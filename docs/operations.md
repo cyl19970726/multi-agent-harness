@@ -11,7 +11,8 @@ Current checks:
 - JSON parsing for schemas and examples;
 - Markdown local link validation;
 - document size warning;
-- skill frontmatter and UI metadata validation.
+- skill frontmatter and UI metadata validation;
+- docs governance registry validation.
 
 Rust checks are also active in CI:
 
@@ -32,7 +33,6 @@ CLI --help snapshot
 Rust type <-> schema coverage
 adapter descriptor validation
 Mermaid render/lint
-docs governance metadata and stale review checks
 dashboard lint/typecheck/build
 API integration smoke
 Docker image build

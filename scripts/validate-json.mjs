@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { readdirSync, statSync } from "node:fs";
 
-const roots = ["schemas", "examples"];
+const roots = ["schemas", "docs", "examples"];
 const files = [];
 
 function walk(dir) {

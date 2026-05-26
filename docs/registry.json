@@ -1,0 +1,115 @@
+{
+  "schema": "agent_harness.docs_registry.v1",
+  "documents": [
+    {
+      "path": "README.md",
+      "ownerRole": "product",
+      "status": "stable",
+      "lifecycle": "stable",
+      "canonicalFor": ["repository entry point", "product boundary"],
+      "dependsOn": [
+        "docs/prd.md",
+        "docs/design-basis.md",
+        "docs/architecture.md",
+        "docs/operations.md",
+        "docs/schemas.md",
+        "docs/decisions.md"
+      ],
+      "machineConsumers": ["check-doc-links", "check-doc-governance"],
+      "reviewAfter": "2026-08-26",
+      "lastVerifiedWith": ["npx pnpm@9.15.4 check"],
+      "reorgTrigger": "Start Here links or product boundary no longer match implemented and gateable surfaces."
+    },
+    {
+      "path": "docs/README.md",
+      "ownerRole": "knowledge",
+      "status": "stable",
+      "lifecycle": "stable",
+      "canonicalFor": ["docs index", "docs split rule"],
+      "dependsOn": [
+        "docs/prd.md",
+        "docs/design-basis.md",
+        "docs/architecture.md",
+        "docs/operations.md",
+        "docs/schemas.md",
+        "docs/decisions.md"
+      ],
+      "machineConsumers": ["check-doc-links", "check-doc-governance"],
+      "reviewAfter": "2026-08-26",
+      "lastVerifiedWith": ["npx pnpm@9.15.4 check"],
+      "reorgTrigger": "Docs grow new stable sections, readers, or machine-consumed groups."
+    },
+    {
+      "path": "docs/prd.md",
+      "ownerRole": "product",
+      "status": "stable",
+      "lifecycle": "stable",
+      "canonicalFor": ["product purpose", "product scenarios", "non-goals"],
+      "dependsOn": ["docs/design-basis.md"],
+      "machineConsumers": ["check-doc-links", "check-doc-governance"],
+      "reviewAfter": "2026-08-26",
+      "lastVerifiedWith": ["npx pnpm@9.15.4 check"],
+      "reorgTrigger": "Product scenarios or non-goals change enough to invalidate the architecture boundary."
+    },
+    {
+      "path": "docs/design-basis.md",
+      "ownerRole": "architecture",
+      "status": "stable",
+      "lifecycle": "stable",
+      "canonicalFor": ["design basis", "module core ideas", "surface responsibility"],
+      "dependsOn": ["docs/prd.md", "docs/architecture.md", "docs/operations.md", "docs/schemas.md"],
+      "machineConsumers": ["check-doc-links", "check-doc-governance"],
+      "reviewAfter": "2026-08-26",
+      "lastVerifiedWith": ["npx pnpm@9.15.4 check"],
+      "reorgTrigger": "A new core layer, module, surface, or governance rule becomes stable."
+    },
+    {
+      "path": "docs/architecture.md",
+      "ownerRole": "architecture",
+      "status": "stable",
+      "lifecycle": "stable",
+      "canonicalFor": ["core loop", "module boundaries", "package plan"],
+      "dependsOn": ["docs/design-basis.md", "docs/schemas.md"],
+      "machineConsumers": ["check-doc-links", "check-doc-governance"],
+      "reviewAfter": "2026-08-26",
+      "lastVerifiedWith": ["npx pnpm@9.15.4 check", "cargo test"],
+      "reorgTrigger": "Implemented crates, object boundaries, or source-of-truth surfaces diverge from the architecture."
+    },
+    {
+      "path": "docs/operations.md",
+      "ownerRole": "operations",
+      "status": "stable",
+      "lifecycle": "volatile",
+      "canonicalFor": ["current gates", "planned gates", "local validation"],
+      "dependsOn": ["package.json", ".github/workflows/ci.yml", "docs/schemas.md"],
+      "machineConsumers": ["check-doc-links", "check-doc-governance"],
+      "reviewAfter": "2026-07-26",
+      "lastVerifiedWith": ["npx pnpm@9.15.4 check", "cargo clippy --all-targets -- -D warnings"],
+      "reorgTrigger": "CI jobs, local commands, or release gates change."
+    },
+    {
+      "path": "docs/schemas.md",
+      "ownerRole": "schema",
+      "status": "stable",
+      "lifecycle": "stable",
+      "canonicalFor": ["schema index", "contract maturity", "Rust coverage rule"],
+      "dependsOn": ["schemas/README.md", "crates/harness-core/src/lib.rs"],
+      "machineConsumers": ["check-doc-links", "check-doc-governance"],
+      "reviewAfter": "2026-08-26",
+      "lastVerifiedWith": ["npx pnpm@9.15.4 check", "cargo test"],
+      "reorgTrigger": "Schemas, core Rust types, or contract maturity labels change."
+    },
+    {
+      "path": "docs/decisions.md",
+      "ownerRole": "architecture",
+      "status": "stable",
+      "lifecycle": "stable",
+      "canonicalFor": ["architecture decisions", "durable tradeoffs"],
+      "dependsOn": ["docs/design-basis.md", "docs/architecture.md"],
+      "machineConsumers": ["check-doc-links", "check-doc-governance"],
+      "reviewAfter": "2026-08-26",
+      "lastVerifiedWith": ["npx pnpm@9.15.4 check"],
+      "reorgTrigger": "Decisions exceed one file or need numbered ADR lifecycle."
+    }
+  ]
+}

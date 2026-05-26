@@ -28,6 +28,7 @@ configuration or views.
 | `Evidence` | Rust + JSON schema | yes |
 | `Decision` | Rust + JSON schema | yes |
 | `ToolDescriptor` | JSON schema + example descriptor | partially |
+| `DocDescriptor` | JSON schema + docs registry + governance check | yes |
 | `Skill` | markdown skill + metadata check | partially |
 | `PermissionPolicy` | planned concept | no |
 | `Report` / `Claim` / `Blocker` | future concepts, not first-version contracts | no |
@@ -47,6 +48,13 @@ becomes gateable only when its source of truth and CI check are clear.
 | Evidence | [evidence.schema.json](../schemas/evidence.schema.json) |
 | Decision | [decision.schema.json](../schemas/decision.schema.json) |
 | Tool descriptor | [agent-harness-tool-descriptor.schema.json](../schemas/agent-harness-tool-descriptor.schema.json) |
+| Doc descriptor | [doc-descriptor.schema.json](../schemas/doc-descriptor.schema.json) |
+
+## Current Registries
+
+| Registry | File | Check |
+| --- | --- | --- |
+| Docs governance | [registry.json](registry.json) | `pnpm check:doc-governance` |
 
 ## Rust Coverage Rule
 
