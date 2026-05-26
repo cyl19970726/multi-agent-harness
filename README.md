@@ -41,6 +41,14 @@ The generic core must not import project-specific runtime code.
 - [Schemas](docs/schemas.md)
 - [Decisions](docs/decisions.md)
 
+## Skills
+
+- [Bootstrap project workflow](skills/bootstrap-project-workflow/SKILL.md):
+  create or audit a project's docs, CI/CD, diagrams, task workflow, and
+  evidence-backed governance.
+- [Generic agent harness](skills/generic-agent-harness/SKILL.md): operate and
+  extend the generic harness objects and workflow.
+
 ## Initial Commands
 
 ```bash

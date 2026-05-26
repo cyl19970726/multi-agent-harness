@@ -10,7 +10,8 @@ Current checks:
 
 - JSON parsing for schemas and examples;
 - Markdown local link validation;
-- document size warning.
+- document size warning;
+- skill frontmatter and UI metadata validation.
 
 ## Rust Backend Checks
 
@@ -30,6 +31,7 @@ Phase 0:
 docs links
 JSON parse
 doc size warning
+skill metadata check
 ```
 
 Phase 1:

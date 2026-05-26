@@ -1,0 +1,4 @@
+interface:
+  display_name: "Generic Agent Harness"
+  short_description: "Operate and extend the generic multi-agent harness."
+  default_prompt: "Use the generic harness contracts to manage agent members, tasks, messages, evidence, and decisions."

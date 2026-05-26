@@ -1,0 +1,4 @@
+interface:
+  display_name: "Bootstrap Project Workflow"
+  short_description: "Create docs, CI/CD, and agent workflow for a new project."
+  default_prompt: "Design the minimal docs, CI/CD checks, and agent workflow for this project or new requirement."

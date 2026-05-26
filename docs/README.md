@@ -11,6 +11,13 @@
 Project-specific tool usage belongs in `examples/adapters/**` or in the
 integrating project repository, not in the generic core docs.
 
+## Skills
+
+| Skill | Use |
+| --- | --- |
+| [bootstrap-project-workflow](../skills/bootstrap-project-workflow/SKILL.md) | Bootstrap or audit docs, CI/CD, diagrams, task workflow, and project governance. |
+| [generic-agent-harness](../skills/generic-agent-harness/SKILL.md) | Operate or extend the generic harness objects and message-first workflow. |
+
 ## Split Rule
 
 Keep docs merged until a file is stable above roughly 500 lines, has a clearly
