@@ -1,0 +1,15 @@
+{
+  "schema": "agent_harness.tool_descriptor.v1",
+  "toolId": "docs:check",
+  "adapterId": "multi-agent-harness",
+  "label": "Check Docs",
+  "description": "Run repository documentation checks.",
+  "interface": {
+    "type": "terminal"
+  },
+  "inputs": [],
+  "outputs": [],
+  "requiredPermissions": [],
+  "failureModes": [],
+  "evidencePolicy": ["Attach command output summary to the task evidence."]
+}

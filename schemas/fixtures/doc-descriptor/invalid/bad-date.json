@@ -1,0 +1,12 @@
+{
+  "path": "docs/architecture.md",
+  "ownerRole": "architecture",
+  "status": "stable",
+  "lifecycle": "stable",
+  "canonicalFor": ["module boundaries"],
+  "dependsOn": ["docs/design-basis.md", "docs/schemas.md"],
+  "machineConsumers": ["check-doc-links", "check-doc-governance"],
+  "reviewAfter": "August 26 2026",
+  "lastVerifiedWith": ["npx pnpm@9.15.4 check"],
+  "reorgTrigger": "Core modules or source-of-truth surfaces change."
+}

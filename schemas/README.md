@@ -12,3 +12,6 @@
 
 Schemas in this directory are generic. Project-specific artifacts should live
 in an adapter package or example directory.
+
+Fixtures under `fixtures/<schema-name>/valid` and
+`fixtures/<schema-name>/invalid` are checked by `pnpm check:schema-fixtures`.

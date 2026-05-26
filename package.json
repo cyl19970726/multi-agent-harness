@@ -5,12 +5,15 @@
   "type": "module",
   "packageManager": "pnpm@9.15.4",
   "scripts": {
-    "check": "pnpm validate:json && pnpm check:links && pnpm check:doc-size && pnpm check:skills && pnpm check:doc-governance",
+    "check": "pnpm validate:json && pnpm check:schema-fixtures && pnpm check:links && pnpm check:doc-size && pnpm check:skills && pnpm check:doc-governance",
     "validate:json": "node scripts/validate-json.mjs",
+    "check:schema-fixtures": "node scripts/check-schema-fixtures.mjs",
     "check:links": "node scripts/check-doc-links.mjs",
     "check:doc-size": "node scripts/check-doc-size.mjs",
     "check:skills": "node scripts/check-skills.mjs",
     "check:doc-governance": "node scripts/check-doc-governance.mjs"
   },
-  "devDependencies": {}
+  "devDependencies": {
+    "ajv": "8.17.1"
+  }
 }

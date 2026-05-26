@@ -1,0 +1,7 @@
+{
+  "id": "agent-1",
+  "name": "Architect",
+  "role": "architecture",
+  "capabilities": ["docs", "schema"],
+  "status": "idle"
+}

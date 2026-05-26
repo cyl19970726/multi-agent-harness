@@ -1,0 +1,30 @@
+{
+  "schema": "agent_harness.tool_descriptor.v1",
+  "toolId": "docs:check",
+  "adapterId": "multi-agent-harness",
+  "label": "Check Docs",
+  "description": "Run repository documentation checks.",
+  "interface": {
+    "type": "cli",
+    "command": "npx pnpm@9.15.4 check",
+    "workingDirectory": "."
+  },
+  "inputs": [],
+  "outputs": [
+    {
+      "name": "check_result",
+      "required": true,
+      "description": "The command exit status and output summary.",
+      "evidenceKind": "command"
+    }
+  ],
+  "requiredPermissions": [],
+  "failureModes": [
+    {
+      "code": "check_failed",
+      "description": "One or more repository checks failed.",
+      "blocksDecision": true
+    }
+  ],
+  "evidencePolicy": ["Attach command output summary to the task evidence."]
+}

@@ -8,7 +8,8 @@ npx pnpm@9.15.4 check
 
 Current checks:
 
-- JSON parsing for schemas and examples;
+- JSON parsing for schemas, docs, and examples;
+- schema fixture validation;
 - Markdown local link validation;
 - document size warning;
 - skill frontmatter and UI metadata validation;
@@ -28,7 +29,6 @@ These are design commitments, not current blockers until scripts and CI jobs
 exist.
 
 ```text
-schema fixture validation
 CLI --help snapshot
 Rust type <-> schema coverage
 adapter descriptor validation

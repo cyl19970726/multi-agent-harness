@@ -1,0 +1,6 @@
+{
+  "name": "Architect",
+  "role": "architecture",
+  "capabilities": ["docs", "schema"],
+  "status": "idle"
+}

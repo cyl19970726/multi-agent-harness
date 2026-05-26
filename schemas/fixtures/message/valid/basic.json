@@ -1,0 +1,11 @@
+{
+  "id": "msg-1",
+  "task_id": "task-1",
+  "from_agent_id": "agent-1",
+  "to_agent_id": null,
+  "channel": "architecture",
+  "kind": "task",
+  "content": "Please validate docs governance.",
+  "evidence_ids": [],
+  "created_at": "2026-05-26T00:00:00Z"
+}

@@ -36,7 +36,8 @@ configuration or views.
 | Agent Dashboard read model | planned | no |
 
 Do not present planned or future concepts as stable contracts. A concept
-becomes gateable only when its source of truth and CI check are clear.
+becomes gateable only when its source of truth and CI check are clear. Current
+schema contracts are checked with valid and invalid fixtures.
 
 ## Current JSON Schemas
 
@@ -55,6 +56,13 @@ becomes gateable only when its source of truth and CI check are clear.
 | Registry | File | Check |
 | --- | --- | --- |
 | Docs governance | [registry.json](registry.json) | `pnpm check:doc-governance` |
+
+## Fixture Validation
+
+Schema fixtures live under `../schemas/fixtures/<schema-name>/valid` and
+`../schemas/fixtures/<schema-name>/invalid`. `pnpm check:schema-fixtures`
+requires every current schema to have at least one passing and one failing
+fixture.
 
 ## Rust Coverage Rule
 
