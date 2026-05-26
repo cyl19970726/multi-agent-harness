@@ -1,0 +1,167 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-harness.local/schemas/agent-harness-tool-descriptor.schema.json",
+  "title": "Agent Harness Tool Descriptor",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "toolId",
+    "adapterId",
+    "label",
+    "description",
+    "interface",
+    "inputs",
+    "outputs",
+    "requiredPermissions",
+    "failureModes",
+    "evidencePolicy"
+  ],
+  "properties": {
+    "schema": {
+      "const": "agent_harness.tool_descriptor.v1"
+    },
+    "toolId": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_:-]*$"
+    },
+    "adapterId": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_:-]*$"
+    },
+    "label": {
+      "type": "string",
+      "minLength": 1
+    },
+    "description": {
+      "type": "string",
+      "minLength": 1
+    },
+    "interface": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["cli", "http", "dashboard_link", "artifact_reader", "script", "manual"]
+        },
+        "command": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"]
+        },
+        "urlTemplate": {
+          "type": "string"
+        },
+        "artifactTemplate": {
+          "type": "string"
+        },
+        "workingDirectory": {
+          "type": "string"
+        }
+      }
+    },
+    "inputs": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/ioField"
+      }
+    },
+    "outputs": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/outputField"
+      }
+    },
+    "requiredPermissions": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "failureModes": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/failureMode"
+      }
+    },
+    "evidencePolicy": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "notes": {
+      "type": "string"
+    }
+  },
+  "$defs": {
+    "ioField": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "required", "description"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        },
+        "example": {}
+      }
+    },
+    "outputField": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "required", "description"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        },
+        "example": {},
+        "schemaRef": {
+          "type": "string"
+        },
+        "evidenceKind": {
+          "type": "string"
+        }
+      }
+    },
+    "failureMode": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "description"],
+      "properties": {
+        "code": {
+          "type": "string",
+          "minLength": 1
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        },
+        "blocksDecision": {
+          "type": "boolean"
+        }
+      }
+    }
+  }
+}

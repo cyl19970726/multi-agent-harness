@@ -1,0 +1,57 @@
+{
+  "schema": "agent_harness.tool_descriptor.v1",
+  "toolId": "strategy_harness_status",
+  "adapterId": "earning_engine",
+  "label": "Strategy Harness Status",
+  "description": "Build an operational status snapshot for a running or recently completed strategy harness round.",
+  "interface": {
+    "type": "cli",
+    "command": "node scripts/strategy-harness.mjs status --round-dir <round-dir>",
+    "workingDirectory": "<earning-engine-repo>"
+  },
+  "inputs": [
+    {
+      "name": "round-dir",
+      "required": true,
+      "description": "Path to the strategy harness round directory.",
+      "example": "artifacts/live/<round-id>"
+    }
+  ],
+  "outputs": [
+    {
+      "name": "harness/live-status.json",
+      "required": true,
+      "description": "Operational live status snapshot emitted under the round harness directory.",
+      "schemaRef": "docs/agents/schemas/strategy-harness-live-status.schema.json",
+      "evidenceKind": "operational_status"
+    }
+  ],
+  "requiredPermissions": [
+    "read_artifacts",
+    "run_cli"
+  ],
+  "failureModes": [
+    {
+      "code": "round_dir_missing",
+      "description": "The supplied round directory does not exist or is not readable.",
+      "blocksDecision": true
+    },
+    {
+      "code": "stale_status",
+      "description": "The status snapshot is older than the decision being made and must be refreshed.",
+      "blocksDecision": true
+    },
+    {
+      "code": "supervisor_exit_unexplained",
+      "description": "The supervisor appears to have exited before the round completed.",
+      "blocksDecision": true
+    }
+  ],
+  "evidencePolicy": [
+    "This is operational evidence for monitoring and next-action routing.",
+    "It is not promotion evidence by itself.",
+    "A stale status or heartbeat cannot authorize a fresh live launch.",
+    "Promotion decisions require completed-market packets, visual review, execution lifecycle, and reconciliation."
+  ],
+  "notes": "Use this before manual log inspection for active or recently completed S1 rounds."
+}
