@@ -18,6 +18,25 @@ Only five core objects are required for the first version:
 `Skill`, `ToolAdapter`, `ProviderSession`, and `Dashboard` can start as
 configuration or views.
 
+## Contract Maturity
+
+| Concept | Current maturity | Gateable now |
+| --- | --- | --- |
+| `AgentMember` | Rust + JSON schema | yes |
+| `Task` | Rust + JSON schema | yes |
+| `Message` | Rust + JSON schema | yes |
+| `Evidence` | Rust + JSON schema | yes |
+| `Decision` | Rust + JSON schema | yes |
+| `ToolDescriptor` | JSON schema + example descriptor | partially |
+| `Skill` | markdown skill + metadata check | partially |
+| `PermissionPolicy` | planned concept | no |
+| `Report` / `Claim` / `Blocker` | future concepts, not first-version contracts | no |
+| `ProviderSession` | future concept | no |
+| Agent Dashboard read model | planned | no |
+
+Do not present planned or future concepts as stable contracts. A concept
+becomes gateable only when its source of truth and CI check are clear.
+
 ## Current JSON Schemas
 
 | Schema | File |

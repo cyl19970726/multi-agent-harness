@@ -54,6 +54,22 @@ This proves the product can answer:
 `Skill`, `ToolAdapter`, and `Dashboard` do not need complex domain models in
 the first release. They can start as config and views.
 
+## Surface Responsibility Matrix
+
+Each surface has a different source-of-truth role. Do not make prose carry a
+contract that should be owned by schema, code, CLI, CI, or Dashboard.
+
+| Surface | Owns | Refuses | Current maturity |
+| --- | --- | --- | --- |
+| Docs | design basis, boundaries, scenarios, operating path | field truth, command truth, runtime truth | active |
+| Skills | agent operating instructions and reusable workflow | full product docs or domain implementation | active |
+| Schemas | cross-surface machine contracts | business explanation and unstable experiments | active for core objects |
+| Rust code | real behavior, validation, persistence/API/adapter logic | product narrative and future roadmap | implemented for `harness-core` |
+| CLI | shortest executable path and structured output | prose-only output and hidden evidence | planned |
+| CI/CD | verification of current commitments | blocking on immature guesses | phase 0/1 active |
+| Agent Dashboard | coordination read model and evidence links | replacing project dashboards or making domain verdicts | planned |
+| Project Adapter | project tools, permissions, evidence policy | generic harness runtime behavior | schema/example first |
+
 ## Minimal Types
 
 ```text

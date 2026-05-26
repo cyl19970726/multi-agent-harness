@@ -12,8 +12,8 @@ that project's CLI, Dashboard, artifacts, and permission rules.
 
 ```text
 Multi-Agent Harness
-  AgentRole / AgentMember / Message / Task / Report / Claim / Blocker /
-  Decision / Permission / ProviderSession / Agent Dashboard
+  AgentMember / Task / Message / Evidence / Decision
+  Skill files / Tool descriptors / Agent Dashboard
 
 Project Adapter
   CLI commands / Dashboard links / artifact readers / domain acceptance /
@@ -21,6 +21,10 @@ Project Adapter
 ```
 
 The generic core must not import project-specific runtime code.
+
+Future objects such as `Report`, `Claim`, `Blocker`, `Permission`, and
+`ProviderSession` are not first-version gateable contracts until they have
+schemas, implementation, and checks.
 
 ## Repository Layout
 

@@ -106,3 +106,9 @@ Use these questions before adding large docs, new directories, or new modules:
 Good documentation should make the system feel smaller because the structure is
 clear. Bad documentation makes the system feel larger because it adds text
 without revealing the design.
+
+Stable fields belong in schema. Stable behavior belongs in code. Stable
+operations belong in CLI or API. Stable commitments belong in CI/CD. Stable
+coordination views belong in the Agent Dashboard. Documentation should keep the
+reason, boundary, exception, and upgrade rule rather than duplicating those
+sources of truth.

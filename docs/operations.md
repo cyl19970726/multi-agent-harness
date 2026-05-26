@@ -1,6 +1,6 @@
 # Operations
 
-## Current Local Check
+## Current Gates
 
 ```bash
 npx pnpm@9.15.4 check
@@ -13,9 +13,7 @@ Current checks:
 - document size warning;
 - skill frontmatter and UI metadata validation.
 
-## Rust Backend Checks
-
-After Rust is installed and crates exist:
+Rust checks are also active in CI:
 
 ```bash
 cargo fmt --check
@@ -23,37 +21,18 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-## CI Plan
+## Planned Gates
 
-Phase 0:
-
-```text
-docs links
-JSON parse
-doc size warning
-skill metadata check
-```
-
-Phase 1:
-
-```text
-cargo fmt
-cargo clippy
-cargo test
-```
-
-Phase 2:
+These are design commitments, not current blockers until scripts and CI jobs
+exist.
 
 ```text
 schema fixture validation
 CLI --help snapshot
 Rust type <-> schema coverage
 adapter descriptor validation
-```
-
-Phase 3:
-
-```text
+Mermaid render/lint
+docs governance metadata and stale review checks
 dashboard lint/typecheck/build
 API integration smoke
 Docker image build
