@@ -3,6 +3,7 @@
 | Topic | Doc |
 | --- | --- |
 | Product requirements | [prd.md](prd.md) |
+| MVP: self-hosting and LetMeTry strategy pilot | [mvp.md](mvp.md) |
 | Design basis, layers, and module core ideas | [design-basis.md](design-basis.md) |
 | Architecture, modules, task flow, and package plan | [architecture.md](architecture.md) |
 | Operations | [operations.md](operations.md) |

@@ -34,6 +34,16 @@ The design basis for this decomposition is recorded in
 [design-basis.md](design-basis.md). That document explains the layers and
 module core ideas that connect the product thesis to the concrete architecture.
 
+## MVP Definition
+
+The MVP is defined in [mvp.md](mvp.md). It must prove two real pilots:
+
+1. the harness can manage development of this repository itself;
+2. the harness can start iterating LetMeTry / Earning Engine strategy work
+   through an adapter without coupling strategy logic into the generic core.
+
+Both pilots must use the same task, message, evidence, and decision loop.
+
 ## Non-Goals
 
 - Do not build project-specific business logic into the generic core.

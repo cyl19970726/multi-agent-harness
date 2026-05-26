@@ -40,6 +40,7 @@ schemas, implementation, and checks.
 ## Start Here
 
 - [Product requirements](docs/prd.md)
+- [MVP](docs/mvp.md)
 - [Design basis](docs/design-basis.md)
 - [Architecture](docs/architecture.md)
 - [Operations](docs/operations.md)

@@ -9,6 +9,7 @@
       "canonicalFor": ["repository entry point", "product boundary"],
       "dependsOn": [
         "docs/prd.md",
+        "docs/mvp.md",
         "docs/design-basis.md",
         "docs/architecture.md",
         "docs/operations.md",
@@ -28,6 +29,7 @@
       "canonicalFor": ["docs index", "docs split rule"],
       "dependsOn": [
         "docs/prd.md",
+        "docs/mvp.md",
         "docs/design-basis.md",
         "docs/architecture.md",
         "docs/operations.md",
@@ -45,11 +47,29 @@
       "status": "stable",
       "lifecycle": "stable",
       "canonicalFor": ["product purpose", "product scenarios", "non-goals"],
-      "dependsOn": ["docs/design-basis.md"],
+      "dependsOn": ["docs/mvp.md", "docs/design-basis.md"],
       "machineConsumers": ["check-doc-links", "check-doc-governance"],
       "reviewAfter": "2026-08-26",
       "lastVerifiedWith": ["npx pnpm@9.15.4 check"],
       "reorgTrigger": "Product scenarios or non-goals change enough to invalidate the architecture boundary."
+    },
+    {
+      "path": "docs/mvp.md",
+      "ownerRole": "product",
+      "status": "stable",
+      "lifecycle": "volatile",
+      "canonicalFor": ["MVP pilots", "self-hosting acceptance", "LetMeTry strategy adapter pilot"],
+      "dependsOn": [
+        "docs/prd.md",
+        "docs/design-basis.md",
+        "docs/architecture.md",
+        "docs/operations.md",
+        "examples/adapters/earning-engine/README.md"
+      ],
+      "machineConsumers": ["check-doc-links", "check-doc-governance"],
+      "reviewAfter": "2026-07-26",
+      "lastVerifiedWith": ["npx pnpm@9.15.4 check", "cargo test"],
+      "reorgTrigger": "MVP scope changes, self-hosting flow changes, or LetMeTry adapter pilot changes."
     },
     {
       "path": "docs/design-basis.md",
