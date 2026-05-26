@@ -36,6 +36,7 @@ The generic core must not import project-specific runtime code.
 ## Start Here
 
 - [Product requirements](docs/prd.md)
+- [Design basis](docs/design-basis.md)
 - [Architecture](docs/architecture.md)
 - [Operations](docs/operations.md)
 - [Schemas](docs/schemas.md)

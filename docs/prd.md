@@ -30,6 +30,10 @@ Project CLI / API / Dashboard / Artifacts
 The generic harness owns the coordination layer. A project adapter owns the
 domain-specific tools and evaluation rules.
 
+The design basis for this decomposition is recorded in
+[design-basis.md](design-basis.md). That document explains the layers and
+module cultures that connect the product thesis to the concrete architecture.
+
 ## Non-Goals
 
 - Do not build project-specific business logic into the generic core.
