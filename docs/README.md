@@ -3,7 +3,7 @@
 | Topic | Doc |
 | --- | --- |
 | Product requirements | [prd.md](prd.md) |
-| Design basis, layers, and module culture | [design-basis.md](design-basis.md) |
+| Design basis, layers, and module core ideas | [design-basis.md](design-basis.md) |
 | Architecture, modules, task flow, and package plan | [architecture.md](architecture.md) |
 | Operations | [operations.md](operations.md) |
 | Schemas and minimal object contracts | [schemas.md](schemas.md) |

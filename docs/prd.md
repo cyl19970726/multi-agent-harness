@@ -32,7 +32,7 @@ domain-specific tools and evaluation rules.
 
 The design basis for this decomposition is recorded in
 [design-basis.md](design-basis.md). That document explains the layers and
-module cultures that connect the product thesis to the concrete architecture.
+module core ideas that connect the product thesis to the concrete architecture.
 
 ## Non-Goals
 

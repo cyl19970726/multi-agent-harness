@@ -53,22 +53,22 @@ how results become evidence, and how evidence feeds governance and future work.
 | Governance | Repeated mistakes should become checks, not memories. | CI/CD gates validate project promises and permission boundaries. |
 | Interface | Humans and agents need a shared operational view. | Agent Dashboard is separate from the project dashboard but links to it. |
 
-## Module Culture
+## Module Core Ideas
 
-Each core module has a design culture. This is the part of the architecture that
-should survive implementation changes.
+Each core module has a core idea: why the module exists, what it owns, what it
+refuses to own, and which invariant should survive implementation changes.
 
-| Module | Owns | Refuses | Invariant |
-| --- | --- | --- | --- |
-| Agent Runtime | Agent members, capabilities, status | Domain-specific business logic | Agents are manageable instances, not anonymous chat sessions. |
-| Task System | Decomposition, ownership, assignment, acceptance | Vague TODOs without an owner or acceptance | Work can be tracked from request to decision. |
-| Message System | Agent-to-agent communication and reports | Hidden side channels as the only source of truth | Task assignment and reports can be reconstructed. |
-| Evidence System | References to proof | Treating unsupported summaries as facts | Decisions point to inspectable evidence. |
-| Decision System | Accept, reject, retry, block, escalate | Silent implicit conclusions | The leader's rationale is durable. |
-| Skill System | How agents should use a scenario or tool | Copying project business logic into generic core | Repeated working knowledge becomes reusable. |
-| Tool Adapter System | CLI/API/dashboard/artifact access | Direct coupling to a specific project runtime | Project capability has a stable contract. |
-| Agent Dashboard | Operational read model for tasks and evidence | Replacing the project dashboard | It shows coordination state and links to domain evidence. |
-| CI/CD | Validation of promises and release readiness | Running checks that do not map to real commitments | Broken contracts fail early. |
+| Module | Core idea | Owns | Refuses | Invariant |
+| --- | --- | --- | --- | --- |
+| Agent Runtime | Agents must be manageable, accountable instances. | Agent members, capabilities, status | Domain-specific business logic | Agents are not anonymous chat sessions. |
+| Task System | Work needs a durable unit that can be assigned and accepted. | Decomposition, ownership, assignment, acceptance | Vague TODOs without an owner or acceptance | Work can be tracked from request to decision. |
+| Message System | Collaboration should be reconstructable. | Agent-to-agent communication and reports | Hidden side channels as the only source of truth | Task assignment and reports can be replayed. |
+| Evidence System | Claims need inspectable support. | References to proof | Treating unsupported summaries as facts | Decisions point to evidence. |
+| Decision System | Outcomes need explicit rationale. | Accept, reject, retry, block, escalate | Silent implicit conclusions | The leader's rationale is durable. |
+| Skill System | Repeated working knowledge should become reusable. | How agents should use a scenario or tool | Copying project business logic into generic core | Skills guide usage without owning domain execution. |
+| Tool Adapter System | Project capability needs a stable agent-facing contract. | CLI/API/dashboard/artifact access | Direct coupling to a specific project runtime | Domain tools enter through descriptors and adapters. |
+| Agent Dashboard | Coordination state needs a shared view. | Operational read model for tasks and evidence | Replacing the project dashboard | It links to domain evidence instead of duplicating it. |
+| CI/CD | Repeated mistakes should become checks. | Validation of promises and release readiness | Running checks that do not map to real commitments | Broken contracts fail early. |
 
 ## Documentation Mapping
 
@@ -78,7 +78,7 @@ The documentation structure should mirror the system thinking:
 | --- | --- |
 | `README.md` | Entry point, product boundary, and fastest route to useful context. |
 | `docs/prd.md` | Motivation, scenarios, non-goals, and success criteria. |
-| `docs/design-basis.md` | Layering, module culture, and the reasoning that connects product to architecture. |
+| `docs/design-basis.md` | Layering, module core ideas, and the reasoning that connects product to architecture. |
 | `docs/architecture.md` | Concrete modules, data flow, object contracts, package boundaries. |
 | `docs/operations.md` | How the system is run, checked, released, and recovered. |
 | `docs/schemas.md` | Machine-readable contracts that stabilize the workflow. |
@@ -87,12 +87,17 @@ The documentation structure should mirror the system thinking:
 
 If a document does not map to a design role, it should not exist yet.
 
+The documentation tree should grow with the project's real state. Keep it flat
+while ideas are unstable; split when readers, lifecycles, modules, or machine
+consumers become stable. Reorganize when the current tree no longer reflects
+the system's actual layers, module relationships, or evidence flow.
+
 ## Design Review Questions
 
 Use these questions before adding large docs, new directories, or new modules:
 
 1. What important design idea is this documenting?
-2. Which layer or module culture does it clarify?
+2. Which layer or module core idea does it clarify?
 3. Does it explain why the decomposition exists, or only list what exists?
 4. Can a new agent use it to make a better decision with less context?
 5. Does it connect to evidence, CI/CD, schema, CLI, or dashboard surfaces?
