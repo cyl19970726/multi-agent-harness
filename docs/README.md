@@ -3,18 +3,15 @@
 | Topic | Doc |
 | --- | --- |
 | Product requirements | [prd.md](prd.md) |
-| Product boundary and split plan | [product-boundary.zh.md](product-boundary.zh.md) |
-| Documentation system | [documentation-system.zh.md](documentation-system.zh.md) |
-| Architecture | [architecture.md](architecture.md) |
-| Package architecture | [package-architecture.md](package-architecture.md) |
+| Architecture, modules, task flow, and package plan | [architecture.md](architecture.md) |
 | Operations | [operations.md](operations.md) |
-| Schemas | [schemas.md](schemas.md) |
-| Decisions | [decisions.md](decisions.md) |
-| Multi-agent role/member/subagent design | [multi-agent-harness-design.zh.md](multi-agent-harness-design.zh.md) |
-| Lifecycle and message protocol | [multi-agent-lifecycle.zh.md](multi-agent-lifecycle.zh.md) |
-| Agent Dashboard design | [agent-dashboard-design.zh.md](agent-dashboard-design.zh.md) |
-| Acceptance | [acceptance.zh.md](acceptance.zh.md) |
-| CI/CD | [ci-cd.md](ci-cd.md) |
+| Schemas and minimal object contracts | [schemas.md](schemas.md) |
+| Design decisions | [decisions.md](decisions.md) |
 
 Project-specific tool usage belongs in `examples/adapters/**` or in the
 integrating project repository, not in the generic core docs.
+
+## Split Rule
+
+Keep docs merged until a file is stable above roughly 500 lines, has a clearly
+different reader, or is consumed by CI/tooling.

@@ -5,9 +5,10 @@
   "type": "module",
   "packageManager": "pnpm@9.15.4",
   "scripts": {
-    "check": "pnpm validate:json && pnpm check:links",
+    "check": "pnpm validate:json && pnpm check:links && pnpm check:doc-size",
     "validate:json": "node scripts/validate-json.mjs",
-    "check:links": "node scripts/check-doc-links.mjs"
+    "check:links": "node scripts/check-doc-links.mjs",
+    "check:doc-size": "node scripts/check-doc-size.mjs"
   },
   "devDependencies": {}
 }

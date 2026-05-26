@@ -12,12 +12,11 @@ domain project that the agents use as a tool.
 
 Read only what the task needs:
 
-- Product boundary: `docs/product-boundary.zh.md`
-- Lifecycle: `docs/multi-agent-lifecycle.zh.md`
+- Product requirements and scenarios: `docs/prd.md`
 - Architecture: `docs/architecture.md`
-- Package plan: `docs/package-architecture.md`
-- Agent Dashboard: `docs/agent-dashboard-design.zh.md`
-- Schemas: `schemas/README.md`
+- Operations and CI: `docs/operations.md`
+- Schemas and minimal object contracts: `docs/schemas.md`
+- Decisions: `docs/decisions.md`
 
 ## Rules
 

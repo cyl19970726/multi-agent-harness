@@ -26,7 +26,7 @@ The generic core must not import project-specific runtime code.
 
 | Path | Purpose |
 | --- | --- |
-| `docs/` | PRD, architecture, operations, schemas, decisions, and design notes. |
+| `docs/` | PRD, architecture, operations, schemas, and decisions. |
 | `schemas/` | Stable JSON schemas shared by API, CLI, adapters, and Dashboard. |
 | `crates/` | Rust backend crates. |
 | `apps/agent-dashboard` | Dashboard product plan and future app. |
@@ -36,16 +36,10 @@ The generic core must not import project-specific runtime code.
 ## Start Here
 
 - [Product requirements](docs/prd.md)
-- [Product boundary](docs/product-boundary.zh.md)
-- [Documentation system](docs/documentation-system.zh.md)
 - [Architecture](docs/architecture.md)
-- [Package architecture](docs/package-architecture.md)
 - [Operations](docs/operations.md)
 - [Schemas](docs/schemas.md)
 - [Decisions](docs/decisions.md)
-- [Lifecycle and message protocol](docs/multi-agent-lifecycle.zh.md)
-- [Agent Dashboard design](docs/agent-dashboard-design.zh.md)
-- [CI/CD](docs/ci-cd.md)
 
 ## Initial Commands
 
