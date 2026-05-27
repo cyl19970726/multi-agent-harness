@@ -67,7 +67,10 @@ Report evidence, changed paths, and gaps that still threaten final acceptance.
 - stale or misplaced docs are split, merged, archived, or deleted;
 - result is reviewable from files, diffs, checks, and notes.
 
-## Example: Multi-Agent Harness
+## Reference Case: Multi-Agent Harness
+
+This is a concrete evaluator case for this repository. Use it to calibrate
+quality, not as a generic object model for other projects.
 
 ```text
 base_commit: 53c6ae2 Rework docs around critical mechanisms

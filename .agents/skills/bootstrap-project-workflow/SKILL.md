@@ -1,6 +1,6 @@
 ---
 name: bootstrap-project-workflow
-description: "Use when Codex needs to bootstrap, audit, or redesign a project's vision-driven docs, architecture, ADRs, CI/CD, task workflow, agent workflow, skills, tool adapters, responsibility boundaries, or evidence-backed acceptance process. Applies to new projects, new requirements, migrations, governance audits, and Multi-Agent Harness itself."
+description: "Use when Codex needs to bootstrap, audit, or redesign a project's vision-driven docs, architecture, ADRs, CI/CD, task workflow, agent workflow, skills, tool adapters, responsibility boundaries, or evidence-backed acceptance process. Applies to new projects, new requirements, migrations, governance audits, and self-hosting workflow work."
 ---
 
 # Bootstrap Project Workflow
@@ -14,6 +14,10 @@ must not misunderstand.
 Load [references/governance.md](references/governance.md) when the task asks
 for a full docs/CI audit, rubric, directory reorg, knowledge lifecycle, or
 responsibility-boundary review.
+
+Load [references/cases.md](references/cases.md) only when you need examples,
+case-to-principle extraction, or evaluator calibration. Do not copy case object
+names into a different project unless that project actually uses those objects.
 
 ## Why This Skill Exists
 
@@ -137,6 +141,39 @@ Answer the relevant questions before writing:
 | What belongs in docs, ADR, schema, code, CLI, Dashboard, CI, skill, or adapter? | Keeps source of truth clean. |
 | What should be split, merged, archived, or deleted? | Keeps the docs tree aligned with project reality. |
 
+## Genericity Filter
+
+Before adding an insight to this skill or to a target project's main docs,
+decide whether it is a principle, a pattern, or a case detail.
+
+| Kind | Keep where | Test |
+| --- | --- | --- |
+| Principle | `SKILL.md` or governance reference | Applies across unrelated projects without object renaming. |
+| Pattern | reference file or target docs | Applies to a class of projects, such as provider integrations or domain adapters. |
+| Case detail | `examples/`, case reference, or target project history | Mentions a specific product, object name, incident, market, provider, or command. |
+
+Use this extraction:
+
+```text
+case observation
+  -> failure mode
+  -> generic risk
+  -> reusable principle
+  -> target-project adaptation
+```
+
+Example:
+
+```text
+case detail: a project set an assignee field but never delivered the work
+generic risk: a state field can fake a workflow event
+principle: acceptance-critical workflows need an auditable event, not only a
+           latest-state projection
+target adaptation: choose the event object appropriate to that project
+```
+
+Do not turn a case object name into a universal object model.
+
 ## Key Mechanism Card
 
 Use this card for every critical mechanism:
@@ -244,28 +281,28 @@ Use questions to choose diagrams:
 
 | Key question | Natural diagram | Example |
 | --- | --- | --- |
-| Which modules exist and how do they depend on each other? | Architecture graph | Goal, Task Graph, Message System, Agent Runtime, Dashboard, Evidence, Decision. |
-| Where does state or evidence move? | Data-flow graph | Provider events become AgentEvents, Evidence, Proposal updates, Dashboard warnings. |
-| How does a scenario finish? | Workflow graph | User request to GoalDesign, task assignment, worker report, critic review, Leader decision. |
-| What happens over time between actors? | Sequence diagram | Leader sends Message(kind=task), runtime delivers turn, provider emits events, harness records report. |
-| How does one object change state? | Lifecycle diagram | Message queued, delivered, acknowledged, failed; Task planned, assigned, running, review, done. |
-| What is inside a large module? | Internal module diagram | Agent Runtime split into provider gateway, event reducer, queue, context packer, supervisor. |
+| Which modules exist and how do they depend on each other? | Architecture graph | Product intent, workflow engine, integration layer, evidence store, UI, decision gate. |
+| Where does state or evidence move? | Data-flow graph | External events become normalized records, evidence, review inputs, and UI warnings. |
+| How does a scenario finish? | Workflow graph | User request to design, assignment, execution, report, review, decision, learning. |
+| What happens over time between actors? | Sequence diagram | Coordinator assigns work, executor runs tools, system records events, reviewer decides. |
+| How does one object change state? | Lifecycle diagram | Work item proposed, assigned, running, blocked, review, accepted, archived. |
+| What is inside a large module? | Internal module diagram | Runtime split into supervisor, queue, event reducer, context packer, integration client. |
 
 Example mapping:
 
 ```text
-Question: How do Task, Message, AgentMember, and AgentRuntime relate?
+Question: How do work item, communication event, executor, and runtime relate?
 Diagrams:
   architecture graph for module relationships
   sequence diagram for assignment delivery
-  lifecycle diagram for message status
+  lifecycle diagram for communication or delivery status
 Docs:
-  concept-model.md for meaning
+  concept model for meaning
   data-model.md for source-of-truth rules
-  agent-runtime.md for runtime delivery
-  dashboard.md for what users must see
+  runtime/integration doc for delivery
+  dashboard or UI doc for what users must see
 ADR:
-  task assignment is message-delivered, not field-mutated
+  assignment is recorded by an auditable event, not only latest-state mutation
 ```
 
 Docs should grow with project state:
@@ -326,7 +363,7 @@ another agent toward the desired outcome, not whether the original author can
 explain the answer.
 
 Load [references/evaluator.md](references/evaluator.md) for the full evaluator
-protocol, prompt shape, passing criteria, and the Multi-Agent Harness example.
+protocol, prompt shape, passing criteria, and a concrete reference case.
 The minimum metadata is:
 
 ```text
@@ -346,87 +383,16 @@ SkillEvaluation
 `expected_outcome_class` names the kind of result expected, not the exact
 answer. Record base commit and branch so the evaluation is reproducible.
 
-## Examples
+## Examples And Cases
 
-### Example: Multi-Agent Harness Self-Development
+Keep examples out of the main workflow unless they are needed. Load
+[references/cases.md](references/cases.md) when you need concrete examples of:
 
-Vision:
-
-```text
-Use persistent agent members, task graph, message delivery, evidence, review,
-decision, and goal evaluation to develop the harness itself.
-```
-
-Final acceptance:
-
-```text
-The system can create agent members, send tasks through messages, observe
-runtime state, collect reports/evidence, run critic review, record decisions,
-and show the chain in the Agent Dashboard.
-```
-
-Key mechanism:
-
-```text
-Task assignment
-  failure_mode: directly setting assignee makes fake assignment look real
-  modules: Task Graph, Message System, Agent Control Plane, Dashboard
-  invariant: Message(kind=task) is the assignment event
-  ADR: task assignment is message-delivered, not field-mutated
-  gate: accepted assigned task has prior delivered task message
-```
-
-### Example: Provider Integration
-
-Vision:
-
-```text
-Support Codex first, then other providers without rewriting core workflow.
-```
-
-Routing:
-
-```text
-docs/agent-runtime.md        # provider-neutral AgentProvider, MessageDelivery, EventReducer
-docs/integration/codex.md    # Codex app-server, hooks, plugins, fallback modes
-docs/integration/openclaw.md # OpenClaw-specific implementation when added
-ADR                         # provider transcript is evidence, harness store is canonical
-```
-
-### Example: Dashboard Backward Design
-
-Question:
-
-```text
-What must the user see to know agents are really working?
-```
-
-Implication:
-
-```text
-Dashboard needs task graph, team roster, member status, inbox/outbox, delivery
-state, runtime timeline, reports, evidence, proposals, review, and decisions.
-Therefore the data model needs message delivery state and runtime events.
-```
-
-### Example: External Project Adapter
-
-Vision:
-
-```text
-Let agents operate a domain project through stable tools without importing
-domain logic into the generic harness.
-```
-
-Routing:
-
-```text
-adapter docs: project CLI/API/dashboard/artifacts/evidence policy
-skill: how agents should use those tools
-schema/CLI: stable machine-readable outputs
-dashboard link: domain evidence view
-CI: adapter descriptor and command fixture checks
-```
+- turning a project-specific incident into a generic principle;
+- separating generic contracts from concrete integrations;
+- designing UI backward from acceptance-critical visibility;
+- extracting historical execution notes into reusable cases instead of the
+  current spec.
 
 ## Agent Workflow
 
@@ -434,16 +400,16 @@ Expose project capability through skills and adapters:
 
 ```text
 User request
-  -> Lead identifies vision link and acceptance
-  -> Lead identifies key mechanisms and risks
-  -> Lead routes docs / ADR / contracts / checks
-  -> Lead creates task graph
-  -> Lead sends Message(kind=task)
-  -> AgentMember uses skill + adapter
-  -> AgentMember returns report with evidence refs
-  -> Reviewer/Critic checks evidence
-  -> Leader records decision
-  -> Goal evaluation updates docs, ADRs, skills, or gates
+  -> coordinator identifies vision link and acceptance
+  -> coordinator identifies key mechanisms and risks
+  -> coordinator routes docs / ADR / contracts / checks
+  -> coordinator creates work plan or task graph
+  -> coordinator sends an auditable assignment event
+  -> executor uses skill + adapter or project tools
+  -> executor returns report with evidence refs
+  -> reviewer checks evidence
+  -> decision owner records outcome
+  -> evaluation updates docs, ADRs, skills, tools, or gates
 ```
 
 ## Completion Checklist
