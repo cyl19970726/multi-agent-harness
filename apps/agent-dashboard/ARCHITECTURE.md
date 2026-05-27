@@ -3,6 +3,12 @@
 The Agent Dashboard is the harness control-plane UI. It reads canonical state
 from the Rust harness snapshot/API and derives operator-friendly views.
 
+This is the app-local frontend architecture document. Product-level Dashboard
+purpose and acceptance stay in [../../docs/dashboard.md](../../docs/dashboard.md).
+The framework decision stays in
+[../../docs/decisions/0014-react-vite-agent-dashboard.md](../../docs/decisions/0014-react-vite-agent-dashboard.md).
+Run and build commands stay in [README.md](README.md).
+
 ## Source Boundary
 
 ```text
@@ -42,6 +48,38 @@ src/styles.css     # product UI styling
 
 Keep large logic out of `App.tsx`. If a component needs more than local
 rendering state, move the derivation into `readModel.ts`.
+
+## Control Plane Read Model
+
+The Control Plane is goal-scoped:
+
+```text
+selected goal
+  -> tasks for goal
+  -> participating members and teams
+  -> task/member scoped warnings
+  -> selected task and member detail panels
+```
+
+The frontend may compute scope, counts, and advisory warnings. It must not
+invent canonical task assignment, delivery, evidence, proposal, review, or
+decision state. Those objects come from the snapshot.
+
+## Component Responsibilities
+
+| Component | Owns |
+| --- | --- |
+| `App.tsx` | snapshot source, live polling state, selected goal/task/member ids |
+| `ControlPlane.tsx` | goal scope composition and panel wiring |
+| `KanbanBoard.tsx` | task status columns for the active goal |
+| `TaskDetail.tsx` | assignment proof, reports, evidence, sessions, proposal, review, decision |
+| `MemberDetail.tsx` | inbox/outbox, runtime health, provider sessions, child threads |
+| `WarningsPanel.tsx` | warning display and task/member navigation links |
+| `readModel.ts` | selectors and scope helpers |
+| `warnings.ts` | advisory warning derivation |
+
+If a warning becomes a gate, move the rule out of `warnings.ts` and into the
+Rust schema/CLI/review gate first, then let the Dashboard display the result.
 
 ## Acceptance
 

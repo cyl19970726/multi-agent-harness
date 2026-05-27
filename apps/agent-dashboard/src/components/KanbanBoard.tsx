@@ -1,18 +1,18 @@
-import { taskColumns } from "../readModel";
-import type { DashboardSnapshot } from "../types";
+import { taskColumnsForTasks } from "../readModel";
+import type { Task } from "../types";
 
 export function KanbanBoard({
-  snapshot,
+  tasks,
   selectedTaskId,
   onSelectTask,
 }: {
-  snapshot: Required<DashboardSnapshot>;
+  tasks: Task[];
   selectedTaskId?: string;
   onSelectTask: (id: string) => void;
 }) {
   return (
     <div className="kanban">
-      {taskColumns(snapshot).map((column) => (
+      {taskColumnsForTasks(tasks).map((column) => (
         <section className="column" key={column.status}>
           <div className="columnHeader">
             <strong>{column.status}</strong>

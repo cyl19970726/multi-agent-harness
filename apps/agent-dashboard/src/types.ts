@@ -1,6 +1,7 @@
 export type TaskStatus = "planned" | "assigned" | "running" | "blocked" | "review" | "done" | "archived";
 export type DeliveryStatus = "queued" | "delivered" | "acknowledged" | "failed";
 export type MessageKind = "message" | "task" | "report";
+export type ProviderSessionStatus = "queued" | "running" | "succeeded" | "failed" | "canceled" | "stale";
 
 export interface Goal {
   id: string;
@@ -43,6 +44,9 @@ export interface AgentMember {
   runtime_health?: Record<string, unknown> | null;
   control_endpoint?: string | null;
   provider_thread_id?: string | null;
+  provider_agent_path?: string | null;
+  provider_agent_nickname?: string | null;
+  provider_agent_role?: string | null;
   current_task_id?: string | null;
   current_proposal_id?: string | null;
   prompt_ref?: string | null;
@@ -72,6 +76,17 @@ export interface Message {
   content?: string;
   evidence_ids?: string[];
   created_at?: string;
+  delivery?: MessageDelivery | null;
+}
+
+export interface MessageDelivery {
+  provider_session_id?: string | null;
+  provider_request_id?: string | null;
+  provider_thread_id?: string | null;
+  provider_turn_id?: string | null;
+  terminal_source?: string | null;
+  delivered_at?: string | null;
+  last_error?: string | null;
 }
 
 export interface ProviderSession {
@@ -79,10 +94,24 @@ export interface ProviderSession {
   provider?: string;
   agent_member_id?: string;
   task_id?: string | null;
-  status?: string;
+  workspace_ref?: string | null;
+  provider_thread_id?: string | null;
+  provider_turn_id?: string | null;
+  terminal_source?: string | null;
+  status?: ProviderSessionStatus | string;
+  command?: string;
+  args?: string[];
+  prompt_ref?: string | null;
+  prompt_summary?: string | null;
+  provider_session_ref?: string | null;
   exit_code?: number | null;
   stdout_ref?: string | null;
+  stderr_ref?: string | null;
+  jsonl_ref?: string | null;
   transcript_ref?: string | null;
+  last_message_ref?: string | null;
+  started_at?: string;
+  ended_at?: string | null;
   evidence_ids?: string[];
 }
 
@@ -106,6 +135,23 @@ export interface Proposal {
   status?: string;
   changed_paths?: string[];
   evidence_ids?: string[];
+}
+
+export interface ProviderChildThread {
+  id: string;
+  provider?: string;
+  agent_member_id?: string;
+  provider_runtime_id?: string | null;
+  task_id?: string | null;
+  parent_provider_thread_id?: string | null;
+  provider_thread_id?: string;
+  provider_agent_path?: string | null;
+  provider_agent_nickname?: string | null;
+  provider_agent_role?: string | null;
+  status?: string;
+  last_message_ref?: string | null;
+  created_at?: string;
+  updated_at?: string;
 }
 
 export interface Evidence {
@@ -151,7 +197,7 @@ export interface DashboardSnapshot {
   evidence?: Evidence[];
   decisions?: Decision[];
   provider_sessions?: ProviderSession[];
-  provider_child_threads?: unknown[];
+  provider_child_threads?: ProviderChildThread[];
   goal_learning_status?: GoalLearningStatus[];
 }
 
@@ -159,7 +205,12 @@ export interface WorkflowWarning {
   id: string;
   kind: string;
   severity: "high" | "medium" | "low";
+  goalId?: string;
   taskId?: string;
   memberId?: string;
+  proposalId?: string;
+  decisionId?: string;
+  sessionId?: string;
+  evidenceId?: string;
   summary: string;
 }

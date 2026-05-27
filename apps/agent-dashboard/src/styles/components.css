@@ -67,7 +67,8 @@
   margin-top: 6px;
 }
 
-.warningLinks button {
+.warningLinks button,
+.warningLinks span {
   padding: 3px 6px;
   color: var(--info);
   font-size: 11px;

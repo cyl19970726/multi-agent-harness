@@ -302,7 +302,8 @@
         "apps/agent-dashboard/README.md",
         "apps/agent-dashboard/vite.config.ts",
         "apps/agent-dashboard/src/types.ts",
-        "apps/agent-dashboard/src/readModel.ts"
+        "apps/agent-dashboard/src/readModel.ts",
+        "apps/agent-dashboard/src/warnings.ts"
       ],
       "machineConsumers": ["check-doc-links", "check-doc-governance"],
       "reviewAfter": "2026-06-26",

@@ -1,26 +1,28 @@
 import { UserRound } from "lucide-react";
 import { byId, teamMembers } from "../readModel";
-import type { DashboardSnapshot } from "../types";
+import type { AgentMember, AgentTeam } from "../types";
 import { Pill } from "./Pill";
 
 export function TeamRoster({
-  snapshot,
+  teams,
+  members,
   onSelectMember,
 }: {
-  snapshot: Required<DashboardSnapshot>;
+  teams: AgentTeam[];
+  members: AgentMember[];
   onSelectMember: (id: string) => void;
 }) {
-  const membersById = byId(snapshot.members);
+  const membersById = byId(members);
 
   return (
     <div className="teamStack">
-      {snapshot.teams.map((team) => {
-        const members = teamMembers(team, snapshot.members);
+      {teams.map((team) => {
+        const teamMemberItems = teamMembers(team, members);
         return (
           <article className="teamMini" key={team.id}>
             <strong>{team.name || team.id}</strong>
             <span>owner={team.owner_agent_id || "-"}</span>
-            {members.map((member) => (
+            {teamMemberItems.map((member) => (
               <button className="memberRow" type="button" key={member.id} onClick={() => onSelectMember(member.id)}>
                 <UserRound size={13} />
                 <span>{member.name || member.id}</span>
@@ -29,14 +31,14 @@ export function TeamRoster({
                 </Pill>
               </button>
             ))}
-            {!members.length && <span className="muted">No members</span>}
+            {!teamMemberItems.length && <span className="muted">No members in selected goal</span>}
             {team.owner_agent_id && !membersById.has(team.owner_agent_id) && (
               <span className="muted">owner not registered</span>
             )}
           </article>
         );
       })}
-      {!snapshot.teams.length && <div className="empty">No teams</div>}
+      {!teams.length && <div className="empty">No teams in selected goal</div>}
     </div>
   );
 }

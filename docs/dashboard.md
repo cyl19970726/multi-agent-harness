@@ -116,19 +116,25 @@ right rail:
   latest evidence and decisions
 ```
 
-## Frontend Architecture
+## Document Boundary
 
-The Dashboard frontend uses React, TypeScript, and Vite. The decision is
-recorded in
-[decisions/0014-react-vite-agent-dashboard.md](decisions/0014-react-vite-agent-dashboard.md).
+Dashboard knowledge is split by responsibility so product intent does not get
+mixed with frontend implementation details:
 
-The frontend architecture follows this boundary:
+| Document | Owns | Refuses |
+| --- | --- | --- |
+| `docs/dashboard.md` | product-level Dashboard purpose, information architecture, backward data requirements, user-facing acceptance | component folder layout, package commands, framework internals |
+| `docs/decisions/0014-react-vite-agent-dashboard.md` | durable frontend framework decision and consequences | day-to-day runbook or product view inventory |
+| `apps/agent-dashboard/ARCHITECTURE.md` | app-local frontend architecture, read-model boundary, component responsibilities | product PRD or canonical harness state rules |
+| `apps/agent-dashboard/README.md` | run, build, snapshot, and live API entry points | architecture rationale or acceptance policy |
+
+The frontend architecture follows this product boundary:
 
 ```text
 Rust store / CLI / API
   -> snapshot JSON
   -> frontend read model
-  -> control-plane panels and warnings
+  -> goal-scoped control-plane panels and warnings
 ```
 
 Frontend warnings are operator read-model warnings until promoted. If a warning

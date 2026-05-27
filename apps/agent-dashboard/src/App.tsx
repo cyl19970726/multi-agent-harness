@@ -4,8 +4,9 @@ import { ControlPlane } from "./components/ControlPlane";
 import { RawViews } from "./components/RawViews";
 import { SummaryGrid } from "./components/SummaryGrid";
 import { TopBar } from "./components/TopBar";
-import { deriveWarnings, normalizeSnapshot } from "./readModel";
+import { normalizeSnapshot } from "./readModel";
 import type { DashboardSnapshot } from "./types";
+import { deriveWarnings } from "./warnings";
 
 export function App() {
   const [snapshot, setSnapshot] = useState<DashboardSnapshot | null>(null);
@@ -31,7 +32,10 @@ export function App() {
           setError(null);
         }
       } catch (loadError) {
-        if (!cancelled) setError(loadError instanceof Error ? loadError.message : String(loadError));
+        if (!cancelled) {
+          setError(loadError instanceof Error ? loadError.message : String(loadError));
+          setIsLive(false);
+        }
       }
     }
     load();

@@ -61,3 +61,9 @@ pnpm check
 
 The first implementation should keep existing snapshot import and live polling
 working before adding mutating Dashboard actions.
+
+Document ownership:
+
+- `docs/dashboard.md` owns product-level Dashboard design and acceptance.
+- `apps/agent-dashboard/ARCHITECTURE.md` owns app-local frontend architecture.
+- `apps/agent-dashboard/README.md` owns run and build instructions.

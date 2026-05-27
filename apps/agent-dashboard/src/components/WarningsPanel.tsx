@@ -26,6 +26,8 @@ export function WarningsPanel({
             <div className="warningLinks">
               {warning.taskId && <button type="button" onClick={() => onSelectTask(warning.taskId!)}>task {warning.taskId}</button>}
               {warning.memberId && <button type="button" onClick={() => onSelectMember(warning.memberId!)}>member {warning.memberId}</button>}
+              {warning.proposalId && <span>proposal {warning.proposalId}</span>}
+              {warning.sessionId && <span>session {warning.sessionId}</span>}
             </div>
           </div>
         </article>

@@ -211,3 +211,27 @@
   padding: 5px 0;
   overflow-wrap: anywhere;
 }
+
+.listLine.clickable {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  text-align: left;
+}
+
+.subList,
+.healthGrid {
+  display: grid;
+  gap: 5px;
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.healthGrid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 8px;
+}

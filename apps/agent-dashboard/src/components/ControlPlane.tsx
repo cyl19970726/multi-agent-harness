@@ -1,4 +1,4 @@
-import { tasksForGoal } from "../readModel";
+import { activeGoal, membersForTasks, tasksForGoal, teamsForMembers, warningsForScope } from "../readModel";
 import type { AgentMember, DashboardSnapshot, Task, WorkflowWarning } from "../types";
 import { GoalHeader } from "./GoalHeader";
 import { KanbanBoard } from "./KanbanBoard";
@@ -20,11 +20,15 @@ interface ControlPlaneProps {
 
 export function ControlPlane(props: ControlPlaneProps) {
   const { snapshot, warnings, selectedGoalId, selectedTaskId, selectedMemberId } = props;
-  const activeGoal = snapshot.goals.find((goal) => goal.id === selectedGoalId) ?? snapshot.goals[0];
-  const tasks = tasksForGoal(snapshot, activeGoal?.id);
-  const selectedTask = snapshot.tasks.find((task) => task.id === selectedTaskId) ?? tasks[0];
+  const goal = activeGoal(snapshot, selectedGoalId);
+  const tasks = tasksForGoal(snapshot, goal?.id);
+  const members = membersForTasks(snapshot, tasks);
+  const teams = teamsForMembers(snapshot.teams, members);
+  const scopedWarnings = warningsForScope(warnings, goal?.id, tasks, members);
+  const selectedTask = tasks.find((task) => task.id === selectedTaskId) ?? tasks[0];
   const selectedMember =
-    snapshot.members.find((member) => member.id === selectedMemberId) ??
+    members.find((member) => member.id === selectedMemberId) ??
+    memberForTask(members, selectedTask) ??
     memberForTask(snapshot.members, selectedTask);
 
   return (
@@ -32,29 +36,29 @@ export function ControlPlane(props: ControlPlaneProps) {
       <aside className="rail">
         <h2>Goals</h2>
         <div className="railList">
-          {snapshot.goals.map((goal) => (
+          {snapshot.goals.map((item) => (
             <button
-              className={`railItem ${activeGoal?.id === goal.id ? "active" : ""}`}
+              className={`railItem ${goal?.id === item.id ? "active" : ""}`}
               type="button"
-              key={goal.id}
-              onClick={() => props.onSelectGoal(goal.id)}
+              key={item.id}
+              onClick={() => props.onSelectGoal(item.id)}
             >
-              <strong>{goal.title || goal.id}</strong>
-              <span>{goal.status || "active"}</span>
+              <strong>{item.title || item.id}</strong>
+              <span>{item.status || "active"}</span>
             </button>
           ))}
         </div>
         <h2>Teams</h2>
-        <TeamRoster snapshot={snapshot} onSelectMember={props.onSelectMember} />
+        <TeamRoster teams={teams} members={members} onSelectMember={props.onSelectMember} />
       </aside>
 
       <main className="workbench">
-        <GoalHeader goal={activeGoal} taskCount={tasks.length} warningCount={warnings.length} />
-        <KanbanBoard snapshot={snapshot} selectedTaskId={selectedTask?.id} onSelectTask={props.onSelectTask} />
+        <GoalHeader goal={goal} taskCount={tasks.length} warningCount={scopedWarnings.length} />
+        <KanbanBoard tasks={tasks} selectedTaskId={selectedTask?.id} onSelectTask={props.onSelectTask} />
         <TaskDetail
           snapshot={snapshot}
           task={selectedTask}
-          warnings={warnings}
+          warnings={scopedWarnings}
           onSelectMember={props.onSelectMember}
         />
       </main>
@@ -62,7 +66,7 @@ export function ControlPlane(props: ControlPlaneProps) {
       <aside className="rightRail">
         <MemberDetail snapshot={snapshot} member={selectedMember} onSelectTask={props.onSelectTask} />
         <WarningsPanel
-          warnings={warnings}
+          warnings={scopedWarnings}
           onSelectTask={props.onSelectTask}
           onSelectMember={props.onSelectMember}
         />

@@ -3,9 +3,11 @@ import type {
   AgentTeam,
   DashboardSnapshot,
   Decision,
+  Evidence,
   Goal,
   Message,
   Proposal,
+  ProviderChildThread,
   ProviderSession,
   Task,
   TaskStatus,
@@ -47,19 +49,6 @@ export function byId<T extends { id: string }>(items: T[]): Map<string, T> {
   return new Map(items.map((item) => [item.id, item]));
 }
 
-export function taskColumns(snapshot: Required<DashboardSnapshot>): Array<{ status: TaskStatus; tasks: Task[] }> {
-  const tasks = byId(snapshot.tasks);
-  return taskStatuses.map((status) => ({
-    status,
-    tasks: (snapshot.kanban[status] ?? []).map((id) => tasks.get(id)).filter(Boolean) as Task[],
-  }));
-}
-
-export function teamMembers(team: AgentTeam, members: AgentMember[]): AgentMember[] {
-  const explicit = new Set(team.member_ids ?? []);
-  return members.filter((member) => explicit.has(member.id) || (member.team_ids ?? []).includes(team.id));
-}
-
 export function activeGoal(snapshot: Required<DashboardSnapshot>, selectedGoalId?: string): Goal | undefined {
   return snapshot.goals.find((goal) => goal.id === selectedGoalId) ?? snapshot.goals[0];
 }
@@ -67,6 +56,53 @@ export function activeGoal(snapshot: Required<DashboardSnapshot>, selectedGoalId
 export function tasksForGoal(snapshot: Required<DashboardSnapshot>, goalId?: string): Task[] {
   if (!goalId) return snapshot.tasks;
   return snapshot.tasks.filter((task) => task.goal_id === goalId);
+}
+
+export function taskColumnsForTasks(tasks: Task[]): Array<{ status: TaskStatus; tasks: Task[] }> {
+  return taskStatuses.map((status) => ({
+    status,
+    tasks: tasks.filter((task) => task.status === status),
+  }));
+}
+
+export function membersForTasks(snapshot: Required<DashboardSnapshot>, tasks: Task[]): AgentMember[] {
+  if (!tasks.length) return [];
+  const taskIds = new Set(tasks.map((task) => task.id));
+  const memberIds = new Set<string>();
+  tasks.forEach((task) => {
+    addValue(memberIds, task.owner_agent_id);
+    addValue(memberIds, task.assignee_agent_id);
+    addValue(memberIds, task.reviewer_agent_id);
+  });
+  snapshot.messages
+    .filter((message) => message.task_id && taskIds.has(message.task_id))
+    .forEach((message) => {
+      addValue(memberIds, message.from_agent_id);
+      addValue(memberIds, message.to_agent_id);
+    });
+  snapshot.provider_sessions
+    .filter((session) => session.task_id && taskIds.has(session.task_id))
+    .forEach((session) => addValue(memberIds, session.agent_member_id));
+  snapshot.provider_child_threads
+    .filter((thread) => thread.task_id && taskIds.has(thread.task_id))
+    .forEach((thread) => addValue(memberIds, thread.agent_member_id));
+  return snapshot.members.filter(
+    (member) => memberIds.has(member.id) || (member.current_task_id != null && taskIds.has(member.current_task_id)),
+  );
+}
+
+export function teamsForMembers(teams: AgentTeam[], members: AgentMember[]): AgentTeam[] {
+  const memberIds = new Set(members.map((member) => member.id));
+  return teams.filter((team) =>
+    (team.member_ids ?? []).some((id) => memberIds.has(id)) ||
+    members.some((member) => (member.team_ids ?? []).includes(team.id)) ||
+    (team.owner_agent_id != null && memberIds.has(team.owner_agent_id)),
+  );
+}
+
+export function teamMembers(team: AgentTeam, members: AgentMember[]): AgentMember[] {
+  const explicit = new Set(team.member_ids ?? []);
+  return members.filter((member) => explicit.has(member.id) || (member.team_ids ?? []).includes(team.id));
 }
 
 export function messagesForTask(snapshot: Required<DashboardSnapshot>, taskId?: string): Message[] {
@@ -79,9 +115,29 @@ export function messagesForMember(snapshot: Required<DashboardSnapshot>, memberI
   return snapshot.messages.filter((message) => message.to_agent_id === memberId || message.from_agent_id === memberId);
 }
 
+export function inboxForMember(snapshot: Required<DashboardSnapshot>, memberId?: string): Message[] {
+  if (!memberId) return [];
+  return snapshot.messages.filter((message) => message.to_agent_id === memberId);
+}
+
+export function outboxForMember(snapshot: Required<DashboardSnapshot>, memberId?: string): Message[] {
+  if (!memberId) return [];
+  return snapshot.messages.filter((message) => message.from_agent_id === memberId);
+}
+
 export function sessionsForMember(snapshot: Required<DashboardSnapshot>, memberId?: string): ProviderSession[] {
   if (!memberId) return [];
   return snapshot.provider_sessions.filter((session) => session.agent_member_id === memberId);
+}
+
+export function childThreadsForMember(snapshot: Required<DashboardSnapshot>, memberId?: string): ProviderChildThread[] {
+  if (!memberId) return [];
+  return snapshot.provider_child_threads.filter((thread) => thread.agent_member_id === memberId);
+}
+
+export function sessionsForTask(snapshot: Required<DashboardSnapshot>, taskId?: string): ProviderSession[] {
+  if (!taskId) return [];
+  return snapshot.provider_sessions.filter((session) => session.task_id === taskId);
 }
 
 export function proposalsForTask(snapshot: Required<DashboardSnapshot>, taskId?: string): Proposal[] {
@@ -94,75 +150,51 @@ export function decisionsForTask(snapshot: Required<DashboardSnapshot>, taskId?:
   return snapshot.decisions.filter((decision) => decision.task_id === taskId);
 }
 
-export function deriveWarnings(snapshot: Required<DashboardSnapshot>): WorkflowWarning[] {
-  const warnings: WorkflowWarning[] = [];
-  const add = (kind: string, severity: WorkflowWarning["severity"], summary: string, taskId?: string, memberId?: string) => {
-    warnings.push({ id: `warning-${warnings.length}-${kind}`, kind, severity, summary, taskId, memberId });
-  };
+export function evidenceForTask(snapshot: Required<DashboardSnapshot>, taskId?: string): Evidence[] {
+  if (!taskId) return [];
+  const ids = new Set<string>();
+  const addIds = (values?: string[]) => values?.forEach((id) => ids.add(id));
+  messagesForTask(snapshot, taskId).forEach((message) => addIds(message.evidence_ids));
+  proposalsForTask(snapshot, taskId).forEach((proposal) => addIds(proposal.evidence_ids));
+  decisionsForTask(snapshot, taskId).forEach((decision) => addIds(decision.evidence_ids));
+  sessionsForTask(snapshot, taskId).forEach((session) => addIds(session.evidence_ids));
+  return snapshot.evidence.filter((item) => item.task_id === taskId || ids.has(item.id));
+}
 
-  snapshot.tasks.forEach((task) => {
-    if (task.assignee_agent_id) {
-      const assignments = snapshot.messages.filter(
-        (message) =>
-          message.kind === "task" &&
-          message.task_id === task.id &&
-          message.to_agent_id === task.assignee_agent_id,
-      );
-      if (assignments.length === 0) {
-        add("fake_assignment_risk", "high", "Task has an assignee but no task assignment message.", task.id, task.assignee_agent_id);
-      } else if (!assignments.some((message) => ["delivered", "acknowledged"].includes(message.delivery_status))) {
-        add("assignment_not_delivered", "medium", "Assignment message exists but has not been delivered.", task.id, task.assignee_agent_id);
-      }
-    }
+export function assignmentProofForTask(snapshot: Required<DashboardSnapshot>, task?: Task): Message[] {
+  if (!task?.id || !task.assignee_agent_id) return [];
+  return messagesForTask(snapshot, task.id).filter(
+    (message) => message.kind === "task" && message.to_agent_id === task.assignee_agent_id,
+  );
+}
 
-    if ((task.status === "review" || task.status === "done") && !snapshot.messages.some((message) => message.kind === "report" && message.task_id === task.id)) {
-      add("missing_report", "medium", "Task is in review or done without a report message.", task.id, task.assignee_agent_id ?? undefined);
-    }
-  });
+export function reportsForTask(snapshot: Required<DashboardSnapshot>, taskId?: string): Message[] {
+  return messagesForTask(snapshot, taskId).filter((message) => message.kind === "report");
+}
 
-  snapshot.messages.forEach((message) => {
-    if (message.delivery_status === "failed") {
-      add("failed_delivery", "high", "Message delivery failed.", message.task_id ?? undefined, message.to_agent_id ?? undefined);
-    }
-    if (message.kind === "task" && message.delivery_status === "queued") {
-      add("queued_task_message", "medium", "Task message is still queued.", message.task_id ?? undefined, message.to_agent_id ?? undefined);
-    }
-  });
+export function reviewEvidenceForTask(snapshot: Required<DashboardSnapshot>, taskId?: string): Evidence[] {
+  return evidenceForTask(snapshot, taskId).filter((item) =>
+    ["critic_findings", "check_passed", "check_failed", "goal_evaluation"].includes(item.source_type ?? ""),
+  );
+}
 
-  snapshot.provider_sessions.forEach((session) => {
-    if (session.status === "failed") {
-      add("failed_provider_session", "high", "Provider session failed.", session.task_id ?? undefined, session.agent_member_id);
-    }
-    if (session.status === "succeeded" && session.task_id && session.agent_member_id) {
-      const hasReport = snapshot.messages.some(
-        (message) =>
-          message.kind === "report" &&
-          message.task_id === session.task_id &&
-          message.from_agent_id === session.agent_member_id,
-      );
-      if (!hasReport) {
-        add("provider_only_claim", "medium", "Provider session exists but no report message was recorded.", session.task_id, session.agent_member_id);
-      }
-    }
-  });
+export function warningsForScope(
+  warnings: WorkflowWarning[],
+  goalId: string | undefined,
+  tasks: Task[],
+  members: AgentMember[],
+): WorkflowWarning[] {
+  if (!goalId) return warnings;
+  const taskIds = new Set(tasks.map((task) => task.id));
+  const memberIds = new Set(members.map((member) => member.id));
+  return warnings.filter(
+    (warning) =>
+      warning.goalId === goalId ||
+      (warning.taskId != null && taskIds.has(warning.taskId)) ||
+      (warning.memberId != null && memberIds.has(warning.memberId)),
+  );
+}
 
-  snapshot.proposals.forEach((proposal) => {
-    if ((proposal.status === "submitted" || proposal.status === "accepted") && (proposal.evidence_ids ?? []).length === 0) {
-      add("proposal_missing_evidence", "high", "Submitted or accepted proposal has no evidence ids.", proposal.task_id, proposal.agent_member_id);
-    }
-  });
-
-  snapshot.decisions.forEach((decision) => {
-    if ((decision.evidence_ids ?? []).length === 0) {
-      add("decision_missing_evidence", "medium", "Decision has no evidence ids.", decision.task_id);
-    }
-  });
-
-  snapshot.goal_learning_status.forEach((status) => {
-    (status.warnings ?? []).forEach((warning) => {
-      add("goal_learning_gap", "medium", `Goal ${status.goal_id}: ${warning}`);
-    });
-  });
-
-  return warnings;
+function addValue(values: Set<string>, value?: string | null) {
+  if (value) values.add(value);
 }
