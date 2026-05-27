@@ -76,33 +76,52 @@ Do not claim a task was run by the multi-agent harness unless the store shows:
 
 The Lead Agent should use this sequence for every non-trivial change:
 
-1. Inspect current state:
+1. Load the required Lead skill:
+   `skills/generic-agent-harness/SKILL.md`.
+2. Inspect current state:
    `target/debug/harness goal list`, `target/debug/harness task list`,
    `target/debug/harness agent list`, and relevant docs.
-2. Create or reuse a goal. If the goal is new, record `goal_design` evidence
+3. Create or reuse a goal. If the goal is new, record `goal_design` evidence
    before assigning implementation tasks.
-3. Design the team. At minimum, substantial work needs a Lead, Worker, and
+4. Design the team. At minimum, substantial work needs a Lead, Worker, and
    Critic/Gate. Add Dashboard, Schema, Provider, Adapter, or Docs agents only
    when the scenario needs those roles.
-4. Create tasks with explicit owner, assignee, reviewer, dependencies, owned
+5. Create tasks with explicit owner, assignee, reviewer, dependencies, owned
    paths, workspace or worktree refs, and acceptance criteria.
-5. Assign work through `task assign` or `agent send`; do not treat a private
+6. Assign work through `task assign` or `agent send`; do not treat a private
    chat instruction as an assignment.
-6. For concurrent code work, give each implementation task a separate worktree
+7. For concurrent code work, give each implementation task a separate worktree
    or clearly disjoint owned paths. Shared-file conflicts must be escalated to
    the Lead before merging.
-7. When a claim depends on real provider behavior, use persistent Codex
+8. When a claim depends on real provider behavior, use persistent Codex
    `AgentMember` runtimes and `agent deliver`; one-shot helper output is not
    enough.
-8. Attach evidence with `evidence add`: checks, logs, provider sessions,
+9. Attach evidence with `evidence add`: checks, logs, provider sessions,
    dashboard snapshots, diffs, review notes, adapter artifacts, or screenshots.
-9. Create a proposal from a diff or explicit changed paths before acceptance.
-10. Run the review gate. Acceptance requires check evidence, worker or provider
+10. Create a proposal from a diff or explicit changed paths before acceptance.
+11. Run the review gate. Acceptance requires check evidence, worker or provider
     output, critic findings, valid evidence refs, and owned-path compliance
     unless an explicit waiver decision records the exception.
-11. Record the Leader decision and update task status.
-12. At goal close, add `goal_evaluation` evidence and create follow-up tasks or
+12. Record the Leader decision and update task status.
+13. At goal close, add `goal_evaluation` evidence and create follow-up tasks or
     a reusable GoalCase when the run teaches a reusable workflow pattern.
+
+## Required Skills For Lead
+
+The Lead Agent must load `skills/generic-agent-harness/SKILL.md` before
+planning or accepting non-trivial work in this repository. It is the operating
+contract for the product itself: goal design, task graph design, message-first
+assignment, provider sessions, evidence, critic review, decisions, goal
+evaluation, and follow-up tasks.
+
+Load `skills/bootstrap-project-workflow/SKILL.md` only when the goal is about
+project bootstrapping or governance: docs and CI/CD design, directory reorg,
+new requirement workflow design, adapter boundaries, skill design, task-system
+design, or migrating a project into a harness-operable shape.
+
+Do not make Earning Engine or other domain skills mandatory for this
+repository. Domain workflows enter through adapters and scenario-specific
+skills; the generic harness core must stay domain-neutral.
 
 Useful local commands:
 
