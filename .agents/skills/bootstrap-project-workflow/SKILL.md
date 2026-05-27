@@ -318,6 +318,34 @@ Promote deeper gates when stable:
 Use `warning` for immature commitments and `blocker` for stable high-risk
 commitments.
 
+## Evaluator Mechanism
+
+Use an independent evaluator when the quality of the docs, architecture, CI/CD,
+or skill itself matters. The evaluator should test whether the skill can drive
+another agent toward the desired outcome, not whether the original author can
+explain the answer.
+
+Load [references/evaluator.md](references/evaluator.md) for the full evaluator
+protocol, prompt shape, passing criteria, and the Multi-Agent Harness example.
+The minimum metadata is:
+
+```text
+SkillEvaluation
+  base_commit:
+  evaluator_worktree:
+  evaluator_agent:
+  user_goal:
+  final_acceptance:
+  expected_outcome_class:
+  changed_paths:
+  checks:
+  reviewer_findings:
+  skill_followups:
+```
+
+`expected_outcome_class` names the kind of result expected, not the exact
+answer. Record base commit and branch so the evaluation is reproducible.
+
 ## Examples
 
 ### Example: Multi-Agent Harness Self-Development

@@ -1,4 +1,4 @@
 interface:
   display_name: "Bootstrap Project Workflow"
   short_description: "Design vision-driven docs, ADRs, CI/CD, and agent workflow."
-  default_prompt: "Identify the project vision, final acceptance standard, critical mechanisms, key modules, risks, ADRs, diagrams, contracts, CI/CD gates, and skills needed for this project or new requirement."
+  default_prompt: "Identify the project vision, final acceptance standard, critical mechanisms, key modules, risks, ADRs, diagrams, contracts, CI/CD gates, skills, and evaluator plan needed for this project or new requirement."
