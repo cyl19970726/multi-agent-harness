@@ -53,8 +53,16 @@ async function loadLiveSnapshot() {
 
 function startLive() {
   stopLive();
-  loadLiveSnapshot().catch(showLoadError);
-  state.liveTimer = window.setInterval(() => loadLiveSnapshot().catch(showLoadError), 5000);
+  loadLiveSnapshot().catch((error) => {
+    showLoadError(error);
+    stopLive();
+  });
+  state.liveTimer = window.setInterval(() => {
+    loadLiveSnapshot().catch((error) => {
+      showLoadError(error);
+      stopLive();
+    });
+  }, 5000);
 }
 
 function stopLive() {
@@ -70,7 +78,9 @@ function showLoadError(error) {
 
 function loadJson(raw) {
   try {
-    setSnapshot(JSON.parse(raw));
+    const snapshot = JSON.parse(raw);
+    stopLive();
+    setSnapshot(snapshot);
   } catch (error) {
     alert(`Invalid JSON: ${error instanceof Error ? error.message : String(error)}`);
   }
@@ -179,6 +189,7 @@ function renderSessions(snapshot) {
         const label = session.status === "succeeded" ? "session" : `session:${text(session.status)}`;
         return item(label, session.id, [
           `agent=${text(session.agent_member_id)} task=${text(session.task_id)} exit=${text(session.exit_code)}`,
+          `thread=${text(session.provider_thread_id)} turn=${text(session.provider_turn_id)} terminal=${text(session.terminal_source)}`,
           `stdout=${text(session.stdout_ref)}`,
           `transcript=${text(session.transcript_ref)}`,
           `evidence=${list(session.evidence_ids).join(", ")}`,
@@ -297,3 +308,4 @@ document.querySelectorAll(".tab").forEach((tab) => {
 });
 
 render();
+startLive();
