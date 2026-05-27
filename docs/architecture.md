@@ -42,12 +42,22 @@ This proves the product can answer:
 - what the Leader decided.
 - what the evaluator learned about the workflow for future goals.
 
+The semantic rules for these objects are defined in
+[concept-model.md](concept-model.md). Architecture and code must preserve those
+relationships: for example, a task assignment is not only a direct
+`assignee_agent_id` field update; it must be delivered as a task message and
+then reflected into task/member state.
+
 ## Core Modules
+
+For the fuller PRD and architecture narrative for each module, see
+[core-modules.md](core-modules.md). This section is the compact module index.
 
 | Module | Owns | First-version scope |
 | --- | --- | --- |
 | Goal System | Long-lived outcomes and success criteria | Active goals, priority, owner, success criteria |
 | Agent Runtime | Registered agent instances | `AgentMember` status and capabilities |
+| Agent Control Plane | Team lifecycle and execution state | Member lifecycle, inbox/outbox, queue policy, event reducer, Dashboard actions |
 | Task System | Task graph, ownership, assignment, status | DAG tasks, dependency refs, workspace refs, reviewer refs |
 | Message System | Agent communication | `message | task | report` messages tied to a task |
 | Evidence System | References to proof | CLI output, file, URL, dashboard, human note |
@@ -64,6 +74,21 @@ the first release. They can start as config and views.
 The Goal Learning System starts as markdown and JSON examples before becoming a
 stable schema. Its detailed architecture is in
 [goal-learning-loop.md](goal-learning-loop.md).
+
+## Key Mechanism Docs
+
+The architecture is organized around mechanisms that decide whether the vision
+can be accepted, not around file types.
+
+| Mechanism | Canonical doc | Question it answers |
+| --- | --- | --- |
+| Object and state model | [data-model.md](data-model.md) | Which objects are source of truth, which are projections, and what invariants must hold? |
+| Provider-neutral runtime | [agent-runtime.md](agent-runtime.md) | How do persistent agent members receive messages, emit events, and stay provider-neutral? |
+| Agent control plane | [agent-control-plane.md](agent-control-plane.md) | How are member lifecycle, queues, peer messages, and runtime reductions operated? |
+| Dashboard control surface | [dashboard.md](dashboard.md) | What must the UI show to prove the workflow actually happened? |
+| Git / PR workflow | [workflow-git-pr.md](workflow-git-pr.md) | How do tasks, worktrees, branches, proposals, reviews, and decisions integrate? |
+| Provider integrations | [integration/README.md](integration/README.md) | How do provider-specific docs implement the neutral runtime without redefining it? |
+| Goal learning | [goal-learning-loop.md](goal-learning-loop.md) | How does completed work become reusable future guidance? |
 
 ## Goal Design
 
@@ -107,58 +132,23 @@ Task graph rules:
 The Leader Agent owns the graph. Worker agents own their assigned task output,
 not the global plan.
 
-## Concurrent Workspaces
+## Concurrent Workspaces And PRs
 
-Any task that changes files should declare:
+Git owns code-change facts. The harness owns work ownership, assignment,
+review, evidence, and decisions. The detailed workflow is in
+[workflow-git-pr.md](workflow-git-pr.md).
 
-- `workspace_ref`: the git worktree, remote sandbox, or provider workspace used
-  for the task;
-- `branch_ref`: the branch used for the task;
-- `pr_ref`: the pull request or review artifact used for integration;
-- `owned_paths`: the intended write scope.
+The architectural invariant is: PR merge is not task acceptance. A non-trivial
+change is accepted only after proposal, evidence, review, and Leader decision
+are recorded in harness state.
 
-The default policy is one editing task per worktree and one branch per task.
-Agents may read the full repository, but write ownership should be disjoint
-unless the Leader explicitly coordinates an integration task.
+## Provider Runtime And Integrations
 
-Review and integration happen through a PR or equivalent review artifact after
-the worker reports evidence. A worker must not revert unrelated edits from
-another task or from the user.
-
-## Git In The Workflow
-
-Git is not the harness state machine. The harness owns coordination state; Git
-owns code-change facts.
-
-```text
-Goal
-  -> Task graph
-      -> Task(workspace_ref, branch_ref, pr_ref, owned_paths)
-          -> AgentMember
-              -> Git worktree / branch
-              -> Proposal(diff, changed_paths)
-              -> Evidence(checks, review, logs)
-              -> Decision(merge / revise / split / reject)
-```
-
-Rules:
-
-- the Leader uses the task graph to decide which branches can run in parallel;
-- each editing task should use one worktree and one branch;
-- `owned_paths` is the intended write boundary, not just documentation;
-- a worker reports a `Proposal` before integration;
-- review checks changed paths, checks, evidence, and acceptance criteria;
-- merge is a Leader decision after review, not a worker side effect;
-- path conflicts create an integration task or a task split.
-
-This lets multiple Agent Members develop concurrently without turning Git into
-the only source of project memory.
-
-## Codex Integration
-
-The first concrete Agent Member provider is Codex. The provider integration
-boundary is [integration/codex.md](integration/codex.md), and the lower-level
-runtime design is [codex-agent-runtime.md](codex-agent-runtime.md).
+The provider-neutral runtime contract is [agent-runtime.md](agent-runtime.md).
+The provider-neutral control-plane contract is
+[agent-control-plane.md](agent-control-plane.md). Provider-specific integration
+rules are indexed in [integration/README.md](integration/README.md); Codex is
+the first provider in [integration/codex.md](integration/codex.md).
 
 The product target is persistent Codex-backed Agent Members:
 
@@ -173,23 +163,6 @@ AgentMember(provider=codex)
 `codex exec` and `codex review` remain fallback paths for one-shot tasks, CI
 smoke tests, and PR review. They are not the primary runtime for persistent
 Agent Members.
-
-## PR-Based Integration
-
-The PR is the integration boundary. A task can move to `review` after the
-worker reports:
-
-- branch ref;
-- PR ref or equivalent diff artifact;
-- changed paths;
-- checks run;
-- evidence refs;
-- known risks.
-
-The reviewer checks the PR against task acceptance criteria and owned paths.
-The Leader records the final decision after review. If multiple worker PRs
-touch overlapping paths, the Leader creates a separate integration task instead
-of letting workers race on the same branch.
 
 ## Review And Decision Flow
 
@@ -246,145 +219,11 @@ contract that should be owned by schema, code, CLI, CI, or Dashboard.
 | Agent Dashboard | coordination read model and evidence links | replacing project dashboards or making domain verdicts | planned |
 | Project Adapter | project tools, permissions, evidence policy | generic harness runtime behavior | schema/example first |
 
-## Minimal Types
+## Data Model
 
-```text
-Goal
-  id
-  title
-  objective
-  owner_agent_id
-  status
-  success_criteria
-  priority
-  created_at
-  updated_at
-
-AgentMember
-  id
-  name
-  description
-  role
-  provider
-  model/profile?
-  capabilities
-  team_ids
-  prompt_ref?
-  skill_refs
-  workspace_policy?
-  status
-  current_task_id?
-  current_proposal_id?
-  provider_runtime_id?
-  provider_thread_id?
-  control_endpoint?
-  created_at
-  last_seen_at?
-
-AgentTeam
-  id
-  name
-  description
-  owner_agent_id
-  member_ids
-
-Task
-  id
-  goal_id?
-  parent_task_id?
-  title
-  objective
-  owner_agent_id
-  assignee_agent_id?
-  reviewer_agent_id?
-  status
-  depends_on_task_ids
-  workspace_ref?
-  branch_ref?
-  pr_ref?
-  owned_paths
-  acceptance_criteria
-  created_at
-  updated_at
-
-Message
-  id
-  task_id?
-  from_agent_id
-  to_agent_id? / channel?
-  kind: message | task | report
-  delivery_status
-  content
-  evidence_ids
-  created_at
-
-AgentRuntime
-  id
-  agent_member_id
-  provider
-  status
-  pid?
-  control_endpoint?
-  command
-  args
-
-AgentEvent
-  id
-  agent_member_id
-  provider_runtime_id?
-  task_id?
-  provider
-  event_type
-  summary
-  payload_ref?
-
-Proposal
-  id
-  task_id
-  agent_member_id
-  title
-  summary
-  status
-  changed_paths
-  evidence_ids
-
-Evidence
-  id
-  task_id?
-  source_type
-  source_ref
-  summary
-  created_at
-
-Decision
-  id
-  task_id
-  decision
-  rationale
-  evidence_ids
-  created_at
-
-ProviderSession
-  id
-  provider
-  agent_member_id
-  task_id?
-  workspace_ref?
-  status
-  command
-  args
-  prompt_ref?
-  prompt_summary?
-  provider_session_ref?
-  stdout_ref?
-  jsonl_ref?
-  transcript_ref?
-  last_message_ref?
-  exit_code?
-  started_at
-  ended_at?
-  evidence_ids
-```
+Minimal object relationships, projections, and source-of-truth rules are in
+[data-model.md](data-model.md). Stable field definitions live in
+[schemas.md](schemas.md) and `schemas/*.schema.json`.
 
 ## Scenario Flow
 

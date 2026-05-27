@@ -156,7 +156,7 @@ function createMember(id, name, role, extra = []) {
     "--provider",
     "codex",
     "--skill",
-    "skills/generic-agent-harness/SKILL.md",
+    ".agents/skills/generic-agent-harness/SKILL.md",
     ...extra,
   ]);
 }

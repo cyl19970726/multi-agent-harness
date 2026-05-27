@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
 
-const skillsRoot = "skills";
+const skillsRoot = ".agents/skills";
 const failures = [];
 const checked = [];
 

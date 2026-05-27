@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, join, normalize } from "node:path";
 
-const roots = ["README.md", "docs", "schemas", "skills", "examples", "apps"];
+const roots = ["README.md", "docs", "schemas", ".agents/skills", "examples", "apps"];
 const markdownFiles = [];
 const linkPattern = /\[[^\]]+\]\(([^)]+)\)/g;
 const failures = [];

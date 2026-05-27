@@ -14,6 +14,11 @@ writes, permission gates, and typed lifecycle transitions.
 Task assignment and task reports should flow through `Message`. A message can
 later materialize into `Task`, `Evidence`, or `Decision`.
 
+The stronger invariant is: assignment is message-delivered, not field-mutated.
+`Task.assignee_agent_id` and `AgentMember.current_task_id` are projections of
+message delivery and runtime state. They are not proof that an agent received
+work.
+
 ## 0003: Minimal First Types
 
 The first version should center on:
@@ -76,3 +81,36 @@ should package skills/hooks/MCP helpers rather than replace the runtime.
 
 The integration boundary is in [integration/codex.md](integration/codex.md);
 the runtime details are in [codex-agent-runtime.md](codex-agent-runtime.md).
+
+## 0009: Task Graph As Derived View
+
+The task graph is a view over task nodes and their edges, not a separate source
+of truth. Edges include parent/child decomposition, dependencies, review,
+assignment delivery, handoff, and follow-up creation.
+
+## 0010: Harness Store Is Canonical
+
+Provider transcripts, hooks, PRs, dashboards, and logs are evidence sources.
+The canonical coordination state is the harness store plus versioned repo
+artifacts. Provider state must be reduced into harness messages, events,
+evidence, proposals, or decisions before it is used for acceptance.
+
+## 0011: Provider-Neutral Runtime Before Provider Implementations
+
+Codex is the first provider implementation, not the generic runtime contract.
+The provider-neutral Agent Runtime Object Model lives in
+[agent-runtime.md](agent-runtime.md). Provider-specific docs live under
+[integration/](integration/).
+
+## 0012: Dashboard Is Control Plane
+
+The Agent Dashboard is an operational control surface over harness state. It
+must show task graph, team state, message delivery, runtime health, evidence,
+proposal, review, decision, and evaluation visibility. It should link to
+project dashboards instead of replacing them.
+
+## 0013: PR Merge Is Not Harness Acceptance
+
+Git owns code-change facts. The harness owns work assignment, evidence, review,
+and Leader decisions. A PR merge can follow an accepted decision, but merge
+alone does not prove task acceptance.

@@ -1,7 +1,10 @@
 # Codex Agent Runtime
 
-This document defines how Multi-Agent Harness integrates Codex as the first
-persistent Agent Member provider.
+This document is a Codex runtime source-audit and implementation note. The
+provider-neutral runtime contract is [agent-runtime.md](agent-runtime.md). The
+canonical Codex integration boundary is [integration/codex.md](integration/codex.md).
+Keep generic runtime decisions in `agent-runtime.md`; keep Codex-specific
+protocol and source findings here or in `integration/codex.md`.
 
 For the broader Codex provider integration boundary across app-server, hooks,
 skills, plugins, and fallback modes, see [integration/codex.md](integration/codex.md).

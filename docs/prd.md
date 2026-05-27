@@ -80,7 +80,8 @@ each goal, the Lead must decide:
 The design basis for this decomposition is recorded in
 [design-basis.md](design-basis.md). That document explains the layers and
 module core ideas that connect the product thesis to the concrete architecture.
-The goal learning loop is specified in
+The canonical object relationships and anti-drift invariants are recorded in
+[concept-model.md](concept-model.md). The goal learning loop is specified in
 [goal-learning-loop.md](goal-learning-loop.md).
 
 ## MVP Definition
@@ -105,6 +106,11 @@ reliably coordinate another project's strategy work.
 - Do not treat provider chat as evidence before it is recorded into the harness.
 
 ## Core Product Modules
+
+The product and architecture narrative for every core module is maintained in
+[core-modules.md](core-modules.md). This section keeps the PRD-level summary
+and minimum object shape; module responsibilities, boundaries, and build order
+belong in that companion document.
 
 ### Goal System
 
@@ -156,8 +162,11 @@ AgentMember
 It answers: who is working, which provider backs the instance, what can they
 do, and are they available?
 
-Codex is the first persistent provider. Its app-server integration is defined
-in [codex-agent-runtime.md](codex-agent-runtime.md).
+The provider-neutral control-plane contract for durable member identity,
+lifecycle, queues, peer messages, reducer output, and Dashboard operations is
+defined in [agent-control-plane.md](agent-control-plane.md). Codex is the first
+persistent provider. Its app-server integration is defined in
+[codex-agent-runtime.md](codex-agent-runtime.md).
 
 ### Task System
 
@@ -307,7 +316,8 @@ descriptors.
 
 ### Agent Dashboard
 
-The Agent Dashboard is the operational view over the harness. It shows:
+The Agent Dashboard is the operational control plane over the harness, as
+specified in [agent-control-plane.md](agent-control-plane.md). It shows:
 
 - active tasks;
 - agent members;

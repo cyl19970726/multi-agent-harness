@@ -18,7 +18,13 @@ execution, evidence, review, decisions, and follow-up requirements.
 Read only what the task needs:
 
 - Product requirements and scenarios: `docs/prd.md`
+- Object relationships and anti-drift invariants: `docs/concept-model.md`
 - Architecture: `docs/architecture.md`
+- Core module purpose and boundaries: `docs/core-modules.md`
+- Data model source-of-truth rules: `docs/data-model.md`
+- Provider-neutral runtime: `docs/agent-runtime.md`
+- Dashboard information architecture: `docs/dashboard.md`
+- Git/PR workflow: `docs/workflow-git-pr.md`
 - Goal learning loop: `docs/goal-learning-loop.md`
 - Operations and CI: `docs/operations.md`
 - Schemas and minimal object contracts: `docs/schemas.md`
@@ -39,6 +45,9 @@ Read only what the task needs:
 - Do not put domain logic in the generic core.
 - Use `AgentMessage` for task assignment, reports, follow-up questions, and
   handoff.
+- A task assignment is not proven by directly setting `assignee_agent_id`.
+  Create or reference the task, send `Message(kind=task)`, then treat task and
+  member assignment state as projections of that delivered message.
 - Materialize messages into `Task`, `Report`, `Claim`, `Blocker`, or
   `Decision` before using them for gates.
 - Keep provider chat below message/report artifacts in the trust order.
@@ -80,6 +89,9 @@ task created
   -> critic / review output
   -> leader decision
 ```
+
+If a direct store update bypasses this order, record it as a workflow defect
+and create a follow-up task to move the behavior behind CLI/API validation.
 
 If the Lead must do a blocking step locally, record it as a `leader-local
 exception` with the reason, evidence, and follow-up task that should turn the

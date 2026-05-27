@@ -2,7 +2,7 @@ import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 
 const maxLines = 500;
-const roots = ["README.md", "docs", "schemas", "skills", "examples", "apps"];
+const roots = ["README.md", "docs", "schemas", ".agents/skills", "examples", "apps"];
 const warnings = [];
 
 function walk(path) {

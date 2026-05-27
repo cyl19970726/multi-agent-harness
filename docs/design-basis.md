@@ -85,12 +85,18 @@ The documentation structure should mirror the system thinking:
 | `README.md` | Entry point, product boundary, and fastest route to useful context. |
 | `docs/prd.md` | Motivation, scenarios, non-goals, and success criteria. |
 | `docs/design-basis.md` | Layering, module core ideas, and the reasoning that connects product to architecture. |
+| `docs/concept-model.md` | Canonical object relationships and anti-drift invariants. |
 | `docs/architecture.md` | Concrete modules, data flow, object contracts, package boundaries. |
+| `docs/data-model.md` | Source-of-truth rules, projections, and task graph edges. |
+| `docs/agent-runtime.md` | Provider-neutral Agent Runtime Object Model and interfaces. |
+| `docs/dashboard.md` | Dashboard information architecture and backward data requirements. |
+| `docs/workflow-git-pr.md` | Task, worktree, branch, PR, proposal, review, and decision flow. |
+| `docs/integration/README.md` | Provider integration boundaries and provider-specific doc template. |
 | `docs/goal-learning-loop.md` | How completed goals become evaluator output and reusable examples. |
 | `docs/operations.md` | How the system is run, checked, released, and recovered. |
 | `docs/schemas.md` | Machine-readable contracts that stabilize the workflow. |
 | `docs/decisions.md` | Durable tradeoffs that future agents should not re-litigate casually. |
-| `skills/` | Operational knowledge that tells agents how to use the project and improve it. |
+| `.agents/skills/` | Operational knowledge that tells agents how to use the project and improve it. |
 
 If a document does not map to a design role, it should not exist yet.
 

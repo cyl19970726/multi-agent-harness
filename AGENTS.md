@@ -77,7 +77,7 @@ Do not claim a task was run by the multi-agent harness unless the store shows:
 The Lead Agent should use this sequence for every non-trivial change:
 
 1. Load the required Lead skill:
-   `skills/generic-agent-harness/SKILL.md`.
+   `.agents/skills/generic-agent-harness/SKILL.md`.
 2. Inspect current state:
    `target/debug/harness goal list`, `target/debug/harness task list`,
    `target/debug/harness agent list`, and relevant docs.
@@ -108,13 +108,13 @@ The Lead Agent should use this sequence for every non-trivial change:
 
 ## Required Skills For Lead
 
-The Lead Agent must load `skills/generic-agent-harness/SKILL.md` before
+The Lead Agent must load `.agents/skills/generic-agent-harness/SKILL.md` before
 planning or accepting non-trivial work in this repository. It is the operating
 contract for the product itself: goal design, task graph design, message-first
 assignment, provider sessions, evidence, critic review, decisions, goal
 evaluation, and follow-up tasks.
 
-Load `skills/bootstrap-project-workflow/SKILL.md` only when the goal is about
+Load `.agents/skills/bootstrap-project-workflow/SKILL.md` only when the goal is about
 project bootstrapping or governance: docs and CI/CD design, directory reorg,
 new requirement workflow design, adapter boundaries, skill design, task-system
 design, or migrating a project into a harness-operable shape.

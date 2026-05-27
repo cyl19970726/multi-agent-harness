@@ -6,6 +6,11 @@ Codex 能跑一次任务”，而是把 Codex 变成 harness 里的持久
 执行过程转成 harness 的 `AgentEvent`、`Proposal`、`Evidence`、`Message`
 和 `Decision`。
 
+Provider-neutral runtime contracts live in [../agent-runtime.md](../agent-runtime.md).
+This file should explain only how Codex implements those contracts. Shared
+object semantics such as `Task`, `Message`, `Evidence`, `Proposal`, and
+`Decision` must not be redefined here.
+
 ## 核心结论
 
 V1 主方案是：
@@ -475,25 +480,3 @@ canonical state 仍在 harness backend/store。
 - 只有 provider stdout 文本，没有映射到 `Message`、`AgentEvent`、
   `ProviderSession`、`Evidence` 或 `Decision`；
 - 只在聊天里说明完成，没有 critic/evaluator evidence 和 Leader decision。
-
-## 当前实现状态
-
-截至 2026-05-27：
-
-- 已验证 `codex app-server --listen=unix://...` 可以作为长驻 runtime；
-- 已验证 one process per AgentMember 可以保持 pid/socket alive；
-- 已修正 delivery 方向为 WebSocket-over-Unix-socket，而不是
-  `Content-Length` frame 或 raw `app-server proxy`；
-- `AgentMember.provider_config`、`AgentRuntime.health`、`Message.delivery`、
-  `AgentEvent.provider_*`、`ProviderSession.provider_*` 和
-  `ProviderChildThread` 已进入 Rust/schema/fixture contract；
-- CLI delivery 已执行 `initialize -> thread/start -> turn/start`，并把 request
-  和 provider output 写入 provider session fixture；
-- `agent health` 会做 process、socket 和 protocol 层探测；
-- Dashboard snapshot 已暴露 runtime health、provider session 和 child thread；
-- `hook record` 会把 hook stdin payload 写到 `.harness/hook-payloads`，并追加
-  `codex_hook.*` 类型的 `AgentEvent`；手工 bridge smoke 已通过；
-- session hook config 注入只保留为实验开关，v0.130.0 实测未触发 command hook；
-- repo-local `plugins/harness-telemetry` 已定义第一版 trusted plugin bundle 形态；
-- global `plugin_hooks` 默认关闭；plugin packaging 负责分发同一组 hooks/skills/MCP；
-- 仍需要补强 app-server streaming、Stop-hook report 和 rollout reconciliation。

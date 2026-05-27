@@ -11,8 +11,16 @@
         "docs/prd.md",
         "docs/mvp.md",
         "docs/design-basis.md",
+        "docs/concept-model.md",
         "docs/architecture.md",
+        "docs/core-modules.md",
+        "docs/data-model.md",
+        "docs/agent-runtime.md",
+        "docs/agent-control-plane.md",
+        "docs/dashboard.md",
+        "docs/workflow-git-pr.md",
         "docs/goal-learning-loop.md",
+        "docs/integration/README.md",
         "docs/integration/codex.md",
         "docs/codex-agent-runtime.md",
         "docs/operations.md",
@@ -33,7 +41,7 @@
       "dependsOn": [
         "docs/prd.md",
         "docs/goal-learning-loop.md",
-        "skills/generic-agent-harness/SKILL.md"
+        ".agents/skills/generic-agent-harness/SKILL.md"
       ],
       "machineConsumers": ["check-doc-links", "check-doc-governance"],
       "reviewAfter": "2026-08-26",
@@ -50,8 +58,16 @@
         "docs/prd.md",
         "docs/mvp.md",
         "docs/design-basis.md",
+        "docs/concept-model.md",
         "docs/architecture.md",
+        "docs/core-modules.md",
+        "docs/data-model.md",
+        "docs/agent-runtime.md",
+        "docs/agent-control-plane.md",
+        "docs/dashboard.md",
+        "docs/workflow-git-pr.md",
         "docs/goal-learning-loop.md",
+        "docs/integration/README.md",
         "docs/integration/codex.md",
         "docs/codex-agent-runtime.md",
         "docs/operations.md",
@@ -69,7 +85,17 @@
       "status": "stable",
       "lifecycle": "stable",
       "canonicalFor": ["product purpose", "product scenarios", "non-goals"],
-      "dependsOn": ["docs/mvp.md", "docs/design-basis.md", "docs/goal-learning-loop.md"],
+      "dependsOn": [
+        "docs/mvp.md",
+        "docs/design-basis.md",
+        "docs/concept-model.md",
+        "docs/core-modules.md",
+        "docs/data-model.md",
+        "docs/agent-runtime.md",
+        "docs/dashboard.md",
+        "docs/workflow-git-pr.md",
+        "docs/goal-learning-loop.md"
+      ],
       "machineConsumers": ["check-doc-links", "check-doc-governance"],
       "reviewAfter": "2026-08-26",
       "lastVerifiedWith": ["npx pnpm@9.15.4 check"],
@@ -84,7 +110,13 @@
       "dependsOn": [
         "docs/prd.md",
         "docs/design-basis.md",
+        "docs/concept-model.md",
+        "docs/core-modules.md",
         "docs/architecture.md",
+        "docs/data-model.md",
+        "docs/agent-runtime.md",
+        "docs/dashboard.md",
+        "docs/workflow-git-pr.md",
         "docs/codex-agent-runtime.md",
         "docs/operations.md",
         "examples/adapters/earning-engine/README.md"
@@ -107,6 +139,30 @@
       "reorgTrigger": "A new core layer, module, surface, or governance rule becomes stable."
     },
     {
+      "path": "docs/concept-model.md",
+      "ownerRole": "product-architecture",
+      "status": "planned",
+      "lifecycle": "volatile",
+      "canonicalFor": [
+        "core object relationships",
+        "Goal-to-Task semantics",
+        "Agent-to-Task semantics",
+        "Task-to-Message assignment semantics",
+        "anti-drift invariants"
+      ],
+      "dependsOn": [
+        "docs/prd.md",
+        "docs/design-basis.md",
+        "docs/architecture.md",
+        "docs/core-modules.md",
+        "docs/schemas.md"
+      ],
+      "machineConsumers": ["check-doc-links", "check-doc-governance"],
+      "reviewAfter": "2026-06-26",
+      "lastVerifiedWith": ["npx pnpm@9.15.4 check"],
+      "reorgTrigger": "Core object semantics, assignment flow, evidence flow, or Dashboard projection rules change."
+    },
+    {
       "path": "docs/architecture.md",
       "ownerRole": "architecture",
       "status": "stable",
@@ -114,7 +170,15 @@
       "canonicalFor": ["core loop", "module boundaries", "package plan"],
       "dependsOn": [
         "docs/design-basis.md",
+        "docs/concept-model.md",
+        "docs/core-modules.md",
+        "docs/data-model.md",
+        "docs/agent-runtime.md",
+        "docs/dashboard.md",
+        "docs/workflow-git-pr.md",
         "docs/schemas.md",
+        "docs/agent-control-plane.md",
+        "docs/integration/README.md",
         "docs/integration/codex.md",
         "docs/codex-agent-runtime.md",
         "docs/goal-learning-loop.md"
@@ -123,6 +187,152 @@
       "reviewAfter": "2026-08-26",
       "lastVerifiedWith": ["npx pnpm@9.15.4 check", "cargo test"],
       "reorgTrigger": "Implemented crates, object boundaries, or source-of-truth surfaces diverge from the architecture."
+    },
+    {
+      "path": "docs/core-modules.md",
+      "ownerRole": "product-architecture",
+      "status": "planned",
+      "lifecycle": "volatile",
+      "canonicalFor": [
+        "core module PRD narrative",
+        "core module architecture boundaries",
+        "source-of-truth map",
+        "module build order"
+      ],
+      "dependsOn": [
+        "docs/prd.md",
+        "docs/design-basis.md",
+        "docs/architecture.md",
+        "docs/concept-model.md",
+        "docs/agent-control-plane.md",
+        "docs/schemas.md"
+      ],
+      "machineConsumers": ["check-doc-links", "check-doc-governance"],
+      "reviewAfter": "2026-06-26",
+      "lastVerifiedWith": ["npx pnpm@9.15.4 check"],
+      "reorgTrigger": "Core module boundaries, source-of-truth ownership, or build order changes."
+    },
+    {
+      "path": "docs/data-model.md",
+      "ownerRole": "schema",
+      "status": "planned",
+      "lifecycle": "volatile",
+      "canonicalFor": [
+        "data model relationships",
+        "source-of-truth rules",
+        "projection semantics",
+        "task graph edges"
+      ],
+      "dependsOn": [
+        "docs/prd.md",
+        "docs/concept-model.md",
+        "docs/architecture.md",
+        "docs/schemas.md"
+      ],
+      "machineConsumers": ["check-doc-links", "check-doc-governance"],
+      "reviewAfter": "2026-06-26",
+      "lastVerifiedWith": ["npx pnpm@9.15.4 check"],
+      "reorgTrigger": "Object relationships, projections, source-of-truth rules, or schema responsibilities change."
+    },
+    {
+      "path": "docs/agent-runtime.md",
+      "ownerRole": "provider-integration",
+      "status": "planned",
+      "lifecycle": "volatile",
+      "canonicalFor": [
+        "provider-neutral Agent Runtime Object Model",
+        "AgentProvider interface",
+        "message delivery policy",
+        "event reducer contract"
+      ],
+      "dependsOn": [
+        "docs/prd.md",
+        "docs/concept-model.md",
+        "docs/data-model.md",
+        "docs/agent-control-plane.md",
+        "docs/integration/README.md",
+        "docs/schemas.md"
+      ],
+      "machineConsumers": ["check-doc-links", "check-doc-governance"],
+      "reviewAfter": "2026-06-26",
+      "lastVerifiedWith": ["npx pnpm@9.15.4 check"],
+      "reorgTrigger": "Provider-neutral runtime, message delivery, queue policy, or provider interface changes."
+    },
+    {
+      "path": "docs/dashboard.md",
+      "ownerRole": "product-design",
+      "status": "planned",
+      "lifecycle": "volatile",
+      "canonicalFor": [
+        "Agent Dashboard information architecture",
+        "Dashboard backward data requirements",
+        "control-plane UI views",
+        "workflow visibility"
+      ],
+      "dependsOn": [
+        "docs/prd.md",
+        "docs/concept-model.md",
+        "docs/data-model.md",
+        "docs/agent-runtime.md",
+        "docs/agent-control-plane.md",
+        "apps/agent-dashboard/README.md"
+      ],
+      "machineConsumers": ["check-doc-links", "check-doc-governance"],
+      "reviewAfter": "2026-06-26",
+      "lastVerifiedWith": ["npx pnpm@9.15.4 check"],
+      "reorgTrigger": "Dashboard views, read models, safe actions, or workflow visibility requirements change."
+    },
+    {
+      "path": "docs/workflow-git-pr.md",
+      "ownerRole": "lead-operations",
+      "status": "planned",
+      "lifecycle": "volatile",
+      "canonicalFor": [
+        "Git worktree workflow",
+        "PR integration",
+        "proposal and review flow",
+        "task concurrency rules"
+      ],
+      "dependsOn": [
+        "docs/concept-model.md",
+        "docs/data-model.md",
+        "docs/architecture.md",
+        "docs/decisions.md"
+      ],
+      "machineConsumers": ["check-doc-links", "check-doc-governance"],
+      "reviewAfter": "2026-06-26",
+      "lastVerifiedWith": ["npx pnpm@9.15.4 check"],
+      "reorgTrigger": "Task concurrency, worktree, PR, proposal, review, or decision workflow changes."
+    },
+    {
+      "path": "docs/agent-control-plane.md",
+      "ownerRole": "architecture",
+      "status": "planned",
+      "lifecycle": "volatile",
+      "canonicalFor": [
+        "AgentMember control plane",
+        "agent lifecycle",
+        "message queue semantics",
+        "peer-to-peer agent messaging",
+        "provider event reducer",
+        "Dashboard control-plane roadmap"
+      ],
+      "dependsOn": [
+        "docs/prd.md",
+        "docs/architecture.md",
+        "docs/mvp.md",
+        "docs/agent-runtime.md",
+        "docs/dashboard.md",
+        "docs/schemas.md",
+        "docs/codex-agent-runtime.md"
+      ],
+      "machineConsumers": ["check-doc-links", "check-doc-governance"],
+      "reviewAfter": "2026-06-26",
+      "lastVerifiedWith": [
+        "npx pnpm@9.15.4 check",
+        "https://code.claude.com/docs/en/agent-teams"
+      ],
+      "reorgTrigger": "Agent lifecycle, queue semantics, peer messaging, provider reducer, or Dashboard control actions stabilize enough to move from roadmap into schema/CLI/API contracts."
     },
     {
       "path": "docs/goal-learning-loop.md",
@@ -142,12 +352,34 @@
       "reorgTrigger": "GoalDesign, GoalEvaluation, or GoalCase fields stabilize enough to move into schemas and CLI/API."
     },
     {
+      "path": "docs/integration/README.md",
+      "ownerRole": "provider-integration",
+      "status": "planned",
+      "lifecycle": "volatile",
+      "canonicalFor": [
+        "provider integration rules",
+        "provider-specific doc template",
+        "provider-neutral boundary"
+      ],
+      "dependsOn": [
+        "docs/agent-runtime.md",
+        "docs/architecture.md",
+        "docs/integration/codex.md"
+      ],
+      "machineConsumers": ["check-doc-links", "check-doc-governance"],
+      "reviewAfter": "2026-06-26",
+      "lastVerifiedWith": ["npx pnpm@9.15.4 check"],
+      "reorgTrigger": "Provider integration template, provider-neutral boundary, or provider roster changes."
+    },
+    {
       "path": "docs/integration/codex.md",
       "ownerRole": "provider-integration",
       "status": "planned",
       "lifecycle": "volatile",
       "canonicalFor": ["Codex provider integration", "app-server vs hooks vs skills vs plugins", "Codex fallback modes"],
       "dependsOn": [
+        "docs/agent-runtime.md",
+        "docs/integration/README.md",
         "docs/architecture.md",
         "docs/codex-agent-runtime.md",
         "docs/mvp.md",
@@ -171,7 +403,9 @@
       "lifecycle": "volatile",
       "canonicalFor": ["persistent Codex AgentMember runtime", "Codex app-server integration", "agent runtime events"],
       "dependsOn": [
+        "docs/agent-runtime.md",
         "docs/architecture.md",
+        "docs/agent-control-plane.md",
         "docs/integration/codex.md",
         "docs/mvp.md",
         "docs/schemas.md",
@@ -215,6 +449,9 @@
       "dependsOn": [
         "docs/design-basis.md",
         "docs/architecture.md",
+        "docs/agent-runtime.md",
+        "docs/dashboard.md",
+        "docs/workflow-git-pr.md",
         "docs/integration/codex.md",
         "docs/codex-agent-runtime.md"
       ],
