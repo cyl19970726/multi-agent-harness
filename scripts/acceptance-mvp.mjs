@@ -723,6 +723,7 @@ function liveCodexRuntime() {
   try {
     const health = harnessJson(["agent", "health", "--id", agent.id]);
     assert(String(health.health.protocol_probe).startsWith("pass:"), "protocol probe did not pass");
+    const hooks = trustLiveAgentHooks(agent.id);
     const message = harnessJson([
       "agent",
       "send",
@@ -752,6 +753,8 @@ function liveCodexRuntime() {
     assert(delivered.provider_thread_id, "live Codex delivery missing provider_thread_id");
     return {
       agent_id: agent.id,
+      hook_count: hooks.hook_count,
+      trusted_hook_count: hooks.trusted_hook_count,
       provider_thread_id: delivered.provider_thread_id,
       terminal_source: delivered.terminal_source,
     };
@@ -781,7 +784,16 @@ function createLiveAgent(id, name, role) {
   );
   const health = harnessJson(["agent", "health", "--id", agent.id]);
   assert(String(health.health.protocol_probe).startsWith("pass:"), `${id} protocol probe did not pass`);
+  trustLiveAgentHooks(agent.id);
   return agent;
+}
+
+function trustLiveAgentHooks(agentId) {
+  const hooks = harnessJson(["agent", "hooks", "--id", agentId, "--trust", "--timeout-ms", "15000"]);
+  assert(hooks.hook_count > 0, `${agentId} hooks/list returned no hooks`);
+  assert(hooks.trusted_hook_count > 0, `${agentId} hooks/list returned no trusted hooks`);
+  assert(!hooks.blocker, `${agentId} trusted hook probe blocked: ${hooks.blocker}`);
+  return hooks;
 }
 
 function deliverLiveMessage(agentId, taskId, content, channel) {
