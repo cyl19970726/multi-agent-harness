@@ -121,3 +121,9 @@ textarea {
   color: var(--bad);
   font-size: 12px;
 }
+
+.loadOk {
+  margin-top: 8px;
+  color: var(--good);
+  font-size: 12px;
+}

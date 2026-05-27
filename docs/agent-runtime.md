@@ -97,6 +97,27 @@ include only the bounded context needed for that turn: task objective,
 acceptance criteria, relevant messages, evidence refs, skill refs, owned paths,
 workspace refs, and permission profile.
 
+Delivery queues must be built from the latest projection of mutable objects.
+For an append-only store, this means selecting the latest row per `Message.id`
+before checking `delivery_status=queued`. Raw historical rows are audit data,
+not deliverable work.
+
+Delivery correctness also requires a claim/lease before provider side effects.
+Starting a runtime, creating a provider thread, or sending provider input can
+change external state. A provider implementation must not perform those effects
+until it has atomically claimed the latest queued message or recorded an
+equivalent recoverable lease. The claim must be visible to later dispatchers
+and to the Dashboard.
+
+Closed, closing, or retired members cannot be revived by delivery. A provider
+may expose an explicit reopen operation later, but normal message delivery and
+runtime start must fail visibly for those states.
+
+The delivered provider input must carry a stable harness envelope containing at
+least message id, kind, task id, sender, recipient, channel, delivery attempt,
+and content. Provider-specific transcript text is not a substitute for this
+correlation envelope.
+
 ## Provider-Specific Docs
 
 Use this split:
@@ -118,3 +139,5 @@ Do not let the first provider implementation define the generic runtime.
 4. Provider-native subagents are visible child threads, not harness members
    unless explicitly promoted.
 5. Dashboard reads normalized harness state, not raw provider state directly.
+6. Delivery claims happen before provider side effects.
+7. Closed, closing, and retired members fail normal delivery.

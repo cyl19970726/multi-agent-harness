@@ -59,6 +59,8 @@ cargo run -p harness-cli -- agent health --id <agent>
 cargo run -p harness-cli -- git status --task <task>
 cargo run -p harness-cli -- proposal from-diff --task <task> --agent <agent> --worktree <path> --title <title> --summary <text> --check-cmd "cargo test"
 cargo run -p harness-cli -- review gate --task <task> --reviewer <agent> --decision accept --rationale <text> --evidence <id>
+cargo run -p harness-cli -- agent gateway --once --dry-run
+cargo run -p harness-cli -- agent gateway --start-runtime
 cargo run -p harness-cli -- dashboard snapshot
 cargo run -p harness-cli -- board
 cargo run -p harness-cli -- serve --addr 127.0.0.1:8787
@@ -82,8 +84,23 @@ GET /v1/dashboard/snapshot
 GET /v1/events
 ```
 
-The API is a read surface for the Agent Dashboard. It does not replace review
-gates, provider-session evidence, or decisions.
+The local API also exposes safe control-plane actions used by the Agent
+Dashboard:
+
+```text
+POST /v1/messages
+POST /v1/gateway/tick
+POST /v1/agents/{id}/deliver
+POST /v1/agents/{id}/retry-delivery
+POST /v1/agents/{id}/reconcile-session
+POST /v1/agents/{id}/close
+POST /v1/tasks/{id}/request-review
+```
+
+The API is a read surface and an operator control plane for the Agent
+Dashboard. It does not replace review gates, provider-session evidence, or
+decisions. Safe actions must call the same CLI value paths and append store
+records instead of mutating dashboard-only state.
 
 Bind the API to `127.0.0.1` for normal local use. It sends permissive CORS
 headers so a static Dashboard file can read it; do not bind it to a public

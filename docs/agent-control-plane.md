@@ -271,10 +271,11 @@ Required control-plane views:
 - Evidence and proposals: check evidence, diff evidence, report messages,
   critic findings, and review-gate status.
 
-Dashboard actions should call the same CLI/API paths as agents:
-`agent create`, `agent start`, `message send`, `agent close`, task status
-changes, proposal review, and decision recording. The Dashboard must not become
-a parallel state machine.
+Dashboard actions should call the same CLI/API paths as agents. Current safe
+actions include `message send`, `agent deliver`, safe delivery retry, provider
+session reconciliation, review request, and `agent close`. Future actions
+include `agent create`, `agent start`, task graph edits, proposal review, and
+decision recording. The Dashboard must not become a parallel state machine.
 
 Minimum useful screens:
 
@@ -303,7 +304,7 @@ The repository currently has enough surface to prove live persistent
 | Message state is too small | `queued/delivered/failed` cannot explain read, active, answered, deferred, interrupted, or permission-blocked messages. | Extend message delivery state and add delivery policy. |
 | Busy/idle is inferred poorly | Dashboard cannot know whether to deliver, queue, inject, or interrupt. | Add active-turn and reducer-derived member state. |
 | Peer communication is not a first-class view | Agents can send messages, but the operator cannot see the collaboration graph. | Add inbox/outbox, reply/correlation refs, and channel fanout. |
-| Dashboard is mostly read-only | It shows state but does not operate the team. | Add safe actions that call harness API/CLI. |
+| Dashboard safe actions are partial | It can send/deliver/retry/reconcile/request review/close, but cannot yet create full teams or record final decisions. | Add create/start, task graph edits, proposal review, and decision actions through the same API/CLI paths. |
 | Provider child work is easy to hide | Native subagents or child threads can disappear under the parent member. | Ingest child-thread events and render them under the parent/task. |
 | Goal/task planning is scattered | The repo has phases, but no concise execution roadmap tied to control-plane gaps. | Use the phased plan below as the next implementation graph. |
 
@@ -314,7 +315,7 @@ The repository currently has enough surface to prove live persistent
 | P0 | Make the contract explicit. | Keep this document, PRD, architecture, MVP, schemas, and skill instructions aligned. | Docs explain member lifecycle, queue policy, peer messaging, reducer, Dashboard, and roadmap without exceeding split rules. |
 | P1 | Fix message and member state. | Add delivery policy, active turn, acknowledged/answered/deferred/interrupted states, and correlation/reply refs. | A queued message sent to a busy member stays visible and later delivers or records a policy failure. |
 | P2 | Build the reducer. | Reduce app-server notifications, hooks, provider sessions, and thread/read reconciliation into member status, message delivery, child-thread events, and report candidates. | A live member that edits files cannot finish with only a timeout; the store shows terminal success, failure, or explicit unresolved state. |
-| P3 | Make Dashboard operational. | Add team board, agent detail, inbox/outbox, runtime timeline, task graph, and safe actions for create/start/send/close/review/decision. | The operator can answer what each agent is doing, what message it is handling, what is queued, and what is blocked without raw JSON. |
+| P3 | Make Dashboard operational. | Extend the first control-plane slice into create/start, task graph edits, proposal review, and decision actions. | The operator can answer what each agent is doing, what message it is handling, what is queued, what is blocked, and perform the normal safe repair path without raw JSON. |
 | P4 | Support true teams. | Add channel fanout, peer replies, self-claim/claim locks, task dependency readiness, and reviewer handoff. | A Worker and Critic can coordinate through messages without routing every exchange through the Lead. |
 | P5 | Package provider integrations. | Stabilize Codex app-server, managed hooks, optional plugin, and later Claude/hermes adapters behind the same control-plane API. | Provider-specific details are hidden behind the same AgentMember/message/event objects. |
 | P6 | Close the learning loop. | Add GoalCase examples and evaluator closeout for each control-plane improvement. | Future Leads can inspect prior goal runs to design better teams and task graphs. |

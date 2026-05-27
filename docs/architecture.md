@@ -216,7 +216,7 @@ contract that should be owned by schema, code, CLI, CI, or Dashboard.
 | Rust code | real behavior, validation, persistence/API/adapter logic | product narrative and future roadmap | implemented for core/store/CLI slice |
 | CLI | shortest executable path and structured output | prose-only output and hidden evidence | implemented for file-store workflow |
 | CI/CD | verification of current commitments | blocking on immature guesses | phase 0/1 active |
-| Agent Dashboard | coordination read model and evidence links | replacing project dashboards or making domain verdicts | planned |
+| Agent Dashboard | coordination read model, evidence links, and safe operator actions | replacing project dashboards or making domain verdicts | first control-plane slice implemented |
 | Project Adapter | project tools, permissions, evidence policy | generic harness runtime behavior | schema/example first |
 
 ## Data Model

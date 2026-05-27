@@ -1,0 +1,3 @@
+display_name: "Multi-Agent System Design"
+short_description: "Design durable agent teams, mailboxes, delivery, lifecycle, permissions, and dashboard proof."
+default_prompt: "Design or audit this multi-agent system by defining actor identity, mailbox ownership, delivery claim/lease, runtime turn injection, busy/idle policy, permission messages, hook/plugin boundaries, and dashboard acceptance evidence."

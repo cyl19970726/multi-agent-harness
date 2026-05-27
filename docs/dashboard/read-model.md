@@ -89,6 +89,9 @@ blocks a goal, move the rule to a canonical surface first.
 | `missing_report` | Task is in review or done without a report message. |
 | `failed_delivery` | Message delivery failed. |
 | `queued_task_message` | Task assignment is still queued. |
+| `closed_member_pending_delivery` | Message is queued or claimed for a member that cannot receive normal delivery. |
+| `claimed_delivery_pending` | Message has a provider-session claim and waits for terminal reconciliation. |
+| `provider_session_blocks_delivery` | Running or queued provider session should block later normal delivery. |
 | `failed_provider_session` | Provider session failed or was canceled. |
 | `unresolved_provider_session` | Provider turn was accepted but still lacks terminal reconciliation. |
 | `provider_only_claim` | Provider session exists without a harness report message. |

@@ -14,6 +14,9 @@ object semantics such as `Task`, `Message`, `Evidence`, `Proposal`, and
 Detailed source-audit notes live in
 [codex-source-audit.md](codex-source-audit.md). Keep long source findings out
 of this integration contract unless they change the provider boundary.
+Detailed persistent mailbox and delivery semantics live in
+[codex-message-delivery.md](codex-message-delivery.md). Keep that file aligned
+with the `agent deliver` implementation and Dashboard read model.
 
 ## 核心结论
 
@@ -197,31 +200,11 @@ Codex 的 transcript 或进程内状态。
 
 ## Codex 全局接入面审计
 
-上面的 app-server 链路只是 runtime control plane。横向检查 Codex 源码后，
-还需要把下面这些模块纳入设计，否则 harness 会漏掉 Codex 已经提供的能力或
-状态边界。
+长源代码审计和模块表放在
+[codex-source-audit.md](codex-source-audit.md)。本文件只保留会改变 provider
+边界和 MVP 验收的结论。
 
-| Codex 模块 | 关键能力 | 对 Harness 的影响 |
-| --- | --- | --- |
-| `app-server-client` | 官方内部 remote client facade，封装 initialize、request/response、server request、notification stream，并区分 lossless/best-effort events。 | 我们的 `CodexProtocolClient` 应该对齐这个语义，尤其不能丢 `TurnCompleted`、`ItemCompleted`、assistant deltas、plan/reasoning deltas。 |
-| `app-server-daemon` | Codex 自己的 daemon lifecycle、pid file、socket path、operation lock、managed binary、remote-control bootstrap。 | V1 仍用 one process per member；但 supervisor 的 pid/socket/lock/restart 设计应参考 daemon，不要低估 lifecycle 细节。 |
-| `core/agent` 和 `multi_agents` tools | Codex 内建 subagent：`spawn_agent`、`send_input`、`wait_agent`、`resume_agent`、`close_agent`，支持 agent path、nickname、role、depth、status。 | 这是 provider 内部 multi-agent 能力，不等于 harness `AgentMember`。需要区分“harness member”和“Codex native subagent”。 |
-| `agent-graph-store` / `state.thread_spawn_edges` | 持久化 parent/child thread-spawn edge，支持 open/closed 状态和 descendants 查询。 | 如果启用 Codex native subagents，harness 要 ingest 这些边为 provider child graph；不要丢子 agent 的状态和完成消息。 |
-| `thread-store` / `rollout` / `state` | 存储中立的 thread persistence、live writer、history/read/list/search、turn/item pagination、metadata sync。 | `thread/read`、`thread/turns/list` 应优先于 raw rollout parsing；rollout 是 fallback 和 forensic，不是唯一 source。 |
-| `protocol` SQ/EQ | Codex core 是 Submission Queue / Event Queue 模型，`Op::UserInput`、`Op::InterAgentCommunication`、`EventMsg::*` 是核心语义。 | Harness `Message` 到 Codex 时通常映射为 `turn/start` user input；provider 内部 agent 通信可映射/观察 `InterAgentCommunication`。 |
-| hooks | `SessionStart`、`UserPromptSubmit`、`PreToolUse`、`PostToolUse`、`PermissionRequest`、`SubagentStart`、`SubagentStop`、`Stop` 等。 | 我们之前只覆盖普通 lifecycle，漏了 native subagent hooks；需要把 SubagentStart/Stop 纳入观察和 dashboard timeline。 |
-| plugins / core-plugins / skills | plugin bundle、marketplace、本地/远程 sync、skill roots、hook sources、MCP server capabilities。 | plugin 是分发层；但 plugin metadata 可以成为 provider capability source，后续让项目 adapter skill/hook/MCP 一键安装。 |
-| MCP / `mcp-server` | Codex 可作为 MCP server，也可连接外部 MCP server；tools 有 provenance、auth、elicitation、sandbox state。 | Harness CLI/API 最终应该提供 MCP server 或 plugin-bundled MCP，让 Codex 用结构化工具而不是只读文档。 |
-| `exec-server` / environments | 本地和远程执行环境、fs/process RPC、environment id、remote cwd、WebSocket/stdio transports。 | Worktree、远程机器、per-agent cwd 和权限不应只靠 shell 字符串；未来可把 AgentMember 绑定到 environment。 |
-| config / agent roles | user-defined 和 built-in agent roles，role layer 可改 model、instructions、service tier、nickname candidates。 | Harness 创建 member 时需要保存 role prompt、provider config、permission profile；不能只存一个 agent name。 |
-| approvals / guardian / sandbox / network proxy | 命令审批、guardian review、execpolicy、filesystem/network sandbox、protected metadata paths。 | Task graph 和 review flow 必须把 permission profile、owned paths、approval reviewer 作为 AgentMember 的一等字段。 |
-| agent identity | agent runtime id、task scoped assertion、ChatGPT backend identity。 | 本地 MVP 暂不依赖；远程/云 provider 或跨组织 agent 时需要补 identity/auth 设计。 |
-| cloud-tasks / state agent jobs | CSV/job item runner、job/item status、assigned thread、result json。 | 可作为“批量任务”参考，但不等价于我们的 goal/task graph；后续可借鉴 item 状态和 structured result。 |
-| external-agent migration | 检测/导入其他 agent 的 config、skills、hooks、sessions、subagents、commands。 | 说明 Codex 已经把跨 agent 迁移当成产品能力；harness 也应提供 project adapter import/export，而不是只支持新项目。 |
-| TUI remote | TUI 可连 Unix/WebSocket app-server，区分 remote workspace。 | Dashboard 不应复刻 TUI，但可复用其 remote/local workspace 边界概念。 |
-| OTEL / analytics / rollout-trace | turn timing、trace、reduced state、feedback/log db。 | Agent Dashboard 应显示 delivery latency、TTFT/TTFM、tool latency、event lag，而不是只显示最终文本。 |
-
-这次审计后，V1 设计需要补充四个关键判断：
+这次审计后，V1 设计需要保留四个关键判断：
 
 1. `Codex AgentMember` 和 `Codex native subagent` 必须分层。
    - `AgentMember` 是 harness durable actor，有自己的 member id、task
@@ -347,9 +330,26 @@ read notifications and responses until terminal event
 ## Message Delivery
 
 Harness 的 `Message` 是源头，Codex thread 只是 provider execution context。
+Codex 不会自己轮询 harness mailbox；harness provider gateway 必须从 store
+选择 latest queued message，并通过 app-server `turn/start` 推给对应
+`AgentMember`。完整队列、busy policy、thread/turn 和 Dashboard proof 见
+[codex-message-delivery.md](codex-message-delivery.md)。
+
+当前实现已经有第一版 CLI/API gateway slice，但不是完整生产形态。`agent
+deliver` 已经实现 latest-message atomic claim/lease、closed member guard、
+稳定 harness envelope 和基础 Dashboard warnings。`agent gateway` 可以执行
+单次 tick 或本地循环，并通过 claim TTL 重试安全的 pre-provider claim。HTTP API
+和 Agent Dashboard 已接入第一批 safe actions：send message、deliver、retry
+delivery、reconcile session、request review、close member、gateway tick。
+
+剩余缺口是 live Codex acceptance、长期运行的受监管 Provider Gateway
+daemon/backend、metrics/backoff/部署包装，以及 accepted provider turn 的
+reconciliation policy。已经进入 provider 的 turn 不能靠自动重试静默重放，必须
+先通过 hook、notification、rollout/thread-read 或 operator decision 明确终态。
 
 ```text
 Message(delivery_status=queued)
+  -> provider gateway atomically claims/leases latest queued message
   -> runtime adapter connects to app-server
   -> initialize / initialized
   -> thread/start if provider_thread_id is empty
@@ -463,7 +463,13 @@ canonical state 仍在 harness backend/store。
 - `agent create --provider codex --start` 创建 member、prompt 和 runtime；
 - `agent health` 显示 pid alive、socket exists、protocol probe pass；
 - `agent send` 产生 queued `Message(kind=task)`；
+- dispatcher 在 provider side effect 之前完成 latest-message atomic
+  claim/lease，避免并发投递和 crash 后重复投递；
 - `agent deliver` 通过 app-server 投递到同一 provider thread；
+- closed、closing、retired member 不能被 `agent deliver` 或 runtime restart
+  静默复活；
+- provider turn input 包含稳定可解析的 harness envelope：message id、kind、
+  task、from_agent_id、to_agent_id、channel、delivery attempt 和 content；
 - provider session 记录 request/stdout/stderr 或等价 event fixture，包含
   provider thread id、terminal source，并能解释缺失 turn id 的 reconciliation；
 - harness store 里有 `AgentEvent`、delivered/failed message 状态变化，message
@@ -480,6 +486,9 @@ canonical state 仍在 harness backend/store。
 
 - 只有 `codex exec` / `codex review` 一次性 session，没有常驻 runtime；
 - 只有 dry-run delivery，没有真实 app-server request/response 或失败 fixture；
+- `turn/start` 前没有可观察的 claim/lease，或并发 `agent deliver` 可以投递同一
+  queued message；
+- closed member 仍然能收到 message 或被 delivery path 重启；
 - 只有 pid/socket alive，没有 protocol probe；
 - 只有 provider stdout 文本，没有映射到 `Message`、`AgentEvent`、
   `ProviderSession`、`Evidence` 或 `Decision`；

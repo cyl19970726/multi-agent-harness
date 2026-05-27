@@ -3,6 +3,7 @@ import type { DashboardSnapshot, Proposal, Task, WorkflowWarning } from "./types
 export function deriveWarnings(snapshot: Required<DashboardSnapshot>): WorkflowWarning[] {
   const warnings: WorkflowWarning[] = [];
   const taskById = new Map(snapshot.tasks.map((task) => [task.id, task]));
+  const memberById = new Map(snapshot.members.map((member) => [member.id, member]));
   const evidenceIds = new Set(snapshot.evidence.map((item) => item.id));
   const add = (warning: Omit<WorkflowWarning, "id">) => {
     warnings.push({ id: `warning-${warnings.length}-${warning.kind}`, ...warning });
@@ -52,6 +53,21 @@ export function deriveWarnings(snapshot: Required<DashboardSnapshot>): WorkflowW
 
   snapshot.messages.forEach((message) => {
     const task = message.task_id ? taskById.get(message.task_id) : undefined;
+    const target = message.to_agent_id ? memberById.get(message.to_agent_id) : undefined;
+    if (
+      target != null &&
+      ["closing", "closed", "retired"].includes(target.status ?? "") &&
+      ["queued", "acknowledged"].includes(message.delivery_status)
+    ) {
+      add({
+        kind: "closed_member_pending_delivery",
+        severity: "high",
+        goalId: task?.goal_id ?? undefined,
+        taskId: message.task_id ?? undefined,
+        memberId: target.id,
+        summary: "Message is pending for a member that cannot receive normal delivery.",
+      });
+    }
     if (message.delivery_status === "failed") {
       add({
         kind: "failed_delivery",
@@ -72,10 +88,32 @@ export function deriveWarnings(snapshot: Required<DashboardSnapshot>): WorkflowW
         summary: "Task message is still queued.",
       });
     }
+    if (message.delivery_status === "acknowledged" && message.delivery?.provider_session_id) {
+      add({
+        kind: "claimed_delivery_pending",
+        severity: "medium",
+        goalId: task?.goal_id ?? undefined,
+        taskId: message.task_id ?? undefined,
+        memberId: message.to_agent_id ?? undefined,
+        sessionId: message.delivery.provider_session_id,
+        summary: "Message has been claimed by a provider session and is waiting for terminal reconciliation.",
+      });
+    }
   });
 
   snapshot.provider_sessions.forEach((session) => {
     const task = session.task_id ? taskById.get(session.task_id) : undefined;
+    if (session.status === "queued" || session.status === "running") {
+      add({
+        kind: "provider_session_blocks_delivery",
+        severity: "medium",
+        goalId: task?.goal_id ?? undefined,
+        taskId: session.task_id ?? undefined,
+        memberId: session.agent_member_id,
+        sessionId: session.id,
+        summary: `Provider session ${session.status}; later normal messages should remain queued.`,
+      });
+    }
     if (session.status === "failed" || session.status === "canceled") {
       add({
         kind: "failed_provider_session",

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { fetchSnapshot } from "./api";
+import { fetchSnapshot, postAction } from "./api";
 import { ControlPlane } from "./components/ControlPlane";
 import { RawViews } from "./components/RawViews";
 import { SummaryGrid } from "./components/SummaryGrid";
@@ -14,6 +14,7 @@ export function App() {
   const [liveUrl, setLiveUrl] = useState("http://127.0.0.1:8787");
   const [isLive, setIsLive] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [actionStatus, setActionStatus] = useState<string | null>(null);
   const [selectedGoalId, setSelectedGoalId] = useState<string | undefined>();
   const [selectedTaskId, setSelectedTaskId] = useState<string | undefined>();
   const [selectedMemberId, setSelectedMemberId] = useState<string | undefined>();
@@ -56,6 +57,18 @@ export function App() {
     }
   }
 
+  async function runAction(path: string, body: unknown = {}) {
+    try {
+      const response = await postAction(liveUrl, path, body);
+      if (response.snapshot) setSnapshot(response.snapshot);
+      setActionStatus("Action completed");
+      setError(null);
+    } catch (actionError) {
+      setActionStatus(null);
+      setError(actionError instanceof Error ? actionError.message : String(actionError));
+    }
+  }
+
   const failed = view.messages.filter((message) => message.delivery_status === "failed").length +
     view.provider_sessions.filter((session) => session.status === "failed").length;
 
@@ -80,6 +93,7 @@ export function App() {
             placeholder="Paste output from: harness dashboard snapshot"
           />
           {error && <div className="loadError">{error}</div>}
+          {actionStatus && !error && <div className="loadOk">{actionStatus}</div>}
         </section>
 
         <SummaryGrid
@@ -104,6 +118,7 @@ export function App() {
           onSelectGoal={setSelectedGoalId}
           onSelectTask={setSelectedTaskId}
           onSelectMember={setSelectedMemberId}
+          onAction={runAction}
         />
 
         <RawViews snapshot={view} />

@@ -1,5 +1,5 @@
 import { activeGoal, membersForTasks, tasksForGoal, teamsForMembers, warningsForScope } from "../readModel";
-import type { AgentMember, DashboardSnapshot, Task, WorkflowWarning } from "../types";
+import type { AgentMember, DashboardAction, DashboardSnapshot, Task, WorkflowWarning } from "../types";
 import { GoalHeader } from "./GoalHeader";
 import { KanbanBoard } from "./KanbanBoard";
 import { MemberDetail } from "./MemberDetail";
@@ -16,6 +16,7 @@ interface ControlPlaneProps {
   onSelectGoal: (id: string) => void;
   onSelectTask: (id: string) => void;
   onSelectMember: (id: string) => void;
+  onAction: DashboardAction;
 }
 
 export function ControlPlane(props: ControlPlaneProps) {
@@ -60,11 +61,17 @@ export function ControlPlane(props: ControlPlaneProps) {
           task={selectedTask}
           warnings={scopedWarnings}
           onSelectMember={props.onSelectMember}
+          onAction={props.onAction}
         />
       </main>
 
       <aside className="rightRail">
-        <MemberDetail snapshot={snapshot} member={selectedMember} onSelectTask={props.onSelectTask} />
+        <MemberDetail
+          snapshot={snapshot}
+          member={selectedMember}
+          onSelectTask={props.onSelectTask}
+          onAction={props.onAction}
+        />
         <WarningsPanel
           warnings={scopedWarnings}
           onSelectTask={props.onSelectTask}

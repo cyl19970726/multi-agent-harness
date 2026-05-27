@@ -214,3 +214,5 @@ export interface WorkflowWarning {
   evidenceId?: string;
   summary: string;
 }
+
+export type DashboardAction = (path: string, body?: unknown) => Promise<void>;

@@ -6,8 +6,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use harness_core::{
-    AgentEvent, AgentMember, AgentRuntime, AgentTeam, Decision, Evidence, Goal, Message, Proposal,
-    ProviderChildThread, ProviderSession, Task,
+    AgentEvent, AgentMember, AgentRuntime, AgentTeam, Decision, Evidence, Goal, Message,
+    MessageDelivery, MessageDeliveryStatus, MessageTerminalSource, Proposal, ProviderChildThread,
+    ProviderSession, ProviderSessionStatus, Task,
 };
 use serde::{de::DeserializeOwned, Serialize};
 use thiserror::Error;
@@ -31,6 +32,13 @@ pub enum StoreError {
 }
 
 pub type StoreResult<T> = Result<T, StoreError>;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MessageDeliveryClaimResult {
+    Claimed(Box<Message>),
+    NotQueued,
+    BlockedBySession(String),
+}
 
 #[derive(Debug, Clone)]
 pub struct HarnessStore {
@@ -102,6 +110,51 @@ impl HarnessStore {
         self.append_jsonl("provider_child_threads.jsonl", value)
     }
 
+    pub fn claim_queued_message_delivery(
+        &self,
+        agent_member_id: &str,
+        message_id: &str,
+        delivery: MessageDelivery,
+        mut provider_session: ProviderSession,
+    ) -> StoreResult<MessageDeliveryClaimResult> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+
+        let latest_sessions = latest_by_id(
+            self.read_jsonl::<ProviderSession>("provider_sessions.jsonl")?,
+            |session| session.id.clone(),
+        );
+        if let Some(session) = latest_sessions.into_values().find(|session| {
+            session.agent_member_id == agent_member_id && session_blocks_delivery(session)
+        }) {
+            return Ok(MessageDeliveryClaimResult::BlockedBySession(session.id));
+        }
+
+        let latest_messages =
+            latest_by_id(self.read_jsonl::<Message>("messages.jsonl")?, |message| {
+                message.id.clone()
+            });
+        let Some(mut message) = latest_messages.get(message_id).cloned() else {
+            return Ok(MessageDeliveryClaimResult::NotQueued);
+        };
+        if message.to_agent_id.as_deref() != Some(agent_member_id)
+            || message.delivery_status != MessageDeliveryStatus::Queued
+        {
+            return Ok(MessageDeliveryClaimResult::NotQueued);
+        }
+
+        provider_session.agent_member_id = agent_member_id.to_string();
+        provider_session.task_id = message.task_id.clone();
+        provider_session.status = ProviderSessionStatus::Running;
+        self.append_jsonl_unlocked("provider_sessions.jsonl", &provider_session)?;
+
+        message.delivery_status = MessageDeliveryStatus::Acknowledged;
+        message.delivery = Some(delivery);
+        self.append_jsonl_unlocked("messages.jsonl", &message)?;
+
+        Ok(MessageDeliveryClaimResult::Claimed(Box::new(message)))
+    }
+
     pub fn goals(&self) -> StoreResult<Vec<Goal>> {
         self.read_jsonl("goals.jsonl")
     }
@@ -152,11 +205,15 @@ impl HarnessStore {
 
     fn append_jsonl<T: Serialize>(&self, file_name: &str, value: &T) -> StoreResult<()> {
         self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        self.append_jsonl_unlocked(file_name, value)
+    }
+
+    fn append_jsonl_unlocked<T: Serialize>(&self, file_name: &str, value: &T) -> StoreResult<()> {
         let mut row = Vec::new();
         serde_json::to_writer(&mut row, value)?;
         row.push(b'\n');
 
-        let _lock = self.acquire_write_lock()?;
         let path = self.root.join(file_name);
         let mut file = OpenOptions::new().create(true).append(true).open(path)?;
         file.write_all(&row)?;
@@ -206,6 +263,24 @@ impl HarnessStore {
     }
 }
 
+fn latest_by_id<T>(
+    values: Vec<T>,
+    mut id: impl FnMut(&T) -> String,
+) -> std::collections::BTreeMap<String, T> {
+    let mut latest = std::collections::BTreeMap::new();
+    for value in values {
+        latest.insert(id(&value), value);
+    }
+    latest
+}
+
+fn session_blocks_delivery(session: &ProviderSession) -> bool {
+    session.status == ProviderSessionStatus::Queued
+        || session.status == ProviderSessionStatus::Running
+        || (session.status == ProviderSessionStatus::Stale
+            && session.terminal_source != Some(MessageTerminalSource::Failed))
+}
+
 fn lock_file_exclusive(file: &File) -> std::io::Result<()> {
     let result = unsafe { flock(file.as_raw_fd(), LOCK_EX | LOCK_NB) };
     if result == -1 {
@@ -240,7 +315,7 @@ mod tests {
     use std::sync::{Arc, Barrier};
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use harness_core::{Goal, GoalStatus};
+    use harness_core::{Goal, GoalStatus, MessageKind};
 
     use super::*;
 
@@ -355,5 +430,121 @@ mod tests {
         assert_eq!(store.goals().expect("read goals"), vec![goal]);
 
         std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
+    #[test]
+    fn claim_queued_message_is_atomic_and_blocks_second_claim() {
+        let root = std::env::temp_dir().join(format!(
+            "harness-store-claim-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock")
+                .as_millis()
+        ));
+        let store = HarnessStore::new(&root);
+        store
+            .append_message(&test_message("message-1", "agent-1"))
+            .expect("append message 1");
+        store
+            .append_message(&test_message("message-2", "agent-1"))
+            .expect("append message 2");
+
+        let claim = store
+            .claim_queued_message_delivery(
+                "agent-1",
+                "message-1",
+                test_delivery("delivery-1"),
+                test_provider_session("delivery-1", "agent-1"),
+            )
+            .expect("claim message");
+        assert!(matches!(claim, MessageDeliveryClaimResult::Claimed(_)));
+
+        let latest_message = store
+            .messages()
+            .expect("messages")
+            .into_iter()
+            .rev()
+            .find(|message| message.id == "message-1")
+            .expect("latest message");
+        assert_eq!(
+            latest_message.delivery_status,
+            MessageDeliveryStatus::Acknowledged
+        );
+        assert_eq!(
+            latest_message
+                .delivery
+                .and_then(|delivery| delivery.provider_session_id),
+            Some("delivery-1".into())
+        );
+
+        let second_claim = store
+            .claim_queued_message_delivery(
+                "agent-1",
+                "message-2",
+                test_delivery("delivery-2"),
+                test_provider_session("delivery-2", "agent-1"),
+            )
+            .expect("second claim");
+        assert_eq!(
+            second_claim,
+            MessageDeliveryClaimResult::BlockedBySession("delivery-1".into())
+        );
+
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
+    fn test_message(id: &str, agent_id: &str) -> Message {
+        Message {
+            id: id.into(),
+            task_id: Some("task-1".into()),
+            from_agent_id: "leader".into(),
+            to_agent_id: Some(agent_id.into()),
+            channel: Some("assignment".into()),
+            kind: MessageKind::Task,
+            delivery_status: MessageDeliveryStatus::Queued,
+            content: "Do the task".into(),
+            evidence_ids: Vec::new(),
+            created_at: "unix-ms:1".into(),
+            delivery: None,
+        }
+    }
+
+    fn test_delivery(provider_session_id: &str) -> MessageDelivery {
+        MessageDelivery {
+            provider_session_id: Some(provider_session_id.into()),
+            provider_request_id: None,
+            provider_thread_id: None,
+            provider_turn_id: None,
+            terminal_source: None,
+            delivered_at: None,
+            last_error: None,
+        }
+    }
+
+    fn test_provider_session(id: &str, agent_id: &str) -> ProviderSession {
+        ProviderSession {
+            id: id.into(),
+            provider: "codex".into(),
+            agent_member_id: agent_id.into(),
+            task_id: Some("task-1".into()),
+            workspace_ref: None,
+            provider_thread_id: None,
+            provider_turn_id: None,
+            terminal_source: None,
+            status: ProviderSessionStatus::Running,
+            command: "harness".into(),
+            args: Vec::new(),
+            prompt_ref: None,
+            prompt_summary: None,
+            provider_session_ref: None,
+            stdout_ref: None,
+            jsonl_ref: None,
+            transcript_ref: None,
+            last_message_ref: None,
+            exit_code: None,
+            started_at: "unix-ms:1".into(),
+            ended_at: None,
+            evidence_ids: Vec::new(),
+        }
     }
 }

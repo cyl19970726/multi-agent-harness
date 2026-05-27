@@ -17,7 +17,7 @@ use harness_core::{
     ProposalStatus, ProviderChildThread, ProviderChildThreadStatus, ProviderSession,
     ProviderSessionStatus, Task, TaskStatus,
 };
-use harness_store::HarnessStore;
+use harness_store::{HarnessStore, MessageDeliveryClaimResult};
 use thiserror::Error;
 use tungstenite::client::IntoClientRequest;
 use tungstenite::{Message as WebSocketMessage, WebSocket};
@@ -34,6 +34,8 @@ enum CliError {
     Store(#[from] harness_store::StoreError),
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
+    #[error("json error: {0}")]
+    Json(#[from] serde_json::Error),
 }
 
 type CliResult<T> = Result<T, CliError>;
@@ -97,7 +99,7 @@ fn member_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
 fn agent_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     require_subcommand(
         args,
-        "agent create|list|show|start|health|hooks|send|deliver|ingest|close",
+        "agent create|list|show|start|health|hooks|send|deliver|retry-delivery|reconcile-session|gateway|ingest|close",
     )?;
     match args[0].as_str() {
         "create" => {
@@ -202,6 +204,7 @@ fn agent_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
         "send" => {
             let to_agent_id = required(args, "--to")?;
             let target = latest_member(store, &to_agent_id)?;
+            ensure_member_accepts_delivery(&target)?;
             let message = Message {
                 id: value(args, "--id").unwrap_or_else(|| generated_id("msg")),
                 task_id: value(args, "--task"),
@@ -230,6 +233,33 @@ fn agent_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
             print_json(&message)?;
         }
         "deliver" => deliver_agent_messages(store, args)?,
+        "retry-delivery" => {
+            let result = retry_delivery_value(
+                store,
+                &required(args, "--agent").or_else(|_| required(args, "--id"))?,
+                &required(args, "--message")?,
+                value(args, "--session").as_deref(),
+                &value(args, "--reason").unwrap_or_else(|| "operator requested retry".into()),
+                has_flag(args, "--force"),
+            )?;
+            print_json(&result)?;
+        }
+        "reconcile-session" => {
+            let result = reconcile_provider_session_value(
+                store,
+                &required(args, "--agent").or_else(|_| required(args, "--id"))?,
+                &required(args, "--session")?,
+                parse_provider_session_status(&required(args, "--status")?)?,
+                parse_terminal_source(
+                    value(args, "--terminal-source")
+                        .as_deref()
+                        .unwrap_or("unknown"),
+                )?,
+                &value(args, "--reason").unwrap_or_else(|| "operator reconciliation".into()),
+            )?;
+            print_json(&result)?;
+        }
+        "gateway" => run_provider_gateway(store, args)?,
         "ingest" => {
             let agent_id = required(args, "--agent")?;
             let before_events = store.events()?.len();
@@ -248,60 +278,7 @@ fn agent_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
         }
         "close" => {
             let id = required(args, "--id")?;
-            let mut member = latest_member(store, &id)?;
-            member.status = AgentMemberStatus::Closing;
-            member.last_seen_at = Some(now_string());
-            store.append_member(&member)?;
-
-            let runtimes: Vec<_> = latest_runtimes(store)?
-                .into_values()
-                .filter(|runtime| runtime.agent_member_id == member.id)
-                .filter(|runtime| runtime.status != AgentRuntimeStatus::Stopped)
-                .collect();
-            for mut runtime in runtimes {
-                runtime.status = AgentRuntimeStatus::Stopping;
-                runtime.last_event_at = Some(now_string());
-                store.append_runtime(&runtime)?;
-                if let Some(pid) = runtime.pid {
-                    if pid_is_alive(pid) {
-                        stop_pid(pid)?;
-                    }
-                }
-                runtime.status = AgentRuntimeStatus::Stopped;
-                runtime.ended_at = Some(now_string());
-                runtime.last_event_at = runtime.ended_at.clone();
-                store.append_runtime(&runtime)?;
-                append_agent_event(
-                    store,
-                    &member.id,
-                    Some(runtime.id.as_str()),
-                    None,
-                    "runtime_stopped",
-                    "Codex app-server runtime stopped",
-                    None,
-                )?;
-            }
-
-            mark_running_provider_sessions_terminal(
-                store,
-                &member.id,
-                ProviderSessionStatus::Canceled,
-                Some(MessageTerminalSource::Failed),
-            )?;
-            member.status = AgentMemberStatus::Closed;
-            member.current_task_id = None;
-            member.last_seen_at = Some(now_string());
-            store.append_member(&member)?;
-            append_agent_event(
-                store,
-                &member.id,
-                member.provider_runtime_id.as_deref(),
-                None,
-                "agent_closed",
-                "Agent Member closed",
-                None,
-            )?;
-            print_json(&member)?;
+            print_json(&close_agent_member_value(store, &id)?)?;
         }
         other => return Err(CliError::Usage(format!("unknown agent command: {other}"))),
     }
@@ -898,13 +875,32 @@ fn handle_http_connection(store: &HarnessStore, mut stream: TcpStream) -> CliRes
     reader.read_line(&mut request_line)?;
     let mut parts = request_line.split_whitespace();
     let method = parts.next().unwrap_or_default();
-    let path = parts.next().unwrap_or_default();
+    let path = parts.next().unwrap_or_default().to_string();
+    let path_only = path.split('?').next().unwrap_or_default().to_string();
+    let mut content_length = 0usize;
+    loop {
+        let mut line = String::new();
+        reader.read_line(&mut line)?;
+        let trimmed = line.trim_end_matches(['\r', '\n']);
+        if trimmed.is_empty() {
+            break;
+        }
+        if let Some((name, value)) = trimmed.split_once(':') {
+            if name.eq_ignore_ascii_case("content-length") {
+                content_length = value.trim().parse().unwrap_or(0);
+            }
+        }
+    }
+    let mut body = vec![0u8; content_length];
+    if content_length > 0 {
+        reader.read_exact(&mut body)?;
+    }
 
     if method == "OPTIONS" {
         write_http_response(&mut stream, "204 No Content", "application/json", b"{}")?;
         return Ok(());
     }
-    if method != "GET" {
+    if method != "GET" && method != "POST" {
         write_http_json(
             &mut stream,
             "405 Method Not Allowed",
@@ -913,23 +909,263 @@ fn handle_http_connection(store: &HarnessStore, mut stream: TcpStream) -> CliRes
         return Ok(());
     }
 
-    match path {
-        "/health" | "/v1/health" => write_http_json(
+    if method == "GET" {
+        match path_only.as_str() {
+            "/health" | "/v1/health" => write_http_json(
+                &mut stream,
+                "200 OK",
+                &serde_json::json!({"status": "ok", "generated_at": now_string()}),
+            )?,
+            "/v1/snapshot" | "/v1/dashboard/snapshot" => {
+                write_http_json(&mut stream, "200 OK", &dashboard_snapshot(store)?)?
+            }
+            "/v1/events" => write_http_json(&mut stream, "200 OK", &store.events()?)?,
+            _ => write_http_json(
+                &mut stream,
+                "404 Not Found",
+                &serde_json::json!({"error": "not_found", "path": path_only}),
+            )?,
+        }
+        return Ok(());
+    }
+
+    let body_json = if body.is_empty() {
+        serde_json::json!({})
+    } else {
+        match serde_json::from_slice::<serde_json::Value>(&body) {
+            Ok(value) => value,
+            Err(error) => {
+                write_http_json(
+                    &mut stream,
+                    "400 Bad Request",
+                    &serde_json::json!({"ok": false, "error": format!("invalid JSON body: {error}")}),
+                )?;
+                return Ok(());
+            }
+        }
+    };
+    match handle_http_action(store, &path_only, &body_json) {
+        Ok(response) => write_http_json(
             &mut stream,
             "200 OK",
-            &serde_json::json!({"status": "ok", "generated_at": now_string()}),
+            &serde_json::json!({"ok": true, "result": response, "snapshot": dashboard_snapshot(store)?}),
         )?,
-        "/v1/snapshot" | "/v1/dashboard/snapshot" => {
-            write_http_json(&mut stream, "200 OK", &dashboard_snapshot(store)?)?
-        }
-        "/v1/events" => write_http_json(&mut stream, "200 OK", &store.events()?)?,
-        _ => write_http_json(
+        Err(error) => write_http_json(
             &mut stream,
-            "404 Not Found",
-            &serde_json::json!({"error": "not_found", "path": path}),
+            "400 Bad Request",
+            &serde_json::json!({"ok": false, "error": error.to_string()}),
         )?,
     }
     Ok(())
+}
+
+fn handle_http_action(
+    store: &HarnessStore,
+    path: &str,
+    body: &serde_json::Value,
+) -> CliResult<serde_json::Value> {
+    if path == "/v1/messages" {
+        return create_message_value(store, body);
+    }
+    if path == "/v1/gateway/tick" {
+        return provider_gateway_tick_value(
+            store,
+            GatewayOptions {
+                dry_run: json_bool(body, "dry_run").unwrap_or(false),
+                start_runtime: json_bool(body, "start_runtime").unwrap_or(false),
+                timeout_ms: json_u64(body, "timeout_ms").unwrap_or(3_000),
+                claim_ttl_ms: json_u64(body, "claim_ttl_ms").unwrap_or(300_000),
+            },
+        );
+    }
+    if let Some(agent_id) = path
+        .strip_prefix("/v1/agents/")
+        .and_then(|rest| rest.strip_suffix("/deliver"))
+    {
+        return deliver_agent_messages_value(
+            store,
+            DeliveryOptions {
+                agent_id: agent_id.into(),
+                message_filter: json_string(body, "message_id"),
+                dry_run: json_bool(body, "dry_run").unwrap_or(false),
+                start_runtime: json_bool(body, "start_runtime").unwrap_or(false),
+                timeout_ms: json_u64(body, "timeout_ms").unwrap_or(3_000),
+            },
+        );
+    }
+    if let Some(agent_id) = path
+        .strip_prefix("/v1/agents/")
+        .and_then(|rest| rest.strip_suffix("/retry-delivery"))
+    {
+        return retry_delivery_value(
+            store,
+            agent_id,
+            &required_json_string(body, "message_id")?,
+            json_string(body, "session_id").as_deref(),
+            json_string(body, "reason")
+                .as_deref()
+                .unwrap_or("dashboard requested retry"),
+            json_bool(body, "force").unwrap_or(false),
+        );
+    }
+    if let Some(agent_id) = path
+        .strip_prefix("/v1/agents/")
+        .and_then(|rest| rest.strip_suffix("/reconcile-session"))
+    {
+        return reconcile_provider_session_value(
+            store,
+            agent_id,
+            &required_json_string(body, "session_id")?,
+            parse_provider_session_status(
+                json_string(body, "status").as_deref().unwrap_or("failed"),
+            )?,
+            parse_terminal_source(
+                json_string(body, "terminal_source")
+                    .as_deref()
+                    .unwrap_or("failed"),
+            )?,
+            json_string(body, "reason")
+                .as_deref()
+                .unwrap_or("dashboard reconciliation"),
+        );
+    }
+    if let Some(agent_id) = path
+        .strip_prefix("/v1/agents/")
+        .and_then(|rest| rest.strip_suffix("/close"))
+    {
+        return Ok(serde_json::to_value(close_agent_member_value(
+            store, agent_id,
+        )?)?);
+    }
+    if let Some(task_id) = path
+        .strip_prefix("/v1/tasks/")
+        .and_then(|rest| rest.strip_suffix("/request-review"))
+    {
+        return request_task_review_value(store, task_id, body);
+    }
+    Err(CliError::Usage(format!("unknown action path: {path}")))
+}
+
+fn create_message_value(
+    store: &HarnessStore,
+    body: &serde_json::Value,
+) -> CliResult<serde_json::Value> {
+    let to_agent_id = json_string(body, "to_agent_id").or_else(|| json_string(body, "to"));
+    let target = to_agent_id
+        .as_deref()
+        .map(|agent_id| latest_member(store, agent_id))
+        .transpose()?;
+    if let Some(member) = target.as_ref() {
+        ensure_member_accepts_delivery(member)?;
+    }
+    let message = Message {
+        id: json_string(body, "id").unwrap_or_else(|| generated_id("msg")),
+        task_id: json_string(body, "task_id").or_else(|| json_string(body, "task")),
+        from_agent_id: required_json_string(body, "from_agent_id")
+            .or_else(|_| required_json_string(body, "from"))?,
+        to_agent_id,
+        channel: json_string(body, "channel"),
+        kind: parse_message_kind(json_string(body, "kind").as_deref().unwrap_or("message"))?,
+        delivery_status: MessageDeliveryStatus::Queued,
+        content: required_json_string(body, "content")?,
+        evidence_ids: json_string_array(body, "evidence_ids"),
+        created_at: now_string(),
+        delivery: None,
+    };
+    store.append_message(&message)?;
+    if let Some(member) = target.as_ref() {
+        append_agent_event(
+            store,
+            &member.id,
+            member.provider_runtime_id.as_deref(),
+            message.task_id.as_deref(),
+            "message_queued",
+            "Message queued for Agent Member",
+            None,
+        )?;
+    }
+    Ok(serde_json::to_value(message)?)
+}
+
+fn request_task_review_value(
+    store: &HarnessStore,
+    task_id: &str,
+    body: &serde_json::Value,
+) -> CliResult<serde_json::Value> {
+    let mut task = latest_task(store, task_id)?;
+    let reviewer = json_string(body, "to_agent_id")
+        .or_else(|| json_string(body, "reviewer_agent_id"))
+        .or_else(|| task.reviewer_agent_id.clone())
+        .ok_or_else(|| {
+            CliError::Usage(format!(
+                "task {task_id} has no reviewer; provide to_agent_id"
+            ))
+        })?;
+    let reviewer_member = latest_member(store, &reviewer)?;
+    ensure_member_accepts_delivery(&reviewer_member)?;
+    let from_agent_id =
+        json_string(body, "from_agent_id").unwrap_or_else(|| task.owner_agent_id.clone());
+    let message = Message {
+        id: generated_id("msg"),
+        task_id: Some(task.id.clone()),
+        from_agent_id,
+        to_agent_id: Some(reviewer.clone()),
+        channel: Some("review-request".into()),
+        kind: MessageKind::Message,
+        delivery_status: MessageDeliveryStatus::Queued,
+        content: json_string(body, "content")
+            .unwrap_or_else(|| format!("Please review task {}", task.id)),
+        evidence_ids: json_string_array(body, "evidence_ids"),
+        created_at: now_string(),
+        delivery: None,
+    };
+    store.append_message(&message)?;
+    task.status = TaskStatus::Review;
+    task.updated_at = now_string();
+    store.append_task(&task)?;
+    append_agent_event(
+        store,
+        &reviewer,
+        reviewer_member.provider_runtime_id.as_deref(),
+        Some(task_id),
+        "review_requested",
+        "Task review requested",
+        None,
+    )?;
+    Ok(serde_json::json!({
+        "task": task,
+        "message": message
+    }))
+}
+
+fn json_string(body: &serde_json::Value, key: &str) -> Option<String> {
+    body.get(key)
+        .and_then(|value| value.as_str())
+        .map(str::to_string)
+}
+
+fn required_json_string(body: &serde_json::Value, key: &str) -> CliResult<String> {
+    json_string(body, key).ok_or_else(|| CliError::Usage(format!("missing JSON field: {key}")))
+}
+
+fn json_bool(body: &serde_json::Value, key: &str) -> Option<bool> {
+    body.get(key).and_then(|value| value.as_bool())
+}
+
+fn json_u64(body: &serde_json::Value, key: &str) -> Option<u64> {
+    body.get(key).and_then(|value| value.as_u64())
+}
+
+fn json_string_array(body: &serde_json::Value, key: &str) -> Vec<String> {
+    body.get(key)
+        .and_then(|value| value.as_array())
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(|value| value.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn write_http_json<T: serde::Serialize>(
@@ -949,7 +1185,7 @@ fn write_http_response(
 ) -> CliResult<()> {
     write!(
         stream,
-        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type\r\nConnection: close\r\n\r\n",
         body.len()
     )?;
     stream.write_all(body)?;
@@ -1171,6 +1407,7 @@ fn codex_review(store: &HarnessStore, args: &[String]) -> CliResult<()> {
 
 fn start_agent_runtime(store: &HarnessStore, agent_id: &str) -> CliResult<AgentMember> {
     let mut member = latest_member(store, agent_id)?;
+    ensure_member_accepts_delivery(&member)?;
     if let Some(runtime_id) = member.provider_runtime_id.as_deref() {
         if let Some(runtime) = latest_runtime(store, runtime_id)? {
             if runtime_is_alive(&runtime) {
@@ -1217,6 +1454,80 @@ fn start_agent_runtime(store: &HarnessStore, agent_id: &str) -> CliResult<AgentM
     Ok(member)
 }
 
+fn close_agent_member_value(store: &HarnessStore, agent_id: &str) -> CliResult<AgentMember> {
+    let mut member = latest_member(store, agent_id)?;
+    member.status = AgentMemberStatus::Closing;
+    member.last_seen_at = Some(now_string());
+    store.append_member(&member)?;
+
+    let runtimes: Vec<_> = latest_runtimes(store)?
+        .into_values()
+        .filter(|runtime| runtime.agent_member_id == member.id)
+        .filter(|runtime| runtime.status != AgentRuntimeStatus::Stopped)
+        .collect();
+    for mut runtime in runtimes {
+        runtime.status = AgentRuntimeStatus::Stopping;
+        runtime.last_event_at = Some(now_string());
+        store.append_runtime(&runtime)?;
+        if let Some(pid) = runtime.pid {
+            if pid_is_alive(pid) {
+                stop_pid(pid)?;
+            }
+        }
+        runtime.status = AgentRuntimeStatus::Stopped;
+        runtime.ended_at = Some(now_string());
+        runtime.last_event_at = runtime.ended_at.clone();
+        store.append_runtime(&runtime)?;
+        append_agent_event(
+            store,
+            &member.id,
+            Some(runtime.id.as_str()),
+            None,
+            "runtime_stopped",
+            "Codex app-server runtime stopped",
+            None,
+        )?;
+    }
+
+    mark_running_provider_sessions_terminal(
+        store,
+        &member.id,
+        ProviderSessionStatus::Canceled,
+        Some(MessageTerminalSource::Failed),
+    )?;
+    member.status = AgentMemberStatus::Closed;
+    member.current_task_id = None;
+    member.last_seen_at = Some(now_string());
+    store.append_member(&member)?;
+    append_agent_event(
+        store,
+        &member.id,
+        member.provider_runtime_id.as_deref(),
+        None,
+        "agent_closed",
+        "Agent Member closed",
+        None,
+    )?;
+    Ok(member)
+}
+
+fn ensure_member_accepts_delivery(member: &AgentMember) -> CliResult<()> {
+    if member_status_rejects_delivery(&member.status) {
+        return Err(CliError::Usage(format!(
+            "agent {} is {:?}; closed, closing, or retired members cannot receive delivery or be restarted",
+            member.id, member.status
+        )));
+    }
+    Ok(())
+}
+
+fn member_status_rejects_delivery(status: &AgentMemberStatus) -> bool {
+    matches!(
+        status,
+        AgentMemberStatus::Closing | AgentMemberStatus::Closed | AgentMemberStatus::Retired
+    )
+}
+
 fn agent_health(store: &HarnessStore, agent_id: &str) -> CliResult<serde_json::Value> {
     let member = latest_member(store, agent_id)?;
     let mut runtime = member
@@ -1228,8 +1539,7 @@ fn agent_health(store: &HarnessStore, agent_id: &str) -> CliResult<serde_json::V
         .as_ref()
         .and_then(|runtime| runtime.control_endpoint.as_deref())
         .and_then(|endpoint| socket_path_from_endpoint(endpoint).ok());
-    let queued_messages = store
-        .messages()?
+    let queued_messages = latest_messages_in_append_order(store)?
         .into_iter()
         .filter(|message| message.to_agent_id.as_deref() == Some(agent_id))
         .filter(|message| message.delivery_status == MessageDeliveryStatus::Queued)
@@ -1465,12 +1775,43 @@ fn pid_is_alive(pid: u32) -> bool {
 }
 
 fn deliver_agent_messages(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    let agent_id = required(args, "--agent").or_else(|_| required(args, "--id"))?;
-    let dry_run = has_flag(args, "--dry-run");
-    let timeout_ms = value(args, "--timeout-ms")
-        .and_then(|value| value.parse::<u64>().ok())
-        .unwrap_or(3_000);
+    let result = deliver_agent_messages_value(
+        store,
+        DeliveryOptions {
+            agent_id: required(args, "--agent").or_else(|_| required(args, "--id"))?,
+            message_filter: value(args, "--message"),
+            dry_run: has_flag(args, "--dry-run"),
+            start_runtime: has_flag(args, "--start-runtime"),
+            timeout_ms: value(args, "--timeout-ms")
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(3_000),
+        },
+    )?;
+    print_json(&result)
+}
+
+#[derive(Debug, Clone)]
+struct DeliveryOptions {
+    agent_id: String,
+    message_filter: Option<String>,
+    dry_run: bool,
+    start_runtime: bool,
+    timeout_ms: u64,
+}
+
+fn deliver_agent_messages_value(
+    store: &HarnessStore,
+    options: DeliveryOptions,
+) -> CliResult<serde_json::Value> {
+    let DeliveryOptions {
+        agent_id,
+        message_filter,
+        dry_run,
+        start_runtime,
+        timeout_ms,
+    } = options;
     let mut member = latest_member(store, &agent_id)?;
+    ensure_member_accepts_delivery(&member)?;
     let mut runtime = match member.provider_runtime_id.as_deref() {
         Some(runtime_id) => latest_runtime(store, runtime_id)?,
         None => None,
@@ -1496,6 +1837,7 @@ fn deliver_agent_messages(store: &HarnessStore, args: &[String]) -> CliResult<()
         )?;
         runtime = None;
         member = latest_member(store, &agent_id)?;
+        ensure_member_accepts_delivery(&member)?;
     }
     if has_unresolved_provider_session(store, &member.id)? {
         return Err(CliError::Usage(format!(
@@ -1503,16 +1845,7 @@ fn deliver_agent_messages(store: &HarnessStore, args: &[String]) -> CliResult<()
             member.id
         )));
     }
-    if runtime.is_none() && has_flag(args, "--start-runtime") {
-        member = start_agent_runtime(store, &agent_id)?;
-        runtime = member
-            .provider_runtime_id
-            .as_deref()
-            .and_then(|runtime_id| latest_runtime(store, runtime_id).ok().flatten());
-    }
-    let message_filter = value(args, "--message");
-    let queued: Vec<Message> = store
-        .messages()?
+    let queued: Vec<Message> = latest_messages_in_append_order(store)?
         .into_iter()
         .filter(|message| message.to_agent_id.as_deref() == Some(agent_id.as_str()))
         .filter(|message| message.delivery_status == MessageDeliveryStatus::Queued)
@@ -1524,60 +1857,168 @@ fn deliver_agent_messages(store: &HarnessStore, args: &[String]) -> CliResult<()
         .collect();
 
     if queued.is_empty() {
-        print_json(&serde_json::json!({
+        return Ok(serde_json::json!({
             "agent_member_id": agent_id,
             "delivered": [],
             "note": "no queued messages"
-        }))?;
-        return Ok(());
+        }));
     }
 
     let mut results = Vec::new();
     for message in queued {
+        member = latest_member(store, &agent_id)?;
+        ensure_member_accepts_delivery(&member)?;
+        let delivery_id = generated_id("delivery");
+        let claimed_message = match claim_message_for_delivery(
+            store,
+            &member,
+            runtime.as_ref(),
+            &message,
+            &delivery_id,
+        )? {
+            Some(message) => message,
+            None => continue,
+        };
+
         member.status = AgentMemberStatus::Running;
-        member.current_task_id = message.task_id.clone();
+        member.current_task_id = claimed_message.task_id.clone();
         member.last_seen_at = Some(now_string());
         store.append_member(&member)?;
         append_agent_event(
             store,
             &member.id,
             member.provider_runtime_id.as_deref(),
-            message.task_id.as_deref(),
-            "delivery_started",
-            "Started message delivery",
+            claimed_message.task_id.as_deref(),
+            "delivery_claimed",
+            "Claimed message delivery before provider side effects",
             None,
         )?;
 
         let delivery = if dry_run {
+            let provider_thread_id = member
+                .provider_thread_id
+                .clone()
+                .or_else(|| Some(format!("dry-thread-{}", member.id)));
+            let provider_turn_id = Some(format!("dry-turn-{}", claimed_message.id));
+            let evidence_ids = record_claimed_delivery_terminal(
+                store,
+                &delivery_id,
+                &claimed_message,
+                ProviderSessionStatus::Succeeded,
+                provider_thread_id.clone(),
+                provider_turn_id.clone(),
+                Some(MessageTerminalSource::DryRun),
+                "dry-run delivery completed",
+                Some("dry-run"),
+                Some(0),
+            )?;
             DeliveryOutcome {
                 status: ProviderSessionStatus::Succeeded,
-                provider_thread_id: member
-                    .provider_thread_id
-                    .clone()
-                    .or_else(|| Some(format!("dry-thread-{}", member.id))),
-                provider_turn_id: Some(format!("dry-turn-{}", message.id)),
+                provider_thread_id,
+                provider_turn_id,
                 terminal_source: Some(MessageTerminalSource::DryRun),
                 stdout_ref: None,
                 stderr_ref: None,
                 request_ref: None,
-                provider_session_id: None,
-                evidence_ids: Vec::new(),
+                provider_request_id: None,
+                provider_session_id: Some(delivery_id.clone()),
+                evidence_ids,
                 exit_code: Some(0),
                 summary: "dry-run delivery completed".into(),
             }
         } else {
-            let runtime = runtime.clone().ok_or_else(|| {
-                CliError::Usage(format!("agent {agent_id} has no running provider runtime"))
-            })?;
-            run_codex_delivery(store, &member, &runtime, &message, timeout_ms)?
+            let start_error = if runtime.is_none() && start_runtime {
+                match start_agent_runtime(store, &agent_id) {
+                    Ok(started_member) => {
+                        member = started_member;
+                        runtime = member
+                            .provider_runtime_id
+                            .as_deref()
+                            .and_then(|runtime_id| {
+                                latest_runtime(store, runtime_id).ok().flatten()
+                            });
+                        None
+                    }
+                    Err(error) => Some(error.to_string()),
+                }
+            } else {
+                None
+            };
+            if let Some(error) = start_error {
+                let summary = format!("Codex runtime start failed after claim: {error}");
+                let evidence_ids = record_claimed_delivery_terminal(
+                    store,
+                    &delivery_id,
+                    &claimed_message,
+                    ProviderSessionStatus::Failed,
+                    member.provider_thread_id.clone(),
+                    None,
+                    Some(MessageTerminalSource::Failed),
+                    &summary,
+                    None,
+                    Some(1),
+                )?;
+                DeliveryOutcome {
+                    status: ProviderSessionStatus::Failed,
+                    provider_thread_id: member.provider_thread_id.clone(),
+                    provider_turn_id: None,
+                    terminal_source: Some(MessageTerminalSource::Failed),
+                    stdout_ref: None,
+                    stderr_ref: None,
+                    request_ref: None,
+                    provider_request_id: None,
+                    provider_session_id: Some(delivery_id.clone()),
+                    evidence_ids,
+                    exit_code: Some(1),
+                    summary,
+                }
+            } else if runtime.is_none() {
+                let summary = format!("agent {agent_id} has no running provider runtime");
+                let evidence_ids = record_claimed_delivery_terminal(
+                    store,
+                    &delivery_id,
+                    &claimed_message,
+                    ProviderSessionStatus::Failed,
+                    member.provider_thread_id.clone(),
+                    None,
+                    Some(MessageTerminalSource::Failed),
+                    &summary,
+                    None,
+                    Some(1),
+                )?;
+                DeliveryOutcome {
+                    status: ProviderSessionStatus::Failed,
+                    provider_thread_id: member.provider_thread_id.clone(),
+                    provider_turn_id: None,
+                    terminal_source: Some(MessageTerminalSource::Failed),
+                    stdout_ref: None,
+                    stderr_ref: None,
+                    request_ref: None,
+                    provider_request_id: None,
+                    provider_session_id: Some(delivery_id.clone()),
+                    evidence_ids,
+                    exit_code: Some(1),
+                    summary,
+                }
+            } else {
+                let runtime = runtime.clone().expect("runtime checked");
+                run_codex_delivery(
+                    store,
+                    &member,
+                    &runtime,
+                    &claimed_message,
+                    &delivery_id,
+                    timeout_ms,
+                )?
+            }
         };
 
         let delivery_unresolved = provider_status_blocks_delivery(&delivery.status);
-        let mut delivered_message = latest_message(store, &message.id)?;
+        let mut delivered_message = latest_message(store, &claimed_message.id)?;
         delivered_message.delivery_status = message_status_for_delivery(&delivery.status);
         delivered_message.delivery = Some(MessageDelivery {
             provider_session_id: delivery.provider_session_id.clone(),
-            provider_request_id: None,
+            provider_request_id: delivery.provider_request_id.clone(),
             provider_thread_id: delivery.provider_thread_id.clone(),
             provider_turn_id: delivery.provider_turn_id.clone(),
             terminal_source: delivery.terminal_source.clone(),
@@ -1673,6 +2114,7 @@ fn deliver_agent_messages(store: &HarnessStore, args: &[String]) -> CliResult<()
             "provider_thread_id": member.provider_thread_id,
             "provider_turn_id": delivery.provider_turn_id,
             "terminal_source": delivery.terminal_source,
+            "provider_request_id": delivery.provider_request_id,
             "request_ref": delivery.request_ref,
             "stdout_ref": delivery.stdout_ref,
             "stderr_ref": delivery.stderr_ref,
@@ -1683,11 +2125,148 @@ fn deliver_agent_messages(store: &HarnessStore, args: &[String]) -> CliResult<()
         }
     }
 
-    print_json(&serde_json::json!({
+    Ok(serde_json::json!({
         "agent_member_id": agent_id,
         "delivered": results
-    }))?;
+    }))
+}
+
+#[derive(Debug, Clone)]
+struct GatewayOptions {
+    dry_run: bool,
+    start_runtime: bool,
+    timeout_ms: u64,
+    claim_ttl_ms: u64,
+}
+
+fn run_provider_gateway(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    let options = GatewayOptions {
+        dry_run: has_flag(args, "--dry-run"),
+        start_runtime: has_flag(args, "--start-runtime"),
+        timeout_ms: value(args, "--timeout-ms")
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(3_000),
+        claim_ttl_ms: value(args, "--claim-ttl-ms")
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(300_000),
+    };
+    let once = has_flag(args, "--once");
+    let interval_ms = value(args, "--interval-ms")
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(1_000);
+    loop {
+        let result = provider_gateway_tick_value(store, options.clone())?;
+        print_json(&result)?;
+        if once {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(interval_ms));
+    }
     Ok(())
+}
+
+fn provider_gateway_tick_value(
+    store: &HarnessStore,
+    options: GatewayOptions,
+) -> CliResult<serde_json::Value> {
+    let expired_claims = expire_safe_delivery_claims_value(store, options.claim_ttl_ms)?;
+    let mut agent_ids = Vec::new();
+    for message in latest_messages_in_append_order(store)? {
+        if message.delivery_status == MessageDeliveryStatus::Queued {
+            if let Some(agent_id) = message.to_agent_id {
+                if !agent_ids.contains(&agent_id) {
+                    agent_ids.push(agent_id);
+                }
+            }
+        }
+    }
+    let mut results = Vec::new();
+    for agent_id in agent_ids {
+        match deliver_agent_messages_value(
+            store,
+            DeliveryOptions {
+                agent_id: agent_id.clone(),
+                message_filter: None,
+                dry_run: options.dry_run,
+                start_runtime: options.start_runtime,
+                timeout_ms: options.timeout_ms,
+            },
+        ) {
+            Ok(result) => results.push(serde_json::json!({
+                "agent_member_id": agent_id,
+                "ok": true,
+                "result": result
+            })),
+            Err(error) => results.push(serde_json::json!({
+                "agent_member_id": agent_id,
+                "ok": false,
+                "error": error.to_string()
+            })),
+        }
+    }
+    Ok(serde_json::json!({
+        "generated_at": now_string(),
+        "agent_count": results.len(),
+        "expired_claims": expired_claims,
+        "results": results
+    }))
+}
+
+fn expire_safe_delivery_claims_value(
+    store: &HarnessStore,
+    claim_ttl_ms: u64,
+) -> CliResult<Vec<serde_json::Value>> {
+    if claim_ttl_ms == 0 {
+        return Ok(Vec::new());
+    }
+    let now_ms = current_unix_ms();
+    let messages = latest_messages(store)?;
+    let sessions = latest_provider_sessions_in_append_order(store)?;
+    let mut expired = Vec::new();
+    for session in sessions {
+        if session.status != ProviderSessionStatus::Running {
+            continue;
+        }
+        let Some(started_ms) = parse_unix_ms(&session.started_at) else {
+            continue;
+        };
+        if now_ms.saturating_sub(started_ms) < u128::from(claim_ttl_ms) {
+            continue;
+        }
+        let Some(message) = messages.values().find(|message| {
+            message.delivery_status == MessageDeliveryStatus::Acknowledged
+                && message.delivery.as_ref().is_some_and(|delivery| {
+                    delivery.provider_session_id.as_deref() == Some(session.id.as_str())
+                        && delivery.provider_request_id.is_none()
+                        && delivery.provider_turn_id.is_none()
+                })
+        }) else {
+            continue;
+        };
+        if session.provider_turn_id.is_some() {
+            continue;
+        }
+        let Some(agent_id) = message.to_agent_id.as_deref() else {
+            continue;
+        };
+        match retry_delivery_value(
+            store,
+            agent_id,
+            &message.id,
+            Some(&session.id),
+            "gateway expired unreconciled pre-provider delivery claim",
+            false,
+        ) {
+            Ok(result) => expired.push(serde_json::json!({"ok": true, "result": result})),
+            Err(error) => expired.push(serde_json::json!({
+                "ok": false,
+                "provider_session_id": session.id,
+                "message_id": message.id,
+                "error": error.to_string()
+            })),
+        }
+    }
+    Ok(expired)
 }
 
 #[derive(Debug)]
@@ -1699,10 +2278,304 @@ struct DeliveryOutcome {
     stdout_ref: Option<String>,
     stderr_ref: Option<String>,
     request_ref: Option<String>,
+    provider_request_id: Option<String>,
     provider_session_id: Option<String>,
     evidence_ids: Vec<String>,
     exit_code: Option<i32>,
     summary: String,
+}
+
+fn claim_message_for_delivery(
+    store: &HarnessStore,
+    member: &AgentMember,
+    runtime: Option<&AgentRuntime>,
+    message: &Message,
+    delivery_id: &str,
+) -> CliResult<Option<Message>> {
+    let provider_session = build_claimed_provider_session(delivery_id, member, runtime, message);
+    let delivery = MessageDelivery {
+        provider_session_id: Some(delivery_id.to_string()),
+        provider_request_id: None,
+        provider_thread_id: member.provider_thread_id.clone(),
+        provider_turn_id: None,
+        terminal_source: None,
+        delivered_at: None,
+        last_error: None,
+    };
+    match store.claim_queued_message_delivery(
+        &member.id,
+        &message.id,
+        delivery,
+        provider_session,
+    )? {
+        MessageDeliveryClaimResult::Claimed(message) => Ok(Some(*message)),
+        MessageDeliveryClaimResult::NotQueued => Ok(None),
+        MessageDeliveryClaimResult::BlockedBySession(session_id) => Err(CliError::Usage(format!(
+            "agent {} has unresolved provider session {}; cannot claim another delivery",
+            member.id, session_id
+        ))),
+    }
+}
+
+fn retry_delivery_value(
+    store: &HarnessStore,
+    agent_id: &str,
+    message_id: &str,
+    session_id: Option<&str>,
+    reason: &str,
+    force: bool,
+) -> CliResult<serde_json::Value> {
+    let member = latest_member(store, agent_id)?;
+    ensure_member_accepts_delivery(&member)?;
+    let mut message = latest_message(store, message_id)?;
+    if message.to_agent_id.as_deref() != Some(agent_id) {
+        return Err(CliError::Usage(format!(
+            "message {message_id} is not addressed to agent {agent_id}"
+        )));
+    }
+    let delivery = message.delivery.clone().ok_or_else(|| {
+        CliError::Usage(format!(
+            "message {message_id} has no delivery claim to retry"
+        ))
+    })?;
+    let session_id = session_id
+        .map(str::to_string)
+        .or(delivery.provider_session_id.clone())
+        .ok_or_else(|| {
+            CliError::Usage(format!(
+                "message {message_id} has no provider session id to retry"
+            ))
+        })?;
+    let mut session = latest_provider_session(store, &session_id)?
+        .ok_or_else(|| CliError::Usage(format!("provider session not found: {session_id}")))?;
+    if session.agent_member_id != agent_id {
+        return Err(CliError::Usage(format!(
+            "provider session {session_id} does not belong to agent {agent_id}"
+        )));
+    }
+    let safe_without_force = delivery.provider_request_id.is_none()
+        && delivery.provider_turn_id.is_none()
+        && session.provider_turn_id.is_none()
+        && !matches!(session.status, ProviderSessionStatus::Succeeded);
+    if !force && !safe_without_force {
+        return Err(CliError::Usage(format!(
+            "delivery retry for message {message_id} is not safe without --force; reconcile provider output first or pass --force explicitly"
+        )));
+    }
+
+    let evidence_id = record_operator_evidence(
+        store,
+        message.task_id.clone(),
+        "delivery_retry",
+        &format!("provider-session:{session_id}"),
+        reason,
+    )?;
+    session.status = ProviderSessionStatus::Canceled;
+    session.terminal_source = Some(MessageTerminalSource::Failed);
+    session.ended_at = Some(now_string());
+    if !session.evidence_ids.contains(&evidence_id) {
+        session.evidence_ids.push(evidence_id.clone());
+    }
+    store.append_provider_session(&session)?;
+
+    message.delivery_status = MessageDeliveryStatus::Queued;
+    message.delivery = None;
+    store.append_message(&message)?;
+    append_agent_event(
+        store,
+        agent_id,
+        member.provider_runtime_id.as_deref(),
+        message.task_id.as_deref(),
+        "delivery_requeued",
+        reason,
+        None,
+    )?;
+
+    Ok(serde_json::json!({
+        "agent_member_id": agent_id,
+        "message_id": message_id,
+        "provider_session_id": session_id,
+        "delivery_status": message.delivery_status,
+        "session_status": session.status,
+        "evidence_id": evidence_id,
+        "forced": force
+    }))
+}
+
+fn reconcile_provider_session_value(
+    store: &HarnessStore,
+    agent_id: &str,
+    session_id: &str,
+    status: ProviderSessionStatus,
+    terminal_source: MessageTerminalSource,
+    reason: &str,
+) -> CliResult<serde_json::Value> {
+    if matches!(
+        status,
+        ProviderSessionStatus::Queued | ProviderSessionStatus::Running
+    ) {
+        return Err(CliError::Usage(
+            "reconcile-session requires a terminal status".into(),
+        ));
+    }
+    let mut session = latest_provider_session(store, session_id)?
+        .ok_or_else(|| CliError::Usage(format!("provider session not found: {session_id}")))?;
+    if session.agent_member_id != agent_id {
+        return Err(CliError::Usage(format!(
+            "provider session {session_id} does not belong to agent {agent_id}"
+        )));
+    }
+    let evidence_id = record_operator_evidence(
+        store,
+        session.task_id.clone(),
+        "provider_session_reconciliation",
+        &format!("provider-session:{session_id}"),
+        reason,
+    )?;
+    session.status = status.clone();
+    session.terminal_source = Some(terminal_source.clone());
+    session.ended_at = Some(now_string());
+    if !session.evidence_ids.contains(&evidence_id) {
+        session.evidence_ids.push(evidence_id.clone());
+    }
+    store.append_provider_session(&session)?;
+    mark_delivery_messages_terminal(
+        store,
+        &session,
+        status.clone(),
+        Some(terminal_source.clone()),
+    )?;
+    if let Ok(mut member) = latest_member(store, agent_id) {
+        if matches!(
+            member.status,
+            AgentMemberStatus::Running | AgentMemberStatus::Stale
+        ) && member
+            .current_task_id
+            .as_ref()
+            .map_or_else(|| true, |task_id| session.task_id.as_ref() == Some(task_id))
+        {
+            member.status = AgentMemberStatus::Idle;
+            member.current_task_id = None;
+            member.last_seen_at = Some(now_string());
+            store.append_member(&member)?;
+        }
+    }
+    append_agent_event(
+        store,
+        agent_id,
+        None,
+        session.task_id.as_deref(),
+        "provider_session_reconciled",
+        reason,
+        None,
+    )?;
+    Ok(serde_json::json!({
+        "agent_member_id": agent_id,
+        "provider_session_id": session_id,
+        "status": status,
+        "terminal_source": terminal_source,
+        "evidence_id": evidence_id
+    }))
+}
+
+fn record_operator_evidence(
+    store: &HarnessStore,
+    task_id: Option<String>,
+    source_type: &str,
+    source_ref: &str,
+    summary: &str,
+) -> CliResult<String> {
+    let evidence = Evidence {
+        id: generated_id("evidence"),
+        task_id,
+        source_type: source_type.into(),
+        source_ref: source_ref.into(),
+        summary: summary.into(),
+        created_at: now_string(),
+    };
+    let id = evidence.id.clone();
+    store.append_evidence(&evidence)?;
+    Ok(id)
+}
+
+fn build_claimed_provider_session(
+    delivery_id: &str,
+    member: &AgentMember,
+    runtime: Option<&AgentRuntime>,
+    message: &Message,
+) -> ProviderSession {
+    ProviderSession {
+        id: delivery_id.into(),
+        provider: "codex".into(),
+        agent_member_id: member.id.clone(),
+        task_id: message.task_id.clone(),
+        workspace_ref: member.worktree_ref.clone(),
+        provider_thread_id: member.provider_thread_id.clone(),
+        provider_turn_id: None,
+        terminal_source: None,
+        status: ProviderSessionStatus::Running,
+        command: "harness".into(),
+        args: vec![
+            "codex".into(),
+            "message-delivery-claim".into(),
+            message.id.clone(),
+        ],
+        prompt_ref: member.prompt_ref.clone(),
+        prompt_summary: Some(format!("claimed delivery for message {}", message.id)),
+        provider_session_ref: runtime.and_then(|runtime| runtime.control_endpoint.clone()),
+        stdout_ref: None,
+        jsonl_ref: None,
+        transcript_ref: None,
+        last_message_ref: None,
+        exit_code: None,
+        started_at: now_string(),
+        ended_at: None,
+        evidence_ids: Vec::new(),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn record_claimed_delivery_terminal(
+    store: &HarnessStore,
+    delivery_id: &str,
+    message: &Message,
+    status: ProviderSessionStatus,
+    provider_thread_id: Option<String>,
+    provider_turn_id: Option<String>,
+    terminal_source: Option<MessageTerminalSource>,
+    summary: &str,
+    source_ref: Option<&str>,
+    exit_code: Option<i32>,
+) -> CliResult<Vec<String>> {
+    let evidence_id = generated_id("evidence");
+    let evidence = Evidence {
+        id: evidence_id.clone(),
+        task_id: message.task_id.clone(),
+        source_type: "codex_delivery_session".into(),
+        source_ref: source_ref
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("provider-session:{delivery_id}")),
+        summary: summary.into(),
+        created_at: now_string(),
+    };
+    store.append_evidence(&evidence)?;
+
+    let mut session = latest_provider_session(store, delivery_id)?.ok_or_else(|| {
+        CliError::Usage(format!(
+            "claimed provider session not found for delivery {delivery_id}"
+        ))
+    })?;
+    session.status = status;
+    session.provider_thread_id = provider_thread_id.or(session.provider_thread_id);
+    session.provider_turn_id = provider_turn_id.or(session.provider_turn_id);
+    session.terminal_source = terminal_source;
+    session.exit_code = exit_code;
+    session.ended_at = Some(now_string());
+    if !session.evidence_ids.contains(&evidence_id) {
+        session.evidence_ids.push(evidence_id.clone());
+    }
+    store.append_provider_session(&session)?;
+    Ok(vec![evidence_id])
 }
 
 fn delivery_provider_accepted(status: &ProviderSessionStatus) -> bool {
@@ -1740,7 +2613,8 @@ fn provider_status_blocks_delivery(status: &ProviderSessionStatus) -> bool {
 }
 
 fn provider_session_blocks_delivery(session: &ProviderSession) -> bool {
-    session.status == ProviderSessionStatus::Running
+    session.status == ProviderSessionStatus::Queued
+        || session.status == ProviderSessionStatus::Running
         || (session.status == ProviderSessionStatus::Stale
             && session.terminal_source != Some(MessageTerminalSource::Failed))
 }
@@ -1774,14 +2648,14 @@ fn run_codex_delivery(
     member: &AgentMember,
     runtime: &AgentRuntime,
     message: &Message,
+    delivery_id: &str,
     timeout_ms: u64,
 ) -> CliResult<DeliveryOutcome> {
     let endpoint = runtime.control_endpoint.as_deref().ok_or_else(|| {
         CliError::Usage(format!("runtime {} has no control endpoint", runtime.id))
     })?;
     let socket_path = socket_path_from_endpoint(endpoint)?;
-    let delivery_id = generated_id("delivery");
-    let session_dir = store.root().join("provider-sessions").join(&delivery_id);
+    let session_dir = store.root().join("provider-sessions").join(delivery_id);
     fs::create_dir_all(&session_dir)?;
     let started_at = now_string();
     let mut thread_id = member.provider_thread_id.clone();
@@ -1807,7 +2681,7 @@ fn run_codex_delivery(
             let evidence_id = record_delivery_provider_session(
                 store,
                 DeliverySessionRecord {
-                    delivery_id: &delivery_id,
+                    delivery_id,
                     member,
                     runtime,
                     message,
@@ -1831,7 +2705,8 @@ fn run_codex_delivery(
                 stdout_ref,
                 stderr_ref,
                 request_ref: Some(session_dir.display().to_string()),
-                provider_session_id: Some(delivery_id),
+                provider_request_id: Some(thread_request_id),
+                provider_session_id: Some(delivery_id.to_string()),
                 evidence_ids: vec![evidence_id],
                 exit_code,
                 summary,
@@ -1845,7 +2720,7 @@ fn run_codex_delivery(
             let evidence_id = record_delivery_provider_session(
                 store,
                 DeliverySessionRecord {
-                    delivery_id: &delivery_id,
+                    delivery_id,
                     member,
                     runtime,
                     message,
@@ -1869,7 +2744,8 @@ fn run_codex_delivery(
                 stdout_ref,
                 stderr_ref,
                 request_ref: Some(session_dir.display().to_string()),
-                provider_session_id: Some(delivery_id),
+                provider_request_id: Some(thread_request_id),
+                provider_session_id: Some(delivery_id.to_string()),
                 evidence_ids: vec![evidence_id],
                 exit_code,
                 summary,
@@ -1885,7 +2761,7 @@ fn run_codex_delivery(
         "turn-start",
         &[
             build_initialize_request(),
-            build_turn_start_request(member, message, &thread_id, &turn_request_id),
+            build_turn_start_request(member, message, &thread_id, &turn_request_id, delivery_id),
         ],
         timeout_ms,
     )?;
@@ -1903,7 +2779,7 @@ fn run_codex_delivery(
     let evidence_id = record_delivery_provider_session(
         store,
         DeliverySessionRecord {
-            delivery_id: &delivery_id,
+            delivery_id,
             member,
             runtime,
             message,
@@ -1928,7 +2804,8 @@ fn run_codex_delivery(
         stdout_ref,
         stderr_ref,
         request_ref: Some(session_dir.display().to_string()),
-        provider_session_id: Some(delivery_id),
+        provider_request_id: Some(turn_request_id),
+        provider_session_id: Some(delivery_id.to_string()),
         evidence_ids: vec![evidence_id],
         exit_code: delivery_exit_code(&status, exit_code),
         summary,
@@ -2360,13 +3237,17 @@ fn build_turn_start_request(
     message: &Message,
     thread_id: &str,
     request_id: &str,
+    delivery_attempt_id: &str,
 ) -> serde_json::Value {
     let mut params = serde_json::Map::new();
     params.insert(
         "threadId".into(),
         serde_json::Value::String(thread_id.into()),
     );
-    params.insert("input".into(), build_turn_input(message));
+    params.insert(
+        "input".into(),
+        build_turn_input(message, delivery_attempt_id),
+    );
     insert_optional_string(&mut params, "cwd", member.worktree_ref.clone());
     insert_optional_string(
         &mut params,
@@ -2451,14 +3332,18 @@ fn codex_sandbox_policy(member: &AgentMember) -> Option<serde_json::Value> {
     }
 }
 
-fn build_turn_input(message: &Message) -> serde_json::Value {
+fn build_turn_input(message: &Message, delivery_attempt_id: &str) -> serde_json::Value {
     serde_json::json!([{
         "type": "text",
         "text": format!(
-            "Harness message id: {}\nkind: {:?}\ntask: {}\n\n{}",
+            "Harness message envelope:\nmessage_id: {}\nkind: {}\ntask_id: {}\nfrom_agent_id: {}\nto_agent_id: {}\nchannel: {}\ndelivery_attempt: {}\ncontent:\n{}",
             message.id,
-            message.kind,
+            message_kind_label(&message.kind),
             message.task_id.as_deref().unwrap_or("-"),
+            message.from_agent_id,
+            message.to_agent_id.as_deref().unwrap_or("-"),
+            message.channel.as_deref().unwrap_or("-"),
+            delivery_attempt_id,
             message.content
         )
     }])
@@ -4285,6 +5170,17 @@ fn latest_runtime(store: &HarnessStore, runtime_id: &str) -> CliResult<Option<Ag
     Ok(runtimes.remove(runtime_id))
 }
 
+fn latest_provider_session(
+    store: &HarnessStore,
+    session_id: &str,
+) -> CliResult<Option<ProviderSession>> {
+    let mut sessions = BTreeMap::new();
+    for session in store.provider_sessions()? {
+        sessions.insert(session.id.clone(), session);
+    }
+    Ok(sessions.remove(session_id))
+}
+
 fn latest_provider_sessions_in_append_order(
     store: &HarnessStore,
 ) -> CliResult<Vec<ProviderSession>> {
@@ -4735,6 +5631,14 @@ fn parse_message_kind(value: &str) -> CliResult<MessageKind> {
     }
 }
 
+fn message_kind_label(kind: &MessageKind) -> &'static str {
+    match kind {
+        MessageKind::Message => "message",
+        MessageKind::Task => "task",
+        MessageKind::Report => "report",
+    }
+}
+
 fn parse_delivery_status(value: &str) -> CliResult<MessageDeliveryStatus> {
     match value {
         "queued" => Ok(MessageDeliveryStatus::Queued),
@@ -4743,6 +5647,35 @@ fn parse_delivery_status(value: &str) -> CliResult<MessageDeliveryStatus> {
         "failed" => Ok(MessageDeliveryStatus::Failed),
         other => Err(CliError::Usage(format!(
             "unknown message delivery status: {other}"
+        ))),
+    }
+}
+
+fn parse_provider_session_status(value: &str) -> CliResult<ProviderSessionStatus> {
+    match value {
+        "queued" => Ok(ProviderSessionStatus::Queued),
+        "running" => Ok(ProviderSessionStatus::Running),
+        "succeeded" => Ok(ProviderSessionStatus::Succeeded),
+        "failed" => Ok(ProviderSessionStatus::Failed),
+        "canceled" => Ok(ProviderSessionStatus::Canceled),
+        "stale" => Ok(ProviderSessionStatus::Stale),
+        other => Err(CliError::Usage(format!(
+            "unknown provider session status: {other}"
+        ))),
+    }
+}
+
+fn parse_terminal_source(value: &str) -> CliResult<MessageTerminalSource> {
+    match value {
+        "turn_completed" => Ok(MessageTerminalSource::TurnCompleted),
+        "thread_idle" => Ok(MessageTerminalSource::ThreadIdle),
+        "thread_read" => Ok(MessageTerminalSource::ThreadRead),
+        "hook_stop" => Ok(MessageTerminalSource::HookStop),
+        "dry_run" => Ok(MessageTerminalSource::DryRun),
+        "failed" => Ok(MessageTerminalSource::Failed),
+        "unknown" => Ok(MessageTerminalSource::Unknown),
+        other => Err(CliError::Usage(format!(
+            "unknown message terminal source: {other}"
         ))),
     }
 }
@@ -4808,18 +5741,19 @@ fn status_label(status: &TaskStatus) -> &'static str {
 }
 
 fn now_string() -> String {
-    let millis = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis();
+    let millis = current_unix_ms();
     format!("unix-ms:{millis}")
 }
 
-fn generated_id(prefix: &str) -> String {
-    let millis = SystemTime::now()
+fn current_unix_ms() -> u128 {
+    SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
-        .as_millis();
+        .as_millis()
+}
+
+fn generated_id(prefix: &str) -> String {
+    let millis = current_unix_ms();
     let counter = GENERATED_ID_COUNTER.fetch_add(1, Ordering::Relaxed);
     format!("{prefix}-{millis}-{counter}")
 }
@@ -4845,6 +5779,9 @@ fn print_help() {
   agent show --id <agent>
   agent send --from <agent> --to <agent> --content <text> [--task <task>] [--channel <channel>] [--kind message|task|report]
   agent deliver --agent <agent> [--message <message>] [--dry-run] [--start-runtime] [--timeout-ms <ms>]
+  agent retry-delivery --agent <agent> --message <message> [--session <session>] [--reason <text>] [--force]
+  agent reconcile-session --agent <agent> --session <session> --status <succeeded|failed|canceled|stale> [--terminal-source <source>] [--reason <text>]
+  agent gateway [--once] [--dry-run] [--start-runtime] [--interval-ms <ms>] [--timeout-ms <ms>] [--claim-ttl-ms <ms>]
   agent ingest --agent <agent> --source <provider-output> [--runtime <runtime>] [--task <task>]
   agent close --id <agent>
   team create --name <name> --description <text> --owner <agent> [--member <agent>]
@@ -5765,6 +6702,389 @@ mod tests {
     }
 
     #[test]
+    fn delivery_queue_uses_latest_message_status_per_id() {
+        let root = std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("queue")));
+        let store = HarnessStore::new(&root);
+        store
+            .append_member(&make_member("agent-1"))
+            .expect("append member");
+        let mut message = Message {
+            id: "message-1".into(),
+            task_id: Some("task-1".into()),
+            from_agent_id: "leader".into(),
+            to_agent_id: Some("agent-1".into()),
+            channel: Some("assignment".into()),
+            kind: MessageKind::Task,
+            delivery_status: MessageDeliveryStatus::Queued,
+            content: "Assign task".into(),
+            evidence_ids: Vec::new(),
+            created_at: "unix-ms:1".into(),
+            delivery: None,
+        };
+        store.append_message(&message).expect("append queued");
+        message.delivery_status = MessageDeliveryStatus::Acknowledged;
+        store.append_message(&message).expect("append acknowledged");
+
+        deliver_agent_messages(
+            &store,
+            &["--agent".into(), "agent-1".into(), "--dry-run".into()],
+        )
+        .expect("deliver should not redeliver stale queued row");
+
+        let latest = latest_message(&store, "message-1").expect("latest message");
+        assert_eq!(latest.delivery_status, MessageDeliveryStatus::Acknowledged);
+        assert!(store
+            .messages()
+            .expect("messages")
+            .iter()
+            .all(|message| message.kind != MessageKind::Report));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn dry_run_delivery_claims_and_finishes_provider_session() {
+        let root =
+            std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("dry-claim")));
+        let store = HarnessStore::new(&root);
+        store
+            .append_member(&make_member("agent-1"))
+            .expect("append member");
+        store
+            .append_message(&Message {
+                id: "message-1".into(),
+                task_id: Some("task-1".into()),
+                from_agent_id: "leader".into(),
+                to_agent_id: Some("agent-1".into()),
+                channel: Some("assignment".into()),
+                kind: MessageKind::Task,
+                delivery_status: MessageDeliveryStatus::Queued,
+                content: "Assign task".into(),
+                evidence_ids: Vec::new(),
+                created_at: "unix-ms:1".into(),
+                delivery: None,
+            })
+            .expect("append queued");
+
+        deliver_agent_messages(
+            &store,
+            &["--agent".into(), "agent-1".into(), "--dry-run".into()],
+        )
+        .expect("dry-run delivery");
+
+        let latest = latest_message(&store, "message-1").expect("latest message");
+        assert_eq!(latest.delivery_status, MessageDeliveryStatus::Delivered);
+        let delivery = latest.delivery.expect("delivery");
+        let session_id = delivery
+            .provider_session_id
+            .expect("claimed provider session id");
+        assert_eq!(
+            delivery.terminal_source,
+            Some(MessageTerminalSource::DryRun)
+        );
+
+        let session = latest_provider_session(&store, &session_id)
+            .expect("session lookup")
+            .expect("provider session");
+        assert_eq!(session.status, ProviderSessionStatus::Succeeded);
+        assert_eq!(session.terminal_source, Some(MessageTerminalSource::DryRun));
+        assert!(!session.evidence_ids.is_empty());
+
+        let reports: Vec<_> = store
+            .messages()
+            .expect("messages")
+            .into_iter()
+            .filter(|message| message.kind == MessageKind::Report)
+            .collect();
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].evidence_ids, session.evidence_ids);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn retry_delivery_requeues_safe_claim_without_provider_request() {
+        let root = std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("retry")));
+        let store = HarnessStore::new(&root);
+        let member = make_member("agent-1");
+        store.append_member(&member).expect("append member");
+        let message = Message {
+            id: "message-1".into(),
+            task_id: Some("task-1".into()),
+            from_agent_id: "leader".into(),
+            to_agent_id: Some("agent-1".into()),
+            channel: Some("assignment".into()),
+            kind: MessageKind::Task,
+            delivery_status: MessageDeliveryStatus::Queued,
+            content: "Assign task".into(),
+            evidence_ids: Vec::new(),
+            created_at: "unix-ms:1".into(),
+            delivery: None,
+        };
+        store.append_message(&message).expect("append queued");
+        claim_message_for_delivery(&store, &member, None, &message, "delivery-1")
+            .expect("claim")
+            .expect("claimed message");
+
+        retry_delivery_value(
+            &store,
+            "agent-1",
+            "message-1",
+            Some("delivery-1"),
+            "safe retry test",
+            false,
+        )
+        .expect("retry delivery");
+
+        let latest_message = latest_message(&store, "message-1").expect("latest message");
+        assert_eq!(
+            latest_message.delivery_status,
+            MessageDeliveryStatus::Queued
+        );
+        assert!(latest_message.delivery.is_none());
+        let latest_session = latest_provider_session(&store, "delivery-1")
+            .expect("session lookup")
+            .expect("session");
+        assert_eq!(latest_session.status, ProviderSessionStatus::Canceled);
+        assert_eq!(
+            latest_session.terminal_source,
+            Some(MessageTerminalSource::Failed)
+        );
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn gateway_expires_safe_pre_provider_claims() {
+        let root =
+            std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("expire")));
+        let store = HarnessStore::new(&root);
+        let member = make_member("agent-1");
+        store.append_member(&member).expect("append member");
+        let message = Message {
+            id: "message-1".into(),
+            task_id: Some("task-1".into()),
+            from_agent_id: "leader".into(),
+            to_agent_id: Some("agent-1".into()),
+            channel: Some("assignment".into()),
+            kind: MessageKind::Task,
+            delivery_status: MessageDeliveryStatus::Queued,
+            content: "Assign task".into(),
+            evidence_ids: Vec::new(),
+            created_at: "unix-ms:1".into(),
+            delivery: None,
+        };
+        store.append_message(&message).expect("append queued");
+        claim_message_for_delivery(&store, &member, None, &message, "delivery-1")
+            .expect("claim")
+            .expect("claimed message");
+        let mut old_session = latest_provider_session(&store, "delivery-1")
+            .expect("session lookup")
+            .expect("session");
+        old_session.started_at = "unix-ms:1".into();
+        store
+            .append_provider_session(&old_session)
+            .expect("append old session");
+
+        let result = provider_gateway_tick_value(
+            &store,
+            GatewayOptions {
+                dry_run: false,
+                start_runtime: false,
+                timeout_ms: 100,
+                claim_ttl_ms: 1,
+            },
+        )
+        .expect("gateway tick");
+
+        assert_eq!(result["expired_claims"].as_array().map(Vec::len), Some(1));
+        let latest_message = latest_message(&store, "message-1").expect("latest message");
+        assert_eq!(
+            latest_message.delivery_status,
+            MessageDeliveryStatus::Failed
+        );
+        let sessions = latest_provider_sessions_in_append_order(&store).expect("sessions");
+        assert!(sessions.iter().any(|session| {
+            session.id == "delivery-1" && session.status == ProviderSessionStatus::Canceled
+        }));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn gateway_tick_delivers_queued_messages_with_same_delivery_path() {
+        let root =
+            std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("gateway")));
+        let store = HarnessStore::new(&root);
+        store
+            .append_member(&make_member("agent-1"))
+            .expect("append member 1");
+        store
+            .append_member(&make_member("agent-2"))
+            .expect("append member 2");
+        for agent_id in ["agent-1", "agent-2"] {
+            store
+                .append_message(&Message {
+                    id: format!("message-{agent_id}"),
+                    task_id: Some(format!("task-{agent_id}")),
+                    from_agent_id: "leader".into(),
+                    to_agent_id: Some(agent_id.into()),
+                    channel: Some("assignment".into()),
+                    kind: MessageKind::Task,
+                    delivery_status: MessageDeliveryStatus::Queued,
+                    content: "Assign task".into(),
+                    evidence_ids: Vec::new(),
+                    created_at: "unix-ms:1".into(),
+                    delivery: None,
+                })
+                .expect("append queued");
+        }
+
+        let result = provider_gateway_tick_value(
+            &store,
+            GatewayOptions {
+                dry_run: true,
+                start_runtime: false,
+                timeout_ms: 100,
+                claim_ttl_ms: 300_000,
+            },
+        )
+        .expect("gateway tick");
+
+        assert_eq!(result["agent_count"].as_u64(), Some(2));
+        for agent_id in ["agent-1", "agent-2"] {
+            let latest =
+                latest_message(&store, &format!("message-{agent_id}")).expect("latest message");
+            assert_eq!(latest.delivery_status, MessageDeliveryStatus::Delivered);
+            assert!(latest
+                .delivery
+                .and_then(|delivery| delivery.provider_session_id)
+                .is_some());
+        }
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn http_action_dispatches_control_plane_safe_actions() {
+        let root =
+            std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("http-action")));
+        let store = HarnessStore::new(&root);
+        store
+            .append_goal(&make_goal("goal-1"))
+            .expect("append goal");
+        store
+            .append_member(&make_member("worker"))
+            .expect("append worker");
+        store
+            .append_member(&make_member("critic"))
+            .expect("append critic");
+        store
+            .append_task(&make_task("task-1", "goal-1"))
+            .expect("append task");
+
+        let message = handle_http_action(
+            &store,
+            "/v1/messages",
+            &serde_json::json!({
+                "from_agent_id": "leader",
+                "to_agent_id": "worker",
+                "task_id": "task-1",
+                "kind": "message",
+                "content": "please inspect"
+            }),
+        )
+        .expect("message action");
+        let message_id = message
+            .get("id")
+            .and_then(|value| value.as_str())
+            .expect("message id");
+        let latest = latest_message(&store, message_id).expect("latest message");
+        assert_eq!(latest.to_agent_id.as_deref(), Some("worker"));
+        assert_eq!(latest.delivery_status, MessageDeliveryStatus::Queued);
+
+        let review = handle_http_action(
+            &store,
+            "/v1/tasks/task-1/request-review",
+            &serde_json::json!({
+                "from_agent_id": "leader",
+                "content": "please review"
+            }),
+        )
+        .expect("request review action");
+        assert_eq!(
+            latest_task(&store, "task-1").expect("latest task").status,
+            TaskStatus::Review
+        );
+        assert_eq!(
+            review
+                .get("message")
+                .and_then(|value| value.get("to_agent_id"))
+                .and_then(|value| value.as_str()),
+            Some("critic")
+        );
+
+        handle_http_action(&store, "/v1/agents/worker/close", &serde_json::json!({}))
+            .expect("close worker");
+        assert_eq!(
+            latest_member(&store, "worker")
+                .expect("latest worker")
+                .status,
+            AgentMemberStatus::Closed
+        );
+        let closed_send = handle_http_action(
+            &store,
+            "/v1/messages",
+            &serde_json::json!({
+                "from_agent_id": "leader",
+                "to_agent_id": "worker",
+                "content": "should fail"
+            }),
+        );
+        assert!(closed_send.is_err());
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn closed_member_rejects_delivery_without_claiming_message() {
+        let root =
+            std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("closed")));
+        let store = HarnessStore::new(&root);
+        let mut member = make_member("agent-1");
+        member.status = AgentMemberStatus::Closed;
+        store.append_member(&member).expect("append member");
+        store
+            .append_message(&Message {
+                id: "message-1".into(),
+                task_id: Some("task-1".into()),
+                from_agent_id: "leader".into(),
+                to_agent_id: Some("agent-1".into()),
+                channel: Some("assignment".into()),
+                kind: MessageKind::Task,
+                delivery_status: MessageDeliveryStatus::Queued,
+                content: "Assign task".into(),
+                evidence_ids: Vec::new(),
+                created_at: "unix-ms:1".into(),
+                delivery: None,
+            })
+            .expect("append queued");
+
+        let result = deliver_agent_messages(
+            &store,
+            &["--agent".into(), "agent-1".into(), "--dry-run".into()],
+        );
+
+        assert!(result.is_err());
+        let latest = latest_message(&store, "message-1").expect("latest message");
+        assert_eq!(latest.delivery_status, MessageDeliveryStatus::Queued);
+        assert!(latest.delivery.is_none());
+        assert!(store.provider_sessions().expect("sessions").is_empty());
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn thread_start_uses_prompt_file_contents() {
         let root =
             std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("prompt")));
@@ -5783,6 +7103,36 @@ mod tests {
             Some("Prompt file contents")
         );
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn turn_input_uses_stable_harness_envelope() {
+        let message = Message {
+            id: "message-1".into(),
+            task_id: Some("task-1".into()),
+            from_agent_id: "leader".into(),
+            to_agent_id: Some("agent-1".into()),
+            channel: Some("assignment".into()),
+            kind: MessageKind::Task,
+            delivery_status: MessageDeliveryStatus::Acknowledged,
+            content: "Do the task".into(),
+            evidence_ids: Vec::new(),
+            created_at: "unix-ms:1".into(),
+            delivery: None,
+        };
+
+        let input = build_turn_input(&message, "delivery-1");
+        let text = input[0]["text"].as_str().expect("turn text");
+
+        assert!(text.contains("message_id: message-1"));
+        assert!(text.contains("kind: task"));
+        assert!(text.contains("task_id: task-1"));
+        assert!(text.contains("from_agent_id: leader"));
+        assert!(text.contains("to_agent_id: agent-1"));
+        assert!(text.contains("channel: assignment"));
+        assert!(text.contains("delivery_attempt: delivery-1"));
+        assert!(text.contains("content:\nDo the task"));
+        assert!(!text.contains("kind: Task"));
     }
 
     #[test]

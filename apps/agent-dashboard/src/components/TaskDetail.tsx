@@ -9,7 +9,7 @@ import {
   reviewEvidenceForTask,
   sessionsForTask,
 } from "../readModel";
-import type { DashboardSnapshot, Evidence, Message, ProviderSession, Task, WorkflowWarning } from "../types";
+import type { DashboardAction, DashboardSnapshot, Evidence, Message, ProviderSession, Task, WorkflowWarning } from "../types";
 import { Pill } from "./Pill";
 
 export function TaskDetail({
@@ -17,11 +17,13 @@ export function TaskDetail({
   task,
   warnings,
   onSelectMember,
+  onAction,
 }: {
   snapshot: Required<DashboardSnapshot>;
   task?: Task;
   warnings: WorkflowWarning[];
   onSelectMember: (id: string) => void;
+  onAction: DashboardAction;
 }) {
   if (!task) {
     return <section className="detailPanel"><h2>Task Detail</h2><p className="muted">No task selected</p></section>;
@@ -54,6 +56,19 @@ export function TaskDetail({
         <span>branch={task.branch_ref || "-"}</span>
         <span>pr={task.pr_ref || "-"}</span>
         <span>workspace={task.workspace_ref || "-"}</span>
+      </div>
+      <div className="actionRow">
+        <button
+          type="button"
+          disabled={!task.reviewer_agent_id}
+          onClick={() => onAction(`/v1/tasks/${task.id}/request-review`, {
+            from_agent_id: task.owner_agent_id,
+            to_agent_id: task.reviewer_agent_id,
+          })}
+          title="Request task review"
+        >
+          Request Review
+        </button>
       </div>
       <AssignmentProof assignments={assignments} assignee={task.assignee_agent_id || undefined} />
       <TaskMessages messages={taskMessages} reports={reports} />

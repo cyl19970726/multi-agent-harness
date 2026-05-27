@@ -191,6 +191,61 @@
   text-align: left;
 }
 
+.actionBox {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 8px;
+}
+
+.actionRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-top: 10px;
+}
+
+.actionBox .actionRow {
+  margin-top: 0;
+}
+
+.actionRow button,
+.messageForm button,
+.miniAction {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  padding: 5px 8px;
+  font-size: 12px;
+}
+
+.actionRow button:disabled,
+.messageForm button:disabled,
+.messageForm input:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.messageForm {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px;
+}
+
+.messageForm input {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 6px 8px;
+}
+
+.miniAction {
+  margin-left: auto;
+}
+
 .detailList {
   margin-top: 12px;
 }

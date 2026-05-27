@@ -18,6 +18,8 @@ harness objects and workflow without changing `Goal`, `Task`, `Message`,
 docs/agent-runtime.md        # provider-neutral A-ROM and interfaces
 docs/integration/README.md   # provider documentation rules
 docs/integration/codex.md    # Codex implementation
+docs/integration/codex-message-delivery.md
+                                 # Codex mailbox and turn delivery detail
 docs/integration/<name>.md   # future provider implementation
 ```
 
@@ -25,6 +27,7 @@ Provider docs answer how a concrete provider implements:
 
 - runtime creation and close;
 - message delivery;
+- delivery claim/lease and duplicate-prevention semantics;
 - event ingestion and reduction;
 - queue and context constraints;
 - permissions, sandbox, and approvals;
@@ -42,6 +45,7 @@ Provider
   capability_summary:
   runtime_model:
   message_delivery:
+  claim_and_retry_model:
   event_sources:
   reducer_mapping:
   queue_policy_constraints:
@@ -61,6 +65,7 @@ Provider
 | Provider | Doc | Status | Role |
 | --- | --- | --- | --- |
 | Codex | [codex.md](codex.md) | planned / implemented in slices | First persistent provider, app-server + hooks + skills + plugin path. |
+| Codex message delivery | [codex-message-delivery.md](codex-message-delivery.md) | planned / implemented in slices | Persistent member mailbox, dispatcher, queue policy, and delivery proof. |
 | Codex source audit | [codex-source-audit.md](codex-source-audit.md) | planned / reference | Source-level notes that support Codex integration decisions. |
 | Claude Code | not yet created | idea | Future provider implementation when there is concrete integration work. |
 | OpenClaw / cloud agent | not yet created | idea | Future remote or cloud-hosted provider implementation. |
@@ -77,3 +82,5 @@ README until they need their own file.
 3. First-provider convenience must not become generic architecture.
 4. Unsupported provider features must be explicit so Dashboard and CLI can show
    honest capability state.
+5. Provider docs must distinguish target contract, implemented slices, and
+   acceptance gaps. A working hot path is not the same as a gateable provider.

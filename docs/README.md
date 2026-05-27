@@ -20,6 +20,7 @@
 | Goal learning loop and reusable cases | [goal-learning-loop.md](goal-learning-loop.md) |
 | Provider integration rules | [integration/README.md](integration/README.md) |
 | Codex provider integration | [integration/codex.md](integration/codex.md) |
+| Codex message delivery | [integration/codex-message-delivery.md](integration/codex-message-delivery.md) |
 | Codex source-audit findings | [integration/codex-source-audit.md](integration/codex-source-audit.md) |
 | Operations | [operations.md](operations.md) |
 | Schemas and minimal object contracts | [schemas.md](schemas.md) |
@@ -34,6 +35,7 @@ integrating project repository, not in the generic core docs.
 | --- | --- |
 | [bootstrap-project-workflow](../.agents/skills/bootstrap-project-workflow/SKILL.md) | Bootstrap or audit docs, CI/CD, diagrams, task workflow, and project governance. |
 | [generic-agent-harness](../.agents/skills/generic-agent-harness/SKILL.md) | Operate or extend the generic harness objects and message-first workflow. |
+| [multi-agent-system-design](../.agents/skills/multi-agent-system-design/SKILL.md) | Design or audit durable multi-agent mailboxes, delivery, runtime lifecycle, permission messages, and dashboard proof. |
 
 ## Split Rule
 

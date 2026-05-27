@@ -40,7 +40,7 @@ Reasons:
 ```text
 src/types.ts       # snapshot and harness object types
 src/readModel.ts   # derived maps, selected entities, warnings
-src/api.ts         # snapshot loading and live polling helpers
+src/api.ts         # snapshot loading, live polling, and safe action helpers
 src/App.tsx        # top-level state and layout
 src/components/    # control-plane panels
 src/styles.css     # product UI styling
@@ -69,11 +69,11 @@ decision state. Those objects come from the snapshot.
 
 | Component | Owns |
 | --- | --- |
-| `App.tsx` | snapshot source, live polling state, selected goal/task/member ids |
+| `App.tsx` | snapshot source, live polling state, selected goal/task/member ids, safe action dispatch |
 | `ControlPlane.tsx` | goal scope composition and panel wiring |
 | `KanbanBoard.tsx` | task status columns for the active goal |
-| `TaskDetail.tsx` | assignment proof, reports, evidence, sessions, proposal, review, decision |
-| `MemberDetail.tsx` | inbox/outbox, runtime health, provider sessions, child threads |
+| `TaskDetail.tsx` | assignment proof, reports, evidence, sessions, proposal, review, decision, review request action |
+| `MemberDetail.tsx` | inbox/outbox, runtime health, provider sessions, child threads, member/message/session actions |
 | `WarningsPanel.tsx` | warning display and task/member navigation links |
 | `readModel.ts` | selectors and scope helpers |
 | `warnings.ts` | advisory warning derivation |
@@ -93,8 +93,8 @@ The first React version must preserve:
 
 The next product layer adds:
 
-- goal-centered team control-plane layout;
-- selected task and selected member details;
-- inbox/outbox grouped by task and member;
-- workflow warnings derived from snapshot state;
-- later safe actions routed through Rust CLI/API.
+- richer task graph dependencies and blocker visualization;
+- richer member runtime health from provider notifications and hooks;
+- click-through warning repair flows;
+- create-member and create-task actions;
+- production gateway status and metrics panels.
