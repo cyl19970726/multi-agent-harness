@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-harness.local/schemas/agent-runtime.schema.json",
+  "title": "AgentRuntime",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id",
+    "agent_member_id",
+    "provider",
+    "status",
+    "pid",
+    "control_endpoint",
+    "command",
+    "args",
+    "started_at",
+    "ended_at",
+    "last_event_at",
+    "health"
+  ],
+  "properties": {
+    "id": { "type": "string", "minLength": 1 },
+    "agent_member_id": { "type": "string", "minLength": 1 },
+    "provider": { "type": "string", "minLength": 1 },
+    "status": { "type": "string", "enum": ["starting", "running", "stopping", "stopped", "error"] },
+    "pid": { "type": ["integer", "null"] },
+    "control_endpoint": { "type": ["string", "null"] },
+    "command": { "type": "string", "minLength": 1 },
+    "args": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "started_at": { "type": "string", "minLength": 1 },
+    "ended_at": { "type": ["string", "null"] },
+    "last_event_at": { "type": ["string", "null"] },
+    "health": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "process_alive",
+        "socket_exists",
+        "protocol_probe",
+        "delivery_probe",
+        "checked_at"
+      ],
+      "properties": {
+        "process_alive": { "type": "boolean" },
+        "socket_exists": { "type": "boolean" },
+        "protocol_probe": {
+          "type": ["string", "null"],
+          "description": "Probe status string such as pass: initialize response received, failed: <reason>, skipped: <reason>, or unknown."
+        },
+        "delivery_probe": {
+          "type": ["string", "null"],
+          "description": "Latest delivery probe status string such as pass: turn_completed, failed: <reason>, or unknown."
+        },
+        "checked_at": { "type": ["string", "null"] }
+      }
+    }
+  }
+}

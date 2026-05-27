@@ -6,10 +6,19 @@
   "additionalProperties": false,
   "required": [
     "id",
+    "goal_id",
+    "parent_task_id",
     "title",
     "objective",
     "owner_agent_id",
+    "assignee_agent_id",
+    "reviewer_agent_id",
     "status",
+    "depends_on_task_ids",
+    "workspace_ref",
+    "branch_ref",
+    "pr_ref",
+    "owned_paths",
     "acceptance_criteria",
     "created_at",
     "updated_at"
@@ -18,6 +27,12 @@
     "id": {
       "type": "string",
       "minLength": 1
+    },
+    "goal_id": {
+      "type": ["string", "null"]
+    },
+    "parent_task_id": {
+      "type": ["string", "null"]
     },
     "title": {
       "type": "string",
@@ -34,9 +49,35 @@
     "assignee_agent_id": {
       "type": ["string", "null"]
     },
+    "reviewer_agent_id": {
+      "type": ["string", "null"]
+    },
     "status": {
       "type": "string",
       "enum": ["planned", "assigned", "running", "blocked", "review", "done", "archived"]
+    },
+    "depends_on_task_ids": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "workspace_ref": {
+      "type": ["string", "null"]
+    },
+    "branch_ref": {
+      "type": ["string", "null"]
+    },
+    "pr_ref": {
+      "type": ["string", "null"]
+    },
+    "owned_paths": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
     },
     "acceptance_criteria": {
       "type": "array",

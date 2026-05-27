@@ -1,0 +1,47 @@
+{
+  "schema": "agent_harness.tool_descriptor.v1",
+  "toolId": "strategy_trial_artifact_inspect",
+  "adapterId": "earning_engine",
+  "label": "Strategy Trial Artifact Inspect",
+  "description": "List artifacts attached to a Strategy Trial DAG node.",
+  "interface": {
+    "type": "cli",
+    "command": "ee strategy trial artifact list <trial-id> --json",
+    "workingDirectory": "<earning-engine-repo>"
+  },
+  "inputs": [
+    {
+      "name": "trial-id",
+      "required": true,
+      "description": "Strategy Trial DAG node id whose artifacts should be listed.",
+      "example": "trial_123"
+    }
+  ],
+  "outputs": [
+    {
+      "name": "trial_artifacts",
+      "required": true,
+      "description": "Artifact refs linked to the trial, including local paths or object storage refs.",
+      "evidenceKind": "artifact_index"
+    }
+  ],
+  "requiredPermissions": ["read_trials", "read_artifacts", "run_cli"],
+  "failureModes": [
+    {
+      "code": "trial_not_found",
+      "description": "The requested trial id is missing from strategy_trials.",
+      "blocksDecision": true
+    },
+    {
+      "code": "missing_required_artifact",
+      "description": "The trial has no artifact for the evidence class required by the decision.",
+      "blocksDecision": true
+    }
+  ],
+  "evidencePolicy": [
+    "Artifact inspect evidence links Trial DAG identity to filesystem or object-store evidence.",
+    "A missing artifact usually creates a Knowledge or Infrastructure task before a promotion decision.",
+    "Do not infer strategy quality from an artifact index without reading the underlying artifact."
+  ],
+  "notes": "Use this after `strategy_trial_inspect` when a decision depends on linked evidence."
+}

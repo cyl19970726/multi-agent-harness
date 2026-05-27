@@ -1,0 +1,16 @@
+{
+  "id": "provider-child-1",
+  "provider": "codex",
+  "agent_member_id": "agent-1",
+  "provider_runtime_id": "runtime-1",
+  "task_id": "task-1",
+  "parent_provider_thread_id": "thread-parent",
+  "provider_thread_id": "thread-child",
+  "provider_agent_path": "/root/architect/reviewer",
+  "provider_agent_nickname": "Reviewer",
+  "provider_agent_role": "critic",
+  "status": "open",
+  "last_message_ref": null,
+  "created_at": "2026-05-26T00:00:00Z",
+  "updated_at": "2026-05-26T00:00:00Z"
+}

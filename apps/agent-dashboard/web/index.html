@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Agent Dashboard</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <h1>Agent Dashboard</h1>
+        <p id="snapshotMeta">No snapshot loaded</p>
+      </div>
+      <div class="actions">
+        <input id="liveUrlInput" class="urlInput" type="url" value="http://127.0.0.1:8787" aria-label="Harness API URL" />
+        <button id="loadLiveButton" type="button">Load Live</button>
+        <button id="stopLiveButton" type="button">Stop</button>
+        <label class="fileButton">
+          <input id="fileInput" type="file" accept="application/json,.json" />
+          Load Snapshot
+        </label>
+        <button id="loadPasteButton" type="button">Use Pasted JSON</button>
+      </div>
+    </header>
+
+    <main>
+      <section class="inputBand">
+        <textarea id="jsonInput" spellcheck="false" placeholder='Paste output from: harness dashboard snapshot'></textarea>
+      </section>
+
+      <section class="summaryGrid" aria-label="Summary">
+        <div class="metric"><span id="metricTasks">0</span><label>Tasks</label></div>
+        <div class="metric"><span id="metricMembers">0</span><label>Members</label></div>
+        <div class="metric"><span id="metricQueued">0</span><label>Queued</label></div>
+        <div class="metric"><span id="metricFailed">0</span><label>Failed</label></div>
+        <div class="metric"><span id="metricSessions">0</span><label>Sessions</label></div>
+        <div class="metric"><span id="metricDecisions">0</span><label>Decisions</label></div>
+        <div class="metric"><span id="metricGoalLearning">0</span><label>Goal Learning Warnings</label></div>
+      </section>
+
+      <section class="workspace">
+        <nav class="tabs" aria-label="Dashboard views">
+          <button class="tab active" data-tab="kanban" type="button">Kanban</button>
+          <button class="tab" data-tab="members" type="button">Members</button>
+          <button class="tab" data-tab="messages" type="button">Messages</button>
+          <button class="tab" data-tab="sessions" type="button">Sessions</button>
+          <button class="tab" data-tab="goalLearning" type="button">Goal Learning</button>
+          <button class="tab" data-tab="proposals" type="button">Proposals</button>
+          <button class="tab" data-tab="events" type="button">Events</button>
+          <button class="tab" data-tab="evidence" type="button">Evidence</button>
+        </nav>
+
+        <div id="kanban" class="view active">
+          <div id="kanbanBoard" class="kanban"></div>
+        </div>
+
+        <div id="members" class="view">
+          <div id="memberGrid" class="listGrid"></div>
+        </div>
+
+        <div id="messages" class="view">
+          <div id="messageList" class="denseList"></div>
+        </div>
+
+        <div id="sessions" class="view">
+          <div id="sessionList" class="denseList"></div>
+        </div>
+
+        <div id="goalLearning" class="view">
+          <div id="goalLearningList" class="denseList"></div>
+        </div>
+
+        <div id="proposals" class="view">
+          <div id="proposalList" class="denseList"></div>
+        </div>
+
+        <div id="events" class="view">
+          <div id="eventList" class="timeline"></div>
+        </div>
+
+        <div id="evidence" class="view">
+          <div class="split">
+            <div>
+              <h2>Evidence</h2>
+              <div id="evidenceList" class="denseList"></div>
+            </div>
+            <div>
+              <h2>Decisions</h2>
+              <div id="decisionList" class="denseList"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <script src="./app.js"></script>
+  </body>
+</html>

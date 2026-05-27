@@ -5,7 +5,17 @@
   "to_agent_id": null,
   "channel": "architecture",
   "kind": "task",
+  "delivery_status": "queued",
   "content": "Please validate docs governance.",
   "evidence_ids": [],
-  "created_at": "2026-05-26T00:00:00Z"
+  "created_at": "2026-05-26T00:00:00Z",
+  "delivery": {
+    "provider_session_id": null,
+    "provider_request_id": null,
+    "provider_thread_id": null,
+    "provider_turn_id": null,
+    "terminal_source": null,
+    "delivered_at": null,
+    "last_error": null
+  }
 }

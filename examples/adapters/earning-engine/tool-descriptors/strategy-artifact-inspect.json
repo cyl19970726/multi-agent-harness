@@ -1,0 +1,46 @@
+{
+  "schema": "agent_harness.tool_descriptor.v1",
+  "toolId": "strategy_artifact_inspect",
+  "adapterId": "earning_engine",
+  "label": "Strategy Artifact Inspect",
+  "description": "Read or reference a filesystem artifact produced by the Earning Engine harness.",
+  "interface": {
+    "type": "artifact_reader",
+    "artifactTemplate": "<artifact-path>"
+  },
+  "inputs": [
+    {
+      "name": "artifact-path",
+      "required": true,
+      "description": "Path to a strategy harness artifact, review packet, screenshot, report, or comparison bundle.",
+      "example": "artifacts/live/<experiment>/harness/live-postmortem.json"
+    }
+  ],
+  "outputs": [
+    {
+      "name": "artifact_ref",
+      "required": true,
+      "description": "Typed evidence ref to the inspected artifact.",
+      "evidenceKind": "artifact"
+    }
+  ],
+  "requiredPermissions": ["read_artifacts"],
+  "failureModes": [
+    {
+      "code": "artifact_missing",
+      "description": "The artifact path does not exist.",
+      "blocksDecision": true
+    },
+    {
+      "code": "artifact_stale_or_partial",
+      "description": "The artifact is stale, partial, or not produced by the current run under review.",
+      "blocksDecision": true
+    }
+  ],
+  "evidencePolicy": [
+    "Artifact refs must be tied to a task and decision.",
+    "Filesystem artifacts are evidence refs, not a replacement for role review.",
+    "Promotion claims require the relevant underlying artifact to be inspected, not merely listed."
+  ],
+  "notes": "This descriptor covers artifact inspection when evidence is not yet linked to Trial DAG."
+}

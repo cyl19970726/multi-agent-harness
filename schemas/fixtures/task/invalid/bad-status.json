@@ -1,9 +1,18 @@
 {
   "id": "task-1",
+  "goal_id": "goal-1",
+  "parent_task_id": null,
   "title": "Add docs governance",
   "objective": "Make documentation ownership and review cadence machine-checkable.",
   "owner_agent_id": "agent-1",
+  "assignee_agent_id": null,
+  "reviewer_agent_id": "agent-2",
   "status": "almost-done",
+  "depends_on_task_ids": [],
+  "workspace_ref": null,
+  "branch_ref": "agent/task-1",
+  "pr_ref": null,
+  "owned_paths": ["docs"],
   "acceptance_criteria": ["Registry exists"],
   "created_at": "2026-05-26T00:00:00Z",
   "updated_at": "2026-05-26T00:00:00Z"

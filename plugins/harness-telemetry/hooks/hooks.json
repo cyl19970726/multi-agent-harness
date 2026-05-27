@@ -1,0 +1,106 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${PLUGIN_ROOT}/scripts/harness-telemetry-hook.sh",
+            "timeout": 30,
+            "statusMessage": "Recording harness session telemetry"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${PLUGIN_ROOT}/scripts/harness-telemetry-hook.sh",
+            "timeout": 30,
+            "statusMessage": "Recording harness prompt telemetry"
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${PLUGIN_ROOT}/scripts/harness-telemetry-hook.sh",
+            "timeout": 30,
+            "statusMessage": "Recording harness permission telemetry"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${PLUGIN_ROOT}/scripts/harness-telemetry-hook.sh",
+            "timeout": 30,
+            "statusMessage": "Recording harness tool-start telemetry"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${PLUGIN_ROOT}/scripts/harness-telemetry-hook.sh",
+            "timeout": 30,
+            "statusMessage": "Recording harness tool telemetry"
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${PLUGIN_ROOT}/scripts/harness-telemetry-hook.sh",
+            "timeout": 30,
+            "statusMessage": "Recording harness subagent-start telemetry"
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${PLUGIN_ROOT}/scripts/harness-telemetry-hook.sh",
+            "timeout": 30,
+            "statusMessage": "Recording harness subagent telemetry"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${PLUGIN_ROOT}/scripts/harness-telemetry-hook.sh",
+            "timeout": 30,
+            "statusMessage": "Recording harness stop telemetry"
+          }
+        ]
+      }
+    ]
+  }
+}

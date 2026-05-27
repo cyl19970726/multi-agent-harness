@@ -1,0 +1,47 @@
+{
+  "schema": "agent_harness.tool_descriptor.v1",
+  "toolId": "strategy_trial_inspect",
+  "adapterId": "earning_engine",
+  "label": "Strategy Trial Inspect",
+  "description": "Inspect one Strategy Trial DAG node, including params, metrics, status, verdict, and linked artifacts.",
+  "interface": {
+    "type": "cli",
+    "command": "ee strategy trial show <trial-id> --json",
+    "workingDirectory": "<earning-engine-repo>"
+  },
+  "inputs": [
+    {
+      "name": "trial-id",
+      "required": true,
+      "description": "Strategy Trial DAG node id.",
+      "example": "trial_123"
+    }
+  ],
+  "outputs": [
+    {
+      "name": "trial_detail",
+      "required": true,
+      "description": "Trial row with strategy name, params, status, metrics, verdict, lessons, and artifact refs.",
+      "evidenceKind": "strategy_matrix"
+    }
+  ],
+  "requiredPermissions": ["read_trials", "run_cli"],
+  "failureModes": [
+    {
+      "code": "trial_not_found",
+      "description": "The requested trial id is missing from strategy_trials.",
+      "blocksDecision": true
+    },
+    {
+      "code": "trial_db_unavailable",
+      "description": "The strategy_trials database is unavailable or PG_URL is not configured.",
+      "blocksDecision": true
+    }
+  ],
+  "evidencePolicy": [
+    "Trial inspect evidence identifies which strategy node and parameter set is being reviewed.",
+    "A trial row alone is not promotion evidence.",
+    "Do not run destructive trial tests against the live strategy_trials database."
+  ],
+  "notes": "Use this to anchor matrix review tasks to Trial DAG identity."
+}

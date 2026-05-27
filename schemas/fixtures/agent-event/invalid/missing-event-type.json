@@ -1,0 +1,10 @@
+{
+  "id": "event-1",
+  "agent_member_id": "agent-1",
+  "provider_runtime_id": "runtime-1",
+  "task_id": "task-1",
+  "provider": "codex",
+  "summary": "Codex started handling task-1.",
+  "payload_ref": ".harness/runtimes/agent-1/events/event-1.json",
+  "created_at": "2026-05-26T00:00:00Z"
+}

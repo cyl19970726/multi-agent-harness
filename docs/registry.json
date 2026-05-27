@@ -12,6 +12,9 @@
         "docs/mvp.md",
         "docs/design-basis.md",
         "docs/architecture.md",
+        "docs/goal-learning-loop.md",
+        "docs/integration/codex.md",
+        "docs/codex-agent-runtime.md",
         "docs/operations.md",
         "docs/schemas.md",
         "docs/decisions.md"
@@ -20,6 +23,22 @@
       "reviewAfter": "2026-08-26",
       "lastVerifiedWith": ["npx pnpm@9.15.4 check"],
       "reorgTrigger": "Start Here links or product boundary no longer match implemented and gateable surfaces."
+    },
+    {
+      "path": "AGENTS.md",
+      "ownerRole": "lead-operations",
+      "status": "stable",
+      "lifecycle": "stable",
+      "canonicalFor": ["agent operating rules", "canonical AgentMember workflow", "staged acceptance"],
+      "dependsOn": [
+        "docs/prd.md",
+        "docs/goal-learning-loop.md",
+        "skills/generic-agent-harness/SKILL.md"
+      ],
+      "machineConsumers": ["check-doc-links", "check-doc-governance"],
+      "reviewAfter": "2026-08-26",
+      "lastVerifiedWith": ["npx pnpm@9.15.4 check"],
+      "reorgTrigger": "Canonical AgentMember workflow, staged acceptance, or goal learning gate requirements change."
     },
     {
       "path": "docs/README.md",
@@ -32,6 +51,9 @@
         "docs/mvp.md",
         "docs/design-basis.md",
         "docs/architecture.md",
+        "docs/goal-learning-loop.md",
+        "docs/integration/codex.md",
+        "docs/codex-agent-runtime.md",
         "docs/operations.md",
         "docs/schemas.md",
         "docs/decisions.md"
@@ -47,7 +69,7 @@
       "status": "stable",
       "lifecycle": "stable",
       "canonicalFor": ["product purpose", "product scenarios", "non-goals"],
-      "dependsOn": ["docs/mvp.md", "docs/design-basis.md"],
+      "dependsOn": ["docs/mvp.md", "docs/design-basis.md", "docs/goal-learning-loop.md"],
       "machineConsumers": ["check-doc-links", "check-doc-governance"],
       "reviewAfter": "2026-08-26",
       "lastVerifiedWith": ["npx pnpm@9.15.4 check"],
@@ -63,6 +85,7 @@
         "docs/prd.md",
         "docs/design-basis.md",
         "docs/architecture.md",
+        "docs/codex-agent-runtime.md",
         "docs/operations.md",
         "examples/adapters/earning-engine/README.md"
       ],
@@ -89,11 +112,75 @@
       "status": "stable",
       "lifecycle": "stable",
       "canonicalFor": ["core loop", "module boundaries", "package plan"],
-      "dependsOn": ["docs/design-basis.md", "docs/schemas.md"],
+      "dependsOn": [
+        "docs/design-basis.md",
+        "docs/schemas.md",
+        "docs/integration/codex.md",
+        "docs/codex-agent-runtime.md",
+        "docs/goal-learning-loop.md"
+      ],
       "machineConsumers": ["check-doc-links", "check-doc-governance"],
       "reviewAfter": "2026-08-26",
       "lastVerifiedWith": ["npx pnpm@9.15.4 check", "cargo test"],
       "reorgTrigger": "Implemented crates, object boundaries, or source-of-truth surfaces diverge from the architecture."
+    },
+    {
+      "path": "docs/goal-learning-loop.md",
+      "ownerRole": "product-architecture",
+      "status": "planned",
+      "lifecycle": "volatile",
+      "canonicalFor": ["goal design artifacts", "goal evaluation workflow", "reusable goal cases"],
+      "dependsOn": [
+        "docs/prd.md",
+        "docs/design-basis.md",
+        "docs/architecture.md",
+        "examples/goal-cases/README.md"
+      ],
+      "machineConsumers": ["check-doc-links", "check-doc-governance"],
+      "reviewAfter": "2026-06-26",
+      "lastVerifiedWith": ["npx pnpm@9.15.4 check"],
+      "reorgTrigger": "GoalDesign, GoalEvaluation, or GoalCase fields stabilize enough to move into schemas and CLI/API."
+    },
+    {
+      "path": "docs/integration/codex.md",
+      "ownerRole": "provider-integration",
+      "status": "planned",
+      "lifecycle": "volatile",
+      "canonicalFor": ["Codex provider integration", "app-server vs hooks vs skills vs plugins", "Codex fallback modes"],
+      "dependsOn": [
+        "docs/architecture.md",
+        "docs/codex-agent-runtime.md",
+        "docs/mvp.md",
+        "docs/schemas.md"
+      ],
+      "machineConsumers": ["check-doc-links", "check-doc-governance"],
+      "reviewAfter": "2026-06-26",
+      "lastVerifiedWith": [
+        "https://developers.openai.com/codex/app-server",
+        "https://developers.openai.com/codex/hooks",
+        "https://developers.openai.com/codex/plugins",
+        "https://developers.openai.com/codex/cli/features",
+        "cargo test -p harness-cli"
+      ],
+      "reorgTrigger": "Codex provider surfaces, app-server protocol, hook behavior, plugin packaging, or fallback strategy changes."
+    },
+    {
+      "path": "docs/codex-agent-runtime.md",
+      "ownerRole": "architecture",
+      "status": "planned",
+      "lifecycle": "volatile",
+      "canonicalFor": ["persistent Codex AgentMember runtime", "Codex app-server integration", "agent runtime events"],
+      "dependsOn": [
+        "docs/architecture.md",
+        "docs/integration/codex.md",
+        "docs/mvp.md",
+        "docs/schemas.md",
+        "apps/agent-dashboard/README.md"
+      ],
+      "machineConsumers": ["check-doc-links", "check-doc-governance"],
+      "reviewAfter": "2026-06-26",
+      "lastVerifiedWith": ["codex app-server generate-ts --experimental", "codex features list"],
+      "reorgTrigger": "Codex app-server protocol changes, AgentRuntime schemas stabilize, or Dashboard realtime API is implemented."
     },
     {
       "path": "docs/operations.md",
@@ -125,7 +212,12 @@
       "status": "stable",
       "lifecycle": "stable",
       "canonicalFor": ["architecture decisions", "durable tradeoffs"],
-      "dependsOn": ["docs/design-basis.md", "docs/architecture.md"],
+      "dependsOn": [
+        "docs/design-basis.md",
+        "docs/architecture.md",
+        "docs/integration/codex.md",
+        "docs/codex-agent-runtime.md"
+      ],
       "machineConsumers": ["check-doc-links", "check-doc-governance"],
       "reviewAfter": "2026-08-26",
       "lastVerifiedWith": ["npx pnpm@9.15.4 check"],

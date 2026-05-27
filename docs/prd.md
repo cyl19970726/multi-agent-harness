@@ -2,9 +2,17 @@
 
 ## Purpose
 
-Multi-Agent Harness is a product for building, operating, and improving teams of
-agents. Its purpose is not to replace a project, but to help agents use a
-project's tools with shorter paths, better feedback, and durable decisions.
+Multi-Agent Harness is a product for turning a project or business domain into
+an agent-operable system.
+
+Its first job is not to run tasks. Its first job is to understand a goal in its
+real project context, model the scenario workflow, identify the missing
+infrastructure that would make the scenario easier for agents, design the right
+agent team, and then drive the task graph through messages, evidence, reviews,
+and decisions.
+
+The product does not replace a project. It helps agents use a project's real
+tools with shorter paths, better feedback, and durable decisions.
 
 The product answers three core questions:
 
@@ -12,27 +20,68 @@ The product answers three core questions:
 2. How can an agent know whether its work was good or bad, and why?
 3. How can the system generate new requirements and better work automatically?
 
+The practical answer is:
+
+```text
+Goal
+  -> Scenario understanding
+  -> Scenario workflow
+  -> Required infra: CLI + skill + adapter + dashboard + CI/CD
+  -> Agent team design
+  -> Task graph design
+  -> Message-driven execution
+  -> Evidence / report / critic / decision
+  -> Follow-up requirements and infra improvements
+```
+
+If the Leader Agent skips scenario and team design, then later records a task
+after doing the work locally, the harness has failed its purpose even if the
+store contains tasks and evidence.
+
+Every goal must also become learning material for future Lead Agents. A goal
+starts with a `GoalDesign` artifact and closes with an evaluator-produced
+`GoalEvaluation`. Useful, sanitized results become `GoalCase` examples that
+future Leads can inspect before designing a similar scenario. The product must
+therefore improve its own ability to design goals, not only finish individual
+tasks.
+
 ## Product Thesis
 
 Modern software and research projects expose useful capabilities through CLI,
 APIs, dashboards, artifacts, logs, and tests. A raw agent can call these tools,
 but often sees too much unstructured context and too little structured feedback.
 
-The harness turns project capabilities into agent-usable tools:
+The harness turns project capabilities into an agent-operable workflow:
 
 ```text
-Project CLI / API / Dashboard / Artifacts
-  -> Tool Adapter + Skill
-  -> Task / Message / Evidence / Decision
-  -> Agent Dashboard
+Project / Domain Goal
+  -> Scenario Workflow
+  -> Tool Adapter + Skill + CLI + CI/CD + Dashboard
+  -> Agent Team + Task Graph
+  -> Message / Evidence / Review / Decision
+  -> Agent Dashboard + Follow-up Requirements
 ```
 
 The generic harness owns the coordination layer. A project adapter owns the
 domain-specific tools and evaluation rules.
 
+This makes the Lead Agent a workflow architect before it is an executor. For
+each goal, the Lead must decide:
+
+- which scenario is being operated;
+- which project tools should become CLI, adapters, skills, dashboards, or CI
+  gates;
+- which agent members are needed and what each member owns;
+- which tasks can run in parallel and which need worktrees or PR boundaries;
+- what evidence proves the work was done by the harness rather than by hidden
+  local execution;
+- which critic or gate decides whether the result is acceptable.
+
 The design basis for this decomposition is recorded in
 [design-basis.md](design-basis.md). That document explains the layers and
 module core ideas that connect the product thesis to the concrete architecture.
+The goal learning loop is specified in
+[goal-learning-loop.md](goal-learning-loop.md).
 
 ## MVP Definition
 
@@ -43,6 +92,9 @@ The MVP is defined in [mvp.md](mvp.md). It must prove two real pilots:
    through an adapter without coupling strategy logic into the generic core.
 
 Both pilots must use the same task, message, evidence, and decision loop.
+The self-hosting development pilot has first priority because the product must
+prove it can improve its own docs, schemas, CLI, CI, and dashboard before it can
+reliably coordinate another project's strategy work.
 
 ## Non-Goals
 
@@ -54,6 +106,28 @@ Both pilots must use the same task, message, evidence, and decision loop.
 
 ## Core Product Modules
 
+### Goal System
+
+Owns durable outcomes and success criteria.
+
+Minimum object:
+
+```text
+Goal
+  id
+  title
+  objective
+  owner_agent_id
+  status
+  success_criteria
+  priority
+  created_at
+  updated_at
+```
+
+It answers: what long-lived outcome are we pursuing, who interprets it, and
+how do we know the task graph has succeeded?
+
 ### Agent Runtime
 
 Owns registered agent instances.
@@ -64,12 +138,26 @@ Minimum object:
 AgentMember
   id
   name
+  description
   role
+  provider
+  model/profile
   capabilities
+  team_ids
+  prompt_ref
+  skill_refs
   status
+  current_task_id?
+  current_proposal_id?
+  provider_runtime_id?
+  provider_thread_id?
 ```
 
-It answers: who is working, what can they do, and are they available?
+It answers: who is working, which provider backs the instance, what can they
+do, and are they available?
+
+Codex is the first persistent provider. Its app-server integration is defined
+in [codex-agent-runtime.md](codex-agent-runtime.md).
 
 ### Task System
 
@@ -80,11 +168,19 @@ Minimum object:
 ```text
 Task
   id
+  goal_id?
+  parent_task_id?
   title
   objective
   owner_agent_id
   assignee_agent_id?
+  reviewer_agent_id?
   status
+  depends_on_task_ids
+  workspace_ref?
+  branch_ref?
+  pr_ref?
+  owned_paths
   acceptance_criteria
   created_at
   updated_at
@@ -93,6 +189,10 @@ Task
 Leader Agent owns the task list and has final interpretation rights. Tasks can
 be created from user requests, project observations, failed checks, agent
 reports, or generated improvement ideas.
+
+A task is the smallest assignable and reviewable unit. Parallel work should be
+split into separate tasks, each with an assignee, optional reviewer, dependency
+refs, workspace ref, branch ref, PR ref, and owned paths when it changes files.
 
 ### Message System
 
@@ -154,6 +254,38 @@ Decision
 
 It answers: what did we decide, why, and based on which evidence?
 
+### Provider Session System
+
+Owns records of external agent execution. Codex is the first provider.
+
+Minimum object:
+
+```text
+ProviderSession
+  id
+  provider
+  agent_member_id
+  task_id?
+  workspace_ref?
+  status
+  command
+  args
+  prompt_ref?
+  prompt_summary?
+  provider_session_ref?
+  stdout_ref?
+  jsonl_ref?
+  transcript_ref?
+  last_message_ref?
+  exit_code?
+  started_at
+  ended_at?
+  evidence_ids
+```
+
+It answers: which provider instance ran, in which workspace, for which task,
+with which command, and where the durable output evidence lives?
+
 ### Skill System
 
 Skills teach agents how to use tools and how to work in a scenario. In the
@@ -187,6 +319,15 @@ The Agent Dashboard is the operational view over the harness. It shows:
 
 It is not a replacement for a project-specific dashboard. It links to project
 dashboards when the evidence lives there.
+
+The first Agent Dashboard should behave like a Kanban-style work operating
+view. Columns represent task state, and cards represent durable task objects
+with owner, assignee, role, latest message, evidence count, blocker state, and
+decision status. Cards for implementation work should also show workspace refs,
+branch refs, PR refs, owned paths, dependency blockers, and reviewer state.
+Project-specific
+dashboards remain the place for domain charts; the Agent Dashboard shows
+coordination, accountability, and evidence flow.
 
 ## Scenario 1: Technical Development
 

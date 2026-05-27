@@ -1,0 +1,43 @@
+{
+  "adapterId": "earning_engine",
+  "label": "Earning Engine Strategy Adapter",
+  "projectKind": "polymarket_strategy_research",
+  "toolDescriptorDir": "tool-descriptors",
+  "pilotWorkflow": "pilot-workflow.md",
+  "dashboard": {
+    "localBaseUrl": "http://127.0.0.1:4173",
+    "purpose": "Strategy-specific charts, market context, entry/exit labels, order lifecycle, PnL, and comparison views"
+  },
+  "boundaries": {
+    "genericHarnessOwns": [
+      "task graph",
+      "agent messages",
+      "role assignment",
+      "evidence references",
+      "review gates",
+      "decisions"
+    ],
+    "earningEngineOwns": [
+      "strategy logic",
+      "backtest engine",
+      "live execution",
+      "wallet handling",
+      "strategy dashboard",
+      "market-data workers"
+    ]
+  },
+  "defaultRoles": [
+    "Strategy Lead",
+    "Strategy Research",
+    "Matrix Curator",
+    "Backtest Parity",
+    "Live Ops",
+    "Execution",
+    "Market-Data Fabric",
+    "Dashboard Review",
+    "Infrastructure",
+    "Critic / Risk",
+    "Knowledge"
+  ],
+  "permissionBoundary": "Any live, order, wallet, or secret-touching action requires an explicit task, budget, duration, stop criteria, rollback/cancel plan, and Leader decision."
+}

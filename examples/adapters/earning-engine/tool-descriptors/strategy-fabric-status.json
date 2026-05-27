@@ -1,0 +1,53 @@
+{
+  "schema": "agent_harness.tool_descriptor.v1",
+  "toolId": "strategy_fabric_status",
+  "adapterId": "earning_engine",
+  "label": "Strategy Fabric Status",
+  "description": "Check whether strategy slots are using the shared market-data fabric and whether Polymarket/Binance inputs are fresh.",
+  "interface": {
+    "type": "cli",
+    "command": "node scripts/strategy-harness.mjs fabric-status --round-dir <round-dir> --worker-status <worker-status> --worker-source polymarket --worker-source binance --coin BTC",
+    "workingDirectory": "<earning-engine-repo>"
+  },
+  "inputs": [
+    {
+      "name": "round-dir",
+      "required": true,
+      "description": "Path to the live round being reviewed.",
+      "example": "artifacts/live/<round-id>"
+    },
+    {
+      "name": "worker-status",
+      "required": false,
+      "description": "File or URL for Worker fabric status.",
+      "example": "http://127.0.0.1:8889/v1/fabric/status"
+    }
+  ],
+  "outputs": [
+    {
+      "name": "fabric_gate",
+      "required": true,
+      "description": "Shared-input gate, upstream connection counts, freshness, consumer lag, and direct-WS caveats.",
+      "evidenceKind": "data_quality"
+    }
+  ],
+  "requiredPermissions": ["read_artifacts", "run_cli", "read_worker_status"],
+  "failureModes": [
+    {
+      "code": "direct_ws_consumers",
+      "description": "Strategy slots still consume direct upstream WebSockets instead of the fabric.",
+      "blocksDecision": true
+    },
+    {
+      "code": "stale_market_data",
+      "description": "Polymarket or Binance freshness exceeds the strategy decision budget.",
+      "blocksDecision": true
+    }
+  ],
+  "evidencePolicy": [
+    "Fabric health is promotion-blocking when same-input parity is required.",
+    "Worker health alone does not prove strategy consumers are migrated.",
+    "Current BTC S1 strategy evidence uses Polymarket and Binance, not Chainlink."
+  ],
+  "notes": "Use this before attributing missed trades to strategy logic."
+}

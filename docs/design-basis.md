@@ -12,7 +12,7 @@ structured feedback, and a clear way to judge whether work is good. Multi-Agent
 Harness turns a project's tools into an agent-governed workflow:
 
 ```text
-project capability -> adapter -> agent task -> evidence -> decision
+project capability -> adapter -> goal -> agent task -> evidence -> decision
 ```
 
 The product is not a domain engine. It is the governance and coordination layer
@@ -23,10 +23,11 @@ that lets agents use domain engines with less guessing and better accountability
 ```mermaid
 flowchart TD
   Intent[Intent Layer: user goals and product scenarios]
-  Coordination[Coordination Layer: AgentMember, Task, Message]
+  Coordination[Coordination Layer: Goal, AgentMember, Task, Message]
   Adapter[Adapter Layer: skills and tool descriptors]
   Execution[Execution Layer: project CLI / API / dashboard / artifacts]
   Evidence[Evidence Layer: Evidence, Report, Decision]
+  Learning[Learning Layer: GoalEvaluation and GoalCase]
   Governance[Governance Layer: permissions, CI/CD, release gates]
   Interface[Interface Layer: Agent Dashboard and human review]
 
@@ -34,6 +35,8 @@ flowchart TD
   Coordination --> Adapter
   Adapter --> Execution
   Execution --> Evidence
+  Evidence --> Learning
+  Learning --> Coordination
   Evidence --> Governance
   Evidence --> Interface
   Governance --> Coordination
@@ -50,6 +53,7 @@ how results become evidence, and how evidence feeds governance and future work.
 | Adapter | The generic harness should not know project internals. | Domain tools enter through skills, descriptors, APIs, and artifacts. |
 | Execution | Real value comes from using the project's actual capabilities. | Commands and dashboards must produce evidence, not just text. |
 | Evidence | Decisions should be based on references that can be inspected later. | Important claims need evidence refs. |
+| Learning | Completed goals should improve future Lead designs. | Goal evaluations produce reusable cases and follow-up infra tasks. |
 | Governance | Repeated mistakes should become checks, not memories. | CI/CD gates validate project promises and permission boundaries. |
 | Interface | Humans and agents need a shared operational view. | Agent Dashboard is separate from the project dashboard but links to it. |
 
@@ -60,11 +64,13 @@ refuses to own, and which invariant should survive implementation changes.
 
 | Module | Core idea | Owns | Refuses | Invariant |
 | --- | --- | --- | --- | --- |
+| Goal System | Work needs a durable outcome before tasks can be judged. | Objective, owner, success criteria, priority | Vague intent that never becomes verifiable | Tasks serve a goal, not chat momentum. |
 | Agent Runtime | Agents must be manageable, accountable instances. | Agent members, capabilities, status | Domain-specific business logic | Agents are not anonymous chat sessions. |
-| Task System | Work needs a durable unit that can be assigned and accepted. | Decomposition, ownership, assignment, acceptance | Vague TODOs without an owner or acceptance | Work can be tracked from request to decision. |
+| Task System | Work needs a durable unit that can be assigned, executed, reviewed, and replanned. | Decomposition, ownership, assignment, dependencies, workspace refs, acceptance | Vague TODOs without owner, scope, or acceptance | Work can be tracked from goal to decision. |
 | Message System | Collaboration should be reconstructable. | Agent-to-agent communication and reports | Hidden side channels as the only source of truth | Task assignment and reports can be replayed. |
 | Evidence System | Claims need inspectable support. | References to proof | Treating unsupported summaries as facts | Decisions point to evidence. |
 | Decision System | Outcomes need explicit rationale. | Accept, reject, retry, block, escalate | Silent implicit conclusions | The leader's rationale is durable. |
+| Goal Learning System | Finished goals should improve the next goal. | GoalDesign, GoalEvaluation, GoalCase examples | Raw transcripts as reusable knowledge | Every important goal can become a reviewed case or follow-up task. |
 | Skill System | Repeated working knowledge should become reusable. | How agents should use a scenario or tool | Copying project business logic into generic core | Skills guide usage without owning domain execution. |
 | Tool Adapter System | Project capability needs a stable agent-facing contract. | CLI/API/dashboard/artifact access | Direct coupling to a specific project runtime | Domain tools enter through descriptors and adapters. |
 | Agent Dashboard | Coordination state needs a shared view. | Operational read model for tasks and evidence | Replacing the project dashboard | It links to domain evidence instead of duplicating it. |
@@ -80,6 +86,7 @@ The documentation structure should mirror the system thinking:
 | `docs/prd.md` | Motivation, scenarios, non-goals, and success criteria. |
 | `docs/design-basis.md` | Layering, module core ideas, and the reasoning that connects product to architecture. |
 | `docs/architecture.md` | Concrete modules, data flow, object contracts, package boundaries. |
+| `docs/goal-learning-loop.md` | How completed goals become evaluator output and reusable examples. |
 | `docs/operations.md` | How the system is run, checked, released, and recovered. |
 | `docs/schemas.md` | Machine-readable contracts that stabilize the workflow. |
 | `docs/decisions.md` | Durable tradeoffs that future agents should not re-litigate casually. |

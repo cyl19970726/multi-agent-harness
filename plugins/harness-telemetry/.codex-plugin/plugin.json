@@ -1,0 +1,37 @@
+{
+  "name": "harness-telemetry",
+  "version": "0.1.0",
+  "description": "Codex lifecycle hooks for Multi-Agent Harness telemetry.",
+  "author": {
+    "name": "Multi-Agent Harness",
+    "email": "noreply@example.com",
+    "url": "https://github.com/hhh0x/multi-agent-harness"
+  },
+  "homepage": "https://github.com/hhh0x/multi-agent-harness",
+  "repository": "https://github.com/hhh0x/multi-agent-harness",
+  "license": "MIT",
+  "keywords": [
+    "codex",
+    "agent-harness",
+    "telemetry"
+  ],
+  "hooks": "./hooks/hooks.json",
+  "interface": {
+    "displayName": "Harness Telemetry",
+    "shortDescription": "Record Codex lifecycle events for Agent Dashboard.",
+    "longDescription": "Provides Codex hook handlers that forward lifecycle payloads into Multi-Agent Harness state or plugin data without writing runtime files into task worktrees.",
+    "developerName": "Multi-Agent Harness",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Hooks",
+      "Telemetry"
+    ],
+    "websiteURL": "https://github.com/hhh0x/multi-agent-harness",
+    "privacyPolicyURL": "https://github.com/hhh0x/multi-agent-harness",
+    "termsOfServiceURL": "https://github.com/hhh0x/multi-agent-harness",
+    "defaultPrompt": [
+      "Show current harness telemetry gaps."
+    ],
+    "brandColor": "#2563EB"
+  }
+}

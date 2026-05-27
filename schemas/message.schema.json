@@ -8,9 +8,11 @@
     "id",
     "from_agent_id",
     "kind",
+    "delivery_status",
     "content",
     "evidence_ids",
-    "created_at"
+    "created_at",
+    "delivery"
   ],
   "properties": {
     "id": {
@@ -34,6 +36,10 @@
       "type": "string",
       "enum": ["message", "task", "report"]
     },
+    "delivery_status": {
+      "type": "string",
+      "enum": ["queued", "delivered", "acknowledged", "failed"]
+    },
     "content": {
       "type": "string",
       "minLength": 1
@@ -48,6 +54,40 @@
     "created_at": {
       "type": "string",
       "minLength": 1
+    },
+    "delivery": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": [
+        "provider_session_id",
+        "provider_request_id",
+        "provider_thread_id",
+        "provider_turn_id",
+        "terminal_source",
+        "delivered_at",
+        "last_error"
+      ],
+      "properties": {
+        "provider_session_id": { "type": ["string", "null"] },
+        "provider_request_id": { "type": ["string", "null"] },
+        "provider_thread_id": { "type": ["string", "null"] },
+        "provider_turn_id": { "type": ["string", "null"] },
+        "terminal_source": {
+          "type": ["string", "null"],
+          "enum": [
+            "turn_completed",
+            "thread_idle",
+            "thread_read",
+            "hook_stop",
+            "dry_run",
+            "failed",
+            "unknown",
+            null
+          ]
+        },
+        "delivered_at": { "type": ["string", "null"] },
+        "last_error": { "type": ["string", "null"] }
+      }
     }
   }
 }

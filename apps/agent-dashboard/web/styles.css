@@ -1,0 +1,297 @@
+:root {
+  --bg: #f7f8fa;
+  --surface: #ffffff;
+  --line: #d9dee7;
+  --text: #1c2430;
+  --muted: #667085;
+  --accent: #0f766e;
+  --accent-2: #7c3aed;
+  --warn: #b45309;
+  --bad: #b42318;
+  --good: #047857;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family:
+    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    sans-serif;
+}
+
+.topbar {
+  display: flex;
+  justify-content: space-between;
+  gap: 24px;
+  align-items: center;
+  padding: 20px 28px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+}
+
+h1,
+h2,
+h3,
+p {
+  margin: 0;
+}
+
+h1 {
+  font-size: 22px;
+  font-weight: 700;
+}
+
+h2 {
+  margin-bottom: 12px;
+  font-size: 15px;
+}
+
+.topbar p {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: flex-end;
+}
+
+button,
+.fileButton,
+.urlInput {
+  height: 36px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  padding: 0 12px;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+button:hover,
+.fileButton:hover,
+.urlInput:focus {
+  border-color: var(--accent);
+}
+
+.urlInput {
+  min-width: 220px;
+  cursor: text;
+}
+
+.fileButton {
+  display: inline-flex;
+  align-items: center;
+}
+
+.fileButton input {
+  display: none;
+}
+
+main {
+  padding: 18px 24px 28px;
+}
+
+.inputBand {
+  margin-bottom: 16px;
+}
+
+textarea {
+  width: 100%;
+  min-height: 96px;
+  resize: vertical;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 12px;
+  background: var(--surface);
+  color: var(--text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+
+.summaryGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.metric {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  padding: 14px;
+}
+
+.metric span {
+  display: block;
+  font-size: 26px;
+  font-weight: 750;
+}
+
+.metric label {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.workspace {
+  border-top: 1px solid var(--line);
+  padding-top: 14px;
+}
+
+.tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+
+.tab.active {
+  border-color: var(--accent);
+  background: #e7f5f2;
+  color: #064e3b;
+}
+
+.view {
+  display: none;
+}
+
+.view.active {
+  display: block;
+}
+
+.kanban {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(180px, 1fr));
+  gap: 10px;
+  overflow-x: auto;
+  padding-bottom: 6px;
+}
+
+.column {
+  min-height: 220px;
+  border-left: 1px solid var(--line);
+  padding-left: 10px;
+}
+
+.columnHeader {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 10px;
+  color: var(--muted);
+  font-size: 12px;
+  text-transform: uppercase;
+}
+
+.taskCard,
+.item,
+.memberCard {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  padding: 12px;
+}
+
+.taskCard + .taskCard,
+.item + .item {
+  margin-top: 8px;
+}
+
+.taskCard h3,
+.memberCard h3,
+.item h3 {
+  font-size: 14px;
+  line-height: 1.25;
+}
+
+.meta {
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 10px;
+}
+
+.pill {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 2px 7px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.pill.good {
+  border-color: #a7f3d0;
+  color: var(--good);
+}
+
+.pill.warn {
+  border-color: #fed7aa;
+  color: var(--warn);
+}
+
+.pill.bad {
+  border-color: #fecaca;
+  color: var(--bad);
+}
+
+.listGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 10px;
+}
+
+.denseList,
+.timeline {
+  max-width: 1180px;
+}
+
+.timeline .item {
+  border-left: 3px solid var(--accent-2);
+}
+
+.split {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 18px;
+}
+
+.empty {
+  color: var(--muted);
+  padding: 18px 0;
+}
+
+@media (max-width: 900px) {
+  .topbar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .summaryGrid,
+  .split {
+    grid-template-columns: 1fr;
+  }
+
+  .kanban {
+    grid-template-columns: repeat(7, minmax(220px, 260px));
+  }
+}

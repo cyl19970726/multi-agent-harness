@@ -1,0 +1,42 @@
+{
+  "schema": "agent_harness.tool_descriptor.v1",
+  "toolId": "strategy_calibration_summary",
+  "adapterId": "earning_engine",
+  "label": "Strategy Calibration Summary",
+  "description": "Summarize replay and calibration work for live/backtest execution divergence.",
+  "interface": {
+    "type": "cli",
+    "command": "node scripts/strategy-harness.mjs calibration-summary --round-dir <round-dir>",
+    "workingDirectory": "<earning-engine-repo>"
+  },
+  "inputs": [
+    {
+      "name": "round-dir",
+      "required": true,
+      "description": "Path to the live round whose divergences were calibrated.",
+      "example": "artifacts/live/<round-id>"
+    }
+  ],
+  "outputs": [
+    {
+      "name": "calibration_summary",
+      "required": true,
+      "description": "Neutralized replay-model gaps, remaining promotion blockers, and next calibration jobs.",
+      "evidenceKind": "backtest_parity"
+    }
+  ],
+  "requiredPermissions": ["read_artifacts", "run_cli"],
+  "failureModes": [
+    {
+      "code": "missing_calibration_jobs",
+      "description": "Required same-market replay jobs have not been created or completed.",
+      "blocksDecision": true
+    }
+  ],
+  "evidencePolicy": [
+    "A backtest fill with a live no-fill is expected diagnostic evidence, not automatic failure.",
+    "Promotion requires enough samples to explain latency, queue competition, input freshness, and decision cadence.",
+    "Unexplained divergences create Backtest Parity or Execution tasks."
+  ],
+  "notes": "Use this after completed-market review identifies live/backtest divergence."
+}

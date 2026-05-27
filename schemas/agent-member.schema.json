@@ -4,7 +4,35 @@
   "title": "AgentMember",
   "type": "object",
   "additionalProperties": false,
-  "required": ["id", "name", "role", "capabilities", "status"],
+  "required": [
+    "id",
+    "name",
+    "description",
+    "role",
+    "provider",
+    "model",
+    "profile",
+    "provider_config",
+    "capabilities",
+    "team_ids",
+    "prompt_ref",
+    "skill_refs",
+    "workspace_policy",
+    "worktree_ref",
+    "permission_profile",
+    "runtime_workspace_roots",
+    "status",
+    "current_task_id",
+    "current_proposal_id",
+    "provider_runtime_id",
+    "provider_thread_id",
+    "provider_agent_path",
+    "provider_agent_nickname",
+    "provider_agent_role",
+    "control_endpoint",
+    "created_at",
+    "last_seen_at"
+  ],
   "properties": {
     "id": {
       "type": "string",
@@ -14,9 +42,50 @@
       "type": "string",
       "minLength": 1
     },
+    "description": {
+      "type": "string",
+      "minLength": 1
+    },
     "role": {
       "type": "string",
       "minLength": 1
+    },
+    "provider": {
+      "type": "string",
+      "minLength": 1
+    },
+    "model": {
+      "type": ["string", "null"]
+    },
+    "profile": {
+      "type": ["string", "null"]
+    },
+    "provider_config": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "service_tier",
+        "collaboration_mode",
+        "approval_policy",
+        "approvals_reviewer",
+        "sandbox_policy",
+        "permission_profile",
+        "runtime_workspace_roots",
+        "environment_id"
+      ],
+      "properties": {
+        "service_tier": { "type": ["string", "null"] },
+        "collaboration_mode": { "type": ["string", "null"] },
+        "approval_policy": { "type": ["string", "null"] },
+        "approvals_reviewer": { "type": ["string", "null"] },
+        "sandbox_policy": { "type": ["string", "null"] },
+        "permission_profile": { "type": ["string", "null"] },
+        "runtime_workspace_roots": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "environment_id": { "type": ["string", "null"] }
+      }
     },
     "capabilities": {
       "type": "array",
@@ -25,9 +94,88 @@
         "minLength": 1
       }
     },
+    "team_ids": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "prompt_ref": {
+      "type": ["string", "null"]
+    },
+    "skill_refs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "workspace_policy": {
+      "type": ["string", "null"]
+    },
+    "worktree_ref": {
+      "type": ["string", "null"]
+    },
+    "permission_profile": {
+      "type": ["string", "null"]
+    },
+    "runtime_workspace_roots": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
     "status": {
       "type": "string",
-      "enum": ["idle", "busy", "paused", "stale", "retired"]
+      "enum": [
+        "creating",
+        "idle",
+        "assigned",
+        "running",
+        "waiting_for_input",
+        "waiting_for_approval",
+        "reviewing",
+        "blocked",
+        "closing",
+        "closed",
+        "error",
+        "paused",
+        "stale",
+        "retired"
+      ]
+    },
+    "current_task_id": {
+      "type": ["string", "null"]
+    },
+    "current_proposal_id": {
+      "type": ["string", "null"]
+    },
+    "provider_runtime_id": {
+      "type": ["string", "null"]
+    },
+    "provider_thread_id": {
+      "type": ["string", "null"]
+    },
+    "provider_agent_path": {
+      "type": ["string", "null"]
+    },
+    "provider_agent_nickname": {
+      "type": ["string", "null"]
+    },
+    "provider_agent_role": {
+      "type": ["string", "null"]
+    },
+    "control_endpoint": {
+      "type": ["string", "null"]
+    },
+    "created_at": {
+      "type": "string",
+      "minLength": 1
+    },
+    "last_seen_at": {
+      "type": ["string", "null"]
     }
   }
 }

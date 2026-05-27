@@ -1,0 +1,52 @@
+{
+  "schema": "agent_harness.tool_descriptor.v1",
+  "toolId": "strategy_live_status",
+  "adapterId": "earning_engine",
+  "label": "Strategy Live Status",
+  "description": "Inspect one live round for child process state, live-loop activity, post-live tasks, preflight, and stop criteria.",
+  "interface": {
+    "type": "cli",
+    "command": "node scripts/strategy-harness.mjs status --round-dir <round-dir> --print",
+    "workingDirectory": "<earning-engine-repo>"
+  },
+  "inputs": [
+    {
+      "name": "round-dir",
+      "required": true,
+      "description": "Round directory to inspect.",
+      "example": "artifacts/live/<experiment>/run-01/round-01"
+    }
+  ],
+  "outputs": [
+    {
+      "name": "live_status",
+      "required": true,
+      "description": "Live round state, child process state, post-live work, freshness, and blockers.",
+      "evidenceKind": "live_status"
+    }
+  ],
+  "requiredPermissions": ["read_artifacts", "run_cli"],
+  "failureModes": [
+    {
+      "code": "round_dir_missing",
+      "description": "The round directory does not exist or is not readable.",
+      "blocksDecision": true
+    },
+    {
+      "code": "supervisor_exit_unexplained",
+      "description": "The supervisor or child loop exited unexpectedly.",
+      "blocksDecision": true
+    },
+    {
+      "code": "post_live_incomplete",
+      "description": "Live has finished but post-live backtests or compares have not completed.",
+      "blocksDecision": true
+    }
+  ],
+  "evidencePolicy": [
+    "Live status is operational evidence, not strategy promotion evidence by itself.",
+    "A quiet round with post-live work pending is not a fresh live sample.",
+    "Use this before reading high-volume logs."
+  ],
+  "notes": "This explicit descriptor maps the adapter acceptance item named live status."
+}

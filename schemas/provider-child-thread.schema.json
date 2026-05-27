@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-harness.local/schemas/provider-child-thread.schema.json",
+  "title": "ProviderChildThread",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id",
+    "provider",
+    "agent_member_id",
+    "provider_runtime_id",
+    "task_id",
+    "parent_provider_thread_id",
+    "provider_thread_id",
+    "provider_agent_path",
+    "provider_agent_nickname",
+    "provider_agent_role",
+    "status",
+    "last_message_ref",
+    "created_at",
+    "updated_at"
+  ],
+  "properties": {
+    "id": { "type": "string", "minLength": 1 },
+    "provider": { "type": "string", "minLength": 1 },
+    "agent_member_id": { "type": "string", "minLength": 1 },
+    "provider_runtime_id": { "type": ["string", "null"] },
+    "task_id": { "type": ["string", "null"] },
+    "parent_provider_thread_id": { "type": ["string", "null"] },
+    "provider_thread_id": { "type": "string", "minLength": 1 },
+    "provider_agent_path": { "type": ["string", "null"] },
+    "provider_agent_nickname": { "type": ["string", "null"] },
+    "provider_agent_role": { "type": ["string", "null"] },
+    "status": {
+      "type": "string",
+      "enum": ["open", "running", "completed", "interrupted", "errored", "closed", "unknown"]
+    },
+    "last_message_ref": { "type": ["string", "null"] },
+    "created_at": { "type": "string", "minLength": 1 },
+    "updated_at": { "type": "string", "minLength": 1 }
+  }
+}

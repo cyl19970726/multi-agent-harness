@@ -1,0 +1,20 @@
+{
+  "id": "runtime-1",
+  "agent_member_id": "agent-1",
+  "provider": "codex",
+  "status": "running",
+  "pid": 12345,
+  "control_endpoint": "unix://.harness/runtimes/agent-1/codex.sock",
+  "command": "codex",
+  "args": ["app-server", "--listen", "unix://.harness/runtimes/agent-1/codex.sock"],
+  "started_at": "2026-05-26T00:00:00Z",
+  "ended_at": null,
+  "last_event_at": "2026-05-26T00:00:10Z",
+  "health": {
+    "process_alive": true,
+    "socket_exists": true,
+    "protocol_probe": "pass: initialize response received",
+    "delivery_probe": "pass: turn_completed",
+    "checked_at": "2026-05-26T00:00:10Z"
+  }
+}

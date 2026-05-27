@@ -1,0 +1,14 @@
+{
+  "id": "event-1",
+  "agent_member_id": "agent-1",
+  "provider_runtime_id": "runtime-1",
+  "task_id": "task-1",
+  "provider": "codex",
+  "provider_thread_id": "thread-1",
+  "provider_turn_id": "turn-1",
+  "provider_child_thread_id": null,
+  "event_type": "turn_started",
+  "summary": "Codex started handling task-1.",
+  "payload_ref": ".harness/runtimes/agent-1/events/event-1.json",
+  "created_at": "2026-05-26T00:00:00Z"
+}

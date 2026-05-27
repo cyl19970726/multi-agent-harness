@@ -1,0 +1,46 @@
+{
+  "schema": "agent_harness.tool_descriptor.v1",
+  "toolId": "strategy_dashboard_link",
+  "adapterId": "earning_engine",
+  "label": "Strategy Dashboard Link",
+  "description": "Create a dashboard deep link for strategy, run, market, or postmortem evidence.",
+  "interface": {
+    "type": "dashboard_link",
+    "urlTemplate": "http://127.0.0.1:4173/<path>"
+  },
+  "inputs": [
+    {
+      "name": "path",
+      "required": true,
+      "description": "Dashboard route for a strategy, market, trial, or live postmortem.",
+      "example": "strategy/s1-btc-5m-lag-depth-early"
+    }
+  ],
+  "outputs": [
+    {
+      "name": "dashboard_url",
+      "required": true,
+      "description": "Human-auditable link to strategy charts, order lifecycle, or comparison views.",
+      "evidenceKind": "dashboard"
+    }
+  ],
+  "requiredPermissions": ["read_dashboard"],
+  "failureModes": [
+    {
+      "code": "dashboard_unavailable",
+      "description": "Dashboard frontend or backend is not reachable.",
+      "blocksDecision": false
+    },
+    {
+      "code": "missing_visual_context",
+      "description": "The requested page does not show the market, entries, exits, order lifecycle, or comparison needed for the decision.",
+      "blocksDecision": true
+    }
+  ],
+  "evidencePolicy": [
+    "Dashboard links support visual review but do not replace artifact evidence.",
+    "Screenshots or explicit screenshot skip reasons are required for promotion claims.",
+    "The generic Agent Dashboard links to this; it does not reimplement strategy charts."
+  ],
+  "notes": "Use links as evidence refs from role reports and decisions."
+}

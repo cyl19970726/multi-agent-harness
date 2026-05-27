@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-harness.local/schemas/agent-event.schema.json",
+  "title": "AgentEvent",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id",
+    "agent_member_id",
+    "provider_runtime_id",
+    "task_id",
+    "provider",
+    "provider_thread_id",
+    "provider_turn_id",
+    "provider_child_thread_id",
+    "event_type",
+    "summary",
+    "payload_ref",
+    "created_at"
+  ],
+  "properties": {
+    "id": { "type": "string", "minLength": 1 },
+    "agent_member_id": { "type": "string", "minLength": 1 },
+    "provider_runtime_id": { "type": ["string", "null"] },
+    "task_id": { "type": ["string", "null"] },
+    "provider": { "type": "string", "minLength": 1 },
+    "provider_thread_id": { "type": ["string", "null"] },
+    "provider_turn_id": { "type": ["string", "null"] },
+    "provider_child_thread_id": { "type": ["string", "null"] },
+    "event_type": { "type": "string", "minLength": 1 },
+    "summary": { "type": "string", "minLength": 1 },
+    "payload_ref": { "type": ["string", "null"] },
+    "created_at": { "type": "string", "minLength": 1 }
+  }
+}

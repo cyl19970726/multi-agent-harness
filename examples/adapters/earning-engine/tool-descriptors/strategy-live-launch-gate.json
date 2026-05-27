@@ -1,0 +1,62 @@
+{
+  "schema": "agent_harness.tool_descriptor.v1",
+  "toolId": "strategy_live_launch_gate",
+  "adapterId": "earning_engine",
+  "label": "Strategy Live Launch Gate",
+  "description": "Describe the explicit evidence and permission checks required before a bounded live strategy launch.",
+  "interface": {
+    "type": "manual"
+  },
+  "inputs": [
+    {
+      "name": "matrix",
+      "required": true,
+      "description": "Frozen strategy roster or matrix slots to launch.",
+      "example": "depth-early vs depth-early-presign-wide"
+    },
+    {
+      "name": "budget",
+      "required": true,
+      "description": "Per-strategy or total live budget boundary.",
+      "example": "3u diagnostic only"
+    },
+    {
+      "name": "duration",
+      "required": true,
+      "description": "Bounded live duration.",
+      "example": "8h"
+    }
+  ],
+  "outputs": [
+    {
+      "name": "launch_decision",
+      "required": true,
+      "description": "Leader decision with wallet readiness, fabric status, stop criteria, and rollback/cancel plan.",
+      "evidenceKind": "permission_gate"
+    }
+  ],
+  "requiredPermissions": ["live_orders", "wallet_readiness", "risk_approval"],
+  "failureModes": [
+    {
+      "code": "wallet_not_ready",
+      "description": "Wallet store, mnemonic import, encryption key, or safe readiness is not confirmed.",
+      "blocksDecision": true
+    },
+    {
+      "code": "unbounded_live_risk",
+      "description": "Budget, duration, stop criteria, cancel path, or reconciliation path is missing.",
+      "blocksDecision": true
+    },
+    {
+      "code": "promotion_claim_without_diagnostic_evidence",
+      "description": "The task tries to promote or size up from diagnostic-only evidence.",
+      "blocksDecision": true
+    }
+  ],
+  "evidencePolicy": [
+    "Live/order/wallet actions must be explicit tasks with Leader approval.",
+    "Diagnostic live evidence does not justify promotion or size increase by itself.",
+    "Stop, cancel, reconciliation, residual inventory, and settlement plans must be named before launch."
+  ],
+  "notes": "This descriptor is intentionally manual because it guards fund-affecting actions."
+}

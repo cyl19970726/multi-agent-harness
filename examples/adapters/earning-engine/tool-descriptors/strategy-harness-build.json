@@ -1,0 +1,53 @@
+{
+  "schema": "agent_harness.tool_descriptor.v1",
+  "toolId": "strategy_harness_build",
+  "adapterId": "earning_engine",
+  "label": "Strategy Harness Build",
+  "description": "Build completed-market packets, role reports, and decision artifacts for a completed or partially completed live round.",
+  "interface": {
+    "type": "cli",
+    "command": "node scripts/strategy-harness.mjs build --round-dir <round-dir>",
+    "workingDirectory": "<earning-engine-repo>"
+  },
+  "inputs": [
+    {
+      "name": "round-dir",
+      "required": true,
+      "description": "Path to the strategy harness round directory.",
+      "example": "artifacts/live/<round-id>"
+    }
+  ],
+  "outputs": [
+    {
+      "name": "market_packets",
+      "required": true,
+      "description": "Market-level packets with status, strategy, execution, and review evidence.",
+      "evidenceKind": "market_review"
+    },
+    {
+      "name": "role_reports",
+      "required": true,
+      "description": "Role-specific reports for Lead, Live Ops, Execution, Data Quality, Backtest Parity, and Critic/Gate.",
+      "evidenceKind": "role_report"
+    }
+  ],
+  "requiredPermissions": ["read_artifacts", "run_cli"],
+  "failureModes": [
+    {
+      "code": "round_incomplete",
+      "description": "The round is still running or post-live artifacts are incomplete.",
+      "blocksDecision": false
+    },
+    {
+      "code": "missing_execution_telemetry",
+      "description": "Order lifecycle evidence is missing or partial.",
+      "blocksDecision": true
+    }
+  ],
+  "evidencePolicy": [
+    "Build artifacts are decision evidence only after freshness and completeness are checked.",
+    "Partial build artifacts can create follow-up tasks but cannot promote a strategy.",
+    "Backtest optimism is expected; classify live/backtest divergence before deciding."
+  ],
+  "notes": "This is the main adapter entry point after a bounded live round ends."
+}

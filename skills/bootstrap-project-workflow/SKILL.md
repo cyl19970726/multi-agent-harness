@@ -189,6 +189,12 @@ User Request
   -> Leader records Decision
 ```
 
+When operating inside Multi-Agent Harness, load
+`skills/generic-agent-harness/SKILL.md` for the Lead workflow gate. In
+particular, the Lead must design the scenario workflow, infra gaps, agent team,
+and task graph before assigning work, and assignment messages must precede
+member reports and decisions.
+
 Every agent member needs role, capabilities, allowed tools, forbidden actions,
 expected evidence, and acceptance responsibility.
 

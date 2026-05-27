@@ -1,9 +1,11 @@
 node_modules/
 dist/
 target/
+.harness/
 .turbo/
 .DS_Store
 *.tsbuildinfo
 coverage/
 artifacts/
 tmp/
+.agents/runtime/

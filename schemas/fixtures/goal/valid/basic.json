@@ -1,0 +1,11 @@
+{
+  "id": "goal-1",
+  "title": "Self-host MVP",
+  "objective": "Use the harness to manage its own development.",
+  "owner_agent_id": "leader-1",
+  "status": "active",
+  "success_criteria": ["A self-hosting task graph reaches an evidence-backed decision"],
+  "priority": "p0",
+  "created_at": "2026-05-26T00:00:00Z",
+  "updated_at": "2026-05-26T00:00:00Z"
+}

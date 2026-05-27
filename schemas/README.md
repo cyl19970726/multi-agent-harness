@@ -2,11 +2,18 @@
 
 | Object | Schema |
 | --- | --- |
+| Goal | [goal.schema.json](goal.schema.json) |
+| Agent team | [agent-team.schema.json](agent-team.schema.json) |
 | Agent member | [agent-member.schema.json](agent-member.schema.json) |
 | Task | [task.schema.json](task.schema.json) |
 | Message | [message.schema.json](message.schema.json) |
+| Agent runtime | [agent-runtime.schema.json](agent-runtime.schema.json) |
+| Agent event | [agent-event.schema.json](agent-event.schema.json) |
+| Provider child thread | [provider-child-thread.schema.json](provider-child-thread.schema.json) |
+| Proposal | [proposal.schema.json](proposal.schema.json) |
 | Evidence | [evidence.schema.json](evidence.schema.json) |
 | Decision | [decision.schema.json](decision.schema.json) |
+| Provider session | [provider-session.schema.json](provider-session.schema.json) |
 | Tool descriptor | [agent-harness-tool-descriptor.schema.json](agent-harness-tool-descriptor.schema.json) |
 | Doc descriptor | [doc-descriptor.schema.json](doc-descriptor.schema.json) |
 

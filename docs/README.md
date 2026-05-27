@@ -2,10 +2,14 @@
 
 | Topic | Doc |
 | --- | --- |
+| Agent operating rules | [../AGENTS.md](../AGENTS.md) |
 | Product requirements | [prd.md](prd.md) |
 | MVP: self-hosting and LetMeTry strategy pilot | [mvp.md](mvp.md) |
 | Design basis, layers, and module core ideas | [design-basis.md](design-basis.md) |
 | Architecture, modules, task flow, and package plan | [architecture.md](architecture.md) |
+| Goal learning loop and reusable cases | [goal-learning-loop.md](goal-learning-loop.md) |
+| Codex provider integration | [integration/codex.md](integration/codex.md) |
+| Persistent Codex Agent runtime | [codex-agent-runtime.md](codex-agent-runtime.md) |
 | Operations | [operations.md](operations.md) |
 | Schemas and minimal object contracts | [schemas.md](schemas.md) |
 | Design decisions | [decisions.md](decisions.md) |

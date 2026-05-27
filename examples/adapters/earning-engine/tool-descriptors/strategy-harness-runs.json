@@ -1,0 +1,47 @@
+{
+  "schema": "agent_harness.tool_descriptor.v1",
+  "toolId": "strategy_harness_runs",
+  "adapterId": "earning_engine",
+  "label": "Strategy Harness Runs",
+  "description": "Inspect a rolling live root and identify active, blocked, completed, or post-live strategy harness rounds.",
+  "interface": {
+    "type": "cli",
+    "command": "node scripts/strategy-harness.mjs runs --root <rolling-live-root>",
+    "workingDirectory": "<earning-engine-repo>"
+  },
+  "inputs": [
+    {
+      "name": "rolling-live-root",
+      "required": true,
+      "description": "Root directory that contains rolling strategy live rounds.",
+      "example": "artifacts/live"
+    }
+  ],
+  "outputs": [
+    {
+      "name": "runs_snapshot",
+      "required": true,
+      "description": "Current rolling-run state, blocked supervisor state, and pre-launch refresh commands.",
+      "evidenceKind": "operational_status"
+    }
+  ],
+  "requiredPermissions": ["read_artifacts", "run_cli"],
+  "failureModes": [
+    {
+      "code": "root_missing",
+      "description": "The rolling live root does not exist or is unreadable.",
+      "blocksDecision": true
+    },
+    {
+      "code": "blocked_supervisor_still_running",
+      "description": "A prior supervisor is still active or in post-live work; do not launch another live round.",
+      "blocksDecision": true
+    }
+  ],
+  "evidencePolicy": [
+    "Use this before launching or extending live work.",
+    "A stale runs snapshot cannot authorize a fresh launch.",
+    "Blocked supervisor state creates an infrastructure or Live Ops task, not a strategy-quality conclusion."
+  ],
+  "notes": "This tool answers whether the harness is schedulable before strategy agents request live sampling."
+}

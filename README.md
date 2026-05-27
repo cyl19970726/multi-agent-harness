@@ -1,7 +1,12 @@
 # Multi-Agent Harness
 
-Generic multi-agent harness for agent members, message-first workflows, tool
-adapters, evidence-backed reports, and an Agent Dashboard.
+Generic multi-agent harness for turning a project or business domain into an
+agent-operable system.
+
+The harness starts from a goal, models the domain scenario workflow, identifies
+the missing infrastructure that would shorten agent work, designs the right
+agent team and task graph, and then drives execution through messages,
+evidence-backed reports, critic review, decisions, and follow-up requirements.
 
 This repository is intentionally separate from any specific trading, research,
 or product codebase. A project such as Earning Engine should be integrated
@@ -12,7 +17,8 @@ that project's CLI, Dashboard, artifacts, and permission rules.
 
 ```text
 Multi-Agent Harness
-  AgentMember / Task / Message / Evidence / Decision
+  Goal / AgentTeam / AgentMember / AgentRuntime / AgentEvent / Task / Message
+  Proposal / Evidence / Decision / ProviderSession
   Skill files / Tool descriptors / Agent Dashboard
 
 Project Adapter
@@ -22,9 +28,9 @@ Project Adapter
 
 The generic core must not import project-specific runtime code.
 
-Future objects such as `Report`, `Claim`, `Blocker`, `Permission`, and
-`ProviderSession` are not first-version gateable contracts until they have
-schemas, implementation, and checks.
+Future objects such as `Report`, `Claim`, `Blocker`, and `Permission` are not
+first-version gateable contracts until they have schemas, implementation, and
+checks.
 
 ## Repository Layout
 
@@ -39,10 +45,13 @@ schemas, implementation, and checks.
 
 ## Start Here
 
+- [Agent operating rules](AGENTS.md)
 - [Product requirements](docs/prd.md)
 - [MVP](docs/mvp.md)
 - [Design basis](docs/design-basis.md)
 - [Architecture](docs/architecture.md)
+- [Goal Learning Loop](docs/goal-learning-loop.md)
+- [Codex Agent Runtime](docs/codex-agent-runtime.md)
 - [Operations](docs/operations.md)
 - [Schemas](docs/schemas.md)
 - [Decisions](docs/decisions.md)
@@ -59,4 +68,7 @@ schemas, implementation, and checks.
 
 ```bash
 npx pnpm@9.15.4 check
+cargo test
+cargo run -p harness-cli -- --help
+cargo run -p harness-cli -- dashboard snapshot
 ```
