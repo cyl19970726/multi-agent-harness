@@ -197,7 +197,8 @@ textarea {
 
 .taskCard,
 .item,
-.memberCard {
+.memberCard,
+.teamCard {
   border: 1px solid var(--line);
   border-radius: 6px;
   background: var(--surface);
@@ -205,12 +206,14 @@ textarea {
 }
 
 .taskCard + .taskCard,
-.item + .item {
+.item + .item,
+.teamCard + .teamCard {
   margin-top: 8px;
 }
 
 .taskCard h3,
 .memberCard h3,
+.teamCard h3,
 .item h3 {
   font-size: 14px;
   line-height: 1.25;
@@ -260,6 +263,77 @@ textarea {
   gap: 10px;
 }
 
+.teamList {
+  max-width: 1180px;
+}
+
+.teamHeader {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: flex-start;
+}
+
+.teamCard p {
+  margin-top: 10px;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.teamOwner {
+  min-width: 180px;
+  text-align: right;
+}
+
+.teamOwner span,
+.teamTable td span {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.teamOwner strong {
+  display: block;
+  margin-top: 2px;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.teamTableWrap {
+  margin-top: 12px;
+  overflow-x: auto;
+}
+
+.teamTable {
+  width: 100%;
+  min-width: 720px;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.teamTable th,
+.teamTable td {
+  border-top: 1px solid var(--line);
+  padding: 8px 10px;
+  text-align: left;
+  vertical-align: middle;
+}
+
+.teamTable th {
+  color: var(--muted);
+  font-weight: 650;
+}
+
+.teamTable td:first-child {
+  min-width: 210px;
+}
+
+.emptyCell {
+  color: var(--muted);
+  text-align: center;
+}
+
 .denseList,
 .timeline {
   max-width: 1180px;
@@ -289,6 +363,15 @@ textarea {
   .summaryGrid,
   .split {
     grid-template-columns: 1fr;
+  }
+
+  .teamHeader {
+    flex-direction: column;
+  }
+
+  .teamOwner {
+    min-width: 0;
+    text-align: left;
   }
 
   .kanban {

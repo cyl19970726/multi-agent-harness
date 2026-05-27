@@ -79,6 +79,7 @@ function loadJson(raw) {
 function render() {
   const snapshot = state.snapshot ?? sample;
   const tasks = list(snapshot.tasks);
+  const teams = list(snapshot.teams);
   const members = list(snapshot.members);
   const messages = list(snapshot.messages);
   const decisions = list(snapshot.decisions);
@@ -86,6 +87,7 @@ function render() {
   const goalLearning = list(snapshot.goal_learning_status);
   byId("snapshotMeta").textContent = `Generated: ${text(snapshot.generated_at)}`;
   byId("metricTasks").textContent = tasks.length;
+  byId("metricTeams").textContent = teams.length;
   byId("metricMembers").textContent = members.length;
   byId("metricQueued").textContent = messages.filter((m) => m.delivery_status === "queued").length;
   byId("metricFailed").textContent =
@@ -98,6 +100,7 @@ function render() {
     0,
   );
   renderKanban(snapshot);
+  renderTeams(snapshot);
   renderMembers(snapshot);
   renderMessages(snapshot);
   renderSessions(snapshot);
@@ -105,6 +108,104 @@ function render() {
   renderProposals(snapshot);
   renderEvents(snapshot);
   renderEvidence(snapshot);
+}
+
+function buildMemberLoad(snapshot) {
+  const load = new Map();
+  list(snapshot.tasks).forEach((task) => {
+    const memberId = task.assignee_agent_id;
+    if (!memberId) return;
+    if (!load.has(memberId)) {
+      load.set(memberId, { assigned: 0, running: 0, review: 0 });
+    }
+    if (task.status === "assigned" || task.status === "running" || task.status === "review") {
+      load.get(memberId)[task.status] += 1;
+    }
+  });
+  return load;
+}
+
+function memberTeamIds(member) {
+  return new Set(list(member.team_ids));
+}
+
+function teamMembers(team, membersById, allMembers) {
+  const explicitIds = list(team.member_ids);
+  const members = explicitIds.map((id) => membersById.get(id)).filter(Boolean);
+  const seen = new Set(members.map((member) => member.id));
+  allMembers.forEach((member) => {
+    if (!seen.has(member.id) && memberTeamIds(member).has(team.id)) {
+      members.push(member);
+      seen.add(member.id);
+    }
+  });
+  return members;
+}
+
+function renderTeams(snapshot) {
+  const members = list(snapshot.members);
+  const membersById = new Map(members.map((member) => [member.id, member]));
+  const loadByMember = buildMemberLoad(snapshot);
+  const teams = list(snapshot.teams);
+
+  byId("teamList").innerHTML =
+    teams
+      .map((team) => {
+        const owner = membersById.get(team.owner_agent_id);
+        const rows = teamMembers(team, membersById, members)
+          .map((member) => {
+            const queued = Number(member.queued_count || 0);
+            const runtime = member.runtime_status || member.status || "offline";
+            const alive = Boolean(member.runtime_alive);
+            const load = loadByMember.get(member.id) || { assigned: 0, running: 0, review: 0 };
+            return `<tr>
+              <td>
+                <strong>${escapeHtml(member.name || member.id)}</strong>
+                <span>${escapeHtml(member.id)}</span>
+              </td>
+              <td>${escapeHtml(member.role)}</td>
+              <td>
+                <span class="pill ${runtime === "running" && alive ? "good" : "warn"}">${escapeHtml(runtime)}</span>
+              </td>
+              <td>${escapeHtml(queued)}</td>
+              <td>${escapeHtml(load.assigned)}</td>
+              <td>${escapeHtml(load.running)}</td>
+              <td>${escapeHtml(load.review)}</td>
+            </tr>`;
+          })
+          .join("");
+
+        return `<article class="teamCard">
+          <div class="teamHeader">
+            <div>
+              <h3>${escapeHtml(team.name || team.id)}</h3>
+              <div class="meta">id=${escapeHtml(team.id)}</div>
+            </div>
+            <div class="teamOwner">
+              <span>Owner</span>
+              <strong>${escapeHtml(owner?.name || team.owner_agent_id)}</strong>
+            </div>
+          </div>
+          <p>${escapeHtml(team.description)}</p>
+          <div class="teamTableWrap">
+            <table class="teamTable">
+              <thead>
+                <tr>
+                  <th>Member</th>
+                  <th>Role</th>
+                  <th>Runtime</th>
+                  <th>Queued</th>
+                  <th>Assigned</th>
+                  <th>Running</th>
+                  <th>Review</th>
+                </tr>
+              </thead>
+              <tbody>${rows || '<tr><td colspan="7" class="emptyCell">No members</td></tr>'}</tbody>
+            </table>
+          </div>
+        </article>`;
+      })
+      .join("") || '<div class="empty">No teams</div>';
 }
 
 function renderKanban(snapshot) {
