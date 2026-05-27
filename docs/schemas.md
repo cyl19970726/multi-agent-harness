@@ -45,7 +45,7 @@ Only seven core objects are required for the first version:
 | `Skill` | markdown skill + metadata check | partially |
 | `PermissionPolicy` | planned concept | no |
 | `Report` / `Claim` / `Blocker` | future concepts, not first-version contracts | no |
-| Agent Dashboard read model | planned | no |
+| Agent Dashboard read model | Rust snapshot + TypeScript projection types | partially |
 
 Do not present planned or future concepts as stable contracts. A concept
 becomes gateable only when its source of truth and CI check are clear. Current

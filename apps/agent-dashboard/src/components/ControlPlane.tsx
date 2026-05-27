@@ -1,5 +1,13 @@
-import { activeGoal, membersForTasks, tasksForGoal, teamsForMembers, warningsForScope } from "../readModel";
+import {
+  activeGoal,
+  autonomousProposalsForGoal,
+  membersForTasks,
+  tasksForGoal,
+  teamsForMembers,
+  warningsForScope,
+} from "../readModel";
 import type { AgentMember, DashboardAction, DashboardSnapshot, Task, WorkflowWarning } from "../types";
+import { AutonomousProposalsPanel } from "./AutonomousProposalsPanel";
 import { GoalHeader } from "./GoalHeader";
 import { KanbanBoard } from "./KanbanBoard";
 import { MemberDetail } from "./MemberDetail";
@@ -25,6 +33,7 @@ export function ControlPlane(props: ControlPlaneProps) {
   const tasks = tasksForGoal(snapshot, goal?.id);
   const members = membersForTasks(snapshot, tasks);
   const teams = teamsForMembers(snapshot.teams, members);
+  const autonomousProposals = autonomousProposalsForGoal(snapshot, goal?.id, tasks);
   const scopedWarnings = warningsForScope(warnings, goal?.id, tasks, members);
   const selectedTask = tasks.find((task) => task.id === selectedTaskId) ?? tasks[0];
   const selectedMember =
@@ -55,6 +64,7 @@ export function ControlPlane(props: ControlPlaneProps) {
 
       <main className="workbench">
         <GoalHeader goal={goal} taskCount={tasks.length} warningCount={scopedWarnings.length} />
+        <AutonomousProposalsPanel proposals={autonomousProposals} onSelectTask={props.onSelectTask} />
         <KanbanBoard tasks={tasks} selectedTaskId={selectedTask?.id} onSelectTask={props.onSelectTask} />
         <TaskDetail
           snapshot={snapshot}

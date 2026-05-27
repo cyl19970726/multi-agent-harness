@@ -52,6 +52,17 @@ task
   -> decision
 ```
 
+Observer proposal detail must show the autonomous loop that creates future
+work:
+
+```text
+Evidence(source_type=goal_proposal|graph_change_proposal|blocker|follow_up)
+  -> proposal Message from Observer/member to Lead
+  -> linked evidence such as next_round_plan
+  -> Lead Decision disposition
+  -> follow-up task ids and goal ids
+```
+
 Member detail must show whether an `AgentMember` is a durable harness actor:
 
 ```text
@@ -109,3 +120,24 @@ blocks a goal, move the rule to a canonical surface first.
 | `apps/agent-dashboard/src/readModel.ts` | Selectors, goal scope, member/team/task grouping. |
 | `apps/agent-dashboard/src/warnings.ts` | Advisory warning derivation. |
 | `apps/agent-dashboard/src/components/*` | Display and navigation only. |
+
+## Current Autonomous Projection
+
+The Rust snapshot includes `autonomous_proposals`, a Dashboard-only projection
+derived from canonical `Evidence`, `Message`, `Decision`, and `Task` records.
+It is intentionally not a new stable schema yet.
+
+Current proposal source types:
+
+```text
+goal_proposal
+graph_change_proposal
+blocker
+follow_up
+```
+
+`next_round_plan` is supporting evidence linked through the proposal message.
+The projection adds convenience fields such as source member, target Lead,
+disposition, linked evidence ids, and follow-up task/goal ids. If these fields
+become required by gates outside the Dashboard, they should graduate into a
+versioned schema or explicit CLI/API contract.

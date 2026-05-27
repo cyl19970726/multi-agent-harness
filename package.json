@@ -18,7 +18,8 @@
     "dashboard:build": "vite build --config apps/agent-dashboard/vite.config.ts",
     "acceptance:mvp": "node scripts/acceptance-mvp.mjs",
     "acceptance:mvp:quick": "node scripts/acceptance-mvp.mjs --skip-static",
-    "acceptance:mvp:live": "node scripts/acceptance-mvp.mjs --live-codex"
+    "acceptance:mvp:live": "node scripts/acceptance-mvp.mjs --live-codex",
+    "acceptance:autonomous-team": "node scripts/acceptance-autonomous-team.mjs"
   },
   "devDependencies": {
     "@types/react": "^18.3.18",

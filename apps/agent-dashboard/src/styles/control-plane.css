@@ -171,6 +171,44 @@
   font-size: 15px;
 }
 
+.proposalPanel {
+  display: grid;
+  gap: 8px;
+}
+
+.proposalPanel h2 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.proposalLine {
+  border-top: 1px solid var(--line);
+  padding-top: 8px;
+}
+
+.proposalHead,
+.proposalLinks {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.proposalLinks button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  padding: 4px 7px;
+  font-size: 12px;
+}
+
 .detailPanel p {
   color: var(--muted);
   font-size: 13px;

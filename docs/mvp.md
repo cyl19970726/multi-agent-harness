@@ -21,7 +21,8 @@ gaps, propose goals, and grow the task graph.
 Standing AgentTeam -> Proposed Goal -> GoalDesign -> Task Graph
   -> Message -> AgentMember work
   -> Evidence -> Proposal -> Review -> Decision
-  -> GoalEvaluation -> Follow-up Task or GoalCase
+  -> GoalEvaluation -> NextRoundPlan
+  -> Follow-up Task / Next Goal / GoalCase
 ```
 
 The pilots may use different domain tools and dashboards, but they must share
@@ -172,6 +173,7 @@ Executable gates:
 ```bash
 npx pnpm@9.15.4 acceptance:mvp
 npx pnpm@9.15.4 acceptance:mvp:live
+npx pnpm@9.15.4 acceptance:autonomous-team
 ```
 
 `acceptance:mvp` proves deterministic object protocol, review gate, Dashboard
@@ -180,6 +182,14 @@ provider transport gate: it proves real Codex delivery and a Worker/Critic live
 smoke. It is not sufficient for autonomous team acceptance until it also proves
 member reuse, durable inbox/outbox, idle-to-next-message delivery, peer
 communication, and agent-proposed follow-up work.
+
+`acceptance:autonomous-team` is the deterministic autonomous-team gate. It
+creates a standing team, proves the same `AgentMember` receives multiple
+messages and returns to idle, proves Worker/Critic peer messages, records
+GoalEvaluation, has Observer create a next-round proposal, has Lead accept it,
+creates the follow-up goal/task graph, and verifies the Dashboard
+`autonomous_proposals` projection links proposal, evidence, decision, and
+follow-up work.
 
 ## Current Build Order
 

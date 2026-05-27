@@ -42,6 +42,14 @@ Use the live gate only when the claim depends on real Codex provider delivery:
 npx pnpm@9.15.4 acceptance:mvp:live
 ```
 
+Use the autonomous-team gate when the claim depends on standing team behavior,
+Observer proposals, peer messages, Lead disposition, and automatic next-round
+planning:
+
+```bash
+npx pnpm@9.15.4 acceptance:autonomous-team
+```
+
 The quick gate creates an isolated `HARNESS_ROOT`, then exercises the staged
 self-hosting flow: team creation, goal design, task assignment, worker report,
 provider-event fixture ingestion, negative review-gate rejection, accepted
@@ -56,6 +64,10 @@ multiple messages, idle-to-next-message gateway delivery, peer-to-peer
 messages, Observer-generated goal or graph-change proposals, and a Lead
 decision over those proposals.
 
+The autonomous-team gate provides this deterministic proof through dry-run
+provider delivery. It does not replace the live Codex gate when a change claims
+real provider transport behavior.
+
 The first CLI is available through Cargo:
 
 ```bash
@@ -66,6 +78,8 @@ cargo run -p harness-cli -- git status --task <task>
 cargo run -p harness-cli -- proposal from-diff --task <task> --agent <agent> --worktree <path> --title <title> --summary <text> --check-cmd "cargo test"
 cargo run -p harness-cli -- review gate --task <task> --reviewer <agent> --decision accept --rationale <text> --evidence <id>
 cargo run -p harness-cli -- agent gateway --once --dry-run
+cargo run -p harness-cli -- autonomy plan-next --goal <goal> --task <task> --observer <agent> --lead <agent>
+cargo run -p harness-cli -- autonomy decide --task <task> --lead <agent> --proposal <evidence> --decision accept --rationale <text>
 cargo run -p harness-cli -- agent gateway --start-runtime
 cargo run -p harness-cli -- dashboard snapshot
 cargo run -p harness-cli -- board

@@ -170,6 +170,26 @@ export interface Decision {
   evidence_ids?: string[];
 }
 
+export interface AutonomousProposal {
+  id: string;
+  kind?: string;
+  source_type?: string;
+  source_ref?: string;
+  summary?: string;
+  task_id?: string | null;
+  goal_id?: string | null;
+  created_at?: string;
+  message_id?: string | null;
+  from_agent_id?: string | null;
+  to_agent_id?: string | null;
+  linked_evidence_ids?: string[];
+  disposition?: "pending" | "accepted" | "rejected" | "deferred" | "request_evidence" | "decided" | string;
+  decision_id?: string | null;
+  decision_rationale?: string | null;
+  follow_up_task_ids?: string[];
+  follow_up_goal_ids?: string[];
+}
+
 export interface GoalLearningStatus {
   goal_id: string;
   ok?: boolean;
@@ -194,6 +214,7 @@ export interface DashboardSnapshot {
   messages?: Message[];
   events?: AgentEvent[];
   proposals?: Proposal[];
+  autonomous_proposals?: AutonomousProposal[];
   evidence?: Evidence[];
   decisions?: Decision[];
   provider_sessions?: ProviderSession[];

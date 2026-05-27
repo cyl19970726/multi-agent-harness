@@ -72,6 +72,7 @@ fn run() -> CliResult<()> {
         "review" => review_command(&store, &args[1..])?,
         "evidence" => evidence_command(&store, &args[1..])?,
         "decision" => decision_command(&store, &args[1..])?,
+        "autonomy" => autonomy_command(&store, &args[1..])?,
         "dashboard" => dashboard_command(&store, &args[1..])?,
         "board" => board_command(&store)?,
         "codex" => codex_command(&store, &args[1..])?,
@@ -688,6 +689,400 @@ fn decision_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
         }
     }
     Ok(())
+}
+
+fn autonomy_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    require_subcommand(args, "autonomy observe|plan-next|decide")?;
+    match args[0].as_str() {
+        "observe" => print_json(&autonomy_observe_value(store, &args[1..])?)?,
+        "plan-next" => print_json(&autonomy_plan_next_value(store, &args[1..])?)?,
+        "decide" => print_json(&autonomy_decide_value(store, &args[1..])?)?,
+        other => {
+            return Err(CliError::Usage(format!(
+                "unknown autonomy command: {other}"
+            )))
+        }
+    }
+    Ok(())
+}
+
+fn autonomy_observe_value(store: &HarnessStore, args: &[String]) -> CliResult<serde_json::Value> {
+    let goal_id = required(args, "--goal")?;
+    let task_id = value(args, "--task");
+    let observer = required(args, "--observer")?;
+    let lead = required(args, "--lead")?;
+    let kind = value(args, "--kind").unwrap_or_else(|| "goal_proposal".into());
+    validate_autonomy_proposal_kind(&kind)?;
+    let goal = latest_goals(store)?
+        .remove(&goal_id)
+        .ok_or_else(|| CliError::Usage(format!("goal not found: {goal_id}")))?;
+    if let Some(task_id) = task_id.as_deref() {
+        let task = latest_task(store, task_id)?;
+        if task.goal_id.as_deref() != Some(goal_id.as_str()) {
+            return Err(CliError::Usage(format!(
+                "task {task_id} does not belong to goal {goal_id}"
+            )));
+        }
+    }
+    latest_member(store, &observer)?;
+    let lead_member = latest_member(store, &lead)?;
+    ensure_member_accepts_delivery(&lead_member)?;
+    let summary = value(args, "--summary").unwrap_or_else(|| {
+        autonomy_observation_summary(store, &goal_id)
+            .unwrap_or_else(|_| format!("{observer} proposes {kind} for goal {goal_id}"))
+    });
+    let title = value(args, "--title").unwrap_or_else(|| format!("{kind}: {}", goal.title));
+    let evidence = autonomy_evidence(
+        store,
+        task_id.clone(),
+        &kind,
+        &summary,
+        &format!("# {title}\n\nkind: {kind}\ngoal: {goal_id}\nobserver: {observer}\nlead: {lead}\n\n{summary}\n"),
+    )?;
+    let message = Message {
+        id: value(args, "--message-id").unwrap_or_else(|| generated_id("msg")),
+        task_id,
+        from_agent_id: observer.clone(),
+        to_agent_id: Some(lead.clone()),
+        channel: Some(value(args, "--channel").unwrap_or_else(|| "observer-proposal".into())),
+        kind: MessageKind::Message,
+        delivery_status: MessageDeliveryStatus::Queued,
+        content: format!("{title}\n\n{summary}"),
+        evidence_ids: vec![evidence.id.clone()],
+        created_at: now_string(),
+        delivery: None,
+    };
+    store.append_evidence(&evidence)?;
+    store.append_message(&message)?;
+    append_agent_event(
+        store,
+        &observer,
+        None,
+        message.task_id.as_deref(),
+        "autonomy_proposal_created",
+        &format!("Observer created {kind}"),
+        Some(evidence.source_ref.as_str()),
+    )?;
+    Ok(serde_json::json!({
+        "goal_id": goal_id,
+        "proposal": evidence,
+        "message": message
+    }))
+}
+
+fn autonomy_plan_next_value(store: &HarnessStore, args: &[String]) -> CliResult<serde_json::Value> {
+    let goal_id = required(args, "--goal")?;
+    let task_id = required(args, "--task")?;
+    let observer = required(args, "--observer")?;
+    let lead = required(args, "--lead")?;
+    let task = latest_task(store, &task_id)?;
+    if task.goal_id.as_deref() != Some(goal_id.as_str()) {
+        return Err(CliError::Usage(format!(
+            "task {task_id} does not belong to goal {goal_id}"
+        )));
+    }
+    latest_member(store, &observer)?;
+    let lead_member = latest_member(store, &lead)?;
+    ensure_member_accepts_delivery(&lead_member)?;
+    let status = goal_learning_status(store, &goal_id)?;
+    let status_json = status.to_json();
+    let warnings = status.warnings(true);
+    let summary = value(args, "--summary").unwrap_or_else(|| {
+        if warnings.is_empty() {
+            format!(
+                "Next-round plan for {goal_id}: prior goal has complete learning evidence; propose a follow-up goal to continue self-hosting improvement."
+            )
+        } else {
+            format!(
+                "Next-round plan for {goal_id}: unresolved warnings require follow-up: {}",
+                warnings.join("; ")
+            )
+        }
+    });
+    let plan = autonomy_evidence(
+        store,
+        Some(task_id.clone()),
+        "next_round_plan",
+        &summary,
+        &format!(
+            "# Next Round Plan\n\ngoal: {goal_id}\nobserver: {observer}\nlead: {lead}\n\nsummary: {summary}\n\nstatus:\n```json\n{}\n```\n",
+            serde_json::to_string_pretty(&status_json).expect("serialize goal learning status")
+        ),
+    )?;
+    let proposal_summary = value(args, "--proposal-summary").unwrap_or_else(|| {
+        format!(
+            "Observer proposes the next goal/task graph from GoalEvaluation and dashboard learning for {goal_id}."
+        )
+    });
+    let proposal = autonomy_evidence(
+        store,
+        Some(task_id.clone()),
+        "goal_proposal",
+        &proposal_summary,
+        &format!(
+            "# Goal Proposal\n\ngoal: {goal_id}\nobserver: {observer}\nlead: {lead}\nsource_plan: {}\n\n{proposal_summary}\n",
+            plan.id
+        ),
+    )?;
+    store.append_evidence(&plan)?;
+    store.append_evidence(&proposal)?;
+    let message = Message {
+        id: value(args, "--message-id").unwrap_or_else(|| generated_id("msg")),
+        task_id: Some(task_id.clone()),
+        from_agent_id: observer.clone(),
+        to_agent_id: Some(lead.clone()),
+        channel: Some(value(args, "--channel").unwrap_or_else(|| "next-round-proposal".into())),
+        kind: MessageKind::Message,
+        delivery_status: MessageDeliveryStatus::Queued,
+        content: format!("Next-round proposal for {goal_id}\n\n{proposal_summary}"),
+        evidence_ids: vec![plan.id.clone(), proposal.id.clone()],
+        created_at: now_string(),
+        delivery: None,
+    };
+    store.append_message(&message)?;
+    append_agent_event(
+        store,
+        &observer,
+        None,
+        Some(task_id.as_str()),
+        "next_round_planned",
+        "Observer created next-round plan and goal proposal",
+        Some(plan.source_ref.as_str()),
+    )?;
+    Ok(serde_json::json!({
+        "goal_id": goal_id,
+        "plan": plan,
+        "proposal": proposal,
+        "message": message
+    }))
+}
+
+fn autonomy_decide_value(store: &HarnessStore, args: &[String]) -> CliResult<serde_json::Value> {
+    let task_id = required(args, "--task")?;
+    let lead = required(args, "--lead")?;
+    let proposal_id = required(args, "--proposal")?;
+    let disposition = required(args, "--decision")?;
+    validate_autonomy_disposition(&disposition)?;
+    latest_member(store, &lead)?;
+    let source_task = latest_task(store, &task_id)?;
+    let evidence_by_id = latest_evidence(store)?;
+    let proposal = evidence_by_id
+        .get(&proposal_id)
+        .ok_or_else(|| CliError::Usage(format!("proposal evidence not found: {proposal_id}")))?;
+    if !autonomy_proposal_source_type(&proposal.source_type) {
+        return Err(CliError::Usage(format!(
+            "evidence {proposal_id} is {}, not an autonomous proposal",
+            proposal.source_type
+        )));
+    }
+    if proposal.task_id.as_deref() != Some(task_id.as_str()) {
+        return Err(CliError::Usage(format!(
+            "proposal {proposal_id} is not attached to task {task_id}"
+        )));
+    }
+    let mut evidence_ids = vec![proposal_id.clone()];
+    evidence_ids.extend(many(args, "--evidence"));
+    evidence_ids.sort();
+    evidence_ids.dedup();
+    for evidence_id in &evidence_ids {
+        if !evidence_by_id.contains_key(evidence_id) {
+            return Err(CliError::Usage(format!(
+                "decision references missing evidence {evidence_id}"
+            )));
+        }
+    }
+    let decision = Decision {
+        id: value(args, "--id").unwrap_or_else(|| generated_id("decision")),
+        task_id: task_id.clone(),
+        decision: format!("autonomy {disposition} by {lead}"),
+        rationale: required(args, "--rationale")?,
+        evidence_ids: evidence_ids.clone(),
+        created_at: now_string(),
+    };
+    store.append_decision(&decision)?;
+
+    let mut created_goal = None;
+    let mut created_task = None;
+    let mut goal_design = None;
+    let mut assignment_message = None;
+    if disposition == "accept" {
+        if let Some(goal_id) = value(args, "--create-goal") {
+            let goal = Goal {
+                id: goal_id,
+                title: required(args, "--goal-title")?,
+                objective: required(args, "--goal-objective")?,
+                owner_agent_id: lead.clone(),
+                status: GoalStatus::Active,
+                success_criteria: many(args, "--goal-success"),
+                priority: value(args, "--priority").unwrap_or_else(|| "p0".into()),
+                created_at: now_string(),
+                updated_at: now_string(),
+            };
+            store.append_goal(&goal)?;
+            created_goal = Some(goal);
+        }
+        if let Some(next_task_id) = value(args, "--create-task") {
+            let next_goal_id = created_goal
+                .as_ref()
+                .map(|goal| goal.id.clone())
+                .or_else(|| value(args, "--task-goal"))
+                .or(source_task.goal_id.clone());
+            let assignee = value(args, "--assignee");
+            let reviewer = value(args, "--reviewer");
+            let task = Task {
+                id: next_task_id,
+                goal_id: next_goal_id.clone(),
+                parent_task_id: Some(source_task.id.clone()),
+                title: required(args, "--task-title")?,
+                objective: required(args, "--task-objective")?,
+                owner_agent_id: lead.clone(),
+                assignee_agent_id: assignee.clone(),
+                reviewer_agent_id: reviewer,
+                status: if assignee.is_some() {
+                    TaskStatus::Assigned
+                } else {
+                    TaskStatus::Planned
+                },
+                depends_on_task_ids: many(args, "--depends-on"),
+                workspace_ref: value(args, "--workspace"),
+                branch_ref: value(args, "--branch"),
+                pr_ref: value(args, "--pr"),
+                owned_paths: many(args, "--owned-path"),
+                acceptance_criteria: many(args, "--acceptance"),
+                created_at: now_string(),
+                updated_at: now_string(),
+            };
+            let design = autonomy_evidence(
+                store,
+                Some(task.id.clone()),
+                "goal_design",
+                &format!(
+                    "GoalDesign generated from accepted autonomous proposal {proposal_id}."
+                ),
+                &format!(
+                    "# Goal Design\n\nsource_goal: {}\nsource_task: {}\nproposal: {proposal_id}\ndecision: {}\n\nobjective: {}\n",
+                    source_task.goal_id.as_deref().unwrap_or("-"),
+                    source_task.id,
+                    decision.id,
+                    task.objective
+                ),
+            )?;
+            store.append_evidence(&design)?;
+            store.append_task(&task)?;
+            if let Some(assignee_id) = assignee {
+                let assignee_member = latest_member(store, &assignee_id)?;
+                ensure_member_accepts_delivery(&assignee_member)?;
+                let message = Message {
+                    id: generated_id("msg"),
+                    task_id: Some(task.id.clone()),
+                    from_agent_id: lead.clone(),
+                    to_agent_id: Some(assignee_id),
+                    channel: Some("next-round-task-assignment".into()),
+                    kind: MessageKind::Task,
+                    delivery_status: MessageDeliveryStatus::Queued,
+                    content: format!(
+                        "Assigned next-round task {} from proposal {proposal_id}",
+                        task.id
+                    ),
+                    evidence_ids: vec![proposal_id.clone()],
+                    created_at: now_string(),
+                    delivery: None,
+                };
+                store.append_message(&message)?;
+                assignment_message = Some(message);
+            }
+            goal_design = Some(design);
+            created_task = Some(task);
+        }
+    }
+    append_agent_event(
+        store,
+        &lead,
+        None,
+        Some(task_id.as_str()),
+        "autonomy_proposal_decided",
+        &format!("Lead {disposition} autonomous proposal {proposal_id}"),
+        None,
+    )?;
+    Ok(serde_json::json!({
+        "decision": decision,
+        "created_goal": created_goal,
+        "created_task": created_task,
+        "goal_design": goal_design,
+        "assignment_message": assignment_message
+    }))
+}
+
+fn autonomy_evidence(
+    store: &HarnessStore,
+    task_id: Option<String>,
+    source_type: &str,
+    summary: &str,
+    body: &str,
+) -> CliResult<Evidence> {
+    let evidence_id = generated_id("evidence");
+    let source_ref = write_autonomy_artifact(store, &evidence_id, body)?;
+    Ok(Evidence {
+        id: evidence_id,
+        task_id,
+        source_type: source_type.into(),
+        source_ref,
+        summary: summary.into(),
+        created_at: now_string(),
+    })
+}
+
+fn write_autonomy_artifact(
+    store: &HarnessStore,
+    evidence_id: &str,
+    body: &str,
+) -> CliResult<String> {
+    let dir = store.root().join("autonomy");
+    fs::create_dir_all(&dir)?;
+    let path = dir.join(format!("{evidence_id}.md"));
+    fs::write(&path, body)?;
+    Ok(path.display().to_string())
+}
+
+fn autonomy_observation_summary(store: &HarnessStore, goal_id: &str) -> CliResult<String> {
+    let status = goal_learning_status(store, goal_id)?;
+    let warnings = status.warnings(true);
+    if warnings.is_empty() {
+        Ok(format!(
+            "Observer found goal {goal_id} has complete learning evidence and is ready for a follow-up proposal."
+        ))
+    } else {
+        Ok(format!(
+            "Observer found goal {goal_id} warnings: {}",
+            warnings.join("; ")
+        ))
+    }
+}
+
+fn validate_autonomy_proposal_kind(kind: &str) -> CliResult<()> {
+    if autonomy_proposal_source_type(kind) {
+        Ok(())
+    } else {
+        Err(CliError::Usage(format!(
+            "unknown autonomy proposal kind: {kind}"
+        )))
+    }
+}
+
+fn autonomy_proposal_source_type(source_type: &str) -> bool {
+    matches!(
+        source_type,
+        "goal_proposal" | "graph_change_proposal" | "blocker" | "follow_up"
+    )
+}
+
+fn validate_autonomy_disposition(disposition: &str) -> CliResult<()> {
+    match disposition {
+        "accept" | "reject" | "defer" | "request_evidence" => Ok(()),
+        other => Err(CliError::Usage(format!(
+            "unknown autonomy decision: {other}"
+        ))),
+    }
 }
 
 fn git_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
@@ -4839,6 +5234,11 @@ fn source_type_requires_existing_ref(source_type: &str) -> bool {
             | "dashboard_snapshot"
             | "goal_design"
             | "goal_evaluation"
+            | "goal_proposal"
+            | "graph_change_proposal"
+            | "blocker"
+            | "follow_up"
+            | "next_round_plan"
             | "protocol_fixture"
     )
 }
@@ -5040,6 +5440,8 @@ fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::Value> {
     let decisions = store.decisions()?;
     let sessions = latest_provider_sessions_in_append_order(store)?;
     let provider_child_threads = store.provider_child_threads()?;
+    let autonomous_proposals =
+        autonomous_proposals_snapshot(&tasks, &messages, &evidence, &decisions);
     let goal_learning_status: Vec<_> = goals
         .keys()
         .filter_map(|goal_id| goal_learning_status(store, goal_id).ok())
@@ -5121,11 +5523,88 @@ fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::Value> {
         "messages": messages,
         "events": events,
         "proposals": proposals.into_values().collect::<Vec<_>>(),
+        "autonomous_proposals": autonomous_proposals,
         "evidence": evidence,
         "decisions": decisions,
         "provider_sessions": sessions,
         "provider_child_threads": provider_child_threads
     }))
+}
+
+fn autonomous_proposals_snapshot(
+    tasks: &BTreeMap<String, Task>,
+    messages: &[Message],
+    evidence: &[Evidence],
+    decisions: &[Decision],
+) -> Vec<serde_json::Value> {
+    evidence
+        .iter()
+        .filter(|item| autonomy_proposal_source_type(&item.source_type))
+        .map(|proposal| {
+            let task = proposal
+                .task_id
+                .as_ref()
+                .and_then(|task_id| tasks.get(task_id));
+            let message = messages
+                .iter()
+                .rev()
+                .find(|message| message.evidence_ids.iter().any(|id| id == &proposal.id));
+            let decision = decisions
+                .iter()
+                .rev()
+                .find(|decision| decision.evidence_ids.iter().any(|id| id == &proposal.id));
+            let follow_up_tasks: Vec<_> = tasks
+                .values()
+                .filter(|candidate| candidate.parent_task_id == proposal.task_id)
+                .map(|task| task.id.clone())
+                .collect();
+            let follow_up_goals: Vec<_> = tasks
+                .values()
+                .filter(|candidate| candidate.parent_task_id == proposal.task_id)
+                .filter_map(|task| task.goal_id.clone())
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect();
+            serde_json::json!({
+                "id": proposal.id,
+                "kind": proposal.source_type,
+                "source_type": proposal.source_type,
+                "source_ref": proposal.source_ref,
+                "summary": proposal.summary,
+                "task_id": proposal.task_id,
+                "goal_id": task.and_then(|task| task.goal_id.clone()),
+                "created_at": proposal.created_at,
+                "message_id": message.map(|message| message.id.clone()),
+                "from_agent_id": message.map(|message| message.from_agent_id.clone()),
+                "to_agent_id": message.and_then(|message| message.to_agent_id.clone()),
+                "linked_evidence_ids": message
+                    .map(|message| message.evidence_ids.clone())
+                    .unwrap_or_else(|| vec![proposal.id.clone()]),
+                "disposition": decision
+                    .map(|decision| autonomy_decision_disposition(&decision.decision))
+                    .unwrap_or("pending"),
+                "decision_id": decision.map(|decision| decision.id.clone()),
+                "decision_rationale": decision.map(|decision| decision.rationale.clone()),
+                "follow_up_task_ids": follow_up_tasks,
+                "follow_up_goal_ids": follow_up_goals
+            })
+        })
+        .collect()
+}
+
+fn autonomy_decision_disposition(decision: &str) -> &'static str {
+    let text = decision.to_lowercase();
+    if text.contains("request_evidence") || text.contains("request evidence") {
+        "request_evidence"
+    } else if text.contains("accept") {
+        "accepted"
+    } else if text.contains("reject") {
+        "rejected"
+    } else if text.contains("defer") {
+        "deferred"
+    } else {
+        "decided"
+    }
 }
 
 fn latest_task(store: &HarnessStore, task_id: &str) -> CliResult<Task> {
@@ -5812,6 +6291,9 @@ fn print_help() {
   review gate --task <task> --reviewer <agent> --decision <accept|reject> --rationale <text> [--evidence <id>] [--allow-no-check] [--allow-no-critic] [--allow-no-provider-output] [--allow-missing-goal-design --waiver-decision <decision>] [--require-goal-design] [--require-goal-evaluation] [--allow-goal-learning-waiver --waiver-decision <decision>]
   evidence add --source-type <type> --source-ref <ref> --summary <text> [--task <task>]
   decision record --task <task> --decision <text> --rationale <text> [--evidence <id>]
+  autonomy observe --goal <goal> --task <task> --observer <agent> --lead <agent> [--kind goal_proposal|graph_change_proposal|blocker|follow_up] [--summary <text>]
+  autonomy plan-next --goal <goal> --task <task> --observer <agent> --lead <agent> [--summary <text>] [--proposal-summary <text>]
+  autonomy decide --task <task> --lead <agent> --proposal <evidence> --decision <accept|reject|defer|request_evidence> --rationale <text> [--create-goal <goal> --goal-title <title> --goal-objective <text>] [--create-task <task> --task-title <title> --task-objective <text> --assignee <agent> --reviewer <agent>]
   dashboard snapshot
   board
   hook record --agent <agent> [--runtime <runtime>] [--task <task>]

@@ -1,6 +1,7 @@
 import type {
   AgentMember,
   AgentTeam,
+  AutonomousProposal,
   DashboardSnapshot,
   Decision,
   Evidence,
@@ -34,6 +35,7 @@ export const emptySnapshot: Required<DashboardSnapshot> = {
   messages: [],
   events: [],
   proposals: [],
+  autonomous_proposals: [],
   evidence: [],
   decisions: [],
   provider_sessions: [],
@@ -143,6 +145,21 @@ export function sessionsForTask(snapshot: Required<DashboardSnapshot>, taskId?: 
 export function proposalsForTask(snapshot: Required<DashboardSnapshot>, taskId?: string): Proposal[] {
   if (!taskId) return [];
   return snapshot.proposals.filter((proposal) => proposal.task_id === taskId);
+}
+
+export function autonomousProposalsForGoal(
+  snapshot: Required<DashboardSnapshot>,
+  goalId?: string,
+  tasks: Task[] = tasksForGoal(snapshot, goalId),
+): AutonomousProposal[] {
+  if (!goalId) return snapshot.autonomous_proposals;
+  const taskIds = new Set(tasks.map((task) => task.id));
+  return snapshot.autonomous_proposals.filter(
+    (proposal) =>
+      proposal.goal_id === goalId ||
+      (proposal.task_id != null && taskIds.has(proposal.task_id)) ||
+      (proposal.follow_up_goal_ids ?? []).includes(goalId),
+  );
 }
 
 export function decisionsForTask(snapshot: Required<DashboardSnapshot>, taskId?: string): Decision[] {

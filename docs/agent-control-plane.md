@@ -183,6 +183,29 @@ This is the difference between Multi-Agent Harness and one-shot subagents. A
 subagent answers a prompt. A harness team maintains a backlog, a shared task
 graph, and an evidence-backed learning loop.
 
+Current first-version implementation keeps this minimal:
+
+```text
+autonomy observe
+  -> Evidence(source_type=goal_proposal|graph_change_proposal|blocker|follow_up)
+  -> Message(channel=observer-proposal, to=Lead)
+
+autonomy plan-next
+  -> Evidence(source_type=next_round_plan)
+  -> Evidence(source_type=goal_proposal)
+  -> Message(channel=next-round-proposal, to=Lead)
+
+autonomy decide
+  -> Decision(accept|reject|defer|request_evidence)
+  -> optional Goal
+  -> optional Task(parent_task_id=<source task>)
+  -> optional Message(kind=task) assignment
+```
+
+This deliberately avoids a premature `GoalProposal` schema. The source of
+truth remains the existing `Evidence`, `Message`, `Decision`, `Goal`, and
+`Task` objects until repeated gates need stable proposal fields.
+
 ## Message-First Communication
 
 All agent work starts from a harness `Message`, usually tied to a `Task`.
@@ -365,7 +388,7 @@ The repository currently has enough surface to prove live persistent
 | Message state is too small | `queued/delivered/failed` cannot explain read, active, answered, deferred, interrupted, or permission-blocked messages. | Extend message delivery state and add delivery policy. |
 | Busy/idle is inferred poorly | Dashboard cannot know whether to deliver, queue, inject, or interrupt. | Add active-turn and reducer-derived member state. |
 | Peer communication is not a first-class view | Agents can send messages, but the operator cannot see the collaboration graph. | Add inbox/outbox, reply/correlation refs, and channel fanout. |
-| Team autonomy is not first-class | Members can report work, but proposed goals and task-graph changes are not yet modeled as first-class reviewable objects. | Add goal proposal, graph-change proposal, blocker, and follow-up projections from messages/evidence. |
+| Team autonomy is early-stage | The CLI and Dashboard can represent Observer proposals and next-round planning, but proposal review actions and richer graph editing are still limited. | Harden `autonomy` commands, add Dashboard safe actions for Lead disposition, and promote stable fields only after repeated gates require them. |
 | Dashboard safe actions are partial | It can send/deliver/retry/reconcile/request review/close, but cannot yet create full teams or record final decisions. | Add create/start, task graph edits, proposal review, and decision actions through the same API/CLI paths. |
 | Provider child work is easy to hide | Native subagents or child threads can disappear under the parent member. | Ingest child-thread events and render them under the parent/task. |
 | Goal/task planning is scattered | The repo has phases, but no concise execution roadmap tied to control-plane gaps. | Use the phased plan below as the next implementation graph. |

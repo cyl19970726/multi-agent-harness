@@ -198,6 +198,7 @@ MVP is working:
 
 ```bash
 npx pnpm@9.15.4 acceptance:mvp
+npx pnpm@9.15.4 acceptance:autonomous-team
 ```
 
 Use `acceptance:mvp:quick` while iterating on non-static changes, and
@@ -208,6 +209,12 @@ transport smoke only. Do not claim autonomous persistent team acceptance until
 the gate also proves durable member reuse, idle-to-next-message delivery,
 peer-to-peer messages, Observer-generated proposals, and a Lead decision over
 those proposals.
+
+Use `acceptance:autonomous-team` when claiming the standing team loop works.
+That gate must prove: durable team members, same-member multiple message
+delivery, idle return, peer messages, GoalEvaluation, Observer next-round
+proposal, Lead disposition, follow-up goal/task creation, and Dashboard
+`autonomous_proposals` visibility.
 
 When the gate exposes a skipped or failed stage, create a follow-up task rather
 than weakening the acceptance criteria.
