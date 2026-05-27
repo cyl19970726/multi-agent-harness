@@ -46,9 +46,15 @@ The quick gate creates an isolated `HARNESS_ROOT`, then exercises the staged
 self-hosting flow: team creation, goal design, task assignment, worker report,
 provider-event fixture ingestion, negative review-gate rejection, accepted
 proposal, goal evaluation, hook bridge, Dashboard API, and the Earning Engine
-adapter surface. The live gate adds real persistent Codex delivery, including a
-single-member smoke and a Worker/Critic multi-member dogfood task, and can spend
-provider tokens.
+adapter surface. The current live gate adds real Codex provider delivery
+smokes, including a single-member transport smoke and a Worker/Critic live
+delivery smoke, and can spend provider tokens.
+
+Do not use the current live gate to claim autonomous persistent team
+acceptance. That requires additional proof: durable member reuse across
+multiple messages, idle-to-next-message gateway delivery, peer-to-peer
+messages, Observer-generated goal or graph-change proposals, and a Lead
+decision over those proposals.
 
 The first CLI is available through Cargo:
 

@@ -3,10 +3,28 @@
 ## Vision
 
 Multi-Agent Harness turns a project or business domain into an
-agent-operable system.
+agent-operable and agent-progressable system.
 
 The product is not an agent runner and not a project-specific engine. It is a
-coordination layer that lets a Lead Agent transform a real goal into:
+coordination layer for persistent Agent Teams. A standing team can observe
+project state, propose goals, prioritize work, manage a task graph, collaborate
+through messages, produce evidence, make reviewed decisions, evaluate the
+workflow, and continue into the next goal.
+
+The core product loop is:
+
+```text
+persistent AgentTeam
+  -> observe project state and prior goal cases
+  -> propose / prioritize goals
+  -> scenario and infra design
+  -> task graph
+  -> message-driven member collaboration
+  -> evidence -> proposal -> review -> decision
+  -> goal evaluation -> follow-up task or next goal
+```
+
+The smaller execution loop inside one accepted goal is:
 
 ```text
 scenario -> missing infra -> agent team -> task graph -> message execution
@@ -28,14 +46,26 @@ The harness makes those capabilities usable by agents through:
 
 - stable project adapters and tool descriptors;
 - scenario-specific skills;
-- durable agent members and task graphs;
+- durable agent teams, agent members, and task graphs;
 - message-first assignment and reporting;
+- peer-to-peer agent communication;
 - evidence-backed proposals, reviews, and decisions;
 - Dashboard visibility;
-- goal evaluation and reusable cases.
+- goal evaluation, reusable cases, and agent-proposed follow-up goals.
 
-The Lead Agent is therefore a workflow architect before it is an executor.
-For each goal, it must decide:
+The Lead Agent is therefore an organization and decision owner before it is an
+executor. It accepts or rejects proposed goals, designs the workflow, delegates
+through messages, and records decisions. It should not be the only source of
+new work once a standing team is operating.
+
+The default standing team should include an `Observer` role when the goal is
+long-running. The Observer watches repository state, Dashboard warnings, CI
+results, adapter outputs, prior GoalCases, and stale task graphs. Its output is
+not a final decision; it produces proposed goals, blockers, graph-change
+proposals, or follow-up tasks for the Lead and reviewers to accept, reject, or
+prioritize.
+
+For each goal, the Lead must decide:
 
 - which scenario is being operated;
 - which missing CLI, adapter, skill, Dashboard, or CI/CD surface would shorten
@@ -44,11 +74,12 @@ For each goal, it must decide:
 - which tasks can run in parallel and which require worktree or PR boundaries;
 - what evidence proves the work happened through the harness;
 - which critic, reviewer, or gate decides whether the result is acceptable.
+- which agent-proposed follow-up goals should enter the backlog.
 
 ## Final Acceptance
 
 The product is accepted when it can manage two real pilots with the same
-generic workflow:
+generic workflow and a standing team that continues across multiple tasks:
 
 1. self-hosting development of this repository;
 2. LetMeTry / Earning Engine strategy-matrix iteration through an adapter.
@@ -56,7 +87,8 @@ generic workflow:
 Both pilots must use the same core chain:
 
 ```text
-Goal -> GoalDesign -> Task Graph -> Message -> AgentMember work
+Standing AgentTeam -> Proposed Goal -> GoalDesign -> Task Graph
+  -> Message -> AgentMember work
   -> Evidence -> Proposal -> Critic/Review -> Decision
   -> GoalEvaluation -> Follow-up Task or GoalCase
 ```
@@ -64,6 +96,12 @@ Goal -> GoalDesign -> Task Graph -> Message -> AgentMember work
 The self-hosting pilot has first priority. The product must prove it can
 develop its own docs, schemas, CLI, CI/CD, provider integration, and Dashboard
 before it can reliably coordinate another project's strategy work.
+
+A create-deliver-close smoke test is not final acceptance. It can prove
+provider transport, but it does not prove a team can keep working. Final
+acceptance requires durable members that return to idle, receive more messages,
+collaborate with peers, and produce or prioritize follow-up goals without being
+recreated as job runners.
 
 Detailed MVP gates are in [mvp.md](mvp.md).
 
@@ -85,6 +123,33 @@ The product vision depends on these mechanisms working together:
 | Decisions | Which hard-to-reverse tradeoffs must future agents preserve? | [decisions/README.md](decisions/README.md) |
 
 ## Scenarios
+
+### Persistent Autonomous Team Operation
+
+The central scenario is a long-lived team that can keep moving after one task
+or one user turn ends.
+
+```mermaid
+flowchart TD
+  Team[Standing AgentTeam] --> Observe[Observe repo, adapter, dashboard, prior cases]
+  Observe --> Gap[Gap / opportunity / blocker]
+  Gap --> Proposed[Proposed Goal]
+  Proposed --> Lead[Lead prioritizes / accepts / rejects]
+  Lead --> Design[GoalDesign]
+  Design --> Graph[Task Graph]
+  Graph --> Msg[Task and peer messages]
+  Msg --> Members[Persistent AgentMembers]
+  Members --> Evidence[Reports and evidence]
+  Evidence --> Review[Critic / Review]
+  Review --> Decision[Leader Decision]
+  Decision --> Eval[GoalEvaluation]
+  Eval --> Next[Follow-up task or next goal]
+  Next --> Observe
+```
+
+This is what distinguishes the product from provider subagents. The team has a
+stable identity, shared task graph, durable mailboxes, persistent members, and
+an evaluation loop that generates the next work.
 
 ### Self-Hosting Development
 
@@ -156,6 +221,8 @@ become docs, ADR, schema, skill, Dashboard visibility, or CI/CD.
 - Do not treat provider chat or transcripts as canonical state.
 - Do not claim multi-agent execution from one-shot helper output unless it is
   recorded through harness messages, evidence, and decisions.
+- Do not claim autonomous team acceptance from create-agent, deliver-one-turn,
+  close-agent smoke tests.
 - Do not make the Agent Dashboard replace project-specific dashboards.
 - Do not use docs as the source of truth for stable fields, commands, runtime
   state, or checks.
@@ -166,9 +233,17 @@ The product is useful when:
 
 - a Lead Agent can turn a goal into scenario workflow, infra gaps, agent team,
   task graph, evidence plan, and reviewer gates;
+- standing teams can propose useful goals or follow-up tasks from observed
+  gaps, evaluations, or dashboard warnings;
+- an Observer or equivalent role continuously scans project state and turns
+  drift, stale warnings, repeated manual work, or new opportunities into
+  reviewable proposals;
 - work is assigned through `Message(kind=task)`, not hidden chat or field-only
   mutation;
-- persistent Agent Members can receive work, report, and be observed;
+- persistent Agent Members can receive multiple messages over time, report,
+  return to idle, and be observed;
+- agents can communicate peer-to-peer through durable messages when work needs
+  clarification, handoff, or critique;
 - proposals are backed by evidence and reviewed before Leader decisions;
 - Dashboard views show goals, tasks, teams, messages, runtime health, evidence,
   proposals, reviews, decisions, and goal-learning warnings;

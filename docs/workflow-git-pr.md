@@ -107,7 +107,7 @@ Leader decisions:
 PR merge can be an effect of an accepted decision. It is not itself the
 decision.
 
-## Watchers
+## Watchers And Observer
 
 A watcher is not a task. It observes state and can create evidence, messages,
 blockers, or follow-up tasks.
@@ -122,6 +122,11 @@ Examples:
 
 Watch output becomes useful only after it is recorded into harness evidence or
 messages.
+
+Observer is the durable AgentMember role that coordinates these watches across
+a long-running goal or project. A watcher may observe one PR, runtime, or
+warning stream; Observer turns repeated watch output into proposed goals,
+task-graph changes, blockers, or follow-up work for Lead decision.
 
 ## Invariants
 

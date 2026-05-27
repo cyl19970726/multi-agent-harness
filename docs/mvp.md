@@ -13,10 +13,13 @@ The MVP has two pilots, in this priority order:
 2. LetMeTry / Earning Engine strategy-matrix iteration through a project
    adapter.
 
-Both pilots must use the same generic loop:
+Both pilots must use the same generic loop. The loop starts before a human
+hands over a fully formed task: the standing team should be able to observe
+gaps, propose goals, and grow the task graph.
 
 ```text
-Goal -> GoalDesign -> Task Graph -> Message -> AgentMember work
+Standing AgentTeam -> Proposed Goal -> GoalDesign -> Task Graph
+  -> Message -> AgentMember work
   -> Evidence -> Proposal -> Review -> Decision
   -> GoalEvaluation -> Follow-up Task or GoalCase
 ```
@@ -51,11 +54,18 @@ flowchart TD
 
 Minimum capabilities:
 
+- keep a standing self-hosting team instead of creating throwaway members for
+  each task;
+- include an Observer or equivalent member for long-running goals;
+- let team members propose goals, follow-up tasks, blockers, or graph changes;
 - create a goal and goal-design evidence;
 - create a task with owner, assignee, reviewer, dependencies, workspace or
   owned-path policy, and acceptance criteria;
 - assign through `Message(kind=task)`;
-- run or record provider-backed member work;
+- run or record provider-backed member work across more than one message for
+  the same member;
+- support peer messages between members for questions, critique, handoff, and
+  review feedback;
 - attach evidence from checks, diffs, provider sessions, review, logs, or
   Dashboard snapshots;
 - create a proposal from diff or explicit changed paths;
@@ -67,6 +77,8 @@ Acceptance:
 - a real repository change can be designed, assigned, delivered, proposed,
   reviewed, decided, and shown in Dashboard state without relying on chat
   history as the only state;
+- the same team can continue after that task by producing a follow-up task or
+  next-goal proposal from evidence, evaluation, or a warning;
 - generated evidence points to files, commands, logs, provider sessions, or
   review notes;
 - stale docs, schema drift, missing evidence, provider failures, or missing
@@ -143,7 +155,11 @@ and one self-hosted work loop.
 | Object contracts | Rust types, JSON schemas, fixtures, and docs agree for core objects. | A field exists only in code, docs, or a Dashboard view. |
 | Goal design | GoalDesign exists before implementation assignment. | Retrospective chat explanation only. |
 | Message delivery | A task message becomes delivered or failed with provider-session refs or explicit failure reason. | Success inferred from stdout or an assignee field. |
-| Persistent member | `agent create`, `agent health`, `agent send`, `agent deliver`, and `agent close` operate on a durable member. | Only `codex exec`, dry-run delivery, or pid/socket checks. |
+| Persistent member | A durable member receives multiple messages over time, returns to idle between turns, and preserves identity, inbox/outbox, runtime, and provider-thread mapping unless rotation is explained. | Create member, deliver one turn, then close member as a job runner. |
+| Standing team | A team persists across a goal and its follow-up work, with stable member roles and Dashboard-visible state. | A test creates temporary agents only to satisfy a single script stage. |
+| Observer role | A durable Observer turns Dashboard warnings, CI failures, stale sessions, prior cases, or adapter evidence into proposed goals, blockers, or graph changes. | The user or Lead must manually discover every next task. |
+| Peer collaboration | Worker, Critic, Dashboard, or domain agents can exchange task-linked messages without routing every clarification through the Lead. | Hidden provider chat, final summaries, or Lead-only message fanout. |
+| Goal generation | Evaluator or member reports can create proposed goals, follow-up tasks, blockers, or graph changes that the Lead accepts, rejects, or prioritizes. | The system waits for the user to discover every next task. |
 | Provider events | Provider notifications or fixtures become `AgentEvent` and report/evidence candidates. | Provider output remains raw transcript only. |
 | Review gate | Accepted work includes proposal evidence, check evidence, critic findings, worker/provider output, path validation, and Leader decision. | Missing evidence ids, stale failed sessions, or unchecked path changes. |
 | Dashboard read model | Dashboard/API shows tasks, members, runtimes, messages, provider sessions, proposals, evidence, decisions, and warnings. | A static page that cannot explain assignment, blockers, or evidence. |
@@ -159,9 +175,11 @@ npx pnpm@9.15.4 acceptance:mvp:live
 ```
 
 `acceptance:mvp` proves deterministic object protocol, review gate, Dashboard
-API, hook bridge, and adapter surface. `acceptance:mvp:live` adds real
-persistent Codex delivery plus Worker/Critic multi-member dogfood and is the
-gate for claims that the harness is using live AgentMembers.
+API, hook bridge, and adapter surface. The current `acceptance:mvp:live` is a
+provider transport gate: it proves real Codex delivery and a Worker/Critic live
+smoke. It is not sufficient for autonomous team acceptance until it also proves
+member reuse, durable inbox/outbox, idle-to-next-message delivery, peer
+communication, and agent-proposed follow-up work.
 
 ## Current Build Order
 
@@ -172,6 +190,8 @@ object contracts
   -> evidence / proposal / review gate
   -> Dashboard read model and warnings
   -> self-hosting dogfood
+  -> persistent team reuse and peer collaboration
+  -> agent-proposed follow-up goals
   -> Earning Engine adapter pilot
   -> goal evaluation and reusable cases
 ```
@@ -190,10 +210,12 @@ The MVP is complete when the same harness can:
 
 1. manage a real change to `multi-agent-harness` through goal, task, message,
    provider/session evidence, proposal, review, decision, and goal evaluation;
-2. use the LetMeTry / Earning Engine adapter to drive strategy-matrix
+2. keep the same standing team alive across multiple messages/tasks and have
+   members propose follow-up goals or task-graph changes from evidence;
+3. use the LetMeTry / Earning Engine adapter to drive strategy-matrix
    iteration from long-term goal to evidence-backed strategy or infrastructure
    decision;
-3. show both flows in the Agent Dashboard or equivalent structured read model;
-4. run CI gates that verify the contracts used by both flows;
-5. produce follow-up tasks from missing evidence, failed checks, rejected
+4. show both flows in the Agent Dashboard or equivalent structured read model;
+5. run CI gates that verify the contracts used by both flows;
+6. produce follow-up tasks from missing evidence, failed checks, rejected
    proposals, or strategy findings.

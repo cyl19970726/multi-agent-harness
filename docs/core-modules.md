@@ -13,11 +13,14 @@ exists; the concept model explains how the objects are allowed to relate.
 
 ## Product Shape
 
-Multi-Agent Harness is not only an agent runner. It is a control system for
-turning a goal into a durable multi-agent workflow:
+Multi-Agent Harness is not only an agent runner. It is a control system for a
+standing team that can observe a project, propose goals, adjust the task graph,
+and turn accepted work into durable multi-agent execution:
 
 ```text
-Goal
+Standing AgentTeam
+  -> Observation and proposed goal / graph change
+  -> Goal
   -> Scenario and infra design
   -> Agent team
   -> Task graph
@@ -39,9 +42,10 @@ implementation convenience.
 | --- | --- | --- |
 | Goal System | Preserve the durable "why", success criteria, and closeout standard for a body of work. | Agents chase chat momentum, close work without proving the objective, or replace unclear goals with new vague goals. |
 | Scenario And Infra Design | Force the Lead to understand the domain workflow and decide which CLI, skill, adapter, dashboard, or CI/CD surface would shorten future work. | Agents edit code too early, repeat manual inspection, and rely on the user to re-explain project facts. |
-| Agent Team And Member System | Turn anonymous provider sessions into accountable teammates with roles, prompts, skills, permissions, and ownership. | Work cannot be attributed, reviewed, or resumed because no durable member identity owns it. |
-| Agent Control Plane | Operate persistent members through lifecycle, busy/idle state, inbox/outbox, queue policy, peer messages, and event reduction. | The Dashboard shows a roster but cannot tell what each member is doing, what is queued, or whether a runtime is healthy. |
-| Task Graph System | Decompose goals into assignable, parallelizable, blocked, reviewable, and accepted work units. | Multiple agents collide on the same work, dependencies are hidden, and "done" has no acceptance boundary. |
+| Agent Team And Member System | Turn anonymous provider sessions into accountable teammates with roles, prompts, skills, permissions, ownership, and long-lived responsibility. | Work cannot be attributed, reviewed, resumed, or continued because agents are treated as one-shot jobs. |
+| Observer System | Continuously inspect Dashboard warnings, CI, adapters, stale tasks, prior cases, and project state, then propose goals or graph changes. | The system waits for the user to discover every next task, so it cannot self-improve or keep momentum. |
+| Agent Control Plane | Operate persistent members through lifecycle, busy/idle state, inbox/outbox, queue policy, peer messages, autonomous proposals, and event reduction. | The Dashboard shows a roster but cannot tell what each member is doing, what is queued, or whether the team is generating useful next work. |
+| Task Graph System | Decompose goals into assignable, parallelizable, blocked, reviewable, accepted, and dynamically adjustable work units. | Multiple agents collide on the same work, dependencies are hidden, and "done" has no acceptance boundary. |
 | Message System | Make assignment, task reports, questions, handoffs, and review requests replayable. | Critical coordination stays in private chat or provider transcripts and cannot be audited by future agents. |
 | Provider Runtime System | Connect harness members to Codex and later providers while keeping harness state authoritative. | Provider chat becomes the source of truth, delivery health is guessed from stdout or pids, and failed turns are not reconstructable. |
 | Project Adapter System | Let the generic harness use a real project through stable commands, evidence policy, permissions, and links without importing domain logic. | The generic core becomes polluted with project-specific behavior, or agents fall back to broad unstructured reading. |
@@ -57,6 +61,7 @@ flowchart TD
   Goal[Goal System]
   Learning[Goal Learning]
   Team[Agent Team and Member]
+  Observer[Observer]
   Control[Agent Control Plane]
   Task[Task Graph]
   Msg[Message System]
@@ -70,6 +75,9 @@ flowchart TD
   Goal --> Learning
   Goal --> Team
   Goal --> Task
+  Team --> Observer
+  Observer --> Goal
+  Observer --> Task
   Team --> Control
   Task --> Msg
   Msg --> Control
@@ -130,7 +138,8 @@ requiring the user to repeatedly explain the same project facts.
 ## Agent Team And Member System
 
 PRD purpose: make agents accountable teammates, not anonymous transcripts. A
-team expresses role composition; a member expresses durable identity.
+team expresses role composition; a member expresses durable identity. A
+standing team should survive across tasks and goals.
 
 Architecture boundary:
 
@@ -143,7 +152,28 @@ Architecture boundary:
 Primary objects: `AgentTeam`, `AgentMember`, prompt files, skills.
 
 Done when: the Dashboard can show who is on the team, what each member owns,
-what they are allowed to do, and whether they are active.
+what they are allowed to do, whether they are active, and how their role
+continues across multiple messages or goals.
+
+## Observer System
+
+PRD purpose: make the team self-progressing. Observer is a role and eventual
+projection that turns system state into proposed work.
+
+Architecture boundary:
+
+- watches Dashboard warnings, stale tasks, queued messages, provider sessions,
+  CI results, adapter outputs, and prior GoalCases;
+- produces proposed goals, blockers, graph-change proposals, and follow-up
+  tasks for Lead acceptance;
+- refuses to make final priority decisions or silently mutate the task graph.
+
+Primary objects: `AgentMember(role=observer)`, `Message`, `Evidence`,
+proposed `Goal`, proposed `Task`, `Decision`.
+
+Done when: a future Lead can see which observations generated which proposed
+goals or task changes, why each was accepted or rejected, and what evidence
+supported the proposal.
 
 ## Agent Control Plane
 

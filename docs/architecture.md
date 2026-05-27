@@ -25,7 +25,15 @@ The generic core must not import project-specific runtime code.
 
 ## Minimal Core Loop
 
-The first version is intentionally small:
+The product target is a persistent team loop:
+
+```text
+AgentTeam -> observe -> propose goal / graph change -> Lead decision
+  -> GoalDesign -> Task -> Message -> Evidence -> Decision
+  -> GoalEvaluation -> next goal or follow-up task
+```
+
+The first implementation slice is intentionally smaller:
 
 ```text
 Goal -> GoalDesign -> Task -> Message -> Evidence -> Decision
@@ -35,6 +43,7 @@ Goal -> GoalDesign -> Task -> Message -> Evidence -> Decision
 This proves the product can answer:
 
 - what durable outcome is being pursued;
+- whether the outcome was user-requested or agent-proposed;
 - who did the work;
 - what task they were assigned;
 - what they said or reported;
@@ -93,8 +102,9 @@ can be accepted, not around file types.
 ## Goal Design
 
 A `Goal` is a durable outcome, not a chat intention and not a single task. It
-sets direction for a task graph and gives the Leader Agent a stable object to
-own.
+may be user-requested or proposed by an AgentMember such as Observer, Critic,
+Dashboard, Runtime, or a domain specialist. Once accepted, it sets direction
+for a task graph and gives the Leader Agent a stable object to own.
 
 Examples:
 
@@ -105,6 +115,9 @@ Examples:
 Goal rules:
 
 - one Leader owns final interpretation of the goal;
+- standing teams can propose goals, blockers, and task-graph changes;
+- the Lead accepts, rejects, prioritizes, or requests evidence for those
+  proposals;
 - success criteria must be written before tasks are marked complete;
 - tasks may be added, split, killed, or reprioritized as evidence arrives;
 - a goal is complete only after a decision records why the success criteria are
@@ -129,8 +142,10 @@ Task graph rules:
 - a blocked task must record a message or evidence explaining the block;
 - a task can create follow-up tasks when evidence changes the plan.
 
-The Leader Agent owns the graph. Worker agents own their assigned task output,
-not the global plan.
+The Leader Agent owns final acceptance of the graph. Workers, Critics,
+Observers, Dashboard agents, and domain agents may propose splits, blockers,
+dependencies, follow-ups, or replacement tasks through messages and evidence.
+They own their assigned task output, not silent mutation of the global plan.
 
 ## Concurrent Workspaces And PRs
 

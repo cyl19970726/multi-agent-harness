@@ -22,6 +22,7 @@ know whether agents are working, the Dashboard has failed.
 | Question | Dashboard answer |
 | --- | --- |
 | What goal is active and why? | Goal board with objective, success criteria, owner, and evaluation status. |
+| What work should exist next? | Observer proposals for goals, blockers, graph changes, and follow-up tasks. |
 | What work can run now? | Task graph and Kanban lanes with dependencies and blockers. |
 | Who is working? | Agent team roster with role, permissions, runtime, current task, and latest event. |
 | Was work actually assigned? | Inbox/outbox and delivery state for `Message(kind=task)`. |
@@ -81,6 +82,7 @@ changes acceptance or safety, it belongs in schema/CLI/API and eventually CI.
 | View | Purpose | Safe actions |
 | --- | --- | --- |
 | Goal board | Track active goals, acceptance, and evaluation. | create follow-up task, record evaluation |
+| Observer proposals | Show proposed goals, blockers, graph changes, evidence, and Lead disposition. | accept/reject/defer proposal |
 | Task graph / Kanban | Show work order, blockers, owner, assignee, reviewer, PR/workspace. | create/split/block/assign task |
 | Agent team | Show member identity, role, skills, permissions, runtime state. | create/start/stop/close member |
 | Inbox / outbox | Show messages, queued work, delivery success/failure. | send message, retry delivery, ask follow-up |
@@ -213,12 +215,14 @@ visibility.
 Dashboard acceptance requires a fixture or live snapshot that shows:
 
 1. a goal with design and evaluation state;
-2. a task graph or Kanban board with dependencies and blockers;
-3. a member roster with runtime health and message queue state;
-4. assignment messages with delivered or failed status;
-5. provider sessions and runtime events;
-6. proposal, evidence, review, decision, and follow-up visibility;
-7. warnings when any required workflow link is missing.
+2. Observer or equivalent proposals for next goals, blockers, graph changes, or
+   follow-up tasks when the workflow is long-running;
+3. a task graph or Kanban board with dependencies and blockers;
+4. a member roster with runtime health and message queue state;
+5. assignment messages with delivered or failed status;
+6. provider sessions and runtime events;
+7. proposal, evidence, review, decision, and follow-up visibility;
+8. warnings when any required workflow link is missing.
 
 ## Invariants
 

@@ -44,6 +44,8 @@ The control plane owns:
 - lifecycle: create, start, health, busy, idle, handoff, close;
 - message-first communication and delivery state;
 - task queue and peer-to-peer teammate messages;
+- team-generated goal proposals, task-graph changes, blockers, and follow-up
+  work;
 - provider event reduction into harness objects;
 - Dashboard views for operating the team.
 
@@ -110,8 +112,10 @@ close
 ```
 
 Create records identity even when no provider process is running. Start makes
-that identity executable. Close is not deletion: it preserves messages, events,
-provider sessions, proposals, evidence, and decisions.
+that identity executable. A member should return to idle after a turn and wait
+for the next message. Close is not task completion; it is retirement, handoff,
+or forced cleanup. Close preserves messages, events, provider sessions,
+proposals, evidence, and decisions.
 
 Health has layers:
 
@@ -123,6 +127,61 @@ Health has layers:
 
 The Dashboard must not present process health as execution readiness when
 protocol or delivery health is unknown.
+
+## Persistent Autonomous Team Loop
+
+An `AgentTeam` is a standing organization around a project or scenario, not a
+temporary collection of job runners. The team can generate work as well as
+execute assigned work.
+
+Normal autonomous loop:
+
+```text
+team observes project state / dashboard warnings / prior GoalCases
+  -> member proposes goal, blocker, follow-up task, or graph change
+  -> Lead accepts, rejects, prioritizes, or asks for more evidence
+  -> accepted goal gets GoalDesign and task graph
+  -> tasks are assigned through messages
+  -> members execute, ask peers, report evidence, and request review
+  -> decision and GoalEvaluation produce the next proposals
+```
+
+The Lead owns final interpretation and priority, but the Lead is not the only
+source of work. A Critic can propose a quality goal, a Dashboard member can
+propose a visibility task, a Provider Runtime member can propose a reliability
+task, and a domain member can propose a new adapter or strategy investigation.
+
+The `Observer` role is the default way to make this continuous instead of
+accidental. Observer is a durable `AgentMember` whose primary job is to watch
+state and propose work:
+
+| Input | Observer output |
+| --- | --- |
+| Dashboard warnings | blocker, repair task, or graph-change proposal |
+| CI/check failures | infrastructure task or acceptance-gate proposal |
+| stale tasks/messages/sessions | unblock task, reassignment proposal, or escalation |
+| prior GoalCases | reusable workflow suggestion or anti-pattern warning |
+| adapter/domain evidence | new investigation goal or promotion/blocking question |
+
+Observer does not decide final priority. It gives the team a steady stream of
+structured proposals so progress does not depend on the user noticing every
+gap.
+
+Team-generated work must be durable:
+
+- proposed goals are messages or evidence before they become accepted `Goal`
+  objects;
+- task-graph changes are messages, decisions, or task records, not hidden
+  provider chat;
+- blockers name the evidence or missing infrastructure that prevents progress;
+- rejected proposals remain visible so future Leads know why the path was not
+  taken;
+- accepted proposals enter the same GoalDesign, assignment, review, decision,
+  and evaluation flow as user-requested work.
+
+This is the difference between Multi-Agent Harness and one-shot subagents. A
+subagent answers a prompt. A harness team maintains a backlog, a shared task
+graph, and an evidence-backed learning loop.
 
 ## Message-First Communication
 
@@ -207,8 +266,10 @@ ignored, queued, injected, or blocked.
 An `AgentTeam` is a set of durable members around a goal or task graph.
 
 The shared task list is the harness `Task` graph, not an in-provider scratchpad.
-Each teammate can inspect the tasks relevant to its team, but the Leader owns
-task graph changes and acceptance decisions.
+Each teammate can inspect the tasks relevant to its team and propose changes.
+The Leader owns acceptance and priority for graph changes, but the graph should
+grow from member reports, critic findings, dashboard warnings, adapter
+evidence, and GoalEvaluation output.
 
 Team members have separate contexts:
 
@@ -304,6 +365,7 @@ The repository currently has enough surface to prove live persistent
 | Message state is too small | `queued/delivered/failed` cannot explain read, active, answered, deferred, interrupted, or permission-blocked messages. | Extend message delivery state and add delivery policy. |
 | Busy/idle is inferred poorly | Dashboard cannot know whether to deliver, queue, inject, or interrupt. | Add active-turn and reducer-derived member state. |
 | Peer communication is not a first-class view | Agents can send messages, but the operator cannot see the collaboration graph. | Add inbox/outbox, reply/correlation refs, and channel fanout. |
+| Team autonomy is not first-class | Members can report work, but proposed goals and task-graph changes are not yet modeled as first-class reviewable objects. | Add goal proposal, graph-change proposal, blocker, and follow-up projections from messages/evidence. |
 | Dashboard safe actions are partial | It can send/deliver/retry/reconcile/request review/close, but cannot yet create full teams or record final decisions. | Add create/start, task graph edits, proposal review, and decision actions through the same API/CLI paths. |
 | Provider child work is easy to hide | Native subagents or child threads can disappear under the parent member. | Ingest child-thread events and render them under the parent/task. |
 | Goal/task planning is scattered | The repo has phases, but no concise execution roadmap tied to control-plane gaps. | Use the phased plan below as the next implementation graph. |
@@ -317,8 +379,9 @@ The repository currently has enough surface to prove live persistent
 | P2 | Build the reducer. | Reduce app-server notifications, hooks, provider sessions, and thread/read reconciliation into member status, message delivery, child-thread events, and report candidates. | A live member that edits files cannot finish with only a timeout; the store shows terminal success, failure, or explicit unresolved state. |
 | P3 | Make Dashboard operational. | Extend the first control-plane slice into create/start, task graph edits, proposal review, and decision actions. | The operator can answer what each agent is doing, what message it is handling, what is queued, what is blocked, and perform the normal safe repair path without raw JSON. |
 | P4 | Support true teams. | Add channel fanout, peer replies, self-claim/claim locks, task dependency readiness, and reviewer handoff. | A Worker and Critic can coordinate through messages without routing every exchange through the Lead. |
-| P5 | Package provider integrations. | Stabilize Codex app-server, managed hooks, optional plugin, and later Claude/hermes adapters behind the same control-plane API. | Provider-specific details are hidden behind the same AgentMember/message/event objects. |
-| P6 | Close the learning loop. | Add GoalCase examples and evaluator closeout for each control-plane improvement. | Future Leads can inspect prior goal runs to design better teams and task graphs. |
+| P5 | Make teams autonomous. | Add proposed goals, graph-change proposals, blockers, follow-up task creation, and Lead accept/reject/prioritize decisions. | The team can create the next goal or graph change from evidence without waiting for the user to name every task. |
+| P6 | Package provider integrations. | Stabilize Codex app-server, managed hooks, optional plugin, and later Claude/hermes adapters behind the same control-plane API. | Provider-specific details are hidden behind the same AgentMember/message/event objects. |
+| P7 | Close the learning loop. | Add GoalCase examples and evaluator closeout for each control-plane improvement. | Future Leads can inspect prior goal runs to design better teams and task graphs. |
 
 The next product milestone should be P1 plus P2, not more dashboard decoration.
 Without reliable message state and reducer-derived member state, the Dashboard

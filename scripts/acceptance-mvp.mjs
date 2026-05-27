@@ -775,7 +775,7 @@ function createLiveAgent(id, name, role) {
       "--role",
       role,
       "--description",
-      `${name} used by the live multi-member dogfood gate.`,
+      `${name} used by the live multi-member delivery smoke.`,
       "--provider",
       "codex",
       "--start",
@@ -838,7 +838,7 @@ function closeLiveAgent(id) {
   }
 }
 
-function liveMultiMemberTeamDogfood() {
+function liveMultiMemberDeliverySmoke() {
   const liveAgentIds = [];
   let worker;
   let critic;
@@ -851,9 +851,9 @@ function liveMultiMemberTeamDogfood() {
       "team",
       "create",
       "--id",
-      "team-live-dogfood",
+      "team-live-delivery-smoke",
       "--name",
-      "Live Dogfood Team",
+      "Live Delivery Smoke Team",
       "--description",
       "Worker and Critic persistent Codex AgentMembers used to prove live multi-agent operation.",
       "--owner",
@@ -869,15 +869,15 @@ function liveMultiMemberTeamDogfood() {
       "task",
       "create",
       "--id",
-      "task-live-team-dogfood",
+      "task-live-team-delivery-smoke",
       "--goal",
       "goal-self-host-mvp",
       "--parent",
       "task-self-host-workflow",
       "--title",
-      "Live multi-member dogfood",
+      "Live multi-member delivery smoke",
       "--objective",
-      "Use persistent Codex Worker and Critic AgentMembers to exercise the harness message and review loop.",
+      "Use Codex Worker and Critic AgentMembers to prove live message delivery and dashboard-visible provider sessions.",
       "--owner",
       "lead",
       "--reviewer",
@@ -922,9 +922,9 @@ function liveMultiMemberTeamDogfood() {
         message.kind === "report" &&
         ["live-team-worker", "live-team-critic"].includes(message.from_agent_id),
     );
-    assert(liveTeam?.member_ids?.length === 3, "dashboard missing live dogfood team");
-    assert(liveTask?.assignee_agent_id === worker.id, "dashboard missing live dogfood task assignment");
-    assert(liveTask?.reviewer_agent_id === critic.id, "dashboard missing live dogfood task reviewer");
+    assert(liveTeam?.member_ids?.length === 3, "dashboard missing live delivery team");
+    assert(liveTask?.assignee_agent_id === worker.id, "dashboard missing live delivery task assignment");
+    assert(liveTask?.reviewer_agent_id === critic.id, "dashboard missing live delivery task reviewer");
     assert(sessions.length >= 2, "dashboard missing live team provider sessions");
     assert(reportMessages.length >= 2, "dashboard missing live team report messages");
     const status = harnessJson([
@@ -963,11 +963,11 @@ stage("S8", "Hook bridge and plugin fallback", hookAndPluginBridge);
 await stageAsync("S9", "Dashboard snapshot and API", dashboardApi);
 stage("S10", "Earning Engine adapter surface", earningEngineAdapterSurface);
 if (liveCodex) {
-  stage("S11", "Live persistent Codex AgentMember", liveCodexRuntime);
-  stage("S12", "Live multi-member team dogfood", liveMultiMemberTeamDogfood);
+  stage("S11", "Live Codex AgentMember transport smoke", liveCodexRuntime);
+  stage("S12", "Live Worker/Critic delivery smoke", liveMultiMemberDeliverySmoke);
 } else {
-  skipped("S11", "Live persistent Codex AgentMember", "pass --live-codex to spend provider tokens");
-  skipped("S12", "Live multi-member team dogfood", "pass --live-codex to run Worker and Critic persistent members");
+  skipped("S11", "Live Codex AgentMember transport smoke", "pass --live-codex to spend provider tokens");
+  skipped("S12", "Live Worker/Critic delivery smoke", "pass --live-codex to run Worker and Critic live delivery");
 }
 
 finish(0);

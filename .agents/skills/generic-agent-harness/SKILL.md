@@ -9,9 +9,10 @@ Use this skill when the work is about the multi-agent product itself, or when a
 Lead Agent needs to use the harness to make a project or business domain
 agent-operable.
 
-The harness is not only a record of agent work. It is the workflow that turns a
-goal and its domain scenario into infrastructure, agent team design, task graph
-execution, evidence, review, decisions, and follow-up requirements.
+The harness is not only a record of agent work. It is the workflow that lets a
+persistent team observe a project, propose goals, adjust a task graph, execute
+through messages, produce evidence, review decisions, evaluate results, and
+keep moving into the next goal.
 
 ## First Step
 
@@ -36,6 +37,13 @@ Read only what the task needs:
   task.
 - Before assigning work, define the scenario workflow, missing infra, agent
   team, task graph, and acceptance gates.
+- Treat `AgentTeam` as a standing organization when the scenario is
+  long-running. Do not design create-deliver-close job runners and call that
+  autonomous teamwork.
+- Include an Observer or equivalent role for long-running goals. Observer
+  watches Dashboard warnings, CI, stale tasks, adapter evidence, prior cases,
+  and repeated manual work, then proposes goals, blockers, graph changes, or
+  follow-up tasks.
 - Do not complete domain work locally and then backfill task/message/evidence
   records as if agent members had driven the work.
 - External coding subagents or chat helpers are not canonical execution. Their
@@ -53,6 +61,8 @@ Read only what the task needs:
 - Keep provider chat below message/report artifacts in the trust order.
 - Require explicit permission grants for live, money-moving, destructive, or
   secret-touching actions.
+- Closing an `AgentMember` is retirement, handoff, or cleanup. It is not the
+  normal successful end of one task.
 
 ## Lead Workflow
 
@@ -60,6 +70,9 @@ For every goal that enters harness management, run this sequence before
 implementation:
 
 ```text
+standing team observes project state
+  -> proposed goal / blocker / graph change
+  -> Lead accepts, rejects, prioritizes, or requests evidence
 Goal
   -> GoalDesign
   -> scenario understanding
@@ -73,7 +86,7 @@ Goal
   -> leader decision
   -> GoalEvaluation
   -> GoalCase when reusable
-  -> follow-up tasks
+  -> follow-up tasks or proposed next goals
 ```
 
 Write down the result in tasks, messages, evidence, or decisions. Do not rely
@@ -119,6 +132,15 @@ For each goal, define only the members the scenario needs. Each member needs:
 - owned paths or project surfaces;
 - reviewer or critic relationship.
 
+For standing teams, define the ongoing role mix as well as task-specific
+assignees. A useful self-hosting team normally has:
+
+- Lead: prioritizes and records decisions;
+- Observer: proposes goals, blockers, and graph changes from system state;
+- Implementer: changes code or docs in owned paths;
+- Critic/Reviewer: challenges evidence and acceptance;
+- Dashboard/Runtime/Domain specialists when the scenario needs them.
+
 If the work changes files concurrently, split tasks by owned paths and assign
 separate worktrees or PR boundaries.
 
@@ -142,8 +164,14 @@ A task is not proof that the harness was used. To prove harness usage, require:
 
 - a goal or parent task;
 - role-specific agent members or an explicit leader-local exception;
+- for autonomous-team claims, a standing team with durable members reused
+  across multiple messages, tasks, or goals;
+- Observer or equivalent proposals for new goals, blockers, graph changes, or
+  follow-up tasks when the work is long-running;
 - task messages from the Lead to the assignee before member reports and leader
   decisions;
+- peer messages when clarification, critique, or handoff happens between
+  members;
 - reports back from the assignee;
 - evidence refs for claims;
 - critic or reviewer output for non-trivial decisions;
@@ -156,6 +184,7 @@ Reject the task as not harness-operated when any of these are true:
 - missing assignment message;
 - assignment message created after the report or decision;
 - missing member report for a non-trivial worker claim;
+- create-deliver-close smoke is presented as autonomous AgentTeam acceptance;
 - only Lead-local evidence supports the conclusion;
 - provider chat is the only source of truth;
 - critic/reviewer output is missing for promotion, live, money-moving,
@@ -172,13 +201,13 @@ npx pnpm@9.15.4 acceptance:mvp
 ```
 
 Use `acceptance:mvp:quick` while iterating on non-static changes, and
-`acceptance:mvp:live` when the claim includes real persistent Codex
-AgentMember delivery. A passing quick run proves the object protocol, review
-gate, dashboard read model, hook bridge, and adapter surface. It does not prove
-trusted plugin activation or live provider delivery unless the live gate runs.
-The live gate must include both a single-member smoke and a Worker/Critic
-multi-member dogfood task before claiming the harness can use live
-AgentMembers.
+`acceptance:mvp:live` when the claim includes real Codex provider delivery. A
+passing quick run proves the object protocol, review gate, dashboard read
+model, hook bridge, and adapter surface. The current live gate proves provider
+transport smoke only. Do not claim autonomous persistent team acceptance until
+the gate also proves durable member reuse, idle-to-next-message delivery,
+peer-to-peer messages, Observer-generated proposals, and a Lead decision over
+those proposals.
 
 When the gate exposes a skipped or failed stage, create a follow-up task rather
 than weakening the acceptance criteria.
