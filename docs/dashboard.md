@@ -116,6 +116,26 @@ right rail:
   latest evidence and decisions
 ```
 
+## Frontend Architecture
+
+The Dashboard frontend uses React, TypeScript, and Vite. The decision is
+recorded in
+[decisions/0014-react-vite-agent-dashboard.md](decisions/0014-react-vite-agent-dashboard.md).
+
+The frontend architecture follows this boundary:
+
+```text
+Rust store / CLI / API
+  -> snapshot JSON
+  -> frontend read model
+  -> control-plane panels and warnings
+```
+
+Frontend warnings are operator read-model warnings until promoted. If a warning
+becomes an acceptance rule, it must move into schema, Rust validation, CLI/API,
+review gate, or CI/CD. This prevents Dashboard convenience logic from silently
+becoming the source of truth.
+
 ## Task Detail Panel
 
 Selecting a task should show:

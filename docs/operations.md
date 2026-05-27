@@ -13,7 +13,8 @@ Current checks:
 - Markdown local link validation;
 - document size warning;
 - skill frontmatter and UI metadata validation;
-- docs governance registry validation.
+- docs governance registry validation;
+- Agent Dashboard TypeScript typecheck and Vite production build.
 
 Rust checks are also active in CI:
 
@@ -110,12 +111,25 @@ hatches. They should appear only with a rationale in the recorded decision.
 These are design commitments, not current blockers until scripts and CI jobs
 exist.
 
+```bash
+pnpm check:dashboard
+```
+
+This runs:
+
+```text
+tsc -p apps/agent-dashboard/tsconfig.json --noEmit
+vite build --config apps/agent-dashboard/vite.config.ts
+```
+
+Dashboard build output is committed under `apps/agent-dashboard/web/` so the
+static snapshot viewer can still be opened directly.
+
 ```text
 CLI --help snapshot
 Rust type <-> schema coverage
 adapter descriptor validation
 Mermaid render/lint
-dashboard lint/typecheck/build
 SSE/WebSocket event stream
 non-dry-run Codex app-server delivery smoke
 Docker image build

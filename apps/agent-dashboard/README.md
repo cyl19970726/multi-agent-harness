@@ -2,6 +2,9 @@
 
 The Agent Dashboard is the operational UI for the generic harness.
 
+Frontend architecture and framework decisions are documented in
+[ARCHITECTURE.md](ARCHITECTURE.md).
+
 It should show:
 
 - overview;
@@ -31,9 +34,9 @@ appear as links and typed evidence references supplied by adapters.
 The first implemented surface supports both snapshot import and a local live
 API:
 
-```text
-apps/agent-dashboard/web/index.html
-```
+The Dashboard source is built with React, TypeScript, and Vite. Build output is
+emitted to `apps/agent-dashboard/web/` so the static artifact remains easy to
+open or archive.
 
 Generate data with:
 
@@ -50,6 +53,13 @@ For live local state, start the API and use the dashboard's live URL controls:
 
 ```bash
 cargo run -p harness-cli -- serve --addr 127.0.0.1:8787
+```
+
+Develop and build the frontend with:
+
+```bash
+pnpm dashboard:dev
+pnpm dashboard:build
 ```
 
 The dashboard polls `GET /v1/snapshot` and still supports file or pasted

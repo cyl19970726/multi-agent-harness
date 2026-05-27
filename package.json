@@ -5,7 +5,7 @@
   "type": "module",
   "packageManager": "pnpm@9.15.4",
   "scripts": {
-    "check": "pnpm validate:json && pnpm check:schema-fixtures && pnpm check:tool-descriptors && pnpm check:links && pnpm check:doc-size && pnpm check:skills && pnpm check:doc-governance",
+    "check": "pnpm validate:json && pnpm check:schema-fixtures && pnpm check:tool-descriptors && pnpm check:links && pnpm check:doc-size && pnpm check:skills && pnpm check:doc-governance && pnpm check:dashboard",
     "validate:json": "node scripts/validate-json.mjs",
     "check:schema-fixtures": "node scripts/check-schema-fixtures.mjs",
     "check:tool-descriptors": "node scripts/check-tool-descriptors.mjs",
@@ -13,11 +13,24 @@
     "check:doc-size": "node scripts/check-doc-size.mjs",
     "check:skills": "node scripts/check-skills.mjs",
     "check:doc-governance": "node scripts/check-doc-governance.mjs",
+    "check:dashboard": "tsc -p apps/agent-dashboard/tsconfig.json --noEmit && vite build --config apps/agent-dashboard/vite.config.ts",
+    "dashboard:dev": "vite --config apps/agent-dashboard/vite.config.ts --host 127.0.0.1",
+    "dashboard:build": "vite build --config apps/agent-dashboard/vite.config.ts",
     "acceptance:mvp": "node scripts/acceptance-mvp.mjs",
     "acceptance:mvp:quick": "node scripts/acceptance-mvp.mjs --skip-static",
     "acceptance:mvp:live": "node scripts/acceptance-mvp.mjs --live-codex"
   },
   "devDependencies": {
-    "ajv": "8.17.1"
+    "@types/react": "^18.3.18",
+    "@types/react-dom": "^18.3.5",
+    "@vitejs/plugin-react": "^4.3.4",
+    "ajv": "8.17.1",
+    "typescript": "^5.7.3",
+    "vite": "^5.4.21"
+  },
+  "dependencies": {
+    "lucide-react": "^0.468.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
   }
 }

@@ -278,12 +278,36 @@
         "docs/data-model.md",
         "docs/agent-runtime.md",
         "docs/agent-control-plane.md",
-        "apps/agent-dashboard/README.md"
+        "apps/agent-dashboard/README.md",
+        "apps/agent-dashboard/ARCHITECTURE.md"
       ],
       "machineConsumers": ["check-doc-links", "check-doc-governance"],
       "reviewAfter": "2026-06-26",
       "lastVerifiedWith": ["npx pnpm@9.15.4 check"],
       "reorgTrigger": "Dashboard views, read models, safe actions, or workflow visibility requirements change."
+    },
+    {
+      "path": "apps/agent-dashboard/ARCHITECTURE.md",
+      "ownerRole": "frontend-architecture",
+      "status": "planned",
+      "lifecycle": "volatile",
+      "canonicalFor": [
+        "Agent Dashboard frontend architecture",
+        "React/Vite build boundary",
+        "Dashboard read-model ownership"
+      ],
+      "dependsOn": [
+        "docs/dashboard.md",
+        "docs/decisions/0014-react-vite-agent-dashboard.md",
+        "apps/agent-dashboard/README.md",
+        "apps/agent-dashboard/vite.config.ts",
+        "apps/agent-dashboard/src/types.ts",
+        "apps/agent-dashboard/src/readModel.ts"
+      ],
+      "machineConsumers": ["check-doc-links", "check-doc-governance"],
+      "reviewAfter": "2026-06-26",
+      "lastVerifiedWith": ["npx pnpm@9.15.4 check"],
+      "reorgTrigger": "Frontend stack, build output, Dashboard read model, or static/live loading boundary changes."
     },
     {
       "path": "docs/workflow-git-pr.md",

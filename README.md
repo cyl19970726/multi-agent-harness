@@ -39,7 +39,7 @@ checks.
 | `docs/` | PRD, architecture, operations, schemas, and decisions. |
 | `schemas/` | Stable JSON schemas shared by API, CLI, adapters, and Dashboard. |
 | `crates/` | Rust backend crates. |
-| `apps/agent-dashboard` | Dashboard product plan and future app. |
+| `apps/agent-dashboard` | React/Vite Agent Dashboard control-plane app and static build output. |
 | `.agents/skills/` | Generic agent skills. |
 | `examples/adapters/earning-engine` | First project adapter example. |
 
@@ -76,6 +76,7 @@ checks.
 
 ```bash
 npx pnpm@9.15.4 check
+pnpm dashboard:build
 cargo test
 cargo run -p harness-cli -- --help
 cargo run -p harness-cli -- dashboard snapshot
