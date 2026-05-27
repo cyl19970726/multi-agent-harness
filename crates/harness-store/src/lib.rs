@@ -1,6 +1,9 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
+use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use harness_core::{
     AgentEvent, AgentMember, AgentRuntime, AgentTeam, Decision, Evidence, Goal, Message, Proposal,
@@ -9,12 +12,22 @@ use harness_core::{
 use serde::{de::DeserializeOwned, Serialize};
 use thiserror::Error;
 
+unsafe extern "C" {
+    fn flock(fd: i32, operation: i32) -> i32;
+}
+
+const LOCK_EX: i32 = 2;
+const LOCK_NB: i32 = 4;
+const LOCK_UN: i32 = 8;
+
 #[derive(Debug, Error)]
 pub enum StoreError {
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
     #[error("json error: {0}")]
     Json(#[from] serde_json::Error),
+    #[error("timed out waiting for store write lock {0}")]
+    LockTimeout(String),
 }
 
 pub type StoreResult<T> = Result<T, StoreError>;
@@ -139,11 +152,39 @@ impl HarnessStore {
 
     fn append_jsonl<T: Serialize>(&self, file_name: &str, value: &T) -> StoreResult<()> {
         self.init()?;
+        let mut row = Vec::new();
+        serde_json::to_writer(&mut row, value)?;
+        row.push(b'\n');
+
+        let _lock = self.acquire_write_lock()?;
         let path = self.root.join(file_name);
         let mut file = OpenOptions::new().create(true).append(true).open(path)?;
-        serde_json::to_writer(&mut file, value)?;
-        file.write_all(b"\n")?;
+        file.write_all(&row)?;
+        file.flush()?;
         Ok(())
+    }
+
+    fn acquire_write_lock(&self) -> StoreResult<StoreWriteLock> {
+        let lock_path = self.root.join(".store.lock");
+        let file = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .truncate(false)
+            .write(true)
+            .open(&lock_path)?;
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            match lock_file_exclusive(&file) {
+                Ok(()) => return Ok(StoreWriteLock { file }),
+                Err(error) if would_block_lock(&error) => {
+                    if Instant::now() >= deadline {
+                        return Err(StoreError::LockTimeout(lock_path.display().to_string()));
+                    }
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => return Err(StoreError::Io(error)),
+            }
+        }
     }
 
     fn read_jsonl<T: DeserializeOwned>(&self, file_name: &str) -> StoreResult<Vec<T>> {
@@ -165,8 +206,38 @@ impl HarnessStore {
     }
 }
 
+fn lock_file_exclusive(file: &File) -> std::io::Result<()> {
+    let result = unsafe { flock(file.as_raw_fd(), LOCK_EX | LOCK_NB) };
+    if result == -1 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+fn unlock_file(file: &File) {
+    let _ = unsafe { flock(file.as_raw_fd(), LOCK_UN) };
+}
+
+fn would_block_lock(error: &std::io::Error) -> bool {
+    matches!(error.raw_os_error(), Some(11) | Some(35))
+        || error.kind() == std::io::ErrorKind::WouldBlock
+}
+
+struct StoreWriteLock {
+    file: File,
+}
+
+impl Drop for StoreWriteLock {
+    fn drop(&mut self) {
+        unlock_file(&self.file);
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+    use std::sync::{Arc, Barrier};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use harness_core::{Goal, GoalStatus};
@@ -196,6 +267,91 @@ mod tests {
         };
 
         store.append_goal(&goal).expect("append goal");
+        assert_eq!(store.goals().expect("read goals"), vec![goal]);
+
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
+    #[test]
+    fn concurrent_appends_write_complete_jsonl_rows() {
+        let root = std::env::temp_dir().join(format!(
+            "harness-store-concurrent-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock")
+                .as_millis()
+        ));
+        let store = Arc::new(HarnessStore::new(&root));
+        let worker_count = 8;
+        let appends_per_worker = 25;
+        let barrier = Arc::new(Barrier::new(worker_count));
+        let mut handles = Vec::new();
+
+        for worker in 0..worker_count {
+            let store = Arc::clone(&store);
+            let barrier = Arc::clone(&barrier);
+            handles.push(std::thread::spawn(move || {
+                barrier.wait();
+                for index in 0..appends_per_worker {
+                    let goal = Goal {
+                        id: format!("goal-{worker}-{index}"),
+                        title: "Concurrent".into(),
+                        objective: "Append without corrupting JSONL rows".into(),
+                        owner_agent_id: "leader-1".into(),
+                        status: GoalStatus::Active,
+                        success_criteria: vec!["Goal is persisted".into()],
+                        priority: "p1".into(),
+                        created_at: "2026-05-26T00:00:00Z".into(),
+                        updated_at: "2026-05-26T00:00:00Z".into(),
+                    };
+                    store.append_goal(&goal).expect("append goal");
+                }
+            }));
+        }
+
+        for handle in handles {
+            handle.join().expect("worker thread");
+        }
+
+        let goals = store.goals().expect("read goals");
+        assert_eq!(goals.len(), worker_count * appends_per_worker);
+        let ids = goals
+            .iter()
+            .map(|goal| goal.id.clone())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(ids.len(), worker_count * appends_per_worker);
+
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
+    #[test]
+    fn append_uses_unlocked_existing_lock_file() {
+        let root = std::env::temp_dir().join(format!(
+            "harness-store-stale-lock-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock")
+                .as_millis()
+        ));
+        let store = HarnessStore::new(&root);
+        store.init().expect("init store");
+        std::fs::write(root.join(".store.lock"), "left by interrupted writer\n")
+            .expect("write existing lock file");
+        let goal = Goal {
+            id: "goal-stale-lock".into(),
+            title: "Stale lock".into(),
+            objective: "Recover after interrupted writer".into(),
+            owner_agent_id: "leader-1".into(),
+            status: GoalStatus::Active,
+            success_criteria: vec!["Goal is persisted".into()],
+            priority: "p1".into(),
+            created_at: "2026-05-26T00:00:00Z".into(),
+            updated_at: "2026-05-26T00:00:00Z".into(),
+        };
+
+        store
+            .append_goal(&goal)
+            .expect("append with unlocked lock file");
         assert_eq!(store.goals().expect("read goals"), vec![goal]);
 
         std::fs::remove_dir_all(root).expect("remove temp store");
