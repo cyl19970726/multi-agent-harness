@@ -92,7 +92,7 @@ fn member_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
 fn agent_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     require_subcommand(
         args,
-        "agent create|list|show|start|health|send|deliver|ingest|close",
+        "agent create|list|show|start|health|hooks|send|deliver|ingest|close",
     )?;
     match args[0].as_str() {
         "create" => {
@@ -141,6 +141,18 @@ fn agent_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
         "health" => {
             let id = required(args, "--id").or_else(|_| required(args, "--agent"))?;
             print_json(&agent_health(store, &id)?)?;
+        }
+        "hooks" => {
+            let id = required(args, "--id").or_else(|_| required(args, "--agent"))?;
+            let timeout_ms = value(args, "--timeout-ms")
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(3_000);
+            print_json(&probe_agent_hooks(
+                store,
+                &id,
+                timeout_ms,
+                has_flag(args, "--trust"),
+            )?)?;
         }
         "show" => {
             let id = required(args, "--id")?;
@@ -562,7 +574,7 @@ fn record_codex_hook_event(store: &HarnessStore, args: &[String]) -> CliResult<(
     store.append_event(&event)?;
     if let Ok(mut member) = latest_member(store, &agent_id) {
         member.last_seen_at = Some(now.clone());
-        member.status = if hook_event_name == "Stop" {
+        member.status = if hook_event_name.eq_ignore_ascii_case("stop") {
             AgentMemberStatus::Idle
         } else {
             AgentMemberStatus::Running
@@ -1240,6 +1252,138 @@ fn agent_health(store: &HarnessStore, agent_id: &str) -> CliResult<serde_json::V
         },
         "queued_messages": queued_messages,
         "provider_thread_id": member.provider_thread_id
+    }))
+}
+
+fn probe_agent_hooks(
+    store: &HarnessStore,
+    agent_id: &str,
+    timeout_ms: u64,
+    trust: bool,
+) -> CliResult<serde_json::Value> {
+    let member = latest_member(store, agent_id)?;
+    let runtime = member
+        .provider_runtime_id
+        .as_deref()
+        .and_then(|runtime_id| latest_runtime(store, runtime_id).ok().flatten())
+        .ok_or_else(|| CliError::Usage(format!("agent has no runtime: {agent_id}")))?;
+    if !runtime_is_alive(&runtime) {
+        return Err(CliError::Usage(format!(
+            "agent runtime is not alive: {}",
+            runtime.id
+        )));
+    }
+    let endpoint = runtime.control_endpoint.as_deref().ok_or_else(|| {
+        CliError::Usage(format!("runtime {} has no control endpoint", runtime.id))
+    })?;
+    let socket_path = socket_path_from_endpoint(endpoint)?;
+    let probe_id = generated_id("hook-probe");
+    let session_dir = store.root().join("provider-sessions").join(&probe_id);
+    fs::create_dir_all(&session_dir)?;
+    let cwd = member.worktree_ref.clone().or_else(|| {
+        env::current_dir()
+            .ok()
+            .map(|path| path.display().to_string())
+    });
+    let list_request_id = generated_id("rpc");
+    let list_request = build_hooks_list_request(&list_request_id, cwd.as_deref());
+    let mut exchange = run_codex_app_server_exchange(
+        &session_dir,
+        &socket_path,
+        "hooks-list",
+        &[build_initialize_request(), list_request],
+        timeout_ms,
+    )?;
+    let mut trust_write_ref = None;
+    let mut trust_write_error = None;
+    let mut hooks = hooks_from_list_response(&exchange.values, &list_request_id);
+
+    if trust && exchange.failure_summary().is_none() && !hooks.is_empty() {
+        let trust_request_id = generated_id("rpc");
+        let trust_request = build_hooks_trust_request(&trust_request_id, &hooks)?;
+        if hooks_trust_edit_count(&trust_request) > 0 {
+            let verify_request_id = generated_id("rpc");
+            let verify_request = build_hooks_list_request(&verify_request_id, cwd.as_deref());
+            let trust_exchange = run_codex_app_server_exchange(
+                &session_dir,
+                &socket_path,
+                "hooks-trust",
+                &[build_initialize_request(), trust_request, verify_request],
+                timeout_ms,
+            )?;
+            trust_write_ref = Some(trust_exchange.stdout_ref.display().to_string());
+            if let Some(error) = trust_exchange.failure_summary() {
+                trust_write_error = Some(error);
+            } else {
+                exchange = trust_exchange;
+                hooks = hooks_from_list_response(&exchange.values, &verify_request_id);
+            }
+        }
+    }
+    if let Some(stdout_ref) = exchange.stdout_ref.to_str() {
+        ingest_provider_output(
+            store,
+            &member.id,
+            Some(runtime.id.as_str()),
+            None,
+            stdout_ref,
+        )?;
+    }
+    let managed_hook_count = hooks.iter().filter(|hook| hook_is_managed(hook)).count();
+    let trusted_hook_count = hooks.iter().filter(|hook| hook_is_trusted(hook)).count();
+    let blocker = if let Some(error) = trust_write_error.clone() {
+        Some(format!("hooks trust write failed: {error}"))
+    } else if exchange.failure_summary().is_some() {
+        Some("hooks/list failed".to_string())
+    } else if hooks.is_empty() {
+        Some("hooks/list returned no hooks for runtime cwd".to_string())
+    } else if trust && trusted_hook_count == 0 {
+        Some("hooks/list returned no trusted hook after trust write".to_string())
+    } else if managed_hook_count == 0 {
+        Some("hooks/list returned no managed or trusted hook".to_string())
+    } else {
+        None
+    };
+    if let Some(blocker) = blocker.as_deref() {
+        let payload_ref = exchange.stdout_ref.display().to_string();
+        append_agent_event(
+            store,
+            &member.id,
+            Some(runtime.id.as_str()),
+            None,
+            "codex_hooks_blocked",
+            blocker,
+            Some(payload_ref.as_str()),
+        )?;
+    }
+    let evidence = Evidence {
+        id: generated_id("evidence"),
+        task_id: None,
+        source_type: "codex_hooks_probe".into(),
+        source_ref: session_dir.display().to_string(),
+        summary: format!(
+            "Codex hooks/list probe for agent {} found {} hooks",
+            member.id,
+            hooks.len()
+        ),
+        created_at: now_string(),
+    };
+    store.append_evidence(&evidence)?;
+    Ok(serde_json::json!({
+        "agent_member_id": member.id,
+        "runtime_id": runtime.id,
+        "provider_status": if exchange.failure_summary().is_some() { "failed" } else { "succeeded" },
+        "hooks": hooks,
+        "hook_count": hooks.len(),
+        "managed_hook_count": managed_hook_count,
+        "trusted_hook_count": trusted_hook_count,
+        "trust_requested": trust,
+        "trust_write_ref": trust_write_ref,
+        "trust_write_error": trust_write_error,
+        "blocker": blocker,
+        "stdout_ref": exchange.stdout_ref,
+        "stderr_ref": exchange.stderr_ref,
+        "evidence_id": evidence.id
     }))
 }
 
@@ -2025,15 +2169,23 @@ fn build_thread_start_request(member: &AgentMember, request_id: &str) -> serde_j
             .map(|path| path.display().to_string())
     });
     let developer_instructions = provider_developer_instructions(member);
+    let mut params = serde_json::Map::new();
+    insert_optional_string(&mut params, "cwd", cwd);
+    insert_optional_string(&mut params, "model", member.model.clone());
+    params.insert(
+        "developerInstructions".into(),
+        serde_json::Value::String(developer_instructions),
+    );
+    params.insert("ephemeral".into(), serde_json::Value::Bool(false));
+    if let Some(permissions) = codex_permissions_selection(member) {
+        params.insert("permissions".into(), permissions);
+    } else if let Some(sandbox) = member.provider_config.sandbox_policy.as_deref() {
+        params.insert("sandbox".into(), serde_json::Value::String(sandbox.into()));
+    }
     serde_json::json!({
         "id": request_id,
         "method": "thread/start",
-        "params": {
-            "cwd": cwd,
-            "model": member.model.clone(),
-            "developerInstructions": developer_instructions,
-            "ephemeral": false
-        }
+        "params": params
     })
 }
 
@@ -2055,26 +2207,94 @@ fn build_turn_start_request(
     thread_id: &str,
     request_id: &str,
 ) -> serde_json::Value {
+    let mut params = serde_json::Map::new();
+    params.insert(
+        "threadId".into(),
+        serde_json::Value::String(thread_id.into()),
+    );
+    params.insert("input".into(), build_turn_input(message));
+    insert_optional_string(&mut params, "cwd", member.worktree_ref.clone());
+    insert_optional_string(
+        &mut params,
+        "approvalPolicy",
+        member.provider_config.approval_policy.clone(),
+    );
+    insert_optional_string(
+        &mut params,
+        "approvalsReviewer",
+        member.provider_config.approvals_reviewer.clone(),
+    );
+    insert_optional_string(
+        &mut params,
+        "serviceTier",
+        member.provider_config.service_tier.clone(),
+    );
+    insert_optional_string(
+        &mut params,
+        "collaborationMode",
+        member.provider_config.collaboration_mode.clone(),
+    );
+    if let Some(permissions) = codex_permissions_selection(member) {
+        params.insert("permissions".into(), permissions);
+    } else if let Some(sandbox) = codex_sandbox_policy(member) {
+        params.insert("sandboxPolicy".into(), sandbox);
+    }
     serde_json::json!({
         "id": request_id,
         "method": "turn/start",
-        "params": {
-            "threadId": thread_id,
-            "input": build_turn_input(message),
-            "cwd": member.worktree_ref.clone(),
-            "runtimeWorkspaceRoots": optional_vec(&member.runtime_workspace_roots),
-            "permissions": member.permission_profile.clone(),
-            "approvalPolicy": member.provider_config.approval_policy.clone(),
-            "approvalsReviewer": member.provider_config.approvals_reviewer.clone(),
-            "sandboxPolicy": member.provider_config.sandbox_policy.clone(),
-            "serviceTier": member.provider_config.service_tier.clone(),
-            "collaborationMode": member.provider_config.collaboration_mode.clone()
-        }
+        "params": params
     })
 }
 
-fn optional_vec(values: &[String]) -> Option<Vec<String>> {
-    (!values.is_empty()).then(|| values.to_vec())
+fn insert_optional_string(
+    params: &mut serde_json::Map<String, serde_json::Value>,
+    key: &str,
+    value: Option<String>,
+) {
+    if let Some(value) = value {
+        params.insert(key.into(), serde_json::Value::String(value));
+    }
+}
+
+fn codex_permissions_selection(member: &AgentMember) -> Option<serde_json::Value> {
+    member
+        .permission_profile
+        .as_ref()
+        .or(member.provider_config.permission_profile.as_ref())
+        .map(|profile| {
+            serde_json::json!({
+                "type": "profile",
+                "id": profile,
+                "modifications": serde_json::Value::Null
+            })
+        })
+}
+
+fn codex_sandbox_policy(member: &AgentMember) -> Option<serde_json::Value> {
+    let policy = member.provider_config.sandbox_policy.as_deref()?;
+    match policy {
+        "danger-full-access" | "dangerFullAccess" => {
+            Some(serde_json::json!({"type": "dangerFullAccess"}))
+        }
+        "read-only" | "readOnly" => Some(serde_json::json!({
+            "type": "readOnly",
+            "networkAccess": false
+        })),
+        "workspace-write" | "workspaceWrite" => {
+            let writable_roots = member
+                .runtime_workspace_roots
+                .iter()
+                .chain(member.provider_config.runtime_workspace_roots.iter())
+                .cloned()
+                .collect::<Vec<_>>();
+            Some(serde_json::json!({
+                "type": "workspaceWrite",
+                "networkAccess": false,
+                "writableRoots": writable_roots
+            }))
+        }
+        other => Some(serde_json::json!({"type": other})),
+    }
 }
 
 fn build_turn_input(message: &Message) -> serde_json::Value {
@@ -2276,6 +2496,107 @@ fn jsonrpc_error_messages(values: &[serde_json::Value]) -> Vec<String> {
                 .unwrap_or_else(|| summarize_json_value(error))
         })
         .collect()
+}
+
+fn hooks_from_list_response(
+    values: &[serde_json::Value],
+    request_id: &str,
+) -> Vec<serde_json::Value> {
+    for value in values {
+        if value.get("id").and_then(|id| id.as_str()) != Some(request_id) {
+            continue;
+        }
+        let Some(data) = value
+            .get("result")
+            .and_then(|result| result.get("data"))
+            .and_then(|data| data.as_array())
+        else {
+            continue;
+        };
+        return data
+            .iter()
+            .flat_map(|entry| {
+                entry
+                    .get("hooks")
+                    .and_then(|hooks| hooks.as_array())
+                    .cloned()
+                    .unwrap_or_default()
+            })
+            .collect();
+    }
+    Vec::new()
+}
+
+fn build_hooks_list_request(request_id: &str, cwd: Option<&str>) -> serde_json::Value {
+    let cwds = cwd.map(|cwd| vec![cwd.to_string()]).unwrap_or_default();
+    serde_json::json!({
+        "id": request_id,
+        "method": "hooks/list",
+        "params": {
+            "cwds": cwds
+        }
+    })
+}
+
+fn build_hooks_trust_request(
+    request_id: &str,
+    hooks: &[serde_json::Value],
+) -> CliResult<serde_json::Value> {
+    let mut hook_state = serde_json::Map::new();
+    for hook in hooks {
+        let Some(key) = hook.get("key").and_then(|value| value.as_str()) else {
+            continue;
+        };
+        let Some(current_hash) = hook.get("currentHash").and_then(|value| value.as_str()) else {
+            continue;
+        };
+        hook_state.insert(
+            key.to_string(),
+            serde_json::json!({
+                "enabled": true,
+                "trusted_hash": current_hash
+            }),
+        );
+    }
+    if hook_state.is_empty() {
+        return Err(CliError::Usage(
+            "hooks/list returned hooks without key/currentHash trust metadata".into(),
+        ));
+    }
+    Ok(serde_json::json!({
+        "id": request_id,
+        "method": "config/batchWrite",
+        "params": {
+            "edits": [{
+                "keyPath": "hooks.state",
+                "value": serde_json::Value::Object(hook_state),
+                "mergeStrategy": "upsert"
+            }],
+            "reloadUserConfig": true
+        }
+    }))
+}
+
+fn hooks_trust_edit_count(request: &serde_json::Value) -> usize {
+    request
+        .get("params")
+        .and_then(|params| params.get("edits"))
+        .and_then(|edits| edits.as_array())
+        .map(|edits| edits.len())
+        .unwrap_or(0)
+}
+
+fn hook_is_managed(hook: &serde_json::Value) -> bool {
+    hook.get("isManaged").and_then(|value| value.as_bool()) == Some(true)
+        || hook.get("trustStatus").and_then(|value| value.as_str()) == Some("managed")
+        || hook_is_trusted(hook)
+}
+
+fn hook_is_trusted(hook: &serde_json::Value) -> bool {
+    matches!(
+        hook.get("trustStatus").and_then(|value| value.as_str()),
+        Some("trusted" | "managed")
+    )
 }
 
 fn turn_exchange_confirms_turn_start(values: &[serde_json::Value], request_id: &str) -> bool {
@@ -3684,8 +4005,6 @@ fn add_codex_hook_config(
         ("PermissionRequest", "*"),
         ("PreToolUse", "*"),
         ("PostToolUse", "*"),
-        ("SubagentStart", "*"),
-        ("SubagentStop", "*"),
         ("Stop", "*"),
     ];
     for (event_name, matcher) in hook_specs {
@@ -3737,10 +4056,10 @@ fn start_codex_runtime(store: &HarnessStore, member: &AgentMember) -> CliResult<
         args.push("--disable".into());
         args.push("plugin_hooks".into());
     }
-    if env::var("HARNESS_CODEX_ENABLE_SESSION_HOOK_CONFIG")
+    if env::var("HARNESS_CODEX_DISABLE_SESSION_HOOK_CONFIG")
         .ok()
         .as_deref()
-        == Some("1")
+        != Some("1")
     {
         add_codex_hook_config(&mut args, &member.id, &runtime_id)?;
     }
@@ -3857,20 +4176,21 @@ fn json_str(value: &serde_json::Value, key: &str) -> Option<String> {
 
 fn codex_hook_summary(hook_event_name: &str, payload: &serde_json::Value) -> String {
     match hook_event_name {
-        "SessionStart" => format!(
+        "SessionStart" | "sessionStart" => format!(
             "Codex SessionStart hook source={}",
             json_str(payload, "source").unwrap_or_else(|| "unknown".into())
         ),
-        "PreToolUse" | "PostToolUse" | "PermissionRequest" => format!(
+        "PreToolUse" | "PostToolUse" | "PermissionRequest" | "preToolUse" | "postToolUse"
+        | "permissionRequest" => format!(
             "Codex {hook_event_name} hook tool={}",
             json_str(payload, "tool_name").unwrap_or_else(|| "unknown".into())
         ),
-        "SubagentStart" | "SubagentStop" => format!(
+        "SubagentStart" | "SubagentStop" | "subagentStart" | "subagentStop" => format!(
             "Codex {hook_event_name} hook child={} type={}",
             json_str(payload, "agent_id").unwrap_or_else(|| "unknown".into()),
             json_str(payload, "agent_type").unwrap_or_else(|| "unknown".into())
         ),
-        "Stop" => format!(
+        "Stop" | "stop" => format!(
             "Codex Stop hook turn={}",
             json_str(payload, "turn_id").unwrap_or_else(|| "unknown".into())
         ),
