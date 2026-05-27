@@ -3,11 +3,11 @@
 The Agent Dashboard is the harness control-plane UI. It reads canonical state
 from the Rust harness snapshot/API and derives operator-friendly views.
 
-This is the app-local frontend architecture document. Product-level Dashboard
-purpose and acceptance stay in [../../docs/dashboard.md](../../docs/dashboard.md).
-The framework decision stays in
-[../../docs/decisions/0014-react-vite-agent-dashboard.md](../../docs/decisions/0014-react-vite-agent-dashboard.md).
-Run and build commands stay in [README.md](README.md).
+This is the canonical frontend architecture document for the Agent Dashboard
+module. Product-level Dashboard purpose and acceptance stay in
+[../dashboard.md](../dashboard.md). The framework decision stays in
+[../decisions/0014-react-vite-agent-dashboard.md](../decisions/0014-react-vite-agent-dashboard.md).
+Run and build commands stay in [runbook.md](runbook.md).
 
 ## Source Boundary
 
@@ -25,7 +25,7 @@ Rust/schema/CI gate.
 ## Frontend Stack
 
 Decision: React + TypeScript + Vite. See
-[../../docs/decisions/0014-react-vite-agent-dashboard.md](../../docs/decisions/0014-react-vite-agent-dashboard.md).
+[../decisions/0014-react-vite-agent-dashboard.md](../decisions/0014-react-vite-agent-dashboard.md).
 
 Reasons:
 

@@ -13,6 +13,9 @@
 | Provider-neutral Agent Runtime Object Model | [agent-runtime.md](agent-runtime.md) |
 | Agent control plane, lifecycle, queues, and Dashboard operations | [agent-control-plane.md](agent-control-plane.md) |
 | Agent Dashboard information architecture | [dashboard.md](dashboard.md) |
+| Agent Dashboard frontend architecture | [dashboard/frontend-architecture.md](dashboard/frontend-architecture.md) |
+| Agent Dashboard read model | [dashboard/read-model.md](dashboard/read-model.md) |
+| Agent Dashboard runbook | [dashboard/runbook.md](dashboard/runbook.md) |
 | Git, PR, worktree, review, and decision workflow | [workflow-git-pr.md](workflow-git-pr.md) |
 | Goal learning loop and reusable cases | [goal-learning-loop.md](goal-learning-loop.md) |
 | Provider integration rules | [integration/README.md](integration/README.md) |
@@ -36,3 +39,8 @@ integrating project repository, not in the generic core docs.
 
 Keep docs merged until a file is stable above roughly 500 lines, has a clearly
 different reader, or is consumed by CI/tooling.
+
+Canonical repository documentation belongs under `docs/`. Module internals may
+use `docs/<module>/` when the parent module is too large or has different
+readers. App and package directories should not become parallel documentation
+systems; they should contain implementation files and generated artifacts.

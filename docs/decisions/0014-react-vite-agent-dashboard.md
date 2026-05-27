@@ -65,5 +65,9 @@ working before adding mutating Dashboard actions.
 Document ownership:
 
 - `docs/dashboard.md` owns product-level Dashboard design and acceptance.
-- `apps/agent-dashboard/ARCHITECTURE.md` owns app-local frontend architecture.
-- `apps/agent-dashboard/README.md` owns run and build instructions.
+- `docs/dashboard/frontend-architecture.md` owns app-local frontend architecture.
+- `docs/dashboard/read-model.md` owns Dashboard read-model and warning projection rules.
+- `docs/dashboard/runbook.md` owns run and build instructions.
+
+The `apps/agent-dashboard/` directory must not hold canonical Dashboard docs.
+It contains source, configuration, and static build output.

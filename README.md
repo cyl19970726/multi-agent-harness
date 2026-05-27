@@ -56,6 +56,8 @@ checks.
 - [Agent Runtime](docs/agent-runtime.md)
 - [Agent Control Plane](docs/agent-control-plane.md)
 - [Agent Dashboard](docs/dashboard.md)
+- [Agent Dashboard Frontend Architecture](docs/dashboard/frontend-architecture.md)
+- [Agent Dashboard Runbook](docs/dashboard/runbook.md)
 - [Git / PR Workflow](docs/workflow-git-pr.md)
 - [Provider Integrations](docs/integration/README.md)
 - [Goal Learning Loop](docs/goal-learning-loop.md)

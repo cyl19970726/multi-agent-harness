@@ -124,9 +124,13 @@ mixed with frontend implementation details:
 | Document | Owns | Refuses |
 | --- | --- | --- |
 | `docs/dashboard.md` | product-level Dashboard purpose, information architecture, backward data requirements, user-facing acceptance | component folder layout, package commands, framework internals |
+| `docs/dashboard/frontend-architecture.md` | Agent Dashboard frontend architecture, component responsibilities, app-local source boundary | product PRD or runbook commands |
+| `docs/dashboard/read-model.md` | read-model projections, goal scope, warning promotion rules | canonical validation rules or Rust implementation |
+| `docs/dashboard/runbook.md` | run, build, snapshot, and live API entry points | architecture rationale or acceptance policy |
 | `docs/decisions/0014-react-vite-agent-dashboard.md` | durable frontend framework decision and consequences | day-to-day runbook or product view inventory |
-| `apps/agent-dashboard/ARCHITECTURE.md` | app-local frontend architecture, read-model boundary, component responsibilities | product PRD or canonical harness state rules |
-| `apps/agent-dashboard/README.md` | run, build, snapshot, and live API entry points | architecture rationale or acceptance policy |
+
+Canonical Dashboard docs live under `docs/`. The app directory contains source,
+configuration, and build output only.
 
 The frontend architecture follows this product boundary:
 

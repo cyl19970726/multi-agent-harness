@@ -278,8 +278,9 @@
         "docs/data-model.md",
         "docs/agent-runtime.md",
         "docs/agent-control-plane.md",
-        "apps/agent-dashboard/README.md",
-        "apps/agent-dashboard/ARCHITECTURE.md"
+        "docs/dashboard/frontend-architecture.md",
+        "docs/dashboard/read-model.md",
+        "docs/dashboard/runbook.md"
       ],
       "machineConsumers": ["check-doc-links", "check-doc-governance"],
       "reviewAfter": "2026-06-26",
@@ -287,7 +288,7 @@
       "reorgTrigger": "Dashboard views, read models, safe actions, or workflow visibility requirements change."
     },
     {
-      "path": "apps/agent-dashboard/ARCHITECTURE.md",
+      "path": "docs/dashboard/frontend-architecture.md",
       "ownerRole": "frontend-architecture",
       "status": "planned",
       "lifecycle": "volatile",
@@ -298,8 +299,9 @@
       ],
       "dependsOn": [
         "docs/dashboard.md",
+        "docs/dashboard/read-model.md",
+        "docs/dashboard/runbook.md",
         "docs/decisions/0014-react-vite-agent-dashboard.md",
-        "apps/agent-dashboard/README.md",
         "apps/agent-dashboard/vite.config.ts",
         "apps/agent-dashboard/src/types.ts",
         "apps/agent-dashboard/src/readModel.ts",
@@ -309,6 +311,52 @@
       "reviewAfter": "2026-06-26",
       "lastVerifiedWith": ["npx pnpm@9.15.4 check"],
       "reorgTrigger": "Frontend stack, build output, Dashboard read model, or static/live loading boundary changes."
+    },
+    {
+      "path": "docs/dashboard/read-model.md",
+      "ownerRole": "frontend-architecture",
+      "status": "planned",
+      "lifecycle": "volatile",
+      "canonicalFor": [
+        "Agent Dashboard read-model projections",
+        "goal-scoped Dashboard filtering",
+        "advisory warning ownership",
+        "warning promotion rules"
+      ],
+      "dependsOn": [
+        "docs/dashboard.md",
+        "docs/dashboard/frontend-architecture.md",
+        "docs/data-model.md",
+        "apps/agent-dashboard/src/types.ts",
+        "apps/agent-dashboard/src/readModel.ts",
+        "apps/agent-dashboard/src/warnings.ts"
+      ],
+      "machineConsumers": ["check-doc-links", "check-doc-governance"],
+      "reviewAfter": "2026-06-26",
+      "lastVerifiedWith": ["npx pnpm@9.15.4 check"],
+      "reorgTrigger": "Dashboard warning logic, read-model selectors, or canonical promotion rules change."
+    },
+    {
+      "path": "docs/dashboard/runbook.md",
+      "ownerRole": "operations",
+      "status": "planned",
+      "lifecycle": "volatile",
+      "canonicalFor": [
+        "Agent Dashboard run instructions",
+        "snapshot loading",
+        "live API startup",
+        "frontend build commands"
+      ],
+      "dependsOn": [
+        "docs/dashboard.md",
+        "docs/dashboard/frontend-architecture.md",
+        "apps/agent-dashboard/vite.config.ts",
+        "package.json"
+      ],
+      "machineConsumers": ["check-doc-links", "check-doc-governance"],
+      "reviewAfter": "2026-06-26",
+      "lastVerifiedWith": ["npx pnpm@9.15.4 check"],
+      "reorgTrigger": "Dashboard run commands, API port, build output, or static artifact workflow changes."
     },
     {
       "path": "docs/workflow-git-pr.md",

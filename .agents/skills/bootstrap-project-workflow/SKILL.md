@@ -311,6 +311,12 @@ Docs should grow with project state:
 - split when reader, lifecycle, module, or machine consumer differs;
 - split when a key module's internal details make the parent diagram
   unreadable;
+- keep canonical project docs in the project's docs tree, such as
+  `docs/<module>/`, unless the repository has an explicit different
+  convention;
+- avoid turning app, package, or implementation directories into parallel
+  canonical documentation systems; local README files should be pointers or
+  operational entry points, not architecture source of truth;
 - use `docs/integration/<provider>.md` for provider-specific integrations;
 - reorg when the tree no longer reflects system layers, relationships, or
   evidence flow;

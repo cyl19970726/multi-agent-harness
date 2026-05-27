@@ -90,6 +90,7 @@ The documentation structure should mirror the system thinking:
 | `docs/data-model.md` | Source-of-truth rules, projections, and task graph edges. |
 | `docs/agent-runtime.md` | Provider-neutral Agent Runtime Object Model and interfaces. |
 | `docs/dashboard.md` | Dashboard information architecture and backward data requirements. |
+| `docs/dashboard/` | Dashboard module internals such as frontend architecture, read model, and runbook. |
 | `docs/workflow-git-pr.md` | Task, worktree, branch, PR, proposal, review, and decision flow. |
 | `docs/integration/README.md` | Provider integration boundaries and provider-specific doc template. |
 | `docs/goal-learning-loop.md` | How completed goals become evaluator output and reusable examples. |
@@ -104,6 +105,12 @@ The documentation tree should grow with the project's real state. Keep it flat
 while ideas are unstable; split when readers, lifecycles, modules, or machine
 consumers become stable. Reorganize when the current tree no longer reflects
 the system's actual layers, module relationships, or evidence flow.
+
+Canonical repository docs live under `docs/`. When a module needs deeper
+details, create `docs/<module>/` rather than putting canonical architecture or
+runbook documents beside implementation files. App and package directories can
+contain source, configuration, and generated artifacts, but should not become a
+parallel documentation tree.
 
 ## Design Review Questions
 

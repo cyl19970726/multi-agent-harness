@@ -476,7 +476,7 @@ fn message_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
             print_json(&message)?;
         }
         "list" => {
-            let mut messages = store.messages()?;
+            let mut messages = latest_messages_in_append_order(store)?;
             if let Some(channel) = value(args, "--channel") {
                 messages.retain(|message| message.channel.as_deref() == Some(channel.as_str()));
             }
@@ -815,7 +815,7 @@ fn dashboard_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
 
 fn board_command(store: &HarnessStore) -> CliResult<()> {
     let tasks = latest_tasks(store)?;
-    let messages = store.messages()?;
+    let messages = latest_messages_in_append_order(store)?;
     let evidence = store.evidence()?;
     let decisions = store.decisions()?;
     let sessions = latest_provider_sessions_in_append_order(store)?;
@@ -4149,7 +4149,7 @@ fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::Value> {
     let teams = latest_teams(store)?;
     let runtimes = latest_runtimes(store)?;
     let proposals = latest_proposals(store)?;
-    let messages = store.messages()?;
+    let messages = latest_messages_in_append_order(store)?;
     let events = store.events()?;
     let evidence = store.evidence()?;
     let decisions = store.decisions()?;
@@ -4256,13 +4256,17 @@ fn latest_member(store: &HarnessStore, member_id: &str) -> CliResult<AgentMember
 }
 
 fn latest_message(store: &HarnessStore, message_id: &str) -> CliResult<Message> {
+    latest_messages(store)?
+        .remove(message_id)
+        .ok_or_else(|| CliError::Usage(format!("message not found: {message_id}")))
+}
+
+fn latest_messages(store: &HarnessStore) -> CliResult<BTreeMap<String, Message>> {
     let mut messages = BTreeMap::new();
     for message in store.messages()? {
         messages.insert(message.id.clone(), message);
     }
-    messages
-        .remove(message_id)
-        .ok_or_else(|| CliError::Usage(format!("message not found: {message_id}")))
+    Ok(messages)
 }
 
 fn latest_goals(store: &HarnessStore) -> CliResult<BTreeMap<String, Goal>> {
@@ -4294,6 +4298,20 @@ fn latest_provider_sessions_in_append_order(
     Ok(session_ids
         .into_iter()
         .filter_map(|id| sessions_by_id.remove(&id))
+        .collect())
+}
+
+fn latest_messages_in_append_order(store: &HarnessStore) -> CliResult<Vec<Message>> {
+    let mut message_ids = Vec::new();
+    let mut messages_by_id = BTreeMap::new();
+    for message in store.messages()? {
+        message_ids.retain(|id| id != &message.id);
+        message_ids.push(message.id.clone());
+        messages_by_id.insert(message.id.clone(), message);
+    }
+    Ok(message_ids
+        .into_iter()
+        .filter_map(|id| messages_by_id.remove(&id))
         .collect())
 }
 
@@ -5699,6 +5717,48 @@ mod tests {
         assert_eq!(
             sessions[0].get("status").and_then(|value| value.as_str()),
             Some("succeeded")
+        );
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn dashboard_snapshot_uses_latest_message_per_id() {
+        let root =
+            std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("messages")));
+        let store = HarnessStore::new(&root);
+        let mut message = Message {
+            id: "message-1".into(),
+            task_id: Some("task-1".into()),
+            from_agent_id: "leader".into(),
+            to_agent_id: Some("agent-1".into()),
+            channel: Some("assignment".into()),
+            kind: MessageKind::Task,
+            delivery_status: MessageDeliveryStatus::Queued,
+            content: "Assign task".into(),
+            evidence_ids: Vec::new(),
+            created_at: "unix-ms:1".into(),
+            delivery: None,
+        };
+        store
+            .append_message(&message)
+            .expect("append queued message");
+        message.delivery_status = MessageDeliveryStatus::Acknowledged;
+        store
+            .append_message(&message)
+            .expect("append acknowledged message");
+
+        let snapshot = dashboard_snapshot(&store).expect("dashboard snapshot");
+        let messages = snapshot
+            .get("messages")
+            .and_then(|value| value.as_array())
+            .expect("messages");
+        assert_eq!(messages.len(), 1);
+        assert_eq!(
+            messages[0]
+                .get("delivery_status")
+                .and_then(|value| value.as_str()),
+            Some("acknowledged")
         );
 
         let _ = std::fs::remove_dir_all(root);
