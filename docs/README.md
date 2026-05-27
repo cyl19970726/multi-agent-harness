@@ -17,10 +17,10 @@
 | Goal learning loop and reusable cases | [goal-learning-loop.md](goal-learning-loop.md) |
 | Provider integration rules | [integration/README.md](integration/README.md) |
 | Codex provider integration | [integration/codex.md](integration/codex.md) |
-| Codex source-audit runtime notes | [codex-agent-runtime.md](codex-agent-runtime.md) |
+| Codex source-audit findings | [integration/codex-source-audit.md](integration/codex-source-audit.md) |
 | Operations | [operations.md](operations.md) |
 | Schemas and minimal object contracts | [schemas.md](schemas.md) |
-| Design decisions | [decisions.md](decisions.md) |
+| Design decisions | [decisions/README.md](decisions/README.md) |
 
 Project-specific tool usage belongs in `examples/adapters/**` or in the
 integrating project repository, not in the generic core docs.

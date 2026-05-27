@@ -22,10 +22,10 @@
         "docs/goal-learning-loop.md",
         "docs/integration/README.md",
         "docs/integration/codex.md",
-        "docs/codex-agent-runtime.md",
+        "docs/integration/codex-source-audit.md",
         "docs/operations.md",
         "docs/schemas.md",
-        "docs/decisions.md"
+        "docs/decisions/README.md"
       ],
       "machineConsumers": ["check-doc-links", "check-doc-governance"],
       "reviewAfter": "2026-08-26",
@@ -69,10 +69,10 @@
         "docs/goal-learning-loop.md",
         "docs/integration/README.md",
         "docs/integration/codex.md",
-        "docs/codex-agent-runtime.md",
+        "docs/integration/codex-source-audit.md",
         "docs/operations.md",
         "docs/schemas.md",
-        "docs/decisions.md"
+        "docs/decisions/README.md"
       ],
       "machineConsumers": ["check-doc-links", "check-doc-governance"],
       "reviewAfter": "2026-08-26",
@@ -92,9 +92,12 @@
         "docs/core-modules.md",
         "docs/data-model.md",
         "docs/agent-runtime.md",
+        "docs/agent-control-plane.md",
         "docs/dashboard.md",
         "docs/workflow-git-pr.md",
-        "docs/goal-learning-loop.md"
+        "docs/goal-learning-loop.md",
+        "docs/integration/README.md",
+        "docs/decisions/README.md"
       ],
       "machineConsumers": ["check-doc-links", "check-doc-governance"],
       "reviewAfter": "2026-08-26",
@@ -115,9 +118,10 @@
         "docs/architecture.md",
         "docs/data-model.md",
         "docs/agent-runtime.md",
+        "docs/agent-control-plane.md",
         "docs/dashboard.md",
         "docs/workflow-git-pr.md",
-        "docs/codex-agent-runtime.md",
+        "docs/integration/codex.md",
         "docs/operations.md",
         "examples/adapters/earning-engine/README.md"
       ],
@@ -180,7 +184,6 @@
         "docs/agent-control-plane.md",
         "docs/integration/README.md",
         "docs/integration/codex.md",
-        "docs/codex-agent-runtime.md",
         "docs/goal-learning-loop.md"
       ],
       "machineConsumers": ["check-doc-links", "check-doc-governance"],
@@ -297,7 +300,7 @@
         "docs/concept-model.md",
         "docs/data-model.md",
         "docs/architecture.md",
-        "docs/decisions.md"
+        "docs/decisions/README.md"
       ],
       "machineConsumers": ["check-doc-links", "check-doc-governance"],
       "reviewAfter": "2026-06-26",
@@ -324,7 +327,7 @@
         "docs/agent-runtime.md",
         "docs/dashboard.md",
         "docs/schemas.md",
-        "docs/codex-agent-runtime.md"
+        "docs/integration/codex.md"
       ],
       "machineConsumers": ["check-doc-links", "check-doc-governance"],
       "reviewAfter": "2026-06-26",
@@ -381,7 +384,7 @@
         "docs/agent-runtime.md",
         "docs/integration/README.md",
         "docs/architecture.md",
-        "docs/codex-agent-runtime.md",
+        "docs/integration/codex-source-audit.md",
         "docs/mvp.md",
         "docs/schemas.md"
       ],
@@ -397,24 +400,20 @@
       "reorgTrigger": "Codex provider surfaces, app-server protocol, hook behavior, plugin packaging, or fallback strategy changes."
     },
     {
-      "path": "docs/codex-agent-runtime.md",
-      "ownerRole": "architecture",
+      "path": "docs/integration/codex-source-audit.md",
+      "ownerRole": "provider-integration",
       "status": "planned",
       "lifecycle": "volatile",
-      "canonicalFor": ["persistent Codex AgentMember runtime", "Codex app-server integration", "agent runtime events"],
+      "canonicalFor": ["Codex source findings", "Codex app-server audit", "provider integration refresh notes"],
       "dependsOn": [
         "docs/agent-runtime.md",
-        "docs/architecture.md",
-        "docs/agent-control-plane.md",
         "docs/integration/codex.md",
-        "docs/mvp.md",
-        "docs/schemas.md",
-        "apps/agent-dashboard/README.md"
+        "docs/decisions/README.md"
       ],
       "machineConsumers": ["check-doc-links", "check-doc-governance"],
       "reviewAfter": "2026-06-26",
-      "lastVerifiedWith": ["codex app-server generate-ts --experimental", "codex features list"],
-      "reorgTrigger": "Codex app-server protocol changes, AgentRuntime schemas stabilize, or Dashboard realtime API is implemented."
+      "lastVerifiedWith": ["Codex source audit", "npx pnpm@9.15.4 check"],
+      "reorgTrigger": "Codex app-server protocol, hooks, plugins, native subagents, or permission behavior changes."
     },
     {
       "path": "docs/operations.md",
@@ -441,7 +440,7 @@
       "reorgTrigger": "Schemas, core Rust types, or contract maturity labels change."
     },
     {
-      "path": "docs/decisions.md",
+      "path": "docs/decisions/README.md",
       "ownerRole": "architecture",
       "status": "stable",
       "lifecycle": "stable",
@@ -453,7 +452,7 @@
         "docs/dashboard.md",
         "docs/workflow-git-pr.md",
         "docs/integration/codex.md",
-        "docs/codex-agent-runtime.md"
+        "docs/integration/codex-source-audit.md"
       ],
       "machineConsumers": ["check-doc-links", "check-doc-governance"],
       "reviewAfter": "2026-08-26",

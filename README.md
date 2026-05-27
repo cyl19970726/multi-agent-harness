@@ -62,7 +62,7 @@ checks.
 - [Codex Integration](docs/integration/codex.md)
 - [Operations](docs/operations.md)
 - [Schemas](docs/schemas.md)
-- [Decisions](docs/decisions.md)
+- [Decisions](docs/decisions/README.md)
 
 ## Skills
 

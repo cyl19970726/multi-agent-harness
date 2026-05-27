@@ -28,7 +28,7 @@ Read only what the task needs:
 - Goal learning loop: `docs/goal-learning-loop.md`
 - Operations and CI: `docs/operations.md`
 - Schemas and minimal object contracts: `docs/schemas.md`
-- Decisions: `docs/decisions.md`
+- Decisions: `docs/decisions/README.md`
 
 ## Rules
 

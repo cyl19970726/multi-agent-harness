@@ -95,7 +95,7 @@ The documentation structure should mirror the system thinking:
 | `docs/goal-learning-loop.md` | How completed goals become evaluator output and reusable examples. |
 | `docs/operations.md` | How the system is run, checked, released, and recovered. |
 | `docs/schemas.md` | Machine-readable contracts that stabilize the workflow. |
-| `docs/decisions.md` | Durable tradeoffs that future agents should not re-litigate casually. |
+| `docs/decisions/` | Durable tradeoffs that future agents should not re-litigate casually. |
 | `.agents/skills/` | Operational knowledge that tells agents how to use the project and improve it. |
 
 If a document does not map to a design role, it should not exist yet.

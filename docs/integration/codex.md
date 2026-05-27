@@ -11,6 +11,10 @@ This file should explain only how Codex implements those contracts. Shared
 object semantics such as `Task`, `Message`, `Evidence`, `Proposal`, and
 `Decision` must not be redefined here.
 
+Detailed source-audit notes live in
+[codex-source-audit.md](codex-source-audit.md). Keep long source findings out
+of this integration contract unless they change the provider boundary.
+
 ## 核心结论
 
 V1 主方案是：

@@ -91,6 +91,78 @@ changes acceptance or safety, it belongs in schema/CLI/API and eventually CI.
 Dashboard actions must update canonical harness objects. A UI action that only
 changes local display state cannot be the source of truth.
 
+## Product Layout
+
+The first Dashboard should be a work surface, not a landing page. The default
+screen should answer "what is happening now and what needs a decision?"
+
+```text
+left rail:
+  goals
+  task boards
+  teams
+  provider sessions
+  decisions
+
+main work area:
+  selected goal
+  task graph / Kanban
+  selected task detail
+
+right rail:
+  member roster
+  inbox/outbox
+  warnings
+  latest evidence and decisions
+```
+
+## Task Detail Panel
+
+Selecting a task should show:
+
+- objective and acceptance criteria;
+- owner, assignee, reviewer, dependencies, parent, and follow-ups;
+- assignment messages and delivery state;
+- current member/runtime handling the task;
+- workspace, branch, PR, and owned paths;
+- reports, evidence refs, proposal, review, and Leader decision;
+- warnings for missing assignment, missing evidence, stale runtime, failed
+  provider session, path conflict, or missing evaluation.
+
+This panel is the primary way to verify that a task was really run through the
+harness rather than backfilled after local work.
+
+## Agent Member Panel
+
+Selecting a member should show:
+
+- id, name, description, role, team, prompt ref, skill refs, capabilities;
+- provider, runtime id, health layers, control endpoint, provider thread id;
+- current task, current proposal, queue length, latest event age;
+- permission profile, workspace roots, approval state, and forbidden actions;
+- provider sessions and child threads;
+- messages sent to and from the member.
+
+The member panel should make one-shot provider output visibly different from a
+durable harness `AgentMember`.
+
+## Warnings
+
+Warnings are product features because they expose harness failure modes.
+
+| Warning | Trigger |
+| --- | --- |
+| Fake assignment risk | task has assignee but no prior delivered task message |
+| Missing evidence | proposal or decision references no valid evidence |
+| Stale runtime | runtime has no recent event or failed protocol health |
+| Failed delivery | latest task message delivery failed or lacks terminal status |
+| Path conflict | task changed paths outside owned scope or overlaps active task |
+| Provider-only claim | provider output exists but no report/evidence/proposal was recorded |
+| Missing evaluation | goal is closing without goal evaluation or waiver |
+
+Warnings should link to repair actions: send message, retry delivery, attach
+evidence, request review, split task, record decision, or create follow-up.
+
 ## UI/UX Direction
 
 The first product shape should be operational and dense:
@@ -105,6 +177,18 @@ The Dashboard should link to project dashboards through adapters instead of
 duplicating domain UI. For example, a strategy adapter may link to trading
 charts, but the Agent Dashboard still owns task/message/evidence/decision
 visibility.
+
+## Acceptance
+
+Dashboard acceptance requires a fixture or live snapshot that shows:
+
+1. a goal with design and evaluation state;
+2. a task graph or Kanban board with dependencies and blockers;
+3. a member roster with runtime health and message queue state;
+4. assignment messages with delivered or failed status;
+5. provider sessions and runtime events;
+6. proposal, evidence, review, decision, and follow-up visibility;
+7. warnings when any required workflow link is missing.
 
 ## Invariants
 

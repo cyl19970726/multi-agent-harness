@@ -2,8 +2,8 @@
 
 This document defines the provider-neutral control plane for durable
 `AgentMember` teams. It sits between the product architecture in
-[architecture.md](architecture.md) and the Codex-specific runtime details in
-[codex-agent-runtime.md](codex-agent-runtime.md).
+[architecture.md](architecture.md) and provider-specific implementations such
+as [integration/codex.md](integration/codex.md).
 
 The design reference is Claude Code Agent Teams: coordinated sessions with a
 shared task list, direct teammate messaging, separate contexts, and explicit

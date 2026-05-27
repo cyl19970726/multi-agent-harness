@@ -9,7 +9,7 @@ const requiredCoreDocs = [
   "docs/architecture.md",
   "docs/operations.md",
   "docs/schemas.md",
-  "docs/decisions.md"
+  "docs/decisions/README.md"
 ];
 const allowedStatuses = new Set(["idea", "planned", "stable", "deprecated", "archival"]);
 const allowedLifecycles = new Set(["volatile", "stable", "archival"]);

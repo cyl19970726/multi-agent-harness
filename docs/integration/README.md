@@ -61,6 +61,7 @@ Provider
 | Provider | Doc | Status | Role |
 | --- | --- | --- | --- |
 | Codex | [codex.md](codex.md) | planned / implemented in slices | First persistent provider, app-server + hooks + skills + plugin path. |
+| Codex source audit | [codex-source-audit.md](codex-source-audit.md) | planned / reference | Source-level notes that support Codex integration decisions. |
 | Claude Code | not yet created | idea | Future provider implementation when there is concrete integration work. |
 | OpenClaw / cloud agent | not yet created | idea | Future remote or cloud-hosted provider implementation. |
 | Permission Agent | not yet created | idea | Future approval/safety specialist or provider-side permission service. |
