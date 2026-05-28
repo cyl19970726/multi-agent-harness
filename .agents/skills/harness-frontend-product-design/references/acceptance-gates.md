@@ -19,6 +19,9 @@ The frontend must show:
 
 Attach evidence:
 
+- reference to the hard layout implementation spec used for this PR;
+- spec path, normally `docs/dashboard/hard-layout-specs/<slice>.md`, plus the
+  Reviewer `continue` decision;
 - desktop screenshot, normally 1440 x 1000;
 - tablet screenshot, normally 900 x 1180;
 - mobile screenshot, normally 390 x 844;
@@ -28,6 +31,11 @@ Attach evidence:
 - proof that selecting a member shows realtime activity and send-message UI;
 - proof that graph and Kanban/lane projections are both reachable where the
   design claims they exist.
+- proof that the first viewport matches the selected spec instead of becoming a
+  stacked report, card dump, metrics dashboard, or raw snapshot tool.
+- proof that the screenshot matrix covers default Team workspace, Member
+  detail, Goal/Task document surface, Graph/Kanban, Warnings, and Debug closed
+  default state.
 
 Suggested artifact names:
 
@@ -70,8 +78,14 @@ Check:
 
 Cannot be waived for implementation acceptance:
 
+- missing hard layout implementation spec;
+- missing changed-core-module option loop or Reviewer decision;
+- missing implementation Questioner/Critic screenshot comparison against the
+  hard layout spec;
+- known failed implementation attempt not recorded as rejected;
 - no browser screenshot evidence;
 - primary page is blank or raw/debug-only;
+- primary page reads as a stacked report/card dump instead of a Workbench;
 - runtime JavaScript error on initial load;
 - horizontal overflow on mobile caused by the layout;
 - missing AgentMember realtime/detail surface when the change claims to support

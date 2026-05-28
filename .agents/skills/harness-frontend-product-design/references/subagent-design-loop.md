@@ -1,9 +1,9 @@
 # Subagent Design Loop
 
-Use this variant-first loop for substantial frontend design. Both design
-subagents must first understand the project Vision and final acceptance
-standard. Their output must include a short restatement of the active Vision,
-the selected Goal, and how the Goal should reduce or expose
+Use this variant-first loop for substantial frontend design. Designers,
+Questioner, and Reviewer must first understand the project Vision and final
+acceptance standard. Their output must include a short restatement of the
+active Vision, the selected Goal, and how the Goal should reduce or expose
 distance-to-vision.
 
 ## Execution Contract
@@ -11,10 +11,10 @@ distance-to-vision.
 Use canonical harness objects when this repository is dogfooding itself:
 
 - create or reuse a `Task` for the design work;
-- assign the Designer and Questioner through `Message(kind=task)` or an
-  equivalent harness-visible assignment;
-- record Designer output, Questioner critique, and Decision output as
-  `Evidence`;
+- assign Designers, Questioner, Reviewer, and implementation Questioner/Critic
+  through `Message(kind=task)` or an equivalent harness-visible assignment;
+- record Designer output, Questioner critique, Reviewer output, and
+  implementation Questioner/Critic screenshot comparison as `Evidence`;
 - record accepted/rejected direction as a Leader `Decision`;
 - keep raw prompts and outputs available through evidence files, provider
   sessions, reports, or PR comments.
@@ -28,11 +28,17 @@ Task, Message, Evidence, review, and Decision records.
 Minimum independent-review record:
 
 ```text
-designer_prompt:
-designer_output_ref:
+designer_prompts:
+designer_output_refs:
 questioner_prompt:
 questioner_input_ref: raw design artifact, not Lead conclusions
 questioner_output_ref:
+reviewer_input_refs:
+reviewer_decision_ref:
+implementation_questioner_prompt:
+implementation_questioner_input_refs: screenshots, DOM/console/overflow proof, hard spec
+implementation_questioner_output_ref:
+implementation_questioner_signoff_or_refusal_ref:
 decision_record_ref:
 unresolved_questions:
 next_loop_request:
@@ -41,6 +47,24 @@ next_loop_request:
 The Questioner must receive the design artifact and product docs, not the Lead's
 preferred answer. If the Questioner cannot explain the Vision, selected Goal,
 and acceptance standard in its own words, discard or rerun that review.
+
+## Required Roles
+
+Use distinct subagents when available:
+
+- Designer A/B/C: produce divergent candidate layouts or module options.
+- Questioner: challenges candidates objectively and does not know the Lead's
+  preferred answer.
+- Reviewer: selects one candidate, synthesizes useful borrowed pieces, kills
+  weak options, or requests another round.
+- Implementation Questioner/Critic: checks browser screenshots and working UI
+  during implementation, then sends the work back to design if the result
+  violates the spec.
+
+If only one Designer agent is available, run separate Designer passes with
+different constraints and record them as independent candidates. Do not treat a
+single unconstrained design as enough for a core surface. If distinct Designer
+AgentMembers cannot be used, record why and how independence was preserved.
 
 ## Designer Prompt
 
@@ -57,7 +81,7 @@ component tree is the page map. For every core page, explain why it exists, what
 workflow proof it must show, which canonical objects it owns, and which browser
 evidence will prove it works.
 
-Return exactly three layout variants:
+Return exactly three top-level layout variants:
 
 1. Team workspace first, similar to Feishu/Slack collaboration space.
 2. Goal/Task document workspace first.
@@ -65,13 +89,14 @@ Return exactly three layout variants:
 
 For each variant, include page map, desktop/tablet/mobile layout, key
 components, interaction model, visual style, graph/Kanban treatment,
-Goal/Task document behavior, Dashboard-mounted docs behavior, and risks.
+Goal/Task document behavior, Workbench-mounted docs behavior, and risks.
 
-After a top-level direction is selected, propose 2-3 page-level UI/UX options
-for every high-risk core page. The final design draft must include page specs
-for Vision overview, Team workspace, AgentMember workbench, Goal document, Task
-document, Graph/Kanban view, Docs context, Evidence/Review/Decision,
-Warnings/repair queue, and Debug drawer.
+After a top-level direction is selected, each core module must receive
+multi-candidate treatment. Provide 2-3 UI/UX options for Vision overview, Team
+workspace, AgentMember workbench, Goal document, Task document, Graph/Kanban
+view, Docs context, Evidence/Review/Decision, Warnings/repair queue, Debug
+drawer, and mobile/responsive placement. The final design draft must include
+selected and rejected options for those modules.
 ```
 
 ## Questioner Prompt
@@ -117,9 +142,9 @@ mobile/accessibility quality: 5%
 ```
 ```
 
-## Lead Synthesis
+## Reviewer / Lead Synthesis
 
-The Lead must:
+The Reviewer / Lead must:
 
 - record accepted design decisions in docs;
 - choose one variant or synthesize a hybrid using the explicit rubric;
@@ -136,12 +161,18 @@ The Lead must:
   information with a follow-up task;
 - run a second option loop for high-risk modules after the top-level layout is
   selected, especially Team workspace, AgentMember workbench, Goal document,
-  Task document, Dashboard-mounted docs, Evidence/Decision, Warnings, Debug,
+  Task document, Workbench-mounted docs, Evidence/Decision, Warnings, Debug,
   and responsive placement;
+- for every core module, record which Designer option won, which options were
+  killed, what was borrowed, and whether another Designer round is required;
 - require a complete frontend design draft before implementation, including
   core page discovery, selected/rejected page options, object-to-page mapping,
   visual placement, responsive behavior, read-model needs, and acceptance
   screenshot plan;
+- require a hard layout implementation spec before coding: desktop/tablet/mobile
+  ASCII box diagrams, exact first-viewport content, region dimensions, scroll
+  boundaries, empty/loading states, data density, and browser screenshot
+  checkpoints;
 - record visual placement for every important UI element:
   primary surface, secondary surface, inspector/drawer, and mobile position;
 - turn unresolved questions into follow-up tasks;
@@ -152,9 +183,28 @@ The Lead must:
 - require browser screenshots and web-quality evidence before implementation
   acceptance.
 
+## Implementation Questioner Loop
+
+Implementation keeps a Questioner/Critic in the loop. The Questioner compares
+browser screenshots and DOM behavior against the hard layout spec, not against
+the developer's intent.
+
+Continue implementation only when the Questioner agrees that:
+
+- the first viewport matches the selected Workbench layout;
+- Team/Member/Goal/Task/Graph-Kanban/Docs/Warnings surfaces are reachable in
+  the expected placement;
+- debug/raw state is secondary;
+- desktop, tablet, and mobile layouts do not collapse into a long unstructured
+  report;
+- horizontal overflow is absent;
+- workflow proof is visible without reading raw JSON.
+
+If this fails, stop coding and record a rejected implementation attempt.
+
 ## Multi-Round Review Rules
 
-The Decision Agent / Reviewer is not a one-pass scorer. It may:
+The Reviewer is not a one-pass scorer. It may:
 
 - select one layout as the main direction and still require changes;
 - name specific weaknesses in the selected layout;
@@ -177,6 +227,8 @@ Continue another design -> review round when any of these are true:
   review, decision, or GoalEvaluation;
 - the Reviewer finds unresolved product, schema, API, or read-model questions
   that the Designer can still clarify.
+- implementation screenshots reveal that the accepted spec was too vague or
+  produced a stacked report/card dump instead of a workbench.
 
 End the loop only with a recorded `stop`, `continue`, or `blocked` decision. A
 `stop` decision must explain why further loops would not add useful signal.
@@ -205,6 +257,24 @@ Next refinement loops:
     options_needed:
     decision_owner:
     acceptance_evidence:
+```
+
+## Rejected Implementation Template
+
+Use this when any coded attempt reaches implementation review but fails
+product, layout, browser, overflow, raw-debug, or screenshot acceptance.
+
+```text
+Rejected implementation:
+  branch_or_worktree:
+  commit_or_diff:
+  screenshot_refs:
+  failed_acceptance:
+  why_it_failed:
+  spec_gap_that_allowed_it:
+  code_disposition: keep isolated | revert | replace
+  required_next_loop:
+  reviewer_decision:
 ```
 
 ## Module Refinement Template

@@ -5,36 +5,86 @@ Product-level acceptance stays in [../dashboard.md](../dashboard.md). Local
 commands stay in [runbook.md](runbook.md). The complete frontend design under
 test stays in [frontend-design.md](frontend-design.md).
 
+## Layout Spec Gate
+
+Before implementation acceptance can start, the PR must point to a hard layout
+implementation spec for the slice under test. Specs live under
+`docs/dashboard/hard-layout-specs/<slice>.md` unless a Reviewer records a
+different path in [layout-decisions.md](layout-decisions.md). Each spec needs a
+stable `spec_id`, selected design refs, Reviewer `stop | continue | blocked`
+decision, screenshot matrix, and non-waivable failure checklist.
+
+The spec must define:
+
+- desktop, tablet, and mobile ASCII box diagrams;
+- region dimensions and collapsed regions;
+- first-viewport content;
+- scroll containers and overflow rules;
+- empty, loading, loaded, warning, and error states;
+- data density and text wrapping constraints;
+- explicit forbidden primary surfaces such as raw JSON, card dumps, and
+  unstructured stacked reports;
+- screenshot acceptance for every viewport.
+
+If browser screenshots show that the implementation does not match the hard
+layout spec, the correct action is to stop implementation, record a rejected
+implementation in [layout-decisions.md](layout-decisions.md), and rerun the
+Designer -> Questioner -> Reviewer loop. Do not continue styling the same
+failed direction until the spec gap is fixed.
+
+Missing ASCII diagrams fail the layout spec gate. Prose-only layout descriptions
+are not enough for implementation acceptance.
+
+## Rebuild Boundary Checklist
+
+Renewed Workbench implementation must not restyle the old dashboard structure.
+Every implementation PR must include an import or `rg` audit proving the old
+primary UI is not still driving the first viewport:
+
+- prohibited as primary layout: `SummaryGrid`, always-visible snapshot
+  `textarea`, `RawViews`, old summary/Kanban/detail/raw-view composition, and
+  raw JSON/debug panels outside the collapsed debug drawer or `/debug` route;
+- allowed only after review: pure `types.ts`, API helpers, and read-model
+  selectors that still serve the new hard layout spec;
+- required audit: changed component list, retained imports, removed old primary
+  imports, and evidence that raw snapshot input is not in the primary viewport.
+
+If the PR keeps an old component, it must state whether it is temporary,
+secondary/debug-only, or pure data logic. Otherwise the implementation is a
+failed rebuild boundary.
+
 ## Implementation Sequence
 
 1. Documentation: update Workbench docs before changing component structure or
    CSS.
-2. Rebuild boundary: remove the old summary/Kanban/detail/raw-view product
+2. Layout spec: add the hard layout implementation spec for the slice and get a
+   Reviewer stop/continue decision.
+3. Rebuild boundary: remove the old summary/Kanban/detail/raw-view product
    structure as the basis of the UI. Preserve only stable API/types/read-model
    contracts that still serve the new design.
-3. Read model: add selectors for latest-row message projection, full active
+4. Read model: add selectors for latest-row message projection, full active
    team roster, vision/goal ladder, and member activity timeline.
-4. Shell: replace always-visible snapshot textarea and raw views with a
+5. Shell: replace always-visible snapshot textarea and raw views with a
    collapsed debug drawer.
-5. Vision and goal header: show vision context, goal collection, selected goal,
+6. Vision and goal header: show vision context, goal collection, selected goal,
    goal learning completeness, distance-to-vision, and next-round proposals
    above the task graph.
-6. Goal design and team: expose designed AgentTeam, current active team, role
+7. Goal design and team: expose designed AgentTeam, current active team, role
    gaps, and team adjustments for the selected goal.
-7. Workbench: expose goal graph/lane projections, task graph/lane projections,
+8. Workbench: expose goal graph/lane projections, task graph/lane projections,
    graph revisions, and selected task detail in the main pane.
-8. Inspector: convert stacked member/warnings panels into tabbed inspector.
-9. Member page: add URL-addressable member detail with chronological activity.
-10. Acceptance: verify browser screenshots, console health, no page-level
+9. Inspector: convert stacked member/warnings panels into tabbed inspector.
+10. Member page: add URL-addressable member detail with chronological activity.
+11. Acceptance: verify browser screenshots, console health, no page-level
    horizontal overflow, and actionable warning/member navigation.
 
 ## Browser Evidence
 
 Every layout implementation PR must attach browser evidence:
 
-- desktop screenshot at `1440x900`;
-- tablet screenshot around `900x900`;
-- mobile screenshot around `390x844`;
+- desktop screenshot at `1440x1000`;
+- tablet screenshot at `900x1180`;
+- mobile screenshot at `390x844`;
 - console output showing no React key warnings and no runtime errors;
 - proof that live mode still loads `/v1/snapshot`;
 - proof that selected goal displays vision context, goal collection, and
@@ -45,10 +95,36 @@ Every layout implementation PR must attach browser evidence:
 - proof that selecting a member shows runtime health, queue, current task, and
   activity stream;
 - proof that raw JSON/debug views are collapsed by default;
-- proof that page-level horizontal overflow is absent.
+- proof that page-level horizontal overflow is absent;
+- proof that the implementation matches the hard layout implementation spec, or
+  a rejected implementation record explaining why it does not.
+
+Each viewport matrix must cover the default Team workspace, Member detail,
+Goal/Task document surface, Graph/Kanban surface, Warnings surface, and Debug
+closed default state. A single happy-path homepage screenshot is not enough.
 
 The Workbench is acceptable only when the first viewport looks like an operator
 workbench over harness state, not a stacked report of cards and raw objects.
+
+## Non-Waivable Failures
+
+These fail implementation acceptance and require a rejected implementation
+record or a return to design:
+
+- missing hard layout implementation spec at the agreed docs path;
+- missing changed-core-module option loop or Reviewer decision;
+- missing implementation Questioner/Critic screenshot comparison against the
+  hard layout spec;
+- known failed implementation attempt not recorded as rejected;
+- no browser screenshot evidence;
+- primary page is blank, raw/debug-only, a card dump, or an unstructured stacked
+  report instead of a Workbench;
+- runtime JavaScript error on initial load;
+- horizontal overflow on mobile caused by the layout;
+- missing AgentMember realtime/detail surface when the change claims to support
+  agent observation;
+- old dashboard primary components or imports still drive the first viewport
+  without a Reviewer-approved debug/secondary rationale.
 
 ## Web Quality Skill Gate
 
@@ -78,7 +154,8 @@ Required checks for Workbench layout PRs:
   size, and expensive rendering in large snapshots;
 - run a best-practices pass for console cleanliness, browser errors, modern API
   usage, and security-sensitive UI behavior;
-- include desktop and mobile browser screenshots with the audit summary.
+- include desktop, tablet, and mobile browser screenshots with the audit
+  summary.
 
 Suggested acceptance targets:
 

@@ -422,6 +422,28 @@
       "reorgTrigger": "Workbench shell, route map, page cards, visual placement, safe actions, read-model needs, responsive behavior, implementation sequence, or acceptance pointers change."
     },
     {
+      "path": "docs/dashboard/hard-layout-specs/agent-workbench-shell-v1.md",
+      "ownerRole": "product-design",
+      "status": "planned",
+      "lifecycle": "volatile",
+      "canonicalFor": [
+        "Agent Workbench shell hard layout spec",
+        "Workbench first viewport and region dimensions",
+        "Workbench scroll ownership",
+        "Workbench screenshot acceptance and stop conditions"
+      ],
+      "dependsOn": [
+        "docs/dashboard/frontend-design.md",
+        "docs/dashboard/layout-decisions.md",
+        "docs/dashboard/acceptance.md",
+        ".agents/skills/harness-frontend-product-design/SKILL.md"
+      ],
+      "machineConsumers": ["check-doc-links", "check-doc-governance"],
+      "reviewAfter": "2026-06-26",
+      "lastVerifiedWith": ["npx pnpm@9.15.4 check"],
+      "reorgTrigger": "Workbench shell dimensions, first viewport content, scroll ownership, module placement, or screenshot acceptance changes."
+    },
+    {
       "path": "docs/dashboard/frontend-architecture.md",
       "ownerRole": "frontend-architecture",
       "status": "planned",
