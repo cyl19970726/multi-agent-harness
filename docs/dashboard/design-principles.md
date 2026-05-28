@@ -1,12 +1,13 @@
-# Agent Dashboard Design Principles
+# Agent Workbench Design Principles
 
-This document owns the core UI/UX principles for the Agent Dashboard. Concrete
-screen layout belongs in [ui-ux-layout.md](ui-ux-layout.md). Frontend module
-boundaries belong in [frontend-architecture.md](frontend-architecture.md).
+This document owns the core UI/UX principles for the Agent Workbench. Concrete
+screen layout and page cards belong in
+[frontend-design.md](frontend-design.md). Frontend module boundaries belong in
+[frontend-architecture.md](frontend-architecture.md).
 
 ## Doctrine
 
-The Agent Dashboard is an operator workbench for proving and repairing the
+The Agent Workbench is an operator workbench for proving and repairing the
 harness workflow:
 
 ```text
@@ -28,7 +29,7 @@ transcripts, or hidden chat context. The first screen should answer:
 - whether assignment and reporting happened through messages;
 - which evidence, review, decision, or warning needs operator action.
 
-The Dashboard is not a metric wall. Summary counts can help orientation, but
+The Workbench is not a metric wall. Summary counts can help orientation, but
 they must not push the workflow proof chain below the fold.
 
 The default product feel should be closer to a collaboration workspace than a
@@ -56,7 +57,7 @@ Vision
   -> next proposed Goal / follow-up Task / GoalCase
 ```
 
-| Concept | Meaning | Dashboard responsibility |
+| Concept | Meaning | Workbench responsibility |
 | --- | --- | --- |
 | Vision | Long-lived product or project target state plus final acceptance standard. | Show active vision, goal collection, progress signals, remaining gaps, and whether completed goals moved closer to the vision. |
 | Proposed Goal | Candidate work from Observer, Critic, warning, prior evaluation, adapter evidence, or user request. | Show source evidence, Lead disposition, and whether it became an accepted goal or was rejected/deferred. |
@@ -115,7 +116,7 @@ promotes them to durable AgentMember identity.
 
 ## Collaboration Workspace Model
 
-The Dashboard may use a Feishu/Slack-like shell when that helps operators think
+The Workbench may use a Feishu/Slack-like shell when that helps operators think
 in terms of standing teams:
 
 - left side: teams, active vision, goals, docs, warnings, and debug access;
@@ -138,7 +139,7 @@ a goal branch. File-changing tasks may use task worktrees and task branches
 that PR into the goal branch. Only after the goal is accepted and evaluated
 should the goal branch merge into the production branch.
 
-The Dashboard should place branch, PR, owned-path, and conflict state near
+The Workbench should place branch, PR, owned-path, and conflict state near
 proposal and review surfaces because that is where path violations become
 actionable.
 

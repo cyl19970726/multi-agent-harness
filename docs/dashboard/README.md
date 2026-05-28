@@ -1,19 +1,21 @@
-# Agent Dashboard Docs
+# Agent Workbench Docs
 
-This directory contains the focused documentation for the Agent Dashboard
-control plane. Use the project documentation workflow before adding new
-Dashboard docs: decide which surface owns the claim, then place it there.
+This directory contains the focused documentation for the Agent Workbench
+control plane. The directory keeps the legacy `dashboard` path for current
+commands and links, but the user-facing product surface is a workbench. Use the
+project documentation workflow before adding new Workbench docs: decide which
+surface owns the claim, then place it there.
 
 ## Placement Map
 
 | Path | Owns | Refuses |
 | --- | --- | --- |
-| `../dashboard.md` | Product-level Dashboard purpose, information architecture, object workflow, and user-facing acceptance | Component internals, run commands, detailed layout specs |
-| `README.md` | Dashboard docs map, placement rules, and change order | Product semantics or component implementation |
+| `../dashboard.md` | Product-level Workbench purpose, information architecture, object workflow, and user-facing acceptance | Component internals, run commands, detailed layout specs |
+| `README.md` | Workbench docs map, placement rules, and change order | Product semantics or component implementation |
 | `design-principles.md` | Core frontend design principles, failure modes, graph/Kanban policy, AgentTeam and AgentMember UI doctrine | Route-level layout details or React module boundaries |
-| `layout-variants.md` | Candidate Dashboard layout directions, Designer/Questioner critique, scoring rubric, and decision inputs | Final implementation spec or component internals |
+| `layout-variants.md` | Candidate Workbench layout directions, Designer/Questioner critique, scoring rubric, and decision inputs | Final implementation spec or component internals |
 | `layout-decisions.md` | Accepted layout direction, killed alternatives, module decisions, and visual placement constraints | Code implementation or unscored future ideas |
-| `ui-ux-layout.md` | Global shell, route/page layout, responsive behavior, and per-surface composition | Canonical object semantics or implementation files |
+| `frontend-design.md` | Complete canonical Workbench frontend design: selected shell, route map, page cards, visual placement, read-model needs, safe actions, responsive behavior, implementation sequence, and acceptance pointers | Product PRD, candidate layout critique, React internals, or local run commands |
 | `frontend-architecture.md` | React/Vite architecture, component responsibilities, app-local boundaries | Product PRD, visual doctrine, or runbook commands |
 | `read-model.md` | Snapshot projections, selectors, advisory warnings, and required read-model fields | Canonical validation rules or Rust implementation |
 | `acceptance.md` | Browser screenshot evidence, web-quality gate, and frontend acceptance sequence | Product purpose or local development commands |
@@ -22,7 +24,7 @@ Dashboard docs: decide which surface owns the claim, then place it there.
 
 ## Change Order
 
-Use this order for non-trivial Dashboard/frontend work:
+Use this order for non-trivial Workbench/frontend work:
 
 ```text
 product purpose
@@ -32,7 +34,7 @@ product purpose
   -> three candidate layout variants and critique
   -> Decision Agent / Lead records selected and killed layouts
   -> module-level option loops for high-risk surfaces
-  -> layout and route design
+  -> complete frontend design draft
   -> read-model/API needs
   -> frontend architecture changes
   -> implementation
@@ -48,11 +50,12 @@ read and restate the project Vision, final acceptance standard, selected Goal,
 and distance-to-vision context. If they cannot do that, their design feedback is
 not ready to drive frontend decisions.
 
-For Dashboard redesigns, keep three layout candidates in
+For Workbench redesigns, keep three layout candidates in
 [layout-variants.md](layout-variants.md) until a Decision Agent or Lead records
 the selected direction in [layout-decisions.md](layout-decisions.md). Once
-selected, move the stable page hierarchy and surface composition into
-[ui-ux-layout.md](ui-ux-layout.md).
+selected, move the stable page hierarchy, page cards, visual placement, safe
+actions, read-model needs, responsive behavior, and acceptance pointers into
+[frontend-design.md](frontend-design.md).
 
 ## Skill Boundary
 
@@ -62,12 +65,12 @@ which docs to read, the two-subagent plus Decision Agent design loop, output
 artifacts, and acceptance gates.
 
 Canonical product and layout decisions still belong in `docs/`. The skill
-should reference these docs instead of embedding the complete Dashboard spec.
+should reference these docs instead of embedding the complete Workbench spec.
 When the skill discovers a repeated docs-placement problem, update this README
 or the relevant canonical doc before changing frontend code.
 
 ## Split Rule
 
 Keep each Markdown file near one reader and under the repository split target.
-Split a Dashboard doc when it grows beyond roughly 500 lines, mixes readers, or
+Split a Workbench doc when it grows beyond roughly 500 lines, mixes readers, or
 starts owning facts that belong to another surface.

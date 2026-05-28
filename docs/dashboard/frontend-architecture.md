@@ -1,10 +1,10 @@
-# Agent Dashboard Architecture
+# Agent Workbench Architecture
 
-The Agent Dashboard is the harness control-plane UI. It reads canonical state
+The Agent Workbench is the harness control-plane UI. It reads canonical state
 from the Rust harness snapshot/API and derives operator-friendly views.
 
-This is the canonical frontend architecture document for the Agent Dashboard
-module. Product-level Dashboard purpose and acceptance stay in
+This is the canonical frontend architecture document for the Agent Workbench
+module. Product-level Workbench purpose and acceptance stay in
 [../dashboard.md](../dashboard.md). Core UI/UX principles stay in
 [design-principles.md](design-principles.md). Layout variants and accepted
 decisions stay in [layout-variants.md](layout-variants.md) and
@@ -12,8 +12,8 @@ decisions stay in [layout-variants.md](layout-variants.md) and
 stays in [acceptance.md](acceptance.md). The framework decision stays in
 [../decisions/0014-react-vite-agent-dashboard.md](../decisions/0014-react-vite-agent-dashboard.md).
 Run and build commands stay in [runbook.md](runbook.md). Global shell, route
-layout, core layouts, and responsive behavior stay in
-[ui-ux-layout.md](ui-ux-layout.md).
+layout, page cards, visual placement, safe actions, and responsive behavior
+stay in [frontend-design.md](frontend-design.md).
 
 ## Source Boundary
 
@@ -42,6 +42,11 @@ Reasons:
 - Vite keeps the dev/build path light and can emit static files to `web/`.
 
 ## Module Shape
+
+The current component tree is not the target architecture for the rebuild. It
+may be used only as migration context. The rebuild should replace the old
+summary/Kanban/detail/raw-view stack with route-ready modules derived from
+[frontend-design.md](frontend-design.md).
 
 ```text
 src/types.ts       # snapshot and harness object types
@@ -75,7 +80,7 @@ decision state. Those objects come from the snapshot.
 
 ## Layout Boundary
 
-The frontend layout should follow [ui-ux-layout.md](ui-ux-layout.md):
+The frontend layout should follow [frontend-design.md](frontend-design.md):
 
 ```text
 top bar
@@ -96,18 +101,23 @@ vision -> goal -> goal graph/Kanban -> task graph/Kanban
   -> message -> member/runtime -> evidence -> review -> decision
 ```
 
-## Component Responsibilities
+## Product Module Responsibilities
 
-| Component | Owns |
+| Module | Owns |
 | --- | --- |
 | `App.tsx` | snapshot source, live polling state, selected goal/task/member ids, safe action dispatch |
-| `ControlPlane.tsx` | goal scope composition and panel wiring |
-| `GoalMap.tsx` | goal graph and goal lane projections for generated goals, blockers, follow-ups, and evaluation readiness |
-| `TaskWorkSurface.tsx` | task graph and task Kanban projections for the active goal |
-| `TaskDetail.tsx` | assignment proof, reports, evidence, sessions, proposal, review, decision, review request action |
-| `MemberDetail.tsx` | inbox/outbox, runtime health, provider sessions, child threads, member/message/session actions |
-| `WarningsPanel.tsx` | warning display and task/member navigation links |
-| `readModel.ts` | selectors and scope helpers |
+| `AppShell` | top bar, app rail, team rail, workspace, inspector, debug drawer placement |
+| `VisionOverview` | vision context, goal collection, distance-to-vision, next-round proposals |
+| `TeamWorkspace` | standing team roster, role groups, activity, queues, decision queue |
+| `AgentMemberWorkbench` | identity, current work, timeline, inbox/outbox, runtime, sessions, prompt/skills, safe actions |
+| `GoalDocument` | objective, success criteria, GoalDesign, team design, graph/Kanban, evidence, decision, evaluation |
+| `TaskDocument` | assignment proof, reports, evidence, proposal, review, decision, Git refs, warnings |
+| `GraphKanbanView` | synchronized graph nodes/edges and lane projections |
+| `DocsContext` | registry-backed docs context linked to active objects |
+| `DecisionQueue` | proposal, review, decision, waiver, and follow-up readiness |
+| `WarningsRepairQueue` | advisory warnings, affected objects, repair action metadata |
+| `DebugDrawer` | snapshot import/export and raw object views outside the primary viewport |
+| `readModel.ts` | selectors, joins, latest-row projections, and scope helpers |
 | `warnings.ts` | advisory warning derivation |
 
 If a warning becomes a gate, move the rule out of `warnings.ts` and into the

@@ -107,9 +107,9 @@ Page Decision
   next_designer_request:
 ```
 
-## Required Dashboard Page Specs
+## Required Workbench Page Specs
 
-For the Agent Dashboard, normally produce page specs for:
+For the Agent Workbench, normally produce page specs for:
 
 | Page | Required UX purpose |
 | --- | --- |

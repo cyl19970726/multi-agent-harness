@@ -1,13 +1,16 @@
 ---
 name: harness-frontend-product-design
-description: "Design or review Multi-Agent Harness frontend UI/UX from the product Vision, Goal collection, TaskGraph, persistent AgentTeam, AgentMember runtime, evidence, review, and decision workflow. Use before changing Dashboard layout, routes, visual system, graph/Kanban views, AgentMember realtime surfaces, frontend acceptance gates, or multi-round Designer/Reviewer layout decisions."
+description: "Design or review the Multi-Agent Harness Agent Workbench UI/UX from the product Vision, Goal collection, TaskGraph, persistent AgentTeam, AgentMember runtime, evidence, review, and decision workflow. Use before changing Workbench layout, routes, visual system, graph/Kanban views, AgentMember realtime surfaces, frontend acceptance gates, or multi-round Designer/Reviewer layout decisions."
 ---
 
 # Harness Frontend Product Design
 
-Use this skill before redesigning or implementing the Agent Dashboard or any
-harness frontend surface. The goal is to prevent decorative UI work that hides
-whether the harness workflow actually happened.
+Use this skill before redesigning or implementing the Agent Workbench or any
+harness frontend surface. The product surface is a workbench, not a dashboard:
+operators should be able to observe, decide, message, repair, and continue
+agent work. `Dashboard` remains a legacy path/command/module name only. The
+goal is to prevent decorative UI work that hides whether the harness workflow
+actually happened.
 
 ## How To Use This Skill
 
@@ -38,12 +41,12 @@ Always load for frontend product design:
 - `docs/dashboard.md`
 - `docs/dashboard/README.md`
 
-Load when changing Dashboard layout, routes, or visual system:
+Load when changing Workbench layout, routes, or visual system:
 
 - `docs/dashboard/design-principles.md`
 - `docs/dashboard/layout-variants.md`
 - `docs/dashboard/layout-decisions.md`
-- `docs/dashboard/ui-ux-layout.md`
+- `docs/dashboard/frontend-design.md`
 - `docs/dashboard/frontend-architecture.md`
 - `docs/dashboard/acceptance.md`
 
@@ -88,12 +91,17 @@ Use the skill for process and guardrails; use docs for product decisions.
   directions, and useful parts kept.
 - `docs/dashboard/layout-decisions.md`: selected main direction, borrowed
   ideas, remaining gaps, reviewer loop status, and stop/continue reasons.
-- `docs/dashboard/ui-ux-layout.md`: selected shell, route map, core page specs,
-  object mapping, visual placement, responsive behavior, and implementation
-  sequence.
+- `docs/dashboard/frontend-design.md`: selected shell, route map, core page
+  cards, object mapping, visual placement, safe actions, read-model needs,
+  responsive behavior, implementation sequence, and acceptance pointers.
 - `docs/dashboard/acceptance.md`: browser screenshots, console, accessibility,
   performance, web-quality, and harness workflow acceptance evidence plan.
-- `docs/dashboard/README.md`: index of the current Dashboard design contract.
+- `docs/dashboard/README.md`: index of the current Workbench design contract.
+
+When a new frontend design document supersedes older Workbench docs, update
+`docs/dashboard/README.md`, `docs/README.md`, and `docs/registry.json`, then
+delete or mark the old docs as deprecated. Do not leave multiple canonical
+layout specs that conflict.
 
 ## Frontend Doctrine
 
@@ -130,10 +138,10 @@ Design from the top down:
 Do not start from component aesthetics or a card grid. Start from the workflow
 proof the user must be able to reconstruct.
 
-The preferred mental model is a multi-agent collaboration control plane, closer
-to a Feishu/Slack team workspace than a metrics dashboard. Use that familiarity
-to make AgentMembers feel like durable teammates, but keep every message,
-status, and action tied to canonical harness objects.
+The preferred mental model is a multi-agent collaboration workbench, closer to
+a Feishu/Slack team workspace than a metrics dashboard. Use that familiarity to
+make AgentMembers feel like durable teammates, but keep every message, status,
+and action tied to canonical harness objects.
 
 ## Non-Negotiable Design Rules
 
@@ -205,6 +213,8 @@ Watch for these before approving design or implementation:
 Before writing component code, the design record must include:
 
 - core page discovery from Vision, PRD, object model, and failure modes;
+- docs cleanup decision: retained docs, deleted/superseded docs, and updated
+  registry/index links;
 - route map and page hierarchy;
 - selected top-level layout, rejected alternatives, and borrowed ideas;
 - page-level specs for Vision, Team, AgentMember, Goal, Task, Graph/Kanban,
