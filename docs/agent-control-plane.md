@@ -200,11 +200,29 @@ autonomy decide
   -> optional Goal
   -> optional Task(parent_task_id=<source task>)
   -> optional Message(kind=task) assignment
+
+autonomy tick / loop
+  -> Provider Gateway delivery
+  -> GoalClose gate for active goals whose task graph is done and evaluated
+  -> Goal(status=complete)
+  -> Decision(goal_complete)
+  -> next_round_plan comparing GoalEvaluation with vision_ref
+  -> goal_proposal Message to Lead
+  -> optional Lead auto-accept
+  -> new GoalDesign and minimal TaskGraph
+  -> task assignment Message
+  -> Provider Gateway delivery
 ```
 
 This deliberately avoids a premature `GoalProposal` schema. The source of
 truth remains the existing `Evidence`, `Message`, `Decision`, `Goal`, and
 `Task` objects until repeated gates need stable proposal fields.
+
+The runner is lifecycle-gated. It should not create a next goal merely because
+a task produced a report. A goal is eligible only when its task graph is
+complete, strict goal learning has no warnings, GoalEvaluation/final acceptance
+exists before GoalClose, a vision context is supplied, and no prior next-round
+plan exists unless the operator explicitly passes `--force`.
 
 ## Message-First Communication
 

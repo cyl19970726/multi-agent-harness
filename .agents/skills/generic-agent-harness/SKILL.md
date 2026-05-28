@@ -218,5 +218,13 @@ proposal, Lead disposition, follow-up goal/task creation, and Dashboard
 next-round task and create another accepted follow-up proposal; merely creating
 one next-round task is not enough to prove self-evolution.
 
+For runner/scheduler work, require the full lifecycle:
+`Vision -> Goal -> GoalDesign -> TaskGraph -> GoalEvaluation/final acceptance
+-> GoalClose -> Vision comparison -> NextGoalProposal -> Lead disposition ->
+New GoalDesign/TaskGraph`. The runner must not schedule from a lone task
+report. It should close only a goal whose task graph is done, whose strict goal
+learning status is clean, and whose next-round proposal can cite the vision
+context it is trying to advance.
+
 When the gate exposes a skipped or failed stage, create a follow-up task rather
 than weakening the acceptance criteria.

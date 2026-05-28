@@ -692,11 +692,13 @@ fn decision_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
 }
 
 fn autonomy_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    require_subcommand(args, "autonomy observe|plan-next|decide")?;
+    require_subcommand(args, "autonomy observe|plan-next|decide|tick|loop")?;
     match args[0].as_str() {
         "observe" => print_json(&autonomy_observe_value(store, &args[1..])?)?,
         "plan-next" => print_json(&autonomy_plan_next_value(store, &args[1..])?)?,
         "decide" => print_json(&autonomy_decide_value(store, &args[1..])?)?,
+        "tick" => print_json(&autonomy_tick_value(store, &args[1..])?)?,
+        "loop" => run_autonomy_loop(store, &args[1..])?,
         other => {
             return Err(CliError::Usage(format!(
                 "unknown autonomy command: {other}"
@@ -787,10 +789,17 @@ fn autonomy_plan_next_value(store: &HarnessStore, args: &[String]) -> CliResult<
     let status = goal_learning_status(store, &goal_id)?;
     let status_json = status.to_json();
     let warnings = status.warnings(true);
+    let vision_ref = value(args, "--vision-ref");
+    let vision_summary = value(args, "--vision-summary").unwrap_or_else(|| {
+        vision_ref
+            .as_ref()
+            .map(|vision_ref| format!("Vision reference: {vision_ref}"))
+            .unwrap_or_else(|| "No explicit vision reference supplied.".into())
+    });
     let summary = value(args, "--summary").unwrap_or_else(|| {
         if warnings.is_empty() {
             format!(
-                "Next-round plan for {goal_id}: prior goal has complete learning evidence; propose a follow-up goal to continue self-hosting improvement."
+                "Next-round plan for {goal_id}: prior goal has complete learning evidence; compare GoalEvaluation with vision and propose the next goal."
             )
         } else {
             format!(
@@ -805,7 +814,8 @@ fn autonomy_plan_next_value(store: &HarnessStore, args: &[String]) -> CliResult<
         "next_round_plan",
         &summary,
         &format!(
-            "# Next Round Plan\n\ngoal: {goal_id}\nobserver: {observer}\nlead: {lead}\n\nsummary: {summary}\n\nstatus:\n```json\n{}\n```\n",
+            "# Next Round Plan\n\ngoal: {goal_id}\nobserver: {observer}\nlead: {lead}\nvision_ref: {}\nvision_summary: {vision_summary}\n\nsummary: {summary}\n\nstatus:\n```json\n{}\n```\n",
+            vision_ref.as_deref().unwrap_or("-"),
             serde_json::to_string_pretty(&status_json).expect("serialize goal learning status")
         ),
     )?;
@@ -820,8 +830,9 @@ fn autonomy_plan_next_value(store: &HarnessStore, args: &[String]) -> CliResult<
         "goal_proposal",
         &proposal_summary,
         &format!(
-            "# Goal Proposal\n\ngoal: {goal_id}\nobserver: {observer}\nlead: {lead}\nsource_plan: {}\n\n{proposal_summary}\n",
-            plan.id
+            "# Goal Proposal\n\ngoal: {goal_id}\nobserver: {observer}\nlead: {lead}\nsource_plan: {}\nvision_ref: {}\n\n{proposal_summary}\n",
+            plan.id,
+            vision_ref.as_deref().unwrap_or("-")
         ),
     )?;
     store.append_evidence(&plan)?;
@@ -1011,6 +1022,445 @@ fn autonomy_decide_value(store: &HarnessStore, args: &[String]) -> CliResult<ser
         "goal_design": goal_design,
         "assignment_message": assignment_message
     }))
+}
+
+#[derive(Debug, Clone)]
+struct AutonomyTickOptions {
+    observer: String,
+    lead: String,
+    assignee: Option<String>,
+    reviewer: Option<String>,
+    goal_filter: Option<String>,
+    vision_ref: Option<String>,
+    vision_summary: Option<String>,
+    auto_accept: bool,
+    force: bool,
+    max_new_goals: usize,
+    dry_run: bool,
+    start_runtime: bool,
+    timeout_ms: u64,
+    claim_ttl_ms: u64,
+    goal_prefix: String,
+    task_prefix: String,
+    workspace: Option<String>,
+    branch: Option<String>,
+    owned_paths: Vec<String>,
+    acceptance: Vec<String>,
+    goal_success: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct AutonomyCandidate {
+    goal_id: String,
+    source_task_id: String,
+    evaluation_evidence_id: String,
+}
+
+fn autonomy_tick_value(store: &HarnessStore, args: &[String]) -> CliResult<serde_json::Value> {
+    let options = parse_autonomy_tick_options(args)?;
+    let gateway_before = provider_gateway_tick_value(
+        store,
+        GatewayOptions {
+            dry_run: options.dry_run,
+            start_runtime: options.start_runtime,
+            timeout_ms: options.timeout_ms,
+            claim_ttl_ms: options.claim_ttl_ms,
+        },
+    )?;
+    let scheduled = schedule_autonomy_next_rounds(store, &options)?;
+    let gateway_after = if scheduled.iter().any(|item| item.get("decision").is_some()) {
+        provider_gateway_tick_value(
+            store,
+            GatewayOptions {
+                dry_run: options.dry_run,
+                start_runtime: options.start_runtime,
+                timeout_ms: options.timeout_ms,
+                claim_ttl_ms: options.claim_ttl_ms,
+            },
+        )?
+    } else {
+        serde_json::json!({
+            "generated_at": now_string(),
+            "agent_count": 0,
+            "expired_claims": [],
+            "results": [],
+            "note": "no accepted generated assignments to deliver"
+        })
+    };
+    Ok(serde_json::json!({
+        "generated_at": now_string(),
+        "gateway_before": gateway_before,
+        "scheduled": scheduled,
+        "gateway_after": gateway_after
+    }))
+}
+
+fn run_autonomy_loop(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    let forever = has_flag(args, "--forever");
+    let iterations = value(args, "--iterations")
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(1);
+    let interval_ms = value(args, "--interval-ms")
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(1_000);
+    let mut results = Vec::new();
+    let mut iteration = 0usize;
+    loop {
+        iteration += 1;
+        let tick = autonomy_tick_value(store, args)?;
+        if forever {
+            print_json(&serde_json::json!({
+                "iteration": iteration,
+                "tick": tick
+            }))?;
+        } else {
+            results.push(serde_json::json!({
+                "iteration": iteration,
+                "tick": tick
+            }));
+        }
+        if !forever && iteration >= iterations {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(interval_ms));
+    }
+    if !forever {
+        print_json(&serde_json::json!({
+            "iterations": iterations,
+            "results": results
+        }))?;
+    }
+    Ok(())
+}
+
+fn parse_autonomy_tick_options(args: &[String]) -> CliResult<AutonomyTickOptions> {
+    let max_new_goals = value(args, "--max-new-goals")
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(1);
+    Ok(AutonomyTickOptions {
+        observer: required(args, "--observer")?,
+        lead: required(args, "--lead")?,
+        assignee: value(args, "--assignee"),
+        reviewer: value(args, "--reviewer"),
+        goal_filter: value(args, "--goal"),
+        vision_ref: value(args, "--vision-ref"),
+        vision_summary: value(args, "--vision-summary"),
+        auto_accept: has_flag(args, "--auto-accept"),
+        force: has_flag(args, "--force"),
+        max_new_goals,
+        dry_run: has_flag(args, "--dry-run"),
+        start_runtime: has_flag(args, "--start-runtime"),
+        timeout_ms: value(args, "--timeout-ms")
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(3_000),
+        claim_ttl_ms: value(args, "--claim-ttl-ms")
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(300_000),
+        goal_prefix: value(args, "--goal-prefix").unwrap_or_else(|| "goal-autonomous-round".into()),
+        task_prefix: value(args, "--task-prefix").unwrap_or_else(|| "task-autonomous-round".into()),
+        workspace: value(args, "--workspace"),
+        branch: value(args, "--branch"),
+        owned_paths: many(args, "--owned-path"),
+        acceptance: many(args, "--acceptance"),
+        goal_success: many(args, "--goal-success"),
+    })
+}
+
+fn schedule_autonomy_next_rounds(
+    store: &HarnessStore,
+    options: &AutonomyTickOptions,
+) -> CliResult<Vec<serde_json::Value>> {
+    if options.vision_ref.is_none() && options.vision_summary.is_none() {
+        return Err(CliError::Usage(
+            "autonomy tick/loop requires --vision-ref or --vision-summary".into(),
+        ));
+    }
+    latest_member(store, &options.observer)?;
+    latest_member(store, &options.lead)?;
+    if let Some(assignee) = options.assignee.as_deref() {
+        let member = latest_member(store, assignee)?;
+        ensure_member_accepts_delivery(&member)?;
+    }
+    if let Some(reviewer) = options.reviewer.as_deref() {
+        latest_member(store, reviewer)?;
+    }
+    let candidates = autonomy_next_round_candidates(store, options)?;
+    let mut scheduled = Vec::new();
+    for candidate in candidates.into_iter().take(options.max_new_goals) {
+        let close_result = close_goal_for_next_round(store, options, &candidate)?;
+        let planned =
+            autonomy_plan_next_value(store, &autonomy_plan_next_args(&candidate, options))?;
+        let mut row = serde_json::json!({
+            "goal_id": candidate.goal_id,
+            "source_task_id": candidate.source_task_id,
+            "evaluation_evidence_id": candidate.evaluation_evidence_id,
+            "goal_close": close_result,
+            "plan": planned.get("plan").cloned(),
+            "proposal": planned.get("proposal").cloned(),
+            "message": planned.get("message").cloned()
+        });
+        if options.auto_accept {
+            let proposal_id = planned
+                .get("proposal")
+                .and_then(|value| value.get("id"))
+                .and_then(|value| value.as_str())
+                .ok_or_else(|| CliError::Usage("planned proposal missing id".into()))?;
+            let plan_id = planned
+                .get("plan")
+                .and_then(|value| value.get("id"))
+                .and_then(|value| value.as_str())
+                .ok_or_else(|| CliError::Usage("planned next_round_plan missing id".into()))?;
+            let decision = accept_scheduled_next_round(
+                store,
+                options,
+                row.get("goal_id")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("-"),
+                row.get("source_task_id")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("-"),
+                proposal_id,
+                plan_id,
+            )?;
+            row.as_object_mut()
+                .expect("row is object")
+                .insert("decision".into(), decision);
+        }
+        scheduled.push(row);
+    }
+    Ok(scheduled)
+}
+
+fn autonomy_plan_next_args(
+    candidate: &AutonomyCandidate,
+    options: &AutonomyTickOptions,
+) -> Vec<String> {
+    let mut args = vec![
+        "--goal".into(),
+        candidate.goal_id.clone(),
+        "--task".into(),
+        candidate.source_task_id.clone(),
+        "--observer".into(),
+        options.observer.clone(),
+        "--lead".into(),
+        options.lead.clone(),
+        "--proposal-summary".into(),
+        format!(
+            "Scheduler compared completed goal {} with vision and proposed the next goal from source task {}.",
+            candidate.goal_id, candidate.source_task_id
+        ),
+    ];
+    if let Some(vision_ref) = &options.vision_ref {
+        push_arg(&mut args, "--vision-ref", vision_ref);
+    }
+    if let Some(vision_summary) = &options.vision_summary {
+        push_arg(&mut args, "--vision-summary", vision_summary);
+    }
+    args
+}
+
+fn autonomy_next_round_candidates(
+    store: &HarnessStore,
+    options: &AutonomyTickOptions,
+) -> CliResult<Vec<AutonomyCandidate>> {
+    let goals = latest_goals(store)?;
+    let evidence = latest_evidence(store)?;
+    let mut candidates = Vec::new();
+    for goal in goals.values() {
+        if goal.status != GoalStatus::Active {
+            continue;
+        }
+        if options
+            .goal_filter
+            .as_ref()
+            .is_some_and(|goal_id| goal_id != &goal.id)
+        {
+            continue;
+        }
+        let status = goal_learning_status(store, &goal.id)?;
+        if !goal_task_graph_complete(&status.task_ids, store)? {
+            continue;
+        }
+        if !status.warnings(true).is_empty() {
+            continue;
+        }
+        if !options.force && goal_has_next_round_plan(&status.task_ids, &evidence) {
+            continue;
+        }
+        let Some((evaluation_evidence_id, source_task_id)) =
+            latest_goal_evaluation_task(&status.goal_evaluation)
+        else {
+            continue;
+        };
+        candidates.push(AutonomyCandidate {
+            goal_id: goal.id.clone(),
+            source_task_id,
+            evaluation_evidence_id,
+        });
+    }
+    Ok(candidates)
+}
+
+fn goal_task_graph_complete(task_ids: &[String], store: &HarnessStore) -> CliResult<bool> {
+    if task_ids.is_empty() {
+        return Ok(false);
+    }
+    let tasks = latest_tasks(store)?;
+    Ok(task_ids.iter().all(|task_id| {
+        tasks
+            .get(task_id)
+            .is_some_and(|task| matches!(task.status, TaskStatus::Done | TaskStatus::Archived))
+    }))
+}
+
+fn goal_has_next_round_plan(
+    task_ids: &[String],
+    evidence_by_id: &BTreeMap<String, Evidence>,
+) -> bool {
+    evidence_by_id.values().any(|item| {
+        item.source_type == "next_round_plan"
+            && item
+                .task_id
+                .as_ref()
+                .is_some_and(|task_id| task_ids.contains(task_id))
+    })
+}
+
+fn latest_goal_evaluation_task(evidence: &[Evidence]) -> Option<(String, String)> {
+    evidence
+        .iter()
+        .filter_map(|item| {
+            Some((
+                parse_unix_ms(&item.created_at).unwrap_or_default(),
+                item.id.clone(),
+                item.task_id.clone()?,
+            ))
+        })
+        .max_by_key(|(created_at, _, _)| *created_at)
+        .map(|(_, evidence_id, task_id)| (evidence_id, task_id))
+}
+
+fn close_goal_for_next_round(
+    store: &HarnessStore,
+    options: &AutonomyTickOptions,
+    candidate: &AutonomyCandidate,
+) -> CliResult<serde_json::Value> {
+    let mut goal = latest_goals(store)?
+        .remove(&candidate.goal_id)
+        .ok_or_else(|| CliError::Usage(format!("goal not found: {}", candidate.goal_id)))?;
+    if goal.status != GoalStatus::Complete {
+        goal.status = GoalStatus::Complete;
+        goal.updated_at = now_string();
+        store.append_goal(&goal)?;
+    }
+    let decision = Decision {
+        id: generated_id("decision"),
+        task_id: candidate.source_task_id.clone(),
+        decision: format!("autonomy goal_complete by {}", options.lead),
+        rationale: format!(
+            "GoalClose gate passed for {}; task graph is complete and GoalEvaluation {} is present. Runner will compare this goal with vision before proposing the next goal.",
+            candidate.goal_id, candidate.evaluation_evidence_id
+        ),
+        evidence_ids: vec![candidate.evaluation_evidence_id.clone()],
+        created_at: now_string(),
+    };
+    store.append_decision(&decision)?;
+    append_agent_event(
+        store,
+        &options.lead,
+        None,
+        Some(candidate.source_task_id.as_str()),
+        "autonomy_goal_closed",
+        &format!("Goal {} marked complete by runner", candidate.goal_id),
+        None,
+    )?;
+    Ok(serde_json::json!({
+        "goal": goal,
+        "decision": decision
+    }))
+}
+
+fn accept_scheduled_next_round(
+    store: &HarnessStore,
+    options: &AutonomyTickOptions,
+    source_goal_id: &str,
+    source_task_id: &str,
+    proposal_id: &str,
+    plan_id: &str,
+) -> CliResult<serde_json::Value> {
+    let next_goal_id = generated_id(&options.goal_prefix);
+    let next_task_id = generated_id(&options.task_prefix);
+    let mut args = vec![
+        "--task".into(),
+        source_task_id.into(),
+        "--lead".into(),
+        options.lead.clone(),
+        "--proposal".into(),
+        proposal_id.into(),
+        "--decision".into(),
+        "accept".into(),
+        "--rationale".into(),
+        format!(
+            "Autonomy runner accepted scheduler proposal {proposal_id} from goal {source_goal_id}."
+        ),
+        "--evidence".into(),
+        plan_id.into(),
+        "--create-goal".into(),
+        next_goal_id.clone(),
+        "--goal-title".into(),
+        format!("Next autonomous round from {source_goal_id}"),
+        "--goal-objective".into(),
+        format!(
+            "Continue from evaluated goal {source_goal_id} and source task {source_task_id} through the autonomous runner."
+        ),
+        "--create-task".into(),
+        next_task_id.clone(),
+        "--task-title".into(),
+        format!("Follow-up: continue from {source_task_id}"),
+        "--task-objective".into(),
+        format!(
+            "Execute the next autonomous runner task generated from proposal {proposal_id}."
+        ),
+    ];
+    let goal_success = if options.goal_success.is_empty() {
+        vec!["Generated next-round task is assigned and visible in Dashboard state.".into()]
+    } else {
+        options.goal_success.clone()
+    };
+    push_repeated_args(&mut args, "--goal-success", &goal_success);
+    if let Some(assignee) = &options.assignee {
+        push_arg(&mut args, "--assignee", assignee);
+    }
+    if let Some(reviewer) = &options.reviewer {
+        push_arg(&mut args, "--reviewer", reviewer);
+    }
+    if let Some(workspace) = &options.workspace {
+        push_arg(&mut args, "--workspace", workspace);
+    }
+    if let Some(branch) = &options.branch {
+        push_arg(&mut args, "--branch", branch);
+    }
+    push_repeated_args(&mut args, "--owned-path", &options.owned_paths);
+    let acceptance = if options.acceptance.is_empty() {
+        vec![
+            "Standing runner assignment is delivered or records terminal delivery evidence.".into(),
+        ]
+    } else {
+        options.acceptance.clone()
+    };
+    push_repeated_args(&mut args, "--acceptance", &acceptance);
+    autonomy_decide_value(store, &args)
+}
+
+fn push_arg(args: &mut Vec<String>, name: &str, value: &str) {
+    args.push(name.into());
+    args.push(value.into());
+}
+
+fn push_repeated_args(args: &mut Vec<String>, name: &str, values: &[String]) {
+    for value in values {
+        push_arg(args, name, value);
+    }
 }
 
 fn autonomy_evidence(
@@ -6294,6 +6744,8 @@ fn print_help() {
   autonomy observe --goal <goal> --task <task> --observer <agent> --lead <agent> [--kind goal_proposal|graph_change_proposal|blocker|follow_up] [--summary <text>]
   autonomy plan-next --goal <goal> --task <task> --observer <agent> --lead <agent> [--summary <text>] [--proposal-summary <text>]
   autonomy decide --task <task> --lead <agent> --proposal <evidence> --decision <accept|reject|defer|request_evidence> --rationale <text> [--create-goal <goal> --goal-title <title> --goal-objective <text>] [--create-task <task> --task-title <title> --task-objective <text> --assignee <agent> --reviewer <agent>]
+  autonomy tick --observer <agent> --lead <agent> --vision-ref <path>|--vision-summary <text> [--goal <goal>] [--auto-accept --assignee <agent> --reviewer <agent>] [--dry-run] [--max-new-goals <n>]
+  autonomy loop --observer <agent> --lead <agent> --vision-ref <path>|--vision-summary <text> [--iterations <n>|--forever] [--interval-ms <ms>] [--auto-accept --assignee <agent> --reviewer <agent>] [--dry-run]
   dashboard snapshot
   board
   hook record --agent <agent> [--runtime <runtime>] [--task <task>]

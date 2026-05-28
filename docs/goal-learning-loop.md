@@ -171,6 +171,13 @@ At goal close:
    start a new workstream.
 7. Distill a GoalCase when the goal teaches a reusable pattern or anti-pattern.
 
+The autonomous runner uses this closeout as a scheduling boundary. It may close
+an active goal only after the task graph is complete, GoalEvaluation/final
+acceptance exists, strict goal learning has no warnings, and a vision context is
+supplied. After close, it compares GoalEvaluation with the supplied
+`vision_ref` or `vision_summary`, creates a next-goal proposal, and only creates
+the next GoalDesign/task graph after Lead disposition accepts the proposal.
+
 Until schema and CLI support exist, a goal-close review should warn when
 `goal_design` or `goal_evaluation` evidence is missing. Once the fields are
 stable and dashboard support exists, accepted goals should require

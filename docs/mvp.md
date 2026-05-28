@@ -186,11 +186,12 @@ communication, and agent-proposed follow-up work.
 `acceptance:autonomous-team` is the deterministic autonomous-team gate. It
 creates a standing team, proves the same `AgentMember` receives multiple
 messages and returns to idle, proves Worker/Critic peer messages, records
-GoalEvaluation, has Observer create a next-round proposal, has Lead accept it,
-creates the follow-up goal/task graph, executes that generated next round, then
-creates another accepted follow-up proposal. The Dashboard
-`autonomous_proposals` projection must link proposals, evidence, decisions, and
-follow-up work across generated rounds.
+GoalEvaluation, then uses `autonomy loop` to close the completed goal, compare
+the evaluation with a vision reference, create a next-goal proposal, have Lead
+auto-accept it, create the follow-up GoalDesign/task graph, execute that
+generated round, and create another accepted follow-up proposal. The Dashboard
+`autonomous_proposals` projection must link proposals, evidence, goal-close
+decisions, follow-up goals, and follow-up tasks across generated rounds.
 
 ## Current Build Order
 

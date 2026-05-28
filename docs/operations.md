@@ -65,8 +65,10 @@ messages, Observer-generated goal or graph-change proposals, and a Lead
 decision over those proposals.
 
 The autonomous-team gate provides this deterministic proof through dry-run
-provider delivery. It must carry an accepted generated next-round task through
-execution, evaluation, and another accepted follow-up proposal. It does not
+provider delivery. It must use `autonomy loop` to close an evaluated goal,
+compare the result with a vision reference, create and accept the next goal,
+generate a minimal task graph, carry that generated task through execution and
+evaluation, and then create another accepted follow-up proposal. It does not
 replace the live Codex gate when a change claims real provider transport
 behavior.
 
@@ -82,6 +84,8 @@ cargo run -p harness-cli -- review gate --task <task> --reviewer <agent> --decis
 cargo run -p harness-cli -- agent gateway --once --dry-run
 cargo run -p harness-cli -- autonomy plan-next --goal <goal> --task <task> --observer <agent> --lead <agent>
 cargo run -p harness-cli -- autonomy decide --task <task> --lead <agent> --proposal <evidence> --decision accept --rationale <text>
+cargo run -p harness-cli -- autonomy tick --observer <agent> --lead <agent> --goal <goal> --auto-accept --assignee <agent> --reviewer <agent> --vision-ref <path> --dry-run
+cargo run -p harness-cli -- autonomy loop --iterations 2 --observer <agent> --lead <agent> --auto-accept --assignee <agent> --reviewer <agent> --vision-ref <path> --dry-run
 cargo run -p harness-cli -- agent gateway --start-runtime
 cargo run -p harness-cli -- dashboard snapshot
 cargo run -p harness-cli -- board
