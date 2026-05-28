@@ -50,6 +50,63 @@ summary/Kanban/detail/raw-view layout is deprecated as a product UI. Preserve
 only stable TypeScript types, API helpers, and pure read-model logic that still
 serve the design below.
 
+## Hard Layout Gate
+
+The accepted direction is not enough by itself to start coding. A renewed
+implementation must first add hard layout implementation specs for every core
+surface that will be built in the slice.
+
+Each spec must live in `docs/dashboard/hard-layout-specs/<slice>.md` unless the
+Reviewer records a different path. The implementation PR must cite the
+`spec_id`, selected design refs, Reviewer `stop | continue | blocked` decision,
+and screenshot matrix.
+
+Each spec must include:
+
+```text
+spec_id:
+route_or_surface:
+selected_design_refs:
+reviewer_decision_ref:
+desktop_wireframe:
+  viewport:
+  columns_or_regions:
+  fixed_dimensions:
+  first_viewport_content:
+  scroll_containers:
+tablet_wireframe:
+  breakpoint:
+  collapsed_regions:
+  first_viewport_content:
+mobile_wireframe:
+  breakpoint:
+  tab_order:
+  first_viewport_content:
+  hidden_or_deferred_regions:
+state_matrix:
+  empty:
+  loading:
+  loaded:
+  warning:
+  error:
+component_inventory:
+data_density_limits:
+text_wrapping_rules:
+forbidden_primary_surfaces:
+screenshot_acceptance:
+reviewer_stop_conditions:
+```
+
+Implementation must stop and return to design when browser screenshots show a
+stacked report, metrics dashboard, card dump, raw snapshot tool, incoherent
+first viewport, or page-level overflow.
+
+The first implementation attempt on `task/agent-workbench-implementation` is a
+rejected example: checks passed, but the browser-visible layout did not meet the
+Workbench bar. See [layout-decisions.md](layout-decisions.md) for the rejection
+record. Future implementation should replace that attempt from the hard specs,
+not continue styling it into shape.
+
 ## Documentation Cleanup Decision
 
 Deleted or superseded:
@@ -679,9 +736,9 @@ must attach browser evidence before acceptance.
 Implementation acceptance requires:
 
 - `npx pnpm@9.15.4 check` passes;
-- desktop screenshot at `1440x900`;
-- tablet screenshot around `900x1180`;
-- mobile screenshot around `390x844`;
+- desktop screenshot at `1440x1000`;
+- tablet screenshot at `900x1180`;
+- mobile screenshot at `390x844`;
 - clean browser console with no runtime errors or React key/layout warnings;
 - `document.documentElement.scrollWidth <= document.documentElement.clientWidth`
   for tablet and mobile;

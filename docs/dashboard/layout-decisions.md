@@ -91,6 +91,75 @@ Loop status: stop for top-level design. The selected shell has enough signal:
 Team workspace first, Goal/Task document surfaces, controlled graph/Kanban
 relationship views, mounted docs, warnings/repair, and debug secondary.
 
+## Decision 2026-05-28: Reject First Implementation Attempt
+
+The first implementation attempt in branch
+`task/agent-workbench-implementation` is rejected as a layout-quality failure.
+It is not a PR candidate for the goal branch.
+
+What happened:
+
+- build and TypeScript checks could pass while the browser-visible surface still
+  read as a long stacked report rather than a coherent Agent Workbench;
+- the implementation moved from accepted direction directly into component/CSS
+  work without a hard desktop/tablet/mobile layout implementation spec;
+- the Team workspace, activity stream, graph/Kanban, inspector, and debug
+  surfaces were technically present but not constrained enough by first-viewport
+  placement, region dimensions, or scroll boundaries;
+- browser review showed that "Team workspace first" was still too vague as an
+  implementation instruction.
+
+Rejected because:
+
+- it did not meet the product bar for a Feishu-like multi-agent collaboration
+  workbench;
+- it risked repeating the old dashboard failure mode: lots of state visible,
+  but weak hierarchy and poor operational usability;
+- it proved that passing build checks is not sufficient frontend acceptance;
+- it exposed a missing workflow gate in the frontend skill.
+
+Decision:
+
+```text
+branch_or_worktree:
+  /Users/hhh0x/multi-agent-harness-agent-workbench-implementation
+branch:
+  task/agent-workbench-implementation
+commit_or_diff:
+  base 11fae5e761c734763c1a8292a42101c00c3a8148 plus uncommitted dirty
+  implementation diff; no implementation commit was accepted
+screenshot_refs:
+  local rejected review screenshots captured before rejection:
+  dashboard-shell-desktop-1440.png, dashboard-shell-tablet-900.png
+failed_acceptance:
+  no hard layout implementation spec; weak first-viewport hierarchy; Team,
+  activity, graph/Kanban, inspector, and debug placement not constrained by
+  region dimensions or scroll ownership
+spec_gap_that_allowed_it:
+  accepted direction said "Team workspace first" without implementation-ready
+  desktop/tablet/mobile wireframes, module-level option decisions, or
+  screenshot stop conditions
+code_disposition:
+  keep isolated in task/agent-workbench-implementation until replaced or
+  explicitly discarded; do not merge it into the goal branch
+required_next_loop:
+  update frontend skill and docs, then create hard layout implementation specs
+  before renewed UI coding
+reviewer_stop_condition:
+  no new implementation PR may proceed without desktop/tablet/mobile wireframes,
+  region dimensions, first-viewport content, scroll boundaries, rejected module
+  options, and browser screenshot acceptance criteria
+```
+
+Skill changes required by this failure:
+
+- core modules require multiple Designer candidates, not a single option;
+- Questioner/Critic must challenge both design artifacts and browser screenshots;
+- Reviewer chooses, synthesizes, kills, or requests another round for each core
+  module;
+- failed implementation attempts must be recorded as rejected layouts when they
+  reveal that the design spec was too vague.
+
 ## Page-Level Decisions
 
 These decisions close the required page-level option loop. The rejected options
@@ -121,6 +190,22 @@ Remaining weaknesses accepted into implementation:
   reasons instead of simulating success;
 - mobile graph and timeline views need browser proof for no overflow, focus
   order, labels, and text-based status.
+
+Future module decision records must include:
+
+```text
+selected:
+killed_because:
+borrowed:
+remaining_weakness:
+hard_spec_implication:
+screenshot_acceptance:
+reviewer_stop_continue_blocked:
+```
+
+At minimum, Team workspace, AgentMember workbench, Goal/Task documents,
+Graph/Kanban, and mobile/responsive placement need this record before renewed
+implementation.
 
 ## Module Decisions
 
@@ -358,8 +443,8 @@ Findings accepted:
   harness dogfooding, independence, evidence, and waiver cases.
 - Acceptance gates listed outcomes but did not define viewport targets,
   artifact names, overflow proof, or non-waivable failures.
-- The skill metadata default prompt did not mention variant/review loop or
-  browser/web-quality evidence.
+- The skill metadata default prompt did not mention multi-candidate review loops
+  or browser/web-quality evidence.
 
 Fixes applied:
 
@@ -371,8 +456,8 @@ Fixes applied:
   `.agents/skills/harness-frontend-product-design/references/page-design-workflow.md`;
 - expanded browser and web-quality gates in
   `.agents/skills/harness-frontend-product-design/references/acceptance-gates.md`;
-- regenerated `agents/openai.yaml` with a default prompt that names the
-  variant/review loop and browser/web-quality validation.
+- regenerated `agents/openai.yaml` with a default prompt that names
+  multi-candidate review loops and browser/web-quality validation.
 
 Loop decision:
 

@@ -49,13 +49,17 @@ operator behavior.
 
 ```text
 Core page brief
-  -> Designer proposes 2-3 page options
+  -> Designers propose 2-3 page options
   -> Questioner challenges each option
-  -> Decision Agent / Lead selects, synthesizes, or requests more options
+  -> Reviewer / Lead selects, synthesizes, or requests more options
   -> rejected options are recorded
   -> loop stop/continue reason is recorded
   -> selected page spec is added to the design draft
 ```
+
+Use multiple Designer subagents when available. If only one Designer is
+available, run separate passes with different constraints. A core page or module
+cannot move to implementation from a single unchallenged option.
 
 Each option should include:
 
@@ -107,6 +111,78 @@ Page Decision
   next_designer_request:
 ```
 
+## Hard Layout Implementation Spec Gate
+
+Before component or CSS work starts, convert selected page decisions into a
+hard layout implementation spec for every changed route, surface, or core
+module. This is stricter than a design direction. It must remove ambiguity that
+would let an implementation become a stacked report, card dump, or
+raw-debug-first page.
+
+Required fields:
+
+```text
+Hard Layout Spec
+  spec_id:
+  spec_path: docs/dashboard/hard-layout-specs/<slice>.md
+  route_or_surface:
+  selected_design_refs:
+  reviewer_decision_ref:
+  desktop_wireframe:
+    viewport:
+    columns_or_regions:
+    fixed_dimensions:
+    first_viewport_content:
+    scroll_containers:
+  tablet_wireframe:
+    breakpoint:
+    collapsed_regions:
+    first_viewport_content:
+  mobile_wireframe:
+    breakpoint:
+    tab_order:
+    first_viewport_content:
+    hidden_or_deferred_regions:
+  state_matrix:
+    empty:
+    loading:
+    loaded:
+    warning:
+    error:
+  component_inventory:
+  data_density_limits:
+  text_wrapping_rules:
+  forbidden_primary_surfaces:
+  screenshot_acceptance:
+  reviewer_stop_conditions:
+```
+
+Implementation may start only when the PR points to the spec path and the
+Reviewer records `continue` with a statement that this spec is specific enough
+to compare against browser screenshots. A `stop` or `blocked` decision returns
+the work to the design loop.
+
+## Core Module Multi-Designer Loop
+
+Run module-level candidates for these surfaces before implementation:
+
+| Module | Minimum options |
+| --- | --- |
+| Vision overview | 2 options for goal collection and distance-to-vision placement |
+| Team workspace | 3 options for Feishu-like team/workspace/inbox composition |
+| AgentMember workbench | 3 options for activity, inbox/outbox, runtime, and send-message placement |
+| Goal document | 2 options for document sections and graph/Kanban placement |
+| Task document | 2 options for proof-order layout and PR/evidence placement |
+| Graph/Kanban | 3 options for default, focus, and mobile fallback |
+| Docs context | 2 options for inspector/route placement |
+| Evidence/Review/Decision | 2 options for global queue and object-local proof |
+| Warnings/repair | 2 options for global queue and local callouts |
+| Debug | 2 options for collapsed drawer and route behavior |
+| Mobile/responsive | 3 options for tab order, inspector behavior, and graph fallback |
+
+The Reviewer chooses one option per module, may borrow pieces from rejected
+options, and records any required follow-up Designer round.
+
 ## Required Workbench Page Specs
 
 For the Agent Workbench, normally produce page specs for:
@@ -136,6 +212,7 @@ Include:
 - route map;
 - page specs for all core pages;
 - selected and rejected page-level variants for risky pages;
+- hard layout implementation specs for desktop, tablet, and mobile;
 - component inventory and object mapping;
 - visual placement map;
 - interaction flows and safe action contracts;
@@ -146,3 +223,8 @@ Include:
 
 Do not start implementation until missing page specs are either completed or
 explicitly waived with rationale and follow-up tasks.
+
+Do not continue implementation when browser screenshots show the selected spec
+was not followed or was too vague. Record the failed attempt in
+`layout-decisions.md`, keep the code out of the integration branch, and return
+to the module option loop.

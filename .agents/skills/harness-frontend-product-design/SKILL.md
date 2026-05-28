@@ -21,12 +21,20 @@ actually happened.
 3. Restate the Vision, selected Goal, and final acceptance standard before
    proposing UI.
 4. Map canonical harness objects to pages and workflow proof.
-5. Run the required Designer -> Questioner -> Decision loop for substantial
-   layouts, and the smaller option loop for risky pages or modules.
+5. Run the required multi-candidate Designer -> Questioner -> Reviewer loop for
+   substantial layouts, and the smaller multi-candidate option loop for pages
+   or modules. Any top-level Workbench layout or changed core module must have
+   multiple Designer/options before implementation.
 6. Record selected designs, rejected designs, borrowed ideas, remaining gaps,
    and loop stop/continue decisions in `docs/dashboard/`.
-7. Turn accepted specs into small implementation tasks with clear owned paths.
-8. Require browser screenshots and web-quality evidence before implementation
+7. Produce a hard layout implementation spec before component or CSS work:
+   desktop/tablet/mobile wireframes, region dimensions, first-viewport content,
+   scroll boundaries, empty states, and browser screenshot acceptance.
+8. Turn accepted specs into small implementation tasks with clear owned paths.
+9. Keep a Questioner/Critic active during implementation. If screenshots show a
+   stacked report, raw-debug-first view, overflow, or weak workflow proof, stop
+   coding, record the rejected implementation, and return to design.
+10. Require browser screenshots and web-quality evidence before implementation
    acceptance.
 
 ## Required Source Docs
@@ -65,8 +73,8 @@ Use skill references only when needed:
 
 - `references/product-model.md` for Vision/Goal/Task/Team object-to-page rules.
 - `references/layout-principles.md` for graph, Kanban, inspector, realtime, and visual-system rules.
-- `references/subagent-design-loop.md` for the required three-variant
-  Designer/Questioner/Decision loop.
+- `references/subagent-design-loop.md` for the required multi-candidate
+  Designer/Questioner/Reviewer loop.
 - `references/page-design-workflow.md` for core page discovery, page-level
   option loops, and complete frontend design draft requirements.
 - `references/acceptance-gates.md` for browser, web-quality, and harness workflow acceptance.
@@ -92,8 +100,12 @@ Use the skill for process and guardrails; use docs for product decisions.
 - `docs/dashboard/layout-decisions.md`: selected main direction, borrowed
   ideas, remaining gaps, reviewer loop status, and stop/continue reasons.
 - `docs/dashboard/frontend-design.md`: selected shell, route map, core page
-  cards, object mapping, visual placement, safe actions, read-model needs,
-  responsive behavior, implementation sequence, and acceptance pointers.
+  cards, object mapping, visual placement, hard layout implementation spec,
+  safe actions, read-model needs, responsive behavior, implementation sequence,
+  and acceptance pointers.
+- `docs/dashboard/hard-layout-specs/<slice>.md`: implementation-ready hard
+  layout specs for approved frontend slices, with `spec_id`, viewport matrix,
+  Reviewer decision, and screenshot acceptance.
 - `docs/dashboard/acceptance.md`: browser screenshots, console, accessibility,
   performance, web-quality, and harness workflow acceptance evidence plan.
 - `docs/dashboard/README.md`: index of the current Workbench design contract.
@@ -174,21 +186,27 @@ For substantial frontend design or redesign, load
 `references/subagent-design-loop.md` and run the required loop:
 
 ```text
-Designer proposes three distinct directions
+multiple Designers propose distinct directions
   -> Questioner challenges them independently
-  -> Decision Agent selects, synthesizes, or requests another round
+  -> Reviewer selects, synthesizes, kills, or requests another round
   -> repeat until acceptance, no useful new signal, or an explicit blocker
 ```
 
-The Decision Agent / Reviewer may choose one design as the main direction while
-still requiring changes. Every decision must record the main selected layout,
-its remaining weaknesses, useful ideas borrowed from rejected layouts, killed
+Use distinct Designer subagents when available. If only one agent is available,
+run separate Designer passes with different constraints and record them as
+separate candidates. The Reviewer may choose one design as the main direction
+while still requiring changes. Every decision must record the selected layout,
+remaining weaknesses, useful ideas borrowed from rejected layouts, killed
 alternatives, whether another Designer round is required, and why the loop
 continues or stops.
 
 For page or module risk, load `references/page-design-workflow.md` and run a
-smaller 2-3 option loop before implementation. Rejected layouts and rejected
-page options are first-class evidence; keep them in `docs/dashboard/`.
+smaller 2-3 option loop before implementation. Core modules must use this
+loop, especially Vision overview, Team workspace, AgentMember workbench, Goal
+document, Task document, Graph/Kanban, Docs context, Evidence/Review/Decision,
+Warnings/repair, Debug, and mobile/responsive placement. Rejected layouts,
+rejected page options, and rejected implementation attempts are first-class
+evidence; keep them in `docs/dashboard/`.
 
 ## Likely Failure Modes
 
@@ -219,10 +237,22 @@ Before writing component code, the design record must include:
 - selected top-level layout, rejected alternatives, and borrowed ideas;
 - page-level specs for Vision, Team, AgentMember, Goal, Task, Graph/Kanban,
   Docs, Evidence/Review/Decision, Warnings, and Debug;
+- a hard layout implementation spec for every changed route, surface, or core
+  module, with concrete desktop/tablet/mobile wireframes, region sizing, scroll
+  behavior, first-viewport content, empty states, overflow constraints, and
+  screenshot acceptance;
 - visual placement for primary surface, secondary surface, inspector/drawer,
   and mobile position;
+- Reviewer selection records for each core module, including killed options and
+  borrowed ideas;
+- Questioner/Critic concerns resolved or converted into follow-up tasks;
 - read-model/API needs and implementation sequence;
 - acceptance plan using `references/acceptance-gates.md`.
+
+Implementation must not begin when the design only states a direction such as
+"Feishu-like" or "Team workspace first." It must say exactly what appears in
+the first viewport, where each core module lives, how it responds on tablet and
+mobile, and how browser screenshots will prove the result.
 
 ## Implementation Gate
 
@@ -232,3 +262,9 @@ tablet, and mobile; console and overflow checks are clean; accessibility,
 performance, and best-practices results are recorded; and workflow acceptance
 proves Vision, Goal, TaskGraph, AgentTeam, AgentMember, evidence, review,
 decision, and GoalEvaluation are visible.
+
+If the first browser screenshots show that the implementation reads as a
+stacked report, metrics dashboard, card dump, raw snapshot tool, or visually
+confusing surface, stop implementation. Record the failed attempt in
+`layout-decisions.md`, keep the code out of the goal branch, and return to the
+Designer -> Questioner -> Reviewer loop before trying again.
