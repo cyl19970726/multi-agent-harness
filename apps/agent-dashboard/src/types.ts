@@ -62,6 +62,7 @@ export interface AgentTeam {
   name?: string;
   description?: string;
   owner_agent_id?: string;
+  status?: "active" | "closed" | "archived";
   member_ids?: string[];
 }
 

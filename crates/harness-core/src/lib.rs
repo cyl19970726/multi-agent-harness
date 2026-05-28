@@ -101,11 +101,25 @@ pub struct AgentMember {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentTeamStatus {
+    Active,
+    Closed,
+    Archived,
+}
+
+fn default_agent_team_status() -> AgentTeamStatus {
+    AgentTeamStatus::Active
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentTeam {
     pub id: String,
     pub name: String,
     pub description: String,
     pub owner_agent_id: String,
+    #[serde(default = "default_agent_team_status")]
+    pub status: AgentTeamStatus,
     pub member_ids: Vec<String>,
     pub created_at: String,
     pub updated_at: String,

@@ -117,6 +117,12 @@ for the next message. Close is not task completion; it is retirement, handoff,
 or forced cleanup. Close preserves messages, events, provider sessions,
 proposals, evidence, and decisions.
 
+`AgentTeam` also has lifecycle. Active teams are the current organizations the
+Dashboard should operate. Closing a team archives that organization while
+preserving the members, messages, task history, and provider evidence. Closing
+a team does not close shared members; close members separately when retiring
+unused runtimes.
+
 Health has layers:
 
 - process: provider runtime pid exists and has not exited;

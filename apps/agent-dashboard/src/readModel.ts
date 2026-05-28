@@ -95,10 +95,12 @@ export function membersForTasks(snapshot: Required<DashboardSnapshot>, tasks: Ta
 
 export function teamsForMembers(teams: AgentTeam[], members: AgentMember[]): AgentTeam[] {
   const memberIds = new Set(members.map((member) => member.id));
-  return teams.filter((team) =>
-    (team.member_ids ?? []).some((id) => memberIds.has(id)) ||
-    members.some((member) => (member.team_ids ?? []).includes(team.id)) ||
-    (team.owner_agent_id != null && memberIds.has(team.owner_agent_id)),
+  return teams.filter(
+    (team) =>
+      (team.status == null || team.status === "active") &&
+      ((team.member_ids ?? []).some((id) => memberIds.has(id)) ||
+        members.some((member) => (member.team_ids ?? []).includes(team.id)) ||
+        (team.owner_agent_id != null && memberIds.has(team.owner_agent_id))),
   );
 }
 

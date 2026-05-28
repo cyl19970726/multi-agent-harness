@@ -12,10 +12,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use harness_core::{
     AgentEvent, AgentMember, AgentMemberStatus, AgentProviderConfig, AgentRuntime,
-    AgentRuntimeHealth, AgentRuntimeStatus, AgentTeam, Decision, Evidence, Goal, GoalStatus,
-    Message, MessageDelivery, MessageDeliveryStatus, MessageKind, MessageTerminalSource, Proposal,
-    ProposalStatus, ProviderChildThread, ProviderChildThreadStatus, ProviderSession,
-    ProviderSessionStatus, Task, TaskStatus,
+    AgentRuntimeHealth, AgentRuntimeStatus, AgentTeam, AgentTeamStatus, Decision, Evidence, Goal,
+    GoalStatus, Message, MessageDelivery, MessageDeliveryStatus, MessageKind,
+    MessageTerminalSource, Proposal, ProposalStatus, ProviderChildThread,
+    ProviderChildThreadStatus, ProviderSession, ProviderSessionStatus, Task, TaskStatus,
 };
 use harness_store::{HarnessStore, MessageDeliveryClaimResult};
 use thiserror::Error;
@@ -287,7 +287,7 @@ fn agent_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
 }
 
 fn team_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    require_subcommand(args, "team create|list|show")?;
+    require_subcommand(args, "team create|list|show|close")?;
     match args[0].as_str() {
         "create" => {
             let team = AgentTeam {
@@ -295,6 +295,7 @@ fn team_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
                 name: required(args, "--name")?,
                 description: required(args, "--description")?,
                 owner_agent_id: required(args, "--owner")?,
+                status: AgentTeamStatus::Active,
                 member_ids: many(args, "--member"),
                 created_at: now_string(),
                 updated_at: now_string(),
@@ -302,12 +303,28 @@ fn team_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
             store.append_team(&team)?;
             print_json(&team)?;
         }
-        "list" => print_json(&latest_teams(store)?.into_values().collect::<Vec<_>>())?,
+        "list" => {
+            let teams = latest_teams(store)?
+                .into_values()
+                .filter(|team| has_flag(args, "--all") || team.status == AgentTeamStatus::Active)
+                .collect::<Vec<_>>();
+            print_json(&teams)?
+        }
         "show" => {
             let id = required(args, "--id")?;
             let team = latest_teams(store)?
                 .remove(&id)
                 .ok_or_else(|| CliError::Usage(format!("team not found: {id}")))?;
+            print_json(&team)?;
+        }
+        "close" => {
+            let id = required(args, "--id")?;
+            let mut team = latest_teams(store)?
+                .remove(&id)
+                .ok_or_else(|| CliError::Usage(format!("team not found: {id}")))?;
+            team.status = AgentTeamStatus::Closed;
+            team.updated_at = now_string();
+            store.append_team(&team)?;
             print_json(&team)?;
         }
         other => return Err(CliError::Usage(format!("unknown team command: {other}"))),
@@ -5966,7 +5983,7 @@ fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::Value> {
         "generated_at": now_string(),
         "goals": goals.into_values().collect::<Vec<_>>(),
         "goal_learning_status": goal_learning_status,
-        "teams": teams.into_values().collect::<Vec<_>>(),
+        "teams": teams.into_values().filter(|team| team.status == AgentTeamStatus::Active).collect::<Vec<_>>(),
         "members": member_cards,
         "kanban": kanban,
         "tasks": tasks.into_values().collect::<Vec<_>>(),
@@ -6714,8 +6731,9 @@ fn print_help() {
   agent ingest --agent <agent> --source <provider-output> [--runtime <runtime>] [--task <task>]
   agent close --id <agent>
   team create --name <name> --description <text> --owner <agent> [--member <agent>]
-  team list
+  team list [--all]
   team show --id <team>
+  team close --id <team>
   member register --name <name> --role <role> [--provider codex] [--capability <cap>] [--worktree <path>] [--permission-profile <profile>] [--runtime-workspace-root <path>]
   member list
   goal create --title <title> --objective <text> --owner <agent> [--success <text>]
