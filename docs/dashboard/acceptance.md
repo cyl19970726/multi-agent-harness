@@ -98,6 +98,10 @@ Every layout implementation PR must attach browser evidence:
 - proof that page-level horizontal overflow is absent;
 - proof that the implementation matches the hard layout implementation spec, or
   a rejected implementation record explaining why it does not.
+- PM acceptance agent output that validates end-to-end product logic using the
+  browser screenshots and live UI.
+- User acceptance agent output that validates operator usability using the
+  browser screenshots and live UI.
 
 Each viewport matrix must cover the default Team workspace, Member detail,
 Goal/Task document surface, Graph/Kanban surface, Warnings surface, and Debug
@@ -115,6 +119,7 @@ record or a return to design:
 - missing changed-core-module option loop or Reviewer decision;
 - missing implementation Questioner/Critic screenshot comparison against the
   hard layout spec;
+- missing PM/User browser acceptance agent findings;
 - known failed implementation attempt not recorded as rejected;
 - no browser screenshot evidence;
 - primary page is blank, raw/debug-only, a card dump, or an unstructured stacked

@@ -28,6 +28,8 @@ export interface Task {
   pr_ref?: string | null;
   owned_paths?: string[];
   acceptance_criteria?: string[];
+  created_at?: string;
+  updated_at?: string;
 }
 
 export interface AgentMember {

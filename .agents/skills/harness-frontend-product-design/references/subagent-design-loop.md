@@ -60,6 +60,12 @@ Use distinct subagents when available:
 - Implementation Questioner/Critic: checks browser screenshots and working UI
   during implementation, then sends the work back to design if the result
   violates the spec.
+- PM Acceptance Agent: after implementation, uses browser automation and
+  screenshots to judge whether product logic and canonical workflow proof are
+  understandable end to end.
+- User Acceptance Agent: after implementation, uses browser automation and
+  screenshots to judge whether an operator can navigate, understand, and act on
+  the Workbench without hidden context.
 
 If only one Designer agent is available, run separate Designer passes with
 different constraints and record them as independent candidates. Do not treat a
@@ -182,6 +188,8 @@ The Reviewer / Lead must:
   accessibility, performance, and web-quality requirements;
 - require browser screenshots and web-quality evidence before implementation
   acceptance.
+- require PM and User acceptance agents to inspect browser screenshots and the
+  live UI before implementation acceptance.
 
 ## Implementation Questioner Loop
 
@@ -199,6 +207,9 @@ Continue implementation only when the Questioner agrees that:
   report;
 - horizontal overflow is absent;
 - workflow proof is visible without reading raw JSON.
+- PM and User acceptance agents have reviewed browser screenshots and either
+  accepted the implementation or produced findings that were fixed or recorded
+  as explicit waivers/follow-ups.
 
 If this fails, stop coding and record a rejected implementation attempt.
 

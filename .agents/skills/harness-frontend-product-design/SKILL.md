@@ -35,8 +35,11 @@ actually happened.
 9. Keep a Questioner/Critic active during implementation. If screenshots show a
    stacked report, raw-debug-first view, overflow, or weak workflow proof, stop
    coding, record the rejected implementation, and return to design.
-10. Require browser screenshots and web-quality evidence before implementation
-   acceptance.
+10. After implementation, run browser-based PM and User acceptance agents using
+   the prompts in `references/acceptance-gates.md`. They must inspect the
+   working UI and screenshots, not only static docs or code.
+11. Require browser screenshots, PM/User acceptance output, and web-quality
+   evidence before implementation acceptance.
 
 ## Required Source Docs
 
@@ -282,7 +285,11 @@ approve a frontend implementation until browser evidence covers desktop,
 tablet, and mobile; console and overflow checks are clean; accessibility,
 performance, and best-practices results are recorded; and workflow acceptance
 proves Vision, Goal, TaskGraph, AgentTeam, AgentMember, evidence, review,
-decision, and GoalEvaluation are visible.
+decision, and GoalEvaluation are visible. Implementation review also requires
+two read-only browser acceptance agents: a PM agent that judges end-to-end
+product logic, and a User agent that judges operator usability while using the
+actual interface. Their prompts, screenshot refs, findings, fixes, and any
+waivers must be recorded with the PR or harness evidence.
 
 If the first browser screenshots show that the implementation reads as a
 stacked report, metrics dashboard, card dump, raw snapshot tool, or visually
