@@ -1,6 +1,6 @@
-# Agent Dashboard Layout Decisions
+# Agent Workbench Layout Decisions
 
-This document records Dashboard UI/UX layout alternatives, rejected variants,
+This document records Workbench UI/UX layout alternatives, rejected variants,
 and selected design direction. Core principles stay in
 [design-principles.md](design-principles.md). Concrete route composition,
 page cards, visual placement, safe actions, and responsive behavior stay in
@@ -63,7 +63,7 @@ Independent review record:
 
 ```text
 designer_prompt:
-  propose top-level and page-level Dashboard UI/UX options after restating
+  propose top-level and page-level Workbench UI/UX options after restating
   Vision, selected Goal, and final acceptance
 designer_output_ref:
   layout-variants.md Page-Level Option Loop; chat-side subagent Lagrange
@@ -71,7 +71,7 @@ questioner_prompt:
   independently challenge workflow proof, mobile/accessibility, read-model/API
   feasibility, and no-raw-debug-first behavior
 questioner_input_ref:
-  current Dashboard docs and raw design artifacts, not a Lead-preferred answer
+  current Workbench docs and raw design artifacts, not a Lead-preferred answer
 questioner_output_ref:
   this decision record; chat-side subagent Locke
 decision_record_ref:
@@ -333,7 +333,7 @@ Constraints:
 
 ## Implementation Guidance
 
-Do not implement the whole Dashboard rewrite in one task. Split into page-level
+Do not implement the whole Workbench rewrite in one task. Split into page-level
 or module-level work:
 
 1. shell and Team workspace;
@@ -378,7 +378,7 @@ Loop decision:
 
 - status: stop for this skill-hardening round;
 - reason: the accepted reviewer findings were directly addressed, and remaining
-  improvements are implementation of the Dashboard itself rather than skill
+  improvements are implementation of the Workbench itself rather than skill
   structure uncertainty;
 - next Designer request: none for the skill; use the skill to drive the next
   frontend implementation design/verification loop.

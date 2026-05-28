@@ -1,11 +1,11 @@
-# Agent Dashboard Frontend Design
+# Agent Workbench Frontend Design
 
-This document is the canonical implementation design for the Agent Dashboard
+This document is the canonical implementation design for the Agent Workbench
 frontend. It replaces the previous split between `ui-ux-layout.md` and
 `frontend-rebuild-design.md`.
 
 Split reason: this file intentionally exceeds the normal 500-line split target
-because it is the single implementation handoff for the full Dashboard redesign.
+because it is the single implementation handoff for the full Workbench redesign.
 Splitting page cards, visual placement, safe actions, read-model needs, and
 browser acceptance into separate canonical docs previously created conflicting
 sources of truth. If this file grows beyond the current route/page/action
@@ -21,8 +21,8 @@ in [read-model.md](read-model.md). Browser and web-quality gates stay in
 
 ## Vision And Acceptance
 
-Multi-Agent Harness is a goal-task-multi-agent development system. The
-Dashboard must let an operator reconstruct and control this workflow without
+Multi-Agent Harness is a goal-task-multi-agent development system. The Agent
+Workbench must let an operator reconstruct and control this workflow without
 raw JSON or hidden chat context:
 
 ```text
@@ -32,8 +32,8 @@ Vision -> Goal collection -> GoalDesign -> AgentTeam -> TaskGraph
   -> next Goal / follow-up Task / GoalCase
 ```
 
-The current frontend goal is to rebuild the Dashboard as a multi-agent
-collaboration observability and control workspace. The first accepted product
+The current frontend goal is to rebuild the surface as a multi-agent
+collaboration workbench. The first accepted product
 direction is:
 
 ```text
@@ -78,7 +78,7 @@ record is split intentionally:
 
 | Stage | Record |
 | --- | --- |
-| Product Vision and Dashboard purpose | [../dashboard.md](../dashboard.md) |
+| Product Vision and Workbench purpose | [../dashboard.md](../dashboard.md) |
 | Frontend doctrine and failure modes | [design-principles.md](design-principles.md) |
 | Top-level layout candidates and Questioner critique | [layout-variants.md](layout-variants.md) |
 | Selected layout, rejected alternatives, page-level decisions, and loop status | [layout-decisions.md](layout-decisions.md) |
@@ -564,7 +564,7 @@ the first viewport.
 
 ## Visual System
 
-The Dashboard should feel like a dense collaboration control plane, closer to
+The Workbench should feel like a dense collaboration control plane, closer to
 Feishu/Slack for teams and Notion/Linear for work documents, but with harness
 object proof as the source of truth.
 

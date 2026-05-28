@@ -1,6 +1,6 @@
-# Agent Dashboard Read Model
+# Agent Workbench Read Model
 
-The Agent Dashboard read model turns canonical harness objects into an
+The Agent Workbench read model turns canonical harness objects into an
 operator-facing control plane. It is a projection, not the source of truth.
 
 ## Source Boundary

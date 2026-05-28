@@ -1,8 +1,14 @@
-# Agent Dashboard
+# Agent Workbench
 
-The Agent Dashboard is the control-plane UI for Multi-Agent Harness. It is not
-a decorative report and it is not a replacement for project-specific
-dashboards. Its job is to make the harness workflow inspectable and operable.
+The Agent Workbench is the control-plane UI for Multi-Agent Harness. It is not
+a decorative report, metrics dashboard, or replacement for project-specific
+dashboards. Its job is to make the harness workflow inspectable, operable, and
+repairable.
+
+Terminology: `Agent Workbench` is the product surface and user-facing mental
+model. `Agent Dashboard` remains a legacy technical/module name in paths,
+commands, snapshots, and existing package names such as `docs/dashboard/`,
+`dashboard snapshot`, and `apps/agent-dashboard`.
 
 ## Vision Link
 
@@ -19,11 +25,11 @@ vision -> goal collection -> selected goal -> goal design
 ```
 
 If the user must inspect raw JSON, provider transcripts, or chat history to
-know whether agents are working, the Dashboard has failed.
+know whether agents are working, the Workbench has failed.
 
 ## Key Questions
 
-| Question | Dashboard answer |
+| Question | Workbench answer |
 | --- | --- |
 | What goal is active and why? | Goal board with objective, success criteria, owner, and evaluation status. |
 | How does this goal serve the vision? | Vision context with final acceptance signals, goal collection, pilot/scenario, and distance-to-vision gaps. |
@@ -73,9 +79,9 @@ flowchart TD
 
 ## Backward Data Requirements
 
-Dashboard needs should force the data model to expose missing state.
+Workbench needs should force the data model to expose missing state.
 
-| Dashboard need | Required state |
+| Workbench need | Required state |
 | --- | --- |
 | Show real assignment | task-linked `Message(kind=task)` and delivery status |
 | Show member activity | `AgentMember.status`, `current_task_id`, `current_proposal_id`, latest `AgentEvent` |
@@ -103,12 +109,12 @@ changes acceptance or safety, it belongs in schema/CLI/API and eventually CI.
 | Proposal and evidence | Show diffs, checks, artifacts, review, critic findings. | request review, attach evidence |
 | Decisions | Show Leader choices, waivers, follow-ups, acceptance state. | record decision, create follow-up |
 
-Dashboard actions must update canonical harness objects. A UI action that only
+Workbench actions must update canonical harness objects. A UI action that only
 changes local display state cannot be the source of truth.
 
 ## Product Layout
 
-The first Dashboard should be a work surface, not a landing page. The default
+The first Workbench should be a work surface, not a landing page. The default
 screen should answer "what is happening now and what needs a decision?"
 
 ```text
@@ -128,25 +134,26 @@ inspector:
 
 ## Document Boundary
 
-Dashboard knowledge is split by responsibility so product intent does not get
+Workbench knowledge is split by responsibility so product intent does not get
 mixed with frontend implementation details:
 
 | Document | Owns | Refuses |
 | --- | --- | --- |
-| `docs/dashboard.md` | product-level Dashboard purpose, information architecture, backward data requirements, user-facing acceptance | component folder layout, package commands, framework internals |
-| `docs/dashboard/README.md` | Dashboard docs placement map, change order, and docs/surface routing rules | product semantics or component implementation |
+| `docs/dashboard.md` | product-level Workbench purpose, information architecture, backward data requirements, user-facing acceptance | component folder layout, package commands, framework internals |
+| `docs/dashboard/README.md` | Workbench docs placement map, change order, and docs/surface routing rules | product semantics or component implementation |
 | `docs/dashboard/design-principles.md` | core frontend design principles, graph/Kanban policy, AgentTeam/AgentMember UI doctrine, visual system, and current UX failure modes | route-level layout details or React module boundaries |
-| `docs/dashboard/layout-variants.md` | candidate Dashboard layout directions, Designer/Questioner critique, scoring rubric, and decision inputs | final route spec, component internals, or accepted layout details |
+| `docs/dashboard/layout-variants.md` | candidate Workbench layout directions, Designer/Questioner critique, scoring rubric, and decision inputs | final route spec, component internals, or accepted layout details |
 | `docs/dashboard/layout-decisions.md` | accepted layout direction, rejected alternatives, module decisions, and visual placement constraints | component internals or unscored future ideas |
 | `docs/dashboard/frontend-design.md` | complete frontend design: selected shell, route map, page cards, visual placement, read-model needs, safe actions, responsive behavior, implementation sequence | product PRD, candidate critique, framework internals, run commands |
-| `docs/dashboard/frontend-architecture.md` | Agent Dashboard frontend architecture, component responsibilities, app-local source boundary | product PRD or runbook commands |
+| `docs/dashboard/frontend-architecture.md` | Agent Workbench frontend architecture, component responsibilities, app-local source boundary | product PRD or runbook commands |
 | `docs/dashboard/read-model.md` | read-model projections, goal scope, warning promotion rules | canonical validation rules or Rust implementation |
 | `docs/dashboard/acceptance.md` | browser screenshot evidence, web-quality gate, and frontend acceptance sequence | product purpose or local development commands |
 | `docs/dashboard/runbook.md` | run, build, snapshot, and live API entry points | architecture rationale or acceptance policy |
 | `docs/decisions/0014-react-vite-agent-dashboard.md` | durable frontend framework decision and consequences | day-to-day runbook or product view inventory |
 
-Canonical Dashboard docs live under `docs/`. The app directory contains source,
-configuration, and build output only.
+Canonical Workbench docs currently live under `docs/dashboard/` for historical
+path compatibility. The app directory contains source, configuration, and build
+output only.
 
 The frontend architecture follows this product boundary:
 
@@ -159,7 +166,7 @@ Rust store / CLI / API
 
 The frontend design contract is in
 [dashboard/frontend-design.md](dashboard/frontend-design.md). Frontend changes
-that reshape the Dashboard should update that document before changing
+that reshape the Workbench should update that document before changing
 component structure or CSS.
 
 Candidate layout options, critiques, and rejected alternatives belong in
@@ -175,7 +182,7 @@ evidence before implementation starts.
 
 Frontend warnings are operator read-model warnings until promoted. If a warning
 becomes an acceptance rule, it must move into schema, Rust validation, CLI/API,
-review gate, or CI/CD. This prevents Dashboard convenience logic from silently
+review gate, or CI/CD. This prevents Workbench convenience logic from silently
 becoming the source of truth.
 
 ## Task Detail Panel
@@ -237,14 +244,14 @@ The first product shape should be operational and dense:
 - proposal/evidence/review lanes for acceptance;
 - warnings panel for broken workflow invariants.
 
-The Dashboard should link to project dashboards through adapters instead of
+The Workbench should link to project dashboards through adapters instead of
 duplicating domain UI. For example, a strategy adapter may link to trading
-charts, but the Agent Dashboard still owns task/message/evidence/decision
+charts, but the Agent Workbench still owns task/message/evidence/decision
 visibility.
 
 ## Acceptance
 
-Dashboard acceptance requires a fixture or live snapshot that shows:
+Workbench acceptance requires a fixture or live snapshot that shows:
 
 1. a goal with design and evaluation state;
 2. vision context, goal collection grouped by completion state, and
@@ -270,9 +277,9 @@ best-practices checks after the harness-specific workflow acceptance passes.
 
 ## Invariants
 
-1. Dashboard must show assignment messages, not only assignee fields.
-2. Dashboard warnings should expose missing evidence and failed delivery.
-3. Dashboard should distinguish harness state from provider or project links.
+1. Workbench must show assignment messages, not only assignee fields.
+2. Workbench warnings should expose missing evidence and failed delivery.
+3. Workbench should distinguish harness state from provider or project links.
 4. Safe actions should route through CLI/API/store contracts.
 5. A polished page that cannot prove the workflow happened is not accepted.
 6. AgentTeam should render as a persistent organization by default, not as a

@@ -1,13 +1,13 @@
-# Agent Dashboard Layout Variants
+# Agent Workbench Layout Variants
 
-This document holds candidate Dashboard UI/UX directions before one direction is
+This document holds candidate Workbench UI/UX directions before one direction is
 accepted into [frontend-design.md](frontend-design.md). It is the place for
 Designer variants, Questioner critique, scoring, and rejected alternatives.
 
 ## Product Context
 
 Multi-Agent Harness is a coordination layer for persistent Agent Teams. The
-Dashboard must show that this workflow really happened:
+The Workbench must show that this workflow really happened:
 
 ```text
 Vision -> Goal collection -> GoalDesign -> AgentTeam -> TaskGraph
@@ -17,7 +17,7 @@ Vision -> Goal collection -> GoalDesign -> AgentTeam -> TaskGraph
 
 The current frontend design goal is to reduce distance-to-vision by making that
 chain visible and operable without raw JSON or hidden chat context. The
-Dashboard should feel like a multi-agent collaboration control plane: agents are
+Workbench should feel like a multi-agent collaboration control plane: agents are
 durable teammates, goals and tasks are auditable work documents, and graph views
 explain relationships without becoming the default mental model for everything.
 
@@ -29,7 +29,7 @@ execution by themselves.
 
 ```text
 designer: Lagrange
-designer_task: propose top-level and page-level Dashboard UI/UX options
+designer_task: propose top-level and page-level Workbench UI/UX options
 questioner: Locke
 questioner_task: independently challenge workflow proof, mobile/accessibility,
   read-model feasibility, and raw-debug-first risks
@@ -38,7 +38,7 @@ durable_record: this file, layout-decisions.md, frontend-design.md, and task
   evidence in the harness store
 ```
 
-Both subagents first restated the product Vision, the selected Dashboard Goal,
+Both subagents first restated the product Vision, the selected Workbench Goal,
 and the final acceptance standard. The Questioner agreed that no further
 top-level shell loop was useful, but required explicit page-level option
 records before implementation.

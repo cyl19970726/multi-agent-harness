@@ -1,10 +1,10 @@
-# Agent Dashboard Architecture
+# Agent Workbench Architecture
 
-The Agent Dashboard is the harness control-plane UI. It reads canonical state
+The Agent Workbench is the harness control-plane UI. It reads canonical state
 from the Rust harness snapshot/API and derives operator-friendly views.
 
-This is the canonical frontend architecture document for the Agent Dashboard
-module. Product-level Dashboard purpose and acceptance stay in
+This is the canonical frontend architecture document for the Agent Workbench
+module. Product-level Workbench purpose and acceptance stay in
 [../dashboard.md](../dashboard.md). Core UI/UX principles stay in
 [design-principles.md](design-principles.md). Layout variants and accepted
 decisions stay in [layout-variants.md](layout-variants.md) and

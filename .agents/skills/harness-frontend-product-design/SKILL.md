@@ -1,13 +1,16 @@
 ---
 name: harness-frontend-product-design
-description: "Design or review Multi-Agent Harness frontend UI/UX from the product Vision, Goal collection, TaskGraph, persistent AgentTeam, AgentMember runtime, evidence, review, and decision workflow. Use before changing Dashboard layout, routes, visual system, graph/Kanban views, AgentMember realtime surfaces, frontend acceptance gates, or multi-round Designer/Reviewer layout decisions."
+description: "Design or review the Multi-Agent Harness Agent Workbench UI/UX from the product Vision, Goal collection, TaskGraph, persistent AgentTeam, AgentMember runtime, evidence, review, and decision workflow. Use before changing Workbench layout, routes, visual system, graph/Kanban views, AgentMember realtime surfaces, frontend acceptance gates, or multi-round Designer/Reviewer layout decisions."
 ---
 
 # Harness Frontend Product Design
 
-Use this skill before redesigning or implementing the Agent Dashboard or any
-harness frontend surface. The goal is to prevent decorative UI work that hides
-whether the harness workflow actually happened.
+Use this skill before redesigning or implementing the Agent Workbench or any
+harness frontend surface. The product surface is a workbench, not a dashboard:
+operators should be able to observe, decide, message, repair, and continue
+agent work. `Dashboard` remains a legacy path/command/module name only. The
+goal is to prevent decorative UI work that hides whether the harness workflow
+actually happened.
 
 ## How To Use This Skill
 
@@ -38,7 +41,7 @@ Always load for frontend product design:
 - `docs/dashboard.md`
 - `docs/dashboard/README.md`
 
-Load when changing Dashboard layout, routes, or visual system:
+Load when changing Workbench layout, routes, or visual system:
 
 - `docs/dashboard/design-principles.md`
 - `docs/dashboard/layout-variants.md`
@@ -93,9 +96,9 @@ Use the skill for process and guardrails; use docs for product decisions.
   responsive behavior, implementation sequence, and acceptance pointers.
 - `docs/dashboard/acceptance.md`: browser screenshots, console, accessibility,
   performance, web-quality, and harness workflow acceptance evidence plan.
-- `docs/dashboard/README.md`: index of the current Dashboard design contract.
+- `docs/dashboard/README.md`: index of the current Workbench design contract.
 
-When a new frontend design document supersedes older Dashboard docs, update
+When a new frontend design document supersedes older Workbench docs, update
 `docs/dashboard/README.md`, `docs/README.md`, and `docs/registry.json`, then
 delete or mark the old docs as deprecated. Do not leave multiple canonical
 layout specs that conflict.
@@ -135,10 +138,10 @@ Design from the top down:
 Do not start from component aesthetics or a card grid. Start from the workflow
 proof the user must be able to reconstruct.
 
-The preferred mental model is a multi-agent collaboration control plane, closer
-to a Feishu/Slack team workspace than a metrics dashboard. Use that familiarity
-to make AgentMembers feel like durable teammates, but keep every message,
-status, and action tied to canonical harness objects.
+The preferred mental model is a multi-agent collaboration workbench, closer to
+a Feishu/Slack team workspace than a metrics dashboard. Use that familiarity to
+make AgentMembers feel like durable teammates, but keep every message, status,
+and action tied to canonical harness objects.
 
 ## Non-Negotiable Design Rules
 

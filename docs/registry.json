@@ -271,8 +271,8 @@
       "status": "planned",
       "lifecycle": "volatile",
       "canonicalFor": [
-        "Agent Dashboard information architecture",
-        "Dashboard backward data requirements",
+        "Agent Workbench information architecture",
+        "Workbench backward data requirements",
         "control-plane UI views",
         "workflow visibility"
       ],
@@ -295,7 +295,7 @@
       "machineConsumers": ["check-doc-links", "check-doc-governance"],
       "reviewAfter": "2026-06-26",
       "lastVerifiedWith": ["npx pnpm@9.15.4 check"],
-      "reorgTrigger": "Dashboard views, read models, safe actions, or workflow visibility requirements change."
+      "reorgTrigger": "Workbench views, read models, safe actions, or workflow visibility requirements change."
     },
     {
       "path": "docs/dashboard/README.md",
@@ -303,9 +303,9 @@
       "status": "planned",
       "lifecycle": "volatile",
       "canonicalFor": [
-        "Agent Dashboard docs placement map",
-        "Dashboard docs change order",
-        "Dashboard surface routing rules"
+        "Agent Workbench docs placement map",
+        "Workbench docs change order",
+        "Workbench surface routing rules"
       ],
       "dependsOn": [
         "docs/README.md",
@@ -322,7 +322,7 @@
       "machineConsumers": ["check-doc-links", "check-doc-governance"],
       "reviewAfter": "2026-06-26",
       "lastVerifiedWith": ["npx pnpm@9.15.4 check"],
-      "reorgTrigger": "Dashboard docs gain new stable surfaces, readers, or source-of-truth boundaries."
+      "reorgTrigger": "Workbench docs gain new stable surfaces, readers, or source-of-truth boundaries."
     },
     {
       "path": "docs/dashboard/design-principles.md",
@@ -330,10 +330,10 @@
       "status": "planned",
       "lifecycle": "volatile",
       "canonicalFor": [
-        "Agent Dashboard frontend design principles",
+        "Agent Workbench frontend design principles",
         "Goal and Task graph/Kanban policy",
         "AgentTeam and AgentMember UI doctrine",
-        "Dashboard visual system"
+        "Workbench visual system"
       ],
       "dependsOn": [
         "docs/prd.md",
@@ -346,7 +346,7 @@
       "machineConsumers": ["check-doc-links", "check-doc-governance"],
       "reviewAfter": "2026-06-26",
       "lastVerifiedWith": ["npx pnpm@9.15.4 check"],
-      "reorgTrigger": "Dashboard frontend principles, graph/Kanban policy, or AgentTeam/AgentMember UI doctrine changes."
+      "reorgTrigger": "Workbench frontend principles, graph/Kanban policy, or AgentTeam/AgentMember UI doctrine changes."
     },
     {
       "path": "docs/dashboard/layout-variants.md",
@@ -354,9 +354,9 @@
       "status": "planned",
       "lifecycle": "volatile",
       "canonicalFor": [
-        "Agent Dashboard candidate layouts",
+        "Agent Workbench candidate layouts",
         "Designer and Questioner critique",
-        "Dashboard layout scoring rubric",
+        "Workbench layout scoring rubric",
         "rejected layout alternatives"
       ],
       "dependsOn": [
@@ -369,7 +369,7 @@
       "machineConsumers": ["check-doc-links", "check-doc-governance"],
       "reviewAfter": "2026-06-26",
       "lastVerifiedWith": ["npx pnpm@9.15.4 check"],
-      "reorgTrigger": "Dashboard design loop, candidate layout set, scoring rubric, or critique workflow changes."
+      "reorgTrigger": "Workbench design loop, candidate layout set, scoring rubric, or critique workflow changes."
     },
     {
       "path": "docs/dashboard/layout-decisions.md",
@@ -377,8 +377,8 @@
       "status": "planned",
       "lifecycle": "volatile",
       "canonicalFor": [
-        "Agent Dashboard accepted layout direction",
-        "killed Dashboard layout alternatives",
+        "Agent Workbench accepted layout direction",
+        "killed Workbench layout alternatives",
         "module-level layout decisions",
         "visual placement constraints"
       ],
@@ -390,7 +390,7 @@
       "machineConsumers": ["check-doc-links", "check-doc-governance"],
       "reviewAfter": "2026-06-26",
       "lastVerifiedWith": ["npx pnpm@9.15.4 check"],
-      "reorgTrigger": "Accepted Dashboard layout direction, killed alternatives, module decisions, or visual placement constraints change."
+      "reorgTrigger": "Accepted Workbench layout direction, killed alternatives, module decisions, or visual placement constraints change."
     },
     {
       "path": "docs/dashboard/frontend-design.md",
@@ -398,11 +398,11 @@
       "status": "planned",
       "lifecycle": "volatile",
       "canonicalFor": [
-        "Agent Dashboard complete frontend design",
-        "Dashboard selected shell and route map",
-        "Dashboard core page cards",
-        "Dashboard visual placement and safe actions",
-        "Dashboard responsive behavior and implementation sequence"
+        "Agent Workbench complete frontend design",
+        "Workbench selected shell and route map",
+        "Workbench core page cards",
+        "Workbench visual placement and safe actions",
+        "Workbench responsive behavior and implementation sequence"
       ],
       "dependsOn": [
         "docs/prd.md",
@@ -419,7 +419,7 @@
       "machineConsumers": ["check-doc-links", "check-doc-governance"],
       "reviewAfter": "2026-06-26",
       "lastVerifiedWith": ["npx pnpm@9.15.4 check"],
-      "reorgTrigger": "Dashboard shell, route map, page cards, visual placement, safe actions, read-model needs, responsive behavior, implementation sequence, or acceptance pointers change."
+      "reorgTrigger": "Workbench shell, route map, page cards, visual placement, safe actions, read-model needs, responsive behavior, implementation sequence, or acceptance pointers change."
     },
     {
       "path": "docs/dashboard/frontend-architecture.md",
@@ -427,9 +427,9 @@
       "status": "planned",
       "lifecycle": "volatile",
       "canonicalFor": [
-        "Agent Dashboard frontend architecture",
+        "Agent Workbench frontend architecture",
         "React/Vite build boundary",
-        "Dashboard read-model ownership"
+        "Workbench read-model ownership"
       ],
       "dependsOn": [
         "docs/dashboard.md",
@@ -457,7 +457,7 @@
       "status": "planned",
       "lifecycle": "volatile",
       "canonicalFor": [
-        "Agent Dashboard read-model projections",
+        "Agent Workbench read-model projections",
         "goal-scoped Dashboard filtering",
         "advisory warning ownership",
         "warning promotion rules"
@@ -474,7 +474,7 @@
       "machineConsumers": ["check-doc-links", "check-doc-governance"],
       "reviewAfter": "2026-06-26",
       "lastVerifiedWith": ["npx pnpm@9.15.4 check"],
-      "reorgTrigger": "Dashboard warning logic, read-model selectors, or canonical promotion rules change."
+      "reorgTrigger": "Workbench warning logic, read-model selectors, or canonical promotion rules change."
     },
     {
       "path": "docs/dashboard/acceptance.md",
@@ -482,9 +482,9 @@
       "status": "planned",
       "lifecycle": "volatile",
       "canonicalFor": [
-        "Agent Dashboard browser acceptance",
-        "Dashboard screenshot evidence",
-        "Dashboard web-quality gate"
+        "Agent Workbench browser acceptance",
+        "Workbench screenshot evidence",
+        "Workbench web-quality gate"
       ],
       "dependsOn": [
         "docs/dashboard.md",
@@ -506,7 +506,7 @@
       "status": "planned",
       "lifecycle": "volatile",
       "canonicalFor": [
-        "Agent Dashboard run instructions",
+        "Agent Workbench run instructions",
         "snapshot loading",
         "live API startup",
         "frontend build commands"
@@ -523,7 +523,7 @@
       "machineConsumers": ["check-doc-links", "check-doc-governance"],
       "reviewAfter": "2026-06-26",
       "lastVerifiedWith": ["npx pnpm@9.15.4 check"],
-      "reorgTrigger": "Dashboard run commands, API port, build output, or static artifact workflow changes."
+      "reorgTrigger": "Workbench run commands, API port, build output, or static artifact workflow changes."
     },
     {
       "path": "docs/workflow-git-pr.md",
@@ -558,7 +558,7 @@
         "message queue semantics",
         "peer-to-peer agent messaging",
         "provider event reducer",
-        "Dashboard control-plane roadmap"
+        "Workbench control-plane roadmap"
       ],
       "dependsOn": [
         "docs/prd.md",
