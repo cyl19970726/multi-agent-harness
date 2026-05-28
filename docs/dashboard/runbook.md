@@ -4,8 +4,11 @@ The Agent Dashboard is the operational UI for the generic harness.
 
 Product-level design and acceptance are in
 [../dashboard.md](../dashboard.md). Frontend architecture is in
-[frontend-architecture.md](frontend-architecture.md). The read model is in
-[read-model.md](read-model.md). The React/Vite decision is in
+[frontend-architecture.md](frontend-architecture.md). UI/UX principles are in
+[design-principles.md](design-principles.md). Layout is in
+[ui-ux-layout.md](ui-ux-layout.md). Frontend acceptance is in
+[acceptance.md](acceptance.md). The read model is in [read-model.md](read-model.md).
+The React/Vite decision is in
 [../decisions/0014-react-vite-agent-dashboard.md](../decisions/0014-react-vite-agent-dashboard.md).
 
 It must not become a project-specific market replay UI. Project evidence should

@@ -13,8 +13,12 @@
 | Provider-neutral Agent Runtime Object Model | [agent-runtime.md](agent-runtime.md) |
 | Agent control plane, lifecycle, queues, and Dashboard operations | [agent-control-plane.md](agent-control-plane.md) |
 | Agent Dashboard information architecture | [dashboard.md](dashboard.md) |
+| Agent Dashboard docs placement map | [dashboard/README.md](dashboard/README.md) |
+| Agent Dashboard frontend design principles | [dashboard/design-principles.md](dashboard/design-principles.md) |
+| Agent Dashboard UI/UX layout | [dashboard/ui-ux-layout.md](dashboard/ui-ux-layout.md) |
 | Agent Dashboard frontend architecture | [dashboard/frontend-architecture.md](dashboard/frontend-architecture.md) |
 | Agent Dashboard read model | [dashboard/read-model.md](dashboard/read-model.md) |
+| Agent Dashboard acceptance | [dashboard/acceptance.md](dashboard/acceptance.md) |
 | Agent Dashboard runbook | [dashboard/runbook.md](dashboard/runbook.md) |
 | Git, PR, worktree, review, and decision workflow | [workflow-git-pr.md](workflow-git-pr.md) |
 | Goal learning loop and reusable cases | [goal-learning-loop.md](goal-learning-loop.md) |

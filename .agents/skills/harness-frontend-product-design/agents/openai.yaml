@@ -1,0 +1,4 @@
+interface:
+  display_name: "Harness Frontend Product Design"
+  short_description: "Design workflow-true harness frontends"
+  default_prompt: "Use $harness-frontend-product-design to design or review Multi-Agent Harness frontend UX from Vision, Goals, TaskGraphs, persistent AgentTeams, realtime AgentMember state, and acceptance gates."

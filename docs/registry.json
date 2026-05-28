@@ -282,14 +282,90 @@
         "docs/data-model.md",
         "docs/agent-runtime.md",
         "docs/agent-control-plane.md",
+        "docs/dashboard/README.md",
+        "docs/dashboard/design-principles.md",
+        "docs/dashboard/ui-ux-layout.md",
         "docs/dashboard/frontend-architecture.md",
         "docs/dashboard/read-model.md",
+        "docs/dashboard/acceptance.md",
         "docs/dashboard/runbook.md"
       ],
       "machineConsumers": ["check-doc-links", "check-doc-governance"],
       "reviewAfter": "2026-06-26",
       "lastVerifiedWith": ["npx pnpm@9.15.4 check"],
       "reorgTrigger": "Dashboard views, read models, safe actions, or workflow visibility requirements change."
+    },
+    {
+      "path": "docs/dashboard/README.md",
+      "ownerRole": "knowledge",
+      "status": "planned",
+      "lifecycle": "volatile",
+      "canonicalFor": [
+        "Agent Dashboard docs placement map",
+        "Dashboard docs change order",
+        "Dashboard surface routing rules"
+      ],
+      "dependsOn": [
+        "docs/README.md",
+        "docs/dashboard.md",
+        "docs/dashboard/design-principles.md",
+        "docs/dashboard/ui-ux-layout.md",
+        "docs/dashboard/frontend-architecture.md",
+        "docs/dashboard/read-model.md",
+        "docs/dashboard/acceptance.md",
+        "docs/dashboard/runbook.md"
+      ],
+      "machineConsumers": ["check-doc-links", "check-doc-governance"],
+      "reviewAfter": "2026-06-26",
+      "lastVerifiedWith": ["npx pnpm@9.15.4 check"],
+      "reorgTrigger": "Dashboard docs gain new stable surfaces, readers, or source-of-truth boundaries."
+    },
+    {
+      "path": "docs/dashboard/design-principles.md",
+      "ownerRole": "product-design",
+      "status": "planned",
+      "lifecycle": "volatile",
+      "canonicalFor": [
+        "Agent Dashboard frontend design principles",
+        "Goal and Task graph/Kanban policy",
+        "AgentTeam and AgentMember UI doctrine",
+        "Dashboard visual system"
+      ],
+      "dependsOn": [
+        "docs/prd.md",
+        "docs/concept-model.md",
+        "docs/dashboard.md",
+        "docs/agent-control-plane.md",
+        "docs/workflow-git-pr.md",
+        "docs/goal-learning-loop.md"
+      ],
+      "machineConsumers": ["check-doc-links", "check-doc-governance"],
+      "reviewAfter": "2026-06-26",
+      "lastVerifiedWith": ["npx pnpm@9.15.4 check"],
+      "reorgTrigger": "Dashboard frontend principles, graph/Kanban policy, or AgentTeam/AgentMember UI doctrine changes."
+    },
+    {
+      "path": "docs/dashboard/ui-ux-layout.md",
+      "ownerRole": "product-design",
+      "status": "planned",
+      "lifecycle": "volatile",
+      "canonicalFor": [
+        "Agent Dashboard UI/UX layout",
+        "Dashboard global shell",
+        "Dashboard responsive behavior",
+        "Dashboard route composition"
+      ],
+      "dependsOn": [
+        "docs/dashboard.md",
+        "docs/dashboard/design-principles.md",
+        "docs/dashboard/frontend-architecture.md",
+        "docs/dashboard/read-model.md",
+        "docs/dashboard/acceptance.md"
+      ],
+      "machineConsumers": ["check-doc-links", "check-doc-governance"],
+      "reviewAfter": "2026-06-26",
+      "lastVerifiedWith": ["npx pnpm@9.15.4 check"],
+      "reorgTrigger": "Dashboard global shell, route layout, responsive behavior, or per-surface composition changes."
     },
     {
       "path": "docs/dashboard/frontend-architecture.md",
@@ -303,7 +379,10 @@
       ],
       "dependsOn": [
         "docs/dashboard.md",
+        "docs/dashboard/design-principles.md",
+        "docs/dashboard/ui-ux-layout.md",
         "docs/dashboard/read-model.md",
+        "docs/dashboard/acceptance.md",
         "docs/dashboard/runbook.md",
         "docs/decisions/0014-react-vite-agent-dashboard.md",
         "apps/agent-dashboard/vite.config.ts",
@@ -329,6 +408,7 @@
       ],
       "dependsOn": [
         "docs/dashboard.md",
+        "docs/dashboard/design-principles.md",
         "docs/dashboard/frontend-architecture.md",
         "docs/data-model.md",
         "apps/agent-dashboard/src/types.ts",
@@ -339,6 +419,29 @@
       "reviewAfter": "2026-06-26",
       "lastVerifiedWith": ["npx pnpm@9.15.4 check"],
       "reorgTrigger": "Dashboard warning logic, read-model selectors, or canonical promotion rules change."
+    },
+    {
+      "path": "docs/dashboard/acceptance.md",
+      "ownerRole": "frontend-quality",
+      "status": "planned",
+      "lifecycle": "volatile",
+      "canonicalFor": [
+        "Agent Dashboard browser acceptance",
+        "Dashboard screenshot evidence",
+        "Dashboard web-quality gate"
+      ],
+      "dependsOn": [
+        "docs/dashboard.md",
+        "docs/dashboard/design-principles.md",
+        "docs/dashboard/ui-ux-layout.md",
+        "docs/dashboard/frontend-architecture.md",
+        "docs/dashboard/read-model.md",
+        "package.json"
+      ],
+      "machineConsumers": ["check-doc-links", "check-doc-governance"],
+      "reviewAfter": "2026-06-26",
+      "lastVerifiedWith": ["npx pnpm@9.15.4 check"],
+      "reorgTrigger": "Browser evidence, web-quality gates, screenshot policy, or frontend acceptance sequence changes."
     },
     {
       "path": "docs/dashboard/runbook.md",
@@ -353,7 +456,10 @@
       ],
       "dependsOn": [
         "docs/dashboard.md",
+        "docs/dashboard/design-principles.md",
+        "docs/dashboard/ui-ux-layout.md",
         "docs/dashboard/frontend-architecture.md",
+        "docs/dashboard/acceptance.md",
         "apps/agent-dashboard/vite.config.ts",
         "package.json"
       ],
