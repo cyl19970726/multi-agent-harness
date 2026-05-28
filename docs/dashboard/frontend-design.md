@@ -71,6 +71,31 @@ Kept:
 | `acceptance.md` | Browser, overflow, console, accessibility, performance, and web-quality gates. |
 | `runbook.md` | Local run and build commands. |
 
+## Design Workflow Provenance
+
+This document is the final design draft, not the raw design loop. The workflow
+record is split intentionally:
+
+| Stage | Record |
+| --- | --- |
+| Product Vision and Dashboard purpose | [../dashboard.md](../dashboard.md) |
+| Frontend doctrine and failure modes | [design-principles.md](design-principles.md) |
+| Top-level layout candidates and Questioner critique | [layout-variants.md](layout-variants.md) |
+| Selected layout, rejected alternatives, page-level decisions, and loop status | [layout-decisions.md](layout-decisions.md) |
+| Final implementation handoff | This document |
+
+The design loop used two temporary chat-side subagents:
+
+- Designer: proposed three top-level candidates and page-level options after
+  restating the Vision, selected Goal, and final acceptance standard.
+- Questioner: independently challenged workflow proof, mobile/accessibility,
+  read-model/API feasibility, and raw-debug-first risks.
+
+They do not count as canonical harness AgentMember execution. Their useful
+outputs are preserved in `layout-variants.md`, `layout-decisions.md`, this
+document, and task evidence. Implementation must treat those docs as the source
+of truth, not hidden chat context.
+
 ## Route Map
 
 The first implementation may remain a single React route internally, but the

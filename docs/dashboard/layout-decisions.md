@@ -54,6 +54,74 @@ Killed directions:
 - Task-card-only model: killed because it cannot prove assignment, report,
   evidence, proposal, review, and decision order.
 
+## Decision 2026-05-28: Frontend Design Workflow Gate
+
+This decision records the frontend skill workflow that produced the current
+design baseline.
+
+Independent review record:
+
+```text
+designer_prompt:
+  propose top-level and page-level Dashboard UI/UX options after restating
+  Vision, selected Goal, and final acceptance
+designer_output_ref:
+  layout-variants.md Page-Level Option Loop; chat-side subagent Lagrange
+questioner_prompt:
+  independently challenge workflow proof, mobile/accessibility, read-model/API
+  feasibility, and no-raw-debug-first behavior
+questioner_input_ref:
+  current Dashboard docs and raw design artifacts, not a Lead-preferred answer
+questioner_output_ref:
+  this decision record; chat-side subagent Locke
+decision_record_ref:
+  layout-decisions.md and frontend-design.md
+unresolved_questions:
+  backend/read-model fields for Vision, GoalEvaluation, graph-change
+  proposals, docs links, and safe repair actions remain implementation tasks
+next_loop_request:
+  no new top-level shell loop; continue only if implementation exposes missing
+  read-model/API blockers or browser evidence contradicts the design
+```
+
+The subagents were temporary design inputs, not canonical harness execution.
+Their outputs are durable only through this documentation and harness evidence.
+
+Loop status: stop for top-level design. The selected shell has enough signal:
+Team workspace first, Goal/Task document surfaces, controlled graph/Kanban
+relationship views, mounted docs, warnings/repair, and debug secondary.
+
+## Page-Level Decisions
+
+These decisions close the required page-level option loop. The rejected options
+are recorded in [layout-variants.md](layout-variants.md); the selected page
+cards are implemented in [frontend-design.md](frontend-design.md).
+
+| Surface | Selected option | Rejected options | Borrowed ideas | Loop status |
+| --- | --- | --- | --- | --- |
+| Vision overview | Vision ladder | scorecard as primary, timeline as primary | pilot acceptance chips, evaluation-to-next-goal links | stop |
+| Team workspace | Collaboration workspace | static operations console, goal-scoped team panel | dense queues, pinned goal health strip | stop |
+| AgentMember workbench | Chronological activity stream | tab-only inspector, runtime-first console | timeline filters, health summary | stop |
+| Goal document | Audit document | cockpit as primary, learning-only document | health strip, distance-to-vision closeout | stop |
+| Task document | Proof-order document | execution workbench as primary, PR/evidence-only audit | runtime strip, owned-path/check block | stop |
+| Graph/Kanban | Kanban default plus graph focus | split view as first implementation, graph canvas default | graph/card sync, later minimap/search/collapse | stop for design, stage implementation |
+| Docs context | Inspector docs panel plus docs route | external links only, full docs embedded inline | compact related-doc blocks | stop |
+| Evidence/Review/Decision | Four-lane acceptance strip | timeline-only chain, packet-only summary | chronological lane ordering, packet summary | stop |
+| Warnings/repair | Global queue plus local callouts | inspector-only warnings, passive checklist | checklist header summary | stop |
+| Debug | Collapsed drawer plus `/debug` route | raw route primary, modal-only console | shareable debug route | stop |
+| Mobile/accessibility | Tabbed mobile workbench | stacked desktop document, drawer-only detail | drawer for secondary context | stop |
+
+Remaining weaknesses accepted into implementation:
+
+- graph visualization should start with Kanban/list-first behavior and add
+  canvas focus only after node/edge/read-model contracts are clear;
+- Evidence/Review/Decision needs object-local and global queue wiring so
+  acceptance proof is not buried;
+- warning repair actions depend on backend support and must show disabled
+  reasons instead of simulating success;
+- mobile graph and timeline views need browser proof for no overflow, focus
+  order, labels, and text-based status.
+
 ## Module Decisions
 
 ### Team Rail And Team Detail

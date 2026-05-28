@@ -21,6 +21,28 @@ Dashboard should feel like a multi-agent collaboration control plane: agents are
 durable teammates, goals and tasks are auditable work documents, and graph views
 explain relationships without becoming the default mental model for everything.
 
+## Workflow Record
+
+This design round used two temporary chat-side subagents as design inputs.
+Their outputs are recorded here because they are not canonical harness
+execution by themselves.
+
+```text
+designer: Lagrange
+designer_task: propose top-level and page-level Dashboard UI/UX options
+questioner: Locke
+questioner_task: independently challenge workflow proof, mobile/accessibility,
+  read-model feasibility, and raw-debug-first risks
+decision_owner: Lead
+durable_record: this file, layout-decisions.md, frontend-design.md, and task
+  evidence in the harness store
+```
+
+Both subagents first restated the product Vision, the selected Dashboard Goal,
+and the final acceptance standard. The Questioner agreed that no further
+top-level shell loop was useful, but required explicit page-level option
+records before implementation.
+
 ## Decision Rubric
 
 The Questioner and Decision Agent use this rubric:
@@ -346,3 +368,132 @@ After selecting the top-level direction, run smaller three-option loops for:
 - Dashboard-mounted docs navigation and contextual docs panel;
 - Evidence, Review, Decision, Warnings, and Debug drawer;
 - desktop, tablet, and mobile placement.
+
+## Page-Level Option Loop
+
+The following option loop records the concrete alternatives used to produce the
+implementation design in [frontend-design.md](frontend-design.md). The selected
+options are decided in [layout-decisions.md](layout-decisions.md).
+
+### Vision Overview
+
+| Option | Shape | Risk | Useful Part |
+| --- | --- | --- | --- |
+| Vision ladder | Goal groups by proposed, active, blocked, complete, archived/rejected, plus distance-to-vision panel | Can underplay scenario/pilot acceptance | Clear complete/not-complete goal collection |
+| Pilot scorecard | Self-hosting and adapter pilots as columns with acceptance gaps | Can become metrics-first | Compact acceptance chips |
+| Learning timeline | Completed goals, evaluations, next-round plans, follow-up goals | Can hide current work | Evaluation-to-next-goal causality |
+
+Recommended: Vision ladder with scorecard chips and learning links.
+
+### Team Workspace
+
+| Option | Shape | Risk | Useful Part |
+| --- | --- | --- | --- |
+| Collaboration workspace | App rail, team rail, central activity/work queue, right inspector | Can drift into chat | Best persistent AgentTeam mental model |
+| Operations console | Dense roster, queues, warnings, decisions in tables | Can feel static | Fast queue scanning |
+| Goal-scoped team panel | Team context embedded inside selected goal | Hides standing-team continuity | Goal health strip |
+
+Recommended: Collaboration workspace with dense queue affordances and a pinned
+goal health strip.
+
+### AgentMember Workbench
+
+| Option | Shape | Risk | Useful Part |
+| --- | --- | --- | --- |
+| Chronological activity stream | Merge messages, delivery, sessions, events, reports, evidence, proposals | Requires normalized timeline projection | Best canonical workflow proof |
+| Tabbed inspector | Inbox, outbox, sessions, events, evidence, actions | Fragments causality | Useful filters |
+| Runtime-first console | Health, sessions, queue, linked work | Can make provider state look canonical | Health summary |
+
+Recommended: Chronological activity stream with filters and a compact runtime
+health summary.
+
+### Goal Document
+
+| Option | Shape | Risk | Useful Part |
+| --- | --- | --- | --- |
+| Audit document | Objective, GoalDesign, team design, graph/Kanban, evidence/review/decision, evaluation | Can become long | Strongest acceptance trail |
+| Goal cockpit | Header, health strip, queues, graph/Kanban, decision queue | Can reduce Goal to operations | Action/health strip |
+| Learning document | GoalEvaluation, distance-to-vision, next-round plan emphasized | Can underplay execution | Strong vision loop |
+
+Recommended: Audit document with cockpit health strip and learning closeout.
+
+### Task Document
+
+| Option | Shape | Risk | Useful Part |
+| --- | --- | --- | --- |
+| Proof-order document | Assignment, report, evidence, proposal, review, decision | Can underplay live runtime | Best protocol proof |
+| Execution workbench | Status, assignee/runtime, messages, sessions, actions, warnings | Can hide acceptance order | Runtime/action strip |
+| PR/evidence audit | Changed paths, owned paths, checks, review, decision | Too narrow for non-code tasks | Owned-path/check block |
+
+Recommended: Proof-order document with runtime strip and PR/evidence block.
+
+### Graph And Kanban
+
+| Option | Shape | Risk | Useful Part |
+| --- | --- | --- | --- |
+| Split synchronized view | Compact graph beside operational lanes | Crowded desktop, poor on mobile if copied directly | Strong graph/card selection sync |
+| Kanban default plus graph focus | Work lanes first, graph opens as focus mode | Dependencies can be missed if focus is hidden | Best mobile/accessibility default |
+| Graph canvas default | Controlled canvas with bottom Kanban | Highest mobile/accessibility and decorative-topology risk | Minimap/search/collapse for later scale |
+
+Recommended: Kanban default plus graph focus for the first implementation;
+mature desktop may add split synchronized mode. The graph must define semantic
+node/edge types, collapse/search behavior, and list fallback before visual
+canvas work begins.
+
+### Docs Context
+
+| Option | Shape | Risk | Useful Part |
+| --- | --- | --- | --- |
+| Inspector docs panel | Object-linked docs and anchors near active work | Panel can be narrow | Strong object context |
+| Dedicated docs route | Search and object backlinks | Loses workflow context if primary | Full browsing and search |
+| Inline context blocks | Compact related docs in Goal/Task documents | Can duplicate source truth | Good local cues |
+
+Recommended: Inspector docs panel plus dedicated route, with compact inline
+related-doc links only.
+
+### Evidence, Review, And Decision
+
+| Option | Shape | Risk | Useful Part |
+| --- | --- | --- | --- |
+| Four-lane acceptance strip | Evidence, Proposal, Review, Decision lanes near object | Can fragment chronology | Makes missing acceptance links visible |
+| Timeline acceptance chain | Event-time chain across evidence, review, decision | Can hide missing categories | Shows order and causality |
+| Decision packet card | Summary of evidence, review, rationale, follow-ups | Can hide underlying proof | Fast Lead scanning |
+
+Recommended: Four-lane acceptance strip with chronological ordering inside
+lanes and a decision packet summary. The first implementation must keep review
+evidence distinct from Leader Decision.
+
+### Warnings And Repair
+
+| Option | Shape | Risk | Useful Part |
+| --- | --- | --- | --- |
+| Global queue plus local callouts | Warning queue plus object-local affected sections | Global queue can feel detached | Best visibility and repair path |
+| Inspector warning browser | Right-panel warning list and detail | Easy to miss object-local causes | Useful detail browsing |
+| Workflow health checklist | Per Goal/Task checklist of protocol links | Can become passive | Good header summary |
+
+Recommended: Global queue plus local callouts, borrowing checklist summaries in
+Goal/Task headers. Every warning needs severity, affected object, cause,
+consequence, repair action, disabled reason, and promotion status.
+
+### Debug Drawer
+
+| Option | Shape | Risk | Useful Part |
+| --- | --- | --- | --- |
+| Collapsed drawer | Raw snapshot, import/export, raw messages/sessions outside main viewport | Can still crowd layout if oversized | Best no-raw-debug-first default |
+| Dedicated `/debug` route | Deep-linkable diagnostics | Separates debug from active context | Shareable raw review |
+| Modal console | Temporary debug overlay | Blocks comparison with workbench | Safe for rare actions |
+
+Recommended: Collapsed drawer plus dedicated `/debug` route. Debug must be
+closed by default and labeled offline when using pasted/file snapshots.
+
+### Mobile And Accessibility
+
+| Option | Shape | Risk | Useful Part |
+| --- | --- | --- | --- |
+| Tabbed mobile workbench | Team, Work, Member, Warnings, Docs, Debug tabs | Tab state must be stable | Best no-overflow structure |
+| Stacked document | Single scroll with anchored sections | Hides member/warning details far below | Simple document reading |
+| Drawer inspector | Work first, details in drawers | Can hide acceptance proof | Good secondary detail pattern |
+
+Recommended: Tabbed mobile workbench with drawer details only for secondary
+context. Graph uses Kanban/list fallback; timelines and warning queues require
+keyboard focus order, text status, and labeled controls.
