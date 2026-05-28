@@ -423,6 +423,132 @@ function planAndAcceptNextRound(taskId, goalId) {
     plan_evidence: planned.plan.id,
     proposal: planned.proposal.id,
     decision: accepted.decision.id,
+    next_goal_id: "goal-autonomous-next-round",
+    next_task_id: "task-autonomous-next-round",
+    follow_up_task_ids: projected.follow_up_task_ids,
+    follow_up_goal_ids: projected.follow_up_goal_ids,
+  };
+}
+
+function executeAcceptedNextRound(taskId, goalId) {
+  const criticRef = writeArtifact(
+    "next-round-critic-findings.md",
+    "Critic verifies the accepted next-round task actually executed and can produce another next-round proposal.",
+  );
+  harnessJson([
+    "evidence",
+    "add",
+    "--id",
+    "evidence-next-round-critic",
+    "--task",
+    taskId,
+    "--source-type",
+    "critic_findings",
+    "--source-ref",
+    criticRef,
+    "--summary",
+    "Critic confirmed the accepted next-round task executed through the standing team.",
+  ]);
+  harnessJson([
+    "decision",
+    "record",
+    "--id",
+    "decision-next-round-current-goal",
+    "--task",
+    taskId,
+    "--decision",
+    "accepted by lead",
+    "--rationale",
+    "The accepted next-round task was delivered to the standing worker and can now produce another follow-up proposal.",
+    "--evidence",
+    "evidence-next-round-critic",
+  ]);
+  harnessJson(["task", "status", "--id", taskId, "--status", "done"]);
+  const evaluationRef = writeArtifact(
+    "next-round-goal-evaluation.md",
+    [
+      "# Next Round Goal Evaluation",
+      "",
+      "worked: the follow-up goal created by Observer/Lead was executed by the same standing team.",
+      "next: create another autonomous proposal to prove the loop can continue beyond one generated round.",
+    ].join("\n"),
+  );
+  harnessJson([
+    "evidence",
+    "add",
+    "--id",
+    "evidence-next-round-evaluation",
+    "--task",
+    taskId,
+    "--source-type",
+    "goal_evaluation",
+    "--source-ref",
+    evaluationRef,
+    "--summary",
+    "Next-round GoalEvaluation requests another automatic carry-forward proposal.",
+  ]);
+  const status = harnessJson(["goal", "learning-status", "--id", goalId, "--strict", "--require-evaluation"]);
+  assert(status.ok === true, `next-round goal learning status should be clean: ${(status.warnings ?? []).join("; ")}`);
+  const planned = harnessJson([
+    "autonomy",
+    "plan-next",
+    "--goal",
+    goalId,
+    "--task",
+    taskId,
+    "--observer",
+    "observer",
+    "--lead",
+    "lead",
+    "--proposal-summary",
+    "Create another follow-up goal from the executed next-round GoalEvaluation.",
+  ]);
+  gateway();
+  const accepted = harnessJson([
+    "autonomy",
+    "decide",
+    "--task",
+    taskId,
+    "--lead",
+    "lead",
+    "--proposal",
+    planned.proposal.id,
+    "--decision",
+    "accept",
+    "--rationale",
+    "Accept the second autonomous proposal to prove carry-forward after executing a generated round.",
+    "--evidence",
+    planned.plan.id,
+    "--create-goal",
+    "goal-autonomous-third-round",
+    "--goal-title",
+    "Third autonomous self-evolution round",
+    "--goal-objective",
+    "Continue from the executed next-round evaluation and keep the task graph moving.",
+    "--goal-success",
+    "Another follow-up task exists and is assigned through the standing message gateway.",
+    "--create-task",
+    "task-autonomous-third-round",
+    "--task-title",
+    "Follow-up: continue autonomous improvement",
+    "--task-objective",
+    "Receive another generated task through the standing team after the previous generated round completed.",
+    "--assignee",
+    "worker",
+    "--reviewer",
+    "critic",
+    "--acceptance",
+    "Worker receives the third-round task through the same standing team.",
+  ]);
+  gateway();
+  const snapshot = harnessJson(["dashboard", "snapshot"]);
+  const projected = snapshot.autonomous_proposals.find((proposal) => proposal.id === planned.proposal.id);
+  assert(projected?.disposition === "accepted", "second autonomous proposal must be accepted in dashboard projection");
+  assert((projected.follow_up_task_ids ?? []).includes("task-autonomous-third-round"), "second proposal must link to third-round task");
+  return {
+    next_round_status_warnings: status.warnings ?? [],
+    proposal: planned.proposal.id,
+    decision: accepted.decision.id,
     follow_up_task_ids: projected.follow_up_task_ids,
     follow_up_goal_ids: projected.follow_up_goal_ids,
   };
@@ -437,9 +563,10 @@ function dashboardProof() {
   const workerSessions = snapshot.provider_sessions.filter((session) => session.agent_member_id === "worker");
   assert(team?.member_ids?.length === 5, "standing team should include five members");
   assert(worker?.status === "idle", "worker should be idle after the next-round assignment delivery");
-  assert(workerSessions.length >= 3, "worker should have multiple provider sessions across current and next tasks");
+  assert(workerSessions.length >= 5, "worker should have multiple provider sessions across generated rounds");
   assert(peerMessages.length === 2, "dashboard snapshot should expose peer message chain");
   assert(observerProposal, "dashboard snapshot should expose accepted Observer proposal");
+  assert(snapshot.autonomous_proposals.filter((proposal) => proposal.disposition === "accepted").length >= 2, "dashboard should expose multiple accepted autonomous proposals");
   return {
     team_members: team.member_ids,
     worker_status: worker.status,
@@ -467,6 +594,7 @@ if (!existsSync(harness)) {
 }
 
 let context;
+let nextRound;
 stage("s0", "standing team and goal design exist", () => {
   context = setupStandingTeam();
   return { team_id: context.team.id, goal_id: context.goal.id, task_id: context.task.id };
@@ -474,7 +602,13 @@ stage("s0", "standing team and goal design exist", () => {
 stage("s1", "same worker receives multiple messages and returns idle", () => assignAndReuseWorker(context.task.id));
 stage("s2", "worker and critic collaborate through peer messages", () => peerMessage(context.task.id));
 stage("s3", "goal evaluation is recorded and strict learning passes", () => evaluateGoal(context.task.id, context.goal.id));
-stage("s4", "Observer proposes and Lead accepts next-round goal/task graph", () => planAndAcceptNextRound(context.task.id, context.goal.id));
-stage("s5", "dashboard snapshot proves autonomous-team loop", () => dashboardProof());
+stage("s4", "Observer proposes and Lead accepts next-round goal/task graph", () => {
+  nextRound = planAndAcceptNextRound(context.task.id, context.goal.id);
+  return nextRound;
+});
+stage("s5", "accepted next round executes and creates another autonomous proposal", () =>
+  executeAcceptedNextRound(nextRound.next_task_id, nextRound.next_goal_id),
+);
+stage("s6", "dashboard snapshot proves autonomous-team loop", () => dashboardProof());
 
 finish(0);

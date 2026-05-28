@@ -187,9 +187,10 @@ communication, and agent-proposed follow-up work.
 creates a standing team, proves the same `AgentMember` receives multiple
 messages and returns to idle, proves Worker/Critic peer messages, records
 GoalEvaluation, has Observer create a next-round proposal, has Lead accept it,
-creates the follow-up goal/task graph, and verifies the Dashboard
-`autonomous_proposals` projection links proposal, evidence, decision, and
-follow-up work.
+creates the follow-up goal/task graph, executes that generated next round, then
+creates another accepted follow-up proposal. The Dashboard
+`autonomous_proposals` projection must link proposals, evidence, decisions, and
+follow-up work across generated rounds.
 
 ## Current Build Order
 

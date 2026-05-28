@@ -65,8 +65,10 @@ messages, Observer-generated goal or graph-change proposals, and a Lead
 decision over those proposals.
 
 The autonomous-team gate provides this deterministic proof through dry-run
-provider delivery. It does not replace the live Codex gate when a change claims
-real provider transport behavior.
+provider delivery. It must carry an accepted generated next-round task through
+execution, evaluation, and another accepted follow-up proposal. It does not
+replace the live Codex gate when a change claims real provider transport
+behavior.
 
 The first CLI is available through Cargo:
 

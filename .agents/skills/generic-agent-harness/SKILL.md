@@ -214,7 +214,9 @@ Use `acceptance:autonomous-team` when claiming the standing team loop works.
 That gate must prove: durable team members, same-member multiple message
 delivery, idle return, peer messages, GoalEvaluation, Observer next-round
 proposal, Lead disposition, follow-up goal/task creation, and Dashboard
-`autonomous_proposals` visibility.
+`autonomous_proposals` visibility. It must also execute an accepted generated
+next-round task and create another accepted follow-up proposal; merely creating
+one next-round task is not enough to prove self-evolution.
 
 When the gate exposes a skipped or failed stage, create a follow-up task rather
 than weakening the acceptance criteria.
