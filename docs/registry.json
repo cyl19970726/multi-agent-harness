@@ -286,8 +286,7 @@
         "docs/dashboard/design-principles.md",
         "docs/dashboard/layout-variants.md",
         "docs/dashboard/layout-decisions.md",
-        "docs/dashboard/ui-ux-layout.md",
-        "docs/dashboard/frontend-rebuild-design.md",
+        "docs/dashboard/frontend-design.md",
         "docs/dashboard/frontend-architecture.md",
         "docs/dashboard/read-model.md",
         "docs/dashboard/acceptance.md",
@@ -314,8 +313,7 @@
         "docs/dashboard/design-principles.md",
         "docs/dashboard/layout-variants.md",
         "docs/dashboard/layout-decisions.md",
-        "docs/dashboard/ui-ux-layout.md",
-        "docs/dashboard/frontend-rebuild-design.md",
+        "docs/dashboard/frontend-design.md",
         "docs/dashboard/frontend-architecture.md",
         "docs/dashboard/read-model.md",
         "docs/dashboard/acceptance.md",
@@ -387,7 +385,7 @@
       "dependsOn": [
         "docs/dashboard/layout-variants.md",
         "docs/dashboard/design-principles.md",
-        "docs/dashboard/ui-ux-layout.md"
+        "docs/dashboard/frontend-design.md"
       ],
       "machineConsumers": ["check-doc-links", "check-doc-governance"],
       "reviewAfter": "2026-06-26",
@@ -395,41 +393,16 @@
       "reorgTrigger": "Accepted Dashboard layout direction, killed alternatives, module decisions, or visual placement constraints change."
     },
     {
-      "path": "docs/dashboard/ui-ux-layout.md",
+      "path": "docs/dashboard/frontend-design.md",
       "ownerRole": "product-design",
       "status": "planned",
       "lifecycle": "volatile",
       "canonicalFor": [
-        "Agent Dashboard UI/UX layout",
-        "Dashboard global shell",
-        "Dashboard responsive behavior",
-        "Dashboard route composition"
-      ],
-      "dependsOn": [
-        "docs/dashboard.md",
-        "docs/dashboard/design-principles.md",
-        "docs/dashboard/layout-variants.md",
-        "docs/dashboard/layout-decisions.md",
-        "docs/dashboard/frontend-rebuild-design.md",
-        "docs/dashboard/frontend-architecture.md",
-        "docs/dashboard/read-model.md",
-        "docs/dashboard/acceptance.md"
-      ],
-      "machineConsumers": ["check-doc-links", "check-doc-governance"],
-      "reviewAfter": "2026-06-26",
-      "lastVerifiedWith": ["npx pnpm@9.15.4 check"],
-      "reorgTrigger": "Dashboard global shell, route layout, responsive behavior, or per-surface composition changes."
-    },
-    {
-      "path": "docs/dashboard/frontend-rebuild-design.md",
-      "ownerRole": "product-design",
-      "status": "planned",
-      "lifecycle": "volatile",
-      "canonicalFor": [
-        "Agent Dashboard full frontend rebuild design",
-        "Dashboard implementation-ready page specs",
-        "Dashboard rebuild boundary",
-        "rejected old frontend implementation directions"
+        "Agent Dashboard complete frontend design",
+        "Dashboard selected shell and route map",
+        "Dashboard core page cards",
+        "Dashboard visual placement and safe actions",
+        "Dashboard responsive behavior and implementation sequence"
       ],
       "dependsOn": [
         "docs/prd.md",
@@ -438,7 +411,6 @@
         "docs/dashboard/design-principles.md",
         "docs/dashboard/layout-variants.md",
         "docs/dashboard/layout-decisions.md",
-        "docs/dashboard/ui-ux-layout.md",
         "docs/dashboard/frontend-architecture.md",
         "docs/dashboard/read-model.md",
         "docs/dashboard/acceptance.md",
@@ -447,7 +419,7 @@
       "machineConsumers": ["check-doc-links", "check-doc-governance"],
       "reviewAfter": "2026-06-26",
       "lastVerifiedWith": ["npx pnpm@9.15.4 check"],
-      "reorgTrigger": "Dashboard rebuild scope, core page specs, implementation boundary, or rejected frontend directions change."
+      "reorgTrigger": "Dashboard shell, route map, page cards, visual placement, safe actions, read-model needs, responsive behavior, implementation sequence, or acceptance pointers change."
     },
     {
       "path": "docs/dashboard/frontend-architecture.md",
@@ -464,7 +436,7 @@
         "docs/dashboard/design-principles.md",
         "docs/dashboard/layout-variants.md",
         "docs/dashboard/layout-decisions.md",
-        "docs/dashboard/ui-ux-layout.md",
+        "docs/dashboard/frontend-design.md",
         "docs/dashboard/read-model.md",
         "docs/dashboard/acceptance.md",
         "docs/dashboard/runbook.md",
@@ -518,7 +490,7 @@
         "docs/dashboard.md",
         "docs/dashboard/design-principles.md",
         "docs/dashboard/layout-decisions.md",
-        "docs/dashboard/ui-ux-layout.md",
+        "docs/dashboard/frontend-design.md",
         "docs/dashboard/frontend-architecture.md",
         "docs/dashboard/read-model.md",
         "package.json"
@@ -542,7 +514,7 @@
       "dependsOn": [
         "docs/dashboard.md",
         "docs/dashboard/design-principles.md",
-        "docs/dashboard/ui-ux-layout.md",
+        "docs/dashboard/frontend-design.md",
         "docs/dashboard/frontend-architecture.md",
         "docs/dashboard/acceptance.md",
         "apps/agent-dashboard/vite.config.ts",

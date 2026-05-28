@@ -138,7 +138,7 @@ mixed with frontend implementation details:
 | `docs/dashboard/design-principles.md` | core frontend design principles, graph/Kanban policy, AgentTeam/AgentMember UI doctrine, visual system, and current UX failure modes | route-level layout details or React module boundaries |
 | `docs/dashboard/layout-variants.md` | candidate Dashboard layout directions, Designer/Questioner critique, scoring rubric, and decision inputs | final route spec, component internals, or accepted layout details |
 | `docs/dashboard/layout-decisions.md` | accepted layout direction, rejected alternatives, module decisions, and visual placement constraints | component internals or unscored future ideas |
-| `docs/dashboard/ui-ux-layout.md` | global shell, route/page layout, responsive behavior, and per-surface composition | canonical object semantics, framework internals, run commands, browser acceptance |
+| `docs/dashboard/frontend-design.md` | complete frontend design: selected shell, route map, page cards, visual placement, read-model needs, safe actions, responsive behavior, implementation sequence | product PRD, candidate critique, framework internals, run commands |
 | `docs/dashboard/frontend-architecture.md` | Agent Dashboard frontend architecture, component responsibilities, app-local source boundary | product PRD or runbook commands |
 | `docs/dashboard/read-model.md` | read-model projections, goal scope, warning promotion rules | canonical validation rules or Rust implementation |
 | `docs/dashboard/acceptance.md` | browser screenshot evidence, web-quality gate, and frontend acceptance sequence | product purpose or local development commands |
@@ -157,17 +157,17 @@ Rust store / CLI / API
   -> goal-scoped control-plane panels and warnings
 ```
 
-The UI/UX layout contract is in
-[dashboard/ui-ux-layout.md](dashboard/ui-ux-layout.md). Frontend changes that
-reshape the Dashboard should update that document before changing component
-structure or CSS.
+The frontend design contract is in
+[dashboard/frontend-design.md](dashboard/frontend-design.md). Frontend changes
+that reshape the Dashboard should update that document before changing
+component structure or CSS.
 
 Candidate layout options, critiques, and rejected alternatives belong in
 [dashboard/layout-variants.md](dashboard/layout-variants.md). Accepted layout
 decisions and killed alternatives belong in
 [dashboard/layout-decisions.md](dashboard/layout-decisions.md). Once a
-direction is accepted, promote stable route and surface decisions into the
-layout contract.
+direction is accepted, promote stable route, page, surface, action, and
+acceptance decisions into the frontend design contract.
 
 Browser screenshot and web-quality acceptance lives in
 [dashboard/acceptance.md](dashboard/acceptance.md). Layout PRs should plan that

@@ -2,8 +2,9 @@
 
 This document records Dashboard UI/UX layout alternatives, rejected variants,
 and selected design direction. Core principles stay in
-[design-principles.md](design-principles.md). Concrete route composition stays
-in [ui-ux-layout.md](ui-ux-layout.md).
+[design-principles.md](design-principles.md). Concrete route composition,
+page cards, visual placement, safe actions, and responsive behavior stay in
+[frontend-design.md](frontend-design.md).
 
 ## Decision 2026-05-28: Team Workspace Shell
 

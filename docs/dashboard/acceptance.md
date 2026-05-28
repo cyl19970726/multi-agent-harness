@@ -2,7 +2,8 @@
 
 This document owns frontend acceptance for Agent Dashboard layout changes.
 Product-level acceptance stays in [../dashboard.md](../dashboard.md). Local
-commands stay in [runbook.md](runbook.md).
+commands stay in [runbook.md](runbook.md). The complete frontend design under
+test stays in [frontend-design.md](frontend-design.md).
 
 ## Implementation Sequence
 

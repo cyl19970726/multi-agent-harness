@@ -1,8 +1,9 @@
 # Agent Dashboard Design Principles
 
 This document owns the core UI/UX principles for the Agent Dashboard. Concrete
-screen layout belongs in [ui-ux-layout.md](ui-ux-layout.md). Frontend module
-boundaries belong in [frontend-architecture.md](frontend-architecture.md).
+screen layout and page cards belong in
+[frontend-design.md](frontend-design.md). Frontend module boundaries belong in
+[frontend-architecture.md](frontend-architecture.md).
 
 ## Doctrine
 

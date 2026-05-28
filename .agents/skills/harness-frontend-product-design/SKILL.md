@@ -43,7 +43,7 @@ Load when changing Dashboard layout, routes, or visual system:
 - `docs/dashboard/design-principles.md`
 - `docs/dashboard/layout-variants.md`
 - `docs/dashboard/layout-decisions.md`
-- `docs/dashboard/ui-ux-layout.md`
+- `docs/dashboard/frontend-design.md`
 - `docs/dashboard/frontend-architecture.md`
 - `docs/dashboard/acceptance.md`
 
@@ -88,12 +88,17 @@ Use the skill for process and guardrails; use docs for product decisions.
   directions, and useful parts kept.
 - `docs/dashboard/layout-decisions.md`: selected main direction, borrowed
   ideas, remaining gaps, reviewer loop status, and stop/continue reasons.
-- `docs/dashboard/ui-ux-layout.md`: selected shell, route map, core page specs,
-  object mapping, visual placement, responsive behavior, and implementation
-  sequence.
+- `docs/dashboard/frontend-design.md`: selected shell, route map, core page
+  cards, object mapping, visual placement, safe actions, read-model needs,
+  responsive behavior, implementation sequence, and acceptance pointers.
 - `docs/dashboard/acceptance.md`: browser screenshots, console, accessibility,
   performance, web-quality, and harness workflow acceptance evidence plan.
 - `docs/dashboard/README.md`: index of the current Dashboard design contract.
+
+When a new frontend design document supersedes older Dashboard docs, update
+`docs/dashboard/README.md`, `docs/README.md`, and `docs/registry.json`, then
+delete or mark the old docs as deprecated. Do not leave multiple canonical
+layout specs that conflict.
 
 ## Frontend Doctrine
 
@@ -205,6 +210,8 @@ Watch for these before approving design or implementation:
 Before writing component code, the design record must include:
 
 - core page discovery from Vision, PRD, object model, and failure modes;
+- docs cleanup decision: retained docs, deleted/superseded docs, and updated
+  registry/index links;
 - route map and page hierarchy;
 - selected top-level layout, rejected alternatives, and borrowed ideas;
 - page-level specs for Vision, Team, AgentMember, Goal, Task, Graph/Kanban,

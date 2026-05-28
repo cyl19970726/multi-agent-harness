@@ -1,8 +1,8 @@
 # Agent Dashboard Layout Variants
 
 This document holds candidate Dashboard UI/UX directions before one direction is
-accepted into [ui-ux-layout.md](ui-ux-layout.md). It is the place for Designer
-variants, Questioner critique, scoring, and rejected alternatives.
+accepted into [frontend-design.md](frontend-design.md). It is the place for
+Designer variants, Questioner critique, scoring, and rejected alternatives.
 
 ## Product Context
 
@@ -330,7 +330,7 @@ follow-ups, and distance-to-vision.
 This synthesis is not final implementation approval. Before coding, the
 Decision Agent must score the candidates, record the accepted/rejected tradeoffs
 in this document or an ADR, and move the accepted layout into
-[ui-ux-layout.md](ui-ux-layout.md).
+[frontend-design.md](frontend-design.md).
 
 ## Next Module Option Loops
 

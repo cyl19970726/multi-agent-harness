@@ -37,6 +37,28 @@ selected goal
 This keeps the Dashboard focused on one operational workflow instead of a raw
 repository-wide object dump.
 
+## Required Selectors
+
+The frontend design in [frontend-design.md](frontend-design.md) should be built
+from named projections instead of ad hoc component filtering.
+
+| Selector | Owns | Degraded state |
+| --- | --- | --- |
+| `activeVisionContext(snapshot, selectedGoalId)` | vision summary, final acceptance signal, selected goal relation, missing-context warning | show explicit missing Vision/read-model gap |
+| `goalCollection(snapshot)` | proposed, active, blocked, complete, archived/rejected goal groups | show ungrouped goals with grouping warning |
+| `goalDocument(snapshot, goalId)` | Goal, GoalDesign evidence, goal learning status, team design, decisions, evaluation, related docs | mark missing GoalDesign, Decision, or GoalEvaluation separately |
+| `teamWorkspace(snapshot, teamId, goalId?)` | full roster independent of task refs, role groups, queues, activity, decision queue | show team/member source gap instead of inferring disposable workers |
+| `memberWorkbench(snapshot, memberId)` | identity, current work, runtime layers, prompt/skills, sessions, safe-action disabled reasons | show member as durable but incomplete |
+| `memberTimeline(snapshot, memberId)` | chronological messages, delivery updates, provider sessions, events, reports, evidence refs, proposals | fall back to grouped sections with timeline warning |
+| `taskDocument(snapshot, taskId)` | proof-order assignment, report, evidence, proposal, review, decision, Git refs, object-local warnings | mark each missing protocol link |
+| `graphKanbanModel(snapshot, scope)` | synchronized graph nodes/edges and lane projections for Vision/Goal/Task scopes | disable graph focus while preserving Kanban/document access |
+| `decisionQueue(snapshot, scope)` | proposals, missing reviews, warning repairs, waivers, pending decisions, follow-ups | show queue unavailable warning |
+| `docsContext(snapshot, objectRef)` | registry-backed related docs and owner/status/lifecycle metadata | link to docs index and show missing relation warning |
+| `warningsByObject(snapshot)` | advisory warnings grouped by affected canonical object | show global warnings only |
+
+Each selector should consume latest-row projections for append-only mutable
+objects before computing React keys, status counts, or warning state.
+
 ## Detail Panels
 
 Task detail must show the evidence chain that proves work happened:

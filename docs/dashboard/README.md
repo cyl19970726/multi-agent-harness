@@ -13,8 +13,7 @@ Dashboard docs: decide which surface owns the claim, then place it there.
 | `design-principles.md` | Core frontend design principles, failure modes, graph/Kanban policy, AgentTeam and AgentMember UI doctrine | Route-level layout details or React module boundaries |
 | `layout-variants.md` | Candidate Dashboard layout directions, Designer/Questioner critique, scoring rubric, and decision inputs | Final implementation spec or component internals |
 | `layout-decisions.md` | Accepted layout direction, killed alternatives, module decisions, and visual placement constraints | Code implementation or unscored future ideas |
-| `ui-ux-layout.md` | Global shell, route/page layout, responsive behavior, and per-surface composition | Canonical object semantics or implementation files |
-| `frontend-rebuild-design.md` | Implementation-ready full frontend rebuild design, core page specs, rejected implementation directions, high-risk module options, and acceptance requirements | Stable product doctrine already owned by design principles or low-level React code |
+| `frontend-design.md` | Complete canonical Dashboard frontend design: selected shell, route map, page cards, visual placement, read-model needs, safe actions, responsive behavior, implementation sequence, and acceptance pointers | Product PRD, candidate layout critique, React internals, or local run commands |
 | `frontend-architecture.md` | React/Vite architecture, component responsibilities, app-local boundaries | Product PRD, visual doctrine, or runbook commands |
 | `read-model.md` | Snapshot projections, selectors, advisory warnings, and required read-model fields | Canonical validation rules or Rust implementation |
 | `acceptance.md` | Browser screenshot evidence, web-quality gate, and frontend acceptance sequence | Product purpose or local development commands |
@@ -33,8 +32,7 @@ product purpose
   -> three candidate layout variants and critique
   -> Decision Agent / Lead records selected and killed layouts
   -> module-level option loops for high-risk surfaces
-  -> layout and route design
-  -> implementation-ready rebuild design
+  -> complete frontend design draft
   -> read-model/API needs
   -> frontend architecture changes
   -> implementation
@@ -53,8 +51,9 @@ not ready to drive frontend decisions.
 For Dashboard redesigns, keep three layout candidates in
 [layout-variants.md](layout-variants.md) until a Decision Agent or Lead records
 the selected direction in [layout-decisions.md](layout-decisions.md). Once
-selected, move the stable page hierarchy and surface composition into
-[ui-ux-layout.md](ui-ux-layout.md).
+selected, move the stable page hierarchy, page cards, visual placement, safe
+actions, read-model needs, responsive behavior, and acceptance pointers into
+[frontend-design.md](frontend-design.md).
 
 ## Skill Boundary
 

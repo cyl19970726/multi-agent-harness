@@ -17,8 +17,7 @@
 | Agent Dashboard frontend design principles | [dashboard/design-principles.md](dashboard/design-principles.md) |
 | Agent Dashboard layout variants | [dashboard/layout-variants.md](dashboard/layout-variants.md) |
 | Agent Dashboard layout decisions | [dashboard/layout-decisions.md](dashboard/layout-decisions.md) |
-| Agent Dashboard UI/UX layout | [dashboard/ui-ux-layout.md](dashboard/ui-ux-layout.md) |
-| Agent Dashboard frontend rebuild design | [dashboard/frontend-rebuild-design.md](dashboard/frontend-rebuild-design.md) |
+| Agent Dashboard frontend design | [dashboard/frontend-design.md](dashboard/frontend-design.md) |
 | Agent Dashboard frontend architecture | [dashboard/frontend-architecture.md](dashboard/frontend-architecture.md) |
 | Agent Dashboard read model | [dashboard/read-model.md](dashboard/read-model.md) |
 | Agent Dashboard acceptance | [dashboard/acceptance.md](dashboard/acceptance.md) |
