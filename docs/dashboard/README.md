@@ -14,6 +14,7 @@ Dashboard docs: decide which surface owns the claim, then place it there.
 | `layout-variants.md` | Candidate Dashboard layout directions, Designer/Questioner critique, scoring rubric, and decision inputs | Final implementation spec or component internals |
 | `layout-decisions.md` | Accepted layout direction, killed alternatives, module decisions, and visual placement constraints | Code implementation or unscored future ideas |
 | `ui-ux-layout.md` | Global shell, route/page layout, responsive behavior, and per-surface composition | Canonical object semantics or implementation files |
+| `frontend-rebuild-design.md` | Implementation-ready full frontend rebuild design, core page specs, rejected implementation directions, high-risk module options, and acceptance requirements | Stable product doctrine already owned by design principles or low-level React code |
 | `frontend-architecture.md` | React/Vite architecture, component responsibilities, app-local boundaries | Product PRD, visual doctrine, or runbook commands |
 | `read-model.md` | Snapshot projections, selectors, advisory warnings, and required read-model fields | Canonical validation rules or Rust implementation |
 | `acceptance.md` | Browser screenshot evidence, web-quality gate, and frontend acceptance sequence | Product purpose or local development commands |
@@ -33,6 +34,7 @@ product purpose
   -> Decision Agent / Lead records selected and killed layouts
   -> module-level option loops for high-risk surfaces
   -> layout and route design
+  -> implementation-ready rebuild design
   -> read-model/API needs
   -> frontend architecture changes
   -> implementation

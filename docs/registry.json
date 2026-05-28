@@ -287,6 +287,7 @@
         "docs/dashboard/layout-variants.md",
         "docs/dashboard/layout-decisions.md",
         "docs/dashboard/ui-ux-layout.md",
+        "docs/dashboard/frontend-rebuild-design.md",
         "docs/dashboard/frontend-architecture.md",
         "docs/dashboard/read-model.md",
         "docs/dashboard/acceptance.md",
@@ -314,6 +315,7 @@
         "docs/dashboard/layout-variants.md",
         "docs/dashboard/layout-decisions.md",
         "docs/dashboard/ui-ux-layout.md",
+        "docs/dashboard/frontend-rebuild-design.md",
         "docs/dashboard/frontend-architecture.md",
         "docs/dashboard/read-model.md",
         "docs/dashboard/acceptance.md",
@@ -408,6 +410,7 @@
         "docs/dashboard/design-principles.md",
         "docs/dashboard/layout-variants.md",
         "docs/dashboard/layout-decisions.md",
+        "docs/dashboard/frontend-rebuild-design.md",
         "docs/dashboard/frontend-architecture.md",
         "docs/dashboard/read-model.md",
         "docs/dashboard/acceptance.md"
@@ -416,6 +419,35 @@
       "reviewAfter": "2026-06-26",
       "lastVerifiedWith": ["npx pnpm@9.15.4 check"],
       "reorgTrigger": "Dashboard global shell, route layout, responsive behavior, or per-surface composition changes."
+    },
+    {
+      "path": "docs/dashboard/frontend-rebuild-design.md",
+      "ownerRole": "product-design",
+      "status": "planned",
+      "lifecycle": "volatile",
+      "canonicalFor": [
+        "Agent Dashboard full frontend rebuild design",
+        "Dashboard implementation-ready page specs",
+        "Dashboard rebuild boundary",
+        "rejected old frontend implementation directions"
+      ],
+      "dependsOn": [
+        "docs/prd.md",
+        "docs/concept-model.md",
+        "docs/dashboard.md",
+        "docs/dashboard/design-principles.md",
+        "docs/dashboard/layout-variants.md",
+        "docs/dashboard/layout-decisions.md",
+        "docs/dashboard/ui-ux-layout.md",
+        "docs/dashboard/frontend-architecture.md",
+        "docs/dashboard/read-model.md",
+        "docs/dashboard/acceptance.md",
+        ".agents/skills/harness-frontend-product-design/SKILL.md"
+      ],
+      "machineConsumers": ["check-doc-links", "check-doc-governance"],
+      "reviewAfter": "2026-06-26",
+      "lastVerifiedWith": ["npx pnpm@9.15.4 check"],
+      "reorgTrigger": "Dashboard rebuild scope, core page specs, implementation boundary, or rejected frontend directions change."
     },
     {
       "path": "docs/dashboard/frontend-architecture.md",

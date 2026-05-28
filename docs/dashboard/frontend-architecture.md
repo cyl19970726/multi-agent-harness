@@ -43,6 +43,11 @@ Reasons:
 
 ## Module Shape
 
+The current component tree is not the target architecture for the rebuild. It
+may be used only as migration context. The rebuild should replace the old
+summary/Kanban/detail/raw-view stack with route-ready modules derived from
+[frontend-rebuild-design.md](frontend-rebuild-design.md).
+
 ```text
 src/types.ts       # snapshot and harness object types
 src/readModel.ts   # derived maps, selected entities, warnings

@@ -8,20 +8,23 @@ commands stay in [runbook.md](runbook.md).
 
 1. Documentation: update Dashboard docs before changing component structure or
    CSS.
-2. Read model: add selectors for latest-row message projection, full active
+2. Rebuild boundary: remove the old summary/Kanban/detail/raw-view product
+   structure as the basis of the UI. Preserve only stable API/types/read-model
+   contracts that still serve the new design.
+3. Read model: add selectors for latest-row message projection, full active
    team roster, vision/goal ladder, and member activity timeline.
-3. Shell: replace always-visible snapshot textarea and raw views with a
+4. Shell: replace always-visible snapshot textarea and raw views with a
    collapsed debug drawer.
-4. Vision and goal header: show vision context, goal collection, selected goal,
+5. Vision and goal header: show vision context, goal collection, selected goal,
    goal learning completeness, distance-to-vision, and next-round proposals
    above the task graph.
-5. Goal design and team: expose designed AgentTeam, current active team, role
+6. Goal design and team: expose designed AgentTeam, current active team, role
    gaps, and team adjustments for the selected goal.
-6. Workbench: expose goal graph/lane projections, task graph/lane projections,
+7. Workbench: expose goal graph/lane projections, task graph/lane projections,
    graph revisions, and selected task detail in the main pane.
-7. Inspector: convert stacked member/warnings panels into tabbed inspector.
-8. Member page: add URL-addressable member detail with chronological activity.
-9. Acceptance: verify browser screenshots, console health, no page-level
+8. Inspector: convert stacked member/warnings panels into tabbed inspector.
+9. Member page: add URL-addressable member detail with chronological activity.
+10. Acceptance: verify browser screenshots, console health, no page-level
    horizontal overflow, and actionable warning/member navigation.
 
 ## Browser Evidence
