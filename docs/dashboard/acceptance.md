@@ -16,7 +16,7 @@ decision, screenshot matrix, and non-waivable failure checklist.
 
 The spec must define:
 
-- desktop, tablet, and mobile wireframes;
+- desktop, tablet, and mobile ASCII or equivalent box wireframes;
 - region dimensions and collapsed regions;
 - first-viewport content;
 - scroll containers and overflow rules;

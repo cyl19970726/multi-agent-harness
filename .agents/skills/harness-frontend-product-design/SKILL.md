@@ -28,8 +28,9 @@ actually happened.
 6. Record selected designs, rejected designs, borrowed ideas, remaining gaps,
    and loop stop/continue decisions in `docs/dashboard/`.
 7. Produce a hard layout implementation spec before component or CSS work:
-   desktop/tablet/mobile wireframes, region dimensions, first-viewport content,
-   scroll boundaries, empty states, and browser screenshot acceptance.
+   desktop/tablet/mobile ASCII or equivalent box wireframes, region dimensions,
+   first-viewport content, scroll boundaries, empty states, and browser
+   screenshot acceptance.
 8. Turn accepted specs into small implementation tasks with clear owned paths.
 9. Keep a Questioner/Critic active during implementation. If screenshots show a
    stacked report, raw-debug-first view, overflow, or weak workflow proof, stop
@@ -238,9 +239,9 @@ Before writing component code, the design record must include:
 - page-level specs for Vision, Team, AgentMember, Goal, Task, Graph/Kanban,
   Docs, Evidence/Review/Decision, Warnings, and Debug;
 - a hard layout implementation spec for every changed route, surface, or core
-  module, with concrete desktop/tablet/mobile wireframes, region sizing, scroll
-  behavior, first-viewport content, empty states, overflow constraints, and
-  screenshot acceptance;
+  module, with concrete desktop/tablet/mobile ASCII or equivalent box
+  wireframes, region sizing, scroll behavior, first-viewport content, empty
+  states, overflow constraints, and screenshot acceptance;
 - visual placement for primary surface, secondary surface, inspector/drawer,
   and mobile position;
 - Reviewer selection records for each core module, including killed options and

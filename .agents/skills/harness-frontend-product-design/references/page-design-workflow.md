@@ -130,16 +130,19 @@ Hard Layout Spec
   reviewer_decision_ref:
   desktop_wireframe:
     viewport:
+    ascii_diagram:
     columns_or_regions:
     fixed_dimensions:
     first_viewport_content:
     scroll_containers:
   tablet_wireframe:
     breakpoint:
+    ascii_diagram:
     collapsed_regions:
     first_viewport_content:
   mobile_wireframe:
     breakpoint:
+    ascii_diagram:
     tab_order:
     first_viewport_content:
     hidden_or_deferred_regions:

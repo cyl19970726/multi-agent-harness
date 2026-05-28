@@ -61,23 +61,22 @@ Killed candidates:
 Viewport: `1440x1000`.
 
 ```text
-52px top bar
-948px body grid:
-  72px app rail
-  264px team rail
-  minmax(620px, 1fr) workspace, normally 744px at 1440 viewport
-  360px inspector, collapsible to 48px
-
-workspace rows:
-  88px VisionGoalStrip
-  44px SurfaceTabs
-  1fr active surface
-  160px DecisionWarningQueue on default Team surface
-
-debug drawer:
-  closed by default
-  bottom overlay when opened
-  never affects primary grid height
++--------------------------------------------------------------------------------+
+| TOP BAR 52: store/API/live | Vision | Goal | search | command | debug toggle     |
++----+---------------+------------------------------------------+------------------+
+|APP | TEAM RAIL 264 | WORKSPACE min 620 / normally 744         | INSPECTOR 360    |
+|72  | roles/members | +--------------------------------------+ | Member default   |
+|    | queues/status | | VisionGoalStrip 88                  | | tabs: Member    |
+|    | current tasks | +--------------------------------------+ | Task Docs        |
+|    | last event    | | SurfaceTabs 44                      | | Evidence Warn   |
+|    |               | +--------------------------------------+ | Decision         |
+|    |               | | active Team/Work surface            | | internal scroll |
+|    |               | | activity, work lanes, local proof   | |                 |
+|    |               | +--------------------------------------+ |                 |
+|    |               | | DecisionWarningQueue 160            | |                 |
++----+---------------+------------------------------------------+------------------+
+| DEBUG DRAWER: closed by default; overlays bottom when opened                   |
++--------------------------------------------------------------------------------+
 ```
 
 Fixed dimensions:
@@ -118,19 +117,19 @@ Scroll containers:
 Viewport: `900x1180`.
 
 ```text
-52px top bar
-body:
-  64px app rail
-  536px workspace
-  300px inspector
-
-team rail:
-  collapsed to a 320px drawer
-  opened from Team rail control or Team tab
-
-debug drawer:
-  closed by default
-  overlays from bottom
++----------------------------------------------------------------+
+| TOP BAR 52: source/live | Vision | Goal | search | debug        |
++----+--------------------------------------+--------------------+
+|APP | WORKSPACE 536                        | INSPECTOR 300      |
+|64  | +----------------------------------+ | Member/Warning     |
+|    | | VisionGoalStrip                 | | Docs/Evidence      |
+|    | +----------------------------------+ | internal scroll    |
+|    | | Team activity + Work tabs        | |                    |
+|    | | Decision/warning summary         | |                    |
+|    | | Kanban/list default              | |                    |
++----+--------------------------------------+--------------------+
+| TEAM RAIL: 320 drawer when opened | DEBUG: closed overlay       |
++----------------------------------------------------------------+
 ```
 
 First viewport content:
@@ -155,11 +154,20 @@ Collapsed regions:
 Viewport: `390x844`.
 
 ```text
-44px top bar
-72px compact VisionGoalStrip
-52px tabs:
-  Team | Work | Member | Warnings | Docs | Debug
-676px active tab scroll area
++--------------------------------------+
+| TOP BAR 44: source/live | debug      |
++--------------------------------------+
+| VISION/GOAL STRIP 72: goal + warn    |
++--------------------------------------+
+| TABS 52: Team Work Member Warn Docs  |
+|          Debug                       |
++--------------------------------------+
+| ACTIVE TAB SCROLL 676                |
+| Team default: members, queues,       |
+| warnings, decisions                  |
+| Work: Goal/Task proof + Kanban/list  |
+| Member: timeline + runtime/actions   |
++--------------------------------------+
 ```
 
 Default tab: `Team`.

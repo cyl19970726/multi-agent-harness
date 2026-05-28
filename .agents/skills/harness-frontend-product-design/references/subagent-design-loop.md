@@ -170,9 +170,9 @@ The Reviewer / Lead must:
   visual placement, responsive behavior, read-model needs, and acceptance
   screenshot plan;
 - require a hard layout implementation spec before coding: desktop/tablet/mobile
-  wireframes, exact first-viewport content, region dimensions, scroll
-  boundaries, empty/loading states, data density, and browser screenshot
-  checkpoints;
+  ASCII or equivalent box wireframes, exact first-viewport content, region
+  dimensions, scroll boundaries, empty/loading states, data density, and
+  browser screenshot checkpoints;
 - record visual placement for every important UI element:
   primary surface, secondary surface, inspector/drawer, and mobile position;
 - turn unresolved questions into follow-up tasks;
