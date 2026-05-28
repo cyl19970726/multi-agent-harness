@@ -33,6 +33,8 @@ Use references only when needed:
 - `references/layout-principles.md` for graph, Kanban, inspector, realtime, and visual-system rules.
 - `references/subagent-design-loop.md` for the required three-variant
   Designer/Questioner/Decision loop.
+- `references/page-design-workflow.md` for core page discovery, page-level
+  option loops, and complete frontend design draft requirements.
 - `references/acceptance-gates.md` for browser, web-quality, and harness workflow acceptance.
 
 ## Frontend Doctrine
@@ -203,19 +205,100 @@ acceptance_evidence_needed:
 Rejected layouts are first-class design evidence. Do not delete them from the
 design record; future agents need to know which ideas were killed and why.
 
+## Core Page Discovery
+
+Before writing component code, actively identify the core pages from the Vision
+and product mechanisms. Do not wait for the user to enumerate pages, and do not
+assume the current implementation's component list is the product page map.
+
+Use the documentation-workflow style:
+
+```text
+Vision and final acceptance
+  -> critical user/operator workflows
+  -> core harness objects and relationships
+  -> failure modes that the UI must prevent
+  -> core pages/workspaces
+  -> page-level UI/UX options
+  -> selected page specs
+  -> complete frontend design draft
+  -> implementation tasks
+```
+
+For Multi-Agent Harness, the likely core pages/workspaces include:
+
+- Vision overview and goal collection;
+- Team workspace and Team detail;
+- AgentMember workbench;
+- Goal document/workspace;
+- Task document/workspace;
+- Goal/Task graph and Kanban relationship view;
+- Dashboard-mounted docs context;
+- Evidence, Review, Decision, and GoalEvaluation surfaces;
+- Warnings and repair queue;
+- Debug drawer and raw snapshot route.
+
+The list is a starting hypothesis. The Designer and Questioner must update it
+when Vision, PRD, read model, or implementation constraints reveal a missing or
+unnecessary page.
+
+## Page-Level UI/UX Options
+
+After top-level layout selection, every core page that carries product risk
+needs its own option loop. Produce 2-3 page-level UI/UX options when the page
+controls workflow proof, user operation speed, realtime state, document
+context, or acceptance.
+
+Examples:
+
+- AgentMember workbench options for activity stream, inbox/outbox, runtime
+  health, and send-message placement;
+- Goal document options for GoalDesign, Team design, graph/Kanban,
+  GoalEvaluation, distance-to-vision, and docs context;
+- Task document options for assignment proof, acceptance criteria, evidence,
+  proposal/review/decision, branch/worktree/PR, and warnings;
+- Docs context options for right inspector, standalone docs page, and inline
+  Goal/Task doc blocks.
+
+Low-risk support pages may use a single spec only when the Decision Agent / Lead
+records why extra options would not change the result.
+
+## Complete Frontend Design Draft
+
+Before implementation begins, produce a complete frontend design draft under
+`docs/dashboard/` or the relevant docs location. It should be detailed enough
+for a Worker to implement without inventing product semantics.
+
+The design draft must include:
+
+- product brief and Vision restatement;
+- selected shell and rejected layout alternatives;
+- route map and page hierarchy;
+- page-level specs for every core page/workspace;
+- object-to-page and object-to-component mapping;
+- visual placement map for primary surface, secondary surface,
+  inspector/drawer, and mobile position;
+- key interactions and safe actions;
+- read-model/API fields needed by each page;
+- visual system, density, state colors, typography, icon usage, and motion;
+- desktop, tablet, and mobile behavior;
+- browser screenshot and web-quality acceptance checklist.
+
 ## Output Artifacts
 
 Before code changes, produce or update the appropriate docs:
 
 - page map and route hierarchy;
+- core page discovery with why each page exists;
 - object-to-page mapping;
 - three candidate layout variants with tradeoffs;
 - Questioner critique for each variant;
 - selected variant or hybrid with Decision Agent / Lead rationale;
 - rejected layout record with killed-because rationale and any useful parts
   kept for the selected design;
-- second-pass variants for important modules when the selected layout still has
-  unresolved card/detail/inspector/docs placement choices;
+- page-level variants for core pages when cards, details, inspector, graph,
+  docs, realtime state, or mobile placement still carry risk;
+- complete frontend design draft before implementation;
 - visual placement map for UI elements: primary surface, secondary surface,
   inspector/drawer, and mobile position;
 - layout spec for Vision, Goal, TaskGraph, AgentTeam, AgentMember, Evidence,

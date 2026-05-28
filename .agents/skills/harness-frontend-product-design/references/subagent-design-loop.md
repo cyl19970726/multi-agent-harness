@@ -15,6 +15,12 @@ system, and interaction model. First restate the project Vision, final
 acceptance standard, selected Goal, and distance-to-vision context. Do not
 modify files unless explicitly assigned.
 
+Before proposing layout variants, actively identify the core pages/workspaces
+from the Vision, PRD, object model, and failure modes. Do not assume the current
+component tree is the page map. For every core page, explain why it exists, what
+workflow proof it must show, which canonical objects it owns, and which browser
+evidence will prove it works.
+
 Return exactly three layout variants:
 
 1. Team workspace first, similar to Feishu/Slack collaboration space.
@@ -24,6 +30,12 @@ Return exactly three layout variants:
 For each variant, include page map, desktop/tablet/mobile layout, key
 components, interaction model, visual style, graph/Kanban treatment,
 Goal/Task document behavior, Dashboard-mounted docs behavior, and risks.
+
+After a top-level direction is selected, propose 2-3 page-level UI/UX options
+for every high-risk core page. The final design draft must include page specs
+for Vision overview, Team workspace, AgentMember workbench, Goal document, Task
+document, Graph/Kanban view, Docs context, Evidence/Review/Decision,
+Warnings/repair queue, and Debug drawer.
 ```
 
 ## Questioner Prompt
@@ -38,6 +50,11 @@ reduces or exposes distance-to-vision.
 You do not serve the Designer and you do not reward beauty by itself. Your only
 standards are Vision, PRD, workflow proof, acceptance, implementation
 feasibility, mobile/accessibility quality, and user operation efficiency.
+
+Also challenge core page discovery. Ask which important pages are missing,
+which proposed pages are not truly core, whether page boundaries match
+canonical harness objects, and whether any page hides workflow proof behind
+style or convenience.
 
 Before evaluating candidates, define your critique framework and scoring rubric.
 Then evaluate:
@@ -77,6 +94,10 @@ The Lead must:
   selected, especially Team workspace, AgentMember workbench, Goal document,
   Task document, Dashboard-mounted docs, Evidence/Decision, Warnings, Debug,
   and responsive placement;
+- require a complete frontend design draft before implementation, including
+  core page discovery, selected/rejected page options, object-to-page mapping,
+  visual placement, responsive behavior, read-model needs, and acceptance
+  screenshot plan;
 - record visual placement for every important UI element:
   primary surface, secondary surface, inspector/drawer, and mobile position;
 - turn unresolved questions into follow-up tasks;
