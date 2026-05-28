@@ -207,6 +207,27 @@ At minimum, Team workspace, AgentMember workbench, Goal/Task documents,
 Graph/Kanban, and mobile/responsive placement need this record before renewed
 implementation.
 
+## Decision 2026-05-28: Hard Layout Spec Shell v1
+
+Reviewer decision: `continue` for implementation planning, not automatic UI
+acceptance. Formal spec:
+[hard-layout-specs/agent-workbench-shell-v1.md](hard-layout-specs/agent-workbench-shell-v1.md).
+
+Selected main candidate: Designer C control-plane hybrid. Borrowed from
+Designer A: collaboration-first first viewport, persistent Team roster,
+selected Member inspector, complete AgentMember runtime/timeline/inbox/outbox,
+and read-model selector list. Borrowed from Designer B: Goal/Task proof-order
+documents, real Vision goal collection and distance-to-vision, and assignment
+`Message(kind=task)` proof before report/evidence/decision.
+
+Killed candidates: Goal/Task document-first default shell, graph-first shell,
+and Team chat/activity-only shell.
+
+Remaining weaknesses carried into implementation acceptance: inspector density
+at `1440x1000` and `900x1180`, mobile six-tab overflow/readability, Graph focus
+scroll traps, and missing read-model fields being faked instead of surfaced as
+explicit gaps.
+
 ## Module Decisions
 
 ### Team Rail And Team Detail

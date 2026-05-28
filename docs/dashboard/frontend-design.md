@@ -18,6 +18,8 @@ stay in [layout-decisions.md](layout-decisions.md). React boundaries stay in
 [frontend-architecture.md](frontend-architecture.md). Read-model contracts stay
 in [read-model.md](read-model.md). Browser and web-quality gates stay in
 [acceptance.md](acceptance.md).
+The current implementation-ready shell spec is
+[hard-layout-specs/agent-workbench-shell-v1.md](hard-layout-specs/agent-workbench-shell-v1.md).
 
 ## Vision And Acceptance
 

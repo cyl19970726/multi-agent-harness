@@ -16,6 +16,7 @@ surface owns the claim, then place it there.
 | `layout-variants.md` | Candidate Workbench layout directions, Designer/Questioner critique, scoring rubric, and decision inputs | Final implementation spec or component internals |
 | `layout-decisions.md` | Accepted layout direction, killed alternatives, module decisions, and visual placement constraints | Code implementation or unscored future ideas |
 | `frontend-design.md` | Complete canonical Workbench frontend design: selected shell, route map, page cards, visual placement, read-model needs, safe actions, responsive behavior, implementation sequence, and acceptance pointers | Product PRD, candidate layout critique, React internals, or local run commands |
+| `hard-layout-specs/agent-workbench-shell-v1.md` | Implementation-ready shell hard layout spec: region dimensions, first viewport, scroll ownership, core module placement, screenshot acceptance, and stop conditions | Product doctrine, raw layout candidates, or component implementation details |
 | `frontend-architecture.md` | React/Vite architecture, component responsibilities, app-local boundaries | Product PRD, visual doctrine, or runbook commands |
 | `read-model.md` | Snapshot projections, selectors, advisory warnings, and required read-model fields | Canonical validation rules or Rust implementation |
 | `acceptance.md` | Browser screenshot evidence, web-quality gate, and frontend acceptance sequence | Product purpose or local development commands |
@@ -32,9 +33,10 @@ product purpose
   -> subagents restate Vision and selected Goal context
   -> core design principles
   -> three candidate layout variants and critique
-  -> Decision Agent / Lead records selected and killed layouts
+  -> Reviewer / Lead records selected and killed layouts
   -> module-level option loops for high-risk surfaces
   -> complete frontend design draft
+  -> hard layout implementation specs
   -> read-model/API needs
   -> frontend architecture changes
   -> implementation
@@ -51,8 +53,8 @@ and distance-to-vision context. If they cannot do that, their design feedback is
 not ready to drive frontend decisions.
 
 For Workbench redesigns, keep three layout candidates in
-[layout-variants.md](layout-variants.md) until a Decision Agent or Lead records
-the selected direction in [layout-decisions.md](layout-decisions.md). Once
+[layout-variants.md](layout-variants.md) until a Reviewer or Lead records the
+selected direction in [layout-decisions.md](layout-decisions.md). Once
 selected, move the stable page hierarchy, page cards, visual placement, safe
 actions, read-model needs, responsive behavior, and acceptance pointers into
 [frontend-design.md](frontend-design.md).
@@ -61,8 +63,8 @@ actions, read-model needs, responsive behavior, and acceptance pointers into
 
 The reusable frontend skill lives under
 `.agents/skills/harness-frontend-product-design/`. It owns the agent procedure:
-which docs to read, the two-subagent plus Decision Agent design loop, output
-artifacts, and acceptance gates.
+which docs to read, the multi-candidate Designer -> Questioner -> Reviewer
+loop, output artifacts, hard layout spec gate, and acceptance gates.
 
 Canonical product and layout decisions still belong in `docs/`. The skill
 should reference these docs instead of embedding the complete Workbench spec.
