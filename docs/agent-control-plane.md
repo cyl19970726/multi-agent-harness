@@ -90,6 +90,57 @@ intentionally promotes them to durable teammates. Schema promotion is justified
 when child work needs independent assignment, review, evidence ownership, or
 Dashboard accountability beyond the parent member's task.
 
+## Prompt Stack And Role Context
+
+An `AgentMember` should be created with enough durable prompt context to make
+its responsibility explicit before the first task arrives. The prompt is not
+only free-form provider text; it is part of the member identity and should be
+inspectable through `prompt_ref`, `skill_refs`, role, permission profile, and
+team membership.
+
+Recommended prompt stack:
+
+```text
+harness base system prompt
+  -> repository / adapter operating rules
+  -> role-specific system prompt
+  -> standing team context
+  -> active vision context
+  -> selected goal design context
+  -> task message envelope
+  -> permission and evidence requirements
+```
+
+Layer responsibilities:
+
+| Layer | Purpose |
+| --- | --- |
+| Harness base | Preserve message-first workflow, evidence rules, review gates, and source-of-truth order. |
+| Repository / adapter rules | Load project-specific constraints, commands, safety limits, and domain boundaries. |
+| Role-specific prompt | Define what this member owns, refuses, reviews, escalates, and reports. |
+| Team context | Explain standing teammates, peer messaging norms, reviewer relationships, and handoff expectations. |
+| Vision context | Explain long-term target state and why goals should move toward it. |
+| GoalDesign context | Explain scenario, non-goals, designed team, task graph, evidence plan, and acceptance gates. |
+| Task envelope | Provide the current task objective, owned paths, dependencies, workspace refs, and expected evidence. |
+| Permission/evidence policy | State allowed tools, approval policy, destructive/live/secret boundaries, and report format. |
+
+Rules:
+
+- members with different roles should have different role-specific prompt
+  layers; a Lead, Observer, Worker, Critic, Dashboard, Runtime, or Adapter
+  specialist should not receive the same responsibilities under different names;
+- role prompts must be durable files or prompt refs when they affect acceptance,
+  not hidden chat context;
+- task-specific context should arrive through `Message(kind=task)`, not by
+  rewriting the member identity each time;
+- if a goal needs a temporary specialist, the Leader should record why the
+  standing team needs that member and which role gap it closes;
+- prompt changes that affect responsibility, permissions, or evidence policy
+  should create an event, evidence, decision, or follow-up task so future
+  reviewers know why the member behavior changed;
+- the Dashboard should show prompt refs, skill refs, role summary, permission
+  profile, and the active task envelope for each member.
+
 ## Lifecycle
 
 Create, start, and close are separate operations.

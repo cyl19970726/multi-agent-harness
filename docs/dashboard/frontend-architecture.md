@@ -5,9 +5,15 @@ from the Rust harness snapshot/API and derives operator-friendly views.
 
 This is the canonical frontend architecture document for the Agent Dashboard
 module. Product-level Dashboard purpose and acceptance stay in
-[../dashboard.md](../dashboard.md). The framework decision stays in
+[../dashboard.md](../dashboard.md). Core UI/UX principles stay in
+[design-principles.md](design-principles.md). Layout variants and accepted
+decisions stay in [layout-variants.md](layout-variants.md) and
+[layout-decisions.md](layout-decisions.md). Browser and web-quality acceptance
+stays in [acceptance.md](acceptance.md). The framework decision stays in
 [../decisions/0014-react-vite-agent-dashboard.md](../decisions/0014-react-vite-agent-dashboard.md).
-Run and build commands stay in [runbook.md](runbook.md).
+Run and build commands stay in [runbook.md](runbook.md). Global shell, route
+layout, core layouts, and responsive behavior stay in
+[ui-ux-layout.md](ui-ux-layout.md).
 
 ## Source Boundary
 
@@ -55,7 +61,9 @@ The Control Plane is goal-scoped:
 
 ```text
 selected goal
+  -> goal graph and goal Kanban projections
   -> tasks for goal
+  -> task graph and task Kanban projections
   -> participating members and teams
   -> task/member scoped warnings
   -> selected task and member detail panels
@@ -65,13 +73,37 @@ The frontend may compute scope, counts, and advisory warnings. It must not
 invent canonical task assignment, delivery, evidence, proposal, review, or
 decision state. Those objects come from the snapshot.
 
+## Layout Boundary
+
+The frontend layout should follow [ui-ux-layout.md](ui-ux-layout.md):
+
+```text
+top bar
+  -> Team rail and Team workspace shell
+  -> Goal/Task document surfaces
+  -> controlled graph/Kanban relationship tabs
+  -> Member/Task/Docs/Warn inspector
+  -> collapsed debug drawer
+```
+
+The default page should not render raw objects or snapshot paste controls as
+primary content during live operation. Debug and import surfaces are still
+required, but they belong behind an explicit drawer or mode. Components may
+change presentation, but they must preserve the workflow proof chain:
+
+```text
+vision -> goal -> goal graph/Kanban -> task graph/Kanban
+  -> message -> member/runtime -> evidence -> review -> decision
+```
+
 ## Component Responsibilities
 
 | Component | Owns |
 | --- | --- |
 | `App.tsx` | snapshot source, live polling state, selected goal/task/member ids, safe action dispatch |
 | `ControlPlane.tsx` | goal scope composition and panel wiring |
-| `KanbanBoard.tsx` | task status columns for the active goal |
+| `GoalMap.tsx` | goal graph and goal lane projections for generated goals, blockers, follow-ups, and evaluation readiness |
+| `TaskWorkSurface.tsx` | task graph and task Kanban projections for the active goal |
 | `TaskDetail.tsx` | assignment proof, reports, evidence, sessions, proposal, review, decision, review request action |
 | `MemberDetail.tsx` | inbox/outbox, runtime health, provider sessions, child threads, member/message/session actions |
 | `WarningsPanel.tsx` | warning display and task/member navigation links |
@@ -88,8 +120,8 @@ The first React version must preserve:
 - pasted JSON snapshot loading;
 - file snapshot loading;
 - live polling from `/v1/snapshot`;
-- Kanban, teams, members, messages, sessions, proposals, events, evidence, and
-  decisions visibility.
+- goal graph/lane projections, task graph/lane projections, teams, members,
+  messages, sessions, proposals, events, evidence, and decisions visibility.
 
 The next product layer adds:
 

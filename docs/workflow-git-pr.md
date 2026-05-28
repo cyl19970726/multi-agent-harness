@@ -12,25 +12,60 @@ harness owns work ownership, assignment, evidence, review, and decisions.
 Final acceptance for this mechanism:
 
 ```text
-Task
+Goal
+  -> goal branch
+  -> Task
   -> Message(kind=task)
-  -> AgentMember works in declared workspace/branch
-  -> Proposal from diff or PR
+  -> AgentMember works in declared worktree/task branch when files change
+  -> task PR into goal branch
+  -> Proposal from diff or PR evidence
   -> Evidence and review
   -> Leader Decision
-  -> merge / revise / split / follow-up
+  -> task merge / revise / split / follow-up
+  -> GoalEvaluation
+  -> goal PR into production branch
 ```
 
 ## Key Relationships
 
 | Concept | Meaning |
 | --- | --- |
+| `Goal` | Durable outcome that owns an integration branch and closeout standard. |
+| Goal branch | Integration branch for all accepted file-changing task work inside one goal, usually `goal/<goal-id>` or `goal-<goal-id>`. |
 | `Task` | Work unit with owner, assignee, reviewer, dependencies, owned paths, and acceptance. |
-| Worktree / branch | Execution workspace for a file-changing task. |
-| PR | Git integration artifact and external review surface. |
+| Task worktree / branch | Execution workspace for a file-changing task. |
+| Task PR | PR from task branch to goal branch after task review. |
+| Goal PR | PR from goal branch to production branch after goal acceptance and evaluation. |
 | `Proposal` | Harness candidate for accepting a change or conclusion. |
 | Review / critic | Evidence about quality, risk, path ownership, and acceptance. |
 | `Decision` | Leader outcome; not the same as PR merge. |
+
+## Branch Model
+
+The repository should use a two-level integration model for file-changing goals:
+
+```text
+production branch
+  <- goal branch
+       <- task branch / worktree
+       <- task branch / worktree
+       <- task branch / worktree
+```
+
+Rules:
+
+- each non-trivial file-changing goal creates or owns one goal branch;
+- the goal branch is the integration target for accepted task PRs;
+- each file-changing task may create its own task worktree and branch when it
+  needs isolation, parallelism, or path ownership;
+- task PRs target the goal branch, not the production branch;
+- goal branch integration into production happens only after goal acceptance:
+  task graph complete or explicitly blocked, evidence present, review complete,
+  Leader decision recorded, and GoalEvaluation present or waived;
+- a documentation-only, investigation-only, or no-file task may report evidence
+  without a task branch, but that exception should be visible in the task's
+  workspace/proposal state;
+- production branch merges are goal-level decisions, not worker-level actions.
 
 ## Workflow
 
@@ -42,25 +77,50 @@ sequenceDiagram
   participant G as Git/PR
   participant C as Critic
 
-  L->>H: create Task(owned_paths, reviewer, workspace policy)
+  L->>G: create goal branch for accepted Goal
+  L->>H: create Task(owned_paths, reviewer, workspace policy, goal branch)
   L->>H: send Message(kind=task)
   H->>A: deliver task and bounded context
-  A->>G: work in worktree/branch
+  A->>G: work in task worktree/branch
   A->>H: report with evidence refs
-  H->>G: inspect diff or PR
+  A->>G: open task PR into goal branch
+  H->>G: inspect diff or task PR
   H->>H: create Proposal(changed_paths, evidence)
   H->>C: review request
   C->>H: critic/review evidence
-  L->>H: Decision(accept/revise/split/reject/follow-up)
+  L->>H: Decision(accept/revise/split/reject/follow-up task)
+  L->>G: merge accepted task PR into goal branch
+  L->>H: GoalEvaluation and goal close decision
+  L->>G: open/merge goal PR into production branch
 ```
 
 ## Concurrency Rules
 
 - One file-changing task should use one worktree or clearly declared workspace.
 - Parallel tasks need disjoint `owned_paths` or an explicit integration task.
+- Parallel task branches integrate into the goal branch after task-level review;
+  they do not bypass the goal branch and merge directly into production.
 - Workers may read the full repo but should write only within owned paths.
 - A worker must not revert unrelated user or agent changes.
 - Path conflicts create a Leader decision: split, serialize, or integrate.
+
+## Standing Agent Teams
+
+`AgentTeam` is a persistent organization, not a one-task execution bundle.
+
+Rules:
+
+- a standing team can work across multiple goals and preserve role identity,
+  inbox/outbox history, provider sessions, and prior decisions;
+- `GoalDesign` chooses the team shape for one goal by reusing standing members,
+  adding specialist members when needed, or explicitly recording a role gap;
+- creating a new team for every task or closing a team when one task completes
+  is a workflow smell unless a Leader decision explains why the team is
+  temporary;
+- task worktrees and task branches are disposable execution surfaces; AgentTeam
+  and AgentMember identities are durable coordination state;
+- the Dashboard should show both the standing team and the selected goal's team
+  design so users can see whether a goal is properly staffed.
 
 ## Proposal Rules
 
@@ -132,6 +192,10 @@ task-graph changes, blockers, or follow-up work for Lead decision.
 
 1. A file-changing task names workspace or owned-path policy before review.
 2. Proposal acceptance requires evidence beyond the worker's summary.
-3. PR merge is not equal to task acceptance.
-4. Review evidence precedes Leader decision for non-trivial changes.
-5. Concurrent work must be visible in task graph and workspace refs.
+3. Task PR merge is not equal to task acceptance.
+4. Goal PR merge is not equal to goal acceptance.
+5. Review evidence precedes Leader decision for non-trivial changes.
+6. Concurrent work must be visible in task graph and workspace refs.
+7. Task branches target the goal branch; goal branches target production.
+8. AgentTeams persist across tasks and goals unless retired by explicit
+   lifecycle decision.
