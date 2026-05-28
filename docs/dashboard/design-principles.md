@@ -31,6 +31,12 @@ transcripts, or hidden chat context. The first screen should answer:
 The Dashboard is not a metric wall. Summary counts can help orientation, but
 they must not push the workflow proof chain below the fold.
 
+The default product feel should be closer to a collaboration workspace than a
+BI dashboard. AgentMembers are durable teammates with workbenches, queues,
+messages, and status; Goals and Tasks are auditable work documents; graphs are
+relationship views that can be opened when they clarify dependencies or
+distance-to-vision.
+
 ## Vision, Goal, And Task
 
 The layout must preserve this hierarchy:
@@ -106,6 +112,24 @@ AgentMember detail must feel live:
 
 Provider-native child threads stay under the parent member unless the store
 promotes them to durable AgentMember identity.
+
+## Collaboration Workspace Model
+
+The Dashboard may use a Feishu/Slack-like shell when that helps operators think
+in terms of standing teams:
+
+- left side: teams, active vision, goals, docs, warnings, and debug access;
+- team workspace: current goal strip, team messages, queues, decision queue,
+  and linked goal/task surfaces;
+- member workspace: profile, role, current task, inbox, outbox, activity stream,
+  runtime health, prompt refs, skills, permissions, and send-message controls;
+- goal/task workspace: document-like surface with graph and Kanban tabs;
+- docs workspace: mounted project docs linked to Vision, Goal, Task, Evidence,
+  and Decision objects.
+
+This shell must not become a chat app. Every visible message, action, warning,
+or status should map back to canonical harness objects or explicitly say that it
+is advisory/debug information.
 
 ## Git And PR Workflow
 

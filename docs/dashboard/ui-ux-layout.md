@@ -4,8 +4,11 @@ This document defines the desired Agent Dashboard layout before frontend
 implementation changes. Product-level purpose stays in
 [../dashboard.md](../dashboard.md). Core UI/UX principles stay in
 [design-principles.md](design-principles.md). Frontend module boundaries stay
-in [frontend-architecture.md](frontend-architecture.md). Browser and
-web-quality acceptance stays in [acceptance.md](acceptance.md).
+in [frontend-architecture.md](frontend-architecture.md). Candidate layouts and
+Designer/Questioner critique stay in [layout-variants.md](layout-variants.md).
+Accepted layout decisions and killed alternatives stay in
+[layout-decisions.md](layout-decisions.md).
+Browser and web-quality acceptance stays in [acceptance.md](acceptance.md).
 
 ## Doctrine
 
@@ -41,16 +44,15 @@ Desktop layout:
 ```text
 +--------------------------------------------------------------------+
 | Top bar: active store, live status, gateway health, safe commands   |
-+------------+------------------------------------------+------------+
-| Scope rail | Goal workbench                           | Inspector  |
++----------+---------------+----------------------------+------------+
+| App rail | Team rail     | Team workspace             | Inspector  |
 |            |                                          |            |
-| Vision     | Vision context + selected goal           | tabs:      |
-| Goals      | Goal header + acceptance state           |            |
-| Teams      | Goal graph + task graph / compact lanes  | Member     |
-| Members    | Selected task detail                     | Task       |
-| Warnings   | Evidence/review/decision lane            | Timeline   |
-|            |                                          | Warnings   |
-+------------+------------------------------------------+------------+
+| Vision     | Team spaces   | active Vision/Goal strip   | Member     |
+| Teams      | role groups   | Team activity + work queue | Task       |
+| Goals      | member status | Goal/Task document tabs    | Docs       |
+| Docs       | role gaps     | graph/Kanban relationship  | Warnings   |
+| Warnings   | queues        | decision queue             | Evidence   |
++----------+---------------+----------------------------+------------+
 | Collapsed debug drawer: raw JSON, snapshot import/export, sessions  |
 +--------------------------------------------------------------------+
 ```
@@ -59,15 +61,14 @@ Layout rules:
 
 - top bar stays compact and operational: live status, generated time, API URL,
   gateway tick, and import/debug access;
-- the selected vision context and selected goal must both be visible above the
-  task graph;
+- the selected Vision and Goal stay visible above Team activity and work tabs;
 - snapshot paste and file import live in a collapsible debug drawer, not the
   default first viewport;
-- left scope rail is navigation and status, not a second detail panel;
-- center workbench owns the selected goal, goal graph/lane projection, and task
-  graph/lane projection;
-- right inspector owns the selected entity and switches by tabs instead of
-  stacking every detail at once;
+- left rails are navigation and Team context, not detail panels;
+- center workspace owns Team activity, current work, Goal/Task document tabs,
+  graph/Kanban relationship views, and decision queue;
+- right inspector owns the selected Member, Task, Docs, Warnings, or Evidence
+  tab instead of stacking every detail at once;
 - raw views are hidden behind a debug drawer and never expand the default page
   height;
 - all scroll should happen inside the workbench, inspector, or debug drawer;
@@ -76,11 +77,44 @@ Layout rules:
 Recommended desktop columns:
 
 ```text
-scope rail: 260-300px
-workbench: minmax(560px, 1fr)
+app rail: 56-72px
+team rail: 260-300px
+workspace: minmax(620px, 1fr)
 inspector: 360-420px
 page max width: none for work surface, but each panel uses readable line widths
 ```
+
+The accepted direction is recorded in
+[layout-decisions.md](layout-decisions.md): Team workspace shell, Goal/Task
+document surfaces, and controlled graph/Kanban relationship layer.
+
+### Team Workspace Layout
+
+Purpose: make the Dashboard feel like a persistent multi-agent collaboration
+space while preserving workflow proof.
+
+```text
+Team header
+  active Vision / selected Goal / goal health / next action
+
+Team roster
+  Lead / Observer / Worker / Critic / Specialist
+  status, queue, current task, last event, role gap
+
+Team workspace
+  activity stream mapped to canonical objects
+  current Goal and Task document tabs
+  operational queues and decision queue
+  graph/Kanban relationship tab
+```
+
+Rules:
+
+- Team activity cannot become chat-only; every row must link to `Message`,
+  `Task`, `Evidence`, `Proposal`, `Decision`, or warning state;
+- AgentTeam is never graph-first; graph is reserved for Vision/Goal/Task
+  relationships or diagnostics;
+- Member selection opens the Member workbench in the inspector or `/members/:id`.
 
 ## Core Layouts
 

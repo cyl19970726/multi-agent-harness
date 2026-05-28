@@ -284,6 +284,8 @@
         "docs/agent-control-plane.md",
         "docs/dashboard/README.md",
         "docs/dashboard/design-principles.md",
+        "docs/dashboard/layout-variants.md",
+        "docs/dashboard/layout-decisions.md",
         "docs/dashboard/ui-ux-layout.md",
         "docs/dashboard/frontend-architecture.md",
         "docs/dashboard/read-model.md",
@@ -309,6 +311,8 @@
         "docs/README.md",
         "docs/dashboard.md",
         "docs/dashboard/design-principles.md",
+        "docs/dashboard/layout-variants.md",
+        "docs/dashboard/layout-decisions.md",
         "docs/dashboard/ui-ux-layout.md",
         "docs/dashboard/frontend-architecture.md",
         "docs/dashboard/read-model.md",
@@ -345,6 +349,50 @@
       "reorgTrigger": "Dashboard frontend principles, graph/Kanban policy, or AgentTeam/AgentMember UI doctrine changes."
     },
     {
+      "path": "docs/dashboard/layout-variants.md",
+      "ownerRole": "product-design",
+      "status": "planned",
+      "lifecycle": "volatile",
+      "canonicalFor": [
+        "Agent Dashboard candidate layouts",
+        "Designer and Questioner critique",
+        "Dashboard layout scoring rubric",
+        "rejected layout alternatives"
+      ],
+      "dependsOn": [
+        "docs/prd.md",
+        "docs/concept-model.md",
+        "docs/dashboard.md",
+        "docs/dashboard/design-principles.md",
+        ".agents/skills/harness-frontend-product-design/SKILL.md"
+      ],
+      "machineConsumers": ["check-doc-links", "check-doc-governance"],
+      "reviewAfter": "2026-06-26",
+      "lastVerifiedWith": ["npx pnpm@9.15.4 check"],
+      "reorgTrigger": "Dashboard design loop, candidate layout set, scoring rubric, or critique workflow changes."
+    },
+    {
+      "path": "docs/dashboard/layout-decisions.md",
+      "ownerRole": "product-design",
+      "status": "planned",
+      "lifecycle": "volatile",
+      "canonicalFor": [
+        "Agent Dashboard accepted layout direction",
+        "killed Dashboard layout alternatives",
+        "module-level layout decisions",
+        "visual placement constraints"
+      ],
+      "dependsOn": [
+        "docs/dashboard/layout-variants.md",
+        "docs/dashboard/design-principles.md",
+        "docs/dashboard/ui-ux-layout.md"
+      ],
+      "machineConsumers": ["check-doc-links", "check-doc-governance"],
+      "reviewAfter": "2026-06-26",
+      "lastVerifiedWith": ["npx pnpm@9.15.4 check"],
+      "reorgTrigger": "Accepted Dashboard layout direction, killed alternatives, module decisions, or visual placement constraints change."
+    },
+    {
       "path": "docs/dashboard/ui-ux-layout.md",
       "ownerRole": "product-design",
       "status": "planned",
@@ -358,6 +406,8 @@
       "dependsOn": [
         "docs/dashboard.md",
         "docs/dashboard/design-principles.md",
+        "docs/dashboard/layout-variants.md",
+        "docs/dashboard/layout-decisions.md",
         "docs/dashboard/frontend-architecture.md",
         "docs/dashboard/read-model.md",
         "docs/dashboard/acceptance.md"
@@ -380,6 +430,8 @@
       "dependsOn": [
         "docs/dashboard.md",
         "docs/dashboard/design-principles.md",
+        "docs/dashboard/layout-variants.md",
+        "docs/dashboard/layout-decisions.md",
         "docs/dashboard/ui-ux-layout.md",
         "docs/dashboard/read-model.md",
         "docs/dashboard/acceptance.md",
@@ -433,6 +485,7 @@
       "dependsOn": [
         "docs/dashboard.md",
         "docs/dashboard/design-principles.md",
+        "docs/dashboard/layout-decisions.md",
         "docs/dashboard/ui-ux-layout.md",
         "docs/dashboard/frontend-architecture.md",
         "docs/dashboard/read-model.md",

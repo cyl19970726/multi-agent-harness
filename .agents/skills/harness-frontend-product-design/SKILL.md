@@ -18,6 +18,8 @@ Read only the docs needed for the task, starting with:
 - `docs/dashboard.md`
 - `docs/dashboard/README.md`
 - `docs/dashboard/design-principles.md`
+- `docs/dashboard/layout-variants.md`
+- `docs/dashboard/layout-decisions.md`
 - `docs/dashboard/ui-ux-layout.md`
 - `docs/dashboard/frontend-architecture.md`
 - `docs/dashboard/acceptance.md`
@@ -29,7 +31,8 @@ Use references only when needed:
 
 - `references/product-model.md` for Vision/Goal/Task/Team object-to-page rules.
 - `references/layout-principles.md` for graph, Kanban, inspector, realtime, and visual-system rules.
-- `references/subagent-design-loop.md` for the required Designer/Questioner loop.
+- `references/subagent-design-loop.md` for the required three-variant
+  Designer/Questioner/Decision loop.
 - `references/acceptance-gates.md` for browser, web-quality, and harness workflow acceptance.
 
 ## Frontend Doctrine
@@ -61,9 +64,16 @@ Design from the top down:
 4. AgentTeam surface: persistent organization, roster, roles, queues, and health.
 5. AgentMember surface: realtime activity stream, inbox/outbox, runtime health,
    prompt/skills/permissions, and send-message controls.
+6. Docs surface: mounted project docs connected to the active Vision, Goal,
+   Task, AgentTeam, evidence, and decisions.
 
 Do not start from component aesthetics or a card grid. Start from the workflow
 proof the user must be able to reconstruct.
+
+The preferred mental model is a multi-agent collaboration control plane, closer
+to a Feishu/Slack team workspace than a metrics dashboard. Use that familiarity
+to make AgentMembers feel like durable teammates, but keep every message,
+status, and action tied to canonical harness objects.
 
 ## Non-Negotiable Design Rules
 
@@ -71,6 +81,9 @@ proof the user must be able to reconstruct.
   goals and a distance-to-vision loop.
 - Goal is not a task list. It owns GoalDesign, team design, branch/integration
   policy, dynamic TaskGraph, evidence, decisions, and evaluation.
+- Goal and Task details should feel like collaborative work documents, not only
+  cards: body, status, linked objects, messages, evidence, review, decision,
+  branch/worktree refs, and history should be visible in one durable surface.
 - TaskGraph is dynamic. It can be split, blocked, reprioritized, or extended
   through graph-change proposals, messages, decisions, and follow-up tasks.
 - Goal and Task views need both graph and Kanban-style execution views. Graph
@@ -79,37 +92,116 @@ proof the user must be able to reconstruct.
   console: roles, members, queues, runtime status, current task, and continuity.
 - AgentMember must feel live: activity timeline, message flow, provider sessions,
   runtime health, and direct send-message affordance.
+- Project docs should be accessible from the Dashboard as first-class context
+  for the active Vision, Goal, Task, Team, or Decision. Do not force operators
+  to leave the control plane to understand the relevant docs.
 - Debug JSON, snapshot paste, and raw object lists are secondary tools. Keep them
   in a debug drawer or route, not the primary viewport.
 - Visual impact must come from live topology, status, motion, density, and
   meaningful state transitions, not decorative gradients or unrelated imagery.
 
-## Required Subagent Design Loop
+## Required Variant Design Loop
 
-For substantial frontend design or redesign, run a two-subagent loop before
-implementation. Both subagents must first read and restate the project Vision,
-final acceptance standard, and how the selected Goal moves toward that Vision.
-If either subagent cannot explain that context, do not use its design output for
-decisions.
+For substantial frontend design or redesign, run a variant-first loop before
+implementation. Both design subagents must first read and restate the project
+Vision, final acceptance standard, and how the selected Goal moves toward that
+Vision. If either subagent cannot explain that context, do not use its output
+for decisions.
 
 ```text
 Designer subagent
   -> restates Vision and selected Goal context
-  -> proposes page hierarchy, layouts, visual system, and interaction model
+  -> proposes exactly three layout variants with tradeoffs
+
+Required variants:
+  1. Team workspace first, similar to Feishu/Slack collaboration space
+  2. Goal/Task document workspace first
+  3. Control plane + graph hybrid
 
 Questioner subagent
   -> restates Vision and selected Goal context
-  -> challenges product assumptions, workflow proof, layout tradeoffs, and
-     acceptance gaps
+  -> objectively challenges each variant against Vision, PRD, workflow proof,
+     layout tradeoffs, implementation risk, and acceptance gaps
 
-Lead
-  -> acts as gate, checks docs and acceptance, records design decisions, and
-     turns accepted changes into tasks
+Decision Agent / Lead
+  -> scores the variants, chooses one or synthesizes a hybrid, records the
+     decision and rejected alternatives, then turns accepted design into tasks
 ```
 
 If subagent tools are unavailable, record a blocker or explicit waiver in the
 harness state. Do not silently replace the loop with one person's hidden
 reasoning for non-trivial frontend redesign.
+
+The Questioner must be independent. It does not serve the Designer, does not
+optimize for visual novelty, and must judge each variant only against Vision,
+PRD, workflow proof, acceptance, implementation feasibility, and operator
+efficiency.
+
+The Decision Agent may be the Lead Agent, but it must not simply endorse the
+Designer. It should use an explicit rubric:
+
+```text
+workflow proof: 25%
+Team/Member collaboration model: 20%
+Goal/Task document model: 15%
+graph/Kanban balance: 15%
+realtime control and observability: 10%
+implementation complexity: 10%
+mobile/accessibility quality: 5%
+```
+
+## Refinement Loop
+
+After a top-level layout is selected, run smaller option loops for the modules
+that still carry product risk. Do not let the selected layout freeze every
+detail too early.
+
+Use this sequence:
+
+```text
+Selected layout
+  -> identify risky / high-impact modules
+  -> Designer proposes 2-3 module variants
+  -> Questioner challenges each variant
+  -> Decision Agent / Lead selects or synthesizes
+  -> record selected and rejected variants
+  -> update layout docs before implementation
+```
+
+Use module-level variants when designing:
+
+- Team list and Team detail workspace;
+- AgentMember workbench, status header, inbox/outbox, activity stream, and
+  prompt/skills/permissions panel;
+- Goal document surface, Goal graph/Kanban switch, GoalEvaluation, and
+  distance-to-vision area;
+- Task document surface, Task graph/Kanban switch, assignment proof, and
+  branch/worktree/PR area;
+- Dashboard-mounted docs navigation and contextual docs panel;
+- Evidence, Review, Decision, Warnings, and Debug drawer;
+- desktop, tablet, and mobile placement.
+
+For every option loop, record:
+
+```text
+selected_variant:
+  why_it_serves_vision:
+  tradeoffs:
+  implementation_notes:
+rejected_variants:
+  - name:
+    killed_because:
+    useful_parts_kept:
+visual_placement:
+  primary_surface:
+  secondary_surface:
+  inspector_or_drawer:
+  mobile_position:
+acceptance_evidence_needed:
+```
+
+Rejected layouts are first-class design evidence. Do not delete them from the
+design record; future agents need to know which ideas were killed and why.
 
 ## Output Artifacts
 
@@ -117,8 +209,19 @@ Before code changes, produce or update the appropriate docs:
 
 - page map and route hierarchy;
 - object-to-page mapping;
+- three candidate layout variants with tradeoffs;
+- Questioner critique for each variant;
+- selected variant or hybrid with Decision Agent / Lead rationale;
+- rejected layout record with killed-because rationale and any useful parts
+  kept for the selected design;
+- second-pass variants for important modules when the selected layout still has
+  unresolved card/detail/inspector/docs placement choices;
+- visual placement map for UI elements: primary surface, secondary surface,
+  inspector/drawer, and mobile position;
 - layout spec for Vision, Goal, TaskGraph, AgentTeam, AgentMember, Evidence,
   Review, Decision, Warnings, and Debug;
+- Goal/Task document-workspace behavior;
+- Dashboard-mounted docs behavior;
 - graph/Kanban behavior and collapse rules;
 - visual system: theme, state colors, typography, density, motion, and realtime
   status treatment;

@@ -112,27 +112,18 @@ The first Dashboard should be a work surface, not a landing page. The default
 screen should answer "what is happening now and what needs a decision?"
 
 ```text
-left rail:
-  vision context
-  goals
-  task boards
-  teams
-  provider sessions
-  decisions
+app rail:
+  vision, teams, goals, docs, warnings, debug
 
-main work area:
-  selected vision/goal status
-  selected goal
-  goal team design
-  goal graph / Kanban
-  task graph / Kanban
-  selected task detail
+team rail:
+  team spaces, role groups, members, queues, role gaps
 
-right rail:
-  member roster
-  inbox/outbox
-  warnings
-  latest evidence and decisions
+team workspace:
+  selected vision/goal strip, team activity, Goal/Task document tabs,
+  graph/Kanban relationship tabs, decision queue
+
+inspector:
+  Member, Task, Docs, Warnings, Evidence
 ```
 
 ## Document Boundary
@@ -145,6 +136,8 @@ mixed with frontend implementation details:
 | `docs/dashboard.md` | product-level Dashboard purpose, information architecture, backward data requirements, user-facing acceptance | component folder layout, package commands, framework internals |
 | `docs/dashboard/README.md` | Dashboard docs placement map, change order, and docs/surface routing rules | product semantics or component implementation |
 | `docs/dashboard/design-principles.md` | core frontend design principles, graph/Kanban policy, AgentTeam/AgentMember UI doctrine, visual system, and current UX failure modes | route-level layout details or React module boundaries |
+| `docs/dashboard/layout-variants.md` | candidate Dashboard layout directions, Designer/Questioner critique, scoring rubric, and decision inputs | final route spec, component internals, or accepted layout details |
+| `docs/dashboard/layout-decisions.md` | accepted layout direction, rejected alternatives, module decisions, and visual placement constraints | component internals or unscored future ideas |
 | `docs/dashboard/ui-ux-layout.md` | global shell, route/page layout, responsive behavior, and per-surface composition | canonical object semantics, framework internals, run commands, browser acceptance |
 | `docs/dashboard/frontend-architecture.md` | Agent Dashboard frontend architecture, component responsibilities, app-local source boundary | product PRD or runbook commands |
 | `docs/dashboard/read-model.md` | read-model projections, goal scope, warning promotion rules | canonical validation rules or Rust implementation |
@@ -168,6 +161,13 @@ The UI/UX layout contract is in
 [dashboard/ui-ux-layout.md](dashboard/ui-ux-layout.md). Frontend changes that
 reshape the Dashboard should update that document before changing component
 structure or CSS.
+
+Candidate layout options, critiques, and rejected alternatives belong in
+[dashboard/layout-variants.md](dashboard/layout-variants.md). Accepted layout
+decisions and killed alternatives belong in
+[dashboard/layout-decisions.md](dashboard/layout-decisions.md). Once a
+direction is accepted, promote stable route and surface decisions into the
+layout contract.
 
 Browser screenshot and web-quality acceptance lives in
 [dashboard/acceptance.md](dashboard/acceptance.md). Layout PRs should plan that

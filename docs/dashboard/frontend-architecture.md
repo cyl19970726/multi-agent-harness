@@ -6,8 +6,10 @@ from the Rust harness snapshot/API and derives operator-friendly views.
 This is the canonical frontend architecture document for the Agent Dashboard
 module. Product-level Dashboard purpose and acceptance stay in
 [../dashboard.md](../dashboard.md). Core UI/UX principles stay in
-[design-principles.md](design-principles.md). Browser and web-quality
-acceptance stays in [acceptance.md](acceptance.md). The framework decision stays in
+[design-principles.md](design-principles.md). Layout variants and accepted
+decisions stay in [layout-variants.md](layout-variants.md) and
+[layout-decisions.md](layout-decisions.md). Browser and web-quality acceptance
+stays in [acceptance.md](acceptance.md). The framework decision stays in
 [../decisions/0014-react-vite-agent-dashboard.md](../decisions/0014-react-vite-agent-dashboard.md).
 Run and build commands stay in [runbook.md](runbook.md). Global shell, route
 layout, core layouts, and responsive behavior stay in
@@ -77,9 +79,10 @@ The frontend layout should follow [ui-ux-layout.md](ui-ux-layout.md):
 
 ```text
 top bar
-  -> scope rail
-  -> selected vision and goal workbench
-  -> tabbed inspector
+  -> Team rail and Team workspace shell
+  -> Goal/Task document surfaces
+  -> controlled graph/Kanban relationship tabs
+  -> Member/Task/Docs/Warn inspector
   -> collapsed debug drawer
 ```
 
