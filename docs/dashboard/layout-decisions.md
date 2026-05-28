@@ -275,3 +275,41 @@ or module-level work:
 6. warnings/decision queue;
 7. mobile/tabbed responsive shell;
 8. browser and web-quality acceptance.
+
+## Decision 2026-05-28: Frontend Skill Audit Hardening
+
+Reviewer: independent skill-quality reviewer using the `skill-creator` guidance.
+
+Findings accepted:
+
+- `SKILL.md` duplicated reference material and weakened progressive disclosure.
+- Required source docs were too broad and encouraged loading every doc by
+  default.
+- The Designer/Questioner loop did not state a concrete execution contract for
+  harness dogfooding, independence, evidence, and waiver cases.
+- Acceptance gates listed outcomes but did not define viewport targets,
+  artifact names, overflow proof, or non-waivable failures.
+- The skill metadata default prompt did not mention variant/review loop or
+  browser/web-quality evidence.
+
+Fixes applied:
+
+- narrowed `SKILL.md` into an entry workflow, doctrine, failure modes, artifact
+  placement, and acceptance pointers;
+- moved detailed loop mechanics to
+  `.agents/skills/harness-frontend-product-design/references/subagent-design-loop.md`;
+- moved page-level option and decision mechanics to
+  `.agents/skills/harness-frontend-product-design/references/page-design-workflow.md`;
+- expanded browser and web-quality gates in
+  `.agents/skills/harness-frontend-product-design/references/acceptance-gates.md`;
+- regenerated `agents/openai.yaml` with a default prompt that names the
+  variant/review loop and browser/web-quality validation.
+
+Loop decision:
+
+- status: stop for this skill-hardening round;
+- reason: the accepted reviewer findings were directly addressed, and remaining
+  improvements are implementation of the Dashboard itself rather than skill
+  structure uncertainty;
+- next Designer request: none for the skill; use the skill to drive the next
+  frontend implementation design/verification loop.

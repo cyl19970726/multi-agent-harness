@@ -1,6 +1,6 @@
 ---
 name: harness-frontend-product-design
-description: "Design or review Multi-Agent Harness frontend UI/UX from the product Vision, Goal collection, TaskGraph, persistent AgentTeam, AgentMember runtime, evidence, review, and decision workflow. Use before changing Dashboard layout, routes, visual system, graph/Kanban views, AgentMember realtime surfaces, or frontend acceptance gates."
+description: "Design or review Multi-Agent Harness frontend UI/UX from the product Vision, Goal collection, TaskGraph, persistent AgentTeam, AgentMember runtime, evidence, review, and decision workflow. Use before changing Dashboard layout, routes, visual system, graph/Kanban views, AgentMember realtime surfaces, frontend acceptance gates, or multi-round Designer/Reviewer layout decisions."
 ---
 
 # Harness Frontend Product Design
@@ -9,25 +9,56 @@ Use this skill before redesigning or implementing the Agent Dashboard or any
 harness frontend surface. The goal is to prevent decorative UI work that hides
 whether the harness workflow actually happened.
 
+## How To Use This Skill
+
+1. Define the frontend decision being made: top-level shell, core page map,
+   module detail, implementation plan, or acceptance review.
+2. Load only the docs needed for that decision, using the source-doc tiers
+   below. Do not load every reference by default.
+3. Restate the Vision, selected Goal, and final acceptance standard before
+   proposing UI.
+4. Map canonical harness objects to pages and workflow proof.
+5. Run the required Designer -> Questioner -> Decision loop for substantial
+   layouts, and the smaller option loop for risky pages or modules.
+6. Record selected designs, rejected designs, borrowed ideas, remaining gaps,
+   and loop stop/continue decisions in `docs/dashboard/`.
+7. Turn accepted specs into small implementation tasks with clear owned paths.
+8. Require browser screenshots and web-quality evidence before implementation
+   acceptance.
+
 ## Required Source Docs
 
-Read only the docs needed for the task, starting with:
+Load docs progressively. Start with the smallest tier that can answer the
+current decision.
+
+Always load for frontend product design:
 
 - `docs/prd.md`
 - `docs/concept-model.md`
 - `docs/dashboard.md`
 - `docs/dashboard/README.md`
+
+Load when changing Dashboard layout, routes, or visual system:
+
 - `docs/dashboard/design-principles.md`
 - `docs/dashboard/layout-variants.md`
 - `docs/dashboard/layout-decisions.md`
 - `docs/dashboard/ui-ux-layout.md`
 - `docs/dashboard/frontend-architecture.md`
 - `docs/dashboard/acceptance.md`
+
+Load when the design touches workflow semantics:
+
 - `docs/goal-learning-loop.md`
 - `docs/agent-control-plane.md`
 - `docs/workflow-git-pr.md`
 
-Use references only when needed:
+Load when placing or indexing docs:
+
+- `docs/README.md`
+- `docs/registry.json`
+
+Use skill references only when needed:
 
 - `references/product-model.md` for Vision/Goal/Task/Team object-to-page rules.
 - `references/layout-principles.md` for graph, Kanban, inspector, realtime, and visual-system rules.
@@ -36,6 +67,33 @@ Use references only when needed:
 - `references/page-design-workflow.md` for core page discovery, page-level
   option loops, and complete frontend design draft requirements.
 - `references/acceptance-gates.md` for browser, web-quality, and harness workflow acceptance.
+
+Reference ownership:
+
+- `product-model.md`: canonical object semantics only.
+- `layout-principles.md`: layout, graph/Kanban, realtime, and visual rules.
+- `subagent-design-loop.md`: subagent roles, prompts, independence,
+  multi-round review, and decision templates.
+- `page-design-workflow.md`: page discovery, page specs, and design drafts.
+- `acceptance-gates.md`: validation commands, evidence, thresholds, and waivers.
+
+## Artifact Placement
+
+The canonical design record belongs in `docs/dashboard/`, not inside the skill.
+Use the skill for process and guardrails; use docs for product decisions.
+
+- `docs/dashboard/design-principles.md`: durable frontend doctrine and visual
+  principles.
+- `docs/dashboard/layout-variants.md`: candidate layouts, critiques, killed
+  directions, and useful parts kept.
+- `docs/dashboard/layout-decisions.md`: selected main direction, borrowed
+  ideas, remaining gaps, reviewer loop status, and stop/continue reasons.
+- `docs/dashboard/ui-ux-layout.md`: selected shell, route map, core page specs,
+  object mapping, visual placement, responsive behavior, and implementation
+  sequence.
+- `docs/dashboard/acceptance.md`: browser screenshots, console, accessibility,
+  performance, web-quality, and harness workflow acceptance evidence plan.
+- `docs/dashboard/README.md`: index of the current Dashboard design contract.
 
 ## Frontend Doctrine
 
@@ -102,228 +160,65 @@ status, and action tied to canonical harness objects.
 - Visual impact must come from live topology, status, motion, density, and
   meaningful state transitions, not decorative gradients or unrelated imagery.
 
-## Required Variant Design Loop
+## Design Loop
 
-For substantial frontend design or redesign, run a variant-first loop before
-implementation. Both design subagents must first read and restate the project
-Vision, final acceptance standard, and how the selected Goal moves toward that
-Vision. If either subagent cannot explain that context, do not use its output
-for decisions.
+For substantial frontend design or redesign, load
+`references/subagent-design-loop.md` and run the required loop:
 
 ```text
-Designer subagent
-  -> restates Vision and selected Goal context
-  -> proposes exactly three layout variants with tradeoffs
-
-Required variants:
-  1. Team workspace first, similar to Feishu/Slack collaboration space
-  2. Goal/Task document workspace first
-  3. Control plane + graph hybrid
-
-Questioner subagent
-  -> restates Vision and selected Goal context
-  -> objectively challenges each variant against Vision, PRD, workflow proof,
-     layout tradeoffs, implementation risk, and acceptance gaps
-
-Decision Agent / Lead
-  -> scores the variants, chooses one or synthesizes a hybrid, records the
-     decision and rejected alternatives, then turns accepted design into tasks
+Designer proposes three distinct directions
+  -> Questioner challenges them independently
+  -> Decision Agent selects, synthesizes, or requests another round
+  -> repeat until acceptance, no useful new signal, or an explicit blocker
 ```
 
-If subagent tools are unavailable, record a blocker or explicit waiver in the
-harness state. Do not silently replace the loop with one person's hidden
-reasoning for non-trivial frontend redesign.
+The Decision Agent / Reviewer may choose one design as the main direction while
+still requiring changes. Every decision must record the main selected layout,
+its remaining weaknesses, useful ideas borrowed from rejected layouts, killed
+alternatives, whether another Designer round is required, and why the loop
+continues or stops.
 
-The Questioner must be independent. It does not serve the Designer, does not
-optimize for visual novelty, and must judge each variant only against Vision,
-PRD, workflow proof, acceptance, implementation feasibility, and operator
-efficiency.
+For page or module risk, load `references/page-design-workflow.md` and run a
+smaller 2-3 option loop before implementation. Rejected layouts and rejected
+page options are first-class evidence; keep them in `docs/dashboard/`.
 
-The Decision Agent may be the Lead Agent, but it must not simply endorse the
-Designer. It should use an explicit rubric:
+## Likely Failure Modes
 
-```text
-workflow proof: 25%
-Team/Member collaboration model: 20%
-Goal/Task document model: 15%
-graph/Kanban balance: 15%
-realtime control and observability: 10%
-implementation complexity: 10%
-mobile/accessibility quality: 5%
-```
+Watch for these before approving design or implementation:
 
-## Refinement Loop
+- Vision collapsed into one Goal instead of a collection and learning loop.
+- Goal reduced to a task list without GoalDesign, branch, team, evidence,
+  decision, evaluation, and distance-to-vision.
+- AgentTeam treated as disposable or graph-first instead of a persistent
+  collaboration workspace.
+- AgentMember realtime state faked by decorative activity instead of messages,
+  sessions, runtime health, inbox/outbox, and send-message controls.
+- Graph used as the whole product, or Kanban omitted where operators need
+  execution state.
+- Docs copied into the UI instead of mounted as source-linked context.
+- Raw JSON, snapshot paste, or debug state promoted to the primary viewport.
+- Visual polish hiding missing assignment, evidence, review, decision, or
+  browser acceptance.
 
-After a top-level layout is selected, run smaller option loops for the modules
-that still carry product risk. Do not let the selected layout freeze every
-detail too early.
+## Before Implementation
 
-Use this sequence:
+Before writing component code, the design record must include:
 
-```text
-Selected layout
-  -> identify risky / high-impact modules
-  -> Designer proposes 2-3 module variants
-  -> Questioner challenges each variant
-  -> Decision Agent / Lead selects or synthesizes
-  -> record selected and rejected variants
-  -> update layout docs before implementation
-```
-
-Use module-level variants when designing:
-
-- Team list and Team detail workspace;
-- AgentMember workbench, status header, inbox/outbox, activity stream, and
-  prompt/skills/permissions panel;
-- Goal document surface, Goal graph/Kanban switch, GoalEvaluation, and
-  distance-to-vision area;
-- Task document surface, Task graph/Kanban switch, assignment proof, and
-  branch/worktree/PR area;
-- Dashboard-mounted docs navigation and contextual docs panel;
-- Evidence, Review, Decision, Warnings, and Debug drawer;
-- desktop, tablet, and mobile placement.
-
-For every option loop, record:
-
-```text
-selected_variant:
-  why_it_serves_vision:
-  tradeoffs:
-  implementation_notes:
-rejected_variants:
-  - name:
-    killed_because:
-    useful_parts_kept:
-visual_placement:
-  primary_surface:
-  secondary_surface:
-  inspector_or_drawer:
-  mobile_position:
-acceptance_evidence_needed:
-```
-
-Rejected layouts are first-class design evidence. Do not delete them from the
-design record; future agents need to know which ideas were killed and why.
-
-## Core Page Discovery
-
-Before writing component code, actively identify the core pages from the Vision
-and product mechanisms. Do not wait for the user to enumerate pages, and do not
-assume the current implementation's component list is the product page map.
-
-Use the documentation-workflow style:
-
-```text
-Vision and final acceptance
-  -> critical user/operator workflows
-  -> core harness objects and relationships
-  -> failure modes that the UI must prevent
-  -> core pages/workspaces
-  -> page-level UI/UX options
-  -> selected page specs
-  -> complete frontend design draft
-  -> implementation tasks
-```
-
-For Multi-Agent Harness, the likely core pages/workspaces include:
-
-- Vision overview and goal collection;
-- Team workspace and Team detail;
-- AgentMember workbench;
-- Goal document/workspace;
-- Task document/workspace;
-- Goal/Task graph and Kanban relationship view;
-- Dashboard-mounted docs context;
-- Evidence, Review, Decision, and GoalEvaluation surfaces;
-- Warnings and repair queue;
-- Debug drawer and raw snapshot route.
-
-The list is a starting hypothesis. The Designer and Questioner must update it
-when Vision, PRD, read model, or implementation constraints reveal a missing or
-unnecessary page.
-
-## Page-Level UI/UX Options
-
-After top-level layout selection, every core page that carries product risk
-needs its own option loop. Produce 2-3 page-level UI/UX options when the page
-controls workflow proof, user operation speed, realtime state, document
-context, or acceptance.
-
-Examples:
-
-- AgentMember workbench options for activity stream, inbox/outbox, runtime
-  health, and send-message placement;
-- Goal document options for GoalDesign, Team design, graph/Kanban,
-  GoalEvaluation, distance-to-vision, and docs context;
-- Task document options for assignment proof, acceptance criteria, evidence,
-  proposal/review/decision, branch/worktree/PR, and warnings;
-- Docs context options for right inspector, standalone docs page, and inline
-  Goal/Task doc blocks.
-
-Low-risk support pages may use a single spec only when the Decision Agent / Lead
-records why extra options would not change the result.
-
-## Complete Frontend Design Draft
-
-Before implementation begins, produce a complete frontend design draft under
-`docs/dashboard/` or the relevant docs location. It should be detailed enough
-for a Worker to implement without inventing product semantics.
-
-The design draft must include:
-
-- product brief and Vision restatement;
-- selected shell and rejected layout alternatives;
+- core page discovery from Vision, PRD, object model, and failure modes;
 - route map and page hierarchy;
-- page-level specs for every core page/workspace;
-- object-to-page and object-to-component mapping;
-- visual placement map for primary surface, secondary surface,
-  inspector/drawer, and mobile position;
-- key interactions and safe actions;
-- read-model/API fields needed by each page;
-- visual system, density, state colors, typography, icon usage, and motion;
-- desktop, tablet, and mobile behavior;
-- browser screenshot and web-quality acceptance checklist.
-
-## Output Artifacts
-
-Before code changes, produce or update the appropriate docs:
-
-- page map and route hierarchy;
-- core page discovery with why each page exists;
-- object-to-page mapping;
-- three candidate layout variants with tradeoffs;
-- Questioner critique for each variant;
-- selected variant or hybrid with Decision Agent / Lead rationale;
-- rejected layout record with killed-because rationale and any useful parts
-  kept for the selected design;
-- page-level variants for core pages when cards, details, inspector, graph,
-  docs, realtime state, or mobile placement still carry risk;
-- complete frontend design draft before implementation;
-- visual placement map for UI elements: primary surface, secondary surface,
-  inspector/drawer, and mobile position;
-- layout spec for Vision, Goal, TaskGraph, AgentTeam, AgentMember, Evidence,
-  Review, Decision, Warnings, and Debug;
-- Goal/Task document-workspace behavior;
-- Dashboard-mounted docs behavior;
-- graph/Kanban behavior and collapse rules;
-- visual system: theme, state colors, typography, density, motion, and realtime
-  status treatment;
-- acceptance plan with browser screenshots and web-quality checks.
-
-Detailed design belongs under `docs/`, usually `docs/dashboard/`. This skill
-owns the process and guardrails, not the canonical page spec.
+- selected top-level layout, rejected alternatives, and borrowed ideas;
+- page-level specs for Vision, Team, AgentMember, Goal, Task, Graph/Kanban,
+  Docs, Evidence/Review/Decision, Warnings, and Debug;
+- visual placement for primary surface, secondary surface, inspector/drawer,
+  and mobile position;
+- read-model/API needs and implementation sequence;
+- acceptance plan using `references/acceptance-gates.md`.
 
 ## Implementation Gate
 
-Do not approve a frontend implementation until it proves:
-
-- Vision/Goal/Task hierarchy is visible.
-- Completed and not-complete goals are distinct.
-- Goal shows designed AgentTeam and dynamic TaskGraph.
-- Task and Goal provide graph plus Kanban execution views where useful.
-- AgentTeam appears persistent, not disposable.
-- AgentMember realtime stream and send-message interaction are visible.
-- Browser screenshots cover desktop, tablet, and mobile.
-- Console is clean of React key warnings and runtime errors.
-- Accessibility, performance, Core Web Vitals, and best-practices checks pass or
-  have documented exceptions and follow-up tasks.
+For implementation review, load `references/acceptance-gates.md`. Do not
+approve a frontend implementation until browser evidence covers desktop,
+tablet, and mobile; console and overflow checks are clean; accessibility,
+performance, and best-practices results are recorded; and workflow acceptance
+proves Vision, Goal, TaskGraph, AgentTeam, AgentMember, evidence, review,
+decision, and GoalEvaluation are visible.

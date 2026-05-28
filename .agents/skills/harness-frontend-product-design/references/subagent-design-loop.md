@@ -6,6 +6,42 @@ standard. Their output must include a short restatement of the active Vision,
 the selected Goal, and how the Goal should reduce or expose
 distance-to-vision.
 
+## Execution Contract
+
+Use canonical harness objects when this repository is dogfooding itself:
+
+- create or reuse a `Task` for the design work;
+- assign the Designer and Questioner through `Message(kind=task)` or an
+  equivalent harness-visible assignment;
+- record Designer output, Questioner critique, and Decision output as
+  `Evidence`;
+- record accepted/rejected direction as a Leader `Decision`;
+- keep raw prompts and outputs available through evidence files, provider
+  sessions, reports, or PR comments.
+
+If only chat-side or local subagents are available, treat them as temporary
+inputs. They are acceptable for exploration only when their prompts, outputs,
+and independence boundaries are copied into the docs or attached as harness
+evidence. Do not claim harness execution unless the store has AgentMember,
+Task, Message, Evidence, review, and Decision records.
+
+Minimum independent-review record:
+
+```text
+designer_prompt:
+designer_output_ref:
+questioner_prompt:
+questioner_input_ref: raw design artifact, not Lead conclusions
+questioner_output_ref:
+decision_record_ref:
+unresolved_questions:
+next_loop_request:
+```
+
+The Questioner must receive the design artifact and product docs, not the Lead's
+preferred answer. If the Questioner cannot explain the Vision, selected Goal,
+and acceptance standard in its own words, discard or rerun that review.
+
 ## Designer Prompt
 
 ```text
@@ -87,9 +123,17 @@ The Lead must:
 
 - record accepted design decisions in docs;
 - choose one variant or synthesize a hybrid using the explicit rubric;
-- record rejected alternatives and why they lost;
+- record the main selected variant, its remaining weaknesses, rejected
+  alternatives, why they lost, and useful ideas borrowed from them;
 - preserve useful parts from rejected variants when they strengthen the selected
   design without violating the Vision;
+- ask Designer for another round when variants are too similar, core pages are
+  missing, visual placement is unclear, workflow proof is weak, or mobile/docs
+  behavior is underspecified;
+- continue the design -> review loop until the Reviewer records that the design
+  is specific enough to implement, further variants are unlikely to improve the
+  decision, or the loop is blocked by missing product/schema/API/read-model
+  information with a follow-up task;
 - run a second option loop for high-risk modules after the top-level layout is
   selected, especially Team workspace, AgentMember workbench, Goal document,
   Task document, Dashboard-mounted docs, Evidence/Decision, Warnings, Debug,
@@ -108,14 +152,48 @@ The Lead must:
 - require browser screenshots and web-quality evidence before implementation
   acceptance.
 
+## Multi-Round Review Rules
+
+The Decision Agent / Reviewer is not a one-pass scorer. It may:
+
+- select one layout as the main direction and still require changes;
+- name specific weaknesses in the selected layout;
+- borrow useful parts from rejected layouts;
+- kill layouts that violate Vision, object boundaries, workflow proof, mobile
+  constraints, or implementation feasibility;
+- ask Designer for more references, more divergent options, or a narrowed
+  module-level round;
+- stop only when the current decision has enough specificity for
+  implementation, additional variants are unlikely to change the outcome, or a
+  blocker has been recorded with a follow-up task.
+
+Continue another design -> review round when any of these are true:
+
+- core pages or object boundaries are missing;
+- variants are too similar to reveal real tradeoffs;
+- AgentTeam, AgentMember, Goal, Task, docs, graph/Kanban, or mobile placement is
+  underspecified;
+- the visual system is impressive but does not prove assignment, evidence,
+  review, decision, or GoalEvaluation;
+- the Reviewer finds unresolved product, schema, API, or read-model questions
+  that the Designer can still clarify.
+
+End the loop only with a recorded `stop`, `continue`, or `blocked` decision. A
+`stop` decision must explain why further loops would not add useful signal.
+
 ## Decision Record Template
 
 ```text
 Selected layout:
   name:
   why_it_serves_vision:
+  remaining_weaknesses:
+  borrowed_from_rejected_variants:
   accepted_tradeoffs:
   implementation_notes:
+  loop_status: continue | stop | blocked
+  stop_or_continue_reason:
+  next_designer_request:
 
 Rejected layouts:
   - name:
@@ -134,10 +212,16 @@ Next refinement loops:
 ```text
 Module:
   selected_variant:
+  remaining_weaknesses:
+  borrowed_ideas:
   rejected_variants:
     - name:
       killed_because:
       useful_parts_kept:
+  loop_status:
+    continue_or_stop:
+    reason:
+    next_designer_request:
   visual_placement:
     desktop:
     tablet:

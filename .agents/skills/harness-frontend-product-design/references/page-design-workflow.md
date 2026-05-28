@@ -51,8 +51,9 @@ operator behavior.
 Core page brief
   -> Designer proposes 2-3 page options
   -> Questioner challenges each option
-  -> Decision Agent / Lead selects or synthesizes
+  -> Decision Agent / Lead selects, synthesizes, or requests more options
   -> rejected options are recorded
+  -> loop stop/continue reason is recorded
   -> selected page spec is added to the design draft
 ```
 
@@ -83,6 +84,28 @@ Questioner checks:
   missing evidence, missing review, or missing GoalEvaluation?
 - Does it keep docs as mounted context rather than a copied source of truth?
 - Does it work on mobile without horizontal overflow?
+
+Continue the page loop when options do not expose real tradeoffs, key
+components have unclear placement, mobile behavior is hand-waved, read-model
+needs are unknown, or the Questioner identifies a missing workflow proof. Stop
+when the selected page spec is implementation-ready, remaining gaps are owned
+implementation tasks, or a blocker/follow-up task is recorded.
+
+Record the page decision:
+
+```text
+Page Decision
+  selected_option:
+  why_it_serves_vision:
+  remaining_weaknesses:
+  borrowed_from_rejected_options:
+  rejected_options:
+  visual_placement:
+  read_model_gaps:
+  loop_status: continue | stop | blocked
+  stop_or_continue_reason:
+  next_designer_request:
+```
 
 ## Required Dashboard Page Specs
 
