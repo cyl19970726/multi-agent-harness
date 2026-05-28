@@ -119,6 +119,10 @@ module. This is stricter than a design direction. It must remove ambiguity that
 would let an implementation become a stacked report, card dump, or
 raw-debug-first page.
 
+Desktop, tablet, and mobile `ascii_diagram` fields are required. They must be
+box diagrams drawn with plain ASCII characters. Text-only descriptions of
+columns, panels, or responsive behavior do not pass the hard layout gate.
+
 Required fields:
 
 ```text
@@ -162,8 +166,9 @@ Hard Layout Spec
 
 Implementation may start only when the PR points to the spec path and the
 Reviewer records `continue` with a statement that this spec is specific enough
-to compare against browser screenshots. A `stop` or `blocked` decision returns
-the work to the design loop.
+to compare against browser screenshots. Missing ASCII diagrams require a
+`blocked` decision. A `stop` or `blocked` decision returns the work to the
+design loop.
 
 ## Core Module Multi-Designer Loop
 

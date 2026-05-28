@@ -63,6 +63,10 @@ Reviewer records a different path. The implementation PR must cite the
 `spec_id`, selected design refs, Reviewer `stop | continue | blocked` decision,
 and screenshot matrix.
 
+Each desktop, tablet, and mobile wireframe must include an `ascii_diagram` drawn
+with plain ASCII box characters. A prose-only description of columns or panels
+does not pass the hard layout gate.
+
 Each spec must include:
 
 ```text

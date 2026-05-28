@@ -16,7 +16,7 @@ decision, screenshot matrix, and non-waivable failure checklist.
 
 The spec must define:
 
-- desktop, tablet, and mobile ASCII or equivalent box wireframes;
+- desktop, tablet, and mobile ASCII box diagrams;
 - region dimensions and collapsed regions;
 - first-viewport content;
 - scroll containers and overflow rules;
@@ -31,6 +31,9 @@ layout spec, the correct action is to stop implementation, record a rejected
 implementation in [layout-decisions.md](layout-decisions.md), and rerun the
 Designer -> Questioner -> Reviewer loop. Do not continue styling the same
 failed direction until the spec gap is fixed.
+
+Missing ASCII diagrams fail the layout spec gate. Prose-only layout descriptions
+are not enough for implementation acceptance.
 
 ## Rebuild Boundary Checklist
 

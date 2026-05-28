@@ -1,4 +1,4 @@
 interface:
   display_name: "Harness Workbench Product Design"
   short_description: "Design workflow-true agent workbenches"
-  default_prompt: "Use $harness-frontend-product-design to design or review the Multi-Agent Harness Agent Workbench UX, clean up conflicting design docs, run multi-candidate Designer/Questioner/Reviewer loops, require hard layout specs before coding, and validate implementation with browser and web-quality evidence."
+  default_prompt: "Use $harness-frontend-product-design to design or review the Multi-Agent Harness Agent Workbench UX, clean up conflicting design docs, run multi-candidate Designer/Questioner/Reviewer loops, require hard layout specs with desktop/tablet/mobile ASCII diagrams before coding, and validate implementation with browser and web-quality evidence."

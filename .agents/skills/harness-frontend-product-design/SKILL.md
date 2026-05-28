@@ -28,9 +28,9 @@ actually happened.
 6. Record selected designs, rejected designs, borrowed ideas, remaining gaps,
    and loop stop/continue decisions in `docs/dashboard/`.
 7. Produce a hard layout implementation spec before component or CSS work:
-   desktop/tablet/mobile ASCII or equivalent box wireframes, region dimensions,
+   desktop/tablet/mobile ASCII box diagrams, region dimensions,
    first-viewport content, scroll boundaries, empty states, and browser
-   screenshot acceptance.
+   screenshot acceptance. Text-only wireframe prose is not enough.
 8. Turn accepted specs into small implementation tasks with clear owned paths.
 9. Keep a Questioner/Critic active during implementation. If screenshots show a
    stacked report, raw-debug-first view, overflow, or weak workflow proof, stop
@@ -115,6 +115,26 @@ When a new frontend design document supersedes older Workbench docs, update
 `docs/dashboard/README.md`, `docs/README.md`, and `docs/registry.json`, then
 delete or mark the old docs as deprecated. Do not leave multiple canonical
 layout specs that conflict.
+
+## ASCII Layout Diagrams
+
+Hard layout specs must include ASCII box diagrams for desktop, tablet, and
+mobile. These diagrams are the implementation contract for region placement,
+fixed dimensions, collapsed regions, first-viewport hierarchy, and scroll
+ownership. A written list of columns or a prose description does not satisfy
+the hard layout gate.
+
+Use plain ASCII characters so the diagram remains stable in Markdown, PR
+comments, terminals, and provider transcripts:
+
+```text
++------+------------------------+--------------+
+| rail | primary workspace      | inspector    |
++------+------------------------+--------------+
+```
+
+Reviewer approval is `blocked` when a changed route, surface, or core module
+lacks the required ASCII diagram for any accepted viewport.
 
 ## Frontend Doctrine
 
@@ -239,9 +259,9 @@ Before writing component code, the design record must include:
 - page-level specs for Vision, Team, AgentMember, Goal, Task, Graph/Kanban,
   Docs, Evidence/Review/Decision, Warnings, and Debug;
 - a hard layout implementation spec for every changed route, surface, or core
-  module, with concrete desktop/tablet/mobile ASCII or equivalent box
-  wireframes, region sizing, scroll behavior, first-viewport content, empty
-  states, overflow constraints, and screenshot acceptance;
+  module, with concrete desktop/tablet/mobile ASCII box diagrams, region
+  sizing, scroll behavior, first-viewport content, empty states, overflow
+  constraints, and screenshot acceptance;
 - visual placement for primary surface, secondary surface, inspector/drawer,
   and mobile position;
 - Reviewer selection records for each core module, including killed options and
