@@ -305,10 +305,9 @@ function Inspector({ model, onSelectionChange }: { model: WorkbenchModel; onSele
 }
 
 function MobileNav({ selection, onSurfaceChange }: { selection: SelectionState; onSurfaceChange: (surface: SurfaceId) => void }) {
-  const mobileItems = navItems.filter((item) => ["team", "goal", "graph", "member", "warnings", "docs", "debug"].includes(item.id));
   return (
     <nav className="mobileNav" aria-label="Mobile Workbench tabs">
-      {mobileItems.map((item) => (
+      {navItems.map((item) => (
         <button
           key={item.id}
           type="button"

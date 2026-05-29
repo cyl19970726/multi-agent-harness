@@ -1134,12 +1134,13 @@ button {
   }
 
   .queueBand,
+  .visionGrid,
   .docsGrid,
   .warningGrid,
   .memberRoute,
   .documentRoute,
   .graphGrid {
-    grid-template-columns: minmax(0, 1fr) 288px;
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .memberMeta,
@@ -1150,6 +1151,12 @@ button {
   .proofPanel,
   .runtimePanel {
     min-width: 0;
+  }
+
+  .laneBoard,
+  .laneBoard.compact {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    overflow: visible;
   }
 }
 
@@ -1198,7 +1205,7 @@ button {
   .workbenchShell,
   .workbenchShell:not(.surface-team) {
     grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: 48px minmax(0, 1fr) 58px;
+    grid-template-rows: 48px minmax(0, 1fr) 96px;
     grid-template-areas:
       "top"
       "workspace"
@@ -1237,7 +1244,8 @@ button {
   .mobileNav {
     grid-area: mobile;
     display: grid;
-    grid-template-columns: repeat(7, minmax(0, 1fr));
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    grid-template-rows: repeat(2, 48px);
     border-top: 1px solid var(--line);
     background: #fff;
   }
@@ -1250,12 +1258,20 @@ button {
     border: 0;
     background: transparent;
     color: var(--muted);
-    font-size: 11px;
+    font-size: 10.5px;
+    line-height: 1.1;
   }
 
   .mobileNav button.active {
     color: var(--teal);
     background: var(--teal-soft);
+  }
+
+  .mobileNav button span {
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .surfaceHeader {
