@@ -9,8 +9,8 @@ failure analysis. Acceptance gates stay in [acceptance.md](acceptance.md).
 ## Current Decision
 
 ```text
-status: planned
-implementation_allowed: no
+status: accepted-for-rebuild
+implementation_allowed: yes, only from page-local layout contracts
 decision:
   keep React + TypeScript + Vite as the build/runtime shell for now
   rebuild the product architecture from Workbench primitives
@@ -55,6 +55,43 @@ mutation truth.
 | Routing | Route-ready internal state first; add router only when page specs require URL routing | Avoid adding dependency before page contracts stabilize. |
 | Graph | Defer library choice until the `graph-kanban` page layout contract is accepted | Graph must be semantic and controlled, not decorative canvas. |
 | State | Local app state + pure read-model selectors first | Canonical state comes from snapshot/API; avoid store abstraction until needed. |
+
+## Component Decision
+
+The first rebuild uses product primitives, not a generic UI kit. These are the
+implementation components for the next slice:
+
+| Component | Owns | Refuses |
+| --- | --- | --- |
+| `WorkbenchShell` | top bar, app rail, responsive workspace grid, source state, debug boundary | business proof logic |
+| `AppRail` | stable navigation across Team, Vision, Goal, Task, Graph/Kanban, Member, Docs, Decisions, Warnings, Debug | raw object browsing |
+| `TopBar` | live/offline source, active Vision/Goal, API input, refresh, search affordance | page content |
+| `TeamRail` | team switcher, role groups, member rows, queue/current-work pressure | graph visualization |
+| `Inspector` | selected member/task/docs/warnings/evidence/decision context | primary workflow ownership |
+| `TeamWorkspace` | default collaboration workspace, activity stream, current work, decisions, warnings | roster-only dashboard |
+| `MemberWorkbench` | durable teammate view: identity, current work, inbox/outbox, timeline, runtime, prompt/skills | provider-session dump |
+| `VisionOverview` | goal collection, completed/not-complete proof, distance-to-vision, next proposals | single-goal status card |
+| `GoalDocument` | GoalDesign, team design, branch policy, graph/Kanban preview, evidence/review/decision, evaluation | task list |
+| `TaskDocument` | assignment -> report -> evidence -> proposal -> review -> decision proof order | status card |
+| `GraphKanban` | Kanban default plus semantic graph focus and synchronized selected object | graph-first shell |
+| `DocsContext` | mounted docs context with source paths and missing-context warnings | copied docs body |
+| `DecisionCenter` | global and object-local Evidence/Proposal/Review/Decision lanes | status chip |
+| `WarningsRepair` | workflow risk queue with affected object, cause, consequence, safe repair state | toast-only alerts |
+| `DebugSurface` / `DebugDrawer` | raw snapshot and import/export only behind explicit debug route/drawer | primary viewport |
+
+Small UI primitives are allowed only when they preserve the product model:
+
+| Primitive | Purpose |
+| --- | --- |
+| `ActionButton` | command affordance with optional `lucide-react` icon. |
+| `StatusBadge` | text-backed state label, never color-only. |
+| `SectionPanel` | bounded workspace region with title/action slot. |
+| `SegmentedControl` | mode switch for Graph/Kanban, proof tabs, or mobile surfaces. |
+| `TimelineRow` | canonical Message/Event/Evidence/Decision rows. |
+| `LaneBoard` | task/goal execution lanes. |
+
+No shadcn, Radix bundle, Tailwind kit, Material UI, Ant Design, or generic
+component framework is used in this rebuild.
 
 ## Dependency Policy
 
