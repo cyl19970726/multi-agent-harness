@@ -6,6 +6,12 @@ and selected design direction. Core principles stay in
 page cards, visual placement, safe actions, and responsive behavior stay in
 [frontend-design.md](frontend-design.md).
 
+Split reason: this file intentionally stays slightly above the 500-line target
+while the Workbench redesign is being reset because it is the chronological
+decision ledger for selected, killed, deprecated, and restarted directions.
+Move stable page-specific decisions into [pages/](pages/) after the next
+Reviewer pass.
+
 ## Decision 2026-05-28: Team Workspace Shell
 
 Selected direction:
@@ -209,8 +215,9 @@ implementation.
 
 ## Decision 2026-05-28: Hard Layout Spec Shell v1
 
-Reviewer decision: `continue` for implementation planning, not automatic UI
-acceptance. Formal spec:
+Status: deprecated after PR #6. The v1 spec was useful as a first hard-layout
+attempt, but it remained too broad and allowed a dashboard/card-dump
+implementation to pass mechanical checks. Formal historical spec:
 [hard-layout-specs/agent-workbench-shell-v1.md](hard-layout-specs/agent-workbench-shell-v1.md).
 
 Selected main candidate: Designer C control-plane hybrid. Borrowed from
@@ -223,10 +230,24 @@ documents, real Vision goal collection and distance-to-vision, and assignment
 Killed candidates: Goal/Task document-first default shell, graph-first shell,
 and Team chat/activity-only shell.
 
-Remaining weaknesses carried into implementation acceptance: inspector density
-at `1440x1000` and `900x1180`, mobile six-tab overflow/readability, Graph focus
-scroll traps, and missing read-model fields being faked instead of surfaced as
-explicit gaps.
+Final disposition: do not implement from shell v1. Restart from page specs,
+[hard-layout-specs/shell-v2.md](hard-layout-specs/shell-v2.md), and the
+architecture reset in [frontend-architecture.md](frontend-architecture.md).
+
+## Decision 2026-05-29: Shell v2 Restart Spec
+
+Reviewer decision: `blocked` for implementation until page specs and
+architecture reset are reviewed. Draft spec:
+[hard-layout-specs/shell-v2.md](hard-layout-specs/shell-v2.md).
+
+The shell v2 restart makes the first viewport stricter:
+
+- Team must read as a collaboration workspace, not roster/cards;
+- AgentMember must read as a teammate workbench, not an inspector card;
+- Goal/Task/Docs/Evidence/Decision must appear connected to workflow context,
+  not as disconnected tabs;
+- screenshots must be reviewed by first impression before console, data, or
+  overflow checks can support acceptance.
 
 ## Module Decisions
 

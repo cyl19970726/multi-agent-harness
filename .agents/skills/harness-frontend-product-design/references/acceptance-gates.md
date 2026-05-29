@@ -41,6 +41,23 @@ Attach evidence:
 - User acceptance agent findings based on browser screenshots and hands-on
   operation.
 
+Screenshots are the review object, not a passive attachment. For every required
+screenshot the Reviewer must write:
+
+```text
+first_impression:
+workbench_or_dashboard:
+matches_hard_spec:
+team_as_collaboration_space:
+agent_member_as_workspace:
+goal_task_docs_connected:
+debug_secondary:
+decision: pass | fix | reject
+```
+
+Do not accept based only on rendered data, clean console, network success, no
+React warnings, or no horizontal overflow.
+
 Suggested artifact names:
 
 ```text
@@ -64,13 +81,20 @@ document.documentElement.scrollWidth <= document.documentElement.clientWidth
 Run it after the page has loaded representative data and after opening the
 member detail, Goal/Task document, graph/Kanban, docs, and warnings surfaces.
 
-## PM / User Browser Acceptance Agents
+## PM / User Browser Acceptance Subagents
 
-Run these agents after the implementation is available in a browser and after
-the screenshot matrix exists. They are read-only validators. Their input must
-include the hard layout spec, active product docs, route URL, screenshot paths,
-console/overflow proof, and any known missing live data. Do not give them the
-developer's preferred answer.
+Run two independent subagents after the implementation is available in a
+browser and after the screenshot matrix exists:
+
+- PM acceptance subagent: product logic, Vision/Goal/Task/Agent workflow, and
+  self-hosting coherence.
+- User acceptance subagent: operator usability, navigation, comprehension, and
+  action confidence.
+
+They are read-only validators. Their input must include the hard layout spec,
+active product docs, route URL, screenshot paths, console/overflow proof, and
+any known missing live data. Do not give them the developer's preferred answer.
+Do not let the implementer act as either acceptance subagent.
 
 Required outputs:
 
@@ -79,13 +103,20 @@ Required outputs:
 - concrete repair requests;
 - whether another browser pass is required after fixes;
 - explicit waiver candidates when an issue is real but outside the slice.
+- whether the subagent recommends another browser pass after fixes.
 
 ### PM Acceptance Prompt
 
 ```text
-You are the PM acceptance agent for Multi-Agent Harness Agent Workbench. You are
-read-only. Use browser automation and the provided screenshots to inspect the
-working product, not only the docs or code.
+You are the PM acceptance subagent for Multi-Agent Harness Agent Workbench. You
+are independent from the implementer and read-only. Use browser automation and
+the provided screenshots to inspect the working product, not only the docs or
+code.
+
+Do not pass the implementation because objects exist, console is clean, network
+requests succeeded, or overflow is absent. First state what the screenshot looks
+like in one sentence. If it looks like a dashboard, card dump, report page, or
+raw object viewer, mark P0 fail.
 
 First restate the product purpose, active Vision, selected frontend Goal, and
 the end-to-end workflow the UI must make understandable:
@@ -108,10 +139,15 @@ logic perspective, or whether another PM browser pass is required after fixes.
 ### User Acceptance Prompt
 
 ```text
-You are the User acceptance agent for Multi-Agent Harness Agent Workbench. You
-are read-only. Act like an operator trying to understand and control a
-multi-agent team. Use browser automation and the provided screenshots to
-experience the product.
+You are the User acceptance subagent for Multi-Agent Harness Agent Workbench.
+You are independent from the implementer and read-only. Act like an operator
+trying to understand and control a multi-agent team. Use browser automation and
+the provided screenshots to experience the product.
+
+You are not reviewing code. Fail when the page feels like a dashboard instead
+of a workbench, when the first action path is unclear, when AgentMember is only
+a card, when Team/Goal/Task/Docs feel disconnected, or when mobile/tablet turns
+into a long report.
 
 Perform this walkthrough: enter the Workbench, identify the active team, select
 an AgentMember, inspect inbox/outbox or message/activity state, find the current
@@ -152,12 +188,18 @@ Cannot be waived for implementation acceptance:
 - known failed implementation attempt not recorded as rejected;
 - no browser screenshot evidence;
 - missing PM/User browser acceptance agent output;
+- PM/User roles were not run by two independent subagents;
 - primary page is blank or raw/debug-only;
 - primary page reads as a stacked report/card dump instead of a Workbench;
 - runtime JavaScript error on initial load;
 - horizontal overflow on mobile caused by the layout;
 - missing AgentMember realtime/detail surface when the change claims to support
   agent observation.
+- screenshot first impression is dashboard, report, card dump, or raw object
+  viewer;
+- PM/User acceptance relies on data presence, console cleanliness, network
+  success, component presence, or lack of overflow instead of product shape and
+  operator flow.
 
 May be waived only with rationale, owner, and follow-up task:
 

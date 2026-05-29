@@ -17,8 +17,10 @@
 | Agent Workbench frontend design principles | [dashboard/design-principles.md](dashboard/design-principles.md) |
 | Agent Workbench layout variants | [dashboard/layout-variants.md](dashboard/layout-variants.md) |
 | Agent Workbench layout decisions | [dashboard/layout-decisions.md](dashboard/layout-decisions.md) |
-| Agent Workbench frontend design | [dashboard/frontend-design.md](dashboard/frontend-design.md) |
-| Agent Workbench shell hard layout spec | [dashboard/hard-layout-specs/agent-workbench-shell-v1.md](dashboard/hard-layout-specs/agent-workbench-shell-v1.md) |
+| Agent Workbench frontend design index | [dashboard/frontend-design.md](dashboard/frontend-design.md) |
+| Agent Workbench page specs | [dashboard/pages/README.md](dashboard/pages/README.md) |
+| Agent Workbench hard layout specs | [dashboard/hard-layout-specs/README.md](dashboard/hard-layout-specs/README.md) |
+| Agent Workbench rejected implementation records | [dashboard/rejected-implementations/README.md](dashboard/rejected-implementations/README.md) |
 | Agent Workbench frontend architecture | [dashboard/frontend-architecture.md](dashboard/frontend-architecture.md) |
 | Agent Workbench read model | [dashboard/read-model.md](dashboard/read-model.md) |
 | Agent Workbench acceptance | [dashboard/acceptance.md](dashboard/acceptance.md) |

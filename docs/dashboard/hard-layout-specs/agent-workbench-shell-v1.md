@@ -1,5 +1,10 @@
 # Agent Workbench Shell Hard Layout Spec v1
 
+Status: deprecated. This spec was superseded by
+[shell-v2.md](shell-v2.md) after PR #6 showed that v1 was too vague to prevent
+a dashboard/card-dump implementation. Keep this file only as historical
+context.
+
 ```text
 spec_id: agent-workbench-shell-v1
 spec_path: docs/dashboard/hard-layout-specs/agent-workbench-shell-v1.md

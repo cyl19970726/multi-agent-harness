@@ -21,25 +21,60 @@ actually happened.
 3. Restate the Vision, selected Goal, and final acceptance standard before
    proposing UI.
 4. Map canonical harness objects to pages and workflow proof.
-5. Run the required multi-candidate Designer -> Questioner -> Reviewer loop for
-   substantial layouts, and the smaller multi-candidate option loop for pages
-   or modules. Any top-level Workbench layout or changed core module must have
-   multiple Designer/options before implementation.
+5. Run the stage-gated frontend loop below. Do not skip directly from design
+   direction to component or CSS work.
 6. Record selected designs, rejected designs, borrowed ideas, remaining gaps,
    and loop stop/continue decisions in `docs/dashboard/`.
 7. Produce a hard layout implementation spec before component or CSS work:
    desktop/tablet/mobile ASCII box diagrams, region dimensions,
    first-viewport content, scroll boundaries, empty states, and browser
    screenshot acceptance. Text-only wireframe prose is not enough.
-8. Turn accepted specs into small implementation tasks with clear owned paths.
-9. Keep a Questioner/Critic active during implementation. If screenshots show a
-   stacked report, raw-debug-first view, overflow, or weak workflow proof, stop
-   coding, record the rejected implementation, and return to design.
-10. After implementation, run browser-based PM and User acceptance agents using
+8. Record a frontend architecture and technical-stack decision before
+   implementation. The current component tree is not evidence for the next
+   architecture.
+9. Turn accepted specs into small implementation tasks with clear owned paths.
+10. Keep a Questioner/Critic active during implementation. If screenshots show
+   a stacked report, raw-debug-first view, overflow, card dump, or weak workflow
+   proof, stop coding, record the rejected implementation, and return to design.
+11. After implementation, run browser-based PM and User acceptance agents using
    the prompts in `references/acceptance-gates.md`. They must inspect the
    working UI and screenshots, not only static docs or code.
-11. Require browser screenshots, PM/User acceptance output, and web-quality
+12. Require browser screenshots, PM/User acceptance output, and web-quality
    evidence before implementation acceptance.
+
+## Stage-Gated Frontend Workflow
+
+Frontend acceptance starts during design intake, not after code is written.
+Every stage has explicit agents, artifacts, and hard stop rules:
+
+```text
+Vision/docs intake
+  -> core page discovery loop
+  -> top-level layout candidate loop
+  -> core module option loop
+  -> architecture and technical-stack decision
+  -> hard layout spec gate
+  -> implementation screenshot critic loop
+  -> PM/User browser acceptance loop
+  -> PR and learning gate
+```
+
+| Stage | Required agents | Required artifact | Cannot continue when |
+| --- | --- | --- | --- |
+| Vision/docs intake | Lead + Questioner | Vision, selected Goal, workflow proof, docs cleanup decision | The workbench purpose is unclear or the work starts from the existing component tree. |
+| Core page discovery | Designer + Questioner + Reviewer | Core page cards and object ownership | AgentTeam, AgentMember, Goal, Task, Docs, Graph/Kanban, warnings, or debug boundaries are missing. |
+| Top-level layout | Multiple Designer passes + Questioner + Reviewer | 3 layout candidates, killed options, borrowed ideas | Only one layout exists or variants do not expose real tradeoffs. |
+| Module options | Designer + Questioner + Reviewer | 2-3 options for each core module | Cards, details, message flow, docs, warnings, or mobile placement are underspecified. |
+| Architecture/stack | Lead + Architect + Critic | Stack decision and module boundary decision | The decision inherits the old dashboard structure or adds a UI kit without proof. |
+| Hard spec | Reviewer + Implementation Questioner | Desktop/tablet/mobile ASCII diagrams and screenshot checklist | Any changed route lacks exact first-viewport placement and scroll ownership. |
+| Implementation | Implementer + Implementation Questioner | Screenshot comparison per slice | Browser screenshots look like a dashboard, card dump, raw tool, or long report. |
+| PM/User acceptance | PM agent + User agent | Browser findings and fixes | Either agent has unresolved P0/P1 findings. |
+| PR/learning | Lead + Critic | Selected/rejected designs, screenshots, failures, waivers | Failed attempts are not recorded or screenshots are treated as passive attachments. |
+
+Screenshots are not passive evidence. The screenshot itself is the acceptance
+object. A frontend change with visible data, clean console output, and no
+horizontal overflow still fails when the first viewport does not read as the
+selected Agent Workbench layout.
 
 ## Required Source Docs
 
@@ -81,6 +116,12 @@ Use skill references only when needed:
   Designer/Questioner/Reviewer loop.
 - `references/page-design-workflow.md` for core page discovery, page-level
   option loops, and complete frontend design draft requirements.
+- `references/architecture-stack-decision.md` for frontend architecture,
+  technology-stack, dependency, graph/canvas, styling, and old-code quarantine
+  decisions before implementation.
+- `references/implementation-loop.md` for implementation-slice planning,
+  screenshot Critic checks, rejected-implementation recording, and PM/User
+  handoff.
 - `references/acceptance-gates.md` for browser, web-quality, and harness workflow acceptance.
 
 Reference ownership:
@@ -90,6 +131,10 @@ Reference ownership:
 - `subagent-design-loop.md`: subagent roles, prompts, independence,
   multi-round review, and decision templates.
 - `page-design-workflow.md`: page discovery, page specs, and design drafts.
+- `architecture-stack-decision.md`: stack choice, dependency policy, graph
+  library policy, no-shadcn rule, code quarantine, and module boundaries.
+- `implementation-loop.md`: implementation slices, browser screenshot
+  comparison, rejected implementation, PM/User handoff, and PR evidence.
 - `acceptance-gates.md`: validation commands, evidence, thresholds, and waivers.
 
 ## Artifact Placement
@@ -103,13 +148,23 @@ Use the skill for process and guardrails; use docs for product decisions.
   directions, and useful parts kept.
 - `docs/dashboard/layout-decisions.md`: selected main direction, borrowed
   ideas, remaining gaps, reviewer loop status, and stop/continue reasons.
-- `docs/dashboard/frontend-design.md`: selected shell, route map, core page
-  cards, object mapping, visual placement, hard layout implementation spec,
-  safe actions, read-model needs, responsive behavior, implementation sequence,
-  and acceptance pointers.
+- `docs/dashboard/frontend-design.md`: Workbench design index, page-spec map,
+  hard-spec map, current status, and implementation-readiness summary. It is
+  not the single large design source of truth.
+- `docs/dashboard/pages/<page>.md`: page-level product and UX specs. Use one
+  file per core page/workspace: Vision overview, Team workspace, AgentMember
+  workbench, Goal document, Task document, Graph/Kanban, Docs context,
+  Evidence/Review/Decision, Warnings/repair, and Debug.
+- `docs/dashboard/frontend-architecture.md`: current frontend architecture and
+  technical-stack decision. Update it before implementation when the work
+  changes framework, state model, component architecture, graph/canvas
+  approach, styling strategy, dependency policy, or old-code disposition.
 - `docs/dashboard/hard-layout-specs/<slice>.md`: implementation-ready hard
   layout specs for approved frontend slices, with `spec_id`, viewport matrix,
   Reviewer decision, and screenshot acceptance.
+- `docs/dashboard/rejected-implementations/<attempt>.md`: failed browser-visible
+  implementations, first-impression screenshot review, violated gates, old-code
+  contamination, and restart point.
 - `docs/dashboard/acceptance.md`: browser screenshots, console, accessibility,
   performance, web-quality, and harness workflow acceptance evidence plan.
 - `docs/dashboard/README.md`: index of the current Workbench design contract.
@@ -259,8 +314,9 @@ Before writing component code, the design record must include:
   registry/index links;
 - route map and page hierarchy;
 - selected top-level layout, rejected alternatives, and borrowed ideas;
-- page-level specs for Vision, Team, AgentMember, Goal, Task, Graph/Kanban,
-  Docs, Evidence/Review/Decision, Warnings, and Debug;
+- page-level specs under `docs/dashboard/pages/` for Vision, Team,
+  AgentMember, Goal, Task, Graph/Kanban, Docs, Evidence/Review/Decision,
+  Warnings, and Debug;
 - a hard layout implementation spec for every changed route, surface, or core
   module, with concrete desktop/tablet/mobile ASCII box diagrams, region
   sizing, scroll behavior, first-viewport content, empty states, overflow
@@ -270,6 +326,10 @@ Before writing component code, the design record must include:
 - Reviewer selection records for each core module, including killed options and
   borrowed ideas;
 - Questioner/Critic concerns resolved or converted into follow-up tasks;
+- frontend architecture and technology-stack decision using
+  `references/architecture-stack-decision.md`;
+- old code disposition: deleted, quarantined, migrated, or explicitly retained
+  with rationale;
 - read-model/API needs and implementation sequence;
 - acceptance plan using `references/acceptance-gates.md`.
 

@@ -1,142 +1,168 @@
-# Agent Workbench Architecture
+# Agent Workbench Frontend Architecture
 
-The Agent Workbench is the harness control-plane UI. It reads canonical state
-from the Rust harness snapshot/API and derives operator-friendly views.
+This document owns the frontend architecture and technology-stack decision for
+Agent Workbench. Product purpose stays in [../dashboard.md](../dashboard.md).
+Page-level UX contracts stay in [pages/](pages/). Hard layout geometry stays in
+[hard-layout-specs/](hard-layout-specs/). Acceptance gates stay in
+[acceptance.md](acceptance.md).
 
-This is the canonical frontend architecture document for the Agent Workbench
-module. Product-level Workbench purpose and acceptance stay in
-[../dashboard.md](../dashboard.md). Core UI/UX principles stay in
-[design-principles.md](design-principles.md). Layout variants and accepted
-decisions stay in [layout-variants.md](layout-variants.md) and
-[layout-decisions.md](layout-decisions.md). Browser and web-quality acceptance
-stays in [acceptance.md](acceptance.md). The framework decision stays in
-[../decisions/0014-react-vite-agent-dashboard.md](../decisions/0014-react-vite-agent-dashboard.md).
-Run and build commands stay in [runbook.md](runbook.md). Global shell, route
-layout, page cards, visual placement, safe actions, and responsive behavior
-stay in [frontend-design.md](frontend-design.md).
+## Current Decision
+
+```text
+status: planned
+implementation_allowed: no
+decision:
+  keep React + TypeScript + Vite as the build/runtime shell for now
+  rebuild the product architecture from Workbench primitives
+  delete or quarantine failed dashboard/PR #6 UI composition
+  do not use shadcn
+```
+
+React + TypeScript + Vite are not the cause of the failed frontend. The failure
+was product architecture and acceptance discipline: old dashboard components,
+card/tab composition, and vague layout specs shaped the implementation. The
+next rebuild keeps the lightweight build path while replacing the UI structure.
+
+This decision must be re-opened if implementation needs routing, graph,
+collaboration editing, state management, or browser acceptance capabilities that
+the current stack cannot support.
 
 ## Source Boundary
 
 ```text
-Rust CLI/API/store
+Rust harness store / CLI / API
   -> dashboard snapshot JSON
-  -> frontend read model
-  -> panels, warnings, and operator navigation
+  -> frontend read model selectors
+  -> Workbench primitives and page surfaces
+  -> screenshot-first browser acceptance
 ```
 
-The frontend does not own harness state. It can derive warnings that help the
-operator see workflow gaps, but those warnings are advisory until promoted to a
-Rust/schema/CI gate.
+The frontend does not own canonical harness state. It can derive operator
+views, selection state, advisory warnings, and disabled reasons. It must not
+invent assignment, evidence, review, decision, goal completion, or graph
+mutation truth.
 
-## Frontend Stack
+## Stack Choice
 
-Decision: React + TypeScript + Vite. See
-[../decisions/0014-react-vite-agent-dashboard.md](../decisions/0014-react-vite-agent-dashboard.md).
+| Area | Decision | Rationale |
+| --- | --- | --- |
+| Framework | React 18 | Existing build path, good composition for page/workbench surfaces. |
+| Language | TypeScript strict mode | Snapshot/read-model contracts must remain explicit. |
+| Bundler | Vite | Lightweight local dev and static `web/` output. |
+| UI kit | None; no shadcn | The product needs custom Workbench primitives, not generic card/dialog defaults. |
+| Icons | `lucide-react` allowed | Existing dependency; use icon+tooltip/label where it clarifies action. |
+| Styling | Custom CSS with design tokens | Avoid kit-driven aesthetics and keep layout tied to hard specs. |
+| Routing | Route-ready internal state first; add router only when page specs require URL routing | Avoid adding dependency before page contracts stabilize. |
+| Graph | Defer library choice until `graph-kanban` hard spec is accepted | Graph must be semantic and controlled, not decorative canvas. |
+| State | Local app state + pure read-model selectors first | Canonical state comes from snapshot/API; avoid store abstraction until needed. |
 
-Reasons:
+## Dependency Policy
 
-- selected goal/task/member state will be central to the control plane;
-- team roster, inbox/outbox, runtime sessions, proposals, evidence, and
-  warnings need composable panels;
-- TypeScript keeps the snapshot read model explicit;
-- Vite keeps the dev/build path light and can emit static files to `web/`.
+- Do not add shadcn.
+- Do not add a generic component library without a recorded Reviewer decision.
+- Do not add a graph/canvas library until [pages/graph-kanban.md](pages/graph-kanban.md)
+  and its hard layout spec require capabilities that custom SVG/HTML cannot
+  provide.
+- Prefer custom Workbench primitives over generic cards.
+- Any dependency must name the page spec it serves and how it will be
+  screenshot-accepted.
 
-## Module Shape
+## Workbench Primitives
 
-The current component tree is not the target architecture for the rebuild. It
-may be used only as migration context. The rebuild should replace the old
-summary/Kanban/detail/raw-view stack with route-ready modules derived from
-[frontend-design.md](frontend-design.md).
+The rebuild starts from product primitives, not dashboard widgets:
 
-```text
-src/types.ts       # snapshot and harness object types
-src/readModel.ts   # derived maps, selected entities, warnings
-src/api.ts         # snapshot loading, live polling, and safe action helpers
-src/App.tsx        # top-level state and layout
-src/components/    # control-plane panels
-src/styles.css     # product UI styling
-```
-
-Keep large logic out of `App.tsx`. If a component needs more than local
-rendering state, move the derivation into `readModel.ts`.
-
-## Control Plane Read Model
-
-The Control Plane is goal-scoped:
-
-```text
-selected goal
-  -> goal graph and goal Kanban projections
-  -> tasks for goal
-  -> task graph and task Kanban projections
-  -> participating members and teams
-  -> task/member scoped warnings
-  -> selected task and member detail panels
-```
-
-The frontend may compute scope, counts, and advisory warnings. It must not
-invent canonical task assignment, delivery, evidence, proposal, review, or
-decision state. Those objects come from the snapshot.
-
-## Layout Boundary
-
-The frontend layout should follow [frontend-design.md](frontend-design.md):
-
-```text
-top bar
-  -> Team rail and Team workspace shell
-  -> Goal/Task document surfaces
-  -> controlled graph/Kanban relationship tabs
-  -> Member/Task/Docs/Warn inspector
-  -> collapsed debug drawer
-```
-
-The default page should not render raw objects or snapshot paste controls as
-primary content during live operation. Debug and import surfaces are still
-required, but they belong behind an explicit drawer or mode. Components may
-change presentation, but they must preserve the workflow proof chain:
-
-```text
-vision -> goal -> goal graph/Kanban -> task graph/Kanban
-  -> message -> member/runtime -> evidence -> review -> decision
-```
-
-## Product Module Responsibilities
-
-| Module | Owns |
+| Primitive | Purpose |
 | --- | --- |
-| `App.tsx` | snapshot source, live polling state, selected goal/task/member ids, safe action dispatch |
-| `AppShell` | top bar, app rail, team rail, workspace, inspector, debug drawer placement |
-| `VisionOverview` | vision context, goal collection, distance-to-vision, next-round proposals |
-| `TeamWorkspace` | standing team roster, role groups, activity, queues, decision queue |
-| `AgentMemberWorkbench` | identity, current work, timeline, inbox/outbox, runtime, sessions, prompt/skills, safe actions |
-| `GoalDocument` | objective, success criteria, GoalDesign, team design, graph/Kanban, evidence, decision, evaluation |
-| `TaskDocument` | assignment proof, reports, evidence, proposal, review, decision, Git refs, warnings |
-| `GraphKanbanView` | synchronized graph nodes/edges and lane projections |
-| `DocsContext` | registry-backed docs context linked to active objects |
-| `DecisionQueue` | proposal, review, decision, waiver, and follow-up readiness |
-| `WarningsRepairQueue` | advisory warnings, affected objects, repair action metadata |
-| `DebugDrawer` | snapshot import/export and raw object views outside the primary viewport |
-| `readModel.ts` | selectors, joins, latest-row projections, and scope helpers |
-| `warnings.ts` | advisory warning derivation |
+| `WorkbenchShell` | Top bar, app navigation, workspace, inspector, debug boundary. |
+| `AppRail` | Stable product navigation across Vision, Team, Work, Member, Docs, Warnings, Debug. |
+| `TeamRail` | Team switcher, role groups, member rows, queue/current work pressure. |
+| `Workspace` | Primary work surface for Team, Work, Vision, or document surfaces. |
+| `MemberWorkbench` | Durable member view: identity, current work, inbox/outbox, timeline, runtime, actions. |
+| `DocumentSurface` | Goal and Task document sections with proof order. |
+| `MessageTimeline` | Canonical activity rows tied to messages, sessions, evidence, proposals, decisions. |
+| `LaneBoard` | Kanban/list projection for Goal/Task execution. |
+| `GraphFocus` | Controlled semantic graph focus when accepted by hard layout spec. |
+| `Inspector` | Secondary context for selected Member, Task, Docs, Warnings, Evidence, Decision. |
+| `DebugDrawer` | Raw snapshot/import/export outside the primary viewport. |
 
-If a warning becomes a gate, move the rule out of `warnings.ts` and into the
-Rust schema/CLI/review gate first, then let the Dashboard display the result.
+## Old Code Disposition
 
-## Acceptance
+| Path/pattern | Decision | Reason |
+| --- | --- | --- |
+| `apps/agent-dashboard/src/components/SummaryGrid.tsx` | delete or quarantine | Encodes metrics/dashboard-first composition. |
+| `apps/agent-dashboard/src/components/RawViews.tsx` | quarantine behind Debug only or replace | Raw views cannot drive primary viewport. |
+| `apps/agent-dashboard/src/components/ControlPlane.tsx` | delete or replace | Old composition encourages card/tab dashboard. |
+| `apps/agent-dashboard/src/components/*Detail*.tsx` | review before reuse | Detail panels may be useful only if converted to page/workbench primitives. |
+| `apps/agent-dashboard/src/styles/*.css` | delete or replace | Old styles encode failed layout and dashboard density. |
+| `apps/agent-dashboard/src/App.tsx` from PR #6 | delete | Rejected implementation, not patchable. |
+| `apps/agent-dashboard/src/api.ts` | retain | Stable API helper if it stays layout-neutral. |
+| `apps/agent-dashboard/src/types.ts` | retain | Snapshot types are layout-neutral. |
+| `apps/agent-dashboard/src/readModel.ts` | review/migrate | Retain only pure selectors that serve page specs. |
+| `apps/agent-dashboard/vite.config.ts` | retain | Build boundary still valid. |
 
-The first React version must preserve:
+No old component may drive the first viewport unless the Reviewer records it as
+a retained Workbench primitive with a page spec and screenshot acceptance path.
 
-- pasted JSON snapshot loading;
-- file snapshot loading;
-- live polling from `/v1/snapshot`;
-- goal graph/lane projections, task graph/lane projections, teams, members,
-  messages, sessions, proposals, events, evidence, and decisions visibility.
+## Module Boundary
 
-The next product layer adds:
+Target shape after rebuild:
 
-- richer task graph dependencies and blocker visualization;
-- richer member runtime health from provider notifications and hooks;
-- click-through warning repair flows;
-- create-member and create-task actions;
-- production gateway status and metrics panels.
+```text
+src/
+  app/
+    App.tsx
+    WorkbenchShell.tsx
+    selection.ts
+  api/
+    client.ts
+  model/
+    types.ts
+    readModel.ts
+    warnings.ts
+  surfaces/
+    team/
+    member/
+    vision/
+    goal/
+    task/
+    graph-kanban/
+    docs/
+    decisions/
+    warnings/
+    debug/
+  ui/
+    primitives/
+    tokens.css
+    layout.css
+```
+
+This is a target architecture, not permission to implement. Implementation
+begins only after page specs and hard layout specs are accepted.
+
+## Graph Strategy
+
+Initial implementation should default to lane/list views. Graph is added as a
+controlled focus surface only when:
+
+- nodes and edges are semantic;
+- selection synchronizes with document/inspector context;
+- mobile has a list fallback;
+- topology changes route through Proposal/Decision, not local mutation;
+- screenshots prove graph does not become the default Team product.
+
+Possible future options:
+
+- custom SVG/HTML for small semantic graphs;
+- React Flow or equivalent when pan/zoom/minimap/collapse/search are necessary;
+- no canvas for initial slice if Kanban/list can satisfy acceptance.
+
+## Acceptance Implications
+
+Architecture acceptance requires:
+
+- import audit proving old dashboard components do not drive first viewport;
+- no shadcn dependency;
+- page specs linked from implemented surfaces;
+- hard layout specs linked from implemented slices;
+- screenshot-first PM/User acceptance;
+- rejected implementation records for failed browser-visible attempts.

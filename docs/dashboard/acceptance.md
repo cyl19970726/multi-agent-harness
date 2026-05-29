@@ -78,7 +78,7 @@ failed rebuild boundary.
 11. Acceptance: verify browser screenshots, console health, no page-level
    horizontal overflow, and actionable warning/member navigation.
 
-## Browser Evidence
+## Screenshot-First Browser Evidence
 
 Every layout implementation PR must attach browser evidence:
 
@@ -103,6 +103,29 @@ Every layout implementation PR must attach browser evidence:
 - User acceptance agent output that validates operator usability using the
   browser screenshots and live UI.
 
+Every screenshot must be reviewed as the product artifact:
+
+```text
+Screenshot Review
+  route:
+  viewport:
+  screenshot_ref:
+  first_impression:
+  workbench_or_dashboard:
+  matched_ascii_spec:
+  team_as_collaboration_space:
+  agent_member_as_workspace:
+  goal_task_docs_connected:
+  debug_secondary:
+  overflow_result:
+  console_result:
+  decision: pass | fix | reject
+```
+
+The review may not pass because data rendered, console is clean, network
+requests succeeded, or horizontal overflow is absent. Those checks are required
+but not sufficient.
+
 Each viewport matrix must cover the default Team workspace, Member detail,
 Goal/Task document surface, Graph/Kanban surface, Warnings surface, and Debug
 closed default state. A single happy-path homepage screenshot is not enough.
@@ -124,12 +147,48 @@ record or a return to design:
 - no browser screenshot evidence;
 - primary page is blank, raw/debug-only, a card dump, or an unstructured stacked
   report instead of a Workbench;
+- screenshot first impression is dashboard, report, card dump, or raw object
+  viewer;
 - runtime JavaScript error on initial load;
 - horizontal overflow on mobile caused by the layout;
 - missing AgentMember realtime/detail surface when the change claims to support
   agent observation;
 - old dashboard primary components or imports still drive the first viewport
   without a Reviewer-approved debug/secondary rationale.
+- PM/User acceptance passes based on object presence, console cleanliness,
+  network success, component presence, or no overflow instead of screenshot
+  product shape and operator flow.
+
+## PM And User Acceptance Subagents
+
+Implementation acceptance requires two independent read-only subagents:
+
+- PM acceptance subagent: judges product logic, workflow proof, Vision/Goal
+  coherence, and whether the surface supports self-hosting.
+- User acceptance subagent: judges real operator usability, navigation,
+  comprehension, and action confidence.
+
+The implementer cannot act as either subagent. Each subagent must use browser
+automation and screenshots, not only code, DOM, docs, or console output.
+
+PM acceptance must judge product logic from screenshots and browser
+interaction:
+
+```text
+If the first viewport looks like a dashboard, card dump, report page, or raw
+object viewer, mark P0 fail even when all data is present.
+```
+
+User acceptance must judge operator usability:
+
+```text
+Fail when the user cannot identify the active team, enter a member workbench,
+inspect inbox/outbox/activity, find Goal/Task context, locate docs/evidence/
+decision, and know the next action without reading raw JSON or code.
+```
+
+Any unresolved P0/P1 from either acceptance agent blocks implementation
+acceptance.
 
 ## Web Quality Skill Gate
 

@@ -15,8 +15,13 @@ surface owns the claim, then place it there.
 | `design-principles.md` | Core frontend design principles, failure modes, graph/Kanban policy, AgentTeam and AgentMember UI doctrine | Route-level layout details or React module boundaries |
 | `layout-variants.md` | Candidate Workbench layout directions, Designer/Questioner critique, scoring rubric, and decision inputs | Final implementation spec or component internals |
 | `layout-decisions.md` | Accepted layout direction, killed alternatives, module decisions, and visual placement constraints | Code implementation or unscored future ideas |
-| `frontend-design.md` | Complete canonical Workbench frontend design: selected shell, route map, page cards, visual placement, read-model needs, safe actions, responsive behavior, implementation sequence, and acceptance pointers | Product PRD, candidate layout critique, React internals, or local run commands |
-| `hard-layout-specs/agent-workbench-shell-v1.md` | Implementation-ready shell hard layout spec: region dimensions, first viewport, scroll ownership, core module placement, screenshot acceptance, and stop conditions | Product doctrine, raw layout candidates, or component implementation details |
+| `frontend-design.md` | Workbench frontend design index, reading order, page-spec map, hard-spec map, and implementation readiness summary | Page-level details, hard layout geometry, React internals, or run commands |
+| `pages/README.md` | Page-spec index and template | Hard dimensions, ASCII wireframes, or implementation internals |
+| `pages/*.md` | One page/workspace product and UX contract: purpose, object ownership, workflow proof, IA, actions, failure modes, screenshot questions | CSS dimensions, exact ASCII geometry, or component implementation |
+| `hard-layout-specs/README.md` | Hard layout spec index and template | Product semantics or page purpose |
+| `hard-layout-specs/*.md` | Screenshot-verifiable hard layout contract: ASCII diagrams, first viewport, dimensions, scroll ownership, state matrix, screenshot acceptance | Product doctrine, raw layout candidates, or component implementation details |
+| `rejected-implementations/README.md` | Failed frontend implementation record index and template | Active design decisions or release notes |
+| `rejected-implementations/*.md` | Rejected browser-visible attempts, violated gates, old-code contamination, restart point | New design specs or implementation instructions |
 | `frontend-architecture.md` | React/Vite architecture, component responsibilities, app-local boundaries | Product PRD, visual doctrine, or runbook commands |
 | `read-model.md` | Snapshot projections, selectors, advisory warnings, and required read-model fields | Canonical validation rules or Rust implementation |
 | `acceptance.md` | Browser screenshot evidence, web-quality gate, and frontend acceptance sequence | Product purpose or local development commands |
@@ -35,10 +40,11 @@ product purpose
   -> three candidate layout variants and critique
   -> Reviewer / Lead records selected and killed layouts
   -> module-level option loops for high-risk surfaces
-  -> complete frontend design draft
-  -> hard layout implementation specs
+  -> page specs under pages/
+  -> frontend design index update
+  -> architecture and stack decision
+  -> hard layout implementation specs under hard-layout-specs/
   -> read-model/API needs
-  -> frontend architecture changes
   -> implementation
   -> browser and web-quality acceptance
   -> follow-up tasks or ADRs
@@ -57,7 +63,12 @@ For Workbench redesigns, keep three layout candidates in
 selected direction in [layout-decisions.md](layout-decisions.md). Once
 selected, move the stable page hierarchy, page cards, visual placement, safe
 actions, read-model needs, responsive behavior, and acceptance pointers into
-[frontend-design.md](frontend-design.md).
+page specs under [pages/](pages/). Keep [frontend-design.md](frontend-design.md)
+as the index and implementation-readiness summary.
+
+Implementation may start only from page specs plus hard layout specs. A broad
+direction such as "Team workspace first" or a single shell diagram is not
+enough.
 
 ## Skill Boundary
 
