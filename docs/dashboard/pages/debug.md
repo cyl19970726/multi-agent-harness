@@ -103,7 +103,106 @@ Responsive requirements:
 - tablet: overlay drawer/route;
 - mobile: Debug tab, never default.
 
-Links to hard layout specs: pending.
+## Layout Contract
+
+Desktop target: `1440x1000`.
+
+```text
++--------------------------------------------------------------------------------+
+| top 56: Workbench | live/source | current route | debug affordance closed      |
++-----+--------------------------------------------------------------------------+
+| app | primary Workbench route 936                         | inspector 400      |
+| 64  |                                                                          |
+|     | Debug drawer closed by default: 40px handle at lower right                |
+|     |                                                                          |
++-----+--------------------------------------------------------------------------+
+| optional /debug route, opened explicitly:                                      |
++-----+----------------------+-----------------------------------+---------------+
+| app | source rail 248      | raw snapshot workspace 760        | record 400    |
+| 64  | +------------------+ | +-------------------------------+ | +-----------+ |
+|     | | live/offline     | | | import/export 120             | | | selected  | |
+|     | | API/source/error | | | paste/file/load/pause/export   | | | record    | |
+|     | +------------------+ | +-------------------------------+ | +-----------+ |
+|     | | object filters   | | | raw object lists 520          | | | JSON view  | |
+|     | | goals/tasks/etc  | | | grouped records, counts       | | | copied ref |
+|     | +------------------+ | +-------------------------------+ | +-----------+ |
+|     | | CLI/API refs     | | | parse/API errors              | | | warnings  | |
+|     | rail scroll          | workspace scroll                   | record scroll|
++-----+----------------------+-----------------------------------+---------------+
+```
+
+Region dimensions:
+
+- primary route keeps normal Workbench layout; debug handle `40px` wide or
+  less;
+- explicit `/debug` source rail `240px` to `260px`;
+- debug workspace min `720px`;
+- record inspector `380px` to `410px`;
+- import/export block `112px` to `136px`;
+- raw object list owns remaining height.
+
+First viewport content:
+
+- in primary routes, debug is closed and cannot dominate the viewport;
+- `/debug` route shows source/live/offline state before raw objects;
+- snapshot paste/file load, pause live polling, export, and parse/API errors;
+- raw objects are grouped and filterable, never used as acceptance proof.
+
+Tablet target: `900x1180`.
+
+```text
++------------------------------------------------------------------+
+| normal routes: debug handle closed; Workbench route remains first |
++------------------------------------------------------------------+
+| /debug explicit route                                             |
++-----+---------------------------------------+--------------------+
+| app | raw snapshot workspace 548           | record 288         |
+| 56  | +-----------------------------------+| +----------------+ |
+|     | | source/live/offline + import      || | selected record| |
+|     | +-----------------------------------+| | JSON/ref/error | |
+|     | | object filters row                || +----------------+ |
+|     | | raw object grouped lists          | record scroll      |
++-----+---------------------------------------+--------------------+
+```
+
+Mobile target: `390x844`.
+
+```text
++--------------------------------------+
+| normal routes: no debug body visible |
++--------------------------------------+
+| /debug explicit route                 |
++--------------------------------------+
+| top 48: Debug | source/live/offline  |
++--------------------------------------+
+| controls 96: import/export/pause     |
++--------------------------------------+
+| tabs 52: Objects Record Errors Refs  |
++--------------------------------------+
+| active tab 556                       |
+| Objects: grouped raw records         |
+| Record: selected JSON + copy refs    |
+| Errors: parse/API/source failures    |
+| Refs: CLI/API snippets               |
++--------------------------------------+
+```
+
+Scroll ownership:
+
+- primary routes: debug drawer is closed and does not own scroll;
+- desktop `/debug`: source rail, workspace, and record inspector scroll
+  separately;
+- tablet `/debug`: workspace and record inspector scroll separately;
+- mobile `/debug`: only the active tab scrolls.
+
+Screenshot acceptance:
+
+- primary Workbench screenshots must not show raw JSON, snapshot textarea, or
+  debug as first content;
+- explicit `/debug` screenshots must show source/live/offline state before raw
+  object records;
+- offline snapshots must be clearly labeled so they cannot be mistaken for live
+  provider/runtime state.
 
 ## Failure Modes
 

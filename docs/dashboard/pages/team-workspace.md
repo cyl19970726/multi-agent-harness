@@ -120,7 +120,103 @@ Responsive requirements:
 - mobile: Team tab with role groups, queue summary, critical warnings, and
   decision pressure.
 
-Links to hard layout specs: pending.
+## Layout Contract
+
+Desktop target: `1440x1000`.
+
+```text
++--------------------------------------------------------------------------------+
+| top 56: Workbench | live/source | active Vision/Goal | search | command | debug |
++-----+----------------------+-----------------------------------+---------------+
+| app | team rail 280        | team workspace 720                | inspector 376 |
+| 64  | +------------------+ | +-------------------------------+ | +-----------+ |
+|     | | team switcher    | | | goal strip 76                 | | | member    | |
+|     | +------------------+ | | | objective/status/warnings     | | | identity  | |
+|     | | Lead group       | | +-------------------------------+ | +-----------+ |
+|     | | - member row 56  | | | activity stream 360           | | | inbox     | |
+|     | | Critic group     | | | canonical rows:               | | | outbox    | |
+|     | | Worker group     | | | msg/task/evidence/decision    | | +-----------+ |
+|     | | Observer group   | | +-------------------------------+ | | runtime   | |
+|     | +------------------+ | | | work pressure 220             | | | actions   | |
+|     | | queues/current   | | | current tasks + decisions     | | +-----------+ |
+|     | +------------------+ | +-------------------------------+ | inspector   |
+|     | team rail scroll     | workspace scroll below goal strip  | scroll      |
++-----+----------------------+-----------------------------------+---------------+
+```
+
+Region dimensions:
+
+- app rail `64px`;
+- team rail `280px`;
+- workspace min `700px`;
+- inspector `360px` to `380px`;
+- member row fixed `56px`;
+- goal strip `76px`;
+- activity row `72px` to `96px`;
+- work pressure region target `200px` to `240px`.
+
+First viewport content:
+
+- team switcher, role groups, members, queue counts, current work;
+- active Vision/Goal strip;
+- activity stream mapped to canonical objects;
+- current tasks and decision pressure;
+- selected member summary with inbox/outbox/runtime/actions.
+
+Tablet target: `900x1180`.
+
+```text
++------------------------------------------------------------------+
+| top 56: Workbench | live/source | active Goal | search | debug    |
++-----+---------------------------------------+--------------------+
+| app | team workspace 548                   | inspector 288      |
+| 56  | +-----------------------------------+| +----------------+ |
+|     | | goal strip 76                    || | selected       | |
+|     | +-----------------------------------+| | member/task    | |
+|     | | activity stream                  || | inbox/outbox   | |
+|     | | current work + decisions         || | runtime        | |
+|     | | warning queue                    || +----------------+ |
+|     | workspace scroll                     | inspector scroll  |
++-----+---------------------------------------+--------------------+
+| team rail drawer 320 closed; opens over workspace                 |
++------------------------------------------------------------------+
+```
+
+Mobile target: `390x844`.
+
+```text
++--------------------------------------+
+| top 48: live/source | search | debug |
++--------------------------------------+
+| goal strip 72: active goal + warns   |
++--------------------------------------+
+| tabs 52: Team Work Member Warn Docs  |
++--------------------------------------+
+| Team tab 672                         |
+| +----------------------------------+ |
+| | team switcher + role filter      | |
+| +----------------------------------+ |
+| | role group: Lead                 | |
+| | member row: status/queue/task    | |
+| | role group: Worker/Critic        | |
+| +----------------------------------+ |
+| | decision pressure + warnings     | |
+| | latest canonical activity rows   | |
++--------------------------------------+
+```
+
+Scroll ownership:
+
+- desktop: team rail, workspace, and inspector each scroll internally;
+- tablet: team rail is drawer; workspace and inspector scroll separately;
+- mobile: only the active tab scrolls.
+
+Screenshot acceptance:
+
+- first impression must be a collaboration workspace, not roster/cards;
+- member rows must expose queue/current work/runtime;
+- activity must map to canonical objects;
+- next operator action must be visible without raw JSON.
 
 ## Failure Modes
 

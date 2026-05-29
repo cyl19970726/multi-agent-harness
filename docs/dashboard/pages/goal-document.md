@@ -119,7 +119,106 @@ Responsive requirements:
 - tablet: document with sticky section navigation;
 - mobile: Work tab sections with graph as secondary focus.
 
-Links to hard layout specs: pending.
+## Layout Contract
+
+Desktop target: `1440x1000`.
+
+```text
++--------------------------------------------------------------------------------+
+| top 56: Workbench | live/source | active Vision | selected Goal | search | dbg |
++-----+----------------------+-----------------------------------+---------------+
+| app | section rail 248     | goal document 760                 | proof 400     |
+| 64  | +------------------+ | +-------------------------------+ | +-----------+ |
+|     | | goal identity    | | | title/objective 104          | | | health    | |
+|     | | status/branch    | | | status, owner, success        | | | strip     | |
+|     | +------------------+ | +-------------------------------+ | +-----------+ |
+|     | | doc nav          | | | GoalDesign 168               | | | decision  | |
+|     | | - objective     | | | scenario, non-goals, team     | | | queue     | |
+|     | | - design        | | +-------------------------------+ | +-----------+ |
+|     | | - team          | | | branch/worktree/PR 88        | | | evidence  | |
+|     | | - graph/board   | | +-------------------------------+ | | review    | |
+|     | | - evidence      | | | graph/Kanban preview 220     | | | eval      | |
+|     | | - evaluation    | | | deps + lanes + selected task  | | +-----------+ |
+|     | +------------------+ | +-------------------------------+ | proof scroll |
+|     | | related docs     | | | proof chain + evaluation      | |             |
+|     | +------------------+ | | continues below first fold    | |             |
+|     | rail scroll          | document scroll                   | proof scroll |
++-----+----------------------+-----------------------------------+---------------+
+```
+
+Region dimensions:
+
+- app rail `64px`;
+- section rail `240px` to `260px`;
+- document column min `720px`;
+- proof inspector `380px` to `410px`;
+- title/objective block `96px` to `120px`;
+- GoalDesign block target `160px` to `190px`;
+- graph/Kanban preview target `200px` to `240px`.
+
+First viewport content:
+
+- Goal objective, success criteria, owner, status, and goal branch;
+- GoalDesign with scenario, non-goals, designed team, and acceptance gate;
+- branch/worktree/PR policy before task execution details;
+- graph/Kanban preview with dependency and lane context;
+- proof inspector with health, missing Decision/Evaluation, evidence, review,
+  and warnings.
+
+Tablet target: `900x1180`.
+
+```text
++------------------------------------------------------------------+
+| top 56: Workbench | active Vision | selected Goal | search | dbg  |
++-----+-------------------------------+----------------------------+
+| app | goal document 560             | proof drawer 284           |
+| 56  | +---------------------------+ | +------------------------+ |
+|     | | title/objective/status    | | | health + decision     | |
+|     | +---------------------------+ | | evidence/review/eval   | |
+|     | | sticky section tabs 48    | | | warnings              | |
+|     | +---------------------------+ | +------------------------+ |
+|     | | GoalDesign                | | proof scroll             |
+|     | | branch/worktree/PR        | |                          |
+|     | | graph/Kanban preview      | |                          |
+|     | | proof chain/evaluation    | |                          |
++-----+-------------------------------+----------------------------+
+| section rail collapsed into tabs; graph can open full-width focus          |
++------------------------------------------------------------------+
+```
+
+Mobile target: `390x844`.
+
+```text
++--------------------------------------+
+| top 48: Goal | live/source | debug   |
++--------------------------------------+
+| header 112: title/status/branch      |
+| objective + success + missing proof  |
++--------------------------------------+
+| tabs 52: Design Graph Proof Eval Doc |
++--------------------------------------+
+| active tab 584                       |
+| Design: GoalDesign + team + policy   |
+| Graph: Kanban first, graph focus btn |
+| Proof: evidence -> review -> decision|
+| Eval: GoalEvaluation + next proposal |
+| Doc: related docs and warnings       |
++--------------------------------------+
+```
+
+Scroll ownership:
+
+- desktop: section rail, goal document, and proof inspector scroll separately;
+- tablet: document scrolls; proof drawer scrolls separately;
+- mobile: only the active tab scrolls.
+
+Screenshot acceptance:
+
+- the first viewport must read as a Goal work document, not a task card grid;
+- GoalDesign must appear before execution proof;
+- branch/worktree/PR policy must be close to proof and review;
+- Decision and GoalEvaluation gaps must be visible before the goal can look
+  complete.
 
 ## Failure Modes
 

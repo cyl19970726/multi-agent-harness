@@ -112,7 +112,98 @@ Responsive requirements:
 - tablet: next-round context becomes side drawer;
 - mobile: tabs for Goals, Progress, Next, Warnings.
 
-Links to hard layout specs: pending.
+## Layout Contract
+
+Desktop target: `1440x1000`.
+
+```text
++--------------------------------------------------------------------------------+
+| top 56: Agent Workbench | live/source | selected vision | search | debug        |
++-----+----------------------+-----------------------------------+---------------+
+| app | vision rail 280      | goal collection workspace 720      | context 376   |
+| 64  | +------------------+ | +-------------------------------+ | +-----------+ |
+|     | | Vision title     | | | status tabs 48: Proposed     | | | distance  | |
+|     | | final outcome    | | | Active Blocked Complete      | | | to vision | |
+|     | | scenario/pilot   | | +-------------------------------+ | +-----------+ |
+|     | +------------------+ | | Active goals lane 220         | | | next goal | |
+|     | | goal filters     | | | - selected goal document row  | | | proposals | |
+|     | | owner/status     | | | - branch/eval state           | | +-----------+ |
+|     | | evaluation gaps  | | +-------------------------------+ | | eval gaps | |
+|     | +------------------+ | | Complete goals lane 180       | | | warnings  | |
+|     |                      | | Blocked/proposed lanes        | | +-----------+ |
+|     | rail scroll          | workspace scroll below tabs       | context scroll |
++-----+----------------------+-----------------------------------+---------------+
+```
+
+Region dimensions:
+
+- app rail `64px`;
+- vision rail `280px`;
+- workspace min `680px`;
+- context panel `360px` to `380px`;
+- status tabs `48px`;
+- lane rows target `92px` to `128px`.
+
+First viewport content:
+
+- Vision title and final outcome;
+- goal groups for proposed, active, blocked, complete, archived/rejected;
+- selected Goal row with Decision/GoalEvaluation state;
+- distance-to-vision summary;
+- next-round proposal list with source evidence.
+
+Tablet target: `900x1180`.
+
+```text
++------------------------------------------------------------------+
+| top 56: Workbench | live/source | selected vision | debug         |
++-----+---------------------------------------+--------------------+
+| app | goals workspace 548                  | context 288        |
+| 56  | +-----------------------------------+| +----------------+ |
+|     | | vision header + final outcome     || | distance       | |
+|     | +-----------------------------------+| | next proposals | |
+|     | | tabs: Proposed Active Blocked     || | eval warnings  | |
+|     | | Complete Archived                 || +----------------+ |
+|     | +-----------------------------------+| context scroll     |
+|     | | grouped goal lanes                |                    |
+|     | | selected goal details inline      |                    |
++-----+---------------------------------------+--------------------+
+| vision rail drawer closed; opens from app rail                    |
++------------------------------------------------------------------+
+```
+
+Mobile target: `390x844`.
+
+```text
++--------------------------------------+
+| top 48: live/source | search | debug |
++--------------------------------------+
+| vision header 96                    |
+| title + final outcome + gap count   |
++--------------------------------------+
+| tabs 52: Goals Progress Next Warn   |
++--------------------------------------+
+| active tab 648                      |
+| Goals: grouped compact goal rows    |
+| row: title/status/decision/eval     |
+| Progress: distance + complete gaps  |
+| Next: proposals + source evidence   |
+| Warn: blocked/missing evaluation    |
++--------------------------------------+
+```
+
+Scroll ownership:
+
+- desktop: vision rail, workspace lanes, and context panel scroll separately;
+- tablet: workspace and context scroll separately; rail is drawer-only;
+- mobile: only the active tab scrolls.
+
+Screenshot acceptance:
+
+- the first viewport must show Vision as a goal collection, not one Goal;
+- complete goals must expose Decision/GoalEvaluation proof;
+- next proposals must show source evidence;
+- the page must not look like a metric dashboard.
 
 ## Failure Modes
 

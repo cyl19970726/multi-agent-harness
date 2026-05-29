@@ -116,7 +116,101 @@ Responsive requirements:
 - tablet: proof document plus drawer for member/evidence;
 - mobile: objective, assignment proof, current state, warnings, then evidence.
 
-Links to hard layout specs: pending.
+## Layout Contract
+
+Desktop target: `1440x1000`.
+
+```text
++--------------------------------------------------------------------------------+
+| top 56: Workbench | live/source | active Goal | selected Task | search | debug |
++-----+----------------------+-----------------------------------+---------------+
+| app | proof nav 248        | task proof document 760           | member 400    |
+| 64  | +------------------+ | +-------------------------------+ | +-----------+ |
+|     | | task identity    | | | title/objective 96           | | | assignee  | |
+|     | | status/lane/path | | | acceptance criteria/status    | | | identity  | |
+|     | +------------------+ | +-------------------------------+ | +-----------+ |
+|     | | proof order nav  | | | assignment proof 144         | | | runtime   | |
+|     | | 1 assignment     | | | task message + delivery       | | | health    | |
+|     | | 2 report         | | +-------------------------------+ | +-----------+ |
+|     | | 3 evidence       | | | report/current state 140     | | | inbox     | |
+|     | | 4 proposal       | | | assignee report + session     | | | outbox    | |
+|     | | 5 review         | | +-------------------------------+ | +-----------+ |
+|     | | 6 decision       | | | proposal/evidence/checks 220 | | | actions   | |
+|     | +------------------+ | | changed paths + PR refs       | | | docs      | |
+|     | | warnings/docs    | | +-------------------------------+ | +-----------+ |
+|     | rail scroll          | | review -> decision below fold  | | member scr |
+|     |                      | document scroll                   |             |
++-----+----------------------+-----------------------------------+---------------+
+```
+
+Region dimensions:
+
+- app rail `64px`;
+- proof nav `240px` to `260px`;
+- task document min `720px`;
+- member inspector `380px` to `410px`;
+- assignment proof `136px` to `160px`;
+- report/current state `128px` to `152px`;
+- proposal/evidence/checks block `200px` to `240px`.
+
+First viewport content:
+
+- task objective, acceptance criteria, status lane, owned paths, reviewer;
+- assignment message and delivery state before any report;
+- assignee runtime/current state connected to report;
+- evidence, proposal, changed paths, PR refs, and checks;
+- review and decision status visible as incomplete/complete pressure.
+
+Tablet target: `900x1180`.
+
+```text
++------------------------------------------------------------------+
+| top 56: Workbench | active Goal | selected Task | search | debug  |
++-----+-------------------------------+----------------------------+
+| app | task proof document 560       | member/evidence 284        |
+| 56  | +---------------------------+ | +------------------------+ |
+|     | | title/objective/status    | | | assignee/runtime      | |
+|     | +---------------------------+ | | inbox/outbox/actions   | |
+|     | | sticky proof tabs 48      | | | evidence/checks       | |
+|     | +---------------------------+ | +------------------------+ |
+|     | | assignment proof          | | inspector scroll         |
+|     | | report/current state      | |                          |
+|     | | proposal/evidence/checks  | |                          |
+|     | | review/decision           | |                          |
++-----+-------------------------------+----------------------------+
+```
+
+Mobile target: `390x844`.
+
+```text
++--------------------------------------+
+| top 48: Task | live/source | debug   |
++--------------------------------------+
+| header 112: objective/status/path    |
+| assignee + reviewer + missing proof  |
++--------------------------------------+
+| tabs 52: Assign Report Proof Review  |
++--------------------------------------+
+| active tab 584                       |
+| Assign: task msg + delivery state    |
+| Report: runtime + latest report      |
+| Proof: evidence/proposal/checks/PR   |
+| Review: review -> decision -> warns  |
++--------------------------------------+
+```
+
+Scroll ownership:
+
+- desktop: proof nav, task document, and member inspector scroll separately;
+- tablet: proof document and inspector scroll separately;
+- mobile: only the active tab scrolls.
+
+Screenshot acceptance:
+
+- assignment proof must visually precede report/evidence;
+- missing assignment, evidence, review, or decision must look incomplete;
+- branch/worktree/PR refs must sit near proposal and checks;
+- assignee state must be connected to the task, not a detached member card.
 
 ## Failure Modes
 

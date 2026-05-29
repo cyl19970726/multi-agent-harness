@@ -111,7 +111,101 @@ Responsive requirements:
 - tablet: segmented tabs;
 - mobile: list/Kanban first, graph focus secondary with textual fallback.
 
-Links to hard layout specs: pending.
+## Layout Contract
+
+Desktop target: `1440x1000`.
+
+```text
++--------------------------------------------------------------------------------+
+| top 56: Workbench | live/source | scope: Goal/TaskGraph | search | debug       |
++-----+----------------------+-----------------------------------+---------------+
+| app | scope/filter 248     | graph-kanban workspace 760        | inspector 400 |
+| 64  | +------------------+ | +-------------------------------+ | +-----------+ |
+|     | | scope summary    | | | mode switch 48                | | | selected  | |
+|     | | goal/status gap  | | | Kanban | Graph | Split        | | | object    | |
+|     | +------------------+ | +-------------------------------+ | +-----------+ |
+|     | | filters          | | | Kanban lanes 420              | | | blockers  | |
+|     | | status/owner     | | | proposed active blocked       | | | deps      | |
+|     | | dependency type  | | | review done killed follow-up  | | +-----------+ |
+|     | +------------------+ | +-------------------------------+ | | proposal  | |
+|     | | graph legend     | | | graph focus preview 260       | | | decision  | |
+|     | | edge meanings    | | | selected node, edges, mini    | | +-----------+ |
+|     | +------------------+ | +-------------------------------+ | | docs      | |
+|     | rail scroll          | workspace scroll by lane/canvas    | inspector scr |
++-----+----------------------+-----------------------------------+---------------+
+```
+
+Region dimensions:
+
+- app rail `64px`;
+- scope/filter rail `240px` to `260px`;
+- workspace min `720px`;
+- inspector `380px` to `410px`;
+- mode switch `48px`;
+- Kanban lane area first viewport target `400px` to `460px`;
+- graph focus preview target `240px` to `300px`.
+
+First viewport content:
+
+- current scope and goal/task count;
+- mode switch with Kanban as default;
+- operational lanes for proposed, active, blocked, review, done, killed, and
+  follow-up states;
+- graph focus preview that explains dependency/blocker/follow-up edges;
+- selected object inspector with blockers, dependencies, proposal/decision
+  state, and document link.
+
+Tablet target: `900x1180`.
+
+```text
++------------------------------------------------------------------+
+| top 56: Workbench | graph scope | mode switch | search | debug    |
++-----+---------------------------------------+--------------------+
+| app | board/canvas workspace 548           | inspector 288      |
+| 56  | +-----------------------------------+| +----------------+ |
+|     | | scope summary + filters row       || | selected       | |
+|     | +-----------------------------------+| | blockers/deps  | |
+|     | | tabs: Kanban Graph Proposals      || | decision/docs  | |
+|     | +-----------------------------------+| +----------------+ |
+|     | | Kanban lanes as horizontal scroll | inspector scroll   |
+|     | | Graph tab uses focus canvas       |                    |
++-----+---------------------------------------+--------------------+
+| filters collapse into drawer; graph never replaces object document          |
++------------------------------------------------------------------+
+```
+
+Mobile target: `390x844`.
+
+```text
++--------------------------------------+
+| top 48: Graph/Kanban | source | dbg  |
++--------------------------------------+
+| scope 88: goal + counts + filters    |
++--------------------------------------+
+| tabs 52: Board Graph Proposals Obj   |
++--------------------------------------+
+| active tab 604                       |
+| Board: status sections + task rows   |
+| Graph: focus node + edge list + btn  |
+| Proposals: graph changes + decisions |
+| Obj: selected object proof links     |
++--------------------------------------+
+```
+
+Scroll ownership:
+
+- desktop: filter rail, workspace lanes/canvas, and inspector scroll
+  separately;
+- tablet: workspace and inspector scroll separately; filters are drawer-only;
+- mobile: only the active tab scrolls; graph has textual edge fallback.
+
+Screenshot acceptance:
+
+- Kanban must be the operational default;
+- graph must explain relationships, not occupy the whole product;
+- selecting a card/node must show one synchronized selected object;
+- graph-change proposals must be visibly decision-backed before topology
+  changes look accepted.
 
 ## Failure Modes
 

@@ -113,7 +113,98 @@ Responsive requirements:
 - tablet: Warnings drawer/tab;
 - mobile: Warnings tab with affected object jump links.
 
-Links to hard layout specs: pending.
+## Layout Contract
+
+Desktop target: `1440x1000`.
+
+```text
++--------------------------------------------------------------------------------+
+| top 56: Workbench | live/source | warning scope | active object | search | dbg |
++-----+----------------------+-----------------------------------+---------------+
+| app | severity rail 248    | warning workspace 760             | repair 400    |
+| 64  | +------------------+ | +-------------------------------+ | +-----------+ |
+|     | | warning summary  | | | global queue header 72       | | | selected  | |
+|     | | P0/P1/P2 counts  | | | affected scope + filters      | | | warning   | |
+|     | +------------------+ | +-------------------------------+ | +-----------+ |
+|     | | severity groups  | | | urgent warnings 280          | | | cause     | |
+|     | | missing proof    | | | object, cause, consequence    | | | consequence|
+|     | | delivery/session | | +-------------------------------+ | +-----------+ |
+|     | | stale workflow   | | | object-local callouts 240    | | | safe      | |
+|     | +------------------+ | | goal/task/member proof gaps   | | | repair    | |
+|     | | filters          | | +-------------------------------+ | +-----------+ |
+|     | | object/status    | | | disabled repairs/follow-ups   | | | docs/logs |
+|     | rail scroll          | workspace scroll                   | repair scr   |
++-----+----------------------+-----------------------------------+---------------+
+```
+
+Region dimensions:
+
+- app rail `64px`;
+- severity rail `240px` to `260px`;
+- warning workspace min `720px`;
+- repair inspector `380px` to `410px`;
+- queue header `64px` to `80px`;
+- urgent warning block target `260px` to `320px`;
+- object-local callout block target `220px` to `270px`.
+
+First viewport content:
+
+- severity counts and affected-object filters;
+- urgent warnings with object ref, cause, consequence, and next safe route;
+- object-local callouts near broken proof sections;
+- selected repair panel with enabled safe action or disabled reason;
+- source docs/logs/evidence links for the warning.
+
+Tablet target: `900x1180`.
+
+```text
++------------------------------------------------------------------+
+| top 56: Workbench | warnings | active object | search | debug     |
++-----+---------------------------------------+--------------------+
+| app | warning workspace 548                | repair 288         |
+| 56  | +-----------------------------------+| +----------------+ |
+|     | | summary + severity filters        || | selected warn  | |
+|     | +-----------------------------------+| | cause/effect   | |
+|     | | urgent queue                      || | repair/disabled| |
+|     | | object-local callouts             || +----------------+ |
+|     | | follow-up task suggestions        | repair scroll      |
++-----+---------------------------------------+--------------------+
+| severity rail collapses to filters row/drawer                              |
++------------------------------------------------------------------+
+```
+
+Mobile target: `390x844`.
+
+```text
++--------------------------------------+
+| top 48: Warnings | source | debug    |
++--------------------------------------+
+| summary 88: P0/P1/P2 + affected obj  |
++--------------------------------------+
+| tabs 52: Urgent Local Repair History |
++--------------------------------------+
+| active tab 604                       |
+| Urgent: warning rows + affected link |
+| Local: callouts by Goal/Task/Member  |
+| Repair: cause/consequence/next step  |
+| History: resolved/killed warnings    |
++--------------------------------------+
+```
+
+Scroll ownership:
+
+- desktop: severity rail, warning workspace, and repair inspector scroll
+  separately;
+- tablet: workspace and repair inspector scroll separately;
+- mobile: only the active tab scrolls.
+
+Screenshot acceptance:
+
+- a warning must always name what is wrong, where, why it matters, and what
+  path is safe;
+- disabled repair actions must look disabled and explain missing backend/API;
+- warning severity must not rely on color alone;
+- local callouts must appear near affected proof sections, not only globally.
 
 ## Failure Modes
 

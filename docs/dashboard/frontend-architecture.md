@@ -2,9 +2,9 @@
 
 This document owns the frontend architecture and technology-stack decision for
 Agent Workbench. Product purpose stays in [../dashboard.md](../dashboard.md).
-Page-level UX contracts stay in [pages/](pages/). Hard layout geometry stays in
-[hard-layout-specs/](hard-layout-specs/). Acceptance gates stay in
-[acceptance.md](acceptance.md).
+Page-level UX and layout contracts stay in [pages/](pages/). Historical
+hard-layout attempts stay in [hard-layout-specs/](hard-layout-specs/) only for
+failure analysis. Acceptance gates stay in [acceptance.md](acceptance.md).
 
 ## Current Decision
 
@@ -51,9 +51,9 @@ mutation truth.
 | Bundler | Vite | Lightweight local dev and static `web/` output. |
 | UI kit | None; no shadcn | The product needs custom Workbench primitives, not generic card/dialog defaults. |
 | Icons | `lucide-react` allowed | Existing dependency; use icon+tooltip/label where it clarifies action. |
-| Styling | Custom CSS with design tokens | Avoid kit-driven aesthetics and keep layout tied to hard specs. |
+| Styling | Custom CSS with design tokens | Avoid kit-driven aesthetics and keep layout tied to page-local contracts. |
 | Routing | Route-ready internal state first; add router only when page specs require URL routing | Avoid adding dependency before page contracts stabilize. |
-| Graph | Defer library choice until `graph-kanban` hard spec is accepted | Graph must be semantic and controlled, not decorative canvas. |
+| Graph | Defer library choice until the `graph-kanban` page layout contract is accepted | Graph must be semantic and controlled, not decorative canvas. |
 | State | Local app state + pure read-model selectors first | Canonical state comes from snapshot/API; avoid store abstraction until needed. |
 
 ## Dependency Policy
@@ -61,7 +61,7 @@ mutation truth.
 - Do not add shadcn.
 - Do not add a generic component library without a recorded Reviewer decision.
 - Do not add a graph/canvas library until [pages/graph-kanban.md](pages/graph-kanban.md)
-  and its hard layout spec require capabilities that custom SVG/HTML cannot
+  and its page-local layout contract require capabilities that custom SVG/HTML cannot
   provide.
 - Prefer custom Workbench primitives over generic cards.
 - Any dependency must name the page spec it serves and how it will be
@@ -81,7 +81,7 @@ The rebuild starts from product primitives, not dashboard widgets:
 | `DocumentSurface` | Goal and Task document sections with proof order. |
 | `MessageTimeline` | Canonical activity rows tied to messages, sessions, evidence, proposals, decisions. |
 | `LaneBoard` | Kanban/list projection for Goal/Task execution. |
-| `GraphFocus` | Controlled semantic graph focus when accepted by hard layout spec. |
+| `GraphFocus` | Controlled semantic graph focus when accepted by the Graph/Kanban page layout contract. |
 | `Inspector` | Secondary context for selected Member, Task, Docs, Warnings, Evidence, Decision. |
 | `DebugDrawer` | Raw snapshot/import/export outside the primary viewport. |
 
@@ -137,7 +137,8 @@ src/
 ```
 
 This is a target architecture, not permission to implement. Implementation
-begins only after page specs and hard layout specs are accepted.
+begins only after page specs with detailed `## Layout Contract` sections are
+accepted.
 
 ## Graph Strategy
 
@@ -162,7 +163,6 @@ Architecture acceptance requires:
 
 - import audit proving old dashboard components do not drive first viewport;
 - no shadcn dependency;
-- page specs linked from implemented surfaces;
-- hard layout specs linked from implemented slices;
+- page specs and page-local layout contracts linked from implemented surfaces;
 - screenshot-first PM/User acceptance;
 - rejected implementation records for failed browser-visible attempts.

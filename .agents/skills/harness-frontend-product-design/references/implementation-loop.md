@@ -1,14 +1,14 @@
 # Implementation Loop
 
-Use this reference after page specs, architecture decision, and hard layout
-specs exist. It is not a substitute for design.
+Use this reference after page specs, page-local layout contracts, and the
+architecture decision exist. It is not a substitute for design.
 
 ## Slice Loop
 
 Implement in narrow slices:
 
 ```text
-select slice from hard layout spec
+select slice from page-local layout contract
   -> implement only the owned files for that slice
   -> run local build/type checks
   -> open browser at required viewport
@@ -50,7 +50,7 @@ Stop implementation and record a rejected implementation when:
 
 - the first major shell screenshot looks like a dashboard, card dump, report
   page, or raw object viewer;
-- implementation does not match the accepted hard layout ASCII/spec;
+- implementation does not match the accepted page-local layout ASCII/contract;
 - old Dashboard components still define the primary viewport;
 - AgentTeam is only a roster;
 - AgentMember is only a side card;
@@ -81,7 +81,7 @@ Rejected Implementation
 ```
 
 After rejection, do not keep patching the same UI direction unless the Reviewer
-records a narrowed restart point and a new hard layout spec.
+records a narrowed restart point and updated page-local layout contracts.
 
 ## PM/User Handoff
 

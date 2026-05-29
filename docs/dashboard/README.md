@@ -10,16 +10,16 @@ surface owns the claim, then place it there.
 
 | Path | Owns | Refuses |
 | --- | --- | --- |
-| `../dashboard.md` | Product-level Workbench purpose, information architecture, object workflow, and user-facing acceptance | Component internals, run commands, detailed layout specs |
+| `../dashboard.md` | Product-level Workbench purpose, information architecture, object workflow, and user-facing acceptance | Component internals, run commands, page-level layout contracts |
 | `README.md` | Workbench docs map, placement rules, and change order | Product semantics or component implementation |
 | `design-principles.md` | Core frontend design principles, failure modes, graph/Kanban policy, AgentTeam and AgentMember UI doctrine | Route-level layout details or React module boundaries |
 | `layout-variants.md` | Candidate Workbench layout directions, Designer/Questioner critique, scoring rubric, and decision inputs | Final implementation spec or component internals |
 | `layout-decisions.md` | Accepted layout direction, killed alternatives, module decisions, and visual placement constraints | Code implementation or unscored future ideas |
-| `frontend-design.md` | Workbench frontend design index, reading order, page-spec map, hard-spec map, and implementation readiness summary | Page-level details, hard layout geometry, React internals, or run commands |
+| `frontend-design.md` | Workbench frontend design index, reading order, page-spec map, and implementation readiness summary | Page-level details, React internals, or run commands |
 | `pages/README.md` | Page-spec index and template | Hard dimensions, ASCII wireframes, or implementation internals |
-| `pages/*.md` | One page/workspace product and UX contract: purpose, object ownership, workflow proof, IA, actions, failure modes, screenshot questions | CSS dimensions, exact ASCII geometry, or component implementation |
-| `hard-layout-specs/README.md` | Hard layout spec index and template | Product semantics or page purpose |
-| `hard-layout-specs/*.md` | Screenshot-verifiable hard layout contract: ASCII diagrams, first viewport, dimensions, scroll ownership, state matrix, screenshot acceptance | Product doctrine, raw layout candidates, or component implementation details |
+| `pages/*.md` | One page/workspace product, UX, and layout contract: purpose, object ownership, workflow proof, IA, actions, detailed desktop/tablet/mobile ASCII diagrams, dimensions, scroll ownership, failure modes, screenshot questions | Component implementation |
+| `hard-layout-specs/README.md` | Historical/deprecated layout-attempt index | Current implementation gate or page purpose |
+| `hard-layout-specs/*.md` | Historical hard-layout attempts kept for failure analysis and migration context | Current page layout contracts, product doctrine, or component implementation details |
 | `rejected-implementations/README.md` | Failed frontend implementation record index and template | Active design decisions or release notes |
 | `rejected-implementations/*.md` | Rejected browser-visible attempts, violated gates, old-code contamination, restart point | New design specs or implementation instructions |
 | `frontend-architecture.md` | React/Vite architecture, component responsibilities, app-local boundaries | Product PRD, visual doctrine, or runbook commands |
@@ -43,7 +43,7 @@ product purpose
   -> page specs under pages/
   -> frontend design index update
   -> architecture and stack decision
-  -> hard layout implementation specs under hard-layout-specs/
+  -> page-local layout contracts under pages/<page>.md
   -> read-model/API needs
   -> implementation
   -> browser and web-quality acceptance
@@ -62,20 +62,21 @@ For Workbench redesigns, keep three layout candidates in
 [layout-variants.md](layout-variants.md) until a Reviewer or Lead records the
 selected direction in [layout-decisions.md](layout-decisions.md). Once
 selected, move the stable page hierarchy, page cards, visual placement, safe
-actions, read-model needs, responsive behavior, and acceptance pointers into
-page specs under [pages/](pages/). Keep [frontend-design.md](frontend-design.md)
-as the index and implementation-readiness summary.
+actions, read-model needs, detailed desktop/tablet/mobile ASCII diagrams,
+responsive behavior, and acceptance pointers into page specs under
+[pages/](pages/). Keep [frontend-design.md](frontend-design.md) as the index
+and implementation-readiness summary.
 
-Implementation may start only from page specs plus hard layout specs. A broad
-direction such as "Team workspace first" or a single shell diagram is not
-enough.
+Implementation may start only from page specs that include accepted
+`## Layout Contract` sections. A broad direction such as "Team workspace first"
+or a single shell diagram is not enough.
 
 ## Skill Boundary
 
 The reusable frontend skill lives under
 `.agents/skills/harness-frontend-product-design/`. It owns the agent procedure:
 which docs to read, the multi-candidate Designer -> Questioner -> Reviewer
-loop, output artifacts, hard layout spec gate, and acceptance gates.
+loop, output artifacts, page-local layout contract gate, and acceptance gates.
 
 Canonical product and layout decisions still belong in `docs/`. The skill
 should reference these docs instead of embedding the complete Workbench spec.

@@ -20,8 +20,9 @@ selected_design_refs:
 reviewer_decision_ref:
   docs/dashboard/layout-decisions.md#decision-2026-05-28-hard-layout-spec-shell-v1
 reviewer_decision:
-  continue for implementation planning; frontend code still requires browser
-  screenshots, implementation Questioner/Critic comparison, and acceptance
+  deprecated; do not implement from this file. Current implementation must start
+  from docs/dashboard/pages/<page>.md ## Layout Contract sections, browser
+  screenshots, implementation Questioner/Critic comparison, and acceptance.
 ```
 
 ## Reviewer Synthesis
@@ -466,7 +467,7 @@ Required checks:
 
 Stop implementation and return to design when:
 
-- a changed route or core module lacks hard spec coverage;
+- a changed route or core module lacks page-local layout contract coverage;
 - the browser first viewport reads as dashboard, report, card dump, or debug
   tool;
 - Goal/Task proof chain is hidden behind Team activity;

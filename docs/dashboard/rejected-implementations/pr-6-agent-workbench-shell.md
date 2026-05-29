@@ -5,7 +5,7 @@ attempt: PR #6 Agent Workbench shell
 branch_or_pr: task/agent-workbench-shell-implementation / GitHub PR #6
 status: rejected
 reviewer_decision: do not merge; restart from page specs, architecture decision,
-  and shell-v2 hard layout
+  and page-local layout contracts
 ```
 
 ## Screenshot Refs
@@ -75,7 +75,7 @@ The failure is structural, not spacing/color polish:
 - the page hierarchy is wrong;
 - the member mental model is wrong;
 - the Team workspace lacks a strong collaboration frame;
-- page specs were not separated from hard layout specs;
+- page specs and layout contracts were not kept together;
 - implementation began from too broad a shell spec and too much old code.
 
 Patching this implementation would likely preserve the same failed information
@@ -86,7 +86,8 @@ architecture.
 Restart from:
 
 - [../pages/README.md](../pages/README.md);
-- [../hard-layout-specs/shell-v2.md](../hard-layout-specs/shell-v2.md);
+- the `## Layout Contract` section inside each changed page spec under
+  [../pages/](../pages/);
 - [../frontend-architecture.md](../frontend-architecture.md);
 - [../acceptance.md](../acceptance.md).
 

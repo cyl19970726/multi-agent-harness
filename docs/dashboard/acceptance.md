@@ -5,16 +5,15 @@ Product-level acceptance stays in [../dashboard.md](../dashboard.md). Local
 commands stay in [runbook.md](runbook.md). The complete frontend design under
 test stays in [frontend-design.md](frontend-design.md).
 
-## Layout Spec Gate
+## Page Layout Contract Gate
 
-Before implementation acceptance can start, the PR must point to a hard layout
-implementation spec for the slice under test. Specs live under
-`docs/dashboard/hard-layout-specs/<slice>.md` unless a Reviewer records a
-different path in [layout-decisions.md](layout-decisions.md). Each spec needs a
-stable `spec_id`, selected design refs, Reviewer `stop | continue | blocked`
-decision, screenshot matrix, and non-waivable failure checklist.
+Before implementation acceptance can start, the PR must point to the page-local
+layout contract for every changed route or surface. Contracts live inside the
+relevant `docs/dashboard/pages/<page>.md` file under `## Layout Contract`.
+`docs/dashboard/hard-layout-specs/` is historical/deprecated and must not be
+used as the current implementation gate.
 
-The spec must define:
+Each changed page contract must define:
 
 - desktop, tablet, and mobile ASCII box diagrams;
 - region dimensions and collapsed regions;
@@ -26,14 +25,14 @@ The spec must define:
   unstructured stacked reports;
 - screenshot acceptance for every viewport.
 
-If browser screenshots show that the implementation does not match the hard
-layout spec, the correct action is to stop implementation, record a rejected
-implementation in [layout-decisions.md](layout-decisions.md), and rerun the
-Designer -> Questioner -> Reviewer loop. Do not continue styling the same
-failed direction until the spec gap is fixed.
+If browser screenshots show that the implementation does not match the
+page-local layout contract, the correct action is to stop implementation,
+record a rejected implementation in [layout-decisions.md](layout-decisions.md),
+and rerun the Designer -> Questioner -> Reviewer loop. Do not continue styling
+the same failed direction until the contract gap is fixed.
 
-Missing ASCII diagrams fail the layout spec gate. Prose-only layout descriptions
-are not enough for implementation acceptance.
+Missing ASCII diagrams fail the page layout contract gate. Prose-only layout
+descriptions are not enough for implementation acceptance.
 
 ## Rebuild Boundary Checklist
 
@@ -45,7 +44,7 @@ primary UI is not still driving the first viewport:
   `textarea`, `RawViews`, old summary/Kanban/detail/raw-view composition, and
   raw JSON/debug panels outside the collapsed debug drawer or `/debug` route;
 - allowed only after review: pure `types.ts`, API helpers, and read-model
-  selectors that still serve the new hard layout spec;
+  selectors that still serve the page-local layout contracts;
 - required audit: changed component list, retained imports, removed old primary
   imports, and evidence that raw snapshot input is not in the primary viewport.
 
@@ -57,7 +56,9 @@ failed rebuild boundary.
 
 1. Documentation: update Workbench docs before changing component structure or
    CSS.
-2. Layout spec: add the hard layout implementation spec for the slice and get a
+2. Page layout contracts: update every changed
+   `docs/dashboard/pages/<page>.md` with detailed desktop/tablet/mobile ASCII
+   diagrams, first-viewport content, dimensions, scroll ownership, and a
    Reviewer stop/continue decision.
 3. Rebuild boundary: remove the old summary/Kanban/detail/raw-view product
    structure as the basis of the UI. Preserve only stable API/types/read-model
@@ -96,8 +97,8 @@ Every layout implementation PR must attach browser evidence:
   activity stream;
 - proof that raw JSON/debug views are collapsed by default;
 - proof that page-level horizontal overflow is absent;
-- proof that the implementation matches the hard layout implementation spec, or
-  a rejected implementation record explaining why it does not.
+- proof that the implementation matches the page-local layout contracts, or a
+  rejected implementation record explaining why it does not.
 - PM acceptance agent output that validates end-to-end product logic using the
   browser screenshots and live UI.
 - User acceptance agent output that validates operator usability using the
@@ -138,10 +139,10 @@ workbench over harness state, not a stacked report of cards and raw objects.
 These fail implementation acceptance and require a rejected implementation
 record or a return to design:
 
-- missing hard layout implementation spec at the agreed docs path;
+- missing page-local layout contract in any changed page spec;
 - missing changed-core-module option loop or Reviewer decision;
 - missing implementation Questioner/Critic screenshot comparison against the
-  hard layout spec;
+  page-local layout contract;
 - missing PM/User browser acceptance agent findings;
 - known failed implementation attempt not recorded as rejected;
 - no browser screenshot evidence;

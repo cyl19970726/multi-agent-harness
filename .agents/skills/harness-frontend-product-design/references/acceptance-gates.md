@@ -19,9 +19,9 @@ The frontend must show:
 
 Attach evidence:
 
-- reference to the hard layout implementation spec used for this PR;
-- spec path, normally `docs/dashboard/hard-layout-specs/<slice>.md`, plus the
-  Reviewer `continue` decision;
+- references to every page-local layout contract used for this PR, normally
+  `docs/dashboard/pages/<page>.md#layout-contract`, plus the Reviewer
+  `continue` decision;
 - desktop screenshot, normally 1440 x 1000;
 - tablet screenshot, normally 900 x 1180;
 - mobile screenshot, normally 390 x 844;
@@ -47,7 +47,7 @@ screenshot the Reviewer must write:
 ```text
 first_impression:
 workbench_or_dashboard:
-matches_hard_spec:
+matches_page_layout_contract:
 team_as_collaboration_space:
 agent_member_as_workspace:
 goal_task_docs_connected:
@@ -91,10 +91,10 @@ browser and after the screenshot matrix exists:
 - User acceptance subagent: operator usability, navigation, comprehension, and
   action confidence.
 
-They are read-only validators. Their input must include the hard layout spec,
-active product docs, route URL, screenshot paths, console/overflow proof, and
-any known missing live data. Do not give them the developer's preferred answer.
-Do not let the implementer act as either acceptance subagent.
+They are read-only validators. Their input must include the page-local layout
+contracts, active product docs, route URL, screenshot paths, console/overflow
+proof, and any known missing live data. Do not give them the developer's
+preferred answer. Do not let the implementer act as either acceptance subagent.
 
 Required outputs:
 
@@ -181,10 +181,10 @@ Check:
 
 Cannot be waived for implementation acceptance:
 
-- missing hard layout implementation spec;
+- missing page-local layout contract in any changed page spec;
 - missing changed-core-module option loop or Reviewer decision;
 - missing implementation Questioner/Critic screenshot comparison against the
-  hard layout spec;
+  page-local layout contract;
 - known failed implementation attempt not recorded as rejected;
 - no browser screenshot evidence;
 - missing PM/User browser acceptance agent output;

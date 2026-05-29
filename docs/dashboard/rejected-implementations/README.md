@@ -28,4 +28,4 @@ Rejected Implementation
 
 | Attempt | Status | Restart point |
 | --- | --- | --- |
-| [PR #6 Agent Workbench shell](pr-6-agent-workbench-shell.md) | rejected | page specs + shell-v2 + architecture restart |
+| [PR #6 Agent Workbench shell](pr-6-agent-workbench-shell.md) | rejected | page specs + page-local layout contracts + architecture restart |

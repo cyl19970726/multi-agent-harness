@@ -111,24 +111,27 @@ Page Decision
   next_designer_request:
 ```
 
-## Hard Layout Implementation Spec Gate
+## Page-Local Layout Contract Gate
 
 Before component or CSS work starts, convert selected page decisions into a
-hard layout implementation spec for every changed route, surface, or core
-module. This is stricter than a design direction. It must remove ambiguity that
-would let an implementation become a stacked report, card dump, or
-raw-debug-first page.
+page-local layout contract for every changed route, surface, or core module.
+The contract lives inside the relevant `docs/dashboard/pages/<page>.md` file
+under `## Layout Contract`; do not put the current implementation contract in
+`docs/dashboard/hard-layout-specs/`. This is stricter than a design direction.
+It must remove ambiguity that would let an implementation become a stacked
+report, card dump, or raw-debug-first page.
 
-Desktop, tablet, and mobile `ascii_diagram` fields are required. They must be
-box diagrams drawn with plain ASCII characters. Text-only descriptions of
-columns, panels, or responsive behavior do not pass the hard layout gate.
+Desktop, tablet, and mobile `ascii_diagram` fields are required in the page
+document. They must be box diagrams drawn with plain ASCII characters.
+Text-only descriptions of columns, panels, or responsive behavior do not pass
+the page layout contract gate.
 
 Required fields:
 
 ```text
-Hard Layout Spec
-  spec_id:
-  spec_path: docs/dashboard/hard-layout-specs/<slice>.md
+Page Layout Contract
+  page_spec_path: docs/dashboard/pages/<page>.md
+  section: "## Layout Contract"
   route_or_surface:
   selected_design_refs:
   reviewer_decision_ref:
@@ -164,11 +167,11 @@ Hard Layout Spec
   reviewer_stop_conditions:
 ```
 
-Implementation may start only when the PR points to the spec path and the
-Reviewer records `continue` with a statement that this spec is specific enough
-to compare against browser screenshots. Missing ASCII diagrams require a
-`blocked` decision. A `stop` or `blocked` decision returns the work to the
-design loop.
+Implementation may start only when the PR points to every changed page spec
+and the Reviewer records `continue` with a statement that each `## Layout
+Contract` is specific enough to compare against browser screenshots. Missing
+ASCII diagrams require a `blocked` decision. A `stop` or `blocked` decision
+returns the work to the design loop.
 
 ## Core Module Multi-Designer Loop
 
@@ -220,7 +223,8 @@ Include:
 - route map;
 - page specs for all core pages;
 - selected and rejected page-level variants for risky pages;
-- hard layout implementation specs for desktop, tablet, and mobile;
+- page-local layout contracts for desktop, tablet, and mobile inside each
+  changed page spec;
 - component inventory and object mapping;
 - visual placement map;
 - interaction flows and safe action contracts;

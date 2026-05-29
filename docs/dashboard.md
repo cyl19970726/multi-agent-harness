@@ -144,9 +144,9 @@ mixed with frontend implementation details:
 | `docs/dashboard/design-principles.md` | core frontend design principles, graph/Kanban policy, AgentTeam/AgentMember UI doctrine, visual system, and current UX failure modes | route-level layout details or React module boundaries |
 | `docs/dashboard/layout-variants.md` | candidate Workbench layout directions, Designer/Questioner critique, scoring rubric, and decision inputs | final route spec, component internals, or accepted layout details |
 | `docs/dashboard/layout-decisions.md` | accepted layout direction, rejected alternatives, module decisions, and visual placement constraints | component internals or unscored future ideas |
-| `docs/dashboard/frontend-design.md` | frontend design index, reading order, page-spec map, hard-spec map, and implementation-readiness summary | page-level details, hard layout geometry, framework internals, run commands |
-| `docs/dashboard/pages/*.md` | page/workspace purpose, canonical objects, workflow proof, IA, actions, failure modes | exact dimensions, ASCII wireframes, component implementation |
-| `docs/dashboard/hard-layout-specs/*.md` | ASCII diagrams, region dimensions, first viewport, scroll ownership, screenshot acceptance | product semantics or why the page exists |
+| `docs/dashboard/frontend-design.md` | frontend design index, reading order, page-spec map, and implementation-readiness summary | page-level details, framework internals, run commands |
+| `docs/dashboard/pages/*.md` | page/workspace purpose, canonical objects, workflow proof, IA, actions, detailed layout contract, ASCII diagrams, dimensions, scroll ownership, failure modes | component implementation |
+| `docs/dashboard/hard-layout-specs/*.md` | historical hard-layout attempts retained for failure analysis | current implementation gates or page layout contracts |
 | `docs/dashboard/rejected-implementations/*.md` | failed browser-visible attempts and restart points | active layout decisions or implementation plans |
 | `docs/dashboard/frontend-architecture.md` | Agent Workbench frontend architecture, component responsibilities, app-local source boundary | product PRD or runbook commands |
 | `docs/dashboard/read-model.md` | read-model projections, goal scope, warning promotion rules | canonical validation rules or Rust implementation |

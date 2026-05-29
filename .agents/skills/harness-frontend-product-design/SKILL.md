@@ -25,10 +25,11 @@ actually happened.
    direction to component or CSS work.
 6. Record selected designs, rejected designs, borrowed ideas, remaining gaps,
    and loop stop/continue decisions in `docs/dashboard/`.
-7. Produce a hard layout implementation spec before component or CSS work:
-   desktop/tablet/mobile ASCII box diagrams, region dimensions,
-   first-viewport content, scroll boundaries, empty states, and browser
-   screenshot acceptance. Text-only wireframe prose is not enough.
+7. Produce page-local layout contracts before component or CSS work. Each
+   changed `docs/dashboard/pages/<page>.md` must include detailed
+   desktop/tablet/mobile ASCII box diagrams, region dimensions, first-viewport
+   content, scroll boundaries, empty states, and browser screenshot acceptance.
+   Text-only wireframe prose is not enough.
 8. Record a frontend architecture and technical-stack decision before
    implementation. The current component tree is not evidence for the next
    architecture.
@@ -53,7 +54,7 @@ Vision/docs intake
   -> top-level layout candidate loop
   -> core module option loop
   -> architecture and technical-stack decision
-  -> hard layout spec gate
+  -> page-local layout contract gate
   -> implementation screenshot critic loop
   -> PM/User browser acceptance loop
   -> PR and learning gate
@@ -66,7 +67,7 @@ Vision/docs intake
 | Top-level layout | Multiple Designer passes + Questioner + Reviewer | 3 layout candidates, killed options, borrowed ideas | Only one layout exists or variants do not expose real tradeoffs. |
 | Module options | Designer + Questioner + Reviewer | 2-3 options for each core module | Cards, details, message flow, docs, warnings, or mobile placement are underspecified. |
 | Architecture/stack | Lead + Architect + Critic | Stack decision and module boundary decision | The decision inherits the old dashboard structure or adds a UI kit without proof. |
-| Hard spec | Reviewer + Implementation Questioner | Desktop/tablet/mobile ASCII diagrams and screenshot checklist | Any changed route lacks exact first-viewport placement and scroll ownership. |
+| Page layout contract | Reviewer + Implementation Questioner | Detailed desktop/tablet/mobile ASCII diagrams inside each changed page spec | Any changed route lacks exact first-viewport placement, dimensions, and scroll ownership in its page document. |
 | Implementation | Implementer + Implementation Questioner | Screenshot comparison per slice | Browser screenshots look like a dashboard, card dump, raw tool, or long report. |
 | PM/User acceptance | PM agent + User agent | Browser findings and fixes | Either agent has unresolved P0/P1 findings. |
 | PR/learning | Lead + Critic | Selected/rejected designs, screenshots, failures, waivers | Failed attempts are not recorded or screenshots are treated as passive attachments. |
@@ -149,19 +150,19 @@ Use the skill for process and guardrails; use docs for product decisions.
 - `docs/dashboard/layout-decisions.md`: selected main direction, borrowed
   ideas, remaining gaps, reviewer loop status, and stop/continue reasons.
 - `docs/dashboard/frontend-design.md`: Workbench design index, page-spec map,
-  hard-spec map, current status, and implementation-readiness summary. It is
+  current status, and implementation-readiness summary. It is
   not the single large design source of truth.
 - `docs/dashboard/pages/<page>.md`: page-level product and UX specs. Use one
   file per core page/workspace: Vision overview, Team workspace, AgentMember
   workbench, Goal document, Task document, Graph/Kanban, Docs context,
-  Evidence/Review/Decision, Warnings/repair, and Debug.
+  Evidence/Review/Decision, Warnings/repair, and Debug. Each page file owns its
+  own detailed layout contract and ASCII diagrams.
 - `docs/dashboard/frontend-architecture.md`: current frontend architecture and
   technical-stack decision. Update it before implementation when the work
   changes framework, state model, component architecture, graph/canvas
   approach, styling strategy, dependency policy, or old-code disposition.
-- `docs/dashboard/hard-layout-specs/<slice>.md`: implementation-ready hard
-  layout specs for approved frontend slices, with `spec_id`, viewport matrix,
-  Reviewer decision, and screenshot acceptance.
+- `docs/dashboard/hard-layout-specs/`: historical/deprecated layout attempts
+  only. Do not place current page layouts there.
 - `docs/dashboard/rejected-implementations/<attempt>.md`: failed browser-visible
   implementations, first-impression screenshot review, violated gates, old-code
   contamination, and restart point.
@@ -172,15 +173,15 @@ Use the skill for process and guardrails; use docs for product decisions.
 When a new frontend design document supersedes older Workbench docs, update
 `docs/dashboard/README.md`, `docs/README.md`, and `docs/registry.json`, then
 delete or mark the old docs as deprecated. Do not leave multiple canonical
-layout specs that conflict.
+layout contracts that conflict.
 
 ## ASCII Layout Diagrams
 
-Hard layout specs must include ASCII box diagrams for desktop, tablet, and
-mobile. These diagrams are the implementation contract for region placement,
-fixed dimensions, collapsed regions, first-viewport hierarchy, and scroll
-ownership. A written list of columns or a prose description does not satisfy
-the hard layout gate.
+Every changed page spec under `docs/dashboard/pages/` must include detailed
+ASCII box diagrams for desktop, tablet, and mobile. These diagrams are the
+implementation contract for region placement, fixed dimensions, collapsed
+regions, first-viewport hierarchy, and scroll ownership. A written list of
+columns or a prose description does not satisfy the layout gate.
 
 Use plain ASCII characters so the diagram remains stable in Markdown, PR
 comments, terminals, and provider transcripts:
@@ -192,7 +193,8 @@ comments, terminals, and provider transcripts:
 ```
 
 Reviewer approval is `blocked` when a changed route, surface, or core module
-lacks the required ASCII diagram for any accepted viewport.
+lacks detailed ASCII diagrams in its own page document for any accepted
+viewport.
 
 ## Frontend Doctrine
 
@@ -317,10 +319,10 @@ Before writing component code, the design record must include:
 - page-level specs under `docs/dashboard/pages/` for Vision, Team,
   AgentMember, Goal, Task, Graph/Kanban, Docs, Evidence/Review/Decision,
   Warnings, and Debug;
-- a hard layout implementation spec for every changed route, surface, or core
-  module, with concrete desktop/tablet/mobile ASCII box diagrams, region
-  sizing, scroll behavior, first-viewport content, empty states, overflow
-  constraints, and screenshot acceptance;
+- a page-local layout contract inside every changed page spec, with concrete
+  desktop/tablet/mobile ASCII box diagrams, region sizing, scroll behavior,
+  first-viewport content, empty states, overflow constraints, and screenshot
+  acceptance;
 - visual placement for primary surface, secondary surface, inspector/drawer,
   and mobile position;
 - Reviewer selection records for each core module, including killed options and

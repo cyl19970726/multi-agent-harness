@@ -380,7 +380,6 @@
         "docs/dashboard/acceptance.md",
         "docs/dashboard/runbook.md",
         "docs/dashboard/pages/README.md",
-        "docs/dashboard/hard-layout-specs/README.md",
         "docs/dashboard/rejected-implementations/README.md"
       ],
       "machineConsumers": [
@@ -415,7 +414,6 @@
         "docs/dashboard/acceptance.md",
         "docs/dashboard/runbook.md",
         "docs/dashboard/pages/README.md",
-        "docs/dashboard/hard-layout-specs/README.md",
         "docs/dashboard/rejected-implementations/README.md"
       ],
       "machineConsumers": [
@@ -519,7 +517,7 @@
       "canonicalFor": [
         "Agent Workbench frontend design index",
         "Workbench page-spec map",
-        "Workbench hard-spec map",
+        "Workbench page-local layout contract map",
         "Workbench implementation-readiness summary"
       ],
       "dependsOn": [
@@ -530,7 +528,6 @@
         "docs/dashboard/layout-variants.md",
         "docs/dashboard/layout-decisions.md",
         "docs/dashboard/pages/README.md",
-        "docs/dashboard/hard-layout-specs/README.md",
         "docs/dashboard/rejected-implementations/README.md",
         "docs/dashboard/frontend-architecture.md",
         "docs/dashboard/read-model.md",
@@ -545,7 +542,7 @@
       "lastVerifiedWith": [
         "npx pnpm@9.15.4 check"
       ],
-      "reorgTrigger": "Workbench page specs, hard layout specs, implementation readiness, or frontend design reading order changes."
+      "reorgTrigger": "Workbench page specs, page-local layout contracts, implementation readiness, or frontend design reading order changes."
     },
     {
       "path": "docs/dashboard/hard-layout-specs/agent-workbench-shell-v1.md",
@@ -553,11 +550,12 @@
       "status": "deprecated",
       "lifecycle": "archival",
       "canonicalFor": [
-        "deprecated Agent Workbench shell hard layout spec",
-        "historical vague shell spec superseded by shell-v2"
+        "deprecated Agent Workbench shell v1 hard-layout attempt",
+        "historical vague shell spec superseded by page-local layout contracts"
       ],
       "dependsOn": [
         "docs/dashboard/hard-layout-specs/README.md",
+        "docs/dashboard/layout-decisions.md",
         "docs/dashboard/rejected-implementations/pr-6-agent-workbench-shell.md"
       ],
       "machineConsumers": [
@@ -568,7 +566,7 @@
       "lastVerifiedWith": [
         "npx pnpm@9.15.4 check"
       ],
-      "reorgTrigger": "Remove after all references to shell-v1 are migrated to shell-v2 or later."
+      "reorgTrigger": "Remove after all references to shell-v1 are migrated to historical rejected implementation records."
     },
     {
       "path": "docs/dashboard/frontend-architecture.md",
@@ -585,7 +583,6 @@
         "docs/dashboard.md",
         "docs/dashboard/frontend-design.md",
         "docs/dashboard/pages/README.md",
-        "docs/dashboard/hard-layout-specs/README.md",
         "docs/dashboard/rejected-implementations/README.md",
         "docs/dashboard/acceptance.md",
         "docs/decisions/0014-react-vite-agent-dashboard.md",
@@ -649,7 +646,6 @@
         "docs/dashboard/read-model.md",
         "package.json",
         "docs/dashboard/pages/README.md",
-        "docs/dashboard/hard-layout-specs/README.md",
         "docs/dashboard/rejected-implementations/README.md"
       ],
       "machineConsumers": [
@@ -979,7 +975,7 @@
       "lifecycle": "volatile",
       "canonicalFor": [
         "Agent Workbench page spec index",
-        "Agent Workbench page spec template"
+        "Agent Workbench page spec and layout contract template"
       ],
       "dependsOn": [
         "docs/dashboard/frontend-design.md",
@@ -994,7 +990,7 @@
       "lastVerifiedWith": [
         "npx pnpm@9.15.4 check"
       ],
-      "reorgTrigger": "Core Workbench page list, page-spec template, or page-spec boundary changes."
+      "reorgTrigger": "Core Workbench page list, page-spec template, page-local layout contract template, or page-spec boundary changes."
     },
     {
       "path": "docs/dashboard/pages/vision-overview.md",
@@ -1003,7 +999,8 @@
       "lifecycle": "volatile",
       "canonicalFor": [
         "Vision goal collection page spec",
-        "distance-to-vision UI contract"
+        "distance-to-vision UI contract",
+        "page-local layout contract"
       ],
       "dependsOn": [
         "docs/prd.md",
@@ -1023,7 +1020,7 @@
       "lastVerifiedWith": [
         "npx pnpm@9.15.4 check"
       ],
-      "reorgTrigger": "Vision overview page contract"
+      "reorgTrigger": "Vision overview page contract, layout contract dimensions, ASCII diagrams, first viewport, or scroll ownership changes."
     },
     {
       "path": "docs/dashboard/pages/team-workspace.md",
@@ -1032,7 +1029,8 @@
       "lifecycle": "volatile",
       "canonicalFor": [
         "persistent AgentTeam workspace page spec",
-        "team collaboration UI contract"
+        "team collaboration UI contract",
+        "page-local layout contract"
       ],
       "dependsOn": [
         "docs/prd.md",
@@ -1052,7 +1050,7 @@
       "lastVerifiedWith": [
         "npx pnpm@9.15.4 check"
       ],
-      "reorgTrigger": "Team workspace page contract"
+      "reorgTrigger": "Team workspace page contract, layout contract dimensions, ASCII diagrams, first viewport, or scroll ownership changes."
     },
     {
       "path": "docs/dashboard/pages/agent-member-workbench.md",
@@ -1061,7 +1059,8 @@
       "lifecycle": "volatile",
       "canonicalFor": [
         "AgentMember workbench page spec",
-        "member runtime and message UI contract"
+        "member runtime and message UI contract",
+        "page-local layout contract"
       ],
       "dependsOn": [
         "docs/prd.md",
@@ -1081,7 +1080,7 @@
       "lastVerifiedWith": [
         "npx pnpm@9.15.4 check"
       ],
-      "reorgTrigger": "AgentMember workbench page contract"
+      "reorgTrigger": "AgentMember workbench page contract, layout contract dimensions, ASCII diagrams, first viewport, or scroll ownership changes."
     },
     {
       "path": "docs/dashboard/pages/goal-document.md",
@@ -1090,7 +1089,8 @@
       "lifecycle": "volatile",
       "canonicalFor": [
         "Goal document page spec",
-        "GoalDesign and GoalEvaluation UI contract"
+        "GoalDesign and GoalEvaluation UI contract",
+        "page-local layout contract"
       ],
       "dependsOn": [
         "docs/prd.md",
@@ -1110,7 +1110,7 @@
       "lastVerifiedWith": [
         "npx pnpm@9.15.4 check"
       ],
-      "reorgTrigger": "Goal document page contract"
+      "reorgTrigger": "Goal document page contract, layout contract dimensions, ASCII diagrams, first viewport, or scroll ownership changes."
     },
     {
       "path": "docs/dashboard/pages/task-document.md",
@@ -1119,7 +1119,8 @@
       "lifecycle": "volatile",
       "canonicalFor": [
         "Task document page spec",
-        "assignment evidence review decision UI contract"
+        "assignment evidence review decision UI contract",
+        "page-local layout contract"
       ],
       "dependsOn": [
         "docs/prd.md",
@@ -1139,7 +1140,7 @@
       "lastVerifiedWith": [
         "npx pnpm@9.15.4 check"
       ],
-      "reorgTrigger": "Task document page contract"
+      "reorgTrigger": "Task document page contract, layout contract dimensions, ASCII diagrams, first viewport, or scroll ownership changes."
     },
     {
       "path": "docs/dashboard/pages/graph-kanban.md",
@@ -1148,7 +1149,8 @@
       "lifecycle": "volatile",
       "canonicalFor": [
         "Goal/Task graph and Kanban UI contract",
-        "relationship and execution projection page spec"
+        "relationship and execution projection page spec",
+        "page-local layout contract"
       ],
       "dependsOn": [
         "docs/prd.md",
@@ -1168,7 +1170,7 @@
       "lastVerifiedWith": [
         "npx pnpm@9.15.4 check"
       ],
-      "reorgTrigger": "Graph and Kanban page contract"
+      "reorgTrigger": "Graph and Kanban page contract, layout contract dimensions, ASCII diagrams, first viewport, or scroll ownership changes."
     },
     {
       "path": "docs/dashboard/pages/docs-context.md",
@@ -1177,7 +1179,8 @@
       "lifecycle": "volatile",
       "canonicalFor": [
         "mounted docs context page spec",
-        "object-linked docs UI contract"
+        "object-linked docs UI contract",
+        "page-local layout contract"
       ],
       "dependsOn": [
         "docs/prd.md",
@@ -1197,7 +1200,7 @@
       "lastVerifiedWith": [
         "npx pnpm@9.15.4 check"
       ],
-      "reorgTrigger": "Docs context page contract"
+      "reorgTrigger": "Docs context page contract, layout contract dimensions, ASCII diagrams, first viewport, or scroll ownership changes."
     },
     {
       "path": "docs/dashboard/pages/evidence-review-decision.md",
@@ -1206,7 +1209,8 @@
       "lifecycle": "volatile",
       "canonicalFor": [
         "acceptance proof UI contract",
-        "evidence review decision page spec"
+        "evidence review decision page spec",
+        "page-local layout contract"
       ],
       "dependsOn": [
         "docs/prd.md",
@@ -1226,7 +1230,7 @@
       "lastVerifiedWith": [
         "npx pnpm@9.15.4 check"
       ],
-      "reorgTrigger": "Evidence review decision page contract"
+      "reorgTrigger": "Evidence review decision page contract, layout contract dimensions, ASCII diagrams, first viewport, or scroll ownership changes."
     },
     {
       "path": "docs/dashboard/pages/warnings-repair.md",
@@ -1235,7 +1239,8 @@
       "lifecycle": "volatile",
       "canonicalFor": [
         "warning queue and repair UI contract",
-        "workflow risk page spec"
+        "workflow risk page spec",
+        "page-local layout contract"
       ],
       "dependsOn": [
         "docs/prd.md",
@@ -1255,7 +1260,7 @@
       "lastVerifiedWith": [
         "npx pnpm@9.15.4 check"
       ],
-      "reorgTrigger": "Warnings and repair page contract"
+      "reorgTrigger": "Warnings and repair page contract, layout contract dimensions, ASCII diagrams, first viewport, or scroll ownership changes."
     },
     {
       "path": "docs/dashboard/pages/debug.md",
@@ -1264,7 +1269,8 @@
       "lifecycle": "volatile",
       "canonicalFor": [
         "debug drawer and raw snapshot UI contract",
-        "secondary debug surface page spec"
+        "secondary debug surface page spec",
+        "page-local layout contract"
       ],
       "dependsOn": [
         "docs/prd.md",
@@ -1284,16 +1290,16 @@
       "lastVerifiedWith": [
         "npx pnpm@9.15.4 check"
       ],
-      "reorgTrigger": "Debug page contract"
+      "reorgTrigger": "Debug page contract, layout contract dimensions, ASCII diagrams, first viewport, or scroll ownership changes."
     },
     {
       "path": "docs/dashboard/hard-layout-specs/README.md",
       "ownerRole": "frontend-design",
-      "status": "planned",
-      "lifecycle": "volatile",
+      "status": "deprecated",
+      "lifecycle": "archival",
       "canonicalFor": [
-        "Agent Workbench hard layout spec index",
-        "screenshot-verifiable hard layout spec template"
+        "historical Agent Workbench hard-layout attempt index",
+        "deprecated hard-layout template retained for failure analysis"
       ],
       "dependsOn": [
         "docs/dashboard/frontend-design.md",
@@ -1309,31 +1315,21 @@
       "lastVerifiedWith": [
         "npx pnpm@9.15.4 check"
       ],
-      "reorgTrigger": "Hard layout spec template, implementation spec list, or screenshot contract changes."
+      "reorgTrigger": "Historical hard-layout attempts are removed, archived elsewhere, or referenced by rejected implementation analysis."
     },
     {
       "path": "docs/dashboard/hard-layout-specs/shell-v2.md",
       "ownerRole": "frontend-design",
-      "status": "planned",
-      "lifecycle": "volatile",
+      "status": "deprecated",
+      "lifecycle": "archival",
       "canonicalFor": [
-        "Agent Workbench shell v2 hard layout spec",
-        "Workbench shell screenshot contract",
-        "Workbench shell restart point"
+        "deprecated Agent Workbench shell v2 hard-layout attempt",
+        "historical shell restart spec superseded by page-local layout contracts"
       ],
       "dependsOn": [
         "docs/dashboard/hard-layout-specs/README.md",
-        "docs/dashboard/pages/team-workspace.md",
-        "docs/dashboard/pages/agent-member-workbench.md",
-        "docs/dashboard/pages/goal-document.md",
-        "docs/dashboard/pages/task-document.md",
-        "docs/dashboard/pages/graph-kanban.md",
-        "docs/dashboard/pages/docs-context.md",
-        "docs/dashboard/pages/evidence-review-decision.md",
-        "docs/dashboard/pages/warnings-repair.md",
-        "docs/dashboard/pages/debug.md",
-        "docs/dashboard/frontend-architecture.md",
-        "docs/dashboard/acceptance.md"
+        "docs/dashboard/layout-decisions.md",
+        "docs/dashboard/rejected-implementations/pr-6-agent-workbench-shell.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -1343,7 +1339,7 @@
       "lastVerifiedWith": [
         "npx pnpm@9.15.4 check"
       ],
-      "reorgTrigger": "Shell geometry, first viewport, scroll ownership, responsive behavior, or screenshot acceptance changes."
+      "reorgTrigger": "Remove after all references to shell-v2 are migrated to page-local layout contracts and rejected implementation records."
     },
     {
       "path": "docs/dashboard/rejected-implementations/README.md",

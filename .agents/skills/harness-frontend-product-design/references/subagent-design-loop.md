@@ -36,7 +36,7 @@ questioner_output_ref:
 reviewer_input_refs:
 reviewer_decision_ref:
 implementation_questioner_prompt:
-implementation_questioner_input_refs: screenshots, DOM/console/overflow proof, hard spec
+implementation_questioner_input_refs: screenshots, DOM/console/overflow proof, page-local layout contracts
 implementation_questioner_output_ref:
 implementation_questioner_signoff_or_refusal_ref:
 decision_record_ref:
@@ -175,10 +175,10 @@ The Reviewer / Lead must:
   core page discovery, selected/rejected page options, object-to-page mapping,
   visual placement, responsive behavior, read-model needs, and acceptance
   screenshot plan;
-- require a hard layout implementation spec before coding: desktop/tablet/mobile
-  ASCII box diagrams, exact first-viewport content, region dimensions, scroll
-  boundaries, empty/loading states, data density, and browser screenshot
-  checkpoints;
+- require page-local layout contracts before coding: each changed
+  `docs/dashboard/pages/<page>.md` must include desktop/tablet/mobile ASCII box
+  diagrams, exact first-viewport content, region dimensions, scroll boundaries,
+  empty/loading states, data density, and browser screenshot checkpoints;
 - record visual placement for every important UI element:
   primary surface, secondary surface, inspector/drawer, and mobile position;
 - turn unresolved questions into follow-up tasks;
@@ -194,8 +194,8 @@ The Reviewer / Lead must:
 ## Implementation Questioner Loop
 
 Implementation keeps a Questioner/Critic in the loop. The Questioner compares
-browser screenshots and DOM behavior against the hard layout spec, not against
-the developer's intent.
+browser screenshots and DOM behavior against the page-local layout contracts,
+not against the developer's intent.
 
 Continue implementation only when the Questioner agrees that:
 

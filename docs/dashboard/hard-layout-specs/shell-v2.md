@@ -2,7 +2,7 @@
 
 ```text
 spec_id: agent-workbench-shell-v2
-status: draft
+status: deprecated
 implements_page_specs:
   - docs/dashboard/pages/team-workspace.md
   - docs/dashboard/pages/agent-member-workbench.md
@@ -14,14 +14,17 @@ implements_page_specs:
   - docs/dashboard/pages/warnings-repair.md
   - docs/dashboard/pages/debug.md
 source_of_truth_boundary:
-  owns shell geometry, first viewport, scroll ownership, responsive placement,
-  and screenshot matrix. Does not own page purpose or canonical object meaning.
-reviewer_decision: blocked until page specs and architecture decision are reviewed
+  historical only. Does not own current shell geometry, first viewport, scroll
+  ownership, responsive placement, screenshot matrix, page purpose, or canonical
+  object meaning. Current layout contracts live in docs/dashboard/pages/*.md.
+reviewer_decision: deprecated after page-local layout contracts moved into docs/dashboard/pages/*.md
 ```
 
-This spec is the restart point after the rejected PR #6 implementation. It is
-intentionally stricter than v1: the first viewport must read as a collaboration
-workspace, not a card collection with tabs.
+This spec is retained only as historical context after the rejected PR #6
+implementation. It is no longer the current implementation contract. Current
+desktop/tablet/mobile ASCII diagrams, region dimensions, first-viewport
+content, scroll ownership, and screenshot acceptance live inside each page spec
+under `docs/dashboard/pages/<page>.md`.
 
 ## Desktop Wireframe
 

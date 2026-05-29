@@ -138,9 +138,9 @@ screenshot_refs:
   local rejected review screenshots captured before rejection:
   dashboard-shell-desktop-1440.png, dashboard-shell-tablet-900.png
 failed_acceptance:
-  no hard layout implementation spec; weak first-viewport hierarchy; Team,
-  activity, graph/Kanban, inspector, and debug placement not constrained by
-  region dimensions or scroll ownership
+  no page-local layout contract; weak first-viewport hierarchy; Team, activity,
+  graph/Kanban, inspector, and debug placement not constrained by region
+  dimensions or scroll ownership
 spec_gap_that_allowed_it:
   accepted direction said "Team workspace first" without implementation-ready
   desktop/tablet/mobile wireframes, module-level option decisions, or
@@ -149,8 +149,8 @@ code_disposition:
   keep isolated in task/agent-workbench-implementation until replaced or
   explicitly discarded; do not merge it into the goal branch
 required_next_loop:
-  update frontend skill and docs, then create hard layout implementation specs
-  before renewed UI coding
+  update frontend skill and docs, then create page-local layout contracts inside
+  docs/dashboard/pages/<page>.md before renewed UI coding
 reviewer_stop_condition:
   no new implementation PR may proceed without desktop/tablet/mobile wireframes,
   region dimensions, first-viewport content, scroll boundaries, rejected module
@@ -170,7 +170,8 @@ Skill changes required by this failure:
 
 These decisions close the required page-level option loop. The rejected options
 are recorded in [layout-variants.md](layout-variants.md); the selected page
-cards are implemented in [frontend-design.md](frontend-design.md).
+cards and detailed layout contracts are implemented in
+[pages/](pages/).
 
 | Surface | Selected option | Rejected options | Borrowed ideas | Loop status |
 | --- | --- | --- | --- | --- |
@@ -204,7 +205,7 @@ selected:
 killed_because:
 borrowed:
 remaining_weakness:
-hard_spec_implication:
+layout_contract_implication:
 screenshot_acceptance:
 reviewer_stop_continue_blocked:
 ```
@@ -230,15 +231,17 @@ documents, real Vision goal collection and distance-to-vision, and assignment
 Killed candidates: Goal/Task document-first default shell, graph-first shell,
 and Team chat/activity-only shell.
 
-Final disposition: do not implement from shell v1. Restart from page specs,
-[hard-layout-specs/shell-v2.md](hard-layout-specs/shell-v2.md), and the
-architecture reset in [frontend-architecture.md](frontend-architecture.md).
+Final disposition: do not implement from shell v1. Restart from page specs with
+page-local `## Layout Contract` sections and the architecture reset in
+[frontend-architecture.md](frontend-architecture.md).
 
 ## Decision 2026-05-29: Shell v2 Restart Spec
 
-Reviewer decision: `blocked` for implementation until page specs and
-architecture reset are reviewed. Draft spec:
-[hard-layout-specs/shell-v2.md](hard-layout-specs/shell-v2.md).
+Reviewer decision: `deprecated` as the current implementation source. The draft
+shell v2 spec is retained as historical context only:
+[hard-layout-specs/shell-v2.md](hard-layout-specs/shell-v2.md). Its useful
+constraints have been moved into the relevant page-local layout contracts under
+[pages/](pages/).
 
 The shell v2 restart makes the first viewport stricter:
 
@@ -248,6 +251,29 @@ The shell v2 restart makes the first viewport stricter:
   not as disconnected tabs;
 - screenshots must be reviewed by first impression before console, data, or
   overflow checks can support acceptance.
+
+## Decision 2026-05-29: Page-Local Layout Contracts
+
+Reviewer decision: `continue` for documentation structure. Current layout
+contracts live inside each `docs/dashboard/pages/<page>.md` file under
+`## Layout Contract`. `docs/dashboard/hard-layout-specs/` is historical only.
+
+Rationale:
+
+- page meaning and page geometry must stay together so implementers cannot miss
+  the workflow proof behind a layout;
+- each core page now has detailed desktop, tablet, and mobile ASCII diagrams,
+  concrete dimensions, first-viewport content, scroll ownership, and screenshot
+  acceptance;
+- hard-layout shell specs were too easy to treat as a generic shell and too
+  far from the page-specific user questions.
+
+Implementation implication:
+
+- every changed route must link to its page spec and `## Layout Contract`;
+- screenshot review compares the browser output to that page document;
+- changes to dimensions, breakpoints, scroll ownership, or first-viewport
+  placement update the same page document, not a separate hard-layout file.
 
 ## Module Decisions
 

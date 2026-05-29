@@ -117,7 +117,100 @@ Responsive requirements:
 - mobile: Member tab with identity, action row, current work, timeline,
   runtime, inbox/outbox, prompt/skills.
 
-Links to hard layout specs: pending.
+## Layout Contract
+
+Desktop target: `1440x1000`.
+
+```text
++--------------------------------------------------------------------------------+
+| top 56: Workbench | live/source | selected member | search | command | debug    |
++-----+----------------------+-----------------------------------+---------------+
+| app | member rail 280      | member workspace 720              | runtime 376   |
+| 64  | +------------------+ | +-------------------------------+ | +-----------+ |
+|     | | identity         | | | current work 120              | | | process   | |
+|     | | role/team/status | | | task/proposal/actions          | | | endpoint  | |
+|     | +------------------+ | +-------------------------------+ | | protocol  | |
+|     | | inbox 96         | | | inbox/outbox split 160        | | | delivery  | |
+|     | | outbox 96        | | | latest assignment/report      | | +-----------+ |
+|     | +------------------+ | +-------------------------------+ | | sessions  | |
+|     | | prompt/skills    | | | timeline 480                  | | | child     | |
+|     | | permissions      | | | msg/session/event/evidence    | | | threads   | |
+|     | +------------------+ | +-------------------------------+ | +-----------+ |
+|     | rail scroll          | timeline scroll                    | runtime scroll|
++-----+----------------------+-----------------------------------+---------------+
+```
+
+Region dimensions:
+
+- app rail `64px`;
+- member rail `280px`;
+- workspace min `700px`;
+- runtime panel `360px` to `380px`;
+- current work `120px`;
+- inbox/outbox split `160px`;
+- timeline owns remaining height with rows `72px` to `104px`.
+
+First viewport content:
+
+- identity, role, team, prompt/skills, permission signal;
+- current task/proposal and safe actions;
+- inbox/outbox counts and latest messages;
+- chronological timeline;
+- runtime health split by process, endpoint, protocol, delivery;
+- sessions and child threads.
+
+Tablet target: `900x1180`.
+
+```text
++------------------------------------------------------------------+
+| top 56: Workbench | selected member | search | debug             |
++-----+---------------------------------------+--------------------+
+| app | member workspace 548                 | runtime 288        |
+| 56  | +-----------------------------------+| +----------------+ |
+|     | | identity + current work/actions   || | health stack    | |
+|     | +-----------------------------------+| | sessions       | |
+|     | | inbox/outbox summary              || | child threads  | |
+|     | +-----------------------------------+| +----------------+ |
+|     | | timeline                          | runtime scroll     |
+|     | | canonical activity rows           |                    |
++-----+---------------------------------------+--------------------+
+| member meta drawer closed                                      |
++------------------------------------------------------------------+
+```
+
+Mobile target: `390x844`.
+
+```text
++--------------------------------------+
+| top 48: member | live/source | debug |
++--------------------------------------+
+| identity 104: role/status/current    |
++--------------------------------------+
+| action row 48: Send Deliver Retry    |
++--------------------------------------+
+| tabs 52: Timeline Inbox Runtime Meta |
++--------------------------------------+
+| active tab 592                       |
+| Timeline: msg/session/event rows     |
+| Inbox: queued/delivered/failed msgs  |
+| Runtime: health + sessions           |
+| Meta: prompt/skills/permissions      |
++--------------------------------------+
+```
+
+Scroll ownership:
+
+- desktop: member rail, timeline workspace, and runtime panel scroll
+  separately;
+- tablet: workspace and runtime panel scroll separately;
+- mobile: only the active tab scrolls.
+
+Screenshot acceptance:
+
+- member must look like a durable teammate with a workstation;
+- inbox/outbox, timeline, runtime, current work, and actions are visible;
+- assignment appears before report/evidence in the timeline;
+- provider/session details stay under member identity.
 
 ## Failure Modes
 
