@@ -12,11 +12,11 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use harness_core::{
     AgentEvent, AgentMember, AgentMemberStatus, AgentProviderConfig, AgentRuntime,
-    AgentRuntimeHealth, AgentRuntimeStatus, AgentTeam, AgentTeamStatus, Decision, Evidence, Gap,
-    GapSeverity, GapStatus, Goal, GoalStatus, Message, MessageDelivery, MessageDeliveryStatus,
-    MessageKind, MessageTerminalSource, Proposal, ProposalStatus, ProviderChildThread,
-    ProviderChildThreadStatus, ProviderSession, ProviderSessionStatus, Review, ReviewVerdict, Task,
-    TaskStatus,
+    AgentRuntimeHealth, AgentRuntimeStatus, AgentTeam, AgentTeamStatus, Decision, EvaluationOutcome,
+    Evidence, Gap, GapSeverity, GapStatus, Goal, GoalCase, GoalDesign, GoalEvaluation, GoalStatus,
+    Message, MessageDelivery, MessageDeliveryStatus, MessageKind, MessageTerminalSource, Proposal,
+    ProposalStatus, ProviderChildThread, ProviderChildThreadStatus, ProviderSession,
+    ProviderSessionStatus, Review, ReviewVerdict, Task, TaskStatus, Vision,
 };
 use harness_store::{HarnessStore, MessageDeliveryClaimResult};
 use thiserror::Error;
@@ -72,6 +72,10 @@ fn run() -> CliResult<()> {
         "git" => git_command(&store, &args[1..])?,
         "review" => review_command(&store, &args[1..])?,
         "gap" => gap_command(&store, &args[1..])?,
+        "goal-design" => goal_design_command(&store, &args[1..])?,
+        "goal-evaluation" => goal_evaluation_command(&store, &args[1..])?,
+        "goal-case" => goal_case_command(&store, &args[1..])?,
+        "vision" => vision_command(&store, &args[1..])?,
         "evidence" => evidence_command(&store, &args[1..])?,
         "decision" => decision_command(&store, &args[1..])?,
         "autonomy" => autonomy_command(&store, &args[1..])?,
@@ -1830,6 +1834,132 @@ fn gap_status_label(status: &GapStatus) -> &'static str {
         GapStatus::Deferred => "deferred",
         GapStatus::Wontfix => "wontfix",
     }
+}
+
+fn goal_design_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    require_subcommand(args, "goal-design create|list")?;
+    match args[0].as_str() {
+        "create" => goal_design_create(store, &args[1..]),
+        "list" => {
+            print_json(&latest_goal_designs_in_append_order(store)?)?;
+            Ok(())
+        }
+        other => Err(CliError::Usage(format!(
+            "unknown goal-design command: {other}"
+        ))),
+    }
+}
+
+fn goal_design_create(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    let design = GoalDesign {
+        id: value(args, "--id").unwrap_or_else(|| generated_id("goal-design")),
+        goal_id: required(args, "--goal")?,
+        scenario_summary: required(args, "--scenario")?,
+        non_goals: many(args, "--non-goal"),
+        risk_and_permission_boundaries: required(args, "--risk-boundaries")?,
+        required_infra: many(args, "--required-infra"),
+        agent_team: value(args, "--team"),
+        task_graph: many(args, "--task"),
+        evidence_plan: many(args, "--evidence-plan"),
+        acceptance_gates: many(args, "--acceptance-gate"),
+        created_at: now_string(),
+    };
+    store.append_goal_design(&design)?;
+    print_json(&design)?;
+    Ok(())
+}
+
+fn goal_evaluation_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    require_subcommand(args, "goal-evaluation create|list")?;
+    match args[0].as_str() {
+        "create" => goal_evaluation_create(store, &args[1..]),
+        "list" => {
+            print_json(&latest_goal_evaluations_in_append_order(store)?)?;
+            Ok(())
+        }
+        other => Err(CliError::Usage(format!(
+            "unknown goal-evaluation command: {other}"
+        ))),
+    }
+}
+
+fn goal_evaluation_create(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    let evaluation = GoalEvaluation {
+        id: value(args, "--id").unwrap_or_else(|| generated_id("goal-evaluation")),
+        goal_id: required(args, "--goal")?,
+        evaluator_agent_id: required(args, "--evaluator")?,
+        outcome: EvaluationOutcome::from(required(args, "--outcome")?),
+        what_worked: required(args, "--what-worked")?,
+        what_failed: required(args, "--what-failed")?,
+        missing_infra: many(args, "--missing-infra"),
+        missing_evidence: many(args, "--missing-evidence"),
+        team_design_feedback: value(args, "--team-feedback").unwrap_or_default(),
+        task_graph_feedback: value(args, "--task-graph-feedback").unwrap_or_default(),
+        dashboard_feedback: value(args, "--dashboard-feedback").unwrap_or_default(),
+        reusable_patterns: many(args, "--pattern"),
+        anti_patterns: many(args, "--anti-pattern"),
+        follow_up_task_ids: many(args, "--follow-up-task"),
+        proposed_goal_ids: many(args, "--proposed-goal"),
+        created_at: now_string(),
+    };
+    store.append_goal_evaluation(&evaluation)?;
+    print_json(&evaluation)?;
+    Ok(())
+}
+
+fn goal_case_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    require_subcommand(args, "goal-case create|list")?;
+    match args[0].as_str() {
+        "create" => goal_case_create(store, &args[1..]),
+        "list" => {
+            print_json(&latest_goal_cases_in_append_order(store)?)?;
+            Ok(())
+        }
+        other => Err(CliError::Usage(format!("unknown goal-case command: {other}"))),
+    }
+}
+
+fn goal_case_create(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    let case = GoalCase {
+        case_id: value(args, "--id").unwrap_or_else(|| generated_id("goal-case")),
+        source_goal_id: required(args, "--goal")?,
+        scenario_type: required(args, "--scenario-type")?,
+        project_adapter: value(args, "--adapter"),
+        goal_design_ref: value(args, "--design-ref"),
+        evaluation_ref: value(args, "--evaluation-ref"),
+        reusable_patterns: many(args, "--pattern"),
+        anti_patterns: many(args, "--anti-pattern"),
+        follow_up_refs: many(args, "--follow-up"),
+        tags: many(args, "--tag"),
+        created_at: now_string(),
+    };
+    store.append_goal_case(&case)?;
+    print_json(&case)?;
+    Ok(())
+}
+
+fn vision_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    require_subcommand(args, "vision create|list")?;
+    match args[0].as_str() {
+        "create" => vision_create(store, &args[1..]),
+        "list" => {
+            print_json(&latest_visions_in_append_order(store)?)?;
+            Ok(())
+        }
+        other => Err(CliError::Usage(format!("unknown vision command: {other}"))),
+    }
+}
+
+fn vision_create(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    let vision = Vision {
+        id: value(args, "--id").unwrap_or_else(|| generated_id("vision")),
+        summary: required(args, "--summary")?,
+        source_refs: many(args, "--source-ref"),
+        created_at: now_string(),
+    };
+    store.append_vision(&vision)?;
+    print_json(&vision)?;
+    Ok(())
 }
 
 fn dashboard_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
@@ -5252,9 +5382,16 @@ fn proposal_from_diff(store: &HarnessStore, args: &[String]) -> CliResult<()> {
 struct GoalLearningStatus {
     goal_id: String,
     task_ids: Vec<String>,
+    // Legacy representation: learning artifacts carried as Evidence rows
+    // (source_type=goal_design|goal_evaluation|goal_case). Kept for back-compat.
     goal_design: Vec<Evidence>,
     goal_evaluation: Vec<Evidence>,
     goal_cases: Vec<Evidence>,
+    // Graduated representation: first-class learning objects, scoped by goal_id.
+    // Dual-read: a goal satisfies the design/evaluation gates via EITHER source.
+    goal_design_objects: Vec<GoalDesign>,
+    goal_evaluation_objects: Vec<GoalEvaluation>,
+    goal_case_objects: Vec<GoalCase>,
     follow_up_tasks: Vec<Task>,
     assignment_messages: Vec<Message>,
     member_reports: Vec<Message>,
@@ -5282,6 +5419,9 @@ impl GoalLearningStatus {
             "goal_design": &self.goal_design,
             "goal_evaluation": &self.goal_evaluation,
             "goal_cases": &self.goal_cases,
+            "goal_design_objects": &self.goal_design_objects,
+            "goal_evaluation_objects": &self.goal_evaluation_objects,
+            "goal_case_objects": &self.goal_case_objects,
             "follow_up_tasks": &self.follow_up_tasks,
             "assignment_messages": &self.assignment_messages,
             "member_reports": &self.member_reports,
@@ -5300,12 +5440,22 @@ impl GoalLearningStatus {
         })
     }
 
+    fn has_goal_design(&self) -> bool {
+        !self.goal_design.is_empty() || !self.goal_design_objects.is_empty()
+    }
+
+    fn has_goal_evaluation(&self) -> bool {
+        !self.goal_evaluation.is_empty() || !self.goal_evaluation_objects.is_empty()
+    }
+
     fn warnings(&self, require_evaluation: bool) -> Vec<String> {
         let mut warnings = Vec::new();
-        if self.goal_design.is_empty() {
+        // Dual-read: either a legacy Evidence row OR a graduated GoalDesign object
+        // satisfies the gate (union by goal_id, no backfill).
+        if !self.has_goal_design() {
             warnings.push("missing goal_design evidence".into());
         }
-        if require_evaluation && self.goal_evaluation.is_empty() {
+        if require_evaluation && !self.has_goal_evaluation() {
             warnings.push("missing goal_evaluation evidence".into());
         }
         if self.assignment_messages.is_empty() {
@@ -5474,6 +5624,21 @@ fn goal_learning_status(store: &HarnessStore, goal_id: &str) -> CliResult<GoalLe
     let goal_design = evidence_by_type(&evidence, "goal_design");
     let goal_evaluation = evidence_by_type(&evidence, "goal_evaluation");
     let goal_cases = evidence_by_type(&evidence, "goal_case");
+
+    // Dual-read: graduated learning objects scoped by goal_id (no backfill; both
+    // representations coexist and union for the gate/event-order checks).
+    let goal_design_objects: Vec<_> = latest_goal_designs_in_append_order(store)?
+        .into_iter()
+        .filter(|design| design.goal_id == goal_id)
+        .collect();
+    let goal_evaluation_objects: Vec<_> = latest_goal_evaluations_in_append_order(store)?
+        .into_iter()
+        .filter(|evaluation| evaluation.goal_id == goal_id)
+        .collect();
+    let goal_case_objects: Vec<_> = latest_goal_cases_in_append_order(store)?
+        .into_iter()
+        .filter(|case| case.source_goal_id == goal_id)
+        .collect();
     let follow_up_tasks: Vec<_> = all_tasks
         .values()
         .filter(|task| {
@@ -5537,9 +5702,23 @@ fn goal_learning_status(store: &HarnessStore, goal_id: &str) -> CliResult<GoalLe
         })
         .collect();
 
+    // Union the legacy-evidence times with graduated-object times so event-order
+    // holds regardless of which representation a goal uses.
+    let design_times = union_times(
+        evidence_times(&goal_design),
+        created_at_times(goal_design_objects.iter().map(|design| &design.created_at)),
+    );
+    let evaluation_times = union_times(
+        evidence_times(&goal_evaluation),
+        created_at_times(
+            goal_evaluation_objects
+                .iter()
+                .map(|evaluation| &evaluation.created_at),
+        ),
+    );
     let event_order = GoalLearningEventOrder {
         design_before_assignment: compare_first(
-            evidence_times(&goal_design),
+            design_times,
             message_times(&assignment_messages),
             |left, right| left <= right,
         ),
@@ -5555,7 +5734,7 @@ fn goal_learning_status(store: &HarnessStore, goal_id: &str) -> CliResult<GoalLe
         ),
         decision_before_evaluation: compare_first(
             decision_times(&decisions),
-            evidence_times(&goal_evaluation),
+            evaluation_times,
             |left, right| left <= right,
         ),
     };
@@ -5566,6 +5745,9 @@ fn goal_learning_status(store: &HarnessStore, goal_id: &str) -> CliResult<GoalLe
         goal_design,
         goal_evaluation,
         goal_cases,
+        goal_design_objects,
+        goal_evaluation_objects,
+        goal_case_objects,
         follow_up_tasks,
         assignment_messages,
         member_reports,
@@ -5608,6 +5790,19 @@ fn evidence_times(evidence: &[Evidence]) -> Vec<u128> {
         .iter()
         .filter_map(|item| parse_unix_ms(&item.created_at))
         .collect()
+}
+
+/// Parse a sequence of `created_at` strings into unix-ms times. Used to fold the
+/// graduated learning objects into the same event-order check as legacy evidence.
+fn created_at_times<'a>(created_at: impl Iterator<Item = &'a String>) -> Vec<u128> {
+    created_at.filter_map(|value| parse_unix_ms(value)).collect()
+}
+
+/// Union two time sets so the dual-read gate treats legacy evidence and graduated
+/// objects equivalently.
+fn union_times(mut left: Vec<u128>, mut right: Vec<u128>) -> Vec<u128> {
+    left.append(&mut right);
+    left
 }
 
 fn message_times(messages: &[Message]) -> Vec<u128> {
@@ -6133,6 +6328,10 @@ fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::Value> {
     let decisions = store.decisions()?;
     let reviews = latest_reviews_in_append_order(store)?;
     let gaps = latest_gaps_in_append_order(store)?;
+    let goal_designs = latest_goal_designs_in_append_order(store)?;
+    let goal_evaluations = latest_goal_evaluations_in_append_order(store)?;
+    let goal_cases = latest_goal_cases_in_append_order(store)?;
+    let visions = latest_visions_in_append_order(store)?;
     let sessions = latest_provider_sessions_in_append_order(store)?;
     let provider_child_threads = store.provider_child_threads()?;
     let autonomous_proposals =
@@ -6223,6 +6422,10 @@ fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::Value> {
         "decisions": decisions,
         "reviews": reviews,
         "gaps": gaps,
+        "goal_designs": goal_designs,
+        "goal_evaluations": goal_evaluations,
+        "goal_cases": goal_cases,
+        "visions": visions,
         "provider_sessions": sessions,
         "provider_child_threads": provider_child_threads
     }))
@@ -6413,6 +6616,52 @@ fn latest_gaps_in_append_order(store: &HarnessStore) -> CliResult<Vec<Gap>> {
         .into_iter()
         .filter_map(|id| gaps_by_id.remove(&id))
         .collect())
+}
+
+fn latest_goal_designs_in_append_order(store: &HarnessStore) -> CliResult<Vec<GoalDesign>> {
+    let mut ids = Vec::new();
+    let mut by_id = BTreeMap::new();
+    for design in store.goal_designs()? {
+        ids.retain(|id| id != &design.id);
+        ids.push(design.id.clone());
+        by_id.insert(design.id.clone(), design);
+    }
+    Ok(ids.into_iter().filter_map(|id| by_id.remove(&id)).collect())
+}
+
+fn latest_goal_evaluations_in_append_order(
+    store: &HarnessStore,
+) -> CliResult<Vec<GoalEvaluation>> {
+    let mut ids = Vec::new();
+    let mut by_id = BTreeMap::new();
+    for evaluation in store.goal_evaluations()? {
+        ids.retain(|id| id != &evaluation.id);
+        ids.push(evaluation.id.clone());
+        by_id.insert(evaluation.id.clone(), evaluation);
+    }
+    Ok(ids.into_iter().filter_map(|id| by_id.remove(&id)).collect())
+}
+
+fn latest_goal_cases_in_append_order(store: &HarnessStore) -> CliResult<Vec<GoalCase>> {
+    let mut ids = Vec::new();
+    let mut by_id = BTreeMap::new();
+    for case in store.goal_cases()? {
+        ids.retain(|id| id != &case.case_id);
+        ids.push(case.case_id.clone());
+        by_id.insert(case.case_id.clone(), case);
+    }
+    Ok(ids.into_iter().filter_map(|id| by_id.remove(&id)).collect())
+}
+
+fn latest_visions_in_append_order(store: &HarnessStore) -> CliResult<Vec<Vision>> {
+    let mut ids = Vec::new();
+    let mut by_id = BTreeMap::new();
+    for vision in store.visions()? {
+        ids.retain(|id| id != &vision.id);
+        ids.push(vision.id.clone());
+        by_id.insert(vision.id.clone(), vision);
+    }
+    Ok(ids.into_iter().filter_map(|id| by_id.remove(&id)).collect())
 }
 
 fn latest_runtimes(store: &HarnessStore) -> CliResult<BTreeMap<String, AgentRuntime>> {
@@ -8461,6 +8710,105 @@ mod tests {
         status
             .require_for_gate(&store, true, false, None)
             .expect("complete chain should pass");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn goal_learning_status_dual_reads_graduated_objects() {
+        // The design/evaluation gates must pass when the artifacts are graduated
+        // first-class objects (GoalDesign/GoalEvaluation) instead of legacy
+        // Evidence rows — proving the union-by-goal_id dual-read with no backfill.
+        let root = std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("store")));
+        let store = HarnessStore::new(&root);
+        let goal = make_goal("goal-1");
+        let task = make_task("task-1", "goal-1");
+        store.append_goal(&goal).expect("append goal");
+        store.append_task(&task).expect("append task");
+        store
+            .append_goal_design(&GoalDesign {
+                id: "design-1".into(),
+                goal_id: "goal-1".into(),
+                scenario_summary: "Render learning layer.".into(),
+                non_goals: vec![],
+                risk_and_permission_boundaries: "Read-only.".into(),
+                required_infra: vec![],
+                agent_team: None,
+                task_graph: vec!["task-1".into()],
+                evidence_plan: vec![],
+                acceptance_gates: vec!["cargo test".into()],
+                created_at: "unix-ms:100".into(),
+            })
+            .expect("append goal design object");
+        store
+            .append_message(&make_timed_message(
+                "assign",
+                MessageKind::Task,
+                "leader",
+                Some("worker"),
+                "task-1",
+                "unix-ms:110",
+            ))
+            .expect("append assignment");
+        store
+            .append_message(&make_timed_message(
+                "report",
+                MessageKind::Report,
+                "worker",
+                Some("leader"),
+                "task-1",
+                "unix-ms:120",
+            ))
+            .expect("append report");
+        store
+            .append_decision(&make_timed_decision("decision", "task-1", "unix-ms:130"))
+            .expect("append decision");
+        // The critic/evaluator-evidence warning still needs a critic row; supply it.
+        store
+            .append_evidence(&make_timed_evidence(
+                "critic",
+                "critic_findings",
+                Some("task-1"),
+                "unix-ms:135",
+            ))
+            .expect("append critic evidence");
+        store
+            .append_goal_evaluation(&GoalEvaluation {
+                id: "eval-1".into(),
+                goal_id: "goal-1".into(),
+                evaluator_agent_id: "evaluator".into(),
+                outcome: EvaluationOutcome::Success,
+                what_worked: "Dual-read.".into(),
+                what_failed: "None.".into(),
+                missing_infra: vec![],
+                missing_evidence: vec![],
+                team_design_feedback: "ok".into(),
+                task_graph_feedback: "ok".into(),
+                dashboard_feedback: "ok".into(),
+                reusable_patterns: vec![],
+                anti_patterns: vec![],
+                follow_up_task_ids: vec![],
+                proposed_goal_ids: vec![],
+                created_at: "unix-ms:140".into(),
+            })
+            .expect("append goal evaluation object");
+
+        let status = goal_learning_status(&store, "goal-1").expect("status");
+        // No legacy evidence rows for design/evaluation.
+        assert!(status.goal_design.is_empty());
+        assert!(status.goal_evaluation.is_empty());
+        // Graduated objects are surfaced and satisfy the gate.
+        assert_eq!(status.goal_design_objects.len(), 1);
+        assert_eq!(status.goal_evaluation_objects.len(), 1);
+        assert!(status.has_goal_design());
+        assert!(status.has_goal_evaluation());
+        assert!(
+            status.warnings(true).is_empty(),
+            "graduated objects must satisfy the gate, got: {:?}",
+            status.warnings(true)
+        );
+        status
+            .require_for_gate(&store, true, false, None)
+            .expect("dual-read chain should pass the strict gate");
         let _ = std::fs::remove_dir_all(root);
     }
 

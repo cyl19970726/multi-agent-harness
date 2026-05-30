@@ -6,9 +6,10 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use harness_core::{
-    AgentEvent, AgentMember, AgentRuntime, AgentTeam, Decision, Evidence, Gap, Goal, Message,
-    MessageDelivery, MessageDeliveryStatus, MessageTerminalSource, Proposal, ProviderChildThread,
-    ProviderSession, ProviderSessionStatus, Review, Task,
+    AgentEvent, AgentMember, AgentRuntime, AgentTeam, Decision, Evidence, Gap, Goal, GoalCase,
+    GoalDesign, GoalEvaluation, Message, MessageDelivery, MessageDeliveryStatus,
+    MessageTerminalSource, Proposal, ProviderChildThread, ProviderSession, ProviderSessionStatus,
+    Review, Task, Vision,
 };
 use serde::{de::DeserializeOwned, Serialize};
 use thiserror::Error;
@@ -110,6 +111,22 @@ impl HarnessStore {
         self.append_jsonl("gaps.jsonl", value)
     }
 
+    pub fn append_goal_design(&self, value: &GoalDesign) -> StoreResult<()> {
+        self.append_jsonl("goal_designs.jsonl", value)
+    }
+
+    pub fn append_goal_evaluation(&self, value: &GoalEvaluation) -> StoreResult<()> {
+        self.append_jsonl("goal_evaluations.jsonl", value)
+    }
+
+    pub fn append_goal_case(&self, value: &GoalCase) -> StoreResult<()> {
+        self.append_jsonl("goal_cases.jsonl", value)
+    }
+
+    pub fn append_vision(&self, value: &Vision) -> StoreResult<()> {
+        self.append_jsonl("visions.jsonl", value)
+    }
+
     pub fn append_provider_session(&self, value: &ProviderSession) -> StoreResult<()> {
         self.append_jsonl("provider_sessions.jsonl", value)
     }
@@ -209,6 +226,22 @@ impl HarnessStore {
 
     pub fn gaps(&self) -> StoreResult<Vec<Gap>> {
         self.read_jsonl("gaps.jsonl")
+    }
+
+    pub fn goal_designs(&self) -> StoreResult<Vec<GoalDesign>> {
+        self.read_jsonl("goal_designs.jsonl")
+    }
+
+    pub fn goal_evaluations(&self) -> StoreResult<Vec<GoalEvaluation>> {
+        self.read_jsonl("goal_evaluations.jsonl")
+    }
+
+    pub fn goal_cases(&self) -> StoreResult<Vec<GoalCase>> {
+        self.read_jsonl("goal_cases.jsonl")
+    }
+
+    pub fn visions(&self) -> StoreResult<Vec<Vision>> {
+        self.read_jsonl("visions.jsonl")
     }
 
     pub fn provider_sessions(&self) -> StoreResult<Vec<ProviderSession>> {

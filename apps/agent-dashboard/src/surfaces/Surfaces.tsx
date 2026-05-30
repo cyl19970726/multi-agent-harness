@@ -62,7 +62,16 @@ import {
   taskTitle,
   type WorkbenchModel,
 } from "../model/readModel";
-import type { Gap, Goal, Review, Task, WorkflowWarning } from "../types";
+import type {
+  Gap,
+  Goal,
+  GoalDesign,
+  GoalEvaluation,
+  Review,
+  Task,
+  Vision,
+  WorkflowWarning,
+} from "../types";
 import type { SelectionState } from "../app/selection";
 
 interface SurfaceProps {
@@ -570,6 +579,13 @@ export function VisionOverview({ model, onSelectionChange }: SurfaceProps) {
     { id: "proposed", title: "Proposed", goals: model.proposedGoals },
   ];
   const proposals = model.snapshot.autonomous_proposals ?? [];
+  const visions = model.visions;
+  // Goals linked to each vision via Goal.vision_id, for the goal↔vision link.
+  const goalsByVision = new Map<string, Goal[]>();
+  for (const goal of model.goals) {
+    if (goal.vision_id == null) continue;
+    goalsByVision.set(goal.vision_id, [...(goalsByVision.get(goal.vision_id) ?? []), goal]);
+  }
   return (
     <div className="space-y-5">
       <SurfaceHeader
@@ -599,6 +615,27 @@ export function VisionOverview({ model, onSelectionChange }: SurfaceProps) {
         />
         <ProofStat label="Proposed" value={model.proposedGoals.length} tone="decision" caption="awaiting accept" />
       </div>
+
+      <Section kicker="Durable product vision" title="Visions" className="rise">
+        <div className="space-y-2 p-3">
+          {visions.length ? (
+            visions.map((vision) => (
+              <VisionRow
+                key={vision.id}
+                vision={vision}
+                goals={goalsByVision.get(vision.id) ?? []}
+                onSelectGoal={(goalId) => onSelectionChange({ goalId, surface: "goal" })}
+              />
+            ))
+          ) : (
+            <EmptyState
+              icon={Target}
+              title="No visions recorded"
+              description="A Vision is the durable product direction a goal is scheduled against."
+            />
+          )}
+        </div>
+      </Section>
 
       <div className="grid gap-4 xl:grid-cols-[1fr_20rem]">
         <Section kicker="Completion proven by decision + evaluation" title="Goal collection" className="rise">
@@ -673,6 +710,51 @@ export function VisionOverview({ model, onSelectionChange }: SurfaceProps) {
   );
 }
 
+/** A Vision with the goals scheduled against it (goal↔vision link). */
+function VisionRow({
+  vision,
+  goals,
+  onSelectGoal,
+}: {
+  vision: Vision;
+  goals: Goal[];
+  onSelectGoal: (goalId: string) => void;
+}) {
+  return (
+    <div className="rounded-md border border-border bg-background/40 p-3">
+      <div className="flex items-center gap-2">
+        <Target className="size-3.5 text-primary" />
+        <MonoId>{vision.id}</MonoId>
+        <Badge tone={goals.length ? "good" : "muted"}>{goals.length} goals</Badge>
+      </div>
+      <p className="mt-1.5 text-[13px] leading-snug text-foreground/90">
+        {vision.summary ?? "No summary recorded"}
+      </p>
+      {goals.length > 0 && (
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {goals.map((goal) => (
+            <button
+              key={goal.id}
+              type="button"
+              onClick={() => onSelectGoal(goal.id)}
+              className="rounded-md border border-border bg-muted/40 px-2 py-0.5 text-[11px] text-foreground/90 transition-colors hover:bg-muted"
+            >
+              {goal.title ?? goal.id}
+            </button>
+          ))}
+        </div>
+      )}
+      {vision.source_refs && vision.source_refs.length > 0 && (
+        <div className="mt-2 flex flex-col gap-0.5">
+          {vision.source_refs.map((ref) => (
+            <MonoId key={ref}>{ref}</MonoId>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ------------------------------------------------------------------ */
 /* Goal document                                                      */
 /* ------------------------------------------------------------------ */
@@ -698,7 +780,14 @@ export function GoalDocument({ model, onSelectionChange }: SurfaceProps) {
   const goalProposals = (model.snapshot.autonomous_proposals ?? []).filter(
     (p) => p.goal_id === goal.id,
   );
-  const hasEvaluation = (learning?.goal_evaluation?.length ?? 0) > 0;
+  // Dual-read: a graduated GoalDesign/GoalEvaluation object OR a legacy
+  // Evidence row satisfies the closeout invariant.
+  const design = model.goalDesignsForGoal[0];
+  const evaluation = model.goalEvaluationsForGoal[0];
+  const hasEvaluation =
+    Boolean(evaluation) || (learning?.goal_evaluation?.length ?? 0) > 0;
+  const hasDesign =
+    Boolean(design) || (learning?.goal_design?.length ?? 0) > 0;
   const hasDecision = Boolean(goalDecision);
   const blockedTasks = model.goalTasks.filter((t) => t.status === "blocked");
 
@@ -728,6 +817,14 @@ export function GoalDocument({ model, onSelectionChange }: SurfaceProps) {
             <CriteriaList items={goal.success_criteria} empty="No success criteria recorded" />
           </Section>
 
+          <Section kicker="Executable thesis" title="Goal design" className="rise">
+            <GoalDesignSection design={design} />
+          </Section>
+
+          <Section kicker="Retrospective" title="Goal evaluation" className="rise">
+            <GoalEvaluationSection evaluation={evaluation} />
+          </Section>
+
           <Section
             kicker="Closeout invariant"
             title="Goal evaluation & decision"
@@ -738,6 +835,7 @@ export function GoalDocument({ model, onSelectionChange }: SurfaceProps) {
                 A goal is complete only after a Leader decision and a GoalEvaluation —
                 never just because its tasks are done.
               </p>
+              <ProofRow ok={hasDesign} label="GoalDesign" detail={hasDesign ? "recorded" : "missing"} />
               <ProofRow ok={hasDecision} label="Leader decision" detail={goalDecision?.decision ?? "missing"} />
               <ProofRow ok={hasEvaluation} label="GoalEvaluation" detail={hasEvaluation ? "recorded" : "missing"} />
             </div>
@@ -770,9 +868,24 @@ export function GoalDocument({ model, onSelectionChange }: SurfaceProps) {
             <div className="p-4">
               <MetaList
                 items={[
-                  { label: "Goal design", value: learningCount(learning?.goal_design) },
-                  { label: "Evaluation", value: learningCount(learning?.goal_evaluation) },
-                  { label: "Goal cases", value: learningCount(learning?.goal_cases) },
+                  {
+                    label: "Goal design",
+                    value:
+                      model.goalDesignsForGoal.length +
+                      learningCount(learning?.goal_design),
+                  },
+                  {
+                    label: "Evaluation",
+                    value:
+                      model.goalEvaluationsForGoal.length +
+                      learningCount(learning?.goal_evaluation),
+                  },
+                  {
+                    label: "Goal cases",
+                    value:
+                      model.goalCasesForGoal.length +
+                      learningCount(learning?.goal_cases),
+                  },
                   { label: "Member reports", value: learningCount(learning?.member_reports) },
                   { label: "Follow-ups", value: learningCount(learning?.follow_up_tasks) },
                   { label: "Blocked tasks", value: blockedTasks.length },
@@ -808,6 +921,129 @@ export function GoalDocument({ model, onSelectionChange }: SurfaceProps) {
 
 function learningCount(value?: unknown[]): number {
   return value?.length ?? 0;
+}
+
+/** A labeled bullet list used by the GoalDesign / GoalEvaluation sections. */
+function LabeledList({
+  label,
+  items,
+  tone = "info",
+}: {
+  label: string;
+  items?: string[];
+  tone?: StatusTone;
+}) {
+  if (!items?.length) return null;
+  return (
+    <div>
+      <p className="mb-1 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+        <StatusDot tone={tone} /> {label}
+      </p>
+      <ul className="space-y-1">
+        {items.map((item, index) => (
+          <li key={index} className="flex items-start gap-2 text-[13px] text-foreground/90">
+            <span className="mt-1 size-1 shrink-0 rounded-full bg-muted-foreground/60" />
+            <span>{item}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+/** Render a GoalDesign as a real section: scenario, non-goals, acceptance gates. */
+function GoalDesignSection({ design }: { design?: GoalDesign }) {
+  if (!design) {
+    return (
+      <EmptyState
+        title="No goal design recorded"
+        description="A GoalDesign captures the scenario, non-goals, and acceptance gates before work starts."
+      />
+    );
+  }
+  return (
+    <div className="space-y-3 p-4">
+      <div className="flex items-center gap-2">
+        <MonoId>{design.id}</MonoId>
+        {design.agent_team && <Badge tone="info">team: {design.agent_team}</Badge>}
+      </div>
+      {design.scenario_summary && (
+        <p className="text-[13px] leading-relaxed text-foreground/90">
+          {design.scenario_summary}
+        </p>
+      )}
+      {design.risk_and_permission_boundaries && (
+        <div>
+          <p className="mb-1 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+            <StatusDot tone="warn" /> Risk & permission boundaries
+          </p>
+          <p className="text-[13px] text-foreground/90">
+            {design.risk_and_permission_boundaries}
+          </p>
+        </div>
+      )}
+      <LabeledList label="Non-goals" items={design.non_goals} tone="bad" />
+      <LabeledList label="Required infra" items={design.required_infra} tone="info" />
+      <LabeledList label="Acceptance gates" items={design.acceptance_gates} tone="good" />
+    </div>
+  );
+}
+
+/** Render a GoalEvaluation as a real section: outcome, what worked/failed, patterns. */
+function GoalEvaluationSection({ evaluation }: { evaluation?: GoalEvaluation }) {
+  if (!evaluation) {
+    return (
+      <EmptyState
+        title="No goal evaluation recorded"
+        description="A GoalEvaluation captures what worked, what failed, and reusable patterns for the next round."
+      />
+    );
+  }
+  return (
+    <div className="space-y-3 p-4">
+      <div className="flex items-center gap-2">
+        <Badge tone={evaluationOutcomeTone(evaluation.outcome)}>
+          {evaluation.outcome ?? "unknown"}
+        </Badge>
+        <MonoId>{evaluation.id}</MonoId>
+      </div>
+      {evaluation.what_worked && (
+        <div>
+          <p className="mb-1 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+            <StatusDot tone="good" /> What worked
+          </p>
+          <p className="text-[13px] text-foreground/90">{evaluation.what_worked}</p>
+        </div>
+      )}
+      {evaluation.what_failed && (
+        <div>
+          <p className="mb-1 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+            <StatusDot tone="bad" /> What failed
+          </p>
+          <p className="text-[13px] text-foreground/90">{evaluation.what_failed}</p>
+        </div>
+      )}
+      <LabeledList label="Reusable patterns" items={evaluation.reusable_patterns} tone="good" />
+      <LabeledList label="Anti-patterns" items={evaluation.anti_patterns} tone="bad" />
+      <LabeledList label="Missing infra" items={evaluation.missing_infra} tone="warn" />
+    </div>
+  );
+}
+
+/** Map a GoalEvaluation outcome (open enum) to a status tone. */
+function evaluationOutcomeTone(outcome?: string): StatusTone {
+  switch ((outcome ?? "").toLowerCase()) {
+    case "success":
+      return "good";
+    case "partial":
+      return "warn";
+    case "failed":
+      return "bad";
+    case "blocked":
+      return "bad";
+    default:
+      return "info";
+  }
 }
 
 /* ------------------------------------------------------------------ */

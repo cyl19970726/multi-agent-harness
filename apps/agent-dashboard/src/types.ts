@@ -228,6 +228,69 @@ export interface Gap {
   updated_at?: string;
 }
 
+/**
+ * Executable thesis for a Goal (the generic subset of the strategy-creation
+ * checklist). Graduates from `Evidence(source_type=goal_design)`; both
+ * representations coexist (dual-read by goal_id, no backfill).
+ */
+export interface GoalDesign {
+  id: string;
+  goal_id: string;
+  scenario_summary?: string;
+  non_goals?: string[];
+  risk_and_permission_boundaries?: string;
+  required_infra?: string[];
+  agent_team?: string | null;
+  task_graph?: string[];
+  evidence_plan?: string[];
+  acceptance_gates?: string[];
+  created_at?: string;
+}
+
+/** Retrospective for a Goal: what worked / failed, reusable patterns, follow-ups. */
+export interface GoalEvaluation {
+  id: string;
+  goal_id: string;
+  evaluator_agent_id?: string;
+  /** Open enum: success/partial/failed/blocked, or an adapter-supplied value. */
+  outcome?: string;
+  what_worked?: string;
+  what_failed?: string;
+  missing_infra?: string[];
+  missing_evidence?: string[];
+  team_design_feedback?: string;
+  task_graph_feedback?: string;
+  dashboard_feedback?: string;
+  reusable_patterns?: string[];
+  anti_patterns?: string[];
+  follow_up_task_ids?: string[];
+  proposed_goal_ids?: string[];
+  created_at?: string;
+}
+
+/** Reusable teaching artifact distilled from a completed Goal. */
+export interface GoalCase {
+  case_id: string;
+  source_goal_id: string;
+  scenario_type?: string;
+  project_adapter?: string | null;
+  goal_design_ref?: string | null;
+  evaluation_ref?: string | null;
+  reusable_patterns?: string[];
+  anti_patterns?: string[];
+  follow_up_refs?: string[];
+  tags?: string[];
+  created_at?: string;
+}
+
+/** A durable product vision a Goal can be scheduled against (Goal.vision_id). */
+export interface Vision {
+  id: string;
+  summary?: string;
+  source_refs?: string[];
+  created_at?: string;
+}
+
 export interface AutonomousProposal {
   id: string;
   kind?: string;
@@ -253,9 +316,14 @@ export interface GoalLearningStatus {
   ok?: boolean;
   warnings?: string[];
   task_ids?: string[];
+  /** Legacy representation: learning artifacts carried as Evidence rows. */
   goal_design?: unknown[];
   goal_evaluation?: unknown[];
   goal_cases?: { source_ref?: string; id?: string }[];
+  /** Graduated representation: first-class learning objects (dual-read union). */
+  goal_design_objects?: GoalDesign[];
+  goal_evaluation_objects?: GoalEvaluation[];
+  goal_case_objects?: GoalCase[];
   follow_up_tasks?: Task[];
   member_reports?: unknown[];
   decisions?: unknown[];
@@ -277,6 +345,10 @@ export interface DashboardSnapshot {
   decisions?: Decision[];
   reviews?: Review[];
   gaps?: Gap[];
+  goal_designs?: GoalDesign[];
+  goal_evaluations?: GoalEvaluation[];
+  goal_cases?: GoalCase[];
+  visions?: Vision[];
   provider_sessions?: ProviderSession[];
   provider_child_threads?: ProviderChildThread[];
   goal_learning_status?: GoalLearningStatus[];
