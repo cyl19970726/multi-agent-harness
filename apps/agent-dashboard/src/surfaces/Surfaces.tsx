@@ -789,6 +789,12 @@ export function GoalDocument({ model, onSelectionChange }: SurfaceProps) {
   const hasDesign =
     Boolean(design) || (learning?.goal_design?.length ?? 0) > 0;
   const hasDecision = Boolean(goalDecision);
+  // Closeout gate (§3.7): the CLI computes readiness; the UI mirrors it. A goal may
+  // close only with a closeout Decision + GoalEvaluation, or a valid waiver.
+  const hasCloseoutDecision = learning?.has_closeout_decision ?? false;
+  const hasCloseoutWaiver = learning?.has_closeout_waiver ?? false;
+  const mayClose = learning?.may_close ?? false;
+  const closeoutBlockers = learning?.closeout_blockers ?? [];
   const blockedTasks = model.goalTasks.filter((t) => t.status === "blocked");
 
   return (
@@ -838,6 +844,24 @@ export function GoalDocument({ model, onSelectionChange }: SurfaceProps) {
               <ProofRow ok={hasDesign} label="GoalDesign" detail={hasDesign ? "recorded" : "missing"} />
               <ProofRow ok={hasDecision} label="Leader decision" detail={goalDecision?.decision ?? "missing"} />
               <ProofRow ok={hasEvaluation} label="GoalEvaluation" detail={hasEvaluation ? "recorded" : "missing"} />
+              <ProofRow
+                ok={hasCloseoutDecision}
+                label="Closeout decision"
+                detail={hasCloseoutDecision ? "recorded (kind=closeout, evidence)" : "missing"}
+              />
+              <ProofRow
+                ok={mayClose}
+                label="May close"
+                detail={
+                  mayClose
+                    ? hasCloseoutWaiver
+                      ? "yes (via waiver)"
+                      : "yes (decision + evaluation)"
+                    : closeoutBlockers.length
+                      ? closeoutBlockers.join("; ")
+                      : "blocked"
+                }
+              />
             </div>
           </Section>
 

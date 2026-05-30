@@ -339,7 +339,7 @@ fn team_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
 }
 
 fn goal_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    require_subcommand(args, "goal create|list|learning-status")?;
+    require_subcommand(args, "goal create|list|learning-status|close")?;
     match args[0].as_str() {
         "create" => {
             let goal = Goal {
@@ -373,9 +373,55 @@ fn goal_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
                 )?;
             }
         }
+        "close" => goal_close(store, &args[1..])?,
         "list" => print_json(&store.goals()?)?,
         other => return Err(CliError::Usage(format!("unknown goal command: {other}"))),
     }
+    Ok(())
+}
+
+/// Transition a Goal to `complete`, enforcing the §3.7 closeout gate: a goal may
+/// only close with a closeout Decision (decision_kind=closeout, >=1 evidence) AND a
+/// GoalEvaluation, OR an explicit valid waiver. Refuses otherwise with a clear error.
+fn goal_close(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    let goal_id = required(args, "--id").or_else(|_| required(args, "--goal"))?;
+    let mut goal = latest_goals(store)?
+        .remove(&goal_id)
+        .ok_or_else(|| CliError::Usage(format!("goal not found: {goal_id}")))?;
+    let status = goal_learning_status(store, &goal_id)?;
+    status.require_closeout()?;
+
+    // Record the decision id that satisfied the gate so the close is auditable and
+    // the Goal carries closed_by_decision_id (the field added in WP-B).
+    let closing_decision_id = status
+        .closeout_decisions
+        .last()
+        .map(|decision| decision.id.clone())
+        .or_else(|| {
+            status
+                .valid_closeout_waivers()
+                .last()
+                .map(|decision| decision.id.clone())
+        });
+
+    if goal.status != GoalStatus::Complete {
+        goal.status = GoalStatus::Complete;
+    }
+    if goal.closed_by_decision_id.is_none() {
+        goal.closed_by_decision_id = closing_decision_id.clone();
+    }
+    goal.updated_at = now_string();
+    store.append_goal(&goal)?;
+    append_agent_event(
+        store,
+        &goal.owner_agent_id,
+        None,
+        None,
+        "goal_closed",
+        &format!("Goal {goal_id} marked complete via closeout gate"),
+        closing_decision_id.as_deref(),
+    )?;
+    print_json(&goal)?;
     Ok(())
 }
 
@@ -714,6 +760,7 @@ fn decision_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
                 is_waiver: has_flag(args, "--waiver"),
                 follow_up_task_id: value(args, "--follow-up-task"),
             };
+            validate_decision(&decision)?;
             store.append_decision(&decision)?;
             print_json(&decision)?;
         }
@@ -723,6 +770,38 @@ fn decision_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
                 "unknown decision command: {other}"
             )))
         }
+    }
+    Ok(())
+}
+
+/// Canonical stop-gate decision values (§3.6). Kept domain-neutral: the harness
+/// only knows "stop" vs "continue", never *why* a run must stop.
+const STOP_GATE_DECISIONS: [&str; 2] = ["stop_approved", "continue_required"];
+
+/// Validate a Decision before it is persisted. Enforces the WP-F write-time rules:
+/// - is_waiver=true requires a follow_up_task_id AND >=1 evidence_ids (§3.6).
+/// - decision_kind=stop_gate requires decision in {stop_approved, continue_required}.
+fn validate_decision(decision: &Decision) -> CliResult<()> {
+    if decision.is_waiver {
+        if decision.follow_up_task_id.is_none() {
+            return Err(CliError::Usage(
+                "a waiver decision (--waiver) must name a --follow-up-task".into(),
+            ));
+        }
+        if decision.evidence_ids.is_empty() {
+            return Err(CliError::Usage(
+                "a waiver decision (--waiver) must reference at least one --evidence".into(),
+            ));
+        }
+    }
+    if decision.decision_kind.as_deref() == Some("stop_gate")
+        && !STOP_GATE_DECISIONS.contains(&decision.decision.as_str())
+    {
+        return Err(CliError::Usage(format!(
+            "decision_kind=stop_gate requires --decision one of {}; got \"{}\"",
+            STOP_GATE_DECISIONS.join("|"),
+            decision.decision
+        )));
     }
     Ok(())
 }
@@ -5399,6 +5478,13 @@ struct GoalLearningStatus {
     reviews: Vec<Review>,
     decisions: Vec<Decision>,
     waivers: Vec<Decision>,
+    // Closeout-gate inputs (§3.7): a closeout Decision is one scoped to this goal
+    // (goal_id == G OR task in the goal's graph) with decision_kind=closeout and at
+    // least one backing evidence_id. A closeout waiver is an explicit is_waiver
+    // Decision (also goal-scoped) that names a follow_up_task_id and carries
+    // evidence — it lets the goal close without the evaluation chain.
+    closeout_decisions: Vec<Decision>,
+    closeout_waivers: Vec<Decision>,
     event_order: GoalLearningEventOrder,
 }
 
@@ -5429,6 +5515,16 @@ impl GoalLearningStatus {
             "reviews": &self.reviews,
             "decisions": &self.decisions,
             "waivers": &self.waivers,
+            "closeout_decisions": &self.closeout_decisions,
+            "closeout_waivers": &self.closeout_waivers,
+            // Closeout-gate readiness (§3.7, §3.4 of WP-F): the frontend reads these
+            // to render the closeout-gate ProofRow and the goal_close_without_evaluation
+            // / waiver_without_follow_up warnings.
+            "has_closeout_decision": self.has_closeout_decision(),
+            "has_evaluation": self.has_goal_evaluation(),
+            "has_closeout_waiver": self.has_valid_closeout_waiver(),
+            "may_close": self.may_close(),
+            "closeout_blockers": self.closeout_blockers(),
             "event_order": {
                 "design_before_assignment": self.event_order.design_before_assignment,
                 "assignment_before_report": self.event_order.assignment_before_report,
@@ -5446,6 +5542,68 @@ impl GoalLearningStatus {
 
     fn has_goal_evaluation(&self) -> bool {
         !self.goal_evaluation.is_empty() || !self.goal_evaluation_objects.is_empty()
+    }
+
+    /// A closeout Decision (decision_kind=closeout, >=1 evidence_id) exists for the
+    /// goal. The evidence requirement is already enforced when the field is built.
+    fn has_closeout_decision(&self) -> bool {
+        !self.closeout_decisions.is_empty()
+    }
+
+    /// At least one valid closeout waiver: is_waiver=true, names a follow_up_task_id
+    /// and carries >=1 evidence_id. These are the structural fields the CLI enforces
+    /// at write time; the gate re-checks them here so a hand-edited JSONL row cannot
+    /// slip an invalid waiver past the closeout gate.
+    fn valid_closeout_waivers(&self) -> impl Iterator<Item = &Decision> {
+        self.closeout_waivers.iter().filter(|decision| {
+            decision.follow_up_task_id.is_some() && !decision.evidence_ids.is_empty()
+        })
+    }
+
+    fn has_valid_closeout_waiver(&self) -> bool {
+        self.valid_closeout_waivers().next().is_some()
+    }
+
+    /// The §3.7 closeout gate: a goal may become complete only with BOTH a closeout
+    /// Decision and a GoalEvaluation, OR an explicit valid waiver.
+    fn may_close(&self) -> bool {
+        (self.has_closeout_decision() && self.has_goal_evaluation()) || self.has_valid_closeout_waiver()
+    }
+
+    /// Human-readable reasons the closeout gate is not yet satisfied. Empty when
+    /// [`may_close`](Self::may_close) is true.
+    fn closeout_blockers(&self) -> Vec<String> {
+        if self.may_close() {
+            return Vec::new();
+        }
+        let mut blockers = Vec::new();
+        if !self.has_closeout_decision() {
+            blockers.push(
+                "missing closeout decision (decision_kind=closeout with >=1 evidence_id)".into(),
+            );
+        }
+        if !self.has_goal_evaluation() {
+            blockers.push("missing goal_evaluation".into());
+        }
+        // Surface why an attempted waiver did not count, when one is present.
+        if !self.closeout_waivers.is_empty() && !self.has_valid_closeout_waiver() {
+            blockers
+                .push("waiver decision missing follow_up_task_id and/or >=1 evidence_id".into());
+        }
+        blockers
+    }
+
+    /// Enforce the closeout gate (used by `goal close`). Returns a descriptive error
+    /// listing every unmet requirement when the goal may not yet close.
+    fn require_closeout(&self) -> CliResult<()> {
+        if self.may_close() {
+            return Ok(());
+        }
+        Err(CliError::Usage(format!(
+            "goal {} cannot be closed: {}. Record a closeout decision (decision_kind=closeout) with evidence plus a GoalEvaluation, or an explicit waiver (--waiver) naming a --follow-up-task and >=1 --evidence.",
+            self.goal_id,
+            self.closeout_blockers().join("; ")
+        )))
     }
 
     fn warnings(&self, require_evaluation: bool) -> Vec<String> {
@@ -5681,14 +5839,37 @@ fn goal_learning_status(store: &HarnessStore, goal_id: &str) -> CliResult<GoalLe
         .cloned()
         .collect();
 
-    let decisions: Vec<_> = store
-        .decisions()?
-        .into_iter()
+    let all_decisions = store.decisions()?;
+    // A decision is "in scope" for this goal when it is explicitly goal-scoped
+    // (goal_id == G) OR it hangs off a task in the goal's graph. Closeout decisions
+    // are typically goal-scoped (no task), so we must not restrict by task_id alone.
+    let decision_in_goal_scope = |decision: &Decision| {
+        decision.goal_id.as_deref() == Some(goal_id) || task_ids.contains(&decision.task_id)
+    };
+    let decisions: Vec<_> = all_decisions
+        .iter()
         .filter(|decision| task_ids.contains(&decision.task_id))
+        .cloned()
         .collect();
     let waivers: Vec<_> = decisions
         .iter()
         .filter(|decision| is_goal_learning_waiver_decision(decision))
+        .cloned()
+        .collect();
+    // Closeout gate (§3.7): closeout decisions carry decision_kind=closeout and at
+    // least one evidence_id; closeout waivers set is_waiver and name a follow-up.
+    let closeout_decisions: Vec<_> = all_decisions
+        .iter()
+        .filter(|decision| {
+            decision_in_goal_scope(decision)
+                && decision.decision_kind.as_deref() == Some("closeout")
+                && !decision.evidence_ids.is_empty()
+        })
+        .cloned()
+        .collect();
+    let closeout_waivers: Vec<_> = all_decisions
+        .iter()
+        .filter(|decision| decision_in_goal_scope(decision) && decision.is_waiver)
         .cloned()
         .collect();
     let reviews: Vec<_> = latest_reviews_in_append_order(store)?
@@ -5755,6 +5936,8 @@ fn goal_learning_status(store: &HarnessStore, goal_id: &str) -> CliResult<GoalLe
         reviews,
         decisions,
         waivers,
+        closeout_decisions,
+        closeout_waivers,
         event_order,
     })
 }
@@ -8924,6 +9107,254 @@ mod tests {
             .require_for_gate(&store, true, true, Some("good-waiver"))
             .expect("valid waiver should pass when explicitly selected");
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    fn make_goal_evaluation(id: &str, goal_id: &str, created_at: &str) -> GoalEvaluation {
+        GoalEvaluation {
+            id: id.into(),
+            goal_id: goal_id.into(),
+            evaluator_agent_id: "evaluator".into(),
+            outcome: EvaluationOutcome::Success,
+            what_worked: "ok".into(),
+            what_failed: "none".into(),
+            missing_infra: vec![],
+            missing_evidence: vec![],
+            team_design_feedback: "ok".into(),
+            task_graph_feedback: "ok".into(),
+            dashboard_feedback: "ok".into(),
+            reusable_patterns: vec![],
+            anti_patterns: vec![],
+            follow_up_task_ids: vec![],
+            proposed_goal_ids: vec![],
+            created_at: created_at.into(),
+        }
+    }
+
+    fn make_closeout_decision(id: &str, goal_id: &str) -> Decision {
+        Decision {
+            id: id.into(),
+            task_id: "task-1".into(),
+            decision: "accept".into(),
+            rationale: "closeout".into(),
+            evidence_ids: vec!["closeout-evidence".into()],
+            created_at: "unix-ms:200".into(),
+            decision_kind: Some("closeout".into()),
+            goal_id: Some(goal_id.into()),
+            is_waiver: false,
+            follow_up_task_id: None,
+        }
+    }
+
+    #[test]
+    fn closeout_gate_allows_close_with_decision_and_evaluation() {
+        let root = std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("store")));
+        let store = HarnessStore::new(&root);
+        store.append_goal(&make_goal("goal-1")).expect("append goal");
+        store
+            .append_task(&make_task("task-1", "goal-1"))
+            .expect("append task");
+        store
+            .append_goal_evaluation(&make_goal_evaluation("eval-1", "goal-1", "unix-ms:140"))
+            .expect("append evaluation");
+        store
+            .append_decision(&make_closeout_decision("closeout-1", "goal-1"))
+            .expect("append closeout decision");
+
+        let status = goal_learning_status(&store, "goal-1").expect("status");
+        assert!(status.has_closeout_decision());
+        assert!(status.has_goal_evaluation());
+        assert!(status.may_close(), "both present should allow close");
+        status
+            .require_closeout()
+            .expect("closeout gate should pass with decision + evaluation");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn closeout_gate_blocks_close_when_evaluation_missing() {
+        let root = std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("store")));
+        let store = HarnessStore::new(&root);
+        store.append_goal(&make_goal("goal-1")).expect("append goal");
+        store
+            .append_task(&make_task("task-1", "goal-1"))
+            .expect("append task");
+        // A closeout decision but no GoalEvaluation: the gate must block.
+        store
+            .append_decision(&make_closeout_decision("closeout-1", "goal-1"))
+            .expect("append closeout decision");
+
+        let status = goal_learning_status(&store, "goal-1").expect("status");
+        assert!(status.has_closeout_decision());
+        assert!(!status.has_goal_evaluation());
+        assert!(!status.may_close());
+        let error = status
+            .require_closeout()
+            .expect_err("missing evaluation must block close");
+        assert!(error.to_string().contains("goal_evaluation"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn closeout_gate_blocks_close_when_closeout_decision_missing() {
+        let root = std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("store")));
+        let store = HarnessStore::new(&root);
+        store.append_goal(&make_goal("goal-1")).expect("append goal");
+        store
+            .append_task(&make_task("task-1", "goal-1"))
+            .expect("append task");
+        store
+            .append_goal_evaluation(&make_goal_evaluation("eval-1", "goal-1", "unix-ms:140"))
+            .expect("append evaluation");
+        // A plain (non-closeout) decision must NOT satisfy the closeout gate.
+        store
+            .append_decision(&make_timed_decision("decision", "task-1", "unix-ms:130"))
+            .expect("append decision");
+
+        let status = goal_learning_status(&store, "goal-1").expect("status");
+        assert!(!status.has_closeout_decision());
+        assert!(!status.may_close());
+        let error = status
+            .require_closeout()
+            .expect_err("missing closeout decision must block close");
+        assert!(error.to_string().contains("closeout decision"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn closeout_gate_rejects_closeout_decision_without_evidence() {
+        let root = std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("store")));
+        let store = HarnessStore::new(&root);
+        store.append_goal(&make_goal("goal-1")).expect("append goal");
+        store
+            .append_task(&make_task("task-1", "goal-1"))
+            .expect("append task");
+        store
+            .append_goal_evaluation(&make_goal_evaluation("eval-1", "goal-1", "unix-ms:140"))
+            .expect("append evaluation");
+        // decision_kind=closeout but with NO evidence_ids: must not count.
+        let mut decision = make_closeout_decision("closeout-1", "goal-1");
+        decision.evidence_ids = vec![];
+        store
+            .append_decision(&decision)
+            .expect("append closeout decision");
+
+        let status = goal_learning_status(&store, "goal-1").expect("status");
+        assert!(
+            !status.has_closeout_decision(),
+            "closeout decision without evidence must not satisfy the gate"
+        );
+        assert!(!status.may_close());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn closeout_gate_allows_close_via_waiver() {
+        let root = std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("store")));
+        let store = HarnessStore::new(&root);
+        store.append_goal(&make_goal("goal-1")).expect("append goal");
+        store
+            .append_task(&make_task("task-1", "goal-1"))
+            .expect("append task");
+        store
+            .append_task(&make_task("follow-up-task", "goal-1"))
+            .expect("append follow-up task");
+        // No GoalEvaluation and no closeout decision, but an explicit valid waiver.
+        store
+            .append_decision(&Decision {
+                id: "waiver-1".into(),
+                task_id: "task-1".into(),
+                decision: "waive".into(),
+                rationale: "closeout waiver".into(),
+                evidence_ids: vec!["waiver-evidence".into()],
+                created_at: "unix-ms:210".into(),
+                decision_kind: Some("waiver".into()),
+                goal_id: Some("goal-1".into()),
+                is_waiver: true,
+                follow_up_task_id: Some("follow-up-task".into()),
+            })
+            .expect("append waiver");
+
+        let status = goal_learning_status(&store, "goal-1").expect("status");
+        assert!(!status.has_closeout_decision());
+        assert!(!status.has_goal_evaluation());
+        assert!(status.has_valid_closeout_waiver());
+        assert!(status.may_close(), "valid waiver should allow close");
+        status
+            .require_closeout()
+            .expect("waiver should satisfy the closeout gate");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn closeout_gate_rejects_waiver_without_follow_up() {
+        let root = std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("store")));
+        let store = HarnessStore::new(&root);
+        store.append_goal(&make_goal("goal-1")).expect("append goal");
+        store
+            .append_task(&make_task("task-1", "goal-1"))
+            .expect("append task");
+        // is_waiver=true but missing follow_up_task_id: must not count as a closeout waiver.
+        store
+            .append_decision(&Decision {
+                id: "waiver-1".into(),
+                task_id: "task-1".into(),
+                decision: "waive".into(),
+                rationale: "incomplete waiver".into(),
+                evidence_ids: vec!["waiver-evidence".into()],
+                created_at: "unix-ms:210".into(),
+                decision_kind: Some("waiver".into()),
+                goal_id: Some("goal-1".into()),
+                is_waiver: true,
+                follow_up_task_id: None,
+            })
+            .expect("append waiver");
+
+        let status = goal_learning_status(&store, "goal-1").expect("status");
+        assert!(!status.has_valid_closeout_waiver());
+        assert!(!status.may_close());
+        let error = status
+            .require_closeout()
+            .expect_err("waiver without follow-up must block close");
+        assert!(error.to_string().contains("follow_up_task_id"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn validate_decision_enforces_waiver_requirements() {
+        // Waiver without follow-up task is rejected.
+        let mut decision = make_timed_decision("d1", "task-1", "unix-ms:1");
+        decision.is_waiver = true;
+        decision.evidence_ids = vec!["e1".into()];
+        let error = validate_decision(&decision).expect_err("waiver without follow-up rejected");
+        assert!(error.to_string().contains("follow-up-task"));
+
+        // Waiver without evidence is rejected.
+        decision.follow_up_task_id = Some("follow-up-task".into());
+        decision.evidence_ids = vec![];
+        let error = validate_decision(&decision).expect_err("waiver without evidence rejected");
+        assert!(error.to_string().contains("evidence"));
+
+        // A complete waiver passes.
+        decision.evidence_ids = vec!["e1".into()];
+        validate_decision(&decision).expect("complete waiver should validate");
+    }
+
+    #[test]
+    fn validate_decision_enforces_stop_gate_values() {
+        let mut decision = make_timed_decision("d1", "task-1", "unix-ms:1");
+        decision.decision_kind = Some("stop_gate".into());
+
+        // An arbitrary decision value is rejected for a stop_gate.
+        decision.decision = "maybe".into();
+        let error =
+            validate_decision(&decision).expect_err("invalid stop_gate decision rejected");
+        assert!(error.to_string().contains("stop_gate"));
+
+        // Both canonical values pass.
+        decision.decision = "stop_approved".into();
+        validate_decision(&decision).expect("stop_approved should validate");
+        decision.decision = "continue_required".into();
+        validate_decision(&decision).expect("continue_required should validate");
     }
 
     #[test]

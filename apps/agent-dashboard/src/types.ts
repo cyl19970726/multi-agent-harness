@@ -327,6 +327,14 @@ export interface GoalLearningStatus {
   follow_up_tasks?: Task[];
   member_reports?: unknown[];
   decisions?: unknown[];
+  /** Closeout-gate readiness (§3.7): surfaced so the UI can render the gate. */
+  closeout_decisions?: Decision[];
+  closeout_waivers?: Decision[];
+  has_closeout_decision?: boolean;
+  has_evaluation?: boolean;
+  has_closeout_waiver?: boolean;
+  may_close?: boolean;
+  closeout_blockers?: string[];
   event_order?: Record<string, unknown>;
 }
 

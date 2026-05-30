@@ -108,6 +108,15 @@ export function deriveWarnings(snapshot: DashboardSnapshot): WorkflowWarning[] {
     }
   }
 
+  const tasksByGoal = new Map<string, Task[]>();
+  for (const task of snapshot.tasks ?? []) {
+    if (!task.goal_id) continue;
+    const list = tasksByGoal.get(task.goal_id) ?? [];
+    list.push(task);
+    tasksByGoal.set(task.goal_id, list);
+  }
+  const goalById = new Map((snapshot.goals ?? []).map((goal) => [goal.id, goal]));
+
   for (const learning of snapshot.goal_learning_status ?? []) {
     for (const item of learning.warnings ?? []) {
       warnings.push({
@@ -117,6 +126,49 @@ export function deriveWarnings(snapshot: DashboardSnapshot): WorkflowWarning[] {
         goalId: learning.goal_id,
         summary: item,
       });
+    }
+
+    // Closeout gate (§3.7): a goal whose task graph is finished must not be
+    // closed without a closeout Decision + GoalEvaluation (or a valid waiver).
+    const goal = goalById.get(learning.goal_id);
+    const goalTasks = tasksByGoal.get(learning.goal_id) ?? [];
+    const terminalStates = new Set(["done", "archived"]);
+    const graphComplete =
+      goalTasks.length > 0 && goalTasks.every((task) => terminalStates.has(task.status));
+    const isClosed = goal?.status === "complete" || goal?.status === "archived";
+    if ((graphComplete || isClosed) && learning.may_close === false) {
+      warnings.push({
+        id: `goal_close_without_evaluation:${learning.goal_id}`,
+        kind: "goal_close_without_evaluation",
+        // A goal that is already closed without the gate is a hard violation.
+        severity: isClosed ? "high" : "medium",
+        goalId: learning.goal_id,
+        summary: isClosed
+          ? `Goal is closed without satisfying the closeout gate: ${(learning.closeout_blockers ?? ["missing closeout decision + GoalEvaluation"]).join("; ")}`
+          : `Goal task graph is complete but cannot close yet: ${(learning.closeout_blockers ?? ["missing closeout decision + GoalEvaluation"]).join("; ")}`,
+      });
+    }
+
+    // Waiver hygiene: any waiver decision lacking a follow-up task and evidence.
+    for (const waiver of learning.closeout_waivers ?? []) {
+      const hasFollowUp = Boolean(waiver.follow_up_task_id);
+      const hasEvidence = (waiver.evidence_ids?.length ?? 0) > 0;
+      if (!hasFollowUp || !hasEvidence) {
+        warnings.push({
+          id: `waiver_without_follow_up:${waiver.id}`,
+          kind: "waiver_without_follow_up",
+          severity: "high",
+          goalId: learning.goal_id,
+          taskId: waiver.task_id ?? undefined,
+          evidenceId: waiver.evidence_ids?.[0],
+          summary: `Waiver decision "${waiver.id}" is invalid: ${[
+            hasFollowUp ? null : "missing follow_up_task_id",
+            hasEvidence ? null : "missing evidence",
+          ]
+            .filter(Boolean)
+            .join(" and ")}.`,
+        });
+      }
     }
   }
 
