@@ -2,6 +2,7 @@ import {
   Activity,
   AlertTriangle,
   Bot,
+  Bug,
   CheckCircle2,
   ClipboardList,
   ExternalLink,
@@ -19,6 +20,7 @@ import {
   Target,
   User,
   Workflow,
+  Wrench,
 } from "lucide-react";
 
 import type { ComponentProps, ReactNode } from "react";
@@ -44,6 +46,8 @@ import {
 } from "@/components/workbench/atoms";
 import { Avatar } from "@/components/workbench/Avatar";
 import {
+  gapSeverityTone,
+  gapStatusTone,
   goalTone,
   memberTone,
   reviewVerdictTone,
@@ -52,8 +56,13 @@ import {
   timelineTone,
 } from "@/components/workbench/tones";
 
-import { memberName, taskTitle, type WorkbenchModel } from "../model/readModel";
-import type { Goal, Review, Task, WorkflowWarning } from "../types";
+import {
+  gapIsResolved,
+  memberName,
+  taskTitle,
+  type WorkbenchModel,
+} from "../model/readModel";
+import type { Gap, Goal, Review, Task, WorkflowWarning } from "../types";
 import type { SelectionState } from "../app/selection";
 
 interface SurfaceProps {
@@ -1254,6 +1263,148 @@ function memberShort(id?: string | null): string {
 }
 
 /* ------------------------------------------------------------------ */
+/* Gap ledger                                                         */
+/* ------------------------------------------------------------------ */
+
+const gapSeverityGroups: { id: string; title: string }[] = [
+  { id: "p0", title: "P0 · critical" },
+  { id: "p1", title: "P1 · high" },
+  { id: "p2", title: "P2 · normal" },
+];
+
+/**
+ * The Gap ledger (absorbs the bug ledger). Grouped by severity (p0→p2); within a
+ * group, unresolved gaps sort above fixed/wontfix ones (readModel pre-sorts). A
+ * Bug is rendered as a Gap with category="bug", with its repro/closing-test refs.
+ */
+function GapLedger({
+  gapsBySeverity,
+  onSelect,
+}: {
+  gapsBySeverity: Map<string, Gap[]>;
+  onSelect: (gap: Gap) => void;
+}) {
+  const otherGroups = [...gapsBySeverity.keys()].filter(
+    (key) => !gapSeverityGroups.some((group) => group.id === key),
+  );
+  const groups = [
+    ...gapSeverityGroups,
+    ...otherGroups.map((id) => ({ id, title: id || "uncategorized" })),
+  ];
+  const total = [...gapsBySeverity.values()].reduce((sum, rows) => sum + rows.length, 0);
+
+  if (!total) {
+    return (
+      <EmptyState
+        icon={Wrench}
+        title="No gaps in the ledger"
+        description="Gaps and bugs (category=bug) recorded against this team's goals appear here, grouped by severity."
+      />
+    );
+  }
+
+  return (
+    <div className="grid gap-4 lg:grid-cols-3">
+      {groups.map((group) => {
+        const rows = gapsBySeverity.get(group.id) ?? [];
+        const openCount = rows.filter((gap) => !gapIsResolved(gap)).length;
+        return (
+          <Section
+            key={group.id}
+            title={group.title}
+            action={
+              <>
+                {openCount > 0 && (
+                  <Badge tone={gapSeverityTone(group.id)}>{openCount} open</Badge>
+                )}
+                <Badge tone="muted">{rows.length}</Badge>
+              </>
+            }
+            className="rise"
+          >
+            {rows.length ? (
+              <div className="divide-y divide-border/60">
+                {rows.map((gap) => (
+                  <GapRow key={gap.id} gap={gap} onSelect={() => onSelect(gap)} />
+                ))}
+              </div>
+            ) : (
+              <EmptyState title="None at this severity" />
+            )}
+          </Section>
+        );
+      })}
+    </div>
+  );
+}
+
+function GapRow({ gap, onSelect }: { gap: Gap; onSelect: () => void }) {
+  const isBug = (gap.category ?? "").toLowerCase() === "bug";
+  const resolved = gapIsResolved(gap);
+  const Icon = isBug ? Bug : Wrench;
+  return (
+    <button
+      type="button"
+      onClick={onSelect}
+      className={cn(
+        "flex w-full flex-col items-stretch gap-2 px-4 py-3 text-left transition-colors hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+        resolved && "opacity-60",
+      )}
+    >
+      <div className="flex flex-wrap items-center gap-2">
+        <Icon
+          className={cn(
+            "size-4 shrink-0",
+            toneText[gapSeverityTone(gap.severity)],
+          )}
+          aria-hidden
+        />
+        <Badge tone={gapSeverityTone(gap.severity)}>{gap.severity ?? "?"}</Badge>
+        <Badge tone={gapStatusTone(gap.status)}>{gap.status ?? "open"}</Badge>
+        {gap.category && <Badge tone="muted">{gap.category}</Badge>}
+        {gap.owner_agent_id && (
+          <span className="ml-auto text-[11px] text-muted-foreground">
+            {memberShort(gap.owner_agent_id)}
+          </span>
+        )}
+      </div>
+      <p className="text-[13px] leading-relaxed text-foreground/90">
+        {gap.summary ?? gap.id}
+      </p>
+      {gap.next_step && (
+        <p className="text-xs text-muted-foreground">
+          <span className="font-semibold uppercase tracking-wide text-[10px]">Next</span>{" "}
+          {gap.next_step}
+        </p>
+      )}
+      {(gap.repro_ref || gap.closing_test_ref) && (
+        <div className="flex flex-wrap gap-1.5">
+          {gap.repro_ref && (
+            <Badge tone="muted">
+              repro <MonoId>{gap.repro_ref}</MonoId>
+            </Badge>
+          )}
+          {gap.closing_test_ref && (
+            <Badge tone="muted">
+              test <MonoId>{gap.closing_test_ref}</MonoId>
+            </Badge>
+          )}
+        </div>
+      )}
+      {Boolean(gap.evidence_ids?.length) && (
+        <div className="flex flex-wrap gap-1.5">
+          {gap.evidence_ids!.map((id) => (
+            <Badge key={id} tone="muted">
+              <MonoId>{id}</MonoId>
+            </Badge>
+          ))}
+        </div>
+      )}
+    </button>
+  );
+}
+
+/* ------------------------------------------------------------------ */
 /* Graph / Kanban                                                     */
 /* ------------------------------------------------------------------ */
 
@@ -1601,17 +1752,19 @@ export function WarningsRepair({ model, onSelectionChange }: SurfaceProps) {
     { id: "medium", title: "Medium" },
     { id: "low", title: "Low" },
   ];
+  const openGapCount = model.gaps.filter((gap) => !gapIsResolved(gap)).length;
   return (
     <div className="space-y-5">
       <SurfaceHeader
         kicker="Repair"
         title="Warnings"
-        description="Broken workflow invariants grouped by severity, plus the decision queue waiting on operator action. Each row links to the object it affects."
+        description="Broken workflow invariants grouped by severity, the Gap/bug ledger, and the decision queue waiting on operator action. Each row links to the object it affects."
         actions={
           <>
             <Badge tone={model.warnings.length ? "bad" : "good"}>
               {model.warnings.length} warnings
             </Badge>
+            <Badge tone={openGapCount ? "warn" : "good"}>{openGapCount} open gaps</Badge>
             <Badge tone={model.decisionQueue.length ? "decision" : "good"}>
               {model.decisionQueue.length} decisions
             </Badge>
@@ -1641,6 +1794,29 @@ export function WarningsRepair({ model, onSelectionChange }: SurfaceProps) {
             </Section>
           );
         })}
+      </div>
+
+      <div className="space-y-2">
+        <div className="flex items-center justify-between gap-2 px-0.5">
+          <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+            Gap · bug ledger
+          </p>
+          <Badge tone={openGapCount ? "warn" : "good"}>
+            {openGapCount} open / {model.gaps.length} total
+          </Badge>
+        </div>
+        <GapLedger
+          gapsBySeverity={model.gapsBySeverity}
+          onSelect={(gap) =>
+            onSelectionChange(
+              gap.task_id
+                ? { taskId: gap.task_id, surface: "task" }
+                : gap.goal_id
+                  ? { goalId: gap.goal_id, surface: "goal" }
+                  : { surface: "warnings" },
+            )
+          }
+        />
       </div>
 
       <Section

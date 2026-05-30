@@ -74,6 +74,39 @@ export function severityTone(severity?: "high" | "medium" | "low"): StatusTone {
   return severity === "high" ? "bad" : severity === "medium" ? "warn" : "info";
 }
 
+/** Map a Gap.severity (p0/p1/p2) to a status tone. */
+export function gapSeverityTone(severity?: string | null): StatusTone {
+  switch ((severity ?? "").toLowerCase()) {
+    case "p0":
+      return "bad";
+    case "p1":
+      return "warn";
+    case "p2":
+      return "info";
+    default:
+      return "idle";
+  }
+}
+
+/** Map a Gap.status to a status tone. */
+export function gapStatusTone(status?: string | null): StatusTone {
+  switch ((status ?? "").toLowerCase()) {
+    case "fixed":
+      return "good";
+    case "wontfix":
+    case "deferred":
+      return "idle";
+    case "blocked":
+      return "bad";
+    case "in_progress":
+      return "running";
+    case "open":
+      return "warn";
+    default:
+      return "idle";
+  }
+}
+
 /** Map a timeline item kind (+ severity for warnings) to a status tone. */
 export function timelineTone(
   kind: string,

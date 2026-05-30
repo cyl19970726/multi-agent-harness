@@ -205,6 +205,29 @@ export interface Review {
   created_at?: string;
 }
 
+/**
+ * Gap ledger entry (absorbs the bug ledger: a Bug is a Gap with category="bug").
+ * `category` is an open enum (free string); `severity`/`status` are closed,
+ * harness-owned sets matching the Rust hard enums.
+ */
+export interface Gap {
+  id: string;
+  goal_id?: string | null;
+  task_id?: string | null;
+  /** Open enum: ux/data/observability/parity/tooling/workflow/docs/bug/other, or adapter-supplied. */
+  category?: string;
+  severity?: "p0" | "p1" | "p2" | string;
+  status?: "open" | "in_progress" | "fixed" | "blocked" | "deferred" | "wontfix" | string;
+  summary?: string;
+  evidence_ids?: string[];
+  next_step?: string | null;
+  owner_agent_id?: string | null;
+  repro_ref?: string | null;
+  closing_test_ref?: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
 export interface AutonomousProposal {
   id: string;
   kind?: string;
@@ -253,6 +276,7 @@ export interface DashboardSnapshot {
   evidence?: Evidence[];
   decisions?: Decision[];
   reviews?: Review[];
+  gaps?: Gap[];
   provider_sessions?: ProviderSession[];
   provider_child_threads?: ProviderChildThread[];
   goal_learning_status?: GoalLearningStatus[];

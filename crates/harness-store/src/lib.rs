@@ -6,7 +6,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use harness_core::{
-    AgentEvent, AgentMember, AgentRuntime, AgentTeam, Decision, Evidence, Goal, Message,
+    AgentEvent, AgentMember, AgentRuntime, AgentTeam, Decision, Evidence, Gap, Goal, Message,
     MessageDelivery, MessageDeliveryStatus, MessageTerminalSource, Proposal, ProviderChildThread,
     ProviderSession, ProviderSessionStatus, Review, Task,
 };
@@ -106,6 +106,10 @@ impl HarnessStore {
         self.append_jsonl("reviews.jsonl", value)
     }
 
+    pub fn append_gap(&self, value: &Gap) -> StoreResult<()> {
+        self.append_jsonl("gaps.jsonl", value)
+    }
+
     pub fn append_provider_session(&self, value: &ProviderSession) -> StoreResult<()> {
         self.append_jsonl("provider_sessions.jsonl", value)
     }
@@ -201,6 +205,10 @@ impl HarnessStore {
 
     pub fn reviews(&self) -> StoreResult<Vec<Review>> {
         self.read_jsonl("reviews.jsonl")
+    }
+
+    pub fn gaps(&self) -> StoreResult<Vec<Gap>> {
+        self.read_jsonl("gaps.jsonl")
     }
 
     pub fn provider_sessions(&self) -> StoreResult<Vec<ProviderSession>> {

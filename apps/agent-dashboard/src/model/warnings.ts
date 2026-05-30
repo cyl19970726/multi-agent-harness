@@ -9,6 +9,7 @@ export function deriveWarnings(snapshot: DashboardSnapshot): WorkflowWarning[] {
   const decisions = snapshot.decisions ?? [];
   const sessions = snapshot.provider_sessions ?? [];
   const reviews = snapshot.reviews ?? [];
+  const gaps = snapshot.gaps ?? [];
 
   const warnings: WorkflowWarning[] = [];
 
@@ -61,6 +62,36 @@ export function deriveWarnings(snapshot: DashboardSnapshot): WorkflowWarning[] {
         summary: `Review verdict "${review.verdict ?? "unknown"}" needs a Leader decision: ${review.summary ?? review.id}`,
       });
     }
+  }
+
+  const unresolvedGapStatuses = new Set(["open", "in_progress", "blocked"]);
+  for (const gap of gaps) {
+    const severity = (gap.severity ?? "").toLowerCase();
+    const status = (gap.status ?? "open").toLowerCase();
+    if (!unresolvedGapStatuses.has(status)) continue;
+    // A P0 gap that is still open is the highest-priority repair signal.
+    if (severity === "p0" && status === "open") {
+      warnings.push({
+        id: `gap_p0_open:${gap.id}`,
+        kind: "gap_p0_open",
+        severity: "high",
+        goalId: gap.goal_id ?? undefined,
+        taskId: gap.task_id ?? undefined,
+        evidenceId: gap.evidence_ids?.[0],
+        summary: `P0 gap (${gap.category ?? "uncategorized"}) is still open: ${gap.summary ?? gap.id}`,
+      });
+      continue;
+    }
+    // Other unresolved gaps surface at a severity mapped from p0/p1/p2.
+    warnings.push({
+      id: `gap_unresolved:${gap.id}`,
+      kind: "gap_unresolved",
+      severity: severity === "p0" ? "high" : severity === "p1" ? "medium" : "low",
+      goalId: gap.goal_id ?? undefined,
+      taskId: gap.task_id ?? undefined,
+      evidenceId: gap.evidence_ids?.[0],
+      summary: `Unresolved ${gap.severity ?? "gap"} (${gap.category ?? "uncategorized"}, ${status}): ${gap.summary ?? gap.id}`,
+    });
   }
 
   for (const session of sessions) {
