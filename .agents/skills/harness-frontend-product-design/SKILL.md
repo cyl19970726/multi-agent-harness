@@ -92,8 +92,7 @@ Always load for frontend product design:
 Load when changing Workbench layout, routes, or visual system:
 
 - `docs/dashboard/design-principles.md`
-- `docs/dashboard/layout-variants.md`
-- `docs/dashboard/layout-decisions.md`
+- `docs/dashboard/layout-history.md`
 - `docs/dashboard/frontend-design.md`
 - `docs/dashboard/frontend-architecture.md`
 - `docs/dashboard/acceptance.md`
@@ -133,7 +132,7 @@ Reference ownership:
   multi-round review, and decision templates.
 - `page-design-workflow.md`: page discovery, page specs, and design drafts.
 - `architecture-stack-decision.md`: stack choice, dependency policy, graph
-  library policy, no-shadcn rule, code quarantine, and module boundaries.
+  library policy, code quarantine, and module boundaries.
 - `implementation-loop.md`: implementation slices, browser screenshot
   comparison, rejected implementation, PM/User handoff, and PR evidence.
 - `acceptance-gates.md`: validation commands, evidence, thresholds, and waivers.
@@ -145,10 +144,10 @@ Use the skill for process and guardrails; use docs for product decisions.
 
 - `docs/dashboard/design-principles.md`: durable frontend doctrine and visual
   principles.
-- `docs/dashboard/layout-variants.md`: candidate layouts, critiques, killed
-  directions, and useful parts kept.
-- `docs/dashboard/layout-decisions.md`: selected main direction, borrowed
-  ideas, remaining gaps, reviewer loop status, and stop/continue reasons.
+- `docs/dashboard/layout-history.md`: candidate layouts, critiques, killed
+  directions, useful parts kept, the selected main direction, borrowed ideas,
+  remaining gaps, reviewer loop status, stop/continue reasons, and the decision
+  ledger that records rejected browser-visible attempts.
 - `docs/dashboard/frontend-design.md`: Workbench design index, page-spec map,
   current status, and implementation-readiness summary. It is
   not the single large design source of truth.
@@ -161,11 +160,9 @@ Use the skill for process and guardrails; use docs for product decisions.
   technical-stack decision. Update it before implementation when the work
   changes framework, state model, component architecture, graph/canvas
   approach, styling strategy, dependency policy, or old-code disposition.
-- `docs/dashboard/hard-layout-specs/`: historical/deprecated layout attempts
-  only. Do not place current page layouts there.
-- `docs/dashboard/rejected-implementations/<attempt>.md`: failed browser-visible
-  implementations, first-impression screenshot review, violated gates, old-code
-  contamination, and restart point.
+- `docs/dashboard/layout-history.md` decision ledger: record failed
+  browser-visible implementations as a dated entry with first-impression
+  screenshot review, violated gates, old-code contamination, and restart point.
 - `docs/dashboard/acceptance.md`: browser screenshots, console, accessibility,
   performance, web-quality, and harness workflow acceptance evidence plan.
 - `docs/dashboard/README.md`: index of the current Workbench design contract.
@@ -355,6 +352,7 @@ waivers must be recorded with the PR or harness evidence.
 
 If the first browser screenshots show that the implementation reads as a
 stacked report, metrics dashboard, card dump, raw snapshot tool, or visually
-confusing surface, stop implementation. Record the failed attempt in
-`layout-decisions.md`, keep the code out of the goal branch, and return to the
-Designer -> Questioner -> Reviewer loop before trying again.
+confusing surface, stop implementation. Record the failed attempt as a dated
+entry in the decision ledger of `layout-history.md`, keep the code out of the
+goal branch, and return to the Designer -> Questioner -> Reviewer loop before
+trying again.

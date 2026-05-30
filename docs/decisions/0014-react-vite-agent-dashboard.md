@@ -1,5 +1,10 @@
 # 0014: React/Vite Agent Dashboard Frontend
 
+> Superseded in part by [0016](0016-tailwind-shadcn-adoption.md): React +
+> TypeScript + Vite remain the build/runtime shell, but the styling and
+> UI-primitive stance below (hand-rolled CSS, no UI kit) is replaced by Tailwind
+> CSS v4 + shadcn/ui primitives over Radix + lucide-react + Geist.
+
 ## Decision
 
 Use React, TypeScript, and Vite for the Agent Dashboard frontend.

@@ -23,6 +23,7 @@ consequences, affected modules, and validation path.
 | [0013](0013-pr-merge-is-not-harness-acceptance.md) | PR merge is not harness acceptance |
 | [0014](0014-react-vite-agent-dashboard.md) | React/Vite Agent Dashboard frontend |
 | [0015](0015-autonomous-proposals-use-evidence-message-decision.md) | Autonomous proposals use Evidence, Message, and Decision first |
+| [0016](0016-tailwind-shadcn-adoption.md) | Tailwind v4 + shadcn/ui adoption for Agent Workbench |
 
 ## Split Rule
 

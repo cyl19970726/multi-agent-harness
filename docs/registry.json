@@ -372,15 +372,13 @@
         "docs/agent-control-plane.md",
         "docs/dashboard/README.md",
         "docs/dashboard/design-principles.md",
-        "docs/dashboard/layout-variants.md",
-        "docs/dashboard/layout-decisions.md",
+        "docs/dashboard/layout-history.md",
         "docs/dashboard/frontend-design.md",
         "docs/dashboard/frontend-architecture.md",
         "docs/dashboard/read-model.md",
         "docs/dashboard/acceptance.md",
         "docs/dashboard/runbook.md",
-        "docs/dashboard/pages/README.md",
-        "docs/dashboard/rejected-implementations/README.md"
+        "docs/dashboard/pages/README.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -406,15 +404,13 @@
         "docs/README.md",
         "docs/dashboard.md",
         "docs/dashboard/design-principles.md",
-        "docs/dashboard/layout-variants.md",
-        "docs/dashboard/layout-decisions.md",
+        "docs/dashboard/layout-history.md",
         "docs/dashboard/frontend-design.md",
         "docs/dashboard/frontend-architecture.md",
         "docs/dashboard/read-model.md",
         "docs/dashboard/acceptance.md",
         "docs/dashboard/runbook.md",
-        "docs/dashboard/pages/README.md",
-        "docs/dashboard/rejected-implementations/README.md"
+        "docs/dashboard/pages/README.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -456,7 +452,7 @@
       "reorgTrigger": "Workbench frontend principles, graph/Kanban policy, or AgentTeam/AgentMember UI doctrine changes."
     },
     {
-      "path": "docs/dashboard/layout-variants.md",
+      "path": "docs/dashboard/layout-history.md",
       "ownerRole": "product-design",
       "status": "planned",
       "lifecycle": "volatile",
@@ -464,13 +460,15 @@
         "Agent Workbench candidate layouts",
         "Designer and Questioner critique",
         "Workbench layout scoring rubric",
-        "rejected layout alternatives"
+        "Agent Workbench accepted/killed layout decision ledger",
+        "rejected-implementation outcomes"
       ],
       "dependsOn": [
         "docs/prd.md",
         "docs/concept-model.md",
         "docs/dashboard.md",
         "docs/dashboard/design-principles.md",
+        "docs/dashboard/frontend-design.md",
         ".agents/skills/harness-frontend-product-design/SKILL.md"
       ],
       "machineConsumers": [
@@ -481,33 +479,7 @@
       "lastVerifiedWith": [
         "npx pnpm@9.15.4 check"
       ],
-      "reorgTrigger": "Workbench design loop, candidate layout set, scoring rubric, or critique workflow changes."
-    },
-    {
-      "path": "docs/dashboard/layout-decisions.md",
-      "ownerRole": "product-design",
-      "status": "planned",
-      "lifecycle": "volatile",
-      "canonicalFor": [
-        "Agent Workbench accepted layout direction",
-        "killed Workbench layout alternatives",
-        "module-level layout decisions",
-        "visual placement constraints"
-      ],
-      "dependsOn": [
-        "docs/dashboard/layout-variants.md",
-        "docs/dashboard/design-principles.md",
-        "docs/dashboard/frontend-design.md"
-      ],
-      "machineConsumers": [
-        "check-doc-links",
-        "check-doc-governance"
-      ],
-      "reviewAfter": "2026-06-26",
-      "lastVerifiedWith": [
-        "npx pnpm@9.15.4 check"
-      ],
-      "reorgTrigger": "Accepted Workbench layout direction, killed alternatives, module decisions, or visual placement constraints change."
+      "reorgTrigger": "Workbench candidate layout set, scoring rubric, accepted/killed layout decisions, module decisions, or rejected-implementation routing changes."
     },
     {
       "path": "docs/dashboard/frontend-design.md",
@@ -525,10 +497,8 @@
         "docs/concept-model.md",
         "docs/dashboard.md",
         "docs/dashboard/design-principles.md",
-        "docs/dashboard/layout-variants.md",
-        "docs/dashboard/layout-decisions.md",
+        "docs/dashboard/layout-history.md",
         "docs/dashboard/pages/README.md",
-        "docs/dashboard/rejected-implementations/README.md",
         "docs/dashboard/frontend-architecture.md",
         "docs/dashboard/read-model.md",
         "docs/dashboard/acceptance.md",
@@ -545,30 +515,6 @@
       "reorgTrigger": "Workbench page specs, page-local layout contracts, implementation readiness, or frontend design reading order changes."
     },
     {
-      "path": "docs/dashboard/hard-layout-specs/agent-workbench-shell-v1.md",
-      "ownerRole": "product-design",
-      "status": "deprecated",
-      "lifecycle": "archival",
-      "canonicalFor": [
-        "deprecated Agent Workbench shell v1 hard-layout attempt",
-        "historical vague shell spec superseded by page-local layout contracts"
-      ],
-      "dependsOn": [
-        "docs/dashboard/hard-layout-specs/README.md",
-        "docs/dashboard/layout-decisions.md",
-        "docs/dashboard/rejected-implementations/pr-6-agent-workbench-shell.md"
-      ],
-      "machineConsumers": [
-        "check-doc-links",
-        "check-doc-governance"
-      ],
-      "reviewAfter": "2026-06-26",
-      "lastVerifiedWith": [
-        "npx pnpm@9.15.4 check"
-      ],
-      "reorgTrigger": "Remove after all references to shell-v1 are migrated to historical rejected implementation records."
-    },
-    {
       "path": "docs/dashboard/frontend-architecture.md",
       "ownerRole": "frontend-architecture",
       "status": "planned",
@@ -583,7 +529,6 @@
         "docs/dashboard.md",
         "docs/dashboard/frontend-design.md",
         "docs/dashboard/pages/README.md",
-        "docs/dashboard/rejected-implementations/README.md",
         "docs/dashboard/acceptance.md",
         "docs/decisions/0014-react-vite-agent-dashboard.md",
         "apps/agent-dashboard/vite.config.ts",
@@ -640,13 +585,12 @@
       "dependsOn": [
         "docs/dashboard.md",
         "docs/dashboard/design-principles.md",
-        "docs/dashboard/layout-decisions.md",
+        "docs/dashboard/layout-history.md",
         "docs/dashboard/frontend-design.md",
         "docs/dashboard/frontend-architecture.md",
         "docs/dashboard/read-model.md",
         "package.json",
-        "docs/dashboard/pages/README.md",
-        "docs/dashboard/rejected-implementations/README.md"
+        "docs/dashboard/pages/README.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -1008,7 +952,7 @@
         "docs/dashboard.md",
         "docs/dashboard/frontend-design.md",
         "docs/dashboard/design-principles.md",
-        "docs/dashboard/layout-decisions.md",
+        "docs/dashboard/layout-history.md",
         "docs/dashboard/read-model.md",
         ".agents/skills/harness-frontend-product-design/SKILL.md"
       ],
@@ -1038,7 +982,7 @@
         "docs/dashboard.md",
         "docs/dashboard/frontend-design.md",
         "docs/dashboard/design-principles.md",
-        "docs/dashboard/layout-decisions.md",
+        "docs/dashboard/layout-history.md",
         "docs/dashboard/read-model.md",
         ".agents/skills/harness-frontend-product-design/SKILL.md"
       ],
@@ -1068,7 +1012,7 @@
         "docs/dashboard.md",
         "docs/dashboard/frontend-design.md",
         "docs/dashboard/design-principles.md",
-        "docs/dashboard/layout-decisions.md",
+        "docs/dashboard/layout-history.md",
         "docs/dashboard/read-model.md",
         ".agents/skills/harness-frontend-product-design/SKILL.md"
       ],
@@ -1098,7 +1042,7 @@
         "docs/dashboard.md",
         "docs/dashboard/frontend-design.md",
         "docs/dashboard/design-principles.md",
-        "docs/dashboard/layout-decisions.md",
+        "docs/dashboard/layout-history.md",
         "docs/dashboard/read-model.md",
         ".agents/skills/harness-frontend-product-design/SKILL.md"
       ],
@@ -1128,7 +1072,7 @@
         "docs/dashboard.md",
         "docs/dashboard/frontend-design.md",
         "docs/dashboard/design-principles.md",
-        "docs/dashboard/layout-decisions.md",
+        "docs/dashboard/layout-history.md",
         "docs/dashboard/read-model.md",
         ".agents/skills/harness-frontend-product-design/SKILL.md"
       ],
@@ -1158,7 +1102,7 @@
         "docs/dashboard.md",
         "docs/dashboard/frontend-design.md",
         "docs/dashboard/design-principles.md",
-        "docs/dashboard/layout-decisions.md",
+        "docs/dashboard/layout-history.md",
         "docs/dashboard/read-model.md",
         ".agents/skills/harness-frontend-product-design/SKILL.md"
       ],
@@ -1188,7 +1132,7 @@
         "docs/dashboard.md",
         "docs/dashboard/frontend-design.md",
         "docs/dashboard/design-principles.md",
-        "docs/dashboard/layout-decisions.md",
+        "docs/dashboard/layout-history.md",
         "docs/dashboard/read-model.md",
         ".agents/skills/harness-frontend-product-design/SKILL.md"
       ],
@@ -1218,7 +1162,7 @@
         "docs/dashboard.md",
         "docs/dashboard/frontend-design.md",
         "docs/dashboard/design-principles.md",
-        "docs/dashboard/layout-decisions.md",
+        "docs/dashboard/layout-history.md",
         "docs/dashboard/read-model.md",
         ".agents/skills/harness-frontend-product-design/SKILL.md"
       ],
@@ -1248,7 +1192,7 @@
         "docs/dashboard.md",
         "docs/dashboard/frontend-design.md",
         "docs/dashboard/design-principles.md",
-        "docs/dashboard/layout-decisions.md",
+        "docs/dashboard/layout-history.md",
         "docs/dashboard/read-model.md",
         ".agents/skills/harness-frontend-product-design/SKILL.md"
       ],
@@ -1278,7 +1222,7 @@
         "docs/dashboard.md",
         "docs/dashboard/frontend-design.md",
         "docs/dashboard/design-principles.md",
-        "docs/dashboard/layout-decisions.md",
+        "docs/dashboard/layout-history.md",
         "docs/dashboard/read-model.md",
         ".agents/skills/harness-frontend-product-design/SKILL.md"
       ],
@@ -1293,101 +1237,31 @@
       "reorgTrigger": "Debug page contract, layout contract dimensions, ASCII diagrams, first viewport, or scroll ownership changes."
     },
     {
-      "path": "docs/dashboard/hard-layout-specs/README.md",
-      "ownerRole": "frontend-design",
-      "status": "deprecated",
-      "lifecycle": "archival",
+      "path": "docs/decisions/0016-tailwind-shadcn-adoption.md",
+      "ownerRole": "frontend-architecture",
+      "status": "stable",
+      "lifecycle": "stable",
       "canonicalFor": [
-        "historical Agent Workbench hard-layout attempt index",
-        "deprecated hard-layout template retained for failure analysis"
+        "Tailwind v4 + shadcn/ui adoption decision",
+        "Agent Workbench styling and UI-primitive stack",
+        "root package.json dependency boundary",
+        "Workbench module boundary"
       ],
       "dependsOn": [
-        "docs/dashboard/frontend-design.md",
-        "docs/dashboard/pages/README.md",
-        "docs/dashboard/acceptance.md",
-        ".agents/skills/harness-frontend-product-design/SKILL.md"
-      ],
-      "machineConsumers": [
-        "check-doc-links",
-        "check-doc-governance"
-      ],
-      "reviewAfter": "2026-06-26",
-      "lastVerifiedWith": [
-        "npx pnpm@9.15.4 check"
-      ],
-      "reorgTrigger": "Historical hard-layout attempts are removed, archived elsewhere, or referenced by rejected implementation analysis."
-    },
-    {
-      "path": "docs/dashboard/hard-layout-specs/shell-v2.md",
-      "ownerRole": "frontend-design",
-      "status": "deprecated",
-      "lifecycle": "archival",
-      "canonicalFor": [
-        "deprecated Agent Workbench shell v2 hard-layout attempt",
-        "historical shell restart spec superseded by page-local layout contracts"
-      ],
-      "dependsOn": [
-        "docs/dashboard/hard-layout-specs/README.md",
-        "docs/dashboard/layout-decisions.md",
-        "docs/dashboard/rejected-implementations/pr-6-agent-workbench-shell.md"
-      ],
-      "machineConsumers": [
-        "check-doc-links",
-        "check-doc-governance"
-      ],
-      "reviewAfter": "2026-06-26",
-      "lastVerifiedWith": [
-        "npx pnpm@9.15.4 check"
-      ],
-      "reorgTrigger": "Remove after all references to shell-v2 are migrated to page-local layout contracts and rejected implementation records."
-    },
-    {
-      "path": "docs/dashboard/rejected-implementations/README.md",
-      "ownerRole": "frontend-quality",
-      "status": "planned",
-      "lifecycle": "archival",
-      "canonicalFor": [
-        "Agent Workbench rejected implementation index",
-        "rejected frontend implementation template"
-      ],
-      "dependsOn": [
-        "docs/dashboard/acceptance.md",
-        "docs/dashboard/layout-decisions.md",
-        ".agents/skills/harness-frontend-product-design/SKILL.md"
-      ],
-      "machineConsumers": [
-        "check-doc-links",
-        "check-doc-governance"
-      ],
-      "reviewAfter": "2026-06-26",
-      "lastVerifiedWith": [
-        "npx pnpm@9.15.4 check"
-      ],
-      "reorgTrigger": "Rejected implementation record template or failure archive structure changes."
-    },
-    {
-      "path": "docs/dashboard/rejected-implementations/pr-6-agent-workbench-shell.md",
-      "ownerRole": "frontend-quality",
-      "status": "archival",
-      "lifecycle": "archival",
-      "canonicalFor": [
-        "PR #6 rejected Agent Workbench implementation record",
-        "dashboard/card-dump anti-pattern evidence"
-      ],
-      "dependsOn": [
-        "docs/dashboard/rejected-implementations/README.md",
-        "docs/dashboard/hard-layout-specs/shell-v2.md",
+        "docs/decisions/0014-react-vite-agent-dashboard.md",
+        "docs/dashboard/frontend-architecture.md",
+        "docs/dashboard/layout-history.md",
         "docs/dashboard/acceptance.md"
       ],
       "machineConsumers": [
         "check-doc-links",
         "check-doc-governance"
       ],
-      "reviewAfter": "2026-06-26",
+      "reviewAfter": "2026-08-26",
       "lastVerifiedWith": [
         "npx pnpm@9.15.4 check"
       ],
-      "reorgTrigger": "PR #6 rejection evidence, restart point, or code disposition changes."
+      "reorgTrigger": "Frontend styling stack, UI-primitive library, dependency boundary, or Workbench module boundary changes."
     }
   ]
 }

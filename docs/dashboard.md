@@ -142,12 +142,9 @@ mixed with frontend implementation details:
 | `docs/dashboard.md` | product-level Workbench purpose, information architecture, backward data requirements, user-facing acceptance | component folder layout, package commands, framework internals |
 | `docs/dashboard/README.md` | Workbench docs placement map, change order, and docs/surface routing rules | product semantics or component implementation |
 | `docs/dashboard/design-principles.md` | core frontend design principles, graph/Kanban policy, AgentTeam/AgentMember UI doctrine, visual system, and current UX failure modes | route-level layout details or React module boundaries |
-| `docs/dashboard/layout-variants.md` | candidate Workbench layout directions, Designer/Questioner critique, scoring rubric, and decision inputs | final route spec, component internals, or accepted layout details |
-| `docs/dashboard/layout-decisions.md` | accepted layout direction, rejected alternatives, module decisions, and visual placement constraints | component internals or unscored future ideas |
+| `docs/dashboard/layout-history.md` | candidate Workbench layout directions, Designer/Questioner critique, scoring rubric, and the selected/killed/deprecated decision ledger including rejected-implementation outcomes | component internals or unscored future ideas |
 | `docs/dashboard/frontend-design.md` | frontend design index, reading order, page-spec map, and implementation-readiness summary | page-level details, framework internals, run commands |
 | `docs/dashboard/pages/*.md` | page/workspace purpose, canonical objects, workflow proof, IA, actions, detailed layout contract, ASCII diagrams, dimensions, scroll ownership, failure modes | component implementation |
-| `docs/dashboard/hard-layout-specs/*.md` | historical hard-layout attempts retained for failure analysis | current implementation gates or page layout contracts |
-| `docs/dashboard/rejected-implementations/*.md` | failed browser-visible attempts and restart points | active layout decisions or implementation plans |
 | `docs/dashboard/frontend-architecture.md` | Agent Workbench frontend architecture, component responsibilities, app-local source boundary | product PRD or runbook commands |
 | `docs/dashboard/read-model.md` | read-model projections, goal scope, warning promotion rules | canonical validation rules or Rust implementation |
 | `docs/dashboard/acceptance.md` | browser screenshot evidence, web-quality gate, and frontend acceptance sequence | product purpose or local development commands |
@@ -172,12 +169,11 @@ The frontend design contract is in
 that reshape the Workbench should update that document before changing
 component structure or CSS.
 
-Candidate layout options, critiques, and rejected alternatives belong in
-[dashboard/layout-variants.md](dashboard/layout-variants.md). Accepted layout
-decisions and killed alternatives belong in
-[dashboard/layout-decisions.md](dashboard/layout-decisions.md). Once a
-direction is accepted, promote stable route, page, surface, action, and
-acceptance decisions into the frontend design contract.
+Candidate layout options, critiques, rejected alternatives, and accepted/killed
+layout decisions belong in
+[dashboard/layout-history.md](dashboard/layout-history.md). Once a direction is
+accepted, promote stable route, page, surface, action, and acceptance decisions
+into the frontend design contract.
 
 Browser screenshot and web-quality acceptance lives in
 [dashboard/acceptance.md](dashboard/acceptance.md). Layout PRs should plan that

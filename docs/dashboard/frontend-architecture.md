@@ -2,30 +2,38 @@
 
 This document owns the frontend architecture and technology-stack decision for
 Agent Workbench. Product purpose stays in [../dashboard.md](../dashboard.md).
-Page-level UX and layout contracts stay in [pages/](pages/). Historical
-hard-layout attempts stay in [hard-layout-specs/](hard-layout-specs/) only for
-failure analysis. Acceptance gates stay in [acceptance.md](acceptance.md).
+Page-level UX and layout contracts stay in [pages/](pages/). Layout history and
+the rejected/selected decision ledger stay in [layout-history.md](layout-history.md).
+Acceptance gates stay in [acceptance.md](acceptance.md). The stack decision is
+recorded as ADR [0016](../decisions/0016-tailwind-shadcn-adoption.md).
 
 ## Current Decision
 
 ```text
-status: accepted-for-rebuild
-implementation_allowed: yes, only from page-local layout contracts
+status: shipped (PR #7)
+implementation_allowed: yes, from page-local layout contracts
 decision:
-  keep React + TypeScript + Vite as the build/runtime shell for now
-  rebuild the product architecture from Workbench primitives
-  delete or quarantine failed dashboard/PR #6 UI composition
-  do not use shadcn
+  React 18 + TypeScript + Vite build/runtime shell
+  Tailwind CSS v4 (@tailwindcss/vite) for styling and tokens
+  shadcn/ui primitives over Radix (components.json, style new-york)
+  lucide-react icons; Geist + Geist Mono fonts
+  dependencies live in the ROOT package.json (no per-app package.json)
+  module boundary: src/app, src/surfaces, src/model, src/components
 ```
 
-React + TypeScript + Vite are not the cause of the failed frontend. The failure
-was product architecture and acceptance discipline: old dashboard components,
-card/tab composition, and vague layout specs shaped the implementation. The
-next rebuild keeps the lightweight build path while replacing the UI structure.
+The Agent Workbench frontend was rebuilt and merged in PR #7. React +
+TypeScript + Vite remain the build/runtime shell; the rebuild adopted Tailwind
+CSS v4, shadcn/ui primitives over Radix, lucide-react icons, and the Geist font
+family on top of a dark operator-console token theme in `src/index.css`. The
+earlier hand-rolled-CSS shell was rejected for product-architecture and
+acceptance reasons (card/tab dumps, vague layout specs), not because of the build
+path. The full stack rationale is recorded in ADR
+[0016](../decisions/0016-tailwind-shadcn-adoption.md), which supersedes ADR
+[0014](../decisions/0014-react-vite-agent-dashboard.md) in part.
 
 This decision must be re-opened if implementation needs routing, graph,
-collaboration editing, state management, or browser acceptance capabilities that
-the current stack cannot support.
+collaboration editing, or state-management capabilities that the current stack
+cannot support.
 
 ## Source Boundary
 
@@ -46,15 +54,18 @@ mutation truth.
 
 | Area | Decision | Rationale |
 | --- | --- | --- |
-| Framework | React 18 | Existing build path, good composition for page/workbench surfaces. |
+| Framework | React 18 | Good composition for page/workbench surfaces. |
 | Language | TypeScript strict mode | Snapshot/read-model contracts must remain explicit. |
 | Bundler | Vite | Lightweight local dev and static `web/` output. |
-| UI kit | None; no shadcn | The product needs custom Workbench primitives, not generic card/dialog defaults. |
-| Icons | `lucide-react` allowed | Existing dependency; use icon+tooltip/label where it clarifies action. |
-| Styling | Custom CSS with design tokens | Avoid kit-driven aesthetics and keep layout tied to page-local contracts. |
+| Styling | Tailwind CSS v4 via `@tailwindcss/vite` | Token-driven utility styling tied to page-local contracts; dark operator-console theme in `src/index.css`. |
+| UI kit | shadcn/ui primitives over Radix (`components.json`, style `new-york`) in `src/components/ui` | Accessible Radix behavior with copy-in primitives the product owns and can adapt. |
+| Product atoms | `src/components/workbench` | Workbench-specific atoms composed from the shadcn/ui primitives. |
+| Icons | `lucide-react` | Use icon+tooltip/label where it clarifies action. |
+| Fonts | Geist + Geist Mono | Operator-console typography for UI and code/data. |
 | Routing | Route-ready internal state first; add router only when page specs require URL routing | Avoid adding dependency before page contracts stabilize. |
 | Graph | Defer library choice until the `graph-kanban` page layout contract is accepted | Graph must be semantic and controlled, not decorative canvas. |
 | State | Local app state + pure read-model selectors first | Canonical state comes from snapshot/API; avoid store abstraction until needed. |
+| Dependencies | Declared in the ROOT `package.json` (no `apps/agent-dashboard/package.json`) | Single dependency surface for the gated monorepo build. |
 
 ## Component Decision
 
@@ -79,7 +90,8 @@ implementation components for the next slice:
 | `WarningsRepair` | workflow risk queue with affected object, cause, consequence, safe repair state | toast-only alerts |
 | `DebugSurface` / `DebugDrawer` | raw snapshot and import/export only behind explicit debug route/drawer | primary viewport |
 
-Small UI primitives are allowed only when they preserve the product model:
+Product atoms in `src/components/workbench` are composed from the shadcn/ui
+primitives and preserve the product model:
 
 | Primitive | Purpose |
 | --- | --- |
@@ -90,17 +102,21 @@ Small UI primitives are allowed only when they preserve the product model:
 | `TimelineRow` | canonical Message/Event/Evidence/Decision rows. |
 | `LaneBoard` | task/goal execution lanes. |
 
-No shadcn, Radix bundle, Tailwind kit, Material UI, Ant Design, or generic
-component framework is used in this rebuild.
+The rebuild uses Tailwind CSS v4 plus shadcn/ui primitives over Radix as the
+base layer. Material UI, Ant Design, and other full component frameworks remain
+out of scope.
 
 ## Dependency Policy
 
-- Do not add shadcn.
-- Do not add a generic component library without a recorded Reviewer decision.
+- shadcn/ui primitives are added through `components.json` (style `new-york`)
+  into `src/components/ui`; product atoms wrap them in `src/components/workbench`.
+- All dependencies are declared in the ROOT `package.json`; there is no
+  `apps/agent-dashboard/package.json`.
+- Do not add a second full component framework without a recorded Reviewer
+  decision.
 - Do not add a graph/canvas library until [pages/graph-kanban.md](pages/graph-kanban.md)
   and its page-local layout contract require capabilities that custom SVG/HTML cannot
   provide.
-- Prefer custom Workbench primitives over generic cards.
 - Any dependency must name the page spec it serves and how it will be
   screenshot-accepted.
 
@@ -142,40 +158,23 @@ a retained Workbench primitive with a page spec and screenshot acceptance path.
 
 ## Module Boundary
 
-Target shape after rebuild:
+Shipped shape after the rebuild (PR #7):
 
 ```text
 src/
-  app/
-    App.tsx
-    WorkbenchShell.tsx
-    selection.ts
-  api/
-    client.ts
-  model/
-    types.ts
-    readModel.ts
-    warnings.ts
-  surfaces/
-    team/
-    member/
-    vision/
-    goal/
-    task/
-    graph-kanban/
-    docs/
-    decisions/
-    warnings/
-    debug/
-  ui/
-    primitives/
-    tokens.css
-    layout.css
+  app/            # App composition, WorkbenchShell, selection state
+  surfaces/       # team, member, vision, goal, task, graph-kanban, docs,
+                  #   decisions, warnings, debug page surfaces
+  model/          # snapshot types, read-model selectors, warnings
+  components/
+    ui/           # shadcn/ui primitives over Radix (components.json, new-york)
+    workbench/    # product atoms composed from the ui primitives
+  index.css       # Tailwind v4 entry + dark operator-console token theme
 ```
 
-This is a target architecture, not permission to implement. Implementation
-begins only after page specs with detailed `## Layout Contract` sections are
-accepted.
+shadcn configuration lives in `apps/agent-dashboard/components.json`. The build
+boundary stays under `apps/agent-dashboard/`, but all dependencies are declared
+in the ROOT `package.json`.
 
 ## Graph Strategy
 
@@ -199,7 +198,9 @@ Possible future options:
 Architecture acceptance requires:
 
 - import audit proving old dashboard components do not drive first viewport;
-- no shadcn dependency;
+- styling through Tailwind v4 plus shadcn/ui primitives over Radix, not a
+  second full component framework;
 - page specs and page-local layout contracts linked from implemented surfaces;
 - screenshot-first PM/User acceptance;
-- rejected implementation records for failed browser-visible attempts.
+- rejected implementation outcomes recorded in
+  [layout-history.md](layout-history.md) for failed browser-visible attempts.

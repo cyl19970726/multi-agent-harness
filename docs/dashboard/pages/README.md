@@ -66,7 +66,5 @@ open_questions:
 - Update the same page spec when the page purpose, canonical object ownership,
   information architecture, action model, dimensions, first viewport,
   breakpoint behavior, or scroll ownership changes.
-- Update [../layout-decisions.md](../layout-decisions.md) when a selected,
+- Update [../layout-history.md](../layout-history.md) when a selected,
   rejected, or borrowed design decision changes.
-- `../hard-layout-specs/` is historical only and must not receive current page
-  layout contracts.
