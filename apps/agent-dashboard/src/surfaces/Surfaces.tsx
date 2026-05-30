@@ -1,940 +1,1399 @@
 import {
+  Activity,
   AlertTriangle,
+  Bot,
   CheckCircle2,
-  CircleDot,
+  ClipboardList,
   ExternalLink,
   FileText,
-  GitPullRequest,
+  Gavel,
   GitBranch,
   Inbox,
+  Link2,
+  ListChecks,
   MessageSquare,
-  PlayCircle,
+  Scale,
   Send,
   ShieldCheck,
-  TimerReset,
+  Target,
+  User,
   Workflow,
 } from "lucide-react";
-import type { ReactNode } from "react";
-import type { SelectionState } from "../app/selection";
-import type { WorkbenchModel } from "../model/readModel";
-import { memberName, objectShortId, taskTitle } from "../model/readModel";
-import type { Goal, Task, WorkflowWarning } from "../types";
-import { ActionButton, EmptyState, SectionPanel, SegmentedControl, StatusBadge, TimelineRow } from "../ui/primitives";
 
-type SelectionPatch = Partial<SelectionState>;
+import { cn } from "@/lib/utils";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import {
+  EmptyState,
+  MetaList,
+  MonoId,
+  Section,
+  StatusDot,
+  SurfaceHeader,
+  TimelineRow,
+  toneText,
+  type StatusTone,
+} from "@/components/workbench/atoms";
+import { Avatar } from "@/components/workbench/Avatar";
+import {
+  goalTone,
+  memberTone,
+  severityTone,
+  taskTone,
+  timelineTone,
+} from "@/components/workbench/tones";
+
+import { memberName, taskTitle, type WorkbenchModel } from "../model/readModel";
+import type { Goal, Task, WorkflowWarning } from "../types";
+import type { SelectionState } from "../app/selection";
 
 interface SurfaceProps {
   model: WorkbenchModel;
-  onSelectionChange: (selection: SelectionPatch) => void;
+  onSelectionChange: (selection: Partial<SelectionState>) => void;
 }
 
-export function TeamWorkspace({ model, onSelectionChange }: SurfaceProps) {
-  return (
-    <div className="surfaceStack teamWorkspaceSurface">
-      <SurfaceHeader
-        kicker="Persistent AgentTeam"
-        title={model.selectedTeam?.name ?? "No active team"}
-        body="Standing members, current work, messages, decisions, and warnings stay visible together."
-        actions={
-          <>
-            <ActionButton icon={Send} tone="primary">Message member</ActionButton>
-            <ActionButton icon={ShieldCheck}>Request review</ActionButton>
-          </>
-        }
-      />
+/** Goal carries 3 fields in the schema that the frontend Goal type omits today. */
+type GoalExtra = Goal & {
+  priority?: string;
+  created_at?: string;
+  updated_at?: string;
+};
 
-      <section className="goalStrip">
-        <div>
-          <span>Active Vision / Goal</span>
-          <strong>{model.selectedGoal?.title ?? "Missing active goal"}</strong>
-          <p>{model.selectedGoal?.objective}</p>
-        </div>
-        <div className="goalProof">
-          <StatusBadge tone="info">{model.goalTasks.length} tasks</StatusBadge>
-          <StatusBadge tone={model.warnings.length ? "warn" : "good"}>{model.warnings.length} warnings</StatusBadge>
-          <StatusBadge tone={model.decisionQueue.length ? "warn" : "good"}>{model.decisionQueue.length} decision items</StatusBadge>
-        </div>
-      </section>
+/* ------------------------------------------------------------------ */
+/* Shared building blocks                                              */
+/* ------------------------------------------------------------------ */
 
-      <div className="teamWorkspaceGrid">
-        <SectionPanel title="Canonical Activity" kicker="Messages / tasks / evidence / decisions" className="activityPanel">
-          <div className="timelineList">
-            {model.activity.map((item) => (
-              <TimelineRow
-                key={item.id}
-                kind={item.kind}
-                title={item.title}
-                meta={item.meta}
-                body={item.body}
-                severity={item.severity}
-                onClick={() => item.objectRef && onSelectionChange({ taskId: item.objectRef, surface: "task" })}
-              />
-            ))}
-          </div>
-        </SectionPanel>
-
-        <SectionPanel title="Current Work Pressure" kicker="Task lanes and decision pressure" className="workPressurePanel">
-          <LaneBoard tasks={model.goalTasks} compact onSelectTask={(task) => onSelectionChange({ taskId: task.id, surface: "task" })} />
-        </SectionPanel>
-      </div>
-
-      <div className="queueBand">
-        <QueueColumn
-          title="Decision Queue"
-          items={model.decisionQueue}
-          empty="No pending decisions"
-          onSelect={(objectRef) => objectRef && onSelectionChange({ taskId: objectRef, surface: "decisions" })}
-        />
-        <WarningColumn warnings={model.warnings.slice(0, 5)} onSelect={(warning) => onSelectionChange(warning.taskId ? { taskId: warning.taskId, surface: "warnings" } : { surface: "warnings" })} />
-      </div>
-    </div>
-  );
-}
-
-export function VisionOverview({ model, onSelectionChange }: SurfaceProps) {
-  const selectedGoal = model.selectedGoal;
-  const nextProposal = model.snapshot.autonomous_proposals?.[0];
-  const proposedGoalCount = model.proposedGoals.length;
-  const nextProposalCount = model.snapshot.autonomous_proposals?.length ?? 0;
-  const goalGroups = [
-    { id: "active", title: "Active", goals: model.activeGoals, fallback: selectedGoal ? [selectedGoal] : [] },
-    { id: "complete", title: "Completed", goals: model.completeGoals, fallback: [] },
-    { id: "blocked", title: "Blocked", goals: model.blockedGoals, fallback: [] },
-    { id: "proposed", title: "Proposed", goals: model.proposedGoals, fallback: [] },
-  ];
-
-  return (
-    <div className="visionPage">
-      <section className="visionHero pageHero">
-        <div>
-          <p className="heroKicker">Vision overview</p>
-          <h1>Workbench self-hosting vision</h1>
-          <p>Track whether active, completed, blocked, and proposed goals are moving the harness toward a reusable self-hosting workflow.</p>
-        </div>
-        <div className="heroActions">
-          <ActionButton icon={Workflow} onClick={() => onSelectionChange({ surface: "graph" })}>Open graph</ActionButton>
-          <ActionButton icon={FileText} onClick={() => selectedGoal && onSelectionChange({ goalId: selectedGoal.id, surface: "goal" })}>Open selected goal</ActionButton>
-        </div>
-      </section>
-
-      <div className="visionStatusStrip">
-        <ProofMetric label="Active" value={String(model.activeGoals.length || (selectedGoal ? 1 : 0))} tone="info" caption="not complete" />
-        <ProofMetric label="Completed" value={String(model.completeGoals.length)} tone="good" caption="decision + evaluation" />
-        <ProofMetric label="Blocked" value={String(model.blockedGoals.length)} tone={model.blockedGoals.length ? "bad" : "good"} caption="needs lead action" />
-        <ProofMetric label="Next items" value={String(proposedGoalCount + nextProposalCount)} tone="warn" caption={`${proposedGoalCount} goals + ${nextProposalCount} proposals`} />
-      </div>
-
-      <div className="visionLayout">
-        <section className="visionCollection">
-          <header className="pageSectionHeader">
-            <span>Goal collection</span>
-            <strong>Completion is proven by Decision and GoalEvaluation, not task count.</strong>
-          </header>
-          <div className="visionGroupGrid">
-            {goalGroups.map((group) => (
-              <section key={group.id} className={`visionGoalGroup ${group.id}`}>
-                <header>
-                  <span>{group.title}</span>
-                  <strong>{group.goals.length || group.fallback.length}</strong>
-                </header>
-                <div className="visionGoalRows">
-                  {(group.goals.length ? group.goals : group.fallback).map((goal) => (
-                    <VisionGoalRow key={goal.id} goal={goal} model={model} onSelect={() => onSelectionChange({ goalId: goal.id, surface: "goal" })} />
-                  ))}
-                  {!group.goals.length && !group.fallback.length && <EmptyState title={`No ${group.title.toLowerCase()} goals`} body="This group is empty in the current snapshot." />}
-                </div>
-              </section>
-            ))}
-          </div>
-        </section>
-
-        <aside className="visionContextRail">
-          <PageSection kicker="Distance-to-vision" title="Next gap to close">
-            <div className="contextStack">
-              <StatusBadge tone={model.warnings.length ? "warn" : "good"}>{model.warnings.length} workflow gaps</StatusBadge>
-              <p>GoalEvaluation must explain what moved the product closer to the Vision before the next Goal is accepted.</p>
-            </div>
-          </PageSection>
-          <PageSection kicker="Next-round proposal" title={nextProposal?.summary ?? "No accepted next proposal yet"}>
-            <p>{nextProposal ? `${nextProposal.disposition ?? "pending"} · source ${nextProposal.source_ref ?? nextProposal.source_type ?? "unknown"}` : "Observer proposals will appear here when linked to evidence or evaluation."}</p>
-            <div className="inlineBadges">
-              <StatusBadge tone={nextProposal?.linked_evidence_ids?.length ? "good" : "warn"}>{nextProposal?.linked_evidence_ids?.length ?? 0} evidence refs</StatusBadge>
-              <StatusBadge tone="info">{nextProposal?.follow_up_task_ids?.length ?? 0} follow-up tasks</StatusBadge>
-            </div>
-          </PageSection>
-          <PageSection kicker="Selected goal" title={selectedGoal?.title ?? "No selected goal"}>
-            <p>{selectedGoal?.objective ?? "Select a goal from the collection to inspect the work document."}</p>
-            <ActionButton icon={FileText} onClick={() => selectedGoal && onSelectionChange({ goalId: selectedGoal.id, surface: "goal" })}>Open goal document</ActionButton>
-          </PageSection>
-        </aside>
-      </div>
-    </div>
-  );
-}
-
-export function MemberWorkbench({ model, onSelectionChange }: SurfaceProps) {
-  const member = model.selectedMember;
-  if (!member) {
-    return <EmptyState title="No AgentMember selected" body="Select a durable member from the team rail." />;
-  }
-
-  return (
-    <div className="memberRoute">
-      <section className="memberMeta">
-        <span className="avatar large">{initials(member.name ?? member.id)}</span>
-        <h1>{member.name ?? member.id}</h1>
-        <p>{member.role ?? "Member"} · {member.runtime_status ?? member.status ?? "unknown"}</p>
-        <div className="inlineBadges">
-          <StatusBadge tone={member.runtime_alive ? "good" : "warn"}>{member.runtime_alive ? "runtime alive" : "runtime unknown"}</StatusBadge>
-          <StatusBadge tone="info">{member.provider ?? "provider neutral"}</StatusBadge>
-        </div>
-        <dl className="metaList">
-          <div><dt>Current task</dt><dd>{taskTitle(model.tasks, member.current_task_id)}</dd></div>
-          <div><dt>Prompt</dt><dd>{member.prompt_ref ?? "not recorded"}</dd></div>
-          <div><dt>Skills</dt><dd>{member.skill_refs?.join(", ") || "none"}</dd></div>
-        </dl>
-      </section>
-
-      <section className="memberMain">
-        <div className="memberActionRow">
-          <ActionButton icon={Send} tone="primary">Send message</ActionButton>
-          <ActionButton icon={Inbox}>Deliver queued</ActionButton>
-          <ActionButton icon={TimerReset}>Retry failed</ActionButton>
-          <ActionButton icon={FileText} onClick={() => member.current_task_id && onSelectionChange({ taskId: member.current_task_id, surface: "task" })}>
-            Open task
-          </ActionButton>
-        </div>
-        <div className="inboxOutbox">
-          <div><strong>{member.inbox_count ?? 0}</strong><span>Inbox</span></div>
-          <div><strong>{member.queued_count ?? 0}</strong><span>Queued</span></div>
-          <div><strong>{model.selectedMemberMessages.length}</strong><span>Messages</span></div>
-        </div>
-        <SectionPanel title="Chronological Activity" kicker="Assignment before report and evidence">
-          <div className="timelineList">
-            {model.selectedMemberTimeline.map((item) => (
-              <TimelineRow
-                key={item.id}
-                kind={item.kind}
-                title={item.title}
-                meta={item.meta}
-                body={item.body}
-                severity={item.severity}
-                onClick={() => item.objectRef && onSelectionChange({ taskId: item.objectRef, surface: "task" })}
-              />
-            ))}
-          </div>
-        </SectionPanel>
-      </section>
-
-      <aside className="runtimePanel">
-        <SectionPanel title="Runtime Health" kicker="Process / endpoint / protocol / delivery">
-          <div className="runtimeStack">
-            <RuntimeLine label="Process" value={member.runtime_alive ? "alive" : "unknown"} tone={member.runtime_alive ? "good" : "warn"} />
-            <RuntimeLine label="Endpoint" value={member.control_endpoint ?? "not exposed"} tone="info" />
-            <RuntimeLine label="Protocol" value={member.provider_thread_id ?? "message-first"} tone="info" />
-            <RuntimeLine label="Delivery" value={`${member.queued_count ?? 0} queued`} tone={member.queued_count ? "warn" : "good"} />
-          </div>
-        </SectionPanel>
-        <SectionPanel title="Sessions" kicker="Provider state under member identity">
-          <div className="sessionList">
-            {model.sessionsByMember.length ? model.sessionsByMember.map((session) => (
-              <div key={session.id} className="sessionRow">
-                <strong>{session.status ?? "unknown"}</strong>
-                <small>{session.prompt_summary ?? session.command ?? session.id}</small>
-              </div>
-            )) : <EmptyState title="No sessions" body="This member has no provider sessions in the current snapshot." />}
-          </div>
-        </SectionPanel>
-      </aside>
-    </div>
-  );
-}
-
-export function GoalDocument({ model, onSelectionChange }: SurfaceProps) {
-  const goal = model.selectedGoal;
-  if (!goal) return <EmptyState title="No goal selected" body="Load a snapshot or select a goal." />;
-
-  const learning = model.snapshot.goal_learning_status?.find((status) => status.goal_id === goal.id);
-  const goalTaskIds = new Set(model.goalTasks.map((task) => task.id));
-  const goalEvidence = model.evidence.filter((item) => item.task_id && goalTaskIds.has(item.task_id));
-  const goalProposals = model.proposals.filter((item) => goalTaskIds.has(item.task_id));
-  const goalDecisions = model.decisions.filter((item) => goalTaskIds.has(item.task_id));
-  const goalReviewMessages = model.messages.filter((message) => {
-    if (!message.task_id || !goalTaskIds.has(message.task_id) || message.kind !== "report") return false;
-    const reviewedTask = model.tasks.find((task) => task.id === message.task_id);
-    return reviewedTask?.reviewer_agent_id === message.from_agent_id;
+function fmtTime(value?: string | null): string {
+  if (!value) return "—";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString(undefined, {
+    month: "short",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
   });
-  const goalWarnings = model.warnings.filter((warning) => warning.goalId === goal.id || (warning.taskId && goalTaskIds.has(warning.taskId)));
-  const taskCounts = countTasks(model.goalTasks);
-  const firstBranch = uniqueValues(model.goalTasks.map((task) => task.branch_ref))[0] ?? "goal branch missing";
-  const firstPr = uniqueValues(model.goalTasks.map((task) => task.pr_ref))[0] ?? "PR missing";
-  const branchCount = uniqueValues(model.goalTasks.map((task) => task.branch_ref)).length;
-  const prCount = uniqueValues(model.goalTasks.map((task) => task.pr_ref)).length;
-
-  return (
-    <div className="goalPage">
-      <section className="goalHero pageHero">
-        <div>
-          <p className="heroKicker">Goal work document</p>
-          <h1>{goal.title ?? goal.id}</h1>
-          <p>{goal.objective ?? "No objective recorded."}</p>
-          <div className="heroMeta">
-            <StatusBadge tone={goal.status === "complete" ? "good" : goal.status === "blocked" ? "bad" : "info"}>{goal.status ?? "active"}</StatusBadge>
-            <StatusBadge tone="info">owner {memberName(model.members, goal.owner_agent_id)}</StatusBadge>
-            <StatusBadge tone={goalWarnings.length ? "warn" : "good"}>{goalWarnings.length} warnings</StatusBadge>
-          </div>
-        </div>
-        <div className="heroActions">
-          <ActionButton icon={Workflow} onClick={() => onSelectionChange({ surface: "graph" })}>Graph/Kanban</ActionButton>
-          <ActionButton icon={ShieldCheck} onClick={() => onSelectionChange({ surface: "decisions" })}>Review proof</ActionButton>
-        </div>
-      </section>
-
-      <div className="goalStatusStrip">
-        <ProofMetric label="GoalDesign" value={(learning?.goal_design?.length ?? 0) > 0 ? "present" : "missing"} tone={(learning?.goal_design?.length ?? 0) > 0 ? "good" : "warn"} caption="design gate" />
-        <ProofMetric label="Tasks" value={`${model.goalTasks.length}`} tone="info" caption={`${taskCounts.running + taskCounts.review} active`} />
-        <ProofMetric label="Decision" value={`${goalDecisions.length}`} tone={goalDecisions.length ? "good" : "warn"} caption="acceptance proof" />
-        <ProofMetric label="Evaluation" value={(learning?.goal_evaluation?.length ?? 0) > 0 ? "present" : "missing"} tone={(learning?.goal_evaluation?.length ?? 0) > 0 ? "good" : "warn"} caption="closeout" />
-      </div>
-
-      <section className="goalProofMap" aria-label="Goal proof map">
-        <header className="pageSectionHeader">
-          <span>Durable goal proof</span>
-          <strong>Proof map before the document body</strong>
-        </header>
-        <div className="proofMiniGrid">
-          <ProofLine label={`Branch / PR refs ${branchCount}/${prCount}`} complete={branchCount > 0 && prCount > 0} />
-          <ProofLine label={`TaskGraph mapped ${model.goalTasks.length} tasks`} complete={model.goalTasks.length > 0} />
-          <ProofLine label={`Evidence refs ${goalEvidence.length}`} complete={goalEvidence.length > 0} />
-          <ProofLine label={`Review reports ${goalReviewMessages.length}`} complete={goalReviewMessages.length > 0} />
-          <ProofLine label={`Leader decisions ${goalDecisions.length}`} complete={goalDecisions.length > 0} />
-          <ProofLine label="GoalEvaluation closeout" complete={(learning?.goal_evaluation?.length ?? 0) > 0} />
-        </div>
-      </section>
-
-      <div className="goalWorkLayout">
-        <PageIndex title="Goal sections" items={["Objective", "Design gate", "Branch / PR", "Execution", "Proof", "Evaluation"]} />
-
-        <main className="goalDocumentFlow">
-          <PageSection id={anchorId("Objective", 0)} kicker="Why this goal exists" title="Objective and success criteria">
-            <ul className="criteriaList strongList">
-              {(goal.success_criteria ?? ["No success criteria recorded."]).map((item) => <li key={item}>{item}</li>)}
-            </ul>
-          </PageSection>
-
-          <section className="goalDesignBlock" id={anchorId("Design gate", 1)}>
-            <header>
-              <span>Design gate before implementation</span>
-              <strong>GoalDesign and team design</strong>
-            </header>
-            <div className="designGrid">
-              <div><span>Scenario</span><p>Self-hosting the harness frontend through its own Workbench objects.</p></div>
-              <div><span>Team</span><p>{model.selectedTeam?.name ?? "team missing"} with {model.members.length} persistent members.</p></div>
-              <div><span>Non-goal</span><p>Do not treat completed tasks as Goal completion without Decision and GoalEvaluation.</p></div>
-              <div><span>Gate</span><p>{(learning?.goal_design?.length ?? 0) > 0 ? "GoalDesign evidence exists before implementation." : "GoalDesign evidence is missing."}</p></div>
-            </div>
-          </section>
-
-          <PageSection id={anchorId("Branch / PR", 2)} kicker="Integration policy" title="Branch, PR, worktree, and docs stay near proof">
-            <div className="proofGrid strongProofGrid">
-              <span><GitBranch size={15} /> {firstBranch}</span>
-              <span><GitPullRequest size={15} /> {firstPr}</span>
-              <span><FileText size={15} /> page-local layout contracts</span>
-            </div>
-          </PageSection>
-
-          <section className="goalExecutionBlock" id={anchorId("Execution", 3)}>
-            <header>
-              <span>TaskGraph execution</span>
-              <strong>Kanban lanes plus dependency focus</strong>
-            </header>
-            <div className="goalExecutionGrid">
-              <LaneBoard tasks={model.goalTasks} compact onSelectTask={(task) => onSelectionChange({ taskId: task.id, surface: "task" })} />
-              <GraphPreview tasks={model.goalTasks} selectedTaskId={model.selectedTask?.id} onSelectTask={(task) => onSelectionChange({ taskId: task.id, surface: "task" })} />
-            </div>
-          </section>
-        </main>
-
-        <aside className="goalProofRail pageProofRail">
-          <PageSection id={anchorId("Proof", 4)} kicker="Acceptance state" title="Goal proof">
-            <div className="proofLines">
-              <ProofLine label="GoalDesign" complete={(learning?.goal_design?.length ?? 0) > 0} />
-              <ProofLine label="Review" complete={goalReviewMessages.length > 0} />
-              <ProofLine label="Decision" complete={goalDecisions.length > 0} />
-              <ProofLine label="Evidence" complete={goalEvidence.length > 0} />
-              <ProofLine label="GoalEvaluation" complete={(learning?.goal_evaluation?.length ?? 0) > 0} />
-            </div>
-          </PageSection>
-          <PageSection kicker="Review packet" title="Evidence, proposals, decisions">
-            <div className="contextStack">
-              <StatusBadge tone={goalEvidence.length ? "good" : "warn"}>{goalEvidence.length} evidence refs</StatusBadge>
-              <StatusBadge tone={goalProposals.length ? "good" : "warn"}>{goalProposals.length} proposals</StatusBadge>
-              <StatusBadge tone={goalDecisions.length ? "good" : "warn"}>{goalDecisions.length} decisions</StatusBadge>
-            </div>
-          </PageSection>
-          <PageSection id={anchorId("Evaluation", 5)} kicker="Distance-to-vision" title={(learning?.goal_evaluation?.length ?? 0) > 0 ? "Evaluation recorded" : "Evaluation still missing"}>
-            <p>Closeout should state what worked, what failed, remaining distance, and the next Goal or follow-up task.</p>
-            <ActionButton icon={FileText} onClick={() => onSelectionChange({ surface: "vision" })}>Back to Vision</ActionButton>
-          </PageSection>
-        </aside>
-      </div>
-    </div>
-  );
 }
 
-export function TaskDocument({ model, onSelectionChange }: SurfaceProps) {
-  const task = model.selectedTask;
-  if (!task) return <EmptyState title="No task selected" body="Select a task from the lanes." />;
-
-  const assignment = model.messages.find((message) => message.task_id === task.id && message.kind === "task");
-  const report = model.messages.find((message) => message.task_id === task.id && message.kind === "report");
-  const review = model.messages.find(
-    (message) => message.task_id === task.id && message.kind === "report" && message.from_agent_id === task.reviewer_agent_id,
-  );
-  const evidence = model.evidence.filter((item) => item.task_id === task.id);
-  const proposal = model.proposals.find((item) => item.task_id === task.id);
-  const decision = model.decisions.find((item) => item.task_id === task.id);
-  const taskWarnings = model.warnings.filter((warning) => warning.taskId === task.id);
-  const taskSessions = model.snapshot.provider_sessions?.filter((session) => session.task_id === task.id) ?? [];
-  const proofSteps = [
-    { label: "Assignment", complete: Boolean(assignment), body: assignment?.content ?? "No task message linked yet." },
-    { label: "Report", complete: Boolean(report), body: report?.content ?? "No member report linked yet." },
-    { label: "Evidence", complete: evidence.length > 0, body: `${evidence.length} evidence refs` },
-    { label: "Proposal", complete: Boolean(proposal), body: proposal?.summary ?? "No proposal packet yet." },
-    { label: "Review", complete: Boolean(review), body: review?.content ?? "No reviewer report linked yet." },
-    { label: "Decision", complete: Boolean(decision), body: decision?.rationale ?? "No Leader decision yet." },
-  ];
-
-  return (
-    <div className="taskPage">
-      <section className="taskHero pageHero">
-        <div>
-          <p className="heroKicker">Task protocol document</p>
-          <h1>{task.title ?? task.id}</h1>
-          <p>{task.objective ?? "No objective recorded."}</p>
-          <div className="heroMeta">
-            <StatusBadge tone={task.status === "done" ? "good" : task.status === "blocked" ? "bad" : "info"}>{task.status}</StatusBadge>
-            <StatusBadge tone="info">assignee {memberName(model.members, task.assignee_agent_id)}</StatusBadge>
-            <StatusBadge tone="info">reviewer {memberName(model.members, task.reviewer_agent_id)}</StatusBadge>
-          </div>
-        </div>
-        <div className="heroActions">
-          <ActionButton icon={Send}>Deliver task</ActionButton>
-          <ActionButton icon={ShieldCheck} onClick={() => onSelectionChange({ surface: "decisions" })}>Request review</ActionButton>
-        </div>
-      </section>
-
-      <div className="taskProtocolStrip">
-        {proofSteps.map((step, index) => (
-          <TaskProofStep key={step.label} index={index + 1} label={step.label} complete={step.complete} />
-        ))}
-      </div>
-
-      <div className="taskWorkLayout">
-        <PageIndex title="Proof order" items={["Objective", "Protocol order", "Assignment report", "Evidence proposal", "Review", "Decision", "Refs"]} />
-
-        <main className="taskDocumentFlow">
-          <PageSection id={anchorId("Objective", 0)} kicker="Assignable reviewable unit" title="Objective and acceptance">
-            <ul className="criteriaList strongList">
-              {(task.acceptance_criteria ?? ["No acceptance criteria recorded."]).map((item) => <li key={item}>{item}</li>)}
-            </ul>
-          </PageSection>
-
-          <section className="protocolTimeline" id={anchorId("Protocol order", 1)}>
-            <header>
-              <span>Canonical order</span>
-              <strong>Assignment must precede report, evidence, proposal, review, and decision.</strong>
-            </header>
-            <div className="protocolSteps">
-              {proofSteps.map((step, index) => (
-                <article key={step.label} className={`protocolStep ${step.complete ? "complete" : "missing"}`}>
-                  <span>{index + 1}</span>
-                  <div>
-                    <strong>{step.label}</strong>
-                    <p>{step.body}</p>
-                  </div>
-                </article>
-              ))}
-            </div>
-          </section>
-
-          <section className="taskMessageGrid" id={anchorId("Assignment report", 2)}>
-            <PageSection kicker="Message(kind=task)" title="Assignment proof">
-              {assignment ? <TimelineRow kind="message" title="Task assignment" meta={assignment.delivery_status} body={assignment.content} /> : <EmptyState title="Assignment missing" body="Assignee field alone does not prove assignment." />}
-            </PageSection>
-            <PageSection kicker="Assignee report" title="Report and runtime">
-              {report ? <TimelineRow kind="report" title="Member report" meta={report.delivery_status} body={report.content} /> : <EmptyState title="Report missing" body="No report message is linked to this task yet." />}
-            </PageSection>
-          </section>
-
-          <PageSection id={anchorId("Evidence proposal", 3)} kicker="PR refs stay near proof" title="Evidence, proposal, checks">
-            <div className="proofGrid strongProofGrid">
-              <span><FileText size={15} /> {evidence.length} evidence refs</span>
-              <span><GitPullRequest size={15} /> {objectShortId(task.pr_ref)}</span>
-              <span><GitBranch size={15} /> {objectShortId(task.branch_ref)}</span>
-            </div>
-            <p>{proposal?.summary ?? "No proposal summary yet."}</p>
-          </PageSection>
-        </main>
-
-        <aside className="taskContextRail pageProofRail">
-          <PageSection kicker="Assignee runtime" title={memberName(model.members, task.assignee_agent_id)}>
-            <div className="contextStack">
-              <StatusBadge tone={taskSessions.length ? "good" : "warn"}>{taskSessions.length} sessions</StatusBadge>
-              <StatusBadge tone={taskWarnings.length ? "warn" : "good"}>{taskWarnings.length} warnings</StatusBadge>
-              <ActionButton icon={ExternalLink} onClick={() => onSelectionChange({ memberId: task.assignee_agent_id ?? undefined, surface: "member" })}>Open assignee</ActionButton>
-            </div>
-          </PageSection>
-          <PageSection id={anchorId("Review", 4)} kicker="Reviewer proof" title={review ? "Review report recorded" : "Review report missing"}>
-            <p>{review?.content ?? "Task cannot look complete until the reviewer reports on the proposal and evidence."}</p>
-            <div className="proofLines">
-              <ProofLine label="Review report" complete={Boolean(review)} />
-              <ProofLine label="Evidence refs" complete={evidence.length > 0} />
-            </div>
-          </PageSection>
-          <PageSection id={anchorId("Decision", 5)} kicker="Leader decision" title={decision ? `Decision: ${decision.decision ?? "recorded"}` : "Decision missing"}>
-            <p>{decision?.rationale ?? "Task cannot look complete until review and Leader decision are recorded."}</p>
-            <div className="proofLines">
-              <ProofLine label="Review report" complete={Boolean(review)} />
-              <ProofLine label="Leader decision" complete={Boolean(decision)} />
-            </div>
-          </PageSection>
-          <PageSection id={anchorId("Refs", 6)} kicker="Owned paths" title="Branch / worktree / PR">
-            <div className="contextStack">
-              <StatusBadge tone="info">{objectShortId(task.branch_ref)}</StatusBadge>
-              <StatusBadge tone={task.pr_ref ? "good" : "warn"}>{objectShortId(task.pr_ref)}</StatusBadge>
-              <p>{task.owned_paths?.join(", ") || "No owned paths recorded."}</p>
-            </div>
-          </PageSection>
-        </aside>
-      </div>
-    </div>
-  );
+function shortBranch(value: string): string {
+  if (value.startsWith("http")) {
+    const parts = value.split("/");
+    return `#${parts.slice(-1)[0]}`;
+  }
+  const parts = value.split("/");
+  return parts.length > 2 ? `…/${parts.slice(-1)[0]}` : value;
 }
 
-export function GraphKanban({ model, mode, onSelectionChange }: SurfaceProps & { mode: "kanban" | "graph" | "split" }) {
-  return (
-    <div className="surfaceStack graphSurface">
-      <SurfaceHeader
-        kicker="Graph / Kanban"
-        title="TaskGraph execution and relationship view"
-        body="Kanban is the operational default. Graph focus explains dependencies and blockers without taking over Team."
-        actions={
-          <SegmentedControl
-            label="Graph mode"
-            value={mode}
-            onChange={(value) => onSelectionChange({ mode: value })}
-            options={[
-              { value: "kanban", label: "Kanban" },
-              { value: "graph", label: "Graph" },
-              { value: "split", label: "Split" },
-            ]}
-          />
-        }
-      />
-      <div className={`graphGrid ${mode}`}>
-        <SectionPanel title="Kanban Lanes" kicker="Operational state">
-          <LaneBoard tasks={model.goalTasks} onSelectTask={(task) => onSelectionChange({ taskId: task.id, surface: "task" })} />
-        </SectionPanel>
-        <SectionPanel title="Graph Focus" kicker="Dependencies, blockers, follow-ups">
-          <GraphPreview tasks={model.goalTasks} selectedTaskId={model.selectedTask?.id} onSelectTask={(task) => onSelectionChange({ taskId: task.id, surface: "task" })} />
-        </SectionPanel>
-        <SectionPanel title="Selected Object" kicker="Synchronized card/node">
-          <p>{model.selectedTask?.title ?? "No task selected"}</p>
-          <p>{model.selectedTask?.objective}</p>
-          <div className="inlineBadges">
-            <StatusBadge tone="info">{model.selectedTask?.status ?? "none"}</StatusBadge>
-            <StatusBadge>{model.selectedTask?.depends_on_task_ids?.length ?? 0} deps</StatusBadge>
-          </div>
-        </SectionPanel>
-      </div>
-    </div>
-  );
-}
-
-export function DocsContext({ model }: SurfaceProps) {
-  return (
-    <div className="surfaceStack">
-      <SurfaceHeader
-        kicker="Mounted docs"
-        title="Docs connected to active work"
-        body="Docs stay source-linked and explain why they matter to the selected Goal, Task, Member, or Decision."
-      />
-      <div className="docsGrid">
-        <SectionPanel title="Related Docs" kicker="Source-linked context">
-          <div className="docRows">
-            {model.docs.map((doc) => (
-              <a key={doc.path} className="docRow" href={`../../${doc.path}`}>
-                <strong>{doc.title}</strong>
-                <span>{doc.reason}</span>
-                <small>{doc.path} · {doc.lifecycle}</small>
-              </a>
-            ))}
-          </div>
-        </SectionPanel>
-        <SectionPanel title="Missing Context Warnings" kicker="Knowledge routing">
-          <WarningColumn warnings={model.warnings.filter((warning) => warning.kind.includes("goal") || warning.kind.includes("evidence"))} />
-        </SectionPanel>
-      </div>
-    </div>
-  );
-}
-
-export function DecisionCenter({ model, onSelectionChange }: SurfaceProps) {
-  const selectedTask = model.selectedTask;
-  return (
-    <div className="surfaceStack">
-      <SurfaceHeader
-        kicker="Evidence / Proposal / Review / Decision"
-        title="Acceptance proof center"
-        body="Acceptance stages stay visually distinct so missing proof cannot look complete."
-      />
-      <div className="proofStrip">
-        <ProofStage title="Evidence" complete={model.evidence.some((item) => item.task_id === selectedTask?.id)} body={`${model.evidence.length} refs`} />
-        <ProofStage title="Proposal" complete={model.proposals.some((item) => item.task_id === selectedTask?.id)} body={`${model.proposals.length} proposals`} />
-        <ProofStage title="Review" complete={model.messages.some((item) => item.kind === "report" && item.task_id === selectedTask?.id)} body="critic/report rows" />
-        <ProofStage title="Decision" complete={model.decisions.some((item) => item.task_id === selectedTask?.id)} body={`${model.decisions.length} decisions`} />
-      </div>
-      <QueueColumn
-        title="Global Decision Queue"
-        items={model.decisionQueue}
-        empty="No pending acceptance work"
-        onSelect={(objectRef) => objectRef && onSelectionChange({ taskId: objectRef, surface: "task" })}
-      />
-    </div>
-  );
-}
-
-export function WarningsRepair({ model, onSelectionChange }: SurfaceProps) {
-  return (
-    <div className="surfaceStack">
-      <SurfaceHeader
-        kicker="Warnings / repair"
-        title="Workflow risk queue"
-        body="Each warning names what is wrong, where it is, why it matters, and the safe path."
-      />
-      <div className="warningGrid">
-        <SectionPanel title="Severity Groups" kicker="Not color-only">
-          <WarningColumn warnings={model.warnings} onSelect={(warning) => warning.taskId && onSelectionChange({ taskId: warning.taskId, surface: "task" })} />
-        </SectionPanel>
-        <SectionPanel title="Repair Panel" kicker="Safe action or disabled reason">
-          {model.warnings[0] ? (
-            <div className="repairPanel">
-              <AlertTriangle size={28} aria-hidden="true" />
-              <h2>{model.warnings[0].kind}</h2>
-              <p>{model.warnings[0].summary}</p>
-              <p>Affected object: {model.warnings[0].taskId ?? model.warnings[0].goalId ?? model.warnings[0].memberId ?? "unknown"}</p>
-              <ActionButton icon={PlayCircle} disabled>Repair API not wired yet</ActionButton>
-            </div>
-          ) : (
-            <EmptyState title="No warnings" body="The current snapshot has no advisory warning rows." />
-          )}
-        </SectionPanel>
-      </div>
-    </div>
-  );
-}
-
-export function DebugSurface({ model, sourceLabel }: { model: WorkbenchModel; sourceLabel: string }) {
-  return (
-    <div className="surfaceStack debugSurface">
-      <SurfaceHeader
-        kicker="Debug"
-        title="Raw snapshot is secondary"
-        body="Debug is explicit and source-labeled. It is never the primary Workbench route."
-      />
-      <div className="debugGrid">
-        <SectionPanel title="Source" kicker="Live/offline state">
-          <p>{sourceLabel}</p>
-          <p>{model.snapshot.generated_at ?? "No generated_at in snapshot."}</p>
-        </SectionPanel>
-        <SectionPanel title="Raw Snapshot" kicker="Diagnosis only">
-          <pre>{JSON.stringify(model.snapshot, null, 2)}</pre>
-        </SectionPanel>
-      </div>
-    </div>
-  );
-}
-
-function ProofMetric({
+function ProofStat({
   label,
   value,
   tone,
   caption,
 }: {
   label: string;
-  value: string;
-  tone: "good" | "warn" | "bad" | "info" | "muted";
-  caption: string;
+  value: number | string;
+  tone: StatusTone;
+  caption?: string;
 }) {
   return (
-    <div className={`proofMetric ${tone}`}>
-      <span>{label}</span>
-      <strong>{value}</strong>
-      <small>{caption}</small>
-    </div>
-  );
-}
-
-function PageSection({ id, kicker, title, children }: { id?: string; kicker: string; title: string; children: ReactNode }) {
-  return (
-    <section className="pageSection" id={id}>
-      <header className="pageSectionHeader">
-        <span>{kicker}</span>
-        <strong>{title}</strong>
-      </header>
-      <div className="pageSectionBody">{children}</div>
-    </section>
-  );
-}
-
-function PageIndex({ title, items }: { title: string; items: string[] }) {
-  return (
-    <aside className="pageIndex">
-      <strong>{title}</strong>
-      <nav aria-label={title}>
-        {items.map((item, index) => (
-          <a key={item} href={`#${anchorId(item, index)}`}>{item}</a>
-        ))}
-      </nav>
-    </aside>
-  );
-}
-
-function anchorId(label: string, index: number): string {
-  return `page-section-${index}-${label.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")}`;
-}
-
-function VisionGoalRow({ goal, model, onSelect }: { goal: Goal; model: WorkbenchModel; onSelect: () => void }) {
-  const tasks = model.tasks.filter((task) => task.goal_id === goal.id);
-  const taskIds = new Set(tasks.map((task) => task.id));
-  const learning = model.snapshot.goal_learning_status?.find((status) => status.goal_id === goal.id);
-  const decisionCount = model.decisions.filter((decision) => taskIds.has(decision.task_id)).length;
-  const hasEvaluation = (learning?.goal_evaluation?.length ?? 0) > 0;
-
-  return (
-    <button type="button" className="visionGoalRow" onClick={onSelect}>
-      <span>
-        <strong>{goal.title ?? goal.id}</strong>
-        <small>{goal.objective ?? "No objective recorded."}</small>
-      </span>
-      <span className="visionGoalProof">
-        <StatusBadge tone={goal.status === "complete" ? "good" : goal.status === "blocked" ? "bad" : "info"}>{goal.status ?? "active"}</StatusBadge>
-        <StatusBadge tone={decisionCount ? "good" : "warn"}>{decisionCount} decisions</StatusBadge>
-        <StatusBadge tone={hasEvaluation ? "good" : "warn"}>{hasEvaluation ? "evaluation" : "evaluation missing"}</StatusBadge>
-      </span>
-    </button>
-  );
-}
-
-function TaskProofStep({ index, label, complete }: { index: number; label: string; complete: boolean }) {
-  return (
-    <div className={`taskProofStep ${complete ? "complete" : "missing"}`}>
-      <span>{index}</span>
-      <strong>{label}</strong>
-      <small>{complete ? "present" : "missing"}</small>
-    </div>
-  );
-}
-
-function SurfaceHeader({ kicker, title, body, actions }: { kicker: string; title: string; body: string; actions?: ReactNode }) {
-  return (
-    <header className="surfaceHeader">
-      <div>
-        <p>{kicker}</p>
-        <h1>{title}</h1>
-        <span>{body}</span>
+    <div className="rounded-md border border-border bg-background/50 px-3.5 py-2 text-center">
+      <div className={cn("text-xl font-semibold tabular-nums", toneText[tone])}>
+        {value}
       </div>
-      {actions && <div className="surfaceActions">{actions}</div>}
-    </header>
-  );
-}
-
-function DocumentRoute({
-  sideTitle,
-  navItems,
-  proofTitle,
-  proof,
-  children,
-}: {
-  sideTitle: string;
-  navItems: string[];
-  proofTitle: string;
-  proof: ReactNode;
-  children: ReactNode;
-}) {
-  return (
-    <div className="documentRoute">
-      <aside className="docRail">
-        <strong>{sideTitle}</strong>
-        {navItems.map((item, index) => (
-          <a key={item} href={`#section-${index}`}>{item}</a>
-        ))}
-      </aside>
-      <div className="documentBody">{children}</div>
-      <aside className="proofPanel">
-        <h2>{proofTitle}</h2>
-        <div className="proofLines">{proof}</div>
-      </aside>
+      <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
+        {label}
+      </div>
+      {caption && (
+        <div className="mt-0.5 text-[10px] text-muted-foreground/70">{caption}</div>
+      )}
     </div>
   );
 }
 
-function LaneBoard({
-  tasks,
-  compact,
-  onSelectTask,
+/** Verifiable-criteria checklist (used by Task acceptance + Goal success). */
+function CriteriaList({
+  items,
+  empty,
 }: {
-  tasks: Task[];
-  compact?: boolean;
-  onSelectTask: (task: Task) => void;
+  items?: string[];
+  empty: string;
 }) {
-  const statuses = compact ? ["planned", "running", "review", "done"] : ["planned", "assigned", "running", "blocked", "review", "done"];
+  if (!items?.length) {
+    return <EmptyState title={empty} />;
+  }
   return (
-    <div className={`laneBoard${compact ? " compact" : ""}`}>
-      {statuses.map((status) => {
-        const laneTasks = tasks.filter((task) => task.status === status);
+    <ul className="space-y-2 p-4">
+      {items.map((item, index) => (
+        <li key={index} className="flex items-start gap-2.5 text-[13px]">
+          <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-status-good" />
+          <span className="text-foreground/90">{item}</span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function PathList({ paths }: { paths?: string[] }) {
+  if (!paths?.length) return <span className="text-muted-foreground">—</span>;
+  return (
+    <span className="flex flex-col gap-0.5">
+      {paths.map((path) => (
+        <MonoId key={path}>{path}</MonoId>
+      ))}
+    </span>
+  );
+}
+
+/** depends_on / blocks chips that link to the related task. */
+function DependencyChips({
+  ids,
+  tasks,
+  empty,
+  onSelect,
+}: {
+  ids: string[];
+  tasks: Task[];
+  empty: string;
+  onSelect: (id: string) => void;
+}) {
+  if (!ids.length) {
+    return <p className="px-1 text-xs text-muted-foreground">{empty}</p>;
+  }
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {ids.map((id) => {
+        const t = tasks.find((task) => task.id === id);
         return (
-          <section key={status} className="lane">
-            <header>
-              <strong>{status}</strong>
-              <span>{laneTasks.length}</span>
-            </header>
-            <div className="laneTasks">
-              {laneTasks.length ? laneTasks.map((task) => (
-                <button key={task.id} type="button" className="taskRow" onClick={() => onSelectTask(task)}>
-                  <strong>{task.title ?? task.id}</strong>
-                  <small>{memberName([], task.assignee_agent_id)} · {objectShortId(task.branch_ref)}</small>
-                </button>
-              )) : <span className="laneEmpty">No work</span>}
-            </div>
-          </section>
+          <button
+            key={id}
+            type="button"
+            onClick={() => onSelect(id)}
+            className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background/50 px-2 py-1 text-[11px] transition-colors hover:border-input hover:bg-accent/40"
+          >
+            <StatusDot tone={taskTone(t?.status)} />
+            <span className="max-w-44 truncate">{t?.title ?? id}</span>
+          </button>
         );
       })}
     </div>
   );
 }
 
-function GraphPreview({ tasks, selectedTaskId, onSelectTask }: { tasks: Task[]; selectedTaskId?: string; onSelectTask: (task: Task) => void }) {
+function TaskCard({ task, onClick }: { task: Task; onClick: () => void }) {
   return (
-    <div className="graphPreview">
-      <svg viewBox="0 0 520 220" role="img" aria-label="Task dependency graph">
-        <path d="M92 70 C160 70 160 122 228 122" />
-        <path d="M228 122 C302 122 302 70 382 70" />
-        <path d="M228 122 C302 122 302 170 382 170" />
-      </svg>
-      <div className="graphNodes">
-        {tasks.slice(0, 5).map((task, index) => (
-          <button
-            key={task.id}
-            type="button"
-            className={`graphNode node${index}${task.id === selectedTaskId ? " active" : ""}`}
-            onClick={() => onSelectTask(task)}
-          >
-            <CircleDot size={14} aria-hidden="true" />
-            <span>{task.title ?? task.id}</span>
-          </button>
-        ))}
+    <button
+      type="button"
+      onClick={onClick}
+      className="group block w-full rounded-md border border-border bg-background/40 p-2.5 text-left transition-colors hover:border-input hover:bg-accent/40"
+    >
+      <div className="flex items-start justify-between gap-2">
+        <span className="line-clamp-2 text-[13px] font-medium leading-snug">
+          {task.title ?? task.id}
+        </span>
+        <Badge tone={taskTone(task.status)}>{task.status}</Badge>
       </div>
+      <div className="mt-1.5 flex items-center gap-3 text-[11px] text-muted-foreground">
+        {task.assignee_agent_id && (
+          <span className="inline-flex items-center gap-1">
+            <Bot className="size-3" />
+            {task.assignee_agent_id.replace(/^agent-/, "")}
+          </span>
+        )}
+        {task.branch_ref && (
+          <span className="inline-flex items-center gap-1">
+            <GitBranch className="size-3" />
+            <MonoId>{shortBranch(task.branch_ref)}</MonoId>
+          </span>
+        )}
+      </div>
+    </button>
+  );
+}
+
+function LaneStack({
+  model,
+  onSelect,
+}: {
+  model: WorkbenchModel;
+  onSelect: (task: Task) => void;
+}) {
+  const lanes = model.lanes.filter((lane) => lane.tasks.length);
+  if (!lanes.length) {
+    return (
+      <EmptyState
+        icon={ClipboardList}
+        title="No tasks in scope"
+        description="Tasks for the active goal will appear here."
+      />
+    );
+  }
+  return (
+    <div className="space-y-3 p-3">
+      {lanes.map((lane) => (
+        <div key={lane.id}>
+          <div className="mb-1.5 flex items-center gap-2">
+            <StatusDot tone={taskTone(lane.id)} />
+            <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+              {lane.title}
+            </span>
+            <span className="font-mono text-[11px] text-muted-foreground/60">
+              {lane.tasks.length}
+            </span>
+          </div>
+          <div className="space-y-1.5">
+            {lane.tasks.map((task) => (
+              <TaskCard key={task.id} task={task} onClick={() => onSelect(task)} />
+            ))}
+          </div>
+        </div>
+      ))}
     </div>
   );
 }
 
-function GoalList({ goals, fallback, onSelect }: { goals: { id: string; title?: string; status?: string; objective?: string }[]; fallback: { id: string; title?: string; status?: string; objective?: string }[]; onSelect: (goalId: string) => void }) {
-  const rows = goals.length ? goals : fallback;
-  if (!rows.length) return <EmptyState title="No goals" body="This group has no goals in the current snapshot." />;
+function QueueList({
+  items,
+  empty,
+  onSelect,
+}: {
+  items: WorkbenchModel["decisionQueue"];
+  empty: string;
+  onSelect: (objectRef?: string) => void;
+}) {
+  if (!items.length) {
+    return <EmptyState icon={Gavel} title={empty} />;
+  }
   return (
-    <div className="goalRows">
-      {rows.map((goal) => (
-        <button key={goal.id} type="button" className="goalRow" onClick={() => onSelect(goal.id)}>
-          <strong>{goal.title ?? goal.id}</strong>
-          <span>{goal.objective}</span>
-          <StatusBadge tone={goal.status === "complete" ? "good" : goal.status === "blocked" ? "bad" : "info"}>{goal.status ?? "active"}</StatusBadge>
+    <div className="max-h-[22rem] overflow-y-auto">
+      {items.map((item) => (
+        <TimelineRow
+          key={item.id}
+          kind={item.kind}
+          title={item.title}
+          meta={item.meta}
+          body={item.body}
+          tone={timelineTone(item.kind, item.severity)}
+          onClick={() => onSelect(item.objectRef)}
+        />
+      ))}
+    </div>
+  );
+}
+
+function WarningList({
+  warnings,
+  onSelect,
+}: {
+  warnings: WorkflowWarning[];
+  onSelect: (warning: WorkflowWarning) => void;
+}) {
+  if (!warnings.length) {
+    return (
+      <EmptyState
+        icon={ShieldCheck}
+        title="No active warnings"
+        description="Every workflow invariant currently holds."
+      />
+    );
+  }
+  return (
+    <div className="max-h-[22rem] overflow-y-auto">
+      {warnings.map((warning) => (
+        <button
+          key={warning.id}
+          type="button"
+          onClick={() => onSelect(warning)}
+          className="flex w-full items-start gap-3 border-b border-border/60 px-3.5 py-2.5 text-left transition-colors last:border-0 hover:bg-accent/40"
+        >
+          <StatusDot tone={severityTone(warning.severity)} className="mt-1" />
+          <span className="min-w-0 flex-1">
+            <span className="flex items-center gap-2">
+              <MonoId>{warning.kind}</MonoId>
+              <Badge tone={severityTone(warning.severity)}>{warning.severity}</Badge>
+            </span>
+            <span className="mt-0.5 block line-clamp-2 text-xs text-muted-foreground">
+              {warning.summary}
+            </span>
+          </span>
         </button>
       ))}
     </div>
   );
 }
 
-function QueueColumn({ title, items, empty, onSelect }: { title: string; items: { id: string; kind: string; title: string; meta: string; body?: string; severity?: WorkflowWarning["severity"]; objectRef?: string }[]; empty: string; onSelect?: (objectRef?: string) => void }) {
+function GoalCard({
+  goal,
+  model,
+  onSelect,
+}: {
+  goal: Goal;
+  model: WorkbenchModel;
+  onSelect: () => void;
+}) {
+  const tasks = model.tasks.filter((task) => task.goal_id === goal.id);
   return (
-    <SectionPanel title={title} kicker="Review pressure">
-      <div className="timelineList compact">
-        {items.length ? items.map((item) => (
-          <TimelineRow key={item.id} kind={item.kind} title={item.title} meta={item.meta} body={item.body} severity={item.severity} onClick={() => onSelect?.(item.objectRef)} />
-        )) : <EmptyState title={empty} body="No queue items in the current snapshot." />}
+    <button
+      type="button"
+      onClick={onSelect}
+      className="block w-full rounded-lg border border-border bg-background/40 p-3 text-left transition-colors hover:border-input hover:bg-accent/40"
+    >
+      <div className="flex items-start justify-between gap-2">
+        <span className="line-clamp-2 text-[13px] font-medium leading-snug">
+          {goal.title ?? goal.id}
+        </span>
+        <Badge tone={goalTone(goal.status)}>{goal.status ?? "active"}</Badge>
       </div>
-    </SectionPanel>
+      <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{goal.objective}</p>
+      <div className="mt-2 inline-flex items-center gap-1 text-[11px] text-muted-foreground">
+        <ClipboardList className="size-3" /> {tasks.length} tasks
+      </div>
+    </button>
   );
 }
 
-function WarningColumn({ warnings, onSelect }: { warnings: WorkflowWarning[]; onSelect?: (warning: WorkflowWarning) => void }) {
+/* ------------------------------------------------------------------ */
+/* Team workspace (flagship)                                          */
+/* ------------------------------------------------------------------ */
+
+export function TeamWorkspace({ model, onSelectionChange }: SurfaceProps) {
+  const team = model.selectedTeam;
+  const goal = model.selectedGoal;
   return (
-    <div className="warningRows">
-      {warnings.length ? warnings.map((warning) => (
-        <button key={warning.id} type="button" className={`warningRow ${warning.severity}`} onClick={() => onSelect?.(warning)}>
-          <AlertTriangle size={16} aria-hidden="true" />
-          <span>
-            <strong>{warning.kind}</strong>
-            <small>{warning.summary}</small>
-          </span>
-          <StatusBadge tone={warning.severity === "high" ? "bad" : warning.severity === "medium" ? "warn" : "info"}>{warning.severity}</StatusBadge>
-        </button>
-      )) : <EmptyState title="No warnings" body="No workflow risks are projected for this object." />}
+    <div className="space-y-5">
+      <SurfaceHeader
+        kicker="Persistent AgentTeam"
+        title={team?.name ?? "No active team"}
+        description={
+          team?.description ??
+          "Standing members, current work, messages, decisions and warnings in one operating surface."
+        }
+        actions={
+          <>
+            <Button variant="secondary" size="sm">
+              <ShieldCheck className="size-3.5" />
+              Request review
+            </Button>
+            <Button size="sm">
+              <Send className="size-3.5" />
+              Message member
+            </Button>
+          </>
+        }
+      />
+
+      <div className="rise relative overflow-hidden rounded-lg border border-border bg-card">
+        <span className="absolute inset-y-0 left-0 w-1 bg-primary" />
+        <div className="flex flex-wrap items-center justify-between gap-4 p-4 pl-5">
+          <div className="min-w-0">
+            <div className="flex items-center gap-1.5 text-[11px] uppercase tracking-wider text-muted-foreground">
+              <Target className="size-3.5 text-primary" /> Active Vision / Goal
+            </div>
+            <p className="mt-1 truncate text-[15px] font-semibold">
+              {goal?.title ?? "Missing active goal"}
+            </p>
+            <p className="mt-0.5 line-clamp-1 text-sm text-muted-foreground">
+              {goal?.objective}
+            </p>
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            <ProofStat label="Tasks" value={model.goalTasks.length} tone="info" />
+            <ProofStat
+              label="Warnings"
+              value={model.warnings.length}
+              tone={model.warnings.length ? "warn" : "good"}
+            />
+            <ProofStat
+              label="Decisions"
+              value={model.decisionQueue.length}
+              tone={model.decisionQueue.length ? "decision" : "good"}
+            />
+          </div>
+        </div>
+      </div>
+
+      <div className="grid gap-4 xl:grid-cols-[1.35fr_1fr]">
+        <Section
+          kicker="Messages · evidence · decisions"
+          title="Canonical Activity"
+          action={<Badge tone="muted">{model.activity.length}</Badge>}
+          className="rise"
+        >
+          <div className="max-h-[28rem] overflow-y-auto">
+            {model.activity.length ? (
+              model.activity.map((item) => (
+                <TimelineRow
+                  key={item.id}
+                  kind={item.kind}
+                  title={item.title}
+                  meta={item.meta}
+                  body={item.body}
+                  tone={timelineTone(item.kind, item.severity)}
+                  onClick={() =>
+                    item.objectRef &&
+                    onSelectionChange({ taskId: item.objectRef, surface: "task" })
+                  }
+                />
+              ))
+            ) : (
+              <EmptyState
+                icon={Activity}
+                title="No activity yet"
+                description="Messages, proposals and decisions will stream here."
+              />
+            )}
+          </div>
+        </Section>
+
+        <Section
+          kicker="What can move now"
+          title="Current Work Pressure"
+          className="rise"
+        >
+          <LaneStack
+            model={model}
+            onSelect={(task) =>
+              onSelectionChange({ taskId: task.id, surface: "task" })
+            }
+          />
+        </Section>
+      </div>
+
+      <div className="grid gap-4 lg:grid-cols-2">
+        <Section
+          kicker="Reviews · waivers · missing proof"
+          title="Decision Queue"
+          className="rise"
+        >
+          <QueueList
+            items={model.decisionQueue}
+            empty="No pending decisions"
+            onSelect={(ref) =>
+              ref && onSelectionChange({ taskId: ref, surface: "decisions" })
+            }
+          />
+        </Section>
+        <Section
+          kicker="Broken workflow invariants"
+          title="Warnings"
+          action={
+            <Badge tone={model.warnings.length ? "bad" : "good"}>
+              {model.warnings.length}
+            </Badge>
+          }
+          className="rise"
+        >
+          <WarningList
+            warnings={model.warnings.slice(0, 6)}
+            onSelect={(warning) =>
+              onSelectionChange(
+                warning.taskId
+                  ? { taskId: warning.taskId, surface: "warnings" }
+                  : { surface: "warnings" },
+              )
+            }
+          />
+        </Section>
+      </div>
     </div>
   );
 }
 
-function RuntimeLine({ label, value, tone }: { label: string; value: string; tone: "good" | "warn" | "info" | "bad" | "muted" }) {
+/* ------------------------------------------------------------------ */
+/* Vision overview                                                    */
+/* ------------------------------------------------------------------ */
+
+export function VisionOverview({ model, onSelectionChange }: SurfaceProps) {
+  const groups: { id: string; title: string; goals: Goal[] }[] = [
+    { id: "active", title: "Active", goals: model.activeGoals },
+    { id: "complete", title: "Completed", goals: model.completeGoals },
+    { id: "blocked", title: "Blocked", goals: model.blockedGoals },
+    { id: "proposed", title: "Proposed", goals: model.proposedGoals },
+  ];
+  const proposals = model.snapshot.autonomous_proposals ?? [];
   return (
-    <div className="runtimeLine">
-      <span>{label}</span>
-      <StatusBadge tone={tone}>{value}</StatusBadge>
+    <div className="space-y-5">
+      <SurfaceHeader
+        kicker="Vision overview"
+        title="Workbench self-hosting vision"
+        description="Track whether active, completed, blocked and proposed goals are moving the harness toward a reusable self-hosting workflow."
+        actions={
+          <Button
+            size="sm"
+            variant="secondary"
+            onClick={() => onSelectionChange({ surface: "graph" })}
+          >
+            <Workflow className="size-3.5" />
+            Open graph
+          </Button>
+        }
+      />
+
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <ProofStat label="Active" value={model.activeGoals.length} tone="running" caption="not complete" />
+        <ProofStat label="Completed" value={model.completeGoals.length} tone="good" caption="decision + eval" />
+        <ProofStat
+          label="Blocked"
+          value={model.blockedGoals.length}
+          tone={model.blockedGoals.length ? "bad" : "good"}
+          caption="needs lead action"
+        />
+        <ProofStat label="Proposed" value={model.proposedGoals.length} tone="decision" caption="awaiting accept" />
+      </div>
+
+      <div className="grid gap-4 xl:grid-cols-[1fr_20rem]">
+        <Section kicker="Completion proven by decision + evaluation" title="Goal collection" className="rise">
+          <div className="grid gap-3 p-3 sm:grid-cols-2">
+            {groups.map((group) => (
+              <div key={group.id}>
+                <p className="mb-1.5 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                  <StatusDot tone={goalTone(group.id)} /> {group.title}
+                  <span className="font-mono text-muted-foreground/60">
+                    {group.goals.length}
+                  </span>
+                </p>
+                <div className="space-y-2">
+                  {group.goals.length ? (
+                    group.goals.map((goal) => (
+                      <GoalCard
+                        key={goal.id}
+                        goal={goal}
+                        model={model}
+                        onSelect={() =>
+                          onSelectionChange({ goalId: goal.id, surface: "goal" })
+                        }
+                      />
+                    ))
+                  ) : (
+                    <p className="rounded-md border border-dashed border-border px-3 py-4 text-center text-[11px] text-muted-foreground">
+                      None
+                    </p>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </Section>
+
+        <Section kicker="Distance-to-vision" title="Next-round proposals" className="rise">
+          <div className="space-y-2 p-3">
+            {proposals.length ? (
+              proposals.slice(0, 5).map((proposal) => (
+                <div
+                  key={proposal.id}
+                  className="rounded-md border border-border bg-background/40 p-3"
+                >
+                  <div className="flex items-center gap-2">
+                    <Badge tone="decision">{proposal.disposition ?? "pending"}</Badge>
+                    <MonoId>{proposal.source_type ?? "observer"}</MonoId>
+                  </div>
+                  <p className="mt-1.5 text-[13px] font-medium leading-snug">
+                    {proposal.summary ?? "Proposed next step"}
+                  </p>
+                  <div className="mt-2 flex gap-1.5">
+                    <Badge tone={proposal.linked_evidence_ids?.length ? "good" : "warn"}>
+                      {proposal.linked_evidence_ids?.length ?? 0} evidence
+                    </Badge>
+                    <Badge tone="info">
+                      {proposal.follow_up_task_ids?.length ?? 0} follow-ups
+                    </Badge>
+                  </div>
+                </div>
+              ))
+            ) : (
+              <EmptyState
+                icon={Target}
+                title="No next proposals"
+                description="Observer proposals appear here when linked to evidence or evaluation."
+              />
+            )}
+          </div>
+        </Section>
+      </div>
     </div>
   );
 }
 
-function ProofLine({ label, complete }: { label: string; complete: boolean }) {
+/* ------------------------------------------------------------------ */
+/* Goal document                                                      */
+/* ------------------------------------------------------------------ */
+
+export function GoalDocument({ model, onSelectionChange }: SurfaceProps) {
+  const goal = model.selectedGoal as GoalExtra | undefined;
+  if (!goal) {
+    return (
+      <EmptyState
+        icon={ClipboardList}
+        title="No goal selected"
+        description="Pick a goal from the Vision overview."
+      />
+    );
+  }
+
+  const learning = (model.snapshot.goal_learning_status ?? []).find(
+    (item) => item.goal_id === goal.id,
+  );
+  const goalDecision = model.decisions.find((d) =>
+    model.goalTasks.some((t) => t.id === d.task_id),
+  );
+  const goalProposals = (model.snapshot.autonomous_proposals ?? []).filter(
+    (p) => p.goal_id === goal.id,
+  );
+  const hasEvaluation = (learning?.goal_evaluation?.length ?? 0) > 0;
+  const hasDecision = Boolean(goalDecision);
+  const blockedTasks = model.goalTasks.filter((t) => t.status === "blocked");
+
   return (
-    <div className={`proofLine ${complete ? "complete" : "missing"}`}>
-      {complete ? <CheckCircle2 size={16} aria-hidden="true" /> : <AlertTriangle size={16} aria-hidden="true" />}
-      <span>{label}</span>
-      <StatusBadge tone={complete ? "good" : "warn"}>{complete ? "present" : "missing"}</StatusBadge>
+    <div className="space-y-5">
+      <SurfaceHeader
+        kicker="Goal document"
+        title={goal.title ?? goal.id}
+        description={goal.objective}
+        actions={
+          <>
+            {goal.priority && <Badge tone="info">priority: {goal.priority}</Badge>}
+            <Badge tone={goalTone(goal.status)}>{goal.status ?? "active"}</Badge>
+          </>
+        }
+      />
+
+      <div className="grid gap-4 lg:grid-cols-[1fr_19rem]">
+        <div className="space-y-4">
+          <Section kicker="Durable outcome" title="Objective" className="rise">
+            <p className="p-4 text-[13px] leading-relaxed text-foreground/90">
+              {goal.objective ?? "No objective recorded."}
+            </p>
+          </Section>
+
+          <Section kicker="What done looks like" title="Success criteria" className="rise">
+            <CriteriaList items={goal.success_criteria} empty="No success criteria recorded" />
+          </Section>
+
+          <Section
+            kicker="Closeout invariant"
+            title="Goal evaluation & decision"
+            className="rise"
+          >
+            <div className="space-y-3 p-4">
+              <p className="text-xs text-muted-foreground">
+                A goal is complete only after a Leader decision and a GoalEvaluation —
+                never just because its tasks are done.
+              </p>
+              <ProofRow ok={hasDecision} label="Leader decision" detail={goalDecision?.decision ?? "missing"} />
+              <ProofRow ok={hasEvaluation} label="GoalEvaluation" detail={hasEvaluation ? "recorded" : "missing"} />
+            </div>
+          </Section>
+
+          <Section kicker="Task graph / Kanban" title="Tasks for this goal" className="rise">
+            <LaneStack
+              model={model}
+              onSelect={(task) => onSelectionChange({ taskId: task.id, surface: "task" })}
+            />
+          </Section>
+        </div>
+
+        <div className="space-y-4">
+          <Section kicker="Ownership & governance" title="Governance" className="rise">
+            <div className="p-4">
+              <MetaList
+                items={[
+                  { label: "Owner", value: memberName(model.members, goal.owner_agent_id) },
+                  { label: "Team", value: model.selectedTeam?.name ?? "—" },
+                  { label: "Priority", value: goal.priority ?? "—" },
+                  { label: "Created", value: fmtTime(goal.created_at) },
+                  { label: "Updated", value: fmtTime(goal.updated_at) },
+                ]}
+              />
+            </div>
+          </Section>
+
+          <Section kicker="Goal learning" title="Design & evaluation" className="rise">
+            <div className="p-4">
+              <MetaList
+                items={[
+                  { label: "Goal design", value: learningCount(learning?.goal_design) },
+                  { label: "Evaluation", value: learningCount(learning?.goal_evaluation) },
+                  { label: "Goal cases", value: learningCount(learning?.goal_cases) },
+                  { label: "Member reports", value: learningCount(learning?.member_reports) },
+                  { label: "Follow-ups", value: learningCount(learning?.follow_up_tasks) },
+                  { label: "Blocked tasks", value: blockedTasks.length },
+                ]}
+              />
+            </div>
+          </Section>
+
+          <Section kicker="Distance-to-vision" title="Next-round proposals" className="rise">
+            <div className="space-y-2 p-3">
+              {goalProposals.length ? (
+                goalProposals.slice(0, 4).map((proposal) => (
+                  <div key={proposal.id} className="rounded-md border border-border bg-background/40 p-2.5">
+                    <div className="flex items-center gap-2">
+                      <Badge tone="decision">{proposal.disposition ?? "pending"}</Badge>
+                      <MonoId>{proposal.source_type ?? "observer"}</MonoId>
+                    </div>
+                    <p className="mt-1 line-clamp-2 text-xs text-foreground/90">
+                      {proposal.summary ?? "Proposed next step"}
+                    </p>
+                  </div>
+                ))
+              ) : (
+                <EmptyState icon={Target} title="No proposals for this goal" />
+              )}
+            </div>
+          </Section>
+        </div>
+      </div>
     </div>
   );
 }
 
-function ProofStage({ title, complete, body }: { title: string; complete: boolean; body: string }) {
+function learningCount(value?: unknown[]): number {
+  return value?.length ?? 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* Task document                                                      */
+/* ------------------------------------------------------------------ */
+
+export function TaskDocument({ model, onSelectionChange }: SurfaceProps) {
+  const task = model.selectedTask;
+  if (!task) {
+    return (
+      <EmptyState
+        icon={GitBranch}
+        title="No task selected"
+        description="Select a task from a goal or the activity stream."
+      />
+    );
+  }
+
+  const goal = model.goals.find((g) => g.id === task.goal_id);
+  const parent = model.tasks.find((t) => t.id === task.parent_task_id);
+  const messages = model.messages.filter((message) => message.task_id === task.id);
+  const evidence = model.evidence.filter((item) => item.task_id === task.id);
+  const proposals = model.proposals.filter((item) => item.task_id === task.id);
+  const decision = model.decisions.find((item) => item.task_id === task.id);
+  const sessions = (model.snapshot.provider_sessions ?? []).filter(
+    (s) => s.task_id === task.id,
+  );
+  const taskWarnings = model.warnings.filter((warning) => warning.taskId === task.id);
+  const dependsOn = task.depends_on_task_ids ?? [];
+  const blocks = model.tasks
+    .filter((t) => (t.depends_on_task_ids ?? []).includes(task.id))
+    .map((t) => t.id);
+
   return (
-    <section className={`proofStage ${complete ? "complete" : "missing"}`}>
-      {complete ? <CheckCircle2 size={18} aria-hidden="true" /> : <AlertTriangle size={18} aria-hidden="true" />}
-      <h2>{title}</h2>
-      <p>{body}</p>
-    </section>
+    <div className="space-y-5">
+      {/* breadcrumb */}
+      <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
+        {goal && (
+          <>
+            <button
+              type="button"
+              className="inline-flex items-center gap-1 hover:text-foreground"
+              onClick={() => onSelectionChange({ goalId: goal.id, surface: "goal" })}
+            >
+              <Target className="size-3" />
+              {goal.title ?? goal.id}
+            </button>
+            <span className="text-border">/</span>
+          </>
+        )}
+        {parent && (
+          <>
+            <button
+              type="button"
+              className="inline-flex items-center gap-1 hover:text-foreground"
+              onClick={() => onSelectionChange({ taskId: parent.id, surface: "task" })}
+            >
+              <GitBranch className="size-3" />
+              {parent.title ?? parent.id}
+            </button>
+            <span className="text-border">/</span>
+          </>
+        )}
+        <span className="text-foreground/70">{task.title ?? task.id}</span>
+      </div>
+
+      <SurfaceHeader
+        kicker="Task document"
+        title={task.title ?? task.id}
+        actions={
+          <>
+            <Badge tone={taskTone(task.status)}>{task.status}</Badge>
+            <Button size="sm" variant="secondary">
+              <ShieldCheck className="size-3.5" />
+              Request review
+            </Button>
+          </>
+        }
+      />
+
+      <div className="grid gap-4 lg:grid-cols-[1fr_19rem]">
+        <div className="space-y-4">
+          <Section kicker="What this delivers when done" title="Objective" className="rise">
+            <p className="p-4 text-[13px] leading-relaxed text-foreground/90">
+              {task.objective ?? "No objective recorded."}
+            </p>
+          </Section>
+
+          <Section
+            kicker="Verifiable at review"
+            title="Acceptance criteria"
+            action={
+              <Badge tone={task.acceptance_criteria?.length ? "info" : "warn"}>
+                {task.acceptance_criteria?.length ?? 0}
+              </Badge>
+            }
+            className="rise"
+          >
+            <CriteriaList
+              items={task.acceptance_criteria}
+              empty="No acceptance criteria — this task cannot be objectively reviewed yet."
+            />
+          </Section>
+
+          <Section kicker="Assignment → report → evidence → decision" title="Proof chain" className="rise">
+            <div className="space-y-3 p-4">
+              <ProofRow
+                ok={messages.some((m) => m.kind === "task")}
+                label="Assignment message"
+                detail={`${messages.filter((m) => m.kind === "task").length} task message(s)`}
+              />
+              <ProofRow
+                ok={messages.some((m) => m.kind === "report")}
+                label="Member report"
+                detail={`${messages.filter((m) => m.kind === "report").length} report(s)`}
+              />
+              <ProofRow ok={evidence.length > 0} label="Evidence" detail={`${evidence.length} item(s)`} />
+              <ProofRow ok={Boolean(decision)} label="Leader decision" detail={decision?.decision ?? "missing"} />
+            </div>
+          </Section>
+
+          <Section kicker="Acceptance" title="Decision & rationale" className="rise">
+            {decision ? (
+              <div className="space-y-2 p-4">
+                <div className="flex items-center gap-2">
+                  <Scale className="size-4 text-status-good" />
+                  <Badge tone="good">{decision.decision ?? "decided"}</Badge>
+                </div>
+                <p className="text-[13px] text-foreground/90">
+                  {decision.rationale ?? "No rationale recorded."}
+                </p>
+                {Boolean(decision.evidence_ids?.length) && (
+                  <div className="flex flex-wrap gap-1.5">
+                    {decision.evidence_ids!.map((id) => (
+                      <Badge key={id} tone="muted">
+                        <MonoId>{id}</MonoId>
+                      </Badge>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ) : (
+              <EmptyState icon={Gavel} title="No decision yet" description="Awaiting review and a Leader decision." />
+            )}
+          </Section>
+
+          <Section
+            kicker="Proof artifacts"
+            title="Evidence & proposals"
+            action={<Badge tone="muted">{evidence.length + proposals.length}</Badge>}
+            className="rise"
+          >
+            {evidence.length || proposals.length ? (
+              <div className="divide-y divide-border/60">
+                {evidence.map((item) => (
+                  <div key={item.id} className="flex items-start gap-2.5 px-4 py-2.5">
+                    <FileText className="mt-0.5 size-3.5 shrink-0 text-status-info" />
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <Badge tone="info">{item.source_type ?? "evidence"}</Badge>
+                        {item.source_ref && <MonoId>{item.source_ref}</MonoId>}
+                      </div>
+                      <p className="mt-0.5 text-xs text-muted-foreground">{item.summary}</p>
+                    </div>
+                  </div>
+                ))}
+                {proposals.map((item) => (
+                  <div key={item.id} className="flex items-start gap-2.5 px-4 py-2.5">
+                    <ListChecks className="mt-0.5 size-3.5 shrink-0 text-status-decision" />
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="text-[13px] font-medium">{item.title ?? "Proposal"}</span>
+                        <Badge tone="decision">{item.status ?? "draft"}</Badge>
+                      </div>
+                      <p className="mt-0.5 text-xs text-muted-foreground">{item.summary}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <EmptyState icon={FileText} title="No evidence or proposals yet" />
+            )}
+          </Section>
+
+          <Section kicker="Messages" title="Assignment & reports" className="rise">
+            {messages.length ? (
+              <div className="max-h-72 overflow-y-auto">
+                {messages.map((message) => (
+                  <TimelineRow
+                    key={message.id}
+                    kind={message.kind}
+                    title={
+                      message.kind === "task"
+                        ? "Task assignment"
+                        : message.kind === "report"
+                          ? "Member report"
+                          : "Message"
+                    }
+                    meta={message.delivery_status}
+                    body={message.content}
+                    tone={message.delivery_status === "failed" ? "bad" : "info"}
+                  />
+                ))}
+              </div>
+            ) : (
+              <EmptyState icon={MessageSquare} title="No messages for this task" />
+            )}
+          </Section>
+        </div>
+
+        <div className="space-y-4">
+          <Section kicker="Accountability" title="Ownership" className="rise">
+            <div className="p-4">
+              <MetaList
+                items={[
+                  { label: "Owner", value: ownerLine(model, task.owner_agent_id) },
+                  {
+                    label: "Assignee",
+                    value: (
+                      <span>
+                        {memberName(model.members, task.assignee_agent_id)}
+                        <span className="ml-1 text-[10px] text-muted-foreground">(projection)</span>
+                      </span>
+                    ),
+                  },
+                  { label: "Reviewer", value: memberName(model.members, task.reviewer_agent_id) },
+                ]}
+              />
+            </div>
+          </Section>
+
+          <Section kicker="Where it runs" title="Workspace" className="rise">
+            <div className="p-4">
+              <MetaList
+                items={[
+                  { label: "Branch", value: task.branch_ref ? <MonoId>{task.branch_ref}</MonoId> : "—" },
+                  { label: "PR", value: task.pr_ref ? <MonoId>{shortBranch(task.pr_ref)}</MonoId> : "—" },
+                  { label: "Workspace", value: task.workspace_ref ? <MonoId>{task.workspace_ref}</MonoId> : "—" },
+                  { label: "Owned paths", value: <PathList paths={task.owned_paths} /> },
+                  { label: "Sessions", value: sessions.length },
+                ]}
+              />
+            </div>
+          </Section>
+
+          <Section kicker="Execution order" title="Dependencies" className="rise">
+            <div className="space-y-3 p-3.5">
+              <div>
+                <p className="mb-1.5 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                  <Link2 className="size-3" /> Depends on
+                </p>
+                <DependencyChips
+                  ids={dependsOn}
+                  tasks={model.tasks}
+                  empty="No upstream dependencies."
+                  onSelect={(id) => onSelectionChange({ taskId: id, surface: "task" })}
+                />
+              </div>
+              <div>
+                <p className="mb-1.5 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                  <Link2 className="size-3 rotate-90" /> Blocks
+                </p>
+                <DependencyChips
+                  ids={blocks}
+                  tasks={model.tasks}
+                  empty="Nothing depends on this task."
+                  onSelect={(id) => onSelectionChange({ taskId: id, surface: "task" })}
+                />
+              </div>
+            </div>
+          </Section>
+
+          <Section kicker="History" title="Lifecycle" className="rise">
+            <div className="p-4">
+              <MetaList
+                items={[
+                  { label: "Status", value: <Badge tone={taskTone(task.status)}>{task.status}</Badge> },
+                  { label: "Created", value: fmtTime(task.created_at) },
+                  { label: "Updated", value: fmtTime(task.updated_at) },
+                ]}
+              />
+            </div>
+          </Section>
+
+          <Section
+            kicker="Risks"
+            title="Warnings"
+            action={<Badge tone={taskWarnings.length ? "bad" : "good"}>{taskWarnings.length}</Badge>}
+            className="rise"
+          >
+            <WarningList
+              warnings={taskWarnings}
+              onSelect={() => onSelectionChange({ surface: "warnings" })}
+            />
+          </Section>
+        </div>
+      </div>
+    </div>
   );
 }
 
-function countTasks(tasks: Task[]) {
-  return {
-    planned: tasks.filter((task) => task.status === "planned").length,
-    assigned: tasks.filter((task) => task.status === "assigned").length,
-    running: tasks.filter((task) => task.status === "running").length,
-    blocked: tasks.filter((task) => task.status === "blocked").length,
-    review: tasks.filter((task) => task.status === "review").length,
-    done: tasks.filter((task) => task.status === "done").length,
-    archived: tasks.filter((task) => task.status === "archived").length,
-  };
+function ownerLine(model: WorkbenchModel, id?: string | null) {
+  if (!id) return "—";
+  return (
+    <span className="inline-flex items-center gap-1.5">
+      <User className="size-3 text-muted-foreground" />
+      {memberName(model.members, id)}
+    </span>
+  );
 }
 
-function uniqueValues(values: (string | null | undefined)[]): string[] {
-  return [...new Set(values.filter((value): value is string => Boolean(value)))];
+function ProofRow({ ok, label, detail }: { ok: boolean; label: string; detail: string }) {
+  return (
+    <div className="flex items-center gap-3">
+      {ok ? (
+        <CheckCircle2 className="size-4 shrink-0 text-status-good" />
+      ) : (
+        <AlertTriangle className="size-4 shrink-0 text-status-warn" />
+      )}
+      <span className="text-[13px] font-medium">{label}</span>
+      <span className="ml-auto text-[11px] text-muted-foreground">{detail}</span>
+    </div>
+  );
 }
 
-function initials(value: string): string {
-  return value
-    .split(/[-_\s]/)
-    .filter(Boolean)
-    .slice(0, 2)
-    .map((part) => part[0]?.toUpperCase() ?? "")
-    .join("");
+/* ------------------------------------------------------------------ */
+/* Graph / Kanban                                                     */
+/* ------------------------------------------------------------------ */
+
+export function GraphKanban({
+  model,
+  mode,
+  onSelectionChange,
+}: SurfaceProps & { mode: "kanban" | "graph" | "split" }) {
+  const lanes = model.lanes.filter((lane) => lane.tasks.length);
+  return (
+    <div className="space-y-5">
+      <SurfaceHeader
+        kicker="Task relationships"
+        title="Graph / Kanban"
+        description="Synchronized projections of the same task read model. Graph canvas arrives once task counts need pan/zoom."
+        actions={
+          <div className="flex items-center gap-1 rounded-md border border-border bg-card p-0.5">
+            {(["kanban", "graph"] as const).map((value) => (
+              <button
+                key={value}
+                type="button"
+                onClick={() => onSelectionChange({ mode: value })}
+                className={cn(
+                  "rounded px-2.5 py-1 text-xs font-medium capitalize transition-colors",
+                  (mode === value || (value === "kanban" && mode === "split"))
+                    ? "bg-primary/15 text-primary"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                {value}
+              </button>
+            ))}
+          </div>
+        }
+      />
+
+      {mode === "graph" ? (
+        <Section title="Dependency graph" kicker="Coming next" className="rise">
+          <EmptyState
+            icon={Workflow}
+            title="Graph canvas not built yet"
+            description="The first slice ships as Kanban; semantic SVG graph is the next surface to rebuild."
+          />
+        </Section>
+      ) : lanes.length ? (
+        <div className="flex gap-3 overflow-x-auto pb-2">
+          {lanes.map((lane) => (
+            <div
+              key={lane.id}
+              className="flex w-72 shrink-0 flex-col rounded-lg border border-border bg-card/60"
+            >
+              <div className="flex items-center gap-2 border-b border-border px-3 py-2.5">
+                <StatusDot tone={taskTone(lane.id)} />
+                <span className="text-[12px] font-semibold">{lane.title}</span>
+                <span className="ml-auto font-mono text-[11px] text-muted-foreground">
+                  {lane.tasks.length}
+                </span>
+              </div>
+              <div className="space-y-1.5 p-2">
+                {lane.tasks.map((task) => (
+                  <TaskCard
+                    key={task.id}
+                    task={task}
+                    onClick={() => onSelectionChange({ taskId: task.id, surface: "task" })}
+                  />
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <Section title="Task lanes" className="rise">
+          <EmptyState icon={ClipboardList} title="No tasks to lay out" />
+        </Section>
+      )}
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Member workbench                                                   */
+/* ------------------------------------------------------------------ */
+
+export function MemberWorkbench({ model, onSelectionChange }: SurfaceProps) {
+  const member = model.selectedMember;
+  if (!member) {
+    return (
+      <EmptyState
+        icon={Bot}
+        title="No AgentMember selected"
+        description="Select a durable member from the team rail."
+      />
+    );
+  }
+  const tone = memberTone(member.runtime_status ?? member.status);
+  return (
+    <div className="space-y-5">
+      <div className="rise flex flex-wrap items-center gap-4">
+        <Avatar name={member.name ?? member.id} tone={tone} size="lg" />
+        <div className="min-w-0">
+          <p className="text-[11px] uppercase tracking-wider text-muted-foreground">
+            AgentMember workbench
+          </p>
+          <h1 className="text-lg font-semibold tracking-tight">
+            {member.name ?? member.id}
+          </h1>
+          <div className="mt-1 flex flex-wrap items-center gap-1.5">
+            <Badge tone={tone}>{member.runtime_status ?? member.status ?? "unknown"}</Badge>
+            <Badge tone="info">{member.role ?? "Member"}</Badge>
+            {member.provider && <Badge tone="muted">{member.provider}</Badge>}
+          </div>
+        </div>
+        <div className="ml-auto flex gap-2">
+          <Button size="sm" variant="secondary">
+            <Inbox className="size-3.5" />
+            Deliver queued
+          </Button>
+          <Button size="sm">
+            <Send className="size-3.5" />
+            Send message
+          </Button>
+        </div>
+      </div>
+
+      <div className="grid gap-4 lg:grid-cols-[20rem_1fr]">
+        <div className="space-y-4">
+          <Section kicker="Identity" title="Member profile" className="rise">
+            <div className="p-4">
+              <MetaList
+                items={[
+                  { label: "Current task", value: taskTitle(model.tasks, member.current_task_id) },
+                  { label: "Prompt", value: member.prompt_ref ? <MonoId>{member.prompt_ref}</MonoId> : "—" },
+                  { label: "Skills", value: member.skill_refs?.join(", ") || "—" },
+                  { label: "Inbox", value: member.inbox_count ?? 0 },
+                  { label: "Queued", value: member.queued_count ?? 0 },
+                ]}
+              />
+            </div>
+          </Section>
+          <Section kicker="Health" title="Runtime" className="rise">
+            <div className="grid grid-cols-2 gap-2 p-3">
+              <HealthCell label="Process" ok={Boolean(member.runtime_alive)} />
+              <HealthCell label="Provider" ok={Boolean(member.provider)} />
+              <HealthCell label="Endpoint" ok={Boolean(member.control_endpoint)} />
+              <HealthCell label="Thread" ok={Boolean(member.provider_thread_id)} />
+            </div>
+          </Section>
+        </div>
+
+        <Section
+          kicker="inbox · outbox · sessions · events"
+          title="Activity timeline"
+          className="rise"
+        >
+          {model.selectedMemberTimeline.length ? (
+            <div className="max-h-[34rem] overflow-y-auto">
+              {model.selectedMemberTimeline.map((item) => (
+                <TimelineRow
+                  key={item.id}
+                  kind={item.kind}
+                  title={item.title}
+                  meta={item.meta}
+                  body={item.body}
+                  tone={timelineTone(item.kind, item.severity)}
+                  onClick={() =>
+                    item.objectRef &&
+                    onSelectionChange({ taskId: item.objectRef, surface: "task" })
+                  }
+                />
+              ))}
+            </div>
+          ) : (
+            <EmptyState icon={Activity} title="No activity recorded for this member" />
+          )}
+        </Section>
+      </div>
+    </div>
+  );
+}
+
+function HealthCell({ label, ok }: { label: string; ok: boolean }) {
+  return (
+    <div className="flex items-center gap-2 rounded-md border border-border bg-background/40 px-3 py-2">
+      <StatusDot tone={ok ? "good" : "idle"} pulse={ok} />
+      <span className="text-xs text-muted-foreground">{label}</span>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Docs context                                                       */
+/* ------------------------------------------------------------------ */
+
+export function DocsContext({ model }: SurfaceProps) {
+  return (
+    <div className="space-y-5">
+      <SurfaceHeader
+        kicker="Mounted context"
+        title="Docs context"
+        description="Project docs linked to the active Vision, Goal, Task, Evidence and Decision objects."
+      />
+      <Section title="Mounted documents" className="rise">
+        <div className="divide-y divide-border">
+          {model.docs.map((doc) => (
+            <div key={doc.path} className="flex items-start gap-3 px-4 py-3">
+              <FileText className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2">
+                  <span className="text-[13px] font-medium">{doc.title}</span>
+                  <Badge tone="muted">{doc.lifecycle}</Badge>
+                </div>
+                <p className="text-xs text-muted-foreground">{doc.reason}</p>
+                <MonoId>{doc.path}</MonoId>
+              </div>
+              <ExternalLink className="size-3.5 shrink-0 text-muted-foreground" />
+            </div>
+          ))}
+        </div>
+      </Section>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Decision center                                                    */
+/* ------------------------------------------------------------------ */
+
+export function DecisionCenter({ model, onSelectionChange }: SurfaceProps) {
+  return (
+    <div className="space-y-5">
+      <SurfaceHeader
+        kicker="Acceptance"
+        title="Decision center"
+        description="Evidence, proposals, reviews and Leader decisions waiting on operator action."
+      />
+      <Section
+        title="Decision queue"
+        action={<Badge tone={model.decisionQueue.length ? "decision" : "good"}>{model.decisionQueue.length}</Badge>}
+        className="rise"
+      >
+        <QueueList
+          items={model.decisionQueue}
+          empty="No pending decisions"
+          onSelect={(ref) => ref && onSelectionChange({ taskId: ref, surface: "task" })}
+        />
+      </Section>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Warnings & repair                                                  */
+/* ------------------------------------------------------------------ */
+
+export function WarningsRepair({ model, onSelectionChange }: SurfaceProps) {
+  const groups: { id: WorkflowWarning["severity"]; title: string }[] = [
+    { id: "high", title: "High" },
+    { id: "medium", title: "Medium" },
+    { id: "low", title: "Low" },
+  ];
+  return (
+    <div className="space-y-5">
+      <SurfaceHeader
+        kicker="Repair"
+        title="Warnings"
+        description="Broken workflow invariants grouped by severity. Each warning links to the object it affects."
+        actions={<Badge tone={model.warnings.length ? "bad" : "good"}>{model.warnings.length} active</Badge>}
+      />
+      <div className="grid gap-4 lg:grid-cols-3">
+        {groups.map((group) => {
+          const items = model.warnings.filter((warning) => warning.severity === group.id);
+          return (
+            <Section
+              key={group.id}
+              title={group.title}
+              action={<Badge tone={severityTone(group.id)}>{items.length}</Badge>}
+              className="rise"
+            >
+              <WarningList
+                warnings={items}
+                onSelect={(warning) =>
+                  onSelectionChange(
+                    warning.taskId
+                      ? { taskId: warning.taskId, surface: "task" }
+                      : { surface: "warnings" },
+                  )
+                }
+              />
+            </Section>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Debug surface                                                      */
+/* ------------------------------------------------------------------ */
+
+export function DebugSurface({
+  model,
+  sourceLabel,
+}: {
+  model: WorkbenchModel;
+  sourceLabel: string;
+}) {
+  return (
+    <div className="space-y-5">
+      <SurfaceHeader
+        kicker="Audit / debug"
+        title="Raw snapshot"
+        description="Canonical snapshot behind every derived view. Hidden from the operating surfaces by default."
+        actions={<Badge tone="muted">{sourceLabel}</Badge>}
+      />
+      <Section title="snapshot.json" kicker="read-only" className="rise">
+        <pre className="max-h-[34rem] overflow-auto p-4 font-mono text-[11px] leading-relaxed text-muted-foreground">
+          {JSON.stringify(model.snapshot, null, 2)}
+        </pre>
+      </Section>
+    </div>
+  );
 }

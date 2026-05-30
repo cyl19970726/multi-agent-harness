@@ -16,6 +16,9 @@ export const demoSnapshot: DashboardSnapshot = {
         "Goal and Task prove assignment, evidence, review, decision, and evaluation.",
         "Desktop, tablet, and mobile screenshots pass PM/User review.",
       ],
+      priority: "P0",
+      created_at: "2026-05-27T09:00:00.000Z",
+      updated_at: "2026-05-29T09:45:00.000Z",
     },
     {
       id: "goal-doc-contracts",
@@ -171,6 +174,9 @@ export const demoSnapshot: DashboardSnapshot = {
       pr_ref: "https://github.com/cyl19970726/multi-agent-harness/pull/6",
       owned_paths: ["apps/agent-dashboard/src/**"],
       acceptance_criteria: ["Browser screenshots match page-local layout contracts."],
+      workspace_ref: ".harness/worktrees/task-shell-rebuild",
+      created_at: "2026-05-28T08:20:00.000Z",
+      updated_at: "2026-05-29T09:10:00.000Z",
     },
     {
       id: "task-critic-screenshot",

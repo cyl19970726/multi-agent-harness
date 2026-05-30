@@ -3,6 +3,7 @@ import { fetchSnapshot } from "../api";
 import { demoSnapshot } from "../model/demoSnapshot";
 import { buildWorkbenchModel } from "../model/readModel";
 import type { DashboardSnapshot } from "../types";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import { defaultSelection, type SelectionState } from "./selection";
 import { WorkbenchShell } from "./WorkbenchShell";
 
@@ -35,16 +36,18 @@ export function App() {
   }
 
   return (
-    <WorkbenchShell
-      apiUrl={apiUrl}
-      isLoading={isLoading}
-      model={model}
-      onApiUrlChange={setApiUrl}
-      onRefresh={refreshLive}
-      onSelectionChange={setSelection}
-      selection={selection}
-      sourceError={sourceError}
-      sourceLabel={sourceLabel}
-    />
+    <TooltipProvider delayDuration={200}>
+      <WorkbenchShell
+        apiUrl={apiUrl}
+        isLoading={isLoading}
+        model={model}
+        onApiUrlChange={setApiUrl}
+        onRefresh={refreshLive}
+        onSelectionChange={setSelection}
+        selection={selection}
+        sourceError={sourceError}
+        sourceLabel={sourceLabel}
+      />
+    </TooltipProvider>
   );
 }

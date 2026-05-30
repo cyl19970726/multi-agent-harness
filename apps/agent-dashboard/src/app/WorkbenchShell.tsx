@@ -1,5 +1,4 @@
 import {
-  Activity,
   BookOpen,
   Bot,
   Bug,
@@ -7,8 +6,6 @@ import {
   Gavel,
   GitBranch,
   Inbox,
-  MessageSquare,
-  PanelRightOpen,
   RefreshCw,
   Search,
   Send,
@@ -17,10 +14,28 @@ import {
   Users,
   Workflow,
 } from "lucide-react";
-import type { SurfaceId, SelectionState } from "./selection";
+
+import { cn } from "@/lib/utils";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import {
+  EmptyState,
+  Kbd,
+  MonoId,
+  StatusDot,
+  TimelineRow,
+} from "@/components/workbench/atoms";
+import { Avatar } from "@/components/workbench/Avatar";
+import { memberTone, taskTone, timelineTone } from "@/components/workbench/tones";
+
+import { countBySeverity, taskTitle } from "../model/readModel";
 import type { WorkbenchModel } from "../model/readModel";
-import { countBySeverity, memberName, objectShortId, taskTitle } from "../model/readModel";
-import { ActionButton, IconButton, StatusBadge, TimelineRow } from "../ui/primitives";
 import {
   DebugSurface,
   DecisionCenter,
@@ -33,6 +48,7 @@ import {
   VisionOverview,
   WarningsRepair,
 } from "../surfaces/Surfaces";
+import type { SelectionState, SurfaceId } from "./selection";
 
 interface WorkbenchShellProps {
   apiUrl: string;
@@ -74,10 +90,11 @@ export function WorkbenchShell({
     onSelectionChange({ ...selection, ...next });
   }
 
-  const severityCounts = countBySeverity(model.warnings);
+  const severity = countBySeverity(model.warnings);
+  const showTeamRail = selection.surface === "team" || selection.surface === "member";
 
   return (
-    <main className={`workbenchShell surface-${selection.surface}`}>
+    <div className="flex h-screen flex-col overflow-hidden text-foreground">
       <TopBar
         apiUrl={apiUrl}
         currentSurface={surfaceLabel(selection.surface)}
@@ -88,14 +105,37 @@ export function WorkbenchShell({
         sourceError={sourceError}
         sourceLabel={sourceLabel}
       />
-      <AppRail selection={selection} onSurfaceChange={(surface) => updateSelection({ surface })} warnings={severityCounts.high} />
-      <TeamRail model={model} selection={selection} onSelectionChange={updateSelection} />
-      <section className="workspace" aria-label="Primary workbench workspace">
-        <SurfaceSwitch model={model} selection={selection} onSelectionChange={updateSelection} sourceLabel={sourceLabel} />
-      </section>
-      <Inspector model={model} onSelectionChange={updateSelection} />
-      <MobileNav selection={selection} onSurfaceChange={(surface) => updateSelection({ surface })} />
-    </main>
+      <div className="flex min-h-0 flex-1">
+        <AppRail
+          selection={selection}
+          onSurfaceChange={(surface) => updateSelection({ surface })}
+          warnings={severity.high}
+        />
+        {showTeamRail && (
+          <TeamRail
+            className="hidden lg:flex"
+            model={model}
+            selection={selection}
+            onSelectionChange={updateSelection}
+          />
+        )}
+        <main className="relative min-w-0 flex-1 overflow-y-auto">
+          <div className="mx-auto w-full max-w-[1480px] p-5 xl:p-6">
+            <SurfaceSwitch
+              model={model}
+              selection={selection}
+              onSelectionChange={updateSelection}
+              sourceLabel={sourceLabel}
+            />
+          </div>
+        </main>
+        <Inspector
+          className="hidden xl:flex"
+          model={model}
+          onSelectionChange={updateSelection}
+        />
+      </div>
+    </div>
   );
 }
 
@@ -108,27 +148,59 @@ function TopBar({
   onRefresh,
   sourceError,
   sourceLabel,
-}: Omit<WorkbenchShellProps, "selection" | "onSelectionChange"> & { currentSurface: string }) {
+}: Omit<WorkbenchShellProps, "selection" | "onSelectionChange"> & {
+  currentSurface: string;
+}) {
+  const isLive = sourceLabel.includes("live");
   return (
-    <header className="topBar">
-      <div className="brandBlock">
-        <strong>Agent Workbench</strong>
-        <span>{currentSurface} · {model.selectedGoal?.title ?? "No active goal"}</span>
+    <header className="flex h-14 shrink-0 items-center gap-3 border-b border-border bg-card/70 px-3 backdrop-blur-md">
+      <div className="flex items-center gap-2.5">
+        <div className="grid size-8 place-items-center rounded-md bg-primary/15 text-primary ring-1 ring-primary/40">
+          <Workflow className="size-4" />
+        </div>
+        <div className="leading-tight">
+          <div className="text-[13px] font-semibold tracking-tight">
+            Agent Workbench
+          </div>
+          <div className="truncate text-[11px] text-muted-foreground">
+            {currentSurface}
+            <span className="mx-1 text-border">/</span>
+            <span className="text-foreground/70">
+              {model.selectedGoal?.title ?? "No active goal"}
+            </span>
+          </div>
+        </div>
       </div>
-      <div className="sourceState">
-        <StatusBadge tone={sourceError ? "warn" : sourceLabel.includes("live") ? "good" : "info"}>{sourceLabel}</StatusBadge>
-        {sourceError && <span className="sourceError">{sourceError}</span>}
+
+      <div className="mx-2 hidden flex-1 justify-center md:flex">
+        <button
+          type="button"
+          className="flex h-8 w-full max-w-md items-center gap-2 rounded-md border border-border bg-background/50 px-2.5 text-xs text-muted-foreground transition-colors hover:border-input"
+        >
+          <Search className="size-3.5" />
+          <span>Search objects, members, tasks…</span>
+          <span className="ml-auto">
+            <Kbd>⌘K</Kbd>
+          </span>
+        </button>
       </div>
-      <label className="apiControl" htmlFor="api-url">
-        <span>Harness API</span>
-        <input id="api-url" value={apiUrl} onChange={(event) => onApiUrlChange(event.target.value)} spellCheck={false} />
-      </label>
-      <ActionButton icon={RefreshCw} disabled={isLoading} onClick={onRefresh} tone="primary">
-        {isLoading ? "Loading" : "Load live"}
-      </ActionButton>
-      <div className="searchGhost" aria-label="Search placeholder">
-        <Search size={15} aria-hidden="true" />
-        <span>Search objects</span>
+
+      <div className="ml-auto flex items-center gap-2">
+        <div className="hidden items-center gap-1.5 rounded-md border border-border bg-background/50 px-2 py-1.5 sm:flex">
+          <StatusDot tone={sourceError ? "warn" : isLive ? "good" : "info"} pulse={isLive} />
+          <span className="text-[11px] text-muted-foreground">{sourceLabel}</span>
+        </div>
+        <input
+          aria-label="Harness API URL"
+          value={apiUrl}
+          spellCheck={false}
+          onChange={(event) => onApiUrlChange(event.target.value)}
+          className="hidden h-8 w-44 rounded-md border border-border bg-background/50 px-2 font-mono text-[11px] text-foreground outline-none transition-colors focus:border-ring lg:block"
+        />
+        <Button size="sm" onClick={onRefresh} disabled={isLoading}>
+          <RefreshCw className={cn("size-3.5", isLoading && "animate-spin")} />
+          {isLoading ? "Loading" : "Load live"}
+        </Button>
       </div>
     </header>
   );
@@ -144,69 +216,153 @@ function AppRail({
   warnings: number;
 }) {
   return (
-    <nav className="appRail" aria-label="Workbench navigation">
-      <div className="railMark">AW</div>
-      {navItems.map((item) => (
-        <IconButton
-          key={item.id}
-          active={selection.surface === item.id}
-          icon={item.icon}
-          label={item.label}
-          onClick={() => onSurfaceChange(item.id)}
-        />
-      ))}
-      {warnings > 0 && <span className="railWarning">{warnings}</span>}
+    <nav
+      aria-label="Workbench navigation"
+      className="flex w-16 shrink-0 flex-col items-center gap-1 border-r border-border bg-card/40 py-3"
+    >
+      {navItems.map((item) => {
+        const active = selection.surface === item.id;
+        const Icon = item.icon;
+        return (
+          <Tooltip key={item.id}>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                aria-label={item.label}
+                onClick={() => onSurfaceChange(item.id)}
+                className={cn(
+                  "relative grid size-10 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground",
+                  active && "bg-primary/12 text-primary hover:bg-primary/12 hover:text-primary",
+                )}
+              >
+                {active && (
+                  <span className="absolute -left-3 top-1/2 h-5 w-0.5 -translate-y-1/2 rounded-r bg-primary" />
+                )}
+                <Icon className="size-[18px]" />
+                {item.id === "warnings" && warnings > 0 && (
+                  <span className="absolute -right-0.5 -top-0.5 grid h-4 min-w-4 place-items-center rounded-full bg-status-bad px-1 text-[9px] font-bold text-background">
+                    {warnings}
+                  </span>
+                )}
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="right">{item.label}</TooltipContent>
+          </Tooltip>
+        );
+      })}
     </nav>
   );
 }
 
 function TeamRail({
+  className,
   model,
   selection,
   onSelectionChange,
 }: {
+  className?: string;
   model: WorkbenchModel;
   selection: SelectionState;
   onSelectionChange: (selection: Partial<SelectionState>) => void;
 }) {
+  const activeMemberId = selection.memberId ?? model.selectedMember?.id;
   return (
-    <aside className="teamRail" aria-label="Team and member rail">
-      <header className="railHeader">
-        <span>Team</span>
-        <strong>{model.selectedTeam?.name ?? "No team"}</strong>
-      </header>
-      <div className="goalRailSummary">
-        <span>Active goal</span>
-        <strong>{model.selectedGoal?.title ?? "Missing goal"}</strong>
-        <small>{model.goalTasks.length} tasks · {model.warnings.length} warnings</small>
+    <aside
+      aria-label="Team and member rail"
+      className={cn(
+        "w-72 shrink-0 flex-col border-r border-border bg-card/40",
+        className,
+      )}
+    >
+      <div className="border-b border-border p-3">
+        <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+          Team
+        </p>
+        <p className="truncate text-sm font-semibold">
+          {model.selectedTeam?.name ?? "No team"}
+        </p>
       </div>
-      <div className="roleGroups">
-        {model.roleGroups.map((group) => (
-          <section key={group.role} className="roleGroup">
-            <h2>{group.role}</h2>
-            {group.members.map((member) => (
-              <button
-                key={member.id}
-                type="button"
-                className={`memberRow${selection.memberId === member.id || model.selectedMember?.id === member.id ? " active" : ""}`}
-                onClick={() => onSelectionChange({ memberId: member.id, taskId: member.current_task_id ?? selection.taskId, surface: "member" })}
-              >
-                <span className="avatar">{initials(member.name ?? member.id)}</span>
-                <span className="memberText">
-                  <strong>{member.name ?? member.id}</strong>
-                  <small>{member.runtime_status ?? member.status ?? "unknown"} · {taskTitle(model.tasks, member.current_task_id)}</small>
-                </span>
-                <span className="queueCount">{(member.inbox_count ?? 0) + (member.queued_count ?? 0)}</span>
-              </button>
-            ))}
-          </section>
-        ))}
+      <ScrollArea className="min-h-0 flex-1">
+        <div className="space-y-4 p-3">
+          <div className="rounded-lg border border-border bg-background/40 p-3">
+            <p className="text-[10px] uppercase tracking-wider text-muted-foreground">
+              Active goal
+            </p>
+            <p className="mt-0.5 line-clamp-2 text-[13px] font-medium leading-snug">
+              {model.selectedGoal?.title ?? "Missing goal"}
+            </p>
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              <Badge tone="info">{model.goalTasks.length} tasks</Badge>
+              <Badge tone={model.warnings.length ? "warn" : "good"}>
+                {model.warnings.length} warnings
+              </Badge>
+            </div>
+          </div>
+
+          {model.roleGroups.map((group) => (
+            <div key={group.role}>
+              <p className="px-1 pb-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                {group.role}
+              </p>
+              <div className="space-y-0.5">
+                {group.members.map((member) => {
+                  const active = activeMemberId === member.id;
+                  const queue =
+                    (member.inbox_count ?? 0) + (member.queued_count ?? 0);
+                  return (
+                    <button
+                      key={member.id}
+                      type="button"
+                      onClick={() =>
+                        onSelectionChange({
+                          memberId: member.id,
+                          taskId: member.current_task_id ?? selection.taskId,
+                          surface: "member",
+                        })
+                      }
+                      className={cn(
+                        "flex w-full items-center gap-2.5 rounded-md border border-transparent px-2 py-1.5 text-left transition-colors hover:bg-accent/50",
+                        active && "border-border bg-accent/60",
+                      )}
+                    >
+                      <Avatar
+                        name={member.name ?? member.id}
+                        tone={memberTone(member.runtime_status ?? member.status)}
+                      />
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-[13px] font-medium">
+                          {member.name ?? member.id}
+                        </span>
+                        <span className="block truncate text-[11px] text-muted-foreground">
+                          {member.runtime_status ?? member.status ?? "unknown"}
+                          <span className="mx-1 text-border">·</span>
+                          {taskTitle(model.tasks, member.current_task_id)}
+                        </span>
+                      </span>
+                      {queue > 0 && (
+                        <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
+                          {queue}
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
+        </div>
+      </ScrollArea>
+      <div className="border-t border-border p-3">
+        <p className="text-[10px] uppercase tracking-wider text-muted-foreground">
+          Decision pressure
+        </p>
+        <p className="text-lg font-semibold tabular-nums">
+          {model.decisionQueue.length}
+          <span className="ml-1.5 text-xs font-normal text-muted-foreground">
+            open items
+          </span>
+        </p>
       </div>
-      <footer className="railQueue">
-        <span>Decision pressure</span>
-        <strong>{model.decisionQueue.length}</strong>
-        <small>reviews, waivers, and missing proof</small>
-      </footer>
     </aside>
   );
 }
@@ -230,7 +386,13 @@ function SurfaceSwitch({
     case "task":
       return <TaskDocument model={model} onSelectionChange={onSelectionChange} />;
     case "graph":
-      return <GraphKanban model={model} mode={selection.mode ?? "kanban"} onSelectionChange={onSelectionChange} />;
+      return (
+        <GraphKanban
+          model={model}
+          mode={selection.mode ?? "kanban"}
+          onSelectionChange={onSelectionChange}
+        />
+      );
     case "member":
       return <MemberWorkbench model={model} onSelectionChange={onSelectionChange} />;
     case "docs":
@@ -247,90 +409,151 @@ function SurfaceSwitch({
   }
 }
 
-function Inspector({ model, onSelectionChange }: { model: WorkbenchModel; onSelectionChange: (selection: Partial<SelectionState>) => void }) {
+function Inspector({
+  className,
+  model,
+  onSelectionChange,
+}: {
+  className?: string;
+  model: WorkbenchModel;
+  onSelectionChange: (selection: Partial<SelectionState>) => void;
+}) {
   const member = model.selectedMember;
   const task = model.selectedTask;
   return (
-    <aside className="inspector" aria-label="Selected object inspector">
-      <header className="inspectorHeader">
-        <PanelRightOpen size={17} aria-hidden="true" />
-        <div>
-          <span>{member ? "Selected member" : task ? "Selected task" : "Inspector"}</span>
-          <strong>{member?.name ?? task?.title ?? "Nothing selected"}</strong>
-        </div>
-      </header>
-      {member && (
-        <section className="inspectorBlock">
-          <p className="blockLabel">Member identity</p>
-          <h2>{member.name ?? member.id}</h2>
-          <div className="inlineBadges">
-            <StatusBadge tone={member.runtime_alive ? "good" : "warn"}>{member.runtime_status ?? "unknown"}</StatusBadge>
-            <StatusBadge tone="info">{member.role ?? "Member"}</StatusBadge>
-          </div>
-          <p>{member.description ?? "Persistent AgentMember with role, prompt, runtime state, inbox/outbox, and current task."}</p>
-          <div className="inspectorActions">
-            <ActionButton icon={Send} tone="primary">Send message</ActionButton>
-            <ActionButton icon={Inbox}>Deliver queued</ActionButton>
-          </div>
-        </section>
+    <aside
+      aria-label="Selected object inspector"
+      className={cn(
+        "w-80 shrink-0 flex-col border-l border-border bg-card/40",
+        className,
       )}
-      {task && (
-        <section className="inspectorBlock">
-          <p className="blockLabel">Current task</p>
-          <button type="button" className="linkButton" onClick={() => onSelectionChange({ surface: "task", taskId: task.id })}>
-            {task.title ?? task.id}
-          </button>
-          <p>{task.objective}</p>
-          <div className="inlineBadges">
-            <StatusBadge tone={task.status === "done" ? "good" : task.status === "blocked" ? "bad" : "info"}>{task.status}</StatusBadge>
-            <StatusBadge>{objectShortId(task.branch_ref)}</StatusBadge>
+    >
+      <div className="flex h-14 shrink-0 items-center gap-2.5 border-b border-border px-4">
+        {member ? (
+          <Avatar
+            name={member.name ?? member.id}
+            tone={memberTone(member.runtime_status ?? member.status)}
+          />
+        ) : (
+          <div className="grid size-8 place-items-center rounded-md bg-secondary text-muted-foreground">
+            <Inbox className="size-4" />
           </div>
-        </section>
-      )}
-      <section className="inspectorBlock">
-        <p className="blockLabel">Inbox / outbox</p>
-        <div className="splitMetrics">
-          <span><strong>{member?.inbox_count ?? 0}</strong> inbox</span>
-          <span><strong>{member?.queued_count ?? 0}</strong> queued</span>
+        )}
+        <div className="min-w-0">
+          <p className="text-[10px] uppercase tracking-wider text-muted-foreground">
+            {member ? "Selected member" : task ? "Selected task" : "Inspector"}
+          </p>
+          <p className="truncate text-[13px] font-semibold">
+            {member?.name ?? task?.title ?? "Nothing selected"}
+          </p>
         </div>
-      </section>
-      <section className="inspectorBlock">
-        <p className="blockLabel">Recent member activity</p>
-        <div className="compactTimeline">
-          {model.selectedMemberTimeline.slice(0, 4).map((item) => (
-            <TimelineRow key={item.id} kind={item.kind} title={item.title} meta={item.meta} body={item.body} severity={item.severity} />
-          ))}
+      </div>
+
+      <ScrollArea className="min-h-0 flex-1">
+        <div className="space-y-4 p-4">
+          {member && (
+            <section className="space-y-2.5">
+              <div className="flex flex-wrap items-center gap-1.5">
+                <Badge tone={memberTone(member.runtime_status ?? member.status)}>
+                  {member.runtime_status ?? member.status ?? "unknown"}
+                </Badge>
+                <Badge tone="info">{member.role ?? "Member"}</Badge>
+                {member.provider && <Badge tone="muted">{member.provider}</Badge>}
+              </div>
+              <p className="text-xs leading-relaxed text-muted-foreground">
+                {member.description ??
+                  "Persistent AgentMember with role, prompt, runtime state, inbox/outbox and a current task."}
+              </p>
+              <div className="flex gap-2">
+                <Button size="sm" className="flex-1">
+                  <Send className="size-3.5" />
+                  Message
+                </Button>
+                <Button size="sm" variant="secondary" className="flex-1">
+                  <Inbox className="size-3.5" />
+                  Deliver
+                </Button>
+              </div>
+            </section>
+          )}
+
+          <section className="grid grid-cols-2 gap-2">
+            <Metric label="Inbox" value={member?.inbox_count ?? 0} />
+            <Metric label="Queued" value={member?.queued_count ?? 0} />
+          </section>
+
+          {task && (
+            <section className="rounded-lg border border-border bg-background/40 p-3">
+              <p className="text-[10px] uppercase tracking-wider text-muted-foreground">
+                Current task
+              </p>
+              <button
+                type="button"
+                onClick={() => onSelectionChange({ surface: "task", taskId: task.id })}
+                className="mt-0.5 block text-left text-[13px] font-medium text-foreground hover:text-primary"
+              >
+                {task.title ?? task.id}
+              </button>
+              <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">
+                {task.objective}
+              </p>
+              <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                <Badge tone={taskTone(task.status)}>{task.status}</Badge>
+                {task.branch_ref && (
+                  <span className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
+                    <GitBranch className="size-3" />
+                    <MonoId>{shortBranch(task.branch_ref)}</MonoId>
+                  </span>
+                )}
+              </div>
+            </section>
+          )}
+
+          <section>
+            <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+              Recent activity
+            </p>
+            <div className="overflow-hidden rounded-lg border border-border bg-background/40">
+              {model.selectedMemberTimeline.length ? (
+                model.selectedMemberTimeline.slice(0, 5).map((item) => (
+                  <TimelineRow
+                    key={item.id}
+                    kind={item.kind}
+                    title={item.title}
+                    meta={item.meta}
+                    body={item.body}
+                    tone={timelineTone(item.kind, item.severity)}
+                    onClick={() =>
+                      item.objectRef &&
+                      onSelectionChange({ taskId: item.objectRef, surface: "task" })
+                    }
+                  />
+                ))
+              ) : (
+                <EmptyState title="No recent activity" />
+              )}
+            </div>
+          </section>
         </div>
-      </section>
+      </ScrollArea>
     </aside>
   );
 }
 
-function MobileNav({ selection, onSurfaceChange }: { selection: SelectionState; onSurfaceChange: (surface: SurfaceId) => void }) {
+function Metric({ label, value }: { label: string; value: number }) {
   return (
-    <nav className="mobileNav" aria-label="Mobile Workbench tabs">
-      {navItems.map((item) => (
-        <button
-          key={item.id}
-          type="button"
-          className={selection.surface === item.id ? "active" : ""}
-          onClick={() => onSurfaceChange(item.id)}
-        >
-          <item.icon size={16} aria-hidden="true" />
-          <span>{item.label}</span>
-        </button>
-      ))}
-    </nav>
+    <div className="rounded-md border border-border bg-background/40 px-3 py-2">
+      <div className="text-lg font-semibold tabular-nums">{value}</div>
+      <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
+        {label}
+      </div>
+    </div>
   );
 }
 
-function initials(value: string): string {
-  return value
-    .split(/[-_\s]/)
-    .filter(Boolean)
-    .slice(0, 2)
-    .map((part) => part[0]?.toUpperCase() ?? "")
-    .join("");
+function shortBranch(value: string): string {
+  const parts = value.split("/");
+  return parts.length > 2 ? `…/${parts.slice(-1)[0]}` : value;
 }
 
 function surfaceLabel(surface: SurfaceId): string {
