@@ -421,6 +421,74 @@ pub struct Decision {
     pub follow_up_task_id: Option<String>,
 }
 
+/// Verdict carried by a [`Review`]. Open enum: the canonical, harness-owned set
+/// is modelled as named variants for type safety; any other value supplied by an
+/// adapter or skill round-trips through [`ReviewVerdict::Other`].
+///
+/// `#[serde(other)]` only supports unit variants and would discard the original
+/// string, so this uses `from`/`into` String conversions to preserve fidelity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Serialize, Deserialize)]
+#[serde(from = "String", into = "String")]
+pub enum ReviewVerdict {
+    Pass,
+    Fail,
+    Blocked,
+    NeedsChanges,
+    Other(String),
+}
+
+impl ReviewVerdict {
+    pub fn as_str(&self) -> &str {
+        match self {
+            ReviewVerdict::Pass => "pass",
+            ReviewVerdict::Fail => "fail",
+            ReviewVerdict::Blocked => "blocked",
+            ReviewVerdict::NeedsChanges => "needs_changes",
+            ReviewVerdict::Other(value) => value,
+        }
+    }
+}
+
+impl From<String> for ReviewVerdict {
+    fn from(value: String) -> Self {
+        match value.as_str() {
+            "pass" => ReviewVerdict::Pass,
+            "fail" => ReviewVerdict::Fail,
+            "blocked" => ReviewVerdict::Blocked,
+            "needs_changes" => ReviewVerdict::NeedsChanges,
+            _ => ReviewVerdict::Other(value),
+        }
+    }
+}
+
+impl From<ReviewVerdict> for String {
+    fn from(value: ReviewVerdict) -> Self {
+        value.as_str().to_string()
+    }
+}
+
+/// First-class evaluator/critic output. Today an unstructured report Message; the
+/// Review object captures verdict + findings + residual risk as structured data.
+///
+/// Concept-model invariant: a Review is *evidence for* a Decision, not the global
+/// decision itself — a Lead/gate still issues the Decision.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Review {
+    pub id: String,
+    pub task_id: Option<String>,
+    pub goal_id: Option<String>,
+    pub reviewer_agent_id: String,
+    pub review_kind: String,
+    pub verdict: ReviewVerdict,
+    pub summary: String,
+    pub blockers: Vec<String>,
+    pub residual_risk: Option<String>,
+    pub missing_validation: Vec<String>,
+    pub evidence_ids: Vec<String>,
+    pub created_at: String,
+}
+
 pub trait Validate {
     fn validate(&self) -> Result<(), ValidationError>;
 }
@@ -556,6 +624,17 @@ impl Validate for Decision {
     }
 }
 
+impl Validate for Review {
+    fn validate(&self) -> Result<(), ValidationError> {
+        require_non_empty(&self.id, "Review.id")?;
+        require_non_empty(&self.reviewer_agent_id, "Review.reviewer_agent_id")?;
+        require_non_empty(&self.review_kind, "Review.review_kind")?;
+        require_non_empty(self.verdict.as_str(), "Review.verdict")?;
+        require_non_empty(&self.summary, "Review.summary")?;
+        require_non_empty(&self.created_at, "Review.created_at")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -615,6 +694,66 @@ mod tests {
 
         assert_eq!(parsed, goal);
         assert!(parsed.validate().is_ok());
+    }
+
+    #[test]
+    fn review_round_trips_json() {
+        let review = Review {
+            id: "review-1".to_string(),
+            task_id: Some("task-1".to_string()),
+            goal_id: Some("goal-1".to_string()),
+            reviewer_agent_id: "evaluator-1".to_string(),
+            review_kind: "acceptance".to_string(),
+            verdict: ReviewVerdict::Pass,
+            summary: "Acceptance gates met; evidence backs the verdict.".to_string(),
+            blockers: vec![],
+            residual_risk: Some("Snapshot regeneration not yet automated.".to_string()),
+            missing_validation: vec!["load test deferred".to_string()],
+            evidence_ids: vec!["evidence-1".to_string()],
+            created_at: "2026-05-26T00:00:00Z".to_string(),
+        };
+
+        let json = serde_json::to_string(&review).expect("serialize review");
+        let parsed: Review = serde_json::from_str(&json).expect("deserialize review");
+
+        assert_eq!(parsed, review);
+        assert!(parsed.validate().is_ok());
+        // Canonical verdict serializes to its snake_case wire value.
+        assert!(json.contains("\"verdict\":\"pass\""));
+    }
+
+    #[test]
+    fn review_verdict_open_enum_round_trips_unknown_value() {
+        // An adapter-supplied verdict that is not in the canonical set must
+        // round-trip through ReviewVerdict::Other without losing the string.
+        let review = Review {
+            id: "review-2".to_string(),
+            task_id: None,
+            goal_id: Some("goal-1".to_string()),
+            reviewer_agent_id: "critic-1".to_string(),
+            review_kind: "safety".to_string(),
+            verdict: ReviewVerdict::Other("conditional_pass".to_string()),
+            summary: "Goal-level review with adapter verdict.".to_string(),
+            blockers: vec!["needs second safety sign-off".to_string()],
+            residual_risk: None,
+            missing_validation: vec![],
+            evidence_ids: vec![],
+            created_at: "2026-05-26T00:00:00Z".to_string(),
+        };
+
+        let json = serde_json::to_string(&review).expect("serialize review");
+        assert!(json.contains("\"verdict\":\"conditional_pass\""));
+
+        let parsed: Review = serde_json::from_str(&json).expect("deserialize review");
+        assert_eq!(parsed.verdict, ReviewVerdict::Other("conditional_pass".to_string()));
+        assert_eq!(parsed, review);
+        assert!(parsed.validate().is_ok());
+
+        // A canonical value deserialized from the wire collapses to its named variant.
+        let canonical: Review =
+            serde_json::from_str(&json.replace("conditional_pass", "needs_changes"))
+                .expect("deserialize canonical verdict");
+        assert_eq!(canonical.verdict, ReviewVerdict::NeedsChanges);
     }
 
     #[test]

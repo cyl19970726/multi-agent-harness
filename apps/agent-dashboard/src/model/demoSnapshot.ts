@@ -370,6 +370,38 @@ export const demoSnapshot: DashboardSnapshot = {
       evidence_ids: ["ev-page-contracts"],
     },
   ],
+  reviews: [
+    {
+      id: "review-architecture-1",
+      task_id: "task-architecture-decision",
+      goal_id: "goal-workbench-rebuild",
+      reviewer_agent_id: "agent-critic",
+      review_kind: "acceptance",
+      verdict: "pass",
+      summary:
+        "Stack decision is backed by the architecture doc; primitives and dependency policy are explicit. Acceptance gate met.",
+      blockers: [],
+      residual_risk: "Component-primitive drift if shadcn is reintroduced later.",
+      missing_validation: ["Browser screenshot acceptance still pending for the implemented shell."],
+      evidence_ids: ["ev-architecture"],
+      created_at: "2026-05-29T08:05:00.000Z",
+    },
+    {
+      id: "review-shell-1",
+      task_id: "task-shell-rebuild",
+      goal_id: "goal-workbench-rebuild",
+      reviewer_agent_id: "agent-critic",
+      review_kind: "design",
+      verdict: "needs_changes",
+      summary:
+        "Shell rebuild is progressing but the Task surface does not yet render structured reviews; verdict is needs_changes until reviews are legible.",
+      blockers: ["Reviews are still shown as unstructured report messages."],
+      residual_risk: null,
+      missing_validation: ["Desktop/tablet/mobile screenshot matrix against page-local contracts."],
+      evidence_ids: ["ev-page-contracts"],
+      created_at: "2026-05-29T09:20:00.000Z",
+    },
+  ],
   provider_sessions: [
     {
       id: "session-worker-1",
