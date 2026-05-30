@@ -18,7 +18,7 @@ import type { ReactNode } from "react";
 import type { SelectionState } from "../app/selection";
 import type { WorkbenchModel } from "../model/readModel";
 import { memberName, objectShortId, taskTitle } from "../model/readModel";
-import type { Task, WorkflowWarning } from "../types";
+import type { Goal, Task, WorkflowWarning } from "../types";
 import { ActionButton, EmptyState, SectionPanel, SegmentedControl, StatusBadge, TimelineRow } from "../ui/primitives";
 
 type SelectionPatch = Partial<SelectionState>;
@@ -92,36 +92,81 @@ export function TeamWorkspace({ model, onSelectionChange }: SurfaceProps) {
 }
 
 export function VisionOverview({ model, onSelectionChange }: SurfaceProps) {
+  const selectedGoal = model.selectedGoal;
+  const nextProposal = model.snapshot.autonomous_proposals?.[0];
+  const proposedGoalCount = model.proposedGoals.length;
+  const nextProposalCount = model.snapshot.autonomous_proposals?.length ?? 0;
+  const goalGroups = [
+    { id: "active", title: "Active", goals: model.activeGoals, fallback: selectedGoal ? [selectedGoal] : [] },
+    { id: "complete", title: "Completed", goals: model.completeGoals, fallback: [] },
+    { id: "blocked", title: "Blocked", goals: model.blockedGoals, fallback: [] },
+    { id: "proposed", title: "Proposed", goals: model.proposedGoals, fallback: [] },
+  ];
+
   return (
-    <div className="surfaceStack">
-      <SurfaceHeader
-        kicker="Vision overview"
-        title="Workbench self-hosting vision"
-        body="Goals are grouped by state so completion depends on Decision and GoalEvaluation, not task count."
-      />
-      <div className="visionGrid">
-        <SectionPanel title="Active Goals" kicker="Not complete until evaluated">
-          <GoalList goals={model.activeGoals} fallback={model.selectedGoal ? [model.selectedGoal] : []} onSelect={(goalId) => onSelectionChange({ goalId, surface: "goal" })} />
-        </SectionPanel>
-        <SectionPanel title="Completed Goals" kicker="Decision and evaluation proof">
-          <GoalList goals={model.completeGoals} fallback={[]} onSelect={(goalId) => onSelectionChange({ goalId, surface: "goal" })} />
-        </SectionPanel>
-        <SectionPanel title="Proposed / Next" kicker="Distance-to-vision loop">
-          <GoalList goals={model.proposedGoals} fallback={[]} onSelect={(goalId) => onSelectionChange({ goalId, surface: "goal" })} />
-          {model.snapshot.autonomous_proposals?.slice(0, 3).map((proposal) => (
-            <div key={proposal.id} className="proposalRow">
-              <strong>{proposal.summary}</strong>
-              <small>{proposal.disposition ?? "pending"} · evidence {proposal.linked_evidence_ids?.join(", ") || "missing"}</small>
-            </div>
-          ))}
-        </SectionPanel>
-        <SectionPanel title="Distance To Vision" kicker="Gaps before next goal">
-          <div className="distanceStack">
-            <StatusBadge tone={model.warnings.length ? "warn" : "good"}>{model.warnings.length} workflow gaps</StatusBadge>
-            <p>GoalEvaluation remains the acceptance closeout. Proposed next goals must point back to evidence or evaluation.</p>
-            <ActionButton icon={Workflow} onClick={() => onSelectionChange({ surface: "graph" })}>Open graph/Kanban</ActionButton>
+    <div className="visionPage">
+      <section className="visionHero pageHero">
+        <div>
+          <p className="heroKicker">Vision overview</p>
+          <h1>Workbench self-hosting vision</h1>
+          <p>Track whether active, completed, blocked, and proposed goals are moving the harness toward a reusable self-hosting workflow.</p>
+        </div>
+        <div className="heroActions">
+          <ActionButton icon={Workflow} onClick={() => onSelectionChange({ surface: "graph" })}>Open graph</ActionButton>
+          <ActionButton icon={FileText} onClick={() => selectedGoal && onSelectionChange({ goalId: selectedGoal.id, surface: "goal" })}>Open selected goal</ActionButton>
+        </div>
+      </section>
+
+      <div className="visionStatusStrip">
+        <ProofMetric label="Active" value={String(model.activeGoals.length || (selectedGoal ? 1 : 0))} tone="info" caption="not complete" />
+        <ProofMetric label="Completed" value={String(model.completeGoals.length)} tone="good" caption="decision + evaluation" />
+        <ProofMetric label="Blocked" value={String(model.blockedGoals.length)} tone={model.blockedGoals.length ? "bad" : "good"} caption="needs lead action" />
+        <ProofMetric label="Next items" value={String(proposedGoalCount + nextProposalCount)} tone="warn" caption={`${proposedGoalCount} goals + ${nextProposalCount} proposals`} />
+      </div>
+
+      <div className="visionLayout">
+        <section className="visionCollection">
+          <header className="pageSectionHeader">
+            <span>Goal collection</span>
+            <strong>Completion is proven by Decision and GoalEvaluation, not task count.</strong>
+          </header>
+          <div className="visionGroupGrid">
+            {goalGroups.map((group) => (
+              <section key={group.id} className={`visionGoalGroup ${group.id}`}>
+                <header>
+                  <span>{group.title}</span>
+                  <strong>{group.goals.length || group.fallback.length}</strong>
+                </header>
+                <div className="visionGoalRows">
+                  {(group.goals.length ? group.goals : group.fallback).map((goal) => (
+                    <VisionGoalRow key={goal.id} goal={goal} model={model} onSelect={() => onSelectionChange({ goalId: goal.id, surface: "goal" })} />
+                  ))}
+                  {!group.goals.length && !group.fallback.length && <EmptyState title={`No ${group.title.toLowerCase()} goals`} body="This group is empty in the current snapshot." />}
+                </div>
+              </section>
+            ))}
           </div>
-        </SectionPanel>
+        </section>
+
+        <aside className="visionContextRail">
+          <PageSection kicker="Distance-to-vision" title="Next gap to close">
+            <div className="contextStack">
+              <StatusBadge tone={model.warnings.length ? "warn" : "good"}>{model.warnings.length} workflow gaps</StatusBadge>
+              <p>GoalEvaluation must explain what moved the product closer to the Vision before the next Goal is accepted.</p>
+            </div>
+          </PageSection>
+          <PageSection kicker="Next-round proposal" title={nextProposal?.summary ?? "No accepted next proposal yet"}>
+            <p>{nextProposal ? `${nextProposal.disposition ?? "pending"} · source ${nextProposal.source_ref ?? nextProposal.source_type ?? "unknown"}` : "Observer proposals will appear here when linked to evidence or evaluation."}</p>
+            <div className="inlineBadges">
+              <StatusBadge tone={nextProposal?.linked_evidence_ids?.length ? "good" : "warn"}>{nextProposal?.linked_evidence_ids?.length ?? 0} evidence refs</StatusBadge>
+              <StatusBadge tone="info">{nextProposal?.follow_up_task_ids?.length ?? 0} follow-up tasks</StatusBadge>
+            </div>
+          </PageSection>
+          <PageSection kicker="Selected goal" title={selectedGoal?.title ?? "No selected goal"}>
+            <p>{selectedGoal?.objective ?? "Select a goal from the collection to inspect the work document."}</p>
+            <ActionButton icon={FileText} onClick={() => selectedGoal && onSelectionChange({ goalId: selectedGoal.id, surface: "goal" })}>Open goal document</ActionButton>
+          </PageSection>
+        </aside>
       </div>
     </div>
   );
@@ -210,42 +255,130 @@ export function GoalDocument({ model, onSelectionChange }: SurfaceProps) {
   if (!goal) return <EmptyState title="No goal selected" body="Load a snapshot or select a goal." />;
 
   const learning = model.snapshot.goal_learning_status?.find((status) => status.goal_id === goal.id);
+  const goalTaskIds = new Set(model.goalTasks.map((task) => task.id));
+  const goalEvidence = model.evidence.filter((item) => item.task_id && goalTaskIds.has(item.task_id));
+  const goalProposals = model.proposals.filter((item) => goalTaskIds.has(item.task_id));
+  const goalDecisions = model.decisions.filter((item) => goalTaskIds.has(item.task_id));
+  const goalReviewMessages = model.messages.filter((message) => {
+    if (!message.task_id || !goalTaskIds.has(message.task_id) || message.kind !== "report") return false;
+    const reviewedTask = model.tasks.find((task) => task.id === message.task_id);
+    return reviewedTask?.reviewer_agent_id === message.from_agent_id;
+  });
+  const goalWarnings = model.warnings.filter((warning) => warning.goalId === goal.id || (warning.taskId && goalTaskIds.has(warning.taskId)));
+  const taskCounts = countTasks(model.goalTasks);
+  const firstBranch = uniqueValues(model.goalTasks.map((task) => task.branch_ref))[0] ?? "goal branch missing";
+  const firstPr = uniqueValues(model.goalTasks.map((task) => task.pr_ref))[0] ?? "PR missing";
+  const branchCount = uniqueValues(model.goalTasks.map((task) => task.branch_ref)).length;
+  const prCount = uniqueValues(model.goalTasks.map((task) => task.pr_ref)).length;
 
   return (
-    <DocumentRoute
-      sideTitle="Goal document"
-      navItems={["Objective", "GoalDesign", "Team", "Branch / PR", "Graph / Board", "Evidence", "Evaluation"]}
-      proofTitle="Goal proof"
-      proof={
-        <>
-          <ProofLine label="GoalDesign" complete={(learning?.goal_design?.length ?? 0) > 0} />
-          <ProofLine label="Decision" complete={model.decisions.some((decision) => model.goalTasks.some((task) => task.id === decision.task_id))} />
-          <ProofLine label="GoalEvaluation" complete={(learning?.goal_evaluation?.length ?? 0) > 0} />
-          <ProofLine label="Warnings" complete={!model.warnings.some((warning) => warning.goalId === goal.id)} />
-        </>
-      }
-    >
-      <SurfaceHeader kicker="Goal work document" title={goal.title ?? goal.id} body={goal.objective ?? "No objective recorded."} />
-      <SectionPanel title="Objective And Success Criteria" kicker="Completion is not inferred from task status">
-        <ul className="criteriaList">
-          {(goal.success_criteria ?? ["No success criteria recorded."]).map((item) => <li key={item}>{item}</li>)}
-        </ul>
-      </SectionPanel>
-      <SectionPanel title="GoalDesign And Team Design" kicker="Design gate before implementation">
-        <p>Scenario: self-hosting the harness frontend through its own Workbench objects.</p>
-        <p>Team: {model.selectedTeam?.name ?? "team missing"} with {model.members.length} persistent members.</p>
-      </SectionPanel>
-      <SectionPanel title="Branch / Worktree / PR Policy" kicker="Integration proof">
-        <div className="proofGrid">
-          <span><GitBranch size={15} /> goal/dashboard-collaboration-workspace</span>
-          <span><GitPullRequest size={15} /> PR #6 reset/rebuild</span>
-          <span><FileText size={15} /> page-local layout contracts</span>
+    <div className="goalPage">
+      <section className="goalHero pageHero">
+        <div>
+          <p className="heroKicker">Goal work document</p>
+          <h1>{goal.title ?? goal.id}</h1>
+          <p>{goal.objective ?? "No objective recorded."}</p>
+          <div className="heroMeta">
+            <StatusBadge tone={goal.status === "complete" ? "good" : goal.status === "blocked" ? "bad" : "info"}>{goal.status ?? "active"}</StatusBadge>
+            <StatusBadge tone="info">owner {memberName(model.members, goal.owner_agent_id)}</StatusBadge>
+            <StatusBadge tone={goalWarnings.length ? "warn" : "good"}>{goalWarnings.length} warnings</StatusBadge>
+          </div>
         </div>
-      </SectionPanel>
-      <SectionPanel title="Graph / Kanban Preview" kicker="Dependencies and execution lanes">
-        <LaneBoard tasks={model.goalTasks} compact onSelectTask={(task) => onSelectionChange({ taskId: task.id, surface: "task" })} />
-      </SectionPanel>
-    </DocumentRoute>
+        <div className="heroActions">
+          <ActionButton icon={Workflow} onClick={() => onSelectionChange({ surface: "graph" })}>Graph/Kanban</ActionButton>
+          <ActionButton icon={ShieldCheck} onClick={() => onSelectionChange({ surface: "decisions" })}>Review proof</ActionButton>
+        </div>
+      </section>
+
+      <div className="goalStatusStrip">
+        <ProofMetric label="GoalDesign" value={(learning?.goal_design?.length ?? 0) > 0 ? "present" : "missing"} tone={(learning?.goal_design?.length ?? 0) > 0 ? "good" : "warn"} caption="design gate" />
+        <ProofMetric label="Tasks" value={`${model.goalTasks.length}`} tone="info" caption={`${taskCounts.running + taskCounts.review} active`} />
+        <ProofMetric label="Decision" value={`${goalDecisions.length}`} tone={goalDecisions.length ? "good" : "warn"} caption="acceptance proof" />
+        <ProofMetric label="Evaluation" value={(learning?.goal_evaluation?.length ?? 0) > 0 ? "present" : "missing"} tone={(learning?.goal_evaluation?.length ?? 0) > 0 ? "good" : "warn"} caption="closeout" />
+      </div>
+
+      <section className="goalProofMap" aria-label="Goal proof map">
+        <header className="pageSectionHeader">
+          <span>Durable goal proof</span>
+          <strong>Proof map before the document body</strong>
+        </header>
+        <div className="proofMiniGrid">
+          <ProofLine label={`Branch / PR refs ${branchCount}/${prCount}`} complete={branchCount > 0 && prCount > 0} />
+          <ProofLine label={`TaskGraph mapped ${model.goalTasks.length} tasks`} complete={model.goalTasks.length > 0} />
+          <ProofLine label={`Evidence refs ${goalEvidence.length}`} complete={goalEvidence.length > 0} />
+          <ProofLine label={`Review reports ${goalReviewMessages.length}`} complete={goalReviewMessages.length > 0} />
+          <ProofLine label={`Leader decisions ${goalDecisions.length}`} complete={goalDecisions.length > 0} />
+          <ProofLine label="GoalEvaluation closeout" complete={(learning?.goal_evaluation?.length ?? 0) > 0} />
+        </div>
+      </section>
+
+      <div className="goalWorkLayout">
+        <PageIndex title="Goal sections" items={["Objective", "Design gate", "Branch / PR", "Execution", "Proof", "Evaluation"]} />
+
+        <main className="goalDocumentFlow">
+          <PageSection id={anchorId("Objective", 0)} kicker="Why this goal exists" title="Objective and success criteria">
+            <ul className="criteriaList strongList">
+              {(goal.success_criteria ?? ["No success criteria recorded."]).map((item) => <li key={item}>{item}</li>)}
+            </ul>
+          </PageSection>
+
+          <section className="goalDesignBlock" id={anchorId("Design gate", 1)}>
+            <header>
+              <span>Design gate before implementation</span>
+              <strong>GoalDesign and team design</strong>
+            </header>
+            <div className="designGrid">
+              <div><span>Scenario</span><p>Self-hosting the harness frontend through its own Workbench objects.</p></div>
+              <div><span>Team</span><p>{model.selectedTeam?.name ?? "team missing"} with {model.members.length} persistent members.</p></div>
+              <div><span>Non-goal</span><p>Do not treat completed tasks as Goal completion without Decision and GoalEvaluation.</p></div>
+              <div><span>Gate</span><p>{(learning?.goal_design?.length ?? 0) > 0 ? "GoalDesign evidence exists before implementation." : "GoalDesign evidence is missing."}</p></div>
+            </div>
+          </section>
+
+          <PageSection id={anchorId("Branch / PR", 2)} kicker="Integration policy" title="Branch, PR, worktree, and docs stay near proof">
+            <div className="proofGrid strongProofGrid">
+              <span><GitBranch size={15} /> {firstBranch}</span>
+              <span><GitPullRequest size={15} /> {firstPr}</span>
+              <span><FileText size={15} /> page-local layout contracts</span>
+            </div>
+          </PageSection>
+
+          <section className="goalExecutionBlock" id={anchorId("Execution", 3)}>
+            <header>
+              <span>TaskGraph execution</span>
+              <strong>Kanban lanes plus dependency focus</strong>
+            </header>
+            <div className="goalExecutionGrid">
+              <LaneBoard tasks={model.goalTasks} compact onSelectTask={(task) => onSelectionChange({ taskId: task.id, surface: "task" })} />
+              <GraphPreview tasks={model.goalTasks} selectedTaskId={model.selectedTask?.id} onSelectTask={(task) => onSelectionChange({ taskId: task.id, surface: "task" })} />
+            </div>
+          </section>
+        </main>
+
+        <aside className="goalProofRail pageProofRail">
+          <PageSection id={anchorId("Proof", 4)} kicker="Acceptance state" title="Goal proof">
+            <div className="proofLines">
+              <ProofLine label="GoalDesign" complete={(learning?.goal_design?.length ?? 0) > 0} />
+              <ProofLine label="Review" complete={goalReviewMessages.length > 0} />
+              <ProofLine label="Decision" complete={goalDecisions.length > 0} />
+              <ProofLine label="Evidence" complete={goalEvidence.length > 0} />
+              <ProofLine label="GoalEvaluation" complete={(learning?.goal_evaluation?.length ?? 0) > 0} />
+            </div>
+          </PageSection>
+          <PageSection kicker="Review packet" title="Evidence, proposals, decisions">
+            <div className="contextStack">
+              <StatusBadge tone={goalEvidence.length ? "good" : "warn"}>{goalEvidence.length} evidence refs</StatusBadge>
+              <StatusBadge tone={goalProposals.length ? "good" : "warn"}>{goalProposals.length} proposals</StatusBadge>
+              <StatusBadge tone={goalDecisions.length ? "good" : "warn"}>{goalDecisions.length} decisions</StatusBadge>
+            </div>
+          </PageSection>
+          <PageSection id={anchorId("Evaluation", 5)} kicker="Distance-to-vision" title={(learning?.goal_evaluation?.length ?? 0) > 0 ? "Evaluation recorded" : "Evaluation still missing"}>
+            <p>Closeout should state what worked, what failed, remaining distance, and the next Goal or follow-up task.</p>
+            <ActionButton icon={FileText} onClick={() => onSelectionChange({ surface: "vision" })}>Back to Vision</ActionButton>
+          </PageSection>
+        </aside>
+      </div>
+    </div>
   );
 }
 
@@ -255,47 +388,127 @@ export function TaskDocument({ model, onSelectionChange }: SurfaceProps) {
 
   const assignment = model.messages.find((message) => message.task_id === task.id && message.kind === "task");
   const report = model.messages.find((message) => message.task_id === task.id && message.kind === "report");
+  const review = model.messages.find(
+    (message) => message.task_id === task.id && message.kind === "report" && message.from_agent_id === task.reviewer_agent_id,
+  );
   const evidence = model.evidence.filter((item) => item.task_id === task.id);
   const proposal = model.proposals.find((item) => item.task_id === task.id);
   const decision = model.decisions.find((item) => item.task_id === task.id);
+  const taskWarnings = model.warnings.filter((warning) => warning.taskId === task.id);
+  const taskSessions = model.snapshot.provider_sessions?.filter((session) => session.task_id === task.id) ?? [];
+  const proofSteps = [
+    { label: "Assignment", complete: Boolean(assignment), body: assignment?.content ?? "No task message linked yet." },
+    { label: "Report", complete: Boolean(report), body: report?.content ?? "No member report linked yet." },
+    { label: "Evidence", complete: evidence.length > 0, body: `${evidence.length} evidence refs` },
+    { label: "Proposal", complete: Boolean(proposal), body: proposal?.summary ?? "No proposal packet yet." },
+    { label: "Review", complete: Boolean(review), body: review?.content ?? "No reviewer report linked yet." },
+    { label: "Decision", complete: Boolean(decision), body: decision?.rationale ?? "No Leader decision yet." },
+  ];
 
   return (
-    <DocumentRoute
-      sideTitle="Task proof"
-      navItems={["Objective", "Assignment", "Report", "Evidence", "Proposal", "Review", "Decision"]}
-      proofTitle="Protocol order"
-      proof={
-        <>
-          <ProofLine label="Assignment message" complete={Boolean(assignment)} />
-          <ProofLine label="Report message" complete={Boolean(report)} />
-          <ProofLine label="Evidence" complete={evidence.length > 0} />
-          <ProofLine label="Proposal" complete={Boolean(proposal)} />
-          <ProofLine label="Decision" complete={Boolean(decision)} />
-        </>
-      }
-    >
-      <SurfaceHeader kicker="Task work document" title={task.title ?? task.id} body={task.objective ?? "No objective recorded."} />
-      <SectionPanel title="Objective And Acceptance" kicker="Assignable reviewable unit">
-        <ul className="criteriaList">
-          {(task.acceptance_criteria ?? ["No acceptance criteria recorded."]).map((item) => <li key={item}>{item}</li>)}
-        </ul>
-      </SectionPanel>
-      <SectionPanel title="Assignment Proof" kicker="Message(kind=task) before report">
-        {assignment ? <TimelineRow kind="message" title="Task assignment" meta={assignment.delivery_status} body={assignment.content} /> : <EmptyState title="Assignment missing" body="Assignee field alone does not prove assignment." />}
-      </SectionPanel>
-      <SectionPanel title="Report And Runtime" kicker="Assignee report connected to member runtime">
-        {report ? <TimelineRow kind="report" title="Member report" meta={report.delivery_status} body={report.content} /> : <EmptyState title="Report missing" body="No report message is linked to this task yet." />}
-      </SectionPanel>
-      <SectionPanel title="Evidence / Proposal / Checks" kicker="PR refs stay near proof">
-        <div className="proofGrid">
-          <span><FileText size={15} /> {evidence.length} evidence refs</span>
-          <span><GitPullRequest size={15} /> {objectShortId(task.pr_ref)}</span>
-          <span><GitBranch size={15} /> {objectShortId(task.branch_ref)}</span>
+    <div className="taskPage">
+      <section className="taskHero pageHero">
+        <div>
+          <p className="heroKicker">Task protocol document</p>
+          <h1>{task.title ?? task.id}</h1>
+          <p>{task.objective ?? "No objective recorded."}</p>
+          <div className="heroMeta">
+            <StatusBadge tone={task.status === "done" ? "good" : task.status === "blocked" ? "bad" : "info"}>{task.status}</StatusBadge>
+            <StatusBadge tone="info">assignee {memberName(model.members, task.assignee_agent_id)}</StatusBadge>
+            <StatusBadge tone="info">reviewer {memberName(model.members, task.reviewer_agent_id)}</StatusBadge>
+          </div>
         </div>
-        <p>{proposal?.summary ?? "No proposal summary yet."}</p>
-        <ActionButton icon={ExternalLink} onClick={() => onSelectionChange({ memberId: task.assignee_agent_id ?? undefined, surface: "member" })}>Open assignee</ActionButton>
-      </SectionPanel>
-    </DocumentRoute>
+        <div className="heroActions">
+          <ActionButton icon={Send}>Deliver task</ActionButton>
+          <ActionButton icon={ShieldCheck} onClick={() => onSelectionChange({ surface: "decisions" })}>Request review</ActionButton>
+        </div>
+      </section>
+
+      <div className="taskProtocolStrip">
+        {proofSteps.map((step, index) => (
+          <TaskProofStep key={step.label} index={index + 1} label={step.label} complete={step.complete} />
+        ))}
+      </div>
+
+      <div className="taskWorkLayout">
+        <PageIndex title="Proof order" items={["Objective", "Protocol order", "Assignment report", "Evidence proposal", "Review", "Decision", "Refs"]} />
+
+        <main className="taskDocumentFlow">
+          <PageSection id={anchorId("Objective", 0)} kicker="Assignable reviewable unit" title="Objective and acceptance">
+            <ul className="criteriaList strongList">
+              {(task.acceptance_criteria ?? ["No acceptance criteria recorded."]).map((item) => <li key={item}>{item}</li>)}
+            </ul>
+          </PageSection>
+
+          <section className="protocolTimeline" id={anchorId("Protocol order", 1)}>
+            <header>
+              <span>Canonical order</span>
+              <strong>Assignment must precede report, evidence, proposal, review, and decision.</strong>
+            </header>
+            <div className="protocolSteps">
+              {proofSteps.map((step, index) => (
+                <article key={step.label} className={`protocolStep ${step.complete ? "complete" : "missing"}`}>
+                  <span>{index + 1}</span>
+                  <div>
+                    <strong>{step.label}</strong>
+                    <p>{step.body}</p>
+                  </div>
+                </article>
+              ))}
+            </div>
+          </section>
+
+          <section className="taskMessageGrid" id={anchorId("Assignment report", 2)}>
+            <PageSection kicker="Message(kind=task)" title="Assignment proof">
+              {assignment ? <TimelineRow kind="message" title="Task assignment" meta={assignment.delivery_status} body={assignment.content} /> : <EmptyState title="Assignment missing" body="Assignee field alone does not prove assignment." />}
+            </PageSection>
+            <PageSection kicker="Assignee report" title="Report and runtime">
+              {report ? <TimelineRow kind="report" title="Member report" meta={report.delivery_status} body={report.content} /> : <EmptyState title="Report missing" body="No report message is linked to this task yet." />}
+            </PageSection>
+          </section>
+
+          <PageSection id={anchorId("Evidence proposal", 3)} kicker="PR refs stay near proof" title="Evidence, proposal, checks">
+            <div className="proofGrid strongProofGrid">
+              <span><FileText size={15} /> {evidence.length} evidence refs</span>
+              <span><GitPullRequest size={15} /> {objectShortId(task.pr_ref)}</span>
+              <span><GitBranch size={15} /> {objectShortId(task.branch_ref)}</span>
+            </div>
+            <p>{proposal?.summary ?? "No proposal summary yet."}</p>
+          </PageSection>
+        </main>
+
+        <aside className="taskContextRail pageProofRail">
+          <PageSection kicker="Assignee runtime" title={memberName(model.members, task.assignee_agent_id)}>
+            <div className="contextStack">
+              <StatusBadge tone={taskSessions.length ? "good" : "warn"}>{taskSessions.length} sessions</StatusBadge>
+              <StatusBadge tone={taskWarnings.length ? "warn" : "good"}>{taskWarnings.length} warnings</StatusBadge>
+              <ActionButton icon={ExternalLink} onClick={() => onSelectionChange({ memberId: task.assignee_agent_id ?? undefined, surface: "member" })}>Open assignee</ActionButton>
+            </div>
+          </PageSection>
+          <PageSection id={anchorId("Review", 4)} kicker="Reviewer proof" title={review ? "Review report recorded" : "Review report missing"}>
+            <p>{review?.content ?? "Task cannot look complete until the reviewer reports on the proposal and evidence."}</p>
+            <div className="proofLines">
+              <ProofLine label="Review report" complete={Boolean(review)} />
+              <ProofLine label="Evidence refs" complete={evidence.length > 0} />
+            </div>
+          </PageSection>
+          <PageSection id={anchorId("Decision", 5)} kicker="Leader decision" title={decision ? `Decision: ${decision.decision ?? "recorded"}` : "Decision missing"}>
+            <p>{decision?.rationale ?? "Task cannot look complete until review and Leader decision are recorded."}</p>
+            <div className="proofLines">
+              <ProofLine label="Review report" complete={Boolean(review)} />
+              <ProofLine label="Leader decision" complete={Boolean(decision)} />
+            </div>
+          </PageSection>
+          <PageSection id={anchorId("Refs", 6)} kicker="Owned paths" title="Branch / worktree / PR">
+            <div className="contextStack">
+              <StatusBadge tone="info">{objectShortId(task.branch_ref)}</StatusBadge>
+              <StatusBadge tone={task.pr_ref ? "good" : "warn"}>{objectShortId(task.pr_ref)}</StatusBadge>
+              <p>{task.owned_paths?.join(", ") || "No owned paths recorded."}</p>
+            </div>
+          </PageSection>
+        </aside>
+      </div>
+    </div>
   );
 }
 
@@ -439,6 +652,87 @@ export function DebugSurface({ model, sourceLabel }: { model: WorkbenchModel; so
           <pre>{JSON.stringify(model.snapshot, null, 2)}</pre>
         </SectionPanel>
       </div>
+    </div>
+  );
+}
+
+function ProofMetric({
+  label,
+  value,
+  tone,
+  caption,
+}: {
+  label: string;
+  value: string;
+  tone: "good" | "warn" | "bad" | "info" | "muted";
+  caption: string;
+}) {
+  return (
+    <div className={`proofMetric ${tone}`}>
+      <span>{label}</span>
+      <strong>{value}</strong>
+      <small>{caption}</small>
+    </div>
+  );
+}
+
+function PageSection({ id, kicker, title, children }: { id?: string; kicker: string; title: string; children: ReactNode }) {
+  return (
+    <section className="pageSection" id={id}>
+      <header className="pageSectionHeader">
+        <span>{kicker}</span>
+        <strong>{title}</strong>
+      </header>
+      <div className="pageSectionBody">{children}</div>
+    </section>
+  );
+}
+
+function PageIndex({ title, items }: { title: string; items: string[] }) {
+  return (
+    <aside className="pageIndex">
+      <strong>{title}</strong>
+      <nav aria-label={title}>
+        {items.map((item, index) => (
+          <a key={item} href={`#${anchorId(item, index)}`}>{item}</a>
+        ))}
+      </nav>
+    </aside>
+  );
+}
+
+function anchorId(label: string, index: number): string {
+  return `page-section-${index}-${label.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")}`;
+}
+
+function VisionGoalRow({ goal, model, onSelect }: { goal: Goal; model: WorkbenchModel; onSelect: () => void }) {
+  const tasks = model.tasks.filter((task) => task.goal_id === goal.id);
+  const taskIds = new Set(tasks.map((task) => task.id));
+  const learning = model.snapshot.goal_learning_status?.find((status) => status.goal_id === goal.id);
+  const decisionCount = model.decisions.filter((decision) => taskIds.has(decision.task_id)).length;
+  const hasEvaluation = (learning?.goal_evaluation?.length ?? 0) > 0;
+
+  return (
+    <button type="button" className="visionGoalRow" onClick={onSelect}>
+      <span>
+        <strong>{goal.title ?? goal.id}</strong>
+        <small>{goal.objective ?? "No objective recorded."}</small>
+      </span>
+      <span className="visionGoalProof">
+        <StatusBadge tone={goal.status === "complete" ? "good" : goal.status === "blocked" ? "bad" : "info"}>{goal.status ?? "active"}</StatusBadge>
+        <StatusBadge tone={decisionCount ? "good" : "warn"}>{decisionCount} decisions</StatusBadge>
+        <StatusBadge tone={hasEvaluation ? "good" : "warn"}>{hasEvaluation ? "evaluation" : "evaluation missing"}</StatusBadge>
+      </span>
+    </button>
+  );
+}
+
+function TaskProofStep({ index, label, complete }: { index: number; label: string; complete: boolean }) {
+  return (
+    <div className={`taskProofStep ${complete ? "complete" : "missing"}`}>
+      <span>{index}</span>
+      <strong>{label}</strong>
+      <small>{complete ? "present" : "missing"}</small>
     </div>
   );
 }
@@ -602,7 +896,7 @@ function RuntimeLine({ label, value, tone }: { label: string; value: string; ton
 
 function ProofLine({ label, complete }: { label: string; complete: boolean }) {
   return (
-    <div className="proofLine">
+    <div className={`proofLine ${complete ? "complete" : "missing"}`}>
       {complete ? <CheckCircle2 size={16} aria-hidden="true" /> : <AlertTriangle size={16} aria-hidden="true" />}
       <span>{label}</span>
       <StatusBadge tone={complete ? "good" : "warn"}>{complete ? "present" : "missing"}</StatusBadge>
@@ -618,6 +912,22 @@ function ProofStage({ title, complete, body }: { title: string; complete: boolea
       <p>{body}</p>
     </section>
   );
+}
+
+function countTasks(tasks: Task[]) {
+  return {
+    planned: tasks.filter((task) => task.status === "planned").length,
+    assigned: tasks.filter((task) => task.status === "assigned").length,
+    running: tasks.filter((task) => task.status === "running").length,
+    blocked: tasks.filter((task) => task.status === "blocked").length,
+    review: tasks.filter((task) => task.status === "review").length,
+    done: tasks.filter((task) => task.status === "done").length,
+    archived: tasks.filter((task) => task.status === "archived").length,
+  };
+}
+
+function uniqueValues(values: (string | null | undefined)[]): string[] {
+  return [...new Set(values.filter((value): value is string => Boolean(value)))];
 }
 
 function initials(value: string): string {

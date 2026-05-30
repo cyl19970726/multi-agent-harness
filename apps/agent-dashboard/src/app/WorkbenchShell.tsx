@@ -80,6 +80,7 @@ export function WorkbenchShell({
     <main className={`workbenchShell surface-${selection.surface}`}>
       <TopBar
         apiUrl={apiUrl}
+        currentSurface={surfaceLabel(selection.surface)}
         isLoading={isLoading}
         model={model}
         onApiUrlChange={onApiUrlChange}
@@ -100,18 +101,19 @@ export function WorkbenchShell({
 
 function TopBar({
   apiUrl,
+  currentSurface,
   isLoading,
   model,
   onApiUrlChange,
   onRefresh,
   sourceError,
   sourceLabel,
-}: Omit<WorkbenchShellProps, "selection" | "onSelectionChange">) {
+}: Omit<WorkbenchShellProps, "selection" | "onSelectionChange"> & { currentSurface: string }) {
   return (
     <header className="topBar">
       <div className="brandBlock">
         <strong>Agent Workbench</strong>
-        <span>{model.selectedGoal?.title ?? "No active goal"}</span>
+        <span>{currentSurface} · {model.selectedGoal?.title ?? "No active goal"}</span>
       </div>
       <div className="sourceState">
         <StatusBadge tone={sourceError ? "warn" : sourceLabel.includes("live") ? "good" : "info"}>{sourceLabel}</StatusBadge>
@@ -253,7 +255,7 @@ function Inspector({ model, onSelectionChange }: { model: WorkbenchModel; onSele
       <header className="inspectorHeader">
         <PanelRightOpen size={17} aria-hidden="true" />
         <div>
-          <span>Inspector</span>
+          <span>{member ? "Selected member" : task ? "Selected task" : "Inspector"}</span>
           <strong>{member?.name ?? task?.title ?? "Nothing selected"}</strong>
         </div>
       </header>
@@ -329,4 +331,8 @@ function initials(value: string): string {
     .slice(0, 2)
     .map((part) => part[0]?.toUpperCase() ?? "")
     .join("");
+}
+
+function surfaceLabel(surface: SurfaceId): string {
+  return navItems.find((item) => item.id === surface)?.label ?? surface;
 }

@@ -30,6 +30,7 @@ export function IconButton({ label, icon: Icon, active, onClick }: IconButtonPro
   return (
     <button className={`iconButton${active ? " active" : ""}`} type="button" title={label} aria-label={label} onClick={onClick}>
       <Icon aria-hidden="true" size={18} />
+      <span className="iconButtonLabel">{label}</span>
     </button>
   );
 }
