@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-harness.local/schemas/goal-case.schema.json",
+  "title": "GoalCase",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "case_id",
+    "source_goal_id",
+    "scenario_type",
+    "project_adapter",
+    "goal_design_ref",
+    "evaluation_ref",
+    "reusable_patterns",
+    "anti_patterns",
+    "follow_up_refs",
+    "tags",
+    "created_at"
+  ],
+  "properties": {
+    "case_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "source_goal_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "scenario_type": {
+      "type": "string",
+      "minLength": 1
+    },
+    "project_adapter": {
+      "type": ["string", "null"]
+    },
+    "goal_design_ref": {
+      "type": ["string", "null"]
+    },
+    "evaluation_ref": {
+      "type": ["string", "null"]
+    },
+    "reusable_patterns": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "anti_patterns": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "follow_up_refs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "tags": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "created_at": {
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}

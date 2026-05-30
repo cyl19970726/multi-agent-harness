@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-harness.local/schemas/gap.schema.json",
+  "title": "Gap",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id",
+    "goal_id",
+    "task_id",
+    "category",
+    "severity",
+    "status",
+    "summary",
+    "evidence_ids",
+    "next_step",
+    "owner_agent_id",
+    "repro_ref",
+    "closing_test_ref",
+    "created_at",
+    "updated_at"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "goal_id": {
+      "type": ["string", "null"]
+    },
+    "task_id": {
+      "type": ["string", "null"]
+    },
+    "category": {
+      "type": "string",
+      "minLength": 1
+    },
+    "severity": {
+      "type": "string",
+      "enum": ["p0", "p1", "p2"]
+    },
+    "status": {
+      "type": "string",
+      "enum": ["open", "in_progress", "fixed", "blocked", "deferred", "wontfix"]
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1
+    },
+    "evidence_ids": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "next_step": {
+      "type": ["string", "null"]
+    },
+    "owner_agent_id": {
+      "type": ["string", "null"]
+    },
+    "repro_ref": {
+      "type": ["string", "null"]
+    },
+    "closing_test_ref": {
+      "type": ["string", "null"]
+    },
+    "created_at": {
+      "type": "string",
+      "minLength": 1
+    },
+    "updated_at": {
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}
