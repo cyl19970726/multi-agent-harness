@@ -13,16 +13,11 @@ surface owns the claim, then place it there.
 | `../dashboard.md` | Product-level Workbench purpose, information architecture, object workflow, and user-facing acceptance | Component internals, run commands, page-level layout contracts |
 | `README.md` | Workbench docs map, placement rules, and change order | Product semantics or component implementation |
 | `design-principles.md` | Core frontend design principles, failure modes, graph/Kanban policy, AgentTeam and AgentMember UI doctrine | Route-level layout details or React module boundaries |
-| `layout-variants.md` | Candidate Workbench layout directions, Designer/Questioner critique, scoring rubric, and decision inputs | Final implementation spec or component internals |
-| `layout-decisions.md` | Accepted layout direction, killed alternatives, module decisions, and visual placement constraints | Code implementation or unscored future ideas |
+| `layout-history.md` | Candidate Workbench layout directions, Designer/Questioner critique, scoring rubric, and the selected/killed/deprecated decision ledger including rejected-implementation outcomes | Code implementation or unscored future ideas |
 | `frontend-design.md` | Workbench frontend design index, reading order, page-spec map, and implementation readiness summary | Page-level details, React internals, or run commands |
 | `pages/README.md` | Page-spec index and template | Hard dimensions, ASCII wireframes, or implementation internals |
 | `pages/*.md` | One page/workspace product, UX, and layout contract: purpose, object ownership, workflow proof, IA, actions, detailed desktop/tablet/mobile ASCII diagrams, dimensions, scroll ownership, failure modes, screenshot questions | Component implementation |
-| `hard-layout-specs/README.md` | Historical/deprecated layout-attempt index | Current implementation gate or page purpose |
-| `hard-layout-specs/*.md` | Historical hard-layout attempts kept for failure analysis and migration context | Current page layout contracts, product doctrine, or component implementation details |
-| `rejected-implementations/README.md` | Failed frontend implementation record index and template | Active design decisions or release notes |
-| `rejected-implementations/*.md` | Rejected browser-visible attempts, violated gates, old-code contamination, restart point | New design specs or implementation instructions |
-| `frontend-architecture.md` | React/Vite architecture, component responsibilities, app-local boundaries | Product PRD, visual doctrine, or runbook commands |
+| `frontend-architecture.md` | React/Vite + Tailwind v4 + shadcn/Radix architecture, component responsibilities, app-local boundaries | Product PRD, visual doctrine, or runbook commands |
 | `read-model.md` | Snapshot projections, selectors, advisory warnings, and required read-model fields | Canonical validation rules or Rust implementation |
 | `acceptance.md` | Browser screenshot evidence, web-quality gate, and frontend acceptance sequence | Product purpose or local development commands |
 | `runbook.md` | Local run, build, snapshot, live API, and safe action entry points | Architecture rationale or UI doctrine |
@@ -37,8 +32,8 @@ product purpose
   -> docs placement decision
   -> subagents restate Vision and selected Goal context
   -> core design principles
-  -> three candidate layout variants and critique
-  -> Reviewer / Lead records selected and killed layouts
+  -> three candidate layout variants and critique in layout-history.md
+  -> Reviewer / Lead records selected and killed layouts in layout-history.md
   -> module-level option loops for high-risk surfaces
   -> page specs under pages/
   -> frontend design index update
@@ -58,9 +53,8 @@ read and restate the project Vision, final acceptance standard, selected Goal,
 and distance-to-vision context. If they cannot do that, their design feedback is
 not ready to drive frontend decisions.
 
-For Workbench redesigns, keep three layout candidates in
-[layout-variants.md](layout-variants.md) until a Reviewer or Lead records the
-selected direction in [layout-decisions.md](layout-decisions.md). Once
+For Workbench redesigns, keep three layout candidates and the selected/killed
+direction in [layout-history.md](layout-history.md). Once
 selected, move the stable page hierarchy, page cards, visual placement, safe
 actions, read-model needs, detailed desktop/tablet/mobile ASCII diagrams,
 responsive behavior, and acceptance pointers into page specs under

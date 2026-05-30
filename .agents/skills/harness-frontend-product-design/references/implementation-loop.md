@@ -63,7 +63,8 @@ Stop implementation and record a rejected implementation when:
 
 ## Rejected Implementation Record
 
-Create `docs/dashboard/rejected-implementations/<attempt>.md`:
+Append a dated entry to the decision ledger in
+`docs/dashboard/layout-history.md`:
 
 ```text
 Rejected Implementation

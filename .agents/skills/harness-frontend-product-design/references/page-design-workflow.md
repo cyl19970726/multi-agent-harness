@@ -117,7 +117,8 @@ Before component or CSS work starts, convert selected page decisions into a
 page-local layout contract for every changed route, surface, or core module.
 The contract lives inside the relevant `docs/dashboard/pages/<page>.md` file
 under `## Layout Contract`; do not put the current implementation contract in
-`docs/dashboard/hard-layout-specs/`. This is stricter than a design direction.
+`docs/dashboard/layout-history.md` (that file holds candidate critique and the
+decision ledger only). This is stricter than a design direction.
 It must remove ambiguity that would let an implementation become a stacked
 report, card dump, or raw-debug-first page.
 
@@ -237,6 +238,6 @@ Do not start implementation until missing page specs are either completed or
 explicitly waived with rationale and follow-up tasks.
 
 Do not continue implementation when browser screenshots show the selected spec
-was not followed or was too vague. Record the failed attempt in
-`layout-decisions.md`, keep the code out of the integration branch, and return
-to the module option loop.
+was not followed or was too vague. Record the failed attempt as a dated entry in
+the decision ledger of `layout-history.md`, keep the code out of the integration
+branch, and return to the module option loop.

@@ -19,7 +19,7 @@ Architecture / Stack Decision
   component_primitives:
   graph_canvas_strategy:
   dependency_policy:
-  no_shadcn_confirmation:
+  ui_primitive_strategy:
   read_model_boundary:
   accessibility_and_keyboard_strategy:
   browser_acceptance_implications:
@@ -30,9 +30,13 @@ Architecture / Stack Decision
 ## Hard Rules
 
 - Do not select a stack by inheriting the old dashboard component tree.
-- Do not use shadcn for this project.
-- Do not add a generic component kit unless the Reviewer records why it serves
-  the Workbench product model better than custom primitives.
+- The shipped stack is Tailwind CSS v4 + shadcn/ui primitives over Radix +
+  lucide-react + Geist, with dependencies in the root `package.json` (see ADR
+  `docs/decisions/0016-tailwind-shadcn-adoption.md`). Compose product atoms in
+  `src/components/workbench` over the shadcn/ui primitives in
+  `src/components/ui`.
+- Do not add a second full component framework unless the Reviewer records why
+  it serves the Workbench product model better than the shadcn/Radix base.
 - Delete or quarantine old dashboard components when they encode the failed
   dashboard/card-dump information architecture.
 - Preserve only stable foundations that do not dictate layout: API helpers,

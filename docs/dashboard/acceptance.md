@@ -9,9 +9,9 @@ test stays in [frontend-design.md](frontend-design.md).
 
 Before implementation acceptance can start, the PR must point to the page-local
 layout contract for every changed route or surface. Contracts live inside the
-relevant `docs/dashboard/pages/<page>.md` file under `## Layout Contract`.
-`docs/dashboard/hard-layout-specs/` is historical/deprecated and must not be
-used as the current implementation gate.
+relevant `docs/dashboard/pages/<page>.md` file under `## Layout Contract`. The
+consolidated [layout-history.md](layout-history.md) holds candidate critique and
+the decision ledger, not the current implementation gate.
 
 Each changed page contract must define:
 
@@ -27,9 +27,10 @@ Each changed page contract must define:
 
 If browser screenshots show that the implementation does not match the
 page-local layout contract, the correct action is to stop implementation,
-record a rejected implementation in [layout-decisions.md](layout-decisions.md),
-and rerun the Designer -> Questioner -> Reviewer loop. Do not continue styling
-the same failed direction until the contract gap is fixed.
+record a rejected implementation in the decision ledger of
+[layout-history.md](layout-history.md), and rerun the Designer -> Questioner ->
+Reviewer loop. Do not continue styling the same failed direction until the
+contract gap is fixed.
 
 Missing ASCII diagrams fail the page layout contract gate. Prose-only layout
 descriptions are not enough for implementation acceptance.
