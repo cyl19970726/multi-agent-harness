@@ -47,6 +47,14 @@ Workflow proof:
 - Graph/Kanban visible for task execution and dependencies;
 - Decision and GoalEvaluation determine completion.
 
+Implemented: GoalDocument renders `GoalDesign` (scenario, non-goals, acceptance
+gates) and `GoalEvaluation` (what worked/failed, reusable patterns,
+anti-patterns) as real sections — not counts — reading first-class objects with
+a dual-read fallback to legacy `goal_design`/`goal_evaluation` evidence. A
+closeout-gate ProofRow shows whether a closeout `Decision` and `GoalEvaluation`
+(or a waiver) are present before the goal can look complete. The linked `Vision`
+is reachable via `Goal.vision_id`.
+
 Source docs:
 
 - [../../goal-learning-loop.md](../../goal-learning-loop.md)

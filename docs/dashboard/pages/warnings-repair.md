@@ -26,6 +26,7 @@ Non-goals:
 Canonical objects:
 
 - WorkflowWarning read model;
+- Gap ledger (first-class `Gap` objects; Bug = `Gap(category=bug)`);
 - Goal;
 - Task;
 - AgentMember;
@@ -34,6 +35,14 @@ Canonical objects:
 - Proposal;
 - Decision;
 - ProviderSession.
+
+Implemented: the Warnings surface is the home of the `Gap` ledger. It renders
+`Gap` rows sortable by `severity` (`p0`/`p1`/`p2`) and `status`
+(`open`/`in_progress`/`fixed`/`blocked`/`deferred`/`wontfix`), alongside the
+derived `WorkflowWarning` queue. The implemented warning kinds are
+`review_needs_decision`, `gap_unresolved`, `failed_provider_session`,
+`goal_learning_gap`, `goal_close_without_evaluation`, and
+`waiver_without_follow_up`.
 
 Workflow proof:
 

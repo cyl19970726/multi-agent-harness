@@ -111,10 +111,14 @@ Architecture boundary:
 - starts the design loop before tasks are assigned;
 - refuses vague chat momentum as a completion signal.
 
-Primary objects: `Goal`, `GoalDesign` evidence, `GoalEvaluation` evidence.
+Primary objects: `Goal`, `GoalDesign`, `GoalEvaluation`, `Vision`
+(`Goal.vision_id`). `GoalDesign` and `GoalEvaluation` are now first-class
+objects; legacy `Evidence(source_type=goal_design|goal_evaluation)` rows are
+dual-read for back-compat.
 
 Done when: a future agent can answer why the work existed and which evidence
-proved or blocked completion.
+proved or blocked completion. The closeout gate refuses `complete` without a
+closeout `Decision` plus a `GoalEvaluation` (or an explicit waiver).
 
 ## Scenario And Infra Design
 
@@ -280,14 +284,17 @@ gates decide whether the evidence is enough.
 
 Architecture boundary:
 
-- owns `Evidence`, `Proposal`, check evidence, diff evidence, provider output,
-  critic findings, and review-gate validation;
+- owns `Evidence`, `Proposal`, `Review`, check evidence, diff evidence, provider
+  output, critic findings, and review-gate validation;
+- a `Review` is the structured evaluator/critic output (`review_kind`,
+  `verdict`, `blockers`, `residual_risk`, `missing_validation`, `evidence_ids`)
+  and is evidence for a `Decision`, not the decision itself;
 - rejects missing refs, failed checks, stale failed provider sessions, and
   path-ownership violations;
 - refuses unsupported summaries as proof.
 
-Primary objects: `Evidence`, `Proposal`, check artifacts, diff artifacts,
-critic reports.
+Primary objects: `Evidence`, `Proposal`, `Review`, check artifacts, diff
+artifacts, critic reports.
 
 Done when: a decision can name exact evidence and another agent can inspect the
 same artifacts later.
@@ -298,12 +305,14 @@ PRD purpose: make outcomes durable and improve future Lead behavior.
 
 Architecture boundary:
 
-- owns `Decision`, rationale, evidence refs, waivers, follow-up tasks,
-  `GoalEvaluation`, and reusable `GoalCase`;
-- turns workflow failures into infra tasks rather than chat memory;
-- refuses silent acceptance or closing a goal without evaluation.
+- owns `Decision` (with `decision_kind`, waivers, follow-up tasks), the `Gap`
+  ledger (Bug = `Gap(category=bug)`), `GoalEvaluation`, and reusable `GoalCase`;
+- turns workflow failures and defects into tracked `Gap` rows and infra tasks
+  rather than chat memory;
+- refuses silent acceptance or closing a goal without evaluation (closeout gate).
 
-Primary objects: `Decision`, `GoalEvaluation`, `GoalCase`, follow-up tasks.
+Primary objects: `Decision`, `Gap`, `GoalEvaluation`, `GoalCase`, follow-up
+tasks.
 
 Done when: the system can explain what worked, what failed, what should be
 reused, and what must be improved before the next similar goal.

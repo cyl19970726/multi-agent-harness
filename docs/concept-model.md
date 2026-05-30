@@ -157,6 +157,64 @@ Rules:
 Failure mode this prevents: treating a confident summary as proof or letting a
 worker self-merge a cross-module decision.
 
+## Generic Object Model (Review, Gap, Learning Layer, Vision)
+
+The object model was extended with six generic objects so that evaluator
+output, defect ledgers, and the learning loop are first-class records instead of
+unstructured report messages or flat files. Each object is domain-neutral; the
+exact vocabularies are documented below and validated in Rust. The schema
+evolution rule (additive-optional, no `schema_version` field) and the design
+rationale live in [decisions/0017-generic-object-model.md](decisions/0017-generic-object-model.md)
+and [schemas.md](schemas.md).
+
+| Object | Replaces | Rule |
+| --- | --- | --- |
+| `Review` | unstructured report `Message` | A `Review` is the structured evaluator/critic output: `review_kind`, `verdict`, `summary`, `blockers`, `residual_risk`, `missing_validation`, `evidence_ids`. It is **evidence for** a `Decision`, never the global decision itself. |
+| `Gap` | the `product-gap-inbox.md` flat file and a separate bug ledger | A `Gap` is a defect/risk ledger row with `category`, `severity`, `status`, `summary`, and `evidence_ids`. **A Bug is a `Gap` with `category=bug`** plus optional `repro_ref` / `closing_test_ref`. There is no separate Bug object. |
+| `GoalDesign` | `Evidence(source_type=goal_design)` | The Lead's executable plan: `scenario_summary`, `non_goals`, `risk_and_permission_boundaries`, `required_infra`, `agent_team`, `task_graph`, `evidence_plan`, `acceptance_gates`. |
+| `GoalEvaluation` | `Evidence(source_type=goal_evaluation)` | The evaluator's retrospective: `outcome`, `what_worked`, `what_failed`, missing-infra/evidence, design/graph/dashboard feedback, reusable patterns, anti-patterns, follow-up tasks, proposed goals. |
+| `GoalCase` | `examples/goal-cases/<case-id>/` files | A sanitized, reusable teaching artifact distilled from a goal. The committed files remain the human artifact; the schema validates an optional `case.json` manifest. |
+| `Vision` | loose `vision_ref` / `vision_summary` fields | A long-lived target a `Goal` points to via `Goal.vision_id`; the next-goal proposal compares a `GoalEvaluation` against the linked `Vision`. |
+
+`Phase` is **not** an object: a phase is a `Task` with a `phase` label plus
+`parent_task_id`.
+
+### Closeout Gate
+
+A `Goal` may move to `complete` only when a closeout `Decision`
+(`decision_kind=closeout`) scoped to the goal with at least one backing
+`evidence_id` exists **and** a `GoalEvaluation` exists for the goal — or an
+explicit waiver `Decision` (`is_waiver=true`) names a follow-up task and backing
+evidence. This generalizes "a verdict must be backed by evidence, never activity
+alone". The gate is enforced by the CLI `goal close` command and surfaced in the
+`goal_learning_status` snapshot. The self-evaluation stop loop generalizes to a
+`Decision(decision_kind=stop_gate)` whose `decision` is `stop_approved` or
+`continue_required`; `Task.requires_human_approval` blocks auto-advance without
+encoding what "dangerous" means (that meaning is supplied by adapters/skills).
+
+### Open-Enum Vocabularies
+
+Useful but domain-flavored taxonomies are **open enums**: a canonical
+harness-owned set is modeled in Rust (an enum with an `Other(String)` fallback),
+the JSON Schema keeps the field as a free `string`, and adapters may supply
+extra values without a schema bump. The canonical sets are:
+
+| Field | Object | Canonical values |
+| --- | --- | --- |
+| `review_kind` | Review | `acceptance`, `correctness`, `safety`, `design`, `data_flow`, `docs`, `other` |
+| `verdict` | Review | `pass`, `fail`, `blocked`, `needs_changes` (let-me-try `keep`/`kill`/`refine` map to `pass`/`fail`/`needs_changes`) |
+| `decision` | Decision | `accept`, `reject`, `revise`, `split`, `block`, `promote`, `waive`, `follow_up`, `stop_approved`, `continue_required` |
+| `decision_kind` | Decision | `verdict`, `gate`, `stop_gate`, `waiver`, `closeout`, `promotion`, `other` |
+| `evidence_kind` | Evidence | `check`, `log`, `session`, `diff`, `review_note`, `screenshot`, `artifact`, `snapshot`, `goal_design`, `goal_evaluation`, `other` |
+| `category` | Gap | `ux`, `data`, `observability`, `parity`, `tooling`, `workflow`, `docs`, `bug`, `other` |
+| `outcome` | GoalEvaluation | `success`, `partial`, `failed`, `blocked` |
+
+Only truly closed, harness-owned sets use a hard JSON `enum`: `Gap.severity`
+(`p0`/`p1`/`p2`) and `Gap.status` (`open`/`in_progress`/`fixed`/`blocked`/
+`deferred`/`wontfix`). Harness core carries zero domain vocabulary; a domain
+label (for example a market or strategy name) lives in a free `*_detail` /
+`source_type` field or in an adapter tool descriptor, never in core.
+
 ## Agent Runtime And Provider Session
 
 `AgentRuntime` and `ProviderSession` connect durable members to external agent
@@ -193,9 +251,12 @@ workflow really happened.
 
 ## Anti-Drift Invariants
 
-These invariants should become CLI/API/CI checks as the implementation matures:
+These invariants should become CLI/API/CI checks as the implementation matures.
+Invariant 1 is now enforced by the `goal close` closeout gate (see the Closeout
+Gate section above); the rest remain documented targets:
 
-1. A goal cannot be closed without a decision and goal evaluation.
+1. A goal cannot be closed without a closeout decision (with evidence) and a
+   goal evaluation, or an explicit waiver — **enforced** by CLI `goal close`.
 2. A task cannot be considered assigned without a prior `Message(kind=task)`.
 3. A non-trivial worker claim cannot be accepted without a report message and
    evidence refs.
