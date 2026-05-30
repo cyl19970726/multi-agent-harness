@@ -537,6 +537,126 @@ pub struct Gap {
     pub updated_at: String,
 }
 
+/// Executable thesis for a Goal: the generic subset of let-me-try's strategy
+/// creation checklist. Graduates from `Evidence(source_type=goal_design)`; both
+/// representations coexist (dual-read by `goal_id`, no backfill).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GoalDesign {
+    pub id: String,
+    pub goal_id: String,
+    pub scenario_summary: String,
+    pub non_goals: Vec<String>,
+    pub risk_and_permission_boundaries: String,
+    pub required_infra: Vec<String>,
+    /// Team id or inline team description; nullable when not yet assigned.
+    pub agent_team: Option<String>,
+    /// Task ids forming the design's task graph.
+    pub task_graph: Vec<String>,
+    pub evidence_plan: Vec<String>,
+    pub acceptance_gates: Vec<String>,
+    pub created_at: String,
+}
+
+/// Outcome of a [`GoalEvaluation`]. Open enum: the canonical generic set is
+/// success/partial/failed/blocked, but an adapter may supply another value that
+/// round-trips through [`EvaluationOutcome::Other`] without a schema bump.
+///
+/// `#[serde(other)]` only supports unit variants and would discard the original
+/// string, so this uses `from`/`into` String conversions to preserve fidelity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Serialize, Deserialize)]
+#[serde(from = "String", into = "String")]
+pub enum EvaluationOutcome {
+    Success,
+    Partial,
+    Failed,
+    Blocked,
+    Other(String),
+}
+
+impl EvaluationOutcome {
+    pub fn as_str(&self) -> &str {
+        match self {
+            EvaluationOutcome::Success => "success",
+            EvaluationOutcome::Partial => "partial",
+            EvaluationOutcome::Failed => "failed",
+            EvaluationOutcome::Blocked => "blocked",
+            EvaluationOutcome::Other(value) => value,
+        }
+    }
+}
+
+impl From<String> for EvaluationOutcome {
+    fn from(value: String) -> Self {
+        match value.as_str() {
+            "success" => EvaluationOutcome::Success,
+            "partial" => EvaluationOutcome::Partial,
+            "failed" => EvaluationOutcome::Failed,
+            "blocked" => EvaluationOutcome::Blocked,
+            _ => EvaluationOutcome::Other(value),
+        }
+    }
+}
+
+impl From<EvaluationOutcome> for String {
+    fn from(value: EvaluationOutcome) -> Self {
+        value.as_str().to_string()
+    }
+}
+
+/// Retrospective for a Goal: what worked / failed, reusable patterns and
+/// anti-patterns, and the follow-up / proposed-goal pointers that feed the next
+/// round. Graduates from `Evidence(source_type=goal_evaluation)`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GoalEvaluation {
+    pub id: String,
+    pub goal_id: String,
+    pub evaluator_agent_id: String,
+    pub outcome: EvaluationOutcome,
+    pub what_worked: String,
+    pub what_failed: String,
+    pub missing_infra: Vec<String>,
+    pub missing_evidence: Vec<String>,
+    pub team_design_feedback: String,
+    pub task_graph_feedback: String,
+    pub dashboard_feedback: String,
+    pub reusable_patterns: Vec<String>,
+    pub anti_patterns: Vec<String>,
+    pub follow_up_task_ids: Vec<String>,
+    pub proposed_goal_ids: Vec<String>,
+    pub created_at: String,
+}
+
+/// Reusable teaching artifact distilled from a completed Goal. The human-facing
+/// files under `examples/goal-cases/<case-id>/` remain the artifact; this is the
+/// optional structured manifest over them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GoalCase {
+    pub case_id: String,
+    pub source_goal_id: String,
+    pub scenario_type: String,
+    pub project_adapter: Option<String>,
+    pub goal_design_ref: Option<String>,
+    pub evaluation_ref: Option<String>,
+    pub reusable_patterns: Vec<String>,
+    pub anti_patterns: Vec<String>,
+    pub follow_up_refs: Vec<String>,
+    pub tags: Vec<String>,
+    pub created_at: String,
+}
+
+/// A durable product vision a Goal can be scheduled against. The autonomous
+/// next-goal proposal compares a [`GoalEvaluation`] against the linked Vision;
+/// there is no NextRoundPlan object (a proposed goal stays Goal+Task+Message+Decision).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Vision {
+    pub id: String,
+    pub summary: String,
+    /// PRD / design-basis doc paths backing the vision.
+    pub source_refs: Vec<String>,
+    pub created_at: String,
+}
+
 pub trait Validate {
     fn validate(&self) -> Result<(), ValidationError>;
 }
@@ -690,6 +810,48 @@ impl Validate for Gap {
         require_non_empty(&self.summary, "Gap.summary")?;
         require_non_empty(&self.created_at, "Gap.created_at")?;
         require_non_empty(&self.updated_at, "Gap.updated_at")
+    }
+}
+
+impl Validate for GoalDesign {
+    fn validate(&self) -> Result<(), ValidationError> {
+        require_non_empty(&self.id, "GoalDesign.id")?;
+        require_non_empty(&self.goal_id, "GoalDesign.goal_id")?;
+        require_non_empty(&self.scenario_summary, "GoalDesign.scenario_summary")?;
+        require_non_empty(
+            &self.risk_and_permission_boundaries,
+            "GoalDesign.risk_and_permission_boundaries",
+        )?;
+        require_non_empty(&self.created_at, "GoalDesign.created_at")
+    }
+}
+
+impl Validate for GoalEvaluation {
+    fn validate(&self) -> Result<(), ValidationError> {
+        require_non_empty(&self.id, "GoalEvaluation.id")?;
+        require_non_empty(&self.goal_id, "GoalEvaluation.goal_id")?;
+        require_non_empty(&self.evaluator_agent_id, "GoalEvaluation.evaluator_agent_id")?;
+        require_non_empty(self.outcome.as_str(), "GoalEvaluation.outcome")?;
+        require_non_empty(&self.what_worked, "GoalEvaluation.what_worked")?;
+        require_non_empty(&self.what_failed, "GoalEvaluation.what_failed")?;
+        require_non_empty(&self.created_at, "GoalEvaluation.created_at")
+    }
+}
+
+impl Validate for GoalCase {
+    fn validate(&self) -> Result<(), ValidationError> {
+        require_non_empty(&self.case_id, "GoalCase.case_id")?;
+        require_non_empty(&self.source_goal_id, "GoalCase.source_goal_id")?;
+        require_non_empty(&self.scenario_type, "GoalCase.scenario_type")?;
+        require_non_empty(&self.created_at, "GoalCase.created_at")
+    }
+}
+
+impl Validate for Vision {
+    fn validate(&self) -> Result<(), ValidationError> {
+        require_non_empty(&self.id, "Vision.id")?;
+        require_non_empty(&self.summary, "Vision.summary")?;
+        require_non_empty(&self.created_at, "Vision.created_at")
     }
 }
 
@@ -871,6 +1033,115 @@ mod tests {
         assert!(parsed.validate().is_ok());
         assert!(json.contains("\"status\":\"in_progress\""));
         assert_eq!(parsed.severity, GapSeverity::P0);
+    }
+
+    #[test]
+    fn goal_design_round_trips_json() {
+        let design = GoalDesign {
+            id: "goal-design-1".to_string(),
+            goal_id: "goal-1".to_string(),
+            scenario_summary: "Render the learning layer on the dashboard.".to_string(),
+            non_goals: vec!["No backfill of legacy Evidence rows.".to_string()],
+            risk_and_permission_boundaries: "Read-only snapshot; no auto-merge.".to_string(),
+            required_infra: vec!["harness-store goal_designs.jsonl".to_string()],
+            agent_team: Some("team-1".to_string()),
+            task_graph: vec!["task-1".to_string(), "task-2".to_string()],
+            evidence_plan: vec!["screenshot of GoalDocument".to_string()],
+            acceptance_gates: vec!["cargo test green".to_string(), "pnpm check green".to_string()],
+            created_at: "2026-05-30T00:00:00Z".to_string(),
+        };
+
+        let json = serde_json::to_string(&design).expect("serialize goal design");
+        let parsed: GoalDesign = serde_json::from_str(&json).expect("deserialize goal design");
+
+        assert_eq!(parsed, design);
+        assert!(parsed.validate().is_ok());
+    }
+
+    #[test]
+    fn goal_evaluation_round_trips_json() {
+        let evaluation = GoalEvaluation {
+            id: "goal-eval-1".to_string(),
+            goal_id: "goal-1".to_string(),
+            evaluator_agent_id: "evaluator-1".to_string(),
+            outcome: EvaluationOutcome::Success,
+            what_worked: "Dual-read union surfaced both objects and legacy evidence.".to_string(),
+            what_failed: "Demo snapshot lagged the new keys until late.".to_string(),
+            missing_infra: vec![],
+            missing_evidence: vec!["load test".to_string()],
+            team_design_feedback: "Solo WP was sufficient.".to_string(),
+            task_graph_feedback: "Linear graph held.".to_string(),
+            dashboard_feedback: "GoalDocument now shows real sections.".to_string(),
+            reusable_patterns: vec!["additive-optional fields".to_string()],
+            anti_patterns: vec!["required new fields on existing objects".to_string()],
+            follow_up_task_ids: vec!["task-3".to_string()],
+            proposed_goal_ids: vec!["goal-2".to_string()],
+            created_at: "2026-05-30T00:00:00Z".to_string(),
+        };
+
+        let json = serde_json::to_string(&evaluation).expect("serialize goal evaluation");
+        let parsed: GoalEvaluation =
+            serde_json::from_str(&json).expect("deserialize goal evaluation");
+
+        assert_eq!(parsed, evaluation);
+        assert!(parsed.validate().is_ok());
+        assert!(json.contains("\"outcome\":\"success\""));
+    }
+
+    #[test]
+    fn evaluation_outcome_open_enum_round_trips_unknown_value() {
+        // An adapter-supplied outcome that is not in the canonical set must
+        // round-trip through EvaluationOutcome::Other without losing the string.
+        let outcome = EvaluationOutcome::Other("partially_blocked".to_string());
+        let json = serde_json::to_string(&outcome).expect("serialize outcome");
+        assert_eq!(json, "\"partially_blocked\"");
+
+        let parsed: EvaluationOutcome = serde_json::from_str(&json).expect("deserialize outcome");
+        assert_eq!(parsed, EvaluationOutcome::Other("partially_blocked".to_string()));
+
+        // A canonical value deserialized from the wire collapses to its named variant.
+        let canonical: EvaluationOutcome =
+            serde_json::from_str("\"partial\"").expect("deserialize canonical outcome");
+        assert_eq!(canonical, EvaluationOutcome::Partial);
+    }
+
+    #[test]
+    fn goal_case_round_trips_json() {
+        let case = GoalCase {
+            case_id: "goal-case-1".to_string(),
+            source_goal_id: "goal-1".to_string(),
+            scenario_type: "dashboard-rendering".to_string(),
+            project_adapter: None,
+            goal_design_ref: Some("goal-design-1".to_string()),
+            evaluation_ref: Some("goal-eval-1".to_string()),
+            reusable_patterns: vec!["additive-optional fields".to_string()],
+            anti_patterns: vec![],
+            follow_up_refs: vec!["task-3".to_string()],
+            tags: vec!["learning-layer".to_string()],
+            created_at: "2026-05-30T00:00:00Z".to_string(),
+        };
+
+        let json = serde_json::to_string(&case).expect("serialize goal case");
+        let parsed: GoalCase = serde_json::from_str(&json).expect("deserialize goal case");
+
+        assert_eq!(parsed, case);
+        assert!(parsed.validate().is_ok());
+    }
+
+    #[test]
+    fn vision_round_trips_json() {
+        let vision = Vision {
+            id: "vision-1".to_string(),
+            summary: "Generic harness object-model with a closed learning loop.".to_string(),
+            source_refs: vec!["docs/goal-learning-loop.md".to_string()],
+            created_at: "2026-05-30T00:00:00Z".to_string(),
+        };
+
+        let json = serde_json::to_string(&vision).expect("serialize vision");
+        let parsed: Vision = serde_json::from_str(&json).expect("deserialize vision");
+
+        assert_eq!(parsed, vision);
+        assert!(parsed.validate().is_ok());
     }
 
     #[test]

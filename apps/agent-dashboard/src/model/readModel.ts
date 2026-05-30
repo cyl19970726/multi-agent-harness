@@ -7,6 +7,9 @@ import type {
   Evidence,
   Gap,
   Goal,
+  GoalCase,
+  GoalDesign,
+  GoalEvaluation,
   Message,
   Proposal,
   ProviderChildThread,
@@ -14,6 +17,7 @@ import type {
   Review,
   Task,
   TaskStatus,
+  Vision,
   WorkflowWarning,
 } from "../types";
 import { deriveWarnings } from "./warnings";
@@ -71,6 +75,22 @@ export interface WorkbenchModel {
   gapsByGoal: Map<string, Gap[]>;
   /** Gaps grouped by severity (p0/p1/p2/other). */
   gapsBySeverity: Map<string, Gap[]>;
+  /** GoalDesign objects grouped by goal_id (dual-read: top-level + goal_learning_status). */
+  goalDesignByGoal: Map<string, GoalDesign[]>;
+  /** GoalEvaluation objects grouped by goal_id. */
+  goalEvaluationByGoal: Map<string, GoalEvaluation[]>;
+  /** All GoalCase objects (graduated teaching artifacts). */
+  goalCases: GoalCase[];
+  /** All Vision objects. */
+  visions: Vision[];
+  /** GoalDesign objects for the selected goal. */
+  goalDesignsForGoal: GoalDesign[];
+  /** GoalEvaluation objects for the selected goal. */
+  goalEvaluationsForGoal: GoalEvaluation[];
+  /** GoalCase objects sourced from the selected goal. */
+  goalCasesForGoal: GoalCase[];
+  /** The Vision linked to the selected goal via Goal.vision_id, if any. */
+  visionForGoal?: Vision;
   warnings: WorkflowWarning[];
   selectedMemberMessages: Message[];
   selectedMemberTimeline: TimelineItem[];
@@ -171,6 +191,44 @@ export function buildWorkbenchModel(snapshot: DashboardSnapshot, selection: Sele
   const gapsByGoal = groupBy(gaps, (gap) => gap.goal_id ?? "");
   const gapsBySeverity = groupBy(gaps, (gap) => gap.severity ?? "other");
 
+  // Dual-read: union the top-level snapshot arrays with the graduated objects
+  // surfaced inside goal_learning_status (deduped by id), so the GoalDocument
+  // renders whichever path the backend wrote.
+  const learningStatus = snapshot.goal_learning_status ?? [];
+  const goalDesigns = dedupeById(
+    [
+      ...(snapshot.goal_designs ?? []),
+      ...learningStatus.flatMap((status) => status.goal_design_objects ?? []),
+    ],
+    (design) => design.id,
+  );
+  const goalEvaluations = dedupeById(
+    [
+      ...(snapshot.goal_evaluations ?? []),
+      ...learningStatus.flatMap((status) => status.goal_evaluation_objects ?? []),
+    ],
+    (evaluation) => evaluation.id,
+  );
+  const goalCases = dedupeById(
+    [
+      ...(snapshot.goal_cases ?? []),
+      ...learningStatus.flatMap((status) => status.goal_case_objects ?? []),
+    ],
+    (goalCase) => goalCase.case_id,
+  );
+  const visions = snapshot.visions ?? [];
+  const goalDesignByGoal = groupBy(goalDesigns, (design) => design.goal_id ?? "");
+  const goalEvaluationByGoal = groupBy(goalEvaluations, (evaluation) => evaluation.goal_id ?? "");
+  const goalDesignsForGoal = selectedGoal ? (goalDesignByGoal.get(selectedGoal.id) ?? []) : [];
+  const goalEvaluationsForGoal = selectedGoal ? (goalEvaluationByGoal.get(selectedGoal.id) ?? []) : [];
+  const goalCasesForGoal = selectedGoal
+    ? goalCases.filter((goalCase) => goalCase.source_goal_id === selectedGoal.id)
+    : [];
+  const visionForGoal =
+    selectedGoal?.vision_id != null
+      ? visions.find((vision) => vision.id === selectedGoal.vision_id)
+      : undefined;
+
   return {
     snapshot,
     selectedGoal,
@@ -197,6 +255,14 @@ export function buildWorkbenchModel(snapshot: DashboardSnapshot, selection: Sele
     gaps,
     gapsByGoal,
     gapsBySeverity,
+    goalDesignByGoal,
+    goalEvaluationByGoal,
+    goalCases,
+    visions,
+    goalDesignsForGoal,
+    goalEvaluationsForGoal,
+    goalCasesForGoal,
+    visionForGoal,
     warnings,
     selectedMemberMessages,
     selectedMemberTimeline: selectedMember
@@ -267,6 +333,19 @@ function sortGaps(gaps: Gap[]): Gap[] {
     if (resolvedDelta !== 0) return resolvedDelta;
     return (b.updated_at ?? "").localeCompare(a.updated_at ?? "");
   });
+}
+
+/** Keep the first occurrence per id (top-level snapshot wins over learning-status). */
+function dedupeById<T>(items: T[], key: (item: T) => string): T[] {
+  const seen = new Set<string>();
+  const result: T[] = [];
+  for (const item of items) {
+    const k = key(item);
+    if (seen.has(k)) continue;
+    seen.add(k);
+    result.push(item);
+  }
+  return result;
 }
 
 function groupBy<T>(items: T[], key: (item: T) => string): Map<string, T[]> {

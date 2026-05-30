@@ -17,6 +17,8 @@ export const demoSnapshot: DashboardSnapshot = {
         "Desktop, tablet, and mobile screenshots pass PM/User review.",
       ],
       priority: "P0",
+      vision_id: "vision-self-hosting-workbench",
+      goal_design_id: "goal-design-workbench-rebuild",
       created_at: "2026-05-27T09:00:00.000Z",
       updated_at: "2026-05-29T09:45:00.000Z",
     },
@@ -452,6 +454,101 @@ export const demoSnapshot: DashboardSnapshot = {
       updated_at: "2026-05-29T08:00:00.000Z",
     },
   ],
+  goal_designs: [
+    {
+      id: "goal-design-workbench-rebuild",
+      goal_id: "goal-workbench-rebuild",
+      scenario_summary:
+        "Rebuild the dashboard as a multi-agent collaboration workbench whose Team, Goal, and Task surfaces each prove assignment, evidence, review, decision, and evaluation.",
+      non_goals: [
+        "No reuse of the rejected card-dump shell.",
+        "No backfill of legacy Evidence-carried learning artifacts.",
+      ],
+      risk_and_permission_boundaries:
+        "Read-only dashboard rendering; no autonomous merges and no live runtime mutation from the UI.",
+      required_infra: [
+        "dashboard snapshot exposes goal_designs/goal_evaluations/goal_cases/visions",
+        "page-local layout contracts for ten core pages",
+      ],
+      agent_team: "team-self-hosting",
+      task_graph: [
+        "task-architecture-decision",
+        "task-page-contracts",
+        "task-shell-rebuild",
+        "task-critic-screenshot",
+      ],
+      evidence_plan: [
+        "Desktop/tablet/mobile screenshot matrix against page-local contracts.",
+        "Critic review with verdict and residual risk.",
+      ],
+      acceptance_gates: [
+        "PM and User browser acceptance pass with no open P0/P1 findings.",
+        "Goal close requires a closeout Decision and a GoalEvaluation.",
+      ],
+      created_at: "2026-05-27T09:30:00.000Z",
+    },
+  ],
+  goal_evaluations: [
+    {
+      id: "goal-evaluation-workbench-rebuild",
+      goal_id: "goal-workbench-rebuild",
+      evaluator_agent_id: "agent-critic",
+      outcome: "partial",
+      what_worked:
+        "Page-local layout contracts gave the implementer an unambiguous target; the proof-document framing made assignment and evidence legible.",
+      what_failed:
+        "Structured reviews and the learning layer were not surfaced in the first shell pass, so the Goal surface showed counts instead of real sections.",
+      missing_infra: ["Browser acceptance automation for the screenshot matrix."],
+      missing_evidence: ["PM/User acceptance screenshots for the rebuilt shell."],
+      team_design_feedback:
+        "A standing self-hosting team with a dedicated critic and PM/User acceptance roles held up well.",
+      task_graph_feedback:
+        "Linear architecture → contracts → shell → critic graph was sufficient; acceptance fan-out at the end was correct.",
+      dashboard_feedback:
+        "GoalDocument now renders GoalDesign scenario/non-goals/acceptance-gates and GoalEvaluation what-worked/failed as real sections.",
+      reusable_patterns: [
+        "Additive-optional schema fields keep old JSONL valid.",
+        "Dual-read union (objects + legacy evidence) avoids backfill.",
+      ],
+      anti_patterns: [
+        "Rendering learning artifacts as counts-only.",
+        "Adding required fields to existing objects.",
+      ],
+      follow_up_task_ids: ["task-pm-acceptance", "task-user-acceptance"],
+      proposed_goal_ids: ["goal-live-members"],
+      created_at: "2026-05-29T09:50:00.000Z",
+    },
+  ],
+  goal_cases: [
+    {
+      case_id: "goal-case-workbench-rebuild",
+      source_goal_id: "goal-workbench-rebuild",
+      scenario_type: "frontend-rebuild-from-contracts",
+      project_adapter: null,
+      goal_design_ref: "goal-design-workbench-rebuild",
+      evaluation_ref: "goal-evaluation-workbench-rebuild",
+      reusable_patterns: [
+        "Page-local layout contracts as the implementer's target.",
+        "Proof-document surfaces (assignment→evidence→review→decision→evaluation).",
+      ],
+      anti_patterns: ["Counts-only rendering of structured artifacts."],
+      follow_up_refs: ["goal-live-members"],
+      tags: ["frontend", "learning-layer", "self-hosting"],
+      created_at: "2026-05-29T10:00:00.000Z",
+    },
+  ],
+  visions: [
+    {
+      id: "vision-self-hosting-workbench",
+      summary:
+        "A generic multi-agent harness whose own dashboard is the reference workbench: every goal carries a design, evaluation, and reusable case that feed the next round.",
+      source_refs: [
+        "docs/dashboard/frontend-design.md",
+        "docs/goal-learning-loop.md",
+      ],
+      created_at: "2026-05-27T08:00:00.000Z",
+    },
+  ],
   provider_sessions: [
     {
       id: "session-worker-1",
@@ -509,6 +606,24 @@ export const demoSnapshot: DashboardSnapshot = {
       goal_design: [{ source_ref: "docs/dashboard/frontend-design.md" }],
       goal_evaluation: [],
       goal_cases: [],
+      goal_design_objects: [
+        {
+          id: "goal-design-workbench-rebuild",
+          goal_id: "goal-workbench-rebuild",
+        },
+      ],
+      goal_evaluation_objects: [
+        {
+          id: "goal-evaluation-workbench-rebuild",
+          goal_id: "goal-workbench-rebuild",
+        },
+      ],
+      goal_case_objects: [
+        {
+          case_id: "goal-case-workbench-rebuild",
+          source_goal_id: "goal-workbench-rebuild",
+        },
+      ],
       follow_up_tasks: [],
       member_reports: [],
       decisions: [{ id: "decision-stack" }],
