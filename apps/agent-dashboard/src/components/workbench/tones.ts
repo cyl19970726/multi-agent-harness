@@ -54,6 +54,21 @@ export function goalTone(status?: string | null): StatusTone {
   }
 }
 
+/** Map a Review.verdict (open enum) to a status tone. */
+export function reviewVerdictTone(verdict?: string | null): StatusTone {
+  switch ((verdict ?? "").toLowerCase()) {
+    case "pass":
+      return "good";
+    case "fail":
+    case "blocked":
+      return "bad";
+    case "needs_changes":
+      return "warn";
+    default:
+      return "info";
+  }
+}
+
 /** Map a warning severity to a status tone. */
 export function severityTone(severity?: "high" | "medium" | "low"): StatusTone {
   return severity === "high" ? "bad" : severity === "medium" ? "warn" : "info";

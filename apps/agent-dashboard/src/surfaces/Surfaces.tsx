@@ -14,6 +14,7 @@ import {
   MessageSquare,
   Scale,
   Send,
+  ShieldAlert,
   ShieldCheck,
   Target,
   User,
@@ -45,13 +46,14 @@ import { Avatar } from "@/components/workbench/Avatar";
 import {
   goalTone,
   memberTone,
+  reviewVerdictTone,
   severityTone,
   taskTone,
   timelineTone,
 } from "@/components/workbench/tones";
 
 import { memberName, taskTitle, type WorkbenchModel } from "../model/readModel";
-import type { Goal, Task, WorkflowWarning } from "../types";
+import type { Goal, Review, Task, WorkflowWarning } from "../types";
 import type { SelectionState } from "../app/selection";
 
 interface SurfaceProps {
@@ -821,6 +823,7 @@ export function TaskDocument({ model, onSelectionChange, actionsEnabled, onActio
   const evidence = model.evidence.filter((item) => item.task_id === task.id);
   const proposals = model.proposals.filter((item) => item.task_id === task.id);
   const decision = model.decisions.find((item) => item.task_id === task.id);
+  const reviews = model.reviewsForTask;
   const sessions = (model.snapshot.provider_sessions ?? []).filter(
     (s) => s.task_id === task.id,
   );
@@ -919,8 +922,26 @@ export function TaskDocument({ model, onSelectionChange, actionsEnabled, onActio
                 detail={`${messages.filter((m) => m.kind === "report").length} report(s)`}
               />
               <ProofRow ok={evidence.length > 0} label="Evidence" detail={`${evidence.length} item(s)`} />
+              <ProofRow
+                ok={reviews.length > 0}
+                label="Evaluator review"
+                detail={reviews.length ? `${reviews.length} review(s)` : "no structured review"}
+              />
               <ProofRow ok={Boolean(decision)} label="Leader decision" detail={decision?.decision ?? "missing"} />
             </div>
+          </Section>
+
+          <Section
+            kicker="Structured evaluator output · pass/fail/blocked/needs_changes"
+            title="Reviews"
+            action={
+              <Badge tone={reviews.some((r) => ["fail", "blocked"].includes((r.verdict ?? "").toLowerCase())) ? "bad" : reviews.length ? "good" : "muted"}>
+                {reviews.length}
+              </Badge>
+            }
+            className="rise"
+          >
+            <ReviewList reviews={reviews} />
           </Section>
 
           <Section kicker="Acceptance" title="Decision & rationale" className="rise">
@@ -1125,6 +1146,111 @@ function ProofRow({ ok, label, detail }: { ok: boolean; label: string; detail: s
       <span className="ml-auto text-[11px] text-muted-foreground">{detail}</span>
     </div>
   );
+}
+
+/** Bullet list of short strings used inside a Review card (blockers / missing validation). */
+function ReviewBullets({
+  label,
+  items,
+  tone,
+}: {
+  label: string;
+  items?: string[];
+  tone: "bad" | "warn";
+}) {
+  if (!items?.length) return null;
+  return (
+    <div>
+      <p className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+        {label}
+      </p>
+      <ul className="space-y-1">
+        {items.map((item, index) => (
+          <li key={index} className="flex items-start gap-1.5 text-xs text-foreground/90">
+            <AlertTriangle
+              className={cn(
+                "mt-0.5 size-3 shrink-0",
+                tone === "bad" ? "text-status-bad" : "text-status-warn",
+              )}
+            />
+            <span>{item}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+/**
+ * Structured evaluator output. Today reviews are unstructured report messages;
+ * this renders the Review object's verdict, blockers, residual risk and missing
+ * validation so the evaluation is legible without reading raw JSON.
+ */
+function ReviewList({ reviews }: { reviews: Review[] }) {
+  if (!reviews.length) {
+    return (
+      <EmptyState
+        icon={ShieldAlert}
+        title="No structured reviews yet"
+        description="Evaluator/critic verdicts (pass/fail/blocked/needs_changes) will appear here once recorded."
+      />
+    );
+  }
+  return (
+    <div className="divide-y divide-border/60">
+      {reviews.map((review) => {
+        const verdict = review.verdict ?? "unknown";
+        const verdictIsBad = ["fail", "blocked"].includes(verdict.toLowerCase());
+        return (
+          <div key={review.id} className="space-y-2.5 px-4 py-3">
+            <div className="flex flex-wrap items-center gap-2">
+              {verdictIsBad ? (
+                <ShieldAlert className="size-4 shrink-0 text-status-bad" />
+              ) : (
+                <ShieldCheck className="size-4 shrink-0 text-status-good" />
+              )}
+              <Badge tone={reviewVerdictTone(verdict)}>{verdict}</Badge>
+              {review.review_kind && <Badge tone="muted">{review.review_kind}</Badge>}
+              <span className="ml-auto text-[11px] text-muted-foreground">
+                {memberShort(review.reviewer_agent_id)}
+              </span>
+            </div>
+            <p className="text-[13px] leading-relaxed text-foreground/90">
+              {review.summary ?? "No summary recorded."}
+            </p>
+            <ReviewBullets label="Blockers" items={review.blockers} tone="bad" />
+            <ReviewBullets
+              label="Missing validation"
+              items={review.missing_validation}
+              tone="warn"
+            />
+            {review.residual_risk && (
+              <div>
+                <p className="mb-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                  Residual risk
+                </p>
+                <p className="text-xs text-foreground/80">{review.residual_risk}</p>
+              </div>
+            )}
+            {Boolean(review.evidence_ids?.length) && (
+              <div className="flex flex-wrap gap-1.5">
+                {review.evidence_ids!.map((id) => (
+                  <Badge key={id} tone="muted">
+                    <MonoId>{id}</MonoId>
+                  </Badge>
+                ))}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function memberShort(id?: string | null): string {
+  if (!id) return "unknown reviewer";
+  return id.replace(/^agent-/, "");
 }
 
 /* ------------------------------------------------------------------ */

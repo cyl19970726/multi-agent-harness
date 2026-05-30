@@ -189,6 +189,22 @@ export interface Decision {
   follow_up_task_id?: string | null;
 }
 
+export interface Review {
+  id: string;
+  task_id?: string | null;
+  goal_id?: string | null;
+  reviewer_agent_id?: string;
+  review_kind?: string;
+  /** Open enum: pass/fail/blocked/needs_changes, or an adapter-supplied value. */
+  verdict?: string;
+  summary?: string;
+  blockers?: string[];
+  residual_risk?: string | null;
+  missing_validation?: string[];
+  evidence_ids?: string[];
+  created_at?: string;
+}
+
 export interface AutonomousProposal {
   id: string;
   kind?: string;
@@ -236,6 +252,7 @@ export interface DashboardSnapshot {
   autonomous_proposals?: AutonomousProposal[];
   evidence?: Evidence[];
   decisions?: Decision[];
+  reviews?: Review[];
   provider_sessions?: ProviderSession[];
   provider_child_threads?: ProviderChildThread[];
   goal_learning_status?: GoalLearningStatus[];

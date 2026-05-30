@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use harness_core::{
     AgentEvent, AgentMember, AgentRuntime, AgentTeam, Decision, Evidence, Goal, Message,
     MessageDelivery, MessageDeliveryStatus, MessageTerminalSource, Proposal, ProviderChildThread,
-    ProviderSession, ProviderSessionStatus, Task,
+    ProviderSession, ProviderSessionStatus, Review, Task,
 };
 use serde::{de::DeserializeOwned, Serialize};
 use thiserror::Error;
@@ -102,6 +102,10 @@ impl HarnessStore {
         self.append_jsonl("decisions.jsonl", value)
     }
 
+    pub fn append_review(&self, value: &Review) -> StoreResult<()> {
+        self.append_jsonl("reviews.jsonl", value)
+    }
+
     pub fn append_provider_session(&self, value: &ProviderSession) -> StoreResult<()> {
         self.append_jsonl("provider_sessions.jsonl", value)
     }
@@ -193,6 +197,10 @@ impl HarnessStore {
 
     pub fn decisions(&self) -> StoreResult<Vec<Decision>> {
         self.read_jsonl("decisions.jsonl")
+    }
+
+    pub fn reviews(&self) -> StoreResult<Vec<Review>> {
+        self.read_jsonl("reviews.jsonl")
     }
 
     pub fn provider_sessions(&self) -> StoreResult<Vec<ProviderSession>> {

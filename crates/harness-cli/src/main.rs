@@ -15,7 +15,8 @@ use harness_core::{
     AgentRuntimeHealth, AgentRuntimeStatus, AgentTeam, AgentTeamStatus, Decision, Evidence, Goal,
     GoalStatus, Message, MessageDelivery, MessageDeliveryStatus, MessageKind,
     MessageTerminalSource, Proposal, ProposalStatus, ProviderChildThread,
-    ProviderChildThreadStatus, ProviderSession, ProviderSessionStatus, Task, TaskStatus,
+    ProviderChildThreadStatus, ProviderSession, ProviderSessionStatus, Review, ReviewVerdict, Task,
+    TaskStatus,
 };
 use harness_store::{HarnessStore, MessageDeliveryClaimResult};
 use thiserror::Error;
@@ -1664,11 +1665,43 @@ fn git_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
 }
 
 fn review_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    require_subcommand(args, "review gate")?;
+    require_subcommand(args, "review create|list|gate")?;
     match args[0].as_str() {
+        "create" => review_create(store, &args[1..]),
+        "list" => {
+            print_json(&store.reviews()?)?;
+            Ok(())
+        }
         "gate" => review_gate(store, args),
         other => Err(CliError::Usage(format!("unknown review command: {other}"))),
     }
+}
+
+fn review_create(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    let task_id = value(args, "--task");
+    let goal_id = value(args, "--goal");
+    if task_id.is_none() && goal_id.is_none() {
+        return Err(CliError::Usage(
+            "review create requires --task or --goal".into(),
+        ));
+    }
+    let review = Review {
+        id: value(args, "--id").unwrap_or_else(|| generated_id("review")),
+        task_id,
+        goal_id,
+        reviewer_agent_id: required(args, "--reviewer")?,
+        review_kind: required(args, "--kind")?,
+        verdict: ReviewVerdict::from(required(args, "--verdict")?),
+        summary: required(args, "--summary")?,
+        blockers: many(args, "--blocker"),
+        residual_risk: value(args, "--residual-risk"),
+        missing_validation: many(args, "--missing-validation"),
+        evidence_ids: many(args, "--evidence"),
+        created_at: now_string(),
+    };
+    store.append_review(&review)?;
+    print_json(&review)?;
+    Ok(())
 }
 
 fn dashboard_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
@@ -5098,6 +5131,7 @@ struct GoalLearningStatus {
     assignment_messages: Vec<Message>,
     member_reports: Vec<Message>,
     critic_outputs: Vec<Evidence>,
+    reviews: Vec<Review>,
     decisions: Vec<Decision>,
     waivers: Vec<Decision>,
     event_order: GoalLearningEventOrder,
@@ -5124,6 +5158,7 @@ impl GoalLearningStatus {
             "assignment_messages": &self.assignment_messages,
             "member_reports": &self.member_reports,
             "critic_outputs": &self.critic_outputs,
+            "reviews": &self.reviews,
             "decisions": &self.decisions,
             "waivers": &self.waivers,
             "event_order": {
@@ -5363,6 +5398,16 @@ fn goal_learning_status(store: &HarnessStore, goal_id: &str) -> CliResult<GoalLe
         .filter(|decision| is_goal_learning_waiver_decision(decision))
         .cloned()
         .collect();
+    let reviews: Vec<_> = latest_reviews_in_append_order(store)?
+        .into_iter()
+        .filter(|review| {
+            review.goal_id.as_deref() == Some(goal_id)
+                || review
+                    .task_id
+                    .as_ref()
+                    .is_some_and(|task_id| task_ids.contains(task_id))
+        })
+        .collect();
 
     let event_order = GoalLearningEventOrder {
         design_before_assignment: compare_first(
@@ -5397,6 +5442,7 @@ fn goal_learning_status(store: &HarnessStore, goal_id: &str) -> CliResult<GoalLe
         assignment_messages,
         member_reports,
         critic_outputs,
+        reviews,
         decisions,
         waivers,
         event_order,
@@ -5957,6 +6003,7 @@ fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::Value> {
     let events = store.events()?;
     let evidence = store.evidence()?;
     let decisions = store.decisions()?;
+    let reviews = latest_reviews_in_append_order(store)?;
     let sessions = latest_provider_sessions_in_append_order(store)?;
     let provider_child_threads = store.provider_child_threads()?;
     let autonomous_proposals =
@@ -6045,6 +6092,7 @@ fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::Value> {
         "autonomous_proposals": autonomous_proposals,
         "evidence": evidence,
         "decisions": decisions,
+        "reviews": reviews,
         "provider_sessions": sessions,
         "provider_child_threads": provider_child_threads
     }))
@@ -6206,6 +6254,20 @@ fn latest_messages_in_append_order(store: &HarnessStore) -> CliResult<Vec<Messag
     Ok(message_ids
         .into_iter()
         .filter_map(|id| messages_by_id.remove(&id))
+        .collect())
+}
+
+fn latest_reviews_in_append_order(store: &HarnessStore) -> CliResult<Vec<Review>> {
+    let mut review_ids = Vec::new();
+    let mut reviews_by_id = BTreeMap::new();
+    for review in store.reviews()? {
+        review_ids.retain(|id| id != &review.id);
+        review_ids.push(review.id.clone());
+        reviews_by_id.insert(review.id.clone(), review);
+    }
+    Ok(review_ids
+        .into_iter()
+        .filter_map(|id| reviews_by_id.remove(&id))
         .collect())
 }
 
@@ -8440,6 +8502,68 @@ mod tests {
         ]);
         let error = review_gate(&store, &args).expect_err("missing evaluation must block");
         assert!(error.to_string().contains("goal_evaluation"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn review_create_persists_structured_verdict() {
+        let root = std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("store")));
+        let store = HarnessStore::new(&root);
+
+        let args = strings(&[
+            "create",
+            "--id",
+            "review-1",
+            "--task",
+            "task-1",
+            "--goal",
+            "goal-1",
+            "--reviewer",
+            "critic",
+            "--kind",
+            "acceptance",
+            "--verdict",
+            "pass",
+            "--summary",
+            "Acceptance gates met.",
+            "--blocker",
+            "none",
+            "--missing-validation",
+            "load test deferred",
+            "--evidence",
+            "ev-1",
+        ]);
+        review_command(&store, &args).expect("create review");
+
+        let reviews = store.reviews().expect("read reviews");
+        assert_eq!(reviews.len(), 1);
+        let review = &reviews[0];
+        assert_eq!(review.id, "review-1");
+        assert_eq!(review.verdict, ReviewVerdict::Pass);
+        assert_eq!(review.task_id.as_deref(), Some("task-1"));
+        assert_eq!(review.goal_id.as_deref(), Some("goal-1"));
+        assert_eq!(review.evidence_ids, vec!["ev-1".to_string()]);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn review_create_requires_task_or_goal() {
+        let root = std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("store")));
+        let store = HarnessStore::new(&root);
+
+        let args = strings(&[
+            "create",
+            "--reviewer",
+            "critic",
+            "--kind",
+            "acceptance",
+            "--verdict",
+            "pass",
+            "--summary",
+            "Detached review.",
+        ]);
+        let error = review_command(&store, &args).expect_err("review without scope must fail");
+        assert!(error.to_string().contains("--task or --goal"));
         let _ = std::fs::remove_dir_all(root);
     }
 

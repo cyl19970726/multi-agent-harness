@@ -10,6 +10,7 @@ import type {
   Proposal,
   ProviderChildThread,
   ProviderSession,
+  Review,
   Task,
   TaskStatus,
   WorkflowWarning,
@@ -58,6 +59,11 @@ export interface WorkbenchModel {
   evidence: Evidence[];
   proposals: Proposal[];
   decisions: Decision[];
+  reviews: Review[];
+  /** Reviews scoped to the selected task (task_id match). */
+  reviewsForTask: Review[];
+  /** Reviews scoped to the selected goal (goal_id match, or via the goal's tasks). */
+  reviewsForGoal: Review[];
   warnings: WorkflowWarning[];
   selectedMemberMessages: Message[];
   selectedMemberTimeline: TimelineItem[];
@@ -119,6 +125,7 @@ export function buildWorkbenchModel(snapshot: DashboardSnapshot, selection: Sele
   const evidence = snapshot.evidence ?? [];
   const proposals = snapshot.proposals ?? [];
   const decisions = snapshot.decisions ?? [];
+  const reviews = snapshot.reviews ?? [];
   const warnings = deriveWarnings(snapshot);
 
   const selectedGoal = goals.find((goal) => goal.id === selection.goalId) ?? goals.find((goal) => goal.status === "active") ?? goals[0];
@@ -141,6 +148,18 @@ export function buildWorkbenchModel(snapshot: DashboardSnapshot, selection: Sele
     ? messages.filter((message) => message.from_agent_id === selectedMember.id || message.to_agent_id === selectedMember.id)
     : [];
 
+  const reviewsForTask = selectedTask
+    ? reviews.filter((review) => review.task_id === selectedTask.id)
+    : [];
+  const goalTaskIds = new Set(goalTasks.map((task) => task.id));
+  const reviewsForGoal = selectedGoal
+    ? reviews.filter(
+        (review) =>
+          review.goal_id === selectedGoal.id ||
+          (review.task_id != null && goalTaskIds.has(review.task_id)),
+      )
+    : [];
+
   return {
     snapshot,
     selectedGoal,
@@ -161,6 +180,9 @@ export function buildWorkbenchModel(snapshot: DashboardSnapshot, selection: Sele
     evidence,
     proposals,
     decisions,
+    reviews,
+    reviewsForTask,
+    reviewsForGoal,
     warnings,
     selectedMemberMessages,
     selectedMemberTimeline: selectedMember
