@@ -489,6 +489,54 @@ pub struct Review {
     pub created_at: String,
 }
 
+/// Severity of a [`Gap`]. Truly-closed, harness-owned set (matches the GAP
+/// ledger P0/P1/P2 convention), so it is a hard enum on both wire and schema.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GapSeverity {
+    P0,
+    P1,
+    P2,
+}
+
+/// Lifecycle status of a [`Gap`]. Unifies the GAP checkbox state and the bug
+/// ledger state machine into one closed, harness-owned set.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GapStatus {
+    Open,
+    InProgress,
+    Fixed,
+    Blocked,
+    Deferred,
+    Wontfix,
+}
+
+/// A first-class Gap ledger entry, absorbing the bug ledger: a Bug is simply a
+/// Gap with `category = "bug"` (plus the optional `repro_ref`/`closing_test_ref`).
+///
+/// `category` is an open enum (free string): the canonical generic dimensions are
+/// ux/data/observability/parity/tooling/workflow/docs/bug/other, but an adapter may
+/// keep a domain-flavored category here without a schema bump. `severity` and
+/// `status` are closed harness-owned enums.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Gap {
+    pub id: String,
+    pub goal_id: Option<String>,
+    pub task_id: Option<String>,
+    pub category: String,
+    pub severity: GapSeverity,
+    pub status: GapStatus,
+    pub summary: String,
+    pub evidence_ids: Vec<String>,
+    pub next_step: Option<String>,
+    pub owner_agent_id: Option<String>,
+    pub repro_ref: Option<String>,
+    pub closing_test_ref: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
 pub trait Validate {
     fn validate(&self) -> Result<(), ValidationError>;
 }
@@ -635,6 +683,16 @@ impl Validate for Review {
     }
 }
 
+impl Validate for Gap {
+    fn validate(&self) -> Result<(), ValidationError> {
+        require_non_empty(&self.id, "Gap.id")?;
+        require_non_empty(&self.category, "Gap.category")?;
+        require_non_empty(&self.summary, "Gap.summary")?;
+        require_non_empty(&self.created_at, "Gap.created_at")?;
+        require_non_empty(&self.updated_at, "Gap.updated_at")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -754,6 +812,65 @@ mod tests {
             serde_json::from_str(&json.replace("conditional_pass", "needs_changes"))
                 .expect("deserialize canonical verdict");
         assert_eq!(canonical.verdict, ReviewVerdict::NeedsChanges);
+    }
+
+    #[test]
+    fn gap_round_trips_json() {
+        let gap = Gap {
+            id: "gap-1".to_string(),
+            goal_id: Some("goal-1".to_string()),
+            task_id: None,
+            category: "observability".to_string(),
+            severity: GapSeverity::P1,
+            status: GapStatus::Open,
+            summary: "Dashboard does not surface open reviews per task.".to_string(),
+            evidence_ids: vec!["evidence-1".to_string()],
+            next_step: Some("Wire reviewsByTask into the task surface.".to_string()),
+            owner_agent_id: Some("worker-1".to_string()),
+            repro_ref: None,
+            closing_test_ref: None,
+            created_at: "2026-05-26T00:00:00Z".to_string(),
+            updated_at: "2026-05-26T00:00:00Z".to_string(),
+        };
+
+        let json = serde_json::to_string(&gap).expect("serialize gap");
+        let parsed: Gap = serde_json::from_str(&json).expect("deserialize gap");
+
+        assert_eq!(parsed, gap);
+        assert!(parsed.validate().is_ok());
+        // Closed severity/status enums serialize to their snake_case wire values.
+        assert!(json.contains("\"severity\":\"p1\""));
+        assert!(json.contains("\"status\":\"open\""));
+    }
+
+    #[test]
+    fn gap_bug_round_trips_with_bug_fields() {
+        // A Bug is a Gap with category="bug" carrying the optional repro/closing-test
+        // refs; no separate Bug object exists.
+        let bug = Gap {
+            id: "gap-bug-1".to_string(),
+            goal_id: None,
+            task_id: Some("task-1".to_string()),
+            category: "bug".to_string(),
+            severity: GapSeverity::P0,
+            status: GapStatus::InProgress,
+            summary: "Snapshot serialization drops the new gaps key.".to_string(),
+            evidence_ids: vec![],
+            next_step: None,
+            owner_agent_id: Some("worker-2".to_string()),
+            repro_ref: Some("artifacts/repro-1.log".to_string()),
+            closing_test_ref: Some("crates/harness-cli/src/main.rs::snapshot_test".to_string()),
+            created_at: "2026-05-26T00:00:00Z".to_string(),
+            updated_at: "2026-05-26T01:00:00Z".to_string(),
+        };
+
+        let json = serde_json::to_string(&bug).expect("serialize bug gap");
+        let parsed: Gap = serde_json::from_str(&json).expect("deserialize bug gap");
+
+        assert_eq!(parsed, bug);
+        assert!(parsed.validate().is_ok());
+        assert!(json.contains("\"status\":\"in_progress\""));
+        assert_eq!(parsed.severity, GapSeverity::P0);
     }
 
     #[test]

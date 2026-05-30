@@ -5,6 +5,7 @@ import type {
   DashboardSnapshot,
   Decision,
   Evidence,
+  Gap,
   Goal,
   Message,
   Proposal,
@@ -64,6 +65,12 @@ export interface WorkbenchModel {
   reviewsForTask: Review[];
   /** Reviews scoped to the selected goal (goal_id match, or via the goal's tasks). */
   reviewsForGoal: Review[];
+  /** All gaps, sorted by severity (p0→p2) then unresolved-first. */
+  gaps: Gap[];
+  /** Gaps grouped by goal_id (null/undefined goal collapses to ""). */
+  gapsByGoal: Map<string, Gap[]>;
+  /** Gaps grouped by severity (p0/p1/p2/other). */
+  gapsBySeverity: Map<string, Gap[]>;
   warnings: WorkflowWarning[];
   selectedMemberMessages: Message[];
   selectedMemberTimeline: TimelineItem[];
@@ -160,6 +167,10 @@ export function buildWorkbenchModel(snapshot: DashboardSnapshot, selection: Sele
       )
     : [];
 
+  const gaps = sortGaps(snapshot.gaps ?? []);
+  const gapsByGoal = groupBy(gaps, (gap) => gap.goal_id ?? "");
+  const gapsBySeverity = groupBy(gaps, (gap) => gap.severity ?? "other");
+
   return {
     snapshot,
     selectedGoal,
@@ -183,6 +194,9 @@ export function buildWorkbenchModel(snapshot: DashboardSnapshot, selection: Sele
     reviews,
     reviewsForTask,
     reviewsForGoal,
+    gaps,
+    gapsByGoal,
+    gapsBySeverity,
     warnings,
     selectedMemberMessages,
     selectedMemberTimeline: selectedMember
@@ -221,6 +235,47 @@ export function countBySeverity(warnings: WorkflowWarning[]) {
     medium: warnings.filter((warning) => warning.severity === "medium").length,
     low: warnings.filter((warning) => warning.severity === "low").length,
   };
+}
+
+/** Resolved gap statuses (fixed/wontfix) sink below unresolved ones in the ledger. */
+const resolvedGapStatuses = new Set(["fixed", "wontfix"]);
+
+export function gapIsResolved(gap: Gap): boolean {
+  return resolvedGapStatuses.has((gap.status ?? "open").toLowerCase());
+}
+
+/** Severity sort rank: p0 first, then p1, p2, then unknown. */
+export function gapSeverityRank(severity?: string | null): number {
+  switch ((severity ?? "").toLowerCase()) {
+    case "p0":
+      return 0;
+    case "p1":
+      return 1;
+    case "p2":
+      return 2;
+    default:
+      return 3;
+  }
+}
+
+/** Sort gaps by severity (p0→p2), unresolved-first, then most-recently-updated. */
+function sortGaps(gaps: Gap[]): Gap[] {
+  return [...gaps].sort((a, b) => {
+    const severityDelta = gapSeverityRank(a.severity) - gapSeverityRank(b.severity);
+    if (severityDelta !== 0) return severityDelta;
+    const resolvedDelta = Number(gapIsResolved(a)) - Number(gapIsResolved(b));
+    if (resolvedDelta !== 0) return resolvedDelta;
+    return (b.updated_at ?? "").localeCompare(a.updated_at ?? "");
+  });
+}
+
+function groupBy<T>(items: T[], key: (item: T) => string): Map<string, T[]> {
+  const map = new Map<string, T[]>();
+  for (const item of items) {
+    const k = key(item);
+    map.set(k, [...(map.get(k) ?? []), item]);
+  }
+  return map;
 }
 
 function isGoalStatus(goal: Goal, ...statuses: string[]): boolean {

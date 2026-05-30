@@ -12,9 +12,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use harness_core::{
     AgentEvent, AgentMember, AgentMemberStatus, AgentProviderConfig, AgentRuntime,
-    AgentRuntimeHealth, AgentRuntimeStatus, AgentTeam, AgentTeamStatus, Decision, Evidence, Goal,
-    GoalStatus, Message, MessageDelivery, MessageDeliveryStatus, MessageKind,
-    MessageTerminalSource, Proposal, ProposalStatus, ProviderChildThread,
+    AgentRuntimeHealth, AgentRuntimeStatus, AgentTeam, AgentTeamStatus, Decision, Evidence, Gap,
+    GapSeverity, GapStatus, Goal, GoalStatus, Message, MessageDelivery, MessageDeliveryStatus,
+    MessageKind, MessageTerminalSource, Proposal, ProposalStatus, ProviderChildThread,
     ProviderChildThreadStatus, ProviderSession, ProviderSessionStatus, Review, ReviewVerdict, Task,
     TaskStatus,
 };
@@ -71,6 +71,7 @@ fn run() -> CliResult<()> {
         "proposal" => proposal_command(&store, &args[1..])?,
         "git" => git_command(&store, &args[1..])?,
         "review" => review_command(&store, &args[1..])?,
+        "gap" => gap_command(&store, &args[1..])?,
         "evidence" => evidence_command(&store, &args[1..])?,
         "decision" => decision_command(&store, &args[1..])?,
         "autonomy" => autonomy_command(&store, &args[1..])?,
@@ -1702,6 +1703,133 @@ fn review_create(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     store.append_review(&review)?;
     print_json(&review)?;
     Ok(())
+}
+
+fn gap_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    require_subcommand(args, "gap create|list|export")?;
+    match args[0].as_str() {
+        "create" => gap_create(store, &args[1..]),
+        "list" => {
+            print_json(&latest_gaps_in_append_order(store)?)?;
+            Ok(())
+        }
+        "export" => gap_export(store),
+        other => Err(CliError::Usage(format!("unknown gap command: {other}"))),
+    }
+}
+
+fn gap_create(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    let now = now_string();
+    let gap = Gap {
+        id: value(args, "--id").unwrap_or_else(|| generated_id("gap")),
+        goal_id: value(args, "--goal"),
+        task_id: value(args, "--task"),
+        category: required(args, "--category")?,
+        severity: parse_gap_severity(&required(args, "--severity")?)?,
+        status: match value(args, "--status") {
+            Some(raw) => parse_gap_status(&raw)?,
+            None => GapStatus::Open,
+        },
+        summary: required(args, "--summary")?,
+        evidence_ids: many(args, "--evidence"),
+        next_step: value(args, "--next-step"),
+        owner_agent_id: value(args, "--owner"),
+        repro_ref: value(args, "--repro"),
+        closing_test_ref: value(args, "--closing-test"),
+        created_at: now.clone(),
+        updated_at: now,
+    };
+    store.append_gap(&gap)?;
+    print_json(&gap)?;
+    Ok(())
+}
+
+/// Print a markdown projection of the Gap ledger (the generated successor to the
+/// flat-file gap inbox). Open/in-progress gaps first, grouped by severity.
+fn gap_export(store: &HarnessStore) -> CliResult<()> {
+    let gaps = latest_gaps_in_append_order(store)?;
+    println!("# Gap ledger\n");
+    if gaps.is_empty() {
+        println!("_No gaps recorded._");
+        return Ok(());
+    }
+    for severity in [GapSeverity::P0, GapSeverity::P1, GapSeverity::P2] {
+        let rows: Vec<&Gap> = gaps
+            .iter()
+            .filter(|gap| gap.severity == severity)
+            .collect();
+        if rows.is_empty() {
+            continue;
+        }
+        println!("## {}\n", gap_severity_label(&severity).to_uppercase());
+        for gap in rows {
+            let checkbox = if matches!(gap.status, GapStatus::Fixed | GapStatus::Wontfix) {
+                "x"
+            } else {
+                " "
+            };
+            println!(
+                "- [{}] {} | {} | {} | {} | evidence={} | next={}",
+                checkbox,
+                gap.id,
+                gap.category,
+                gap_status_label(&gap.status),
+                gap.summary,
+                if gap.evidence_ids.is_empty() {
+                    "-".to_string()
+                } else {
+                    gap.evidence_ids.join(",")
+                },
+                gap.next_step.as_deref().unwrap_or("-"),
+            );
+        }
+        println!();
+    }
+    Ok(())
+}
+
+fn parse_gap_severity(value: &str) -> CliResult<GapSeverity> {
+    match value {
+        "p0" => Ok(GapSeverity::P0),
+        "p1" => Ok(GapSeverity::P1),
+        "p2" => Ok(GapSeverity::P2),
+        other => Err(CliError::Usage(format!(
+            "unknown gap severity: {other} (expected p0|p1|p2)"
+        ))),
+    }
+}
+
+fn parse_gap_status(value: &str) -> CliResult<GapStatus> {
+    match value {
+        "open" => Ok(GapStatus::Open),
+        "in_progress" => Ok(GapStatus::InProgress),
+        "fixed" => Ok(GapStatus::Fixed),
+        "blocked" => Ok(GapStatus::Blocked),
+        "deferred" => Ok(GapStatus::Deferred),
+        "wontfix" => Ok(GapStatus::Wontfix),
+        other => Err(CliError::Usage(format!(
+            "unknown gap status: {other} (expected open|in_progress|fixed|blocked|deferred|wontfix)"
+        ))),
+    }
+}
+
+fn gap_severity_label(severity: &GapSeverity) -> &'static str {
+    match severity {
+        GapSeverity::P0 => "p0",
+        GapSeverity::P1 => "p1",
+        GapSeverity::P2 => "p2",
+    }
+}
+
+fn gap_status_label(status: &GapStatus) -> &'static str {
+    match status {
+        GapStatus::Open => "open",
+        GapStatus::InProgress => "in_progress",
+        GapStatus::Fixed => "fixed",
+        GapStatus::Blocked => "blocked",
+        GapStatus::Deferred => "deferred",
+        GapStatus::Wontfix => "wontfix",
+    }
 }
 
 fn dashboard_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
@@ -6004,6 +6132,7 @@ fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::Value> {
     let evidence = store.evidence()?;
     let decisions = store.decisions()?;
     let reviews = latest_reviews_in_append_order(store)?;
+    let gaps = latest_gaps_in_append_order(store)?;
     let sessions = latest_provider_sessions_in_append_order(store)?;
     let provider_child_threads = store.provider_child_threads()?;
     let autonomous_proposals =
@@ -6093,6 +6222,7 @@ fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::Value> {
         "evidence": evidence,
         "decisions": decisions,
         "reviews": reviews,
+        "gaps": gaps,
         "provider_sessions": sessions,
         "provider_child_threads": provider_child_threads
     }))
@@ -6268,6 +6398,20 @@ fn latest_reviews_in_append_order(store: &HarnessStore) -> CliResult<Vec<Review>
     Ok(review_ids
         .into_iter()
         .filter_map(|id| reviews_by_id.remove(&id))
+        .collect())
+}
+
+fn latest_gaps_in_append_order(store: &HarnessStore) -> CliResult<Vec<Gap>> {
+    let mut gap_ids = Vec::new();
+    let mut gaps_by_id = BTreeMap::new();
+    for gap in store.gaps()? {
+        gap_ids.retain(|id| id != &gap.id);
+        gap_ids.push(gap.id.clone());
+        gaps_by_id.insert(gap.id.clone(), gap);
+    }
+    Ok(gap_ids
+        .into_iter()
+        .filter_map(|id| gaps_by_id.remove(&id))
         .collect())
 }
 
