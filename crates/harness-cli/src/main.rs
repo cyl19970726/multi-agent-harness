@@ -346,6 +346,9 @@ fn goal_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
                 priority: value(args, "--priority").unwrap_or_else(|| "p0".into()),
                 created_at: now_string(),
                 updated_at: now_string(),
+                vision_id: value(args, "--vision"),
+                goal_design_id: value(args, "--goal-design"),
+                closed_by_decision_id: value(args, "--closed-by-decision"),
             };
             store.append_goal(&goal)?;
             print_json(&goal)?;
@@ -392,6 +395,10 @@ fn task_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
                 acceptance_criteria: many(args, "--acceptance"),
                 created_at: now_string(),
                 updated_at: now_string(),
+                phase: value(args, "--phase"),
+                scope_refs: many(args, "--scope-ref"),
+                requires_human_approval: has_flag(args, "--requires-human-approval"),
+                verdict_decision_id: value(args, "--verdict-decision"),
             };
             store.append_task(&task)?;
             print_json(&task)?;
@@ -669,6 +676,8 @@ fn evidence_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
                 source_ref: required(args, "--source-ref")?,
                 summary: required(args, "--summary")?,
                 created_at: now_string(),
+                evidence_kind: value(args, "--evidence-kind"),
+                goal_id: value(args, "--goal"),
             };
             store.append_evidence(&evidence)?;
             print_json(&evidence)?;
@@ -694,6 +703,10 @@ fn decision_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
                 rationale: required(args, "--rationale")?,
                 evidence_ids: many(args, "--evidence"),
                 created_at: now_string(),
+                decision_kind: value(args, "--decision-kind"),
+                goal_id: value(args, "--goal"),
+                is_waiver: has_flag(args, "--waiver"),
+                follow_up_task_id: value(args, "--follow-up-task"),
             };
             store.append_decision(&decision)?;
             print_json(&decision)?;
@@ -926,6 +939,10 @@ fn autonomy_decide_value(store: &HarnessStore, args: &[String]) -> CliResult<ser
         rationale: required(args, "--rationale")?,
         evidence_ids: evidence_ids.clone(),
         created_at: now_string(),
+        decision_kind: Some("verdict".to_string()),
+        goal_id: None,
+        is_waiver: false,
+        follow_up_task_id: None,
     };
     store.append_decision(&decision)?;
 
@@ -945,6 +962,9 @@ fn autonomy_decide_value(store: &HarnessStore, args: &[String]) -> CliResult<ser
                 priority: value(args, "--priority").unwrap_or_else(|| "p0".into()),
                 created_at: now_string(),
                 updated_at: now_string(),
+                vision_id: value(args, "--goal-vision"),
+                goal_design_id: None,
+                closed_by_decision_id: None,
             };
             store.append_goal(&goal)?;
             created_goal = Some(goal);
@@ -979,6 +999,10 @@ fn autonomy_decide_value(store: &HarnessStore, args: &[String]) -> CliResult<ser
                 acceptance_criteria: many(args, "--acceptance"),
                 created_at: now_string(),
                 updated_at: now_string(),
+                phase: value(args, "--task-phase"),
+                scope_refs: many(args, "--task-scope-ref"),
+                requires_human_approval: has_flag(args, "--task-requires-human-approval"),
+                verdict_decision_id: None,
             };
             let design = autonomy_evidence(
                 store,
@@ -1380,6 +1404,10 @@ fn close_goal_for_next_round(
         ),
         evidence_ids: vec![candidate.evaluation_evidence_id.clone()],
         created_at: now_string(),
+        decision_kind: Some("closeout".to_string()),
+        goal_id: Some(candidate.goal_id.clone()),
+        is_waiver: false,
+        follow_up_task_id: None,
     };
     store.append_decision(&decision)?;
     append_agent_event(
@@ -1496,6 +1524,8 @@ fn autonomy_evidence(
         source_ref,
         summary: summary.into(),
         created_at: now_string(),
+        evidence_kind: None,
+        goal_id: None,
     })
 }
 
@@ -1583,6 +1613,8 @@ fn git_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
                 source_ref: path,
                 summary: format!("Attached git worktree branch {branch} from {base}"),
                 created_at: now_string(),
+                evidence_kind: None,
+                goal_id: None,
             };
             store.append_evidence(&evidence)?;
             print_json(&serde_json::json!({ "task": task, "evidence": evidence }))?;
@@ -2104,6 +2136,8 @@ fn codex_run(store: &HarnessStore, args: &[String]) -> CliResult<()> {
         source_ref: session_ref.clone(),
         summary: format!("Codex provider session {session_id} for task {task_id}"),
         created_at: now_string(),
+        evidence_kind: None,
+        goal_id: None,
     };
     store.append_evidence(&evidence)?;
 
@@ -2208,6 +2242,8 @@ fn codex_review(store: &HarnessStore, args: &[String]) -> CliResult<()> {
         source_ref: session_ref.clone(),
         summary: format!("Codex review session {session_id} for task {task_id}"),
         created_at: now_string(),
+        evidence_kind: None,
+        goal_id: None,
     };
     store.append_evidence(&evidence)?;
 
@@ -2565,6 +2601,8 @@ fn probe_agent_hooks(
             hooks.len()
         ),
         created_at: now_string(),
+        evidence_kind: None,
+        goal_id: None,
     };
     store.append_evidence(&evidence)?;
     Ok(serde_json::json!({
@@ -3354,6 +3392,8 @@ fn record_operator_evidence(
         source_ref: source_ref.into(),
         summary: summary.into(),
         created_at: now_string(),
+        evidence_kind: None,
+        goal_id: None,
     };
     let id = evidence.id.clone();
     store.append_evidence(&evidence)?;
@@ -3419,6 +3459,8 @@ fn record_claimed_delivery_terminal(
             .unwrap_or_else(|| format!("provider-session:{delivery_id}")),
         summary: summary.into(),
         created_at: now_string(),
+        evidence_kind: None,
+        goal_id: None,
     };
     store.append_evidence(&evidence)?;
 
@@ -3744,6 +3786,8 @@ fn record_delivery_provider_session(
             record.delivery_id, record.message.id
         ),
         created_at: now_string(),
+        evidence_kind: None,
+        goal_id: None,
     };
     store.append_evidence(&evidence)?;
     let ended_at = if record.status == ProviderSessionStatus::Running {
@@ -5000,6 +5044,8 @@ fn proposal_from_diff(store: &HarnessStore, args: &[String]) -> CliResult<()> {
         source_ref: diff_ref.display().to_string(),
         summary: format!("Git diff from {base} in {worktree}"),
         created_at: now_string(),
+        evidence_kind: None,
+        goal_id: None,
     };
     store.append_evidence(&evidence)?;
     let mut evidence_ids = vec![evidence.id.clone()];
@@ -5548,6 +5594,10 @@ fn review_gate(store: &HarnessStore, args: &[String]) -> CliResult<()> {
         rationale,
         evidence_ids,
         created_at: now_string(),
+        decision_kind: Some("verdict".to_string()),
+        goal_id: None,
+        is_waiver: false,
+        follow_up_task_id: None,
     };
     store.append_decision(&decision)?;
     print_json(&serde_json::json!({
@@ -5807,6 +5857,8 @@ fn run_check_command(
         source_ref: check_dir.display().to_string(),
         summary: format!("check `{command}` exited with {:?}", output.status.code()),
         created_at: now_string(),
+        evidence_kind: None,
+        goal_id: None,
     };
     store.append_evidence(&evidence)?;
     if !output.status.success() {
@@ -7016,6 +7068,8 @@ mod tests {
             source_ref: root.display().to_string(),
             summary: "running delivery evidence".into(),
             created_at: "unix-ms:1".into(),
+            evidence_kind: None,
+            goal_id: None,
         };
         store.append_evidence(&evidence).expect("append evidence");
         store
@@ -8272,6 +8326,8 @@ mod tests {
                 source_ref: std::env::temp_dir().display().to_string(),
                 summary: "waiver evidence".into(),
                 created_at: "unix-ms:100".into(),
+                evidence_kind: None,
+                goal_id: None,
             })
             .expect("append evidence");
         store
@@ -8282,6 +8338,10 @@ mod tests {
                 rationale: "skip design for now".into(),
                 evidence_ids: vec!["waiver-evidence".into()],
                 created_at: "unix-ms:110".into(),
+                decision_kind: Some("waiver".into()),
+                goal_id: None,
+                is_waiver: true,
+                follow_up_task_id: None,
             })
             .expect("append bad waiver");
 
@@ -8299,6 +8359,10 @@ mod tests {
                 rationale: "temporary waiver; follow-up task follow-up-task will produce GoalDesign/GoalEvaluation evidence".into(),
                 evidence_ids: vec!["waiver-evidence".into()],
                 created_at: "unix-ms:120".into(),
+                decision_kind: Some("waiver".into()),
+                goal_id: None,
+                is_waiver: true,
+                follow_up_task_id: Some("follow-up-task".into()),
             })
             .expect("append good waiver");
         let status = goal_learning_status(&store, "goal-1").expect("status");
@@ -8424,6 +8488,8 @@ mod tests {
             source_ref: std::env::temp_dir().display().to_string(),
             summary: "test evidence".into(),
             created_at: now_string(),
+            evidence_kind: None,
+            goal_id: None,
         }
     }
 
@@ -8440,6 +8506,8 @@ mod tests {
             source_ref: std::env::temp_dir().display().to_string(),
             summary: format!("{source_type} evidence"),
             created_at: created_at.into(),
+            evidence_kind: None,
+            goal_id: None,
         }
     }
 
@@ -8454,6 +8522,9 @@ mod tests {
             priority: "p0".into(),
             created_at: "unix-ms:1".into(),
             updated_at: "unix-ms:1".into(),
+            vision_id: None,
+            goal_design_id: None,
+            closed_by_decision_id: None,
         }
     }
 
@@ -8476,6 +8547,10 @@ mod tests {
             acceptance_criteria: Vec::new(),
             created_at: "unix-ms:10".into(),
             updated_at: "unix-ms:10".into(),
+            phase: None,
+            scope_refs: Vec::new(),
+            requires_human_approval: false,
+            verdict_decision_id: None,
         }
     }
 
@@ -8542,6 +8617,10 @@ mod tests {
             rationale: "test".into(),
             evidence_ids: Vec::new(),
             created_at: created_at.into(),
+            decision_kind: None,
+            goal_id: None,
+            is_waiver: false,
+            follow_up_task_id: None,
         }
     }
 

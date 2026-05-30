@@ -21,6 +21,12 @@ pub struct Goal {
     pub priority: String,
     pub created_at: String,
     pub updated_at: String,
+    #[serde(default)]
+    pub vision_id: Option<String>,
+    #[serde(default)]
+    pub goal_design_id: Option<String>,
+    #[serde(default)]
+    pub closed_by_decision_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -156,6 +162,14 @@ pub struct Task {
     pub acceptance_criteria: Vec<String>,
     pub created_at: String,
     pub updated_at: String,
+    #[serde(default)]
+    pub phase: Option<String>,
+    #[serde(default)]
+    pub scope_refs: Vec<String>,
+    #[serde(default)]
+    pub requires_human_approval: bool,
+    #[serde(default)]
+    pub verdict_decision_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -383,6 +397,10 @@ pub struct Evidence {
     pub source_ref: String,
     pub summary: String,
     pub created_at: String,
+    #[serde(default)]
+    pub evidence_kind: Option<String>,
+    #[serde(default)]
+    pub goal_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -393,6 +411,14 @@ pub struct Decision {
     pub rationale: String,
     pub evidence_ids: Vec<String>,
     pub created_at: String,
+    #[serde(default)]
+    pub decision_kind: Option<String>,
+    #[serde(default)]
+    pub goal_id: Option<String>,
+    #[serde(default)]
+    pub is_waiver: bool,
+    #[serde(default)]
+    pub follow_up_task_id: Option<String>,
 }
 
 pub trait Validate {
@@ -554,6 +580,10 @@ mod tests {
             acceptance_criteria: vec!["Evidence is attached".to_string()],
             created_at: "2026-05-26T00:00:00Z".to_string(),
             updated_at: "2026-05-26T00:00:00Z".to_string(),
+            phase: Some("design".to_string()),
+            scope_refs: vec!["scope-1".to_string()],
+            requires_human_approval: true,
+            verdict_decision_id: Some("decision-1".to_string()),
         };
 
         let json = serde_json::to_string(&task).expect("serialize task");
@@ -575,6 +605,9 @@ mod tests {
             priority: "p0".to_string(),
             created_at: "2026-05-26T00:00:00Z".to_string(),
             updated_at: "2026-05-26T00:00:00Z".to_string(),
+            vision_id: Some("vision-1".to_string()),
+            goal_design_id: Some("goal-design-1".to_string()),
+            closed_by_decision_id: Some("decision-1".to_string()),
         };
 
         let json = serde_json::to_string(&goal).expect("serialize goal");
