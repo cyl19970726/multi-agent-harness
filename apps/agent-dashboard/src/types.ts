@@ -13,6 +13,9 @@ export interface Goal {
   success_criteria?: string[];
   created_at?: string;
   updated_at?: string;
+  vision_id?: string | null;
+  goal_design_id?: string | null;
+  closed_by_decision_id?: string | null;
 }
 
 export interface Task {
@@ -33,6 +36,10 @@ export interface Task {
   acceptance_criteria?: string[];
   created_at?: string;
   updated_at?: string;
+  phase?: string | null;
+  scope_refs?: string[];
+  requires_human_approval?: boolean;
+  verdict_decision_id?: string | null;
 }
 
 export interface AgentMember {
@@ -166,6 +173,8 @@ export interface Evidence {
   source_type?: string;
   source_ref?: string;
   summary?: string;
+  evidence_kind?: string | null;
+  goal_id?: string | null;
 }
 
 export interface Decision {
@@ -174,6 +183,10 @@ export interface Decision {
   decision?: string;
   rationale?: string;
   evidence_ids?: string[];
+  decision_kind?: string | null;
+  goal_id?: string | null;
+  is_waiver?: boolean;
+  follow_up_task_id?: string | null;
 }
 
 export interface AutonomousProposal {

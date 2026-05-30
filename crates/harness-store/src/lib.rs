@@ -339,6 +339,9 @@ mod tests {
             priority: "p0".into(),
             created_at: "2026-05-26T00:00:00Z".into(),
             updated_at: "2026-05-26T00:00:00Z".into(),
+            vision_id: None,
+            goal_design_id: None,
+            closed_by_decision_id: None,
         };
 
         store.append_goal(&goal).expect("append goal");
@@ -378,6 +381,9 @@ mod tests {
                         priority: "p1".into(),
                         created_at: "2026-05-26T00:00:00Z".into(),
                         updated_at: "2026-05-26T00:00:00Z".into(),
+                        vision_id: None,
+                        goal_design_id: None,
+                        closed_by_decision_id: None,
                     };
                     store.append_goal(&goal).expect("append goal");
                 }
@@ -422,6 +428,9 @@ mod tests {
             priority: "p1".into(),
             created_at: "2026-05-26T00:00:00Z".into(),
             updated_at: "2026-05-26T00:00:00Z".into(),
+            vision_id: None,
+            goal_design_id: None,
+            closed_by_decision_id: None,
         };
 
         store
