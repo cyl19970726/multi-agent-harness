@@ -1,9 +1,16 @@
-# Agent Dashboard Layout Decisions
+# Agent Workbench Layout Decisions
 
-This document records Dashboard UI/UX layout alternatives, rejected variants,
+This document records Workbench UI/UX layout alternatives, rejected variants,
 and selected design direction. Core principles stay in
-[design-principles.md](design-principles.md). Concrete route composition stays
-in [ui-ux-layout.md](ui-ux-layout.md).
+[design-principles.md](design-principles.md). Concrete route composition,
+page cards, visual placement, safe actions, and responsive behavior stay in
+[frontend-design.md](frontend-design.md).
+
+Split reason: this file intentionally stays slightly above the 500-line target
+while the Workbench redesign is being reset because it is the chronological
+decision ledger for selected, killed, deprecated, and restarted directions.
+Move stable page-specific decisions into [pages/](pages/) after the next
+Reviewer pass.
 
 ## Decision 2026-05-28: Team Workspace Shell
 
@@ -52,6 +59,221 @@ Killed directions:
   review, and decision proof behind topology visuals.
 - Task-card-only model: killed because it cannot prove assignment, report,
   evidence, proposal, review, and decision order.
+
+## Decision 2026-05-28: Frontend Design Workflow Gate
+
+This decision records the frontend skill workflow that produced the current
+design baseline.
+
+Independent review record:
+
+```text
+designer_prompt:
+  propose top-level and page-level Workbench UI/UX options after restating
+  Vision, selected Goal, and final acceptance
+designer_output_ref:
+  layout-variants.md Page-Level Option Loop; chat-side subagent Lagrange
+questioner_prompt:
+  independently challenge workflow proof, mobile/accessibility, read-model/API
+  feasibility, and no-raw-debug-first behavior
+questioner_input_ref:
+  current Workbench docs and raw design artifacts, not a Lead-preferred answer
+questioner_output_ref:
+  this decision record; chat-side subagent Locke
+decision_record_ref:
+  layout-decisions.md and frontend-design.md
+unresolved_questions:
+  backend/read-model fields for Vision, GoalEvaluation, graph-change
+  proposals, docs links, and safe repair actions remain implementation tasks
+next_loop_request:
+  no new top-level shell loop; continue only if implementation exposes missing
+  read-model/API blockers or browser evidence contradicts the design
+```
+
+The subagents were temporary design inputs, not canonical harness execution.
+Their outputs are durable only through this documentation and harness evidence.
+
+Loop status: stop for top-level design. The selected shell has enough signal:
+Team workspace first, Goal/Task document surfaces, controlled graph/Kanban
+relationship views, mounted docs, warnings/repair, and debug secondary.
+
+## Decision 2026-05-28: Reject First Implementation Attempt
+
+The first implementation attempt in branch
+`task/agent-workbench-implementation` is rejected as a layout-quality failure.
+It is not a PR candidate for the goal branch.
+
+What happened:
+
+- build and TypeScript checks could pass while the browser-visible surface still
+  read as a long stacked report rather than a coherent Agent Workbench;
+- the implementation moved from accepted direction directly into component/CSS
+  work without a hard desktop/tablet/mobile layout implementation spec;
+- the Team workspace, activity stream, graph/Kanban, inspector, and debug
+  surfaces were technically present but not constrained enough by first-viewport
+  placement, region dimensions, or scroll boundaries;
+- browser review showed that "Team workspace first" was still too vague as an
+  implementation instruction.
+
+Rejected because:
+
+- it did not meet the product bar for a Feishu-like multi-agent collaboration
+  workbench;
+- it risked repeating the old dashboard failure mode: lots of state visible,
+  but weak hierarchy and poor operational usability;
+- it proved that passing build checks is not sufficient frontend acceptance;
+- it exposed a missing workflow gate in the frontend skill.
+
+Decision:
+
+```text
+branch_or_worktree:
+  /Users/hhh0x/multi-agent-harness-agent-workbench-implementation
+branch:
+  task/agent-workbench-implementation
+commit_or_diff:
+  base 11fae5e761c734763c1a8292a42101c00c3a8148 plus uncommitted dirty
+  implementation diff; no implementation commit was accepted
+screenshot_refs:
+  local rejected review screenshots captured before rejection:
+  dashboard-shell-desktop-1440.png, dashboard-shell-tablet-900.png
+failed_acceptance:
+  no page-local layout contract; weak first-viewport hierarchy; Team, activity,
+  graph/Kanban, inspector, and debug placement not constrained by region
+  dimensions or scroll ownership
+spec_gap_that_allowed_it:
+  accepted direction said "Team workspace first" without implementation-ready
+  desktop/tablet/mobile wireframes, module-level option decisions, or
+  screenshot stop conditions
+code_disposition:
+  keep isolated in task/agent-workbench-implementation until replaced or
+  explicitly discarded; do not merge it into the goal branch
+required_next_loop:
+  update frontend skill and docs, then create page-local layout contracts inside
+  docs/dashboard/pages/<page>.md before renewed UI coding
+reviewer_stop_condition:
+  no new implementation PR may proceed without desktop/tablet/mobile wireframes,
+  region dimensions, first-viewport content, scroll boundaries, rejected module
+  options, and browser screenshot acceptance criteria
+```
+
+Skill changes required by this failure:
+
+- core modules require multiple Designer candidates, not a single option;
+- Questioner/Critic must challenge both design artifacts and browser screenshots;
+- Reviewer chooses, synthesizes, kills, or requests another round for each core
+  module;
+- failed implementation attempts must be recorded as rejected layouts when they
+  reveal that the design spec was too vague.
+
+## Page-Level Decisions
+
+These decisions close the required page-level option loop. The rejected options
+are recorded in [layout-variants.md](layout-variants.md); the selected page
+cards and detailed layout contracts are implemented in
+[pages/](pages/).
+
+| Surface | Selected option | Rejected options | Borrowed ideas | Loop status |
+| --- | --- | --- | --- | --- |
+| Vision overview | Vision ladder | scorecard as primary, timeline as primary | pilot acceptance chips, evaluation-to-next-goal links | stop |
+| Team workspace | Collaboration workspace | static operations console, goal-scoped team panel | dense queues, pinned goal health strip | stop |
+| AgentMember workbench | Chronological activity stream | tab-only inspector, runtime-first console | timeline filters, health summary | stop |
+| Goal document | Audit document | cockpit as primary, learning-only document | health strip, distance-to-vision closeout | stop |
+| Task document | Proof-order document | execution workbench as primary, PR/evidence-only audit | runtime strip, owned-path/check block | stop |
+| Graph/Kanban | Kanban default plus graph focus | split view as first implementation, graph canvas default | graph/card sync, later minimap/search/collapse | stop for design, stage implementation |
+| Docs context | Inspector docs panel plus docs route | external links only, full docs embedded inline | compact related-doc blocks | stop |
+| Evidence/Review/Decision | Four-lane acceptance strip | timeline-only chain, packet-only summary | chronological lane ordering, packet summary | stop |
+| Warnings/repair | Global queue plus local callouts | inspector-only warnings, passive checklist | checklist header summary | stop |
+| Debug | Collapsed drawer plus `/debug` route | raw route primary, modal-only console | shareable debug route | stop |
+| Mobile/accessibility | Tabbed mobile workbench | stacked desktop document, drawer-only detail | drawer for secondary context | stop |
+
+Remaining weaknesses accepted into implementation:
+
+- graph visualization should start with Kanban/list-first behavior and add
+  canvas focus only after node/edge/read-model contracts are clear;
+- Evidence/Review/Decision needs object-local and global queue wiring so
+  acceptance proof is not buried;
+- warning repair actions depend on backend support and must show disabled
+  reasons instead of simulating success;
+- mobile graph and timeline views need browser proof for no overflow, focus
+  order, labels, and text-based status.
+
+Future module decision records must include:
+
+```text
+selected:
+killed_because:
+borrowed:
+remaining_weakness:
+layout_contract_implication:
+screenshot_acceptance:
+reviewer_stop_continue_blocked:
+```
+
+At minimum, Team workspace, AgentMember workbench, Goal/Task documents,
+Graph/Kanban, and mobile/responsive placement need this record before renewed
+implementation.
+
+## Decision 2026-05-28: Hard Layout Spec Shell v1
+
+Status: deprecated after PR #6. The v1 spec was useful as a first hard-layout
+attempt, but it remained too broad and allowed a dashboard/card-dump
+implementation to pass mechanical checks. Formal historical spec:
+[hard-layout-specs/agent-workbench-shell-v1.md](hard-layout-specs/agent-workbench-shell-v1.md).
+
+Selected main candidate: Designer C control-plane hybrid. Borrowed from
+Designer A: collaboration-first first viewport, persistent Team roster,
+selected Member inspector, complete AgentMember runtime/timeline/inbox/outbox,
+and read-model selector list. Borrowed from Designer B: Goal/Task proof-order
+documents, real Vision goal collection and distance-to-vision, and assignment
+`Message(kind=task)` proof before report/evidence/decision.
+
+Killed candidates: Goal/Task document-first default shell, graph-first shell,
+and Team chat/activity-only shell.
+
+Final disposition: do not implement from shell v1. Restart from page specs with
+page-local `## Layout Contract` sections and the architecture reset in
+[frontend-architecture.md](frontend-architecture.md).
+
+## Decision 2026-05-29: Shell v2 Restart Spec
+
+Reviewer decision: `deprecated` as the current implementation source. The draft
+shell v2 spec is retained as historical context only:
+[hard-layout-specs/shell-v2.md](hard-layout-specs/shell-v2.md). Its useful
+constraints have been moved into the relevant page-local layout contracts under
+[pages/](pages/).
+
+The shell v2 restart makes the first viewport stricter:
+
+- Team must read as a collaboration workspace, not roster/cards;
+- AgentMember must read as a teammate workbench, not an inspector card;
+- Goal/Task/Docs/Evidence/Decision must appear connected to workflow context,
+  not as disconnected tabs;
+- screenshots must be reviewed by first impression before console, data, or
+  overflow checks can support acceptance.
+
+## Decision 2026-05-29: Page-Local Layout Contracts
+
+Reviewer decision: `continue` for documentation structure. Current layout
+contracts live inside each `docs/dashboard/pages/<page>.md` file under
+`## Layout Contract`. `docs/dashboard/hard-layout-specs/` is historical only.
+
+Rationale:
+
+- page meaning and page geometry must stay together so implementers cannot miss
+  the workflow proof behind a layout;
+- each core page now has detailed desktop, tablet, and mobile ASCII diagrams,
+  concrete dimensions, first-viewport content, scroll ownership, and screenshot
+  acceptance;
+- hard-layout shell specs were too easy to treat as a generic shell and too
+  far from the page-specific user questions.
+
+Implementation implication:
+
+- every changed route must link to its page spec and `## Layout Contract`;
+- screenshot review compares the browser output to that page document;
+- changes to dimensions, breakpoints, scroll ownership, or first-viewport
+  placement update the same page document, not a separate hard-layout file.
 
 ## Module Decisions
 
@@ -264,7 +486,7 @@ Constraints:
 
 ## Implementation Guidance
 
-Do not implement the whole Dashboard rewrite in one task. Split into page-level
+Do not implement the whole Workbench rewrite in one task. Split into page-level
 or module-level work:
 
 1. shell and Team workspace;
@@ -289,8 +511,8 @@ Findings accepted:
   harness dogfooding, independence, evidence, and waiver cases.
 - Acceptance gates listed outcomes but did not define viewport targets,
   artifact names, overflow proof, or non-waivable failures.
-- The skill metadata default prompt did not mention variant/review loop or
-  browser/web-quality evidence.
+- The skill metadata default prompt did not mention multi-candidate review loops
+  or browser/web-quality evidence.
 
 Fixes applied:
 
@@ -302,14 +524,14 @@ Fixes applied:
   `.agents/skills/harness-frontend-product-design/references/page-design-workflow.md`;
 - expanded browser and web-quality gates in
   `.agents/skills/harness-frontend-product-design/references/acceptance-gates.md`;
-- regenerated `agents/openai.yaml` with a default prompt that names the
-  variant/review loop and browser/web-quality validation.
+- regenerated `agents/openai.yaml` with a default prompt that names
+  multi-candidate review loops and browser/web-quality validation.
 
 Loop decision:
 
 - status: stop for this skill-hardening round;
 - reason: the accepted reviewer findings were directly addressed, and remaining
-  improvements are implementation of the Dashboard itself rather than skill
+  improvements are implementation of the Workbench itself rather than skill
   structure uncertainty;
 - next Designer request: none for the skill; use the skill to drive the next
   frontend implementation design/verification loop.

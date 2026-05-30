@@ -11,17 +11,20 @@
 | Core module PRD and architecture narrative | [core-modules.md](core-modules.md) |
 | Data model, source-of-truth rules, and projections | [data-model.md](data-model.md) |
 | Provider-neutral Agent Runtime Object Model | [agent-runtime.md](agent-runtime.md) |
-| Agent control plane, lifecycle, queues, and Dashboard operations | [agent-control-plane.md](agent-control-plane.md) |
-| Agent Dashboard information architecture | [dashboard.md](dashboard.md) |
-| Agent Dashboard docs placement map | [dashboard/README.md](dashboard/README.md) |
-| Agent Dashboard frontend design principles | [dashboard/design-principles.md](dashboard/design-principles.md) |
-| Agent Dashboard layout variants | [dashboard/layout-variants.md](dashboard/layout-variants.md) |
-| Agent Dashboard layout decisions | [dashboard/layout-decisions.md](dashboard/layout-decisions.md) |
-| Agent Dashboard UI/UX layout | [dashboard/ui-ux-layout.md](dashboard/ui-ux-layout.md) |
-| Agent Dashboard frontend architecture | [dashboard/frontend-architecture.md](dashboard/frontend-architecture.md) |
-| Agent Dashboard read model | [dashboard/read-model.md](dashboard/read-model.md) |
-| Agent Dashboard acceptance | [dashboard/acceptance.md](dashboard/acceptance.md) |
-| Agent Dashboard runbook | [dashboard/runbook.md](dashboard/runbook.md) |
+| Agent control plane, lifecycle, queues, and Workbench operations | [agent-control-plane.md](agent-control-plane.md) |
+| Agent Workbench information architecture | [dashboard.md](dashboard.md) |
+| Agent Workbench docs placement map | [dashboard/README.md](dashboard/README.md) |
+| Agent Workbench frontend design principles | [dashboard/design-principles.md](dashboard/design-principles.md) |
+| Agent Workbench layout variants | [dashboard/layout-variants.md](dashboard/layout-variants.md) |
+| Agent Workbench layout decisions | [dashboard/layout-decisions.md](dashboard/layout-decisions.md) |
+| Agent Workbench frontend design index | [dashboard/frontend-design.md](dashboard/frontend-design.md) |
+| Agent Workbench page specs and layout contracts | [dashboard/pages/README.md](dashboard/pages/README.md) |
+| Agent Workbench historical hard-layout attempts | [dashboard/hard-layout-specs/README.md](dashboard/hard-layout-specs/README.md) |
+| Agent Workbench rejected implementation records | [dashboard/rejected-implementations/README.md](dashboard/rejected-implementations/README.md) |
+| Agent Workbench frontend architecture | [dashboard/frontend-architecture.md](dashboard/frontend-architecture.md) |
+| Agent Workbench read model | [dashboard/read-model.md](dashboard/read-model.md) |
+| Agent Workbench acceptance | [dashboard/acceptance.md](dashboard/acceptance.md) |
+| Agent Workbench runbook | [dashboard/runbook.md](dashboard/runbook.md) |
 | Git, PR, worktree, review, and decision workflow | [workflow-git-pr.md](workflow-git-pr.md) |
 | Goal learning loop and reusable cases | [goal-learning-loop.md](goal-learning-loop.md) |
 | Provider integration rules | [integration/README.md](integration/README.md) |

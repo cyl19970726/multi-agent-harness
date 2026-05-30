@@ -6,7 +6,10 @@
       "ownerRole": "product",
       "status": "stable",
       "lifecycle": "stable",
-      "canonicalFor": ["repository entry point", "product boundary"],
+      "canonicalFor": [
+        "repository entry point",
+        "product boundary"
+      ],
       "dependsOn": [
         "docs/prd.md",
         "docs/mvp.md",
@@ -28,9 +31,14 @@
         "docs/schemas.md",
         "docs/decisions/README.md"
       ],
-      "machineConsumers": ["check-doc-links", "check-doc-governance"],
+      "machineConsumers": [
+        "check-doc-links",
+        "check-doc-governance"
+      ],
       "reviewAfter": "2026-08-26",
-      "lastVerifiedWith": ["npx pnpm@9.15.4 check"],
+      "lastVerifiedWith": [
+        "npx pnpm@9.15.4 check"
+      ],
       "reorgTrigger": "Start Here links or product boundary no longer match implemented and gateable surfaces."
     },
     {
@@ -38,15 +46,24 @@
       "ownerRole": "lead-operations",
       "status": "stable",
       "lifecycle": "stable",
-      "canonicalFor": ["agent operating rules", "canonical AgentMember workflow", "staged acceptance"],
+      "canonicalFor": [
+        "agent operating rules",
+        "canonical AgentMember workflow",
+        "staged acceptance"
+      ],
       "dependsOn": [
         "docs/prd.md",
         "docs/goal-learning-loop.md",
         ".agents/skills/generic-agent-harness/SKILL.md"
       ],
-      "machineConsumers": ["check-doc-links", "check-doc-governance"],
+      "machineConsumers": [
+        "check-doc-links",
+        "check-doc-governance"
+      ],
       "reviewAfter": "2026-08-26",
-      "lastVerifiedWith": ["npx pnpm@9.15.4 check"],
+      "lastVerifiedWith": [
+        "npx pnpm@9.15.4 check"
+      ],
       "reorgTrigger": "Canonical AgentMember workflow, staged acceptance, or goal learning gate requirements change."
     },
     {
@@ -54,7 +71,10 @@
       "ownerRole": "knowledge",
       "status": "stable",
       "lifecycle": "stable",
-      "canonicalFor": ["docs index", "docs split rule"],
+      "canonicalFor": [
+        "docs index",
+        "docs split rule"
+      ],
       "dependsOn": [
         "docs/prd.md",
         "docs/mvp.md",
@@ -76,9 +96,14 @@
         "docs/schemas.md",
         "docs/decisions/README.md"
       ],
-      "machineConsumers": ["check-doc-links", "check-doc-governance"],
+      "machineConsumers": [
+        "check-doc-links",
+        "check-doc-governance"
+      ],
       "reviewAfter": "2026-08-26",
-      "lastVerifiedWith": ["npx pnpm@9.15.4 check"],
+      "lastVerifiedWith": [
+        "npx pnpm@9.15.4 check"
+      ],
       "reorgTrigger": "Docs grow new stable sections, readers, or machine-consumed groups."
     },
     {
@@ -86,7 +111,11 @@
       "ownerRole": "product",
       "status": "stable",
       "lifecycle": "stable",
-      "canonicalFor": ["product purpose", "product scenarios", "non-goals"],
+      "canonicalFor": [
+        "product purpose",
+        "product scenarios",
+        "non-goals"
+      ],
       "dependsOn": [
         "docs/mvp.md",
         "docs/design-basis.md",
@@ -101,9 +130,14 @@
         "docs/integration/README.md",
         "docs/decisions/README.md"
       ],
-      "machineConsumers": ["check-doc-links", "check-doc-governance"],
+      "machineConsumers": [
+        "check-doc-links",
+        "check-doc-governance"
+      ],
       "reviewAfter": "2026-08-26",
-      "lastVerifiedWith": ["npx pnpm@9.15.4 check"],
+      "lastVerifiedWith": [
+        "npx pnpm@9.15.4 check"
+      ],
       "reorgTrigger": "Product scenarios or non-goals change enough to invalidate the architecture boundary."
     },
     {
@@ -111,7 +145,11 @@
       "ownerRole": "product",
       "status": "stable",
       "lifecycle": "volatile",
-      "canonicalFor": ["MVP pilots", "self-hosting acceptance", "LetMeTry strategy adapter pilot"],
+      "canonicalFor": [
+        "MVP pilots",
+        "self-hosting acceptance",
+        "LetMeTry strategy adapter pilot"
+      ],
       "dependsOn": [
         "docs/prd.md",
         "docs/design-basis.md",
@@ -128,9 +166,15 @@
         "docs/operations.md",
         "examples/adapters/earning-engine/README.md"
       ],
-      "machineConsumers": ["check-doc-links", "check-doc-governance"],
+      "machineConsumers": [
+        "check-doc-links",
+        "check-doc-governance"
+      ],
       "reviewAfter": "2026-07-26",
-      "lastVerifiedWith": ["npx pnpm@9.15.4 check", "cargo test"],
+      "lastVerifiedWith": [
+        "npx pnpm@9.15.4 check",
+        "cargo test"
+      ],
       "reorgTrigger": "MVP scope changes, self-hosting flow changes, or LetMeTry adapter pilot changes."
     },
     {
@@ -138,11 +182,25 @@
       "ownerRole": "architecture",
       "status": "stable",
       "lifecycle": "stable",
-      "canonicalFor": ["design basis", "module core ideas", "surface responsibility"],
-      "dependsOn": ["docs/prd.md", "docs/architecture.md", "docs/operations.md", "docs/schemas.md"],
-      "machineConsumers": ["check-doc-links", "check-doc-governance"],
+      "canonicalFor": [
+        "design basis",
+        "module core ideas",
+        "surface responsibility"
+      ],
+      "dependsOn": [
+        "docs/prd.md",
+        "docs/architecture.md",
+        "docs/operations.md",
+        "docs/schemas.md"
+      ],
+      "machineConsumers": [
+        "check-doc-links",
+        "check-doc-governance"
+      ],
       "reviewAfter": "2026-08-26",
-      "lastVerifiedWith": ["npx pnpm@9.15.4 check"],
+      "lastVerifiedWith": [
+        "npx pnpm@9.15.4 check"
+      ],
       "reorgTrigger": "A new core layer, module, surface, or governance rule becomes stable."
     },
     {
@@ -164,9 +222,14 @@
         "docs/core-modules.md",
         "docs/schemas.md"
       ],
-      "machineConsumers": ["check-doc-links", "check-doc-governance"],
+      "machineConsumers": [
+        "check-doc-links",
+        "check-doc-governance"
+      ],
       "reviewAfter": "2026-06-26",
-      "lastVerifiedWith": ["npx pnpm@9.15.4 check"],
+      "lastVerifiedWith": [
+        "npx pnpm@9.15.4 check"
+      ],
       "reorgTrigger": "Core object semantics, assignment flow, evidence flow, or Dashboard projection rules change."
     },
     {
@@ -174,7 +237,11 @@
       "ownerRole": "architecture",
       "status": "stable",
       "lifecycle": "stable",
-      "canonicalFor": ["core loop", "module boundaries", "package plan"],
+      "canonicalFor": [
+        "core loop",
+        "module boundaries",
+        "package plan"
+      ],
       "dependsOn": [
         "docs/design-basis.md",
         "docs/concept-model.md",
@@ -190,9 +257,15 @@
         "docs/integration/codex-message-delivery.md",
         "docs/goal-learning-loop.md"
       ],
-      "machineConsumers": ["check-doc-links", "check-doc-governance"],
+      "machineConsumers": [
+        "check-doc-links",
+        "check-doc-governance"
+      ],
       "reviewAfter": "2026-08-26",
-      "lastVerifiedWith": ["npx pnpm@9.15.4 check", "cargo test"],
+      "lastVerifiedWith": [
+        "npx pnpm@9.15.4 check",
+        "cargo test"
+      ],
       "reorgTrigger": "Implemented crates, object boundaries, or source-of-truth surfaces diverge from the architecture."
     },
     {
@@ -214,9 +287,14 @@
         "docs/agent-control-plane.md",
         "docs/schemas.md"
       ],
-      "machineConsumers": ["check-doc-links", "check-doc-governance"],
+      "machineConsumers": [
+        "check-doc-links",
+        "check-doc-governance"
+      ],
       "reviewAfter": "2026-06-26",
-      "lastVerifiedWith": ["npx pnpm@9.15.4 check"],
+      "lastVerifiedWith": [
+        "npx pnpm@9.15.4 check"
+      ],
       "reorgTrigger": "Core module boundaries, source-of-truth ownership, or build order changes."
     },
     {
@@ -236,9 +314,14 @@
         "docs/architecture.md",
         "docs/schemas.md"
       ],
-      "machineConsumers": ["check-doc-links", "check-doc-governance"],
+      "machineConsumers": [
+        "check-doc-links",
+        "check-doc-governance"
+      ],
       "reviewAfter": "2026-06-26",
-      "lastVerifiedWith": ["npx pnpm@9.15.4 check"],
+      "lastVerifiedWith": [
+        "npx pnpm@9.15.4 check"
+      ],
       "reorgTrigger": "Object relationships, projections, source-of-truth rules, or schema responsibilities change."
     },
     {
@@ -260,9 +343,14 @@
         "docs/integration/README.md",
         "docs/schemas.md"
       ],
-      "machineConsumers": ["check-doc-links", "check-doc-governance"],
+      "machineConsumers": [
+        "check-doc-links",
+        "check-doc-governance"
+      ],
       "reviewAfter": "2026-06-26",
-      "lastVerifiedWith": ["npx pnpm@9.15.4 check"],
+      "lastVerifiedWith": [
+        "npx pnpm@9.15.4 check"
+      ],
       "reorgTrigger": "Provider-neutral runtime, message delivery, queue policy, or provider interface changes."
     },
     {
@@ -271,8 +359,8 @@
       "status": "planned",
       "lifecycle": "volatile",
       "canonicalFor": [
-        "Agent Dashboard information architecture",
-        "Dashboard backward data requirements",
+        "Agent Workbench information architecture",
+        "Workbench backward data requirements",
         "control-plane UI views",
         "workflow visibility"
       ],
@@ -286,16 +374,23 @@
         "docs/dashboard/design-principles.md",
         "docs/dashboard/layout-variants.md",
         "docs/dashboard/layout-decisions.md",
-        "docs/dashboard/ui-ux-layout.md",
+        "docs/dashboard/frontend-design.md",
         "docs/dashboard/frontend-architecture.md",
         "docs/dashboard/read-model.md",
         "docs/dashboard/acceptance.md",
-        "docs/dashboard/runbook.md"
+        "docs/dashboard/runbook.md",
+        "docs/dashboard/pages/README.md",
+        "docs/dashboard/rejected-implementations/README.md"
       ],
-      "machineConsumers": ["check-doc-links", "check-doc-governance"],
+      "machineConsumers": [
+        "check-doc-links",
+        "check-doc-governance"
+      ],
       "reviewAfter": "2026-06-26",
-      "lastVerifiedWith": ["npx pnpm@9.15.4 check"],
-      "reorgTrigger": "Dashboard views, read models, safe actions, or workflow visibility requirements change."
+      "lastVerifiedWith": [
+        "npx pnpm@9.15.4 check"
+      ],
+      "reorgTrigger": "Workbench views, read models, safe actions, or workflow visibility requirements change."
     },
     {
       "path": "docs/dashboard/README.md",
@@ -303,9 +398,9 @@
       "status": "planned",
       "lifecycle": "volatile",
       "canonicalFor": [
-        "Agent Dashboard docs placement map",
-        "Dashboard docs change order",
-        "Dashboard surface routing rules"
+        "Agent Workbench docs placement map",
+        "Workbench docs change order",
+        "Workbench surface routing rules"
       ],
       "dependsOn": [
         "docs/README.md",
@@ -313,16 +408,23 @@
         "docs/dashboard/design-principles.md",
         "docs/dashboard/layout-variants.md",
         "docs/dashboard/layout-decisions.md",
-        "docs/dashboard/ui-ux-layout.md",
+        "docs/dashboard/frontend-design.md",
         "docs/dashboard/frontend-architecture.md",
         "docs/dashboard/read-model.md",
         "docs/dashboard/acceptance.md",
-        "docs/dashboard/runbook.md"
+        "docs/dashboard/runbook.md",
+        "docs/dashboard/pages/README.md",
+        "docs/dashboard/rejected-implementations/README.md"
       ],
-      "machineConsumers": ["check-doc-links", "check-doc-governance"],
+      "machineConsumers": [
+        "check-doc-links",
+        "check-doc-governance"
+      ],
       "reviewAfter": "2026-06-26",
-      "lastVerifiedWith": ["npx pnpm@9.15.4 check"],
-      "reorgTrigger": "Dashboard docs gain new stable surfaces, readers, or source-of-truth boundaries."
+      "lastVerifiedWith": [
+        "npx pnpm@9.15.4 check"
+      ],
+      "reorgTrigger": "Workbench docs gain new stable surfaces, readers, or source-of-truth boundaries."
     },
     {
       "path": "docs/dashboard/design-principles.md",
@@ -330,10 +432,10 @@
       "status": "planned",
       "lifecycle": "volatile",
       "canonicalFor": [
-        "Agent Dashboard frontend design principles",
+        "Agent Workbench frontend design principles",
         "Goal and Task graph/Kanban policy",
         "AgentTeam and AgentMember UI doctrine",
-        "Dashboard visual system"
+        "Workbench visual system"
       ],
       "dependsOn": [
         "docs/prd.md",
@@ -343,10 +445,15 @@
         "docs/workflow-git-pr.md",
         "docs/goal-learning-loop.md"
       ],
-      "machineConsumers": ["check-doc-links", "check-doc-governance"],
+      "machineConsumers": [
+        "check-doc-links",
+        "check-doc-governance"
+      ],
       "reviewAfter": "2026-06-26",
-      "lastVerifiedWith": ["npx pnpm@9.15.4 check"],
-      "reorgTrigger": "Dashboard frontend principles, graph/Kanban policy, or AgentTeam/AgentMember UI doctrine changes."
+      "lastVerifiedWith": [
+        "npx pnpm@9.15.4 check"
+      ],
+      "reorgTrigger": "Workbench frontend principles, graph/Kanban policy, or AgentTeam/AgentMember UI doctrine changes."
     },
     {
       "path": "docs/dashboard/layout-variants.md",
@@ -354,9 +461,9 @@
       "status": "planned",
       "lifecycle": "volatile",
       "canonicalFor": [
-        "Agent Dashboard candidate layouts",
+        "Agent Workbench candidate layouts",
         "Designer and Questioner critique",
-        "Dashboard layout scoring rubric",
+        "Workbench layout scoring rubric",
         "rejected layout alternatives"
       ],
       "dependsOn": [
@@ -366,10 +473,15 @@
         "docs/dashboard/design-principles.md",
         ".agents/skills/harness-frontend-product-design/SKILL.md"
       ],
-      "machineConsumers": ["check-doc-links", "check-doc-governance"],
+      "machineConsumers": [
+        "check-doc-links",
+        "check-doc-governance"
+      ],
       "reviewAfter": "2026-06-26",
-      "lastVerifiedWith": ["npx pnpm@9.15.4 check"],
-      "reorgTrigger": "Dashboard design loop, candidate layout set, scoring rubric, or critique workflow changes."
+      "lastVerifiedWith": [
+        "npx pnpm@9.15.4 check"
+      ],
+      "reorgTrigger": "Workbench design loop, candidate layout set, scoring rubric, or critique workflow changes."
     },
     {
       "path": "docs/dashboard/layout-decisions.md",
@@ -377,45 +489,84 @@
       "status": "planned",
       "lifecycle": "volatile",
       "canonicalFor": [
-        "Agent Dashboard accepted layout direction",
-        "killed Dashboard layout alternatives",
+        "Agent Workbench accepted layout direction",
+        "killed Workbench layout alternatives",
         "module-level layout decisions",
         "visual placement constraints"
       ],
       "dependsOn": [
         "docs/dashboard/layout-variants.md",
         "docs/dashboard/design-principles.md",
-        "docs/dashboard/ui-ux-layout.md"
+        "docs/dashboard/frontend-design.md"
       ],
-      "machineConsumers": ["check-doc-links", "check-doc-governance"],
+      "machineConsumers": [
+        "check-doc-links",
+        "check-doc-governance"
+      ],
       "reviewAfter": "2026-06-26",
-      "lastVerifiedWith": ["npx pnpm@9.15.4 check"],
-      "reorgTrigger": "Accepted Dashboard layout direction, killed alternatives, module decisions, or visual placement constraints change."
+      "lastVerifiedWith": [
+        "npx pnpm@9.15.4 check"
+      ],
+      "reorgTrigger": "Accepted Workbench layout direction, killed alternatives, module decisions, or visual placement constraints change."
     },
     {
-      "path": "docs/dashboard/ui-ux-layout.md",
+      "path": "docs/dashboard/frontend-design.md",
       "ownerRole": "product-design",
       "status": "planned",
       "lifecycle": "volatile",
       "canonicalFor": [
-        "Agent Dashboard UI/UX layout",
-        "Dashboard global shell",
-        "Dashboard responsive behavior",
-        "Dashboard route composition"
+        "Agent Workbench frontend design index",
+        "Workbench page-spec map",
+        "Workbench page-local layout contract map",
+        "Workbench implementation-readiness summary"
       ],
       "dependsOn": [
+        "docs/prd.md",
+        "docs/concept-model.md",
         "docs/dashboard.md",
         "docs/dashboard/design-principles.md",
         "docs/dashboard/layout-variants.md",
         "docs/dashboard/layout-decisions.md",
+        "docs/dashboard/pages/README.md",
+        "docs/dashboard/rejected-implementations/README.md",
         "docs/dashboard/frontend-architecture.md",
         "docs/dashboard/read-model.md",
-        "docs/dashboard/acceptance.md"
+        "docs/dashboard/acceptance.md",
+        ".agents/skills/harness-frontend-product-design/SKILL.md"
       ],
-      "machineConsumers": ["check-doc-links", "check-doc-governance"],
+      "machineConsumers": [
+        "check-doc-links",
+        "check-doc-governance"
+      ],
       "reviewAfter": "2026-06-26",
-      "lastVerifiedWith": ["npx pnpm@9.15.4 check"],
-      "reorgTrigger": "Dashboard global shell, route layout, responsive behavior, or per-surface composition changes."
+      "lastVerifiedWith": [
+        "npx pnpm@9.15.4 check"
+      ],
+      "reorgTrigger": "Workbench page specs, page-local layout contracts, implementation readiness, or frontend design reading order changes."
+    },
+    {
+      "path": "docs/dashboard/hard-layout-specs/agent-workbench-shell-v1.md",
+      "ownerRole": "product-design",
+      "status": "deprecated",
+      "lifecycle": "archival",
+      "canonicalFor": [
+        "deprecated Agent Workbench shell v1 hard-layout attempt",
+        "historical vague shell spec superseded by page-local layout contracts"
+      ],
+      "dependsOn": [
+        "docs/dashboard/hard-layout-specs/README.md",
+        "docs/dashboard/layout-decisions.md",
+        "docs/dashboard/rejected-implementations/pr-6-agent-workbench-shell.md"
+      ],
+      "machineConsumers": [
+        "check-doc-links",
+        "check-doc-governance"
+      ],
+      "reviewAfter": "2026-06-26",
+      "lastVerifiedWith": [
+        "npx pnpm@9.15.4 check"
+      ],
+      "reorgTrigger": "Remove after all references to shell-v1 are migrated to historical rejected implementation records."
     },
     {
       "path": "docs/dashboard/frontend-architecture.md",
@@ -423,29 +574,30 @@
       "status": "planned",
       "lifecycle": "volatile",
       "canonicalFor": [
-        "Agent Dashboard frontend architecture",
-        "React/Vite build boundary",
-        "Dashboard read-model ownership"
+        "Agent Workbench frontend architecture",
+        "Workbench technical stack decision",
+        "Workbench old-code disposition",
+        "Workbench primitive boundaries"
       ],
       "dependsOn": [
         "docs/dashboard.md",
-        "docs/dashboard/design-principles.md",
-        "docs/dashboard/layout-variants.md",
-        "docs/dashboard/layout-decisions.md",
-        "docs/dashboard/ui-ux-layout.md",
-        "docs/dashboard/read-model.md",
+        "docs/dashboard/frontend-design.md",
+        "docs/dashboard/pages/README.md",
+        "docs/dashboard/rejected-implementations/README.md",
         "docs/dashboard/acceptance.md",
-        "docs/dashboard/runbook.md",
         "docs/decisions/0014-react-vite-agent-dashboard.md",
         "apps/agent-dashboard/vite.config.ts",
-        "apps/agent-dashboard/src/types.ts",
-        "apps/agent-dashboard/src/readModel.ts",
-        "apps/agent-dashboard/src/warnings.ts"
+        "apps/agent-dashboard/src/types.ts"
       ],
-      "machineConsumers": ["check-doc-links", "check-doc-governance"],
+      "machineConsumers": [
+        "check-doc-links",
+        "check-doc-governance"
+      ],
       "reviewAfter": "2026-06-26",
-      "lastVerifiedWith": ["npx pnpm@9.15.4 check"],
-      "reorgTrigger": "Frontend stack, build output, Dashboard read model, or static/live loading boundary changes."
+      "lastVerifiedWith": [
+        "npx pnpm@9.15.4 check"
+      ],
+      "reorgTrigger": "Frontend stack, dependency policy, primitive boundaries, graph strategy, or old-code disposition changes."
     },
     {
       "path": "docs/dashboard/read-model.md",
@@ -453,7 +605,7 @@
       "status": "planned",
       "lifecycle": "volatile",
       "canonicalFor": [
-        "Agent Dashboard read-model projections",
+        "Agent Workbench read-model projections",
         "goal-scoped Dashboard filtering",
         "advisory warning ownership",
         "warning promotion rules"
@@ -463,14 +615,17 @@
         "docs/dashboard/design-principles.md",
         "docs/dashboard/frontend-architecture.md",
         "docs/data-model.md",
-        "apps/agent-dashboard/src/types.ts",
-        "apps/agent-dashboard/src/readModel.ts",
-        "apps/agent-dashboard/src/warnings.ts"
+        "apps/agent-dashboard/src/types.ts"
       ],
-      "machineConsumers": ["check-doc-links", "check-doc-governance"],
+      "machineConsumers": [
+        "check-doc-links",
+        "check-doc-governance"
+      ],
       "reviewAfter": "2026-06-26",
-      "lastVerifiedWith": ["npx pnpm@9.15.4 check"],
-      "reorgTrigger": "Dashboard warning logic, read-model selectors, or canonical promotion rules change."
+      "lastVerifiedWith": [
+        "npx pnpm@9.15.4 check"
+      ],
+      "reorgTrigger": "Workbench warning logic, read-model selectors, or canonical promotion rules change."
     },
     {
       "path": "docs/dashboard/acceptance.md",
@@ -478,23 +633,30 @@
       "status": "planned",
       "lifecycle": "volatile",
       "canonicalFor": [
-        "Agent Dashboard browser acceptance",
-        "Dashboard screenshot evidence",
-        "Dashboard web-quality gate"
+        "Agent Workbench screenshot-first browser acceptance",
+        "PM/User acceptance subagent gate",
+        "Workbench web-quality gate"
       ],
       "dependsOn": [
         "docs/dashboard.md",
         "docs/dashboard/design-principles.md",
         "docs/dashboard/layout-decisions.md",
-        "docs/dashboard/ui-ux-layout.md",
+        "docs/dashboard/frontend-design.md",
         "docs/dashboard/frontend-architecture.md",
         "docs/dashboard/read-model.md",
-        "package.json"
+        "package.json",
+        "docs/dashboard/pages/README.md",
+        "docs/dashboard/rejected-implementations/README.md"
       ],
-      "machineConsumers": ["check-doc-links", "check-doc-governance"],
+      "machineConsumers": [
+        "check-doc-links",
+        "check-doc-governance"
+      ],
       "reviewAfter": "2026-06-26",
-      "lastVerifiedWith": ["npx pnpm@9.15.4 check"],
-      "reorgTrigger": "Browser evidence, web-quality gates, screenshot policy, or frontend acceptance sequence changes."
+      "lastVerifiedWith": [
+        "npx pnpm@9.15.4 check"
+      ],
+      "reorgTrigger": "Browser evidence, PM/User subagent gates, screenshot policy, rejected implementation rules, or web-quality acceptance changes."
     },
     {
       "path": "docs/dashboard/runbook.md",
@@ -502,7 +664,7 @@
       "status": "planned",
       "lifecycle": "volatile",
       "canonicalFor": [
-        "Agent Dashboard run instructions",
+        "Agent Workbench run instructions",
         "snapshot loading",
         "live API startup",
         "frontend build commands"
@@ -510,16 +672,21 @@
       "dependsOn": [
         "docs/dashboard.md",
         "docs/dashboard/design-principles.md",
-        "docs/dashboard/ui-ux-layout.md",
+        "docs/dashboard/frontend-design.md",
         "docs/dashboard/frontend-architecture.md",
         "docs/dashboard/acceptance.md",
         "apps/agent-dashboard/vite.config.ts",
         "package.json"
       ],
-      "machineConsumers": ["check-doc-links", "check-doc-governance"],
+      "machineConsumers": [
+        "check-doc-links",
+        "check-doc-governance"
+      ],
       "reviewAfter": "2026-06-26",
-      "lastVerifiedWith": ["npx pnpm@9.15.4 check"],
-      "reorgTrigger": "Dashboard run commands, API port, build output, or static artifact workflow changes."
+      "lastVerifiedWith": [
+        "npx pnpm@9.15.4 check"
+      ],
+      "reorgTrigger": "Workbench run commands, API port, build output, or static artifact workflow changes."
     },
     {
       "path": "docs/workflow-git-pr.md",
@@ -538,9 +705,14 @@
         "docs/architecture.md",
         "docs/decisions/README.md"
       ],
-      "machineConsumers": ["check-doc-links", "check-doc-governance"],
+      "machineConsumers": [
+        "check-doc-links",
+        "check-doc-governance"
+      ],
       "reviewAfter": "2026-06-26",
-      "lastVerifiedWith": ["npx pnpm@9.15.4 check"],
+      "lastVerifiedWith": [
+        "npx pnpm@9.15.4 check"
+      ],
       "reorgTrigger": "Task concurrency, worktree, PR, proposal, review, or decision workflow changes."
     },
     {
@@ -554,7 +726,7 @@
         "message queue semantics",
         "peer-to-peer agent messaging",
         "provider event reducer",
-        "Dashboard control-plane roadmap"
+        "Workbench control-plane roadmap"
       ],
       "dependsOn": [
         "docs/prd.md",
@@ -566,7 +738,10 @@
         "docs/integration/codex.md",
         "docs/integration/codex-message-delivery.md"
       ],
-      "machineConsumers": ["check-doc-links", "check-doc-governance"],
+      "machineConsumers": [
+        "check-doc-links",
+        "check-doc-governance"
+      ],
       "reviewAfter": "2026-06-26",
       "lastVerifiedWith": [
         "npx pnpm@9.15.4 check",
@@ -579,16 +754,25 @@
       "ownerRole": "product-architecture",
       "status": "planned",
       "lifecycle": "volatile",
-      "canonicalFor": ["goal design artifacts", "goal evaluation workflow", "reusable goal cases"],
+      "canonicalFor": [
+        "goal design artifacts",
+        "goal evaluation workflow",
+        "reusable goal cases"
+      ],
       "dependsOn": [
         "docs/prd.md",
         "docs/design-basis.md",
         "docs/architecture.md",
         "examples/goal-cases/README.md"
       ],
-      "machineConsumers": ["check-doc-links", "check-doc-governance"],
+      "machineConsumers": [
+        "check-doc-links",
+        "check-doc-governance"
+      ],
       "reviewAfter": "2026-06-26",
-      "lastVerifiedWith": ["npx pnpm@9.15.4 check"],
+      "lastVerifiedWith": [
+        "npx pnpm@9.15.4 check"
+      ],
       "reorgTrigger": "GoalDesign, GoalEvaluation, or GoalCase fields stabilize enough to move into schemas and CLI/API."
     },
     {
@@ -607,9 +791,14 @@
         "docs/integration/codex.md",
         "docs/integration/codex-message-delivery.md"
       ],
-      "machineConsumers": ["check-doc-links", "check-doc-governance"],
+      "machineConsumers": [
+        "check-doc-links",
+        "check-doc-governance"
+      ],
       "reviewAfter": "2026-06-26",
-      "lastVerifiedWith": ["npx pnpm@9.15.4 check"],
+      "lastVerifiedWith": [
+        "npx pnpm@9.15.4 check"
+      ],
       "reorgTrigger": "Provider integration template, provider-neutral boundary, or provider roster changes."
     },
     {
@@ -617,7 +806,11 @@
       "ownerRole": "provider-integration",
       "status": "planned",
       "lifecycle": "volatile",
-      "canonicalFor": ["Codex provider integration", "app-server vs hooks vs skills vs plugins", "Codex fallback modes"],
+      "canonicalFor": [
+        "Codex provider integration",
+        "app-server vs hooks vs skills vs plugins",
+        "Codex fallback modes"
+      ],
       "dependsOn": [
         "docs/agent-runtime.md",
         "docs/integration/README.md",
@@ -627,7 +820,10 @@
         "docs/mvp.md",
         "docs/schemas.md"
       ],
-      "machineConsumers": ["check-doc-links", "check-doc-governance"],
+      "machineConsumers": [
+        "check-doc-links",
+        "check-doc-governance"
+      ],
       "reviewAfter": "2026-06-26",
       "lastVerifiedWith": [
         "https://developers.openai.com/codex/app-server",
@@ -655,9 +851,15 @@
         "docs/dashboard/read-model.md",
         "crates/harness-cli/src/main.rs"
       ],
-      "machineConsumers": ["check-doc-links", "check-doc-governance"],
+      "machineConsumers": [
+        "check-doc-links",
+        "check-doc-governance"
+      ],
       "reviewAfter": "2026-06-26",
-      "lastVerifiedWith": ["cargo test -p harness-cli", "npx pnpm@9.15.4 check"],
+      "lastVerifiedWith": [
+        "cargo test -p harness-cli",
+        "npx pnpm@9.15.4 check"
+      ],
       "reorgTrigger": "Codex delivery queue, provider gateway, MessageDelivery schema, app-server protocol, or Dashboard projection behavior changes."
     },
     {
@@ -665,15 +867,25 @@
       "ownerRole": "provider-integration",
       "status": "planned",
       "lifecycle": "volatile",
-      "canonicalFor": ["Codex source findings", "Codex app-server audit", "provider integration refresh notes"],
+      "canonicalFor": [
+        "Codex source findings",
+        "Codex app-server audit",
+        "provider integration refresh notes"
+      ],
       "dependsOn": [
         "docs/agent-runtime.md",
         "docs/integration/codex.md",
         "docs/decisions/README.md"
       ],
-      "machineConsumers": ["check-doc-links", "check-doc-governance"],
+      "machineConsumers": [
+        "check-doc-links",
+        "check-doc-governance"
+      ],
       "reviewAfter": "2026-06-26",
-      "lastVerifiedWith": ["Codex source audit", "npx pnpm@9.15.4 check"],
+      "lastVerifiedWith": [
+        "Codex source audit",
+        "npx pnpm@9.15.4 check"
+      ],
       "reorgTrigger": "Codex app-server protocol, hooks, plugins, native subagents, or permission behavior changes."
     },
     {
@@ -681,11 +893,25 @@
       "ownerRole": "operations",
       "status": "stable",
       "lifecycle": "volatile",
-      "canonicalFor": ["current gates", "planned gates", "local validation"],
-      "dependsOn": ["package.json", ".github/workflows/ci.yml", "docs/schemas.md"],
-      "machineConsumers": ["check-doc-links", "check-doc-governance"],
+      "canonicalFor": [
+        "current gates",
+        "planned gates",
+        "local validation"
+      ],
+      "dependsOn": [
+        "package.json",
+        ".github/workflows/ci.yml",
+        "docs/schemas.md"
+      ],
+      "machineConsumers": [
+        "check-doc-links",
+        "check-doc-governance"
+      ],
       "reviewAfter": "2026-07-26",
-      "lastVerifiedWith": ["npx pnpm@9.15.4 check", "cargo clippy --all-targets -- -D warnings"],
+      "lastVerifiedWith": [
+        "npx pnpm@9.15.4 check",
+        "cargo clippy --all-targets -- -D warnings"
+      ],
       "reorgTrigger": "CI jobs, local commands, or release gates change."
     },
     {
@@ -693,11 +919,24 @@
       "ownerRole": "schema",
       "status": "stable",
       "lifecycle": "stable",
-      "canonicalFor": ["schema index", "contract maturity", "Rust coverage rule"],
-      "dependsOn": ["schemas/README.md", "crates/harness-core/src/lib.rs"],
-      "machineConsumers": ["check-doc-links", "check-doc-governance"],
+      "canonicalFor": [
+        "schema index",
+        "contract maturity",
+        "Rust coverage rule"
+      ],
+      "dependsOn": [
+        "schemas/README.md",
+        "crates/harness-core/src/lib.rs"
+      ],
+      "machineConsumers": [
+        "check-doc-links",
+        "check-doc-governance"
+      ],
       "reviewAfter": "2026-08-26",
-      "lastVerifiedWith": ["npx pnpm@9.15.4 check", "cargo test"],
+      "lastVerifiedWith": [
+        "npx pnpm@9.15.4 check",
+        "cargo test"
+      ],
       "reorgTrigger": "Schemas, core Rust types, or contract maturity labels change."
     },
     {
@@ -705,7 +944,10 @@
       "ownerRole": "architecture",
       "status": "stable",
       "lifecycle": "stable",
-      "canonicalFor": ["architecture decisions", "durable tradeoffs"],
+      "canonicalFor": [
+        "architecture decisions",
+        "durable tradeoffs"
+      ],
       "dependsOn": [
         "docs/design-basis.md",
         "docs/architecture.md",
@@ -716,10 +958,436 @@
         "docs/integration/codex-message-delivery.md",
         "docs/integration/codex-source-audit.md"
       ],
-      "machineConsumers": ["check-doc-links", "check-doc-governance"],
+      "machineConsumers": [
+        "check-doc-links",
+        "check-doc-governance"
+      ],
       "reviewAfter": "2026-08-26",
-      "lastVerifiedWith": ["npx pnpm@9.15.4 check"],
+      "lastVerifiedWith": [
+        "npx pnpm@9.15.4 check"
+      ],
       "reorgTrigger": "Decisions exceed one file or need numbered ADR lifecycle."
+    },
+    {
+      "path": "docs/dashboard/pages/README.md",
+      "ownerRole": "product-design",
+      "status": "planned",
+      "lifecycle": "volatile",
+      "canonicalFor": [
+        "Agent Workbench page spec index",
+        "Agent Workbench page spec and layout contract template"
+      ],
+      "dependsOn": [
+        "docs/dashboard/frontend-design.md",
+        "docs/dashboard/design-principles.md",
+        ".agents/skills/harness-frontend-product-design/SKILL.md"
+      ],
+      "machineConsumers": [
+        "check-doc-links",
+        "check-doc-governance"
+      ],
+      "reviewAfter": "2026-06-26",
+      "lastVerifiedWith": [
+        "npx pnpm@9.15.4 check"
+      ],
+      "reorgTrigger": "Core Workbench page list, page-spec template, page-local layout contract template, or page-spec boundary changes."
+    },
+    {
+      "path": "docs/dashboard/pages/vision-overview.md",
+      "ownerRole": "product-design",
+      "status": "planned",
+      "lifecycle": "volatile",
+      "canonicalFor": [
+        "Vision goal collection page spec",
+        "distance-to-vision UI contract",
+        "page-local layout contract"
+      ],
+      "dependsOn": [
+        "docs/prd.md",
+        "docs/concept-model.md",
+        "docs/dashboard.md",
+        "docs/dashboard/frontend-design.md",
+        "docs/dashboard/design-principles.md",
+        "docs/dashboard/layout-decisions.md",
+        "docs/dashboard/read-model.md",
+        ".agents/skills/harness-frontend-product-design/SKILL.md"
+      ],
+      "machineConsumers": [
+        "check-doc-links",
+        "check-doc-governance"
+      ],
+      "reviewAfter": "2026-06-26",
+      "lastVerifiedWith": [
+        "npx pnpm@9.15.4 check"
+      ],
+      "reorgTrigger": "Vision overview page contract, layout contract dimensions, ASCII diagrams, first viewport, or scroll ownership changes."
+    },
+    {
+      "path": "docs/dashboard/pages/team-workspace.md",
+      "ownerRole": "product-design",
+      "status": "planned",
+      "lifecycle": "volatile",
+      "canonicalFor": [
+        "persistent AgentTeam workspace page spec",
+        "team collaboration UI contract",
+        "page-local layout contract"
+      ],
+      "dependsOn": [
+        "docs/prd.md",
+        "docs/concept-model.md",
+        "docs/dashboard.md",
+        "docs/dashboard/frontend-design.md",
+        "docs/dashboard/design-principles.md",
+        "docs/dashboard/layout-decisions.md",
+        "docs/dashboard/read-model.md",
+        ".agents/skills/harness-frontend-product-design/SKILL.md"
+      ],
+      "machineConsumers": [
+        "check-doc-links",
+        "check-doc-governance"
+      ],
+      "reviewAfter": "2026-06-26",
+      "lastVerifiedWith": [
+        "npx pnpm@9.15.4 check"
+      ],
+      "reorgTrigger": "Team workspace page contract, layout contract dimensions, ASCII diagrams, first viewport, or scroll ownership changes."
+    },
+    {
+      "path": "docs/dashboard/pages/agent-member-workbench.md",
+      "ownerRole": "product-design",
+      "status": "planned",
+      "lifecycle": "volatile",
+      "canonicalFor": [
+        "AgentMember workbench page spec",
+        "member runtime and message UI contract",
+        "page-local layout contract"
+      ],
+      "dependsOn": [
+        "docs/prd.md",
+        "docs/concept-model.md",
+        "docs/dashboard.md",
+        "docs/dashboard/frontend-design.md",
+        "docs/dashboard/design-principles.md",
+        "docs/dashboard/layout-decisions.md",
+        "docs/dashboard/read-model.md",
+        ".agents/skills/harness-frontend-product-design/SKILL.md"
+      ],
+      "machineConsumers": [
+        "check-doc-links",
+        "check-doc-governance"
+      ],
+      "reviewAfter": "2026-06-26",
+      "lastVerifiedWith": [
+        "npx pnpm@9.15.4 check"
+      ],
+      "reorgTrigger": "AgentMember workbench page contract, layout contract dimensions, ASCII diagrams, first viewport, or scroll ownership changes."
+    },
+    {
+      "path": "docs/dashboard/pages/goal-document.md",
+      "ownerRole": "product-design",
+      "status": "planned",
+      "lifecycle": "volatile",
+      "canonicalFor": [
+        "Goal document page spec",
+        "GoalDesign and GoalEvaluation UI contract",
+        "page-local layout contract"
+      ],
+      "dependsOn": [
+        "docs/prd.md",
+        "docs/concept-model.md",
+        "docs/dashboard.md",
+        "docs/dashboard/frontend-design.md",
+        "docs/dashboard/design-principles.md",
+        "docs/dashboard/layout-decisions.md",
+        "docs/dashboard/read-model.md",
+        ".agents/skills/harness-frontend-product-design/SKILL.md"
+      ],
+      "machineConsumers": [
+        "check-doc-links",
+        "check-doc-governance"
+      ],
+      "reviewAfter": "2026-06-26",
+      "lastVerifiedWith": [
+        "npx pnpm@9.15.4 check"
+      ],
+      "reorgTrigger": "Goal document page contract, layout contract dimensions, ASCII diagrams, first viewport, or scroll ownership changes."
+    },
+    {
+      "path": "docs/dashboard/pages/task-document.md",
+      "ownerRole": "product-design",
+      "status": "planned",
+      "lifecycle": "volatile",
+      "canonicalFor": [
+        "Task document page spec",
+        "assignment evidence review decision UI contract",
+        "page-local layout contract"
+      ],
+      "dependsOn": [
+        "docs/prd.md",
+        "docs/concept-model.md",
+        "docs/dashboard.md",
+        "docs/dashboard/frontend-design.md",
+        "docs/dashboard/design-principles.md",
+        "docs/dashboard/layout-decisions.md",
+        "docs/dashboard/read-model.md",
+        ".agents/skills/harness-frontend-product-design/SKILL.md"
+      ],
+      "machineConsumers": [
+        "check-doc-links",
+        "check-doc-governance"
+      ],
+      "reviewAfter": "2026-06-26",
+      "lastVerifiedWith": [
+        "npx pnpm@9.15.4 check"
+      ],
+      "reorgTrigger": "Task document page contract, layout contract dimensions, ASCII diagrams, first viewport, or scroll ownership changes."
+    },
+    {
+      "path": "docs/dashboard/pages/graph-kanban.md",
+      "ownerRole": "product-design",
+      "status": "planned",
+      "lifecycle": "volatile",
+      "canonicalFor": [
+        "Goal/Task graph and Kanban UI contract",
+        "relationship and execution projection page spec",
+        "page-local layout contract"
+      ],
+      "dependsOn": [
+        "docs/prd.md",
+        "docs/concept-model.md",
+        "docs/dashboard.md",
+        "docs/dashboard/frontend-design.md",
+        "docs/dashboard/design-principles.md",
+        "docs/dashboard/layout-decisions.md",
+        "docs/dashboard/read-model.md",
+        ".agents/skills/harness-frontend-product-design/SKILL.md"
+      ],
+      "machineConsumers": [
+        "check-doc-links",
+        "check-doc-governance"
+      ],
+      "reviewAfter": "2026-06-26",
+      "lastVerifiedWith": [
+        "npx pnpm@9.15.4 check"
+      ],
+      "reorgTrigger": "Graph and Kanban page contract, layout contract dimensions, ASCII diagrams, first viewport, or scroll ownership changes."
+    },
+    {
+      "path": "docs/dashboard/pages/docs-context.md",
+      "ownerRole": "product-design",
+      "status": "planned",
+      "lifecycle": "volatile",
+      "canonicalFor": [
+        "mounted docs context page spec",
+        "object-linked docs UI contract",
+        "page-local layout contract"
+      ],
+      "dependsOn": [
+        "docs/prd.md",
+        "docs/concept-model.md",
+        "docs/dashboard.md",
+        "docs/dashboard/frontend-design.md",
+        "docs/dashboard/design-principles.md",
+        "docs/dashboard/layout-decisions.md",
+        "docs/dashboard/read-model.md",
+        ".agents/skills/harness-frontend-product-design/SKILL.md"
+      ],
+      "machineConsumers": [
+        "check-doc-links",
+        "check-doc-governance"
+      ],
+      "reviewAfter": "2026-06-26",
+      "lastVerifiedWith": [
+        "npx pnpm@9.15.4 check"
+      ],
+      "reorgTrigger": "Docs context page contract, layout contract dimensions, ASCII diagrams, first viewport, or scroll ownership changes."
+    },
+    {
+      "path": "docs/dashboard/pages/evidence-review-decision.md",
+      "ownerRole": "product-design",
+      "status": "planned",
+      "lifecycle": "volatile",
+      "canonicalFor": [
+        "acceptance proof UI contract",
+        "evidence review decision page spec",
+        "page-local layout contract"
+      ],
+      "dependsOn": [
+        "docs/prd.md",
+        "docs/concept-model.md",
+        "docs/dashboard.md",
+        "docs/dashboard/frontend-design.md",
+        "docs/dashboard/design-principles.md",
+        "docs/dashboard/layout-decisions.md",
+        "docs/dashboard/read-model.md",
+        ".agents/skills/harness-frontend-product-design/SKILL.md"
+      ],
+      "machineConsumers": [
+        "check-doc-links",
+        "check-doc-governance"
+      ],
+      "reviewAfter": "2026-06-26",
+      "lastVerifiedWith": [
+        "npx pnpm@9.15.4 check"
+      ],
+      "reorgTrigger": "Evidence review decision page contract, layout contract dimensions, ASCII diagrams, first viewport, or scroll ownership changes."
+    },
+    {
+      "path": "docs/dashboard/pages/warnings-repair.md",
+      "ownerRole": "product-design",
+      "status": "planned",
+      "lifecycle": "volatile",
+      "canonicalFor": [
+        "warning queue and repair UI contract",
+        "workflow risk page spec",
+        "page-local layout contract"
+      ],
+      "dependsOn": [
+        "docs/prd.md",
+        "docs/concept-model.md",
+        "docs/dashboard.md",
+        "docs/dashboard/frontend-design.md",
+        "docs/dashboard/design-principles.md",
+        "docs/dashboard/layout-decisions.md",
+        "docs/dashboard/read-model.md",
+        ".agents/skills/harness-frontend-product-design/SKILL.md"
+      ],
+      "machineConsumers": [
+        "check-doc-links",
+        "check-doc-governance"
+      ],
+      "reviewAfter": "2026-06-26",
+      "lastVerifiedWith": [
+        "npx pnpm@9.15.4 check"
+      ],
+      "reorgTrigger": "Warnings and repair page contract, layout contract dimensions, ASCII diagrams, first viewport, or scroll ownership changes."
+    },
+    {
+      "path": "docs/dashboard/pages/debug.md",
+      "ownerRole": "product-design",
+      "status": "planned",
+      "lifecycle": "volatile",
+      "canonicalFor": [
+        "debug drawer and raw snapshot UI contract",
+        "secondary debug surface page spec",
+        "page-local layout contract"
+      ],
+      "dependsOn": [
+        "docs/prd.md",
+        "docs/concept-model.md",
+        "docs/dashboard.md",
+        "docs/dashboard/frontend-design.md",
+        "docs/dashboard/design-principles.md",
+        "docs/dashboard/layout-decisions.md",
+        "docs/dashboard/read-model.md",
+        ".agents/skills/harness-frontend-product-design/SKILL.md"
+      ],
+      "machineConsumers": [
+        "check-doc-links",
+        "check-doc-governance"
+      ],
+      "reviewAfter": "2026-06-26",
+      "lastVerifiedWith": [
+        "npx pnpm@9.15.4 check"
+      ],
+      "reorgTrigger": "Debug page contract, layout contract dimensions, ASCII diagrams, first viewport, or scroll ownership changes."
+    },
+    {
+      "path": "docs/dashboard/hard-layout-specs/README.md",
+      "ownerRole": "frontend-design",
+      "status": "deprecated",
+      "lifecycle": "archival",
+      "canonicalFor": [
+        "historical Agent Workbench hard-layout attempt index",
+        "deprecated hard-layout template retained for failure analysis"
+      ],
+      "dependsOn": [
+        "docs/dashboard/frontend-design.md",
+        "docs/dashboard/pages/README.md",
+        "docs/dashboard/acceptance.md",
+        ".agents/skills/harness-frontend-product-design/SKILL.md"
+      ],
+      "machineConsumers": [
+        "check-doc-links",
+        "check-doc-governance"
+      ],
+      "reviewAfter": "2026-06-26",
+      "lastVerifiedWith": [
+        "npx pnpm@9.15.4 check"
+      ],
+      "reorgTrigger": "Historical hard-layout attempts are removed, archived elsewhere, or referenced by rejected implementation analysis."
+    },
+    {
+      "path": "docs/dashboard/hard-layout-specs/shell-v2.md",
+      "ownerRole": "frontend-design",
+      "status": "deprecated",
+      "lifecycle": "archival",
+      "canonicalFor": [
+        "deprecated Agent Workbench shell v2 hard-layout attempt",
+        "historical shell restart spec superseded by page-local layout contracts"
+      ],
+      "dependsOn": [
+        "docs/dashboard/hard-layout-specs/README.md",
+        "docs/dashboard/layout-decisions.md",
+        "docs/dashboard/rejected-implementations/pr-6-agent-workbench-shell.md"
+      ],
+      "machineConsumers": [
+        "check-doc-links",
+        "check-doc-governance"
+      ],
+      "reviewAfter": "2026-06-26",
+      "lastVerifiedWith": [
+        "npx pnpm@9.15.4 check"
+      ],
+      "reorgTrigger": "Remove after all references to shell-v2 are migrated to page-local layout contracts and rejected implementation records."
+    },
+    {
+      "path": "docs/dashboard/rejected-implementations/README.md",
+      "ownerRole": "frontend-quality",
+      "status": "planned",
+      "lifecycle": "archival",
+      "canonicalFor": [
+        "Agent Workbench rejected implementation index",
+        "rejected frontend implementation template"
+      ],
+      "dependsOn": [
+        "docs/dashboard/acceptance.md",
+        "docs/dashboard/layout-decisions.md",
+        ".agents/skills/harness-frontend-product-design/SKILL.md"
+      ],
+      "machineConsumers": [
+        "check-doc-links",
+        "check-doc-governance"
+      ],
+      "reviewAfter": "2026-06-26",
+      "lastVerifiedWith": [
+        "npx pnpm@9.15.4 check"
+      ],
+      "reorgTrigger": "Rejected implementation record template or failure archive structure changes."
+    },
+    {
+      "path": "docs/dashboard/rejected-implementations/pr-6-agent-workbench-shell.md",
+      "ownerRole": "frontend-quality",
+      "status": "archival",
+      "lifecycle": "archival",
+      "canonicalFor": [
+        "PR #6 rejected Agent Workbench implementation record",
+        "dashboard/card-dump anti-pattern evidence"
+      ],
+      "dependsOn": [
+        "docs/dashboard/rejected-implementations/README.md",
+        "docs/dashboard/hard-layout-specs/shell-v2.md",
+        "docs/dashboard/acceptance.md"
+      ],
+      "machineConsumers": [
+        "check-doc-links",
+        "check-doc-governance"
+      ],
+      "reviewAfter": "2026-06-26",
+      "lastVerifiedWith": [
+        "npx pnpm@9.15.4 check"
+      ],
+      "reorgTrigger": "PR #6 rejection evidence, restart point, or code disposition changes."
     }
   ]
 }

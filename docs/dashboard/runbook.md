@@ -1,12 +1,13 @@
-# Agent Dashboard
+# Agent Workbench
 
-The Agent Dashboard is the operational UI for the generic harness.
+The Agent Workbench is the operational UI for the generic harness. Legacy
+commands and package paths still use `dashboard`.
 
 Product-level design and acceptance are in
 [../dashboard.md](../dashboard.md). Frontend architecture is in
 [frontend-architecture.md](frontend-architecture.md). UI/UX principles are in
-[design-principles.md](design-principles.md). Layout is in
-[ui-ux-layout.md](ui-ux-layout.md). Frontend acceptance is in
+[design-principles.md](design-principles.md). Frontend design is in
+[frontend-design.md](frontend-design.md). Frontend acceptance is in
 [acceptance.md](acceptance.md). The read model is in [read-model.md](read-model.md).
 The React/Vite decision is in
 [../decisions/0014-react-vite-agent-dashboard.md](../decisions/0014-react-vite-agent-dashboard.md).
@@ -24,7 +25,7 @@ cargo run -p harness-cli -- dashboard snapshot > .harness/dashboard-snapshot.jso
 
 Open `apps/agent-dashboard/web/index.html`, then load or paste the JSON.
 
-For live local state, start the API and use the Dashboard's live URL controls:
+For live local state, start the API and use the Workbench's live URL controls:
 
 ```bash
 cargo run -p harness-cli -- serve --addr 127.0.0.1:8787
@@ -43,7 +44,7 @@ POST /v1/tasks/{id}/request-review
 ```
 
 These actions route through the same Rust CLI value paths as operator commands
-and return an updated snapshot for the Dashboard. They are not local UI-only
+and return an updated snapshot for the Workbench. They are not local UI-only
 state changes.
 
 ## Develop
@@ -59,7 +60,7 @@ remains easy to open or archive.
 
 ## Current Surface
 
-The Dashboard polls `GET /v1/snapshot` and still supports file or pasted
+The Workbench polls `GET /v1/snapshot` and still supports file or pasted
 snapshots for offline review. Live mode stops when loading fails, and pasted or
 file snapshots stop live polling.
 
