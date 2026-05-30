@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { fetchSnapshot } from "../api";
+import { fetchSnapshot, postAction } from "../api";
 import { demoSnapshot } from "../model/demoSnapshot";
 import { buildWorkbenchModel } from "../model/readModel";
 import type { DashboardSnapshot } from "../types";
@@ -8,6 +8,7 @@ import { defaultSelection, type SelectionState } from "./selection";
 import { WorkbenchShell } from "./WorkbenchShell";
 
 const apiDefault = "http://127.0.0.1:8787";
+const liveSourceLabel = "live /v1/snapshot";
 
 export function App() {
   const [apiUrl, setApiUrl] = useState(apiDefault);
@@ -19,19 +20,37 @@ export function App() {
 
   const model = useMemo(() => buildWorkbenchModel(snapshot, selection), [snapshot, selection]);
 
+  // Actions are only honest against a live snapshot; the offline fixture is read-only.
+  const isLive = sourceLabel === liveSourceLabel;
+
   async function refreshLive() {
     setIsLoading(true);
     setSourceError(null);
     try {
       const next = await fetchSnapshot(apiUrl);
       setSnapshot(next);
-      setSourceLabel("live /v1/snapshot");
+      setSourceLabel(liveSourceLabel);
     } catch (error) {
       setSourceError(error instanceof Error ? error.message : String(error));
       setSourceLabel("offline design fixture");
       setSnapshot(demoSnapshot);
     } finally {
       setIsLoading(false);
+    }
+  }
+
+  async function runAction(path: string, body?: unknown) {
+    if (!isLive) return;
+    setSourceError(null);
+    try {
+      const response = await postAction(apiUrl, path, body);
+      if (response.snapshot) {
+        setSnapshot(response.snapshot);
+      } else {
+        await refreshLive();
+      }
+    } catch (error) {
+      setSourceError(error instanceof Error ? error.message : String(error));
     }
   }
 
@@ -47,6 +66,8 @@ export function App() {
         selection={selection}
         sourceError={sourceError}
         sourceLabel={sourceLabel}
+        actionsEnabled={isLive}
+        onAction={(path, body) => void runAction(path, body)}
       />
     </TooltipProvider>
   );

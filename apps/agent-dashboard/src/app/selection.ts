@@ -3,10 +3,9 @@ export type SurfaceId =
   | "vision"
   | "goal"
   | "task"
-  | "graph"
+  | "tasks"
   | "member"
   | "docs"
-  | "decisions"
   | "warnings"
   | "debug";
 

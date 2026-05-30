@@ -20,9 +20,16 @@ import {
   Workflow,
 } from "lucide-react";
 
+import type { ComponentProps, ReactNode } from "react";
+
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import {
   EmptyState,
   MetaList,
@@ -50,14 +57,41 @@ import type { SelectionState } from "../app/selection";
 interface SurfaceProps {
   model: WorkbenchModel;
   onSelectionChange: (selection: Partial<SelectionState>) => void;
+  /** True only when the snapshot is the live source; gates write actions. */
+  actionsEnabled?: boolean;
+  /** POST a harness action then refresh the snapshot. */
+  onAction?: (path: string, body?: unknown) => void;
 }
 
-/** Goal carries 3 fields in the schema that the frontend Goal type omits today. */
-type GoalExtra = Goal & {
-  priority?: string;
-  created_at?: string;
-  updated_at?: string;
-};
+const ACTIONS_DISABLED_HINT = "Connect a live source to enable actions";
+
+/**
+ * Primary action button that is honest about read-only mode: when actions are
+ * disabled it renders visibly disabled with an explanatory tooltip instead of
+ * silently doing nothing.
+ */
+function ActionButton({
+  enabled,
+  children,
+  ...props
+}: ComponentProps<typeof Button> & { enabled?: boolean; children: ReactNode }) {
+  if (enabled) {
+    return <Button {...props}>{children}</Button>;
+  }
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        {/* span wrapper keeps the tooltip reachable while the button is disabled */}
+        <span className="inline-flex">
+          <Button {...props} disabled title={ACTIONS_DISABLED_HINT}>
+            {children}
+          </Button>
+        </span>
+      </TooltipTrigger>
+      <TooltipContent side="bottom">{ACTIONS_DISABLED_HINT}</TooltipContent>
+    </Tooltip>
+  );
+}
 
 /* ------------------------------------------------------------------ */
 /* Shared building blocks                                              */
@@ -355,9 +389,10 @@ function GoalCard({
 /* Team workspace (flagship)                                          */
 /* ------------------------------------------------------------------ */
 
-export function TeamWorkspace({ model, onSelectionChange }: SurfaceProps) {
+export function TeamWorkspace({ model, onSelectionChange, actionsEnabled, onAction }: SurfaceProps) {
   const team = model.selectedTeam;
   const goal = model.selectedGoal;
+  const member = model.selectedMember;
   return (
     <div className="space-y-5">
       <SurfaceHeader
@@ -369,14 +404,28 @@ export function TeamWorkspace({ model, onSelectionChange }: SurfaceProps) {
         }
         actions={
           <>
-            <Button variant="secondary" size="sm">
+            <ActionButton
+              enabled={actionsEnabled && Boolean(model.selectedTask)}
+              variant="secondary"
+              size="sm"
+              onClick={() =>
+                model.selectedTask &&
+                onAction?.("/v1/actions/request-review", { task_id: model.selectedTask.id })
+              }
+            >
               <ShieldCheck className="size-3.5" />
               Request review
-            </Button>
-            <Button size="sm">
+            </ActionButton>
+            <ActionButton
+              enabled={actionsEnabled && Boolean(member)}
+              size="sm"
+              onClick={() =>
+                member && onAction?.("/v1/actions/message-member", { agent_id: member.id })
+              }
+            >
               <Send className="size-3.5" />
               Message member
-            </Button>
+            </ActionButton>
           </>
         }
       />
@@ -468,7 +517,7 @@ export function TeamWorkspace({ model, onSelectionChange }: SurfaceProps) {
             items={model.decisionQueue}
             empty="No pending decisions"
             onSelect={(ref) =>
-              ref && onSelectionChange({ taskId: ref, surface: "decisions" })
+              ref && onSelectionChange({ taskId: ref, surface: "task" })
             }
           />
         </Section>
@@ -520,10 +569,10 @@ export function VisionOverview({ model, onSelectionChange }: SurfaceProps) {
           <Button
             size="sm"
             variant="secondary"
-            onClick={() => onSelectionChange({ surface: "graph" })}
+            onClick={() => onSelectionChange({ surface: "tasks" })}
           >
             <Workflow className="size-3.5" />
-            Open graph
+            Open tasks
           </Button>
         }
       />
@@ -618,7 +667,7 @@ export function VisionOverview({ model, onSelectionChange }: SurfaceProps) {
 /* ------------------------------------------------------------------ */
 
 export function GoalDocument({ model, onSelectionChange }: SurfaceProps) {
-  const goal = model.selectedGoal as GoalExtra | undefined;
+  const goal = model.selectedGoal;
   if (!goal) {
     return (
       <EmptyState
@@ -754,7 +803,7 @@ function learningCount(value?: unknown[]): number {
 /* Task document                                                      */
 /* ------------------------------------------------------------------ */
 
-export function TaskDocument({ model, onSelectionChange }: SurfaceProps) {
+export function TaskDocument({ model, onSelectionChange, actionsEnabled, onAction }: SurfaceProps) {
   const task = model.selectedTask;
   if (!task) {
     return (
@@ -820,10 +869,15 @@ export function TaskDocument({ model, onSelectionChange }: SurfaceProps) {
         actions={
           <>
             <Badge tone={taskTone(task.status)}>{task.status}</Badge>
-            <Button size="sm" variant="secondary">
+            <ActionButton
+              enabled={actionsEnabled}
+              size="sm"
+              variant="secondary"
+              onClick={() => onAction?.("/v1/actions/request-review", { task_id: task.id })}
+            >
               <ShieldCheck className="size-3.5" />
               Request review
-            </Button>
+            </ActionButton>
           </>
         }
       />
@@ -1087,8 +1141,8 @@ export function GraphKanban({
     <div className="space-y-5">
       <SurfaceHeader
         kicker="Task relationships"
-        title="Graph / Kanban"
-        description="Synchronized projections of the same task read model. Graph canvas arrives once task counts need pan/zoom."
+        title="Tasks"
+        description="Synchronized projections of the same task read model. Kanban is the default view; the graph canvas arrives once task counts need pan/zoom."
         actions={
           <div className="flex items-center gap-1 rounded-md border border-border bg-card p-0.5">
             {(["kanban", "graph"] as const).map((value) => (
@@ -1111,11 +1165,11 @@ export function GraphKanban({
       />
 
       {mode === "graph" ? (
-        <Section title="Dependency graph" kicker="Coming next" className="rise">
+        <Section title="Dependency graph" kicker="Coming in WP5" className="rise">
           <EmptyState
             icon={Workflow}
-            title="Graph canvas not built yet"
-            description="The first slice ships as Kanban; semantic SVG graph is the next surface to rebuild."
+            title="Graph canvas coming in WP5"
+            description="Tasks ship as Kanban today; the semantic dependency graph canvas lands in WP5."
           />
         </Section>
       ) : lanes.length ? (
@@ -1157,15 +1211,88 @@ export function GraphKanban({
 /* Member workbench                                                   */
 /* ------------------------------------------------------------------ */
 
-export function MemberWorkbench({ model, onSelectionChange }: SurfaceProps) {
+/**
+ * Role-grouped member picker. The team rail is hidden below `lg`, so the Member
+ * surface ships its own picker to keep member selection working at all widths.
+ */
+function MemberPicker({
+  model,
+  onSelectionChange,
+}: SurfaceProps) {
+  const activeId = model.selectedMember?.id;
+  if (!model.members.length) {
+    return <EmptyState icon={Bot} title="No members in this team" />;
+  }
+  return (
+    <Section kicker="Pick a member" title="Team members" className="rise">
+      <div className="space-y-4 p-3">
+        {model.roleGroups.map((group) => (
+          <div key={group.role}>
+            <p className="px-1 pb-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+              {group.role}
+            </p>
+            <div className="grid gap-1.5 sm:grid-cols-2">
+              {group.members.map((m) => {
+                const active = activeId === m.id;
+                const queue = (m.inbox_count ?? 0) + (m.queued_count ?? 0);
+                return (
+                  <button
+                    key={m.id}
+                    type="button"
+                    onClick={() =>
+                      onSelectionChange({
+                        memberId: m.id,
+                        taskId: m.current_task_id ?? undefined,
+                        surface: "member",
+                      })
+                    }
+                    className={cn(
+                      "flex w-full items-center gap-2.5 rounded-md border border-transparent px-2 py-1.5 text-left transition-colors hover:bg-accent/50",
+                      active && "border-border bg-accent/60",
+                    )}
+                  >
+                    <Avatar
+                      name={m.name ?? m.id}
+                      tone={memberTone(m.runtime_status ?? m.status)}
+                    />
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-[13px] font-medium">
+                        {m.name ?? m.id}
+                      </span>
+                      <span className="block truncate text-[11px] text-muted-foreground">
+                        {m.runtime_status ?? m.status ?? "unknown"}
+                        <span className="mx-1 text-border">·</span>
+                        {taskTitle(model.tasks, m.current_task_id)}
+                      </span>
+                    </span>
+                    {queue > 0 && (
+                      <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
+                        {queue}
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        ))}
+      </div>
+    </Section>
+  );
+}
+
+export function MemberWorkbench({ model, onSelectionChange, actionsEnabled, onAction }: SurfaceProps) {
   const member = model.selectedMember;
   if (!member) {
     return (
-      <EmptyState
-        icon={Bot}
-        title="No AgentMember selected"
-        description="Select a durable member from the team rail."
-      />
+      <div className="space-y-5">
+        <SurfaceHeader
+          kicker="AgentMember workbench"
+          title="Select a member"
+          description="Pick a durable AgentMember to inspect its inbox, runtime and activity timeline."
+        />
+        <MemberPicker model={model} onSelectionChange={onSelectionChange} />
+      </div>
     );
   }
   const tone = memberTone(member.runtime_status ?? member.status);
@@ -1187,15 +1314,29 @@ export function MemberWorkbench({ model, onSelectionChange }: SurfaceProps) {
           </div>
         </div>
         <div className="ml-auto flex gap-2">
-          <Button size="sm" variant="secondary">
+          <ActionButton
+            enabled={actionsEnabled}
+            size="sm"
+            variant="secondary"
+            onClick={() => onAction?.("/v1/actions/deliver-queued", { agent_id: member.id })}
+          >
             <Inbox className="size-3.5" />
             Deliver queued
-          </Button>
-          <Button size="sm">
+          </ActionButton>
+          <ActionButton
+            enabled={actionsEnabled}
+            size="sm"
+            onClick={() => onAction?.("/v1/actions/message-member", { agent_id: member.id })}
+          >
             <Send className="size-3.5" />
             Send message
-          </Button>
+          </ActionButton>
         </div>
+      </div>
+
+      {/* Picker stays available so members can be switched without the lg-only rail. */}
+      <div className="lg:hidden">
+        <MemberPicker model={model} onSelectionChange={onSelectionChange} />
       </div>
 
       <div className="grid gap-4 lg:grid-cols-[20rem_1fr]">
@@ -1339,8 +1480,17 @@ export function WarningsRepair({ model, onSelectionChange }: SurfaceProps) {
       <SurfaceHeader
         kicker="Repair"
         title="Warnings"
-        description="Broken workflow invariants grouped by severity. Each warning links to the object it affects."
-        actions={<Badge tone={model.warnings.length ? "bad" : "good"}>{model.warnings.length} active</Badge>}
+        description="Broken workflow invariants grouped by severity, plus the decision queue waiting on operator action. Each row links to the object it affects."
+        actions={
+          <>
+            <Badge tone={model.warnings.length ? "bad" : "good"}>
+              {model.warnings.length} warnings
+            </Badge>
+            <Badge tone={model.decisionQueue.length ? "decision" : "good"}>
+              {model.decisionQueue.length} decisions
+            </Badge>
+          </>
+        }
       />
       <div className="grid gap-4 lg:grid-cols-3">
         {groups.map((group) => {
@@ -1366,6 +1516,23 @@ export function WarningsRepair({ model, onSelectionChange }: SurfaceProps) {
           );
         })}
       </div>
+
+      <Section
+        kicker="Reviews · waivers · missing proof"
+        title="Decision queue"
+        action={
+          <Badge tone={model.decisionQueue.length ? "decision" : "good"}>
+            {model.decisionQueue.length}
+          </Badge>
+        }
+        className="rise"
+      >
+        <QueueList
+          items={model.decisionQueue}
+          empty="No pending decisions"
+          onSelect={(ref) => ref && onSelectionChange({ taskId: ref, surface: "task" })}
+        />
+      </Section>
     </div>
   );
 }
