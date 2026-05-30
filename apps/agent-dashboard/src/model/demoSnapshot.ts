@@ -627,6 +627,17 @@ export const demoSnapshot: DashboardSnapshot = {
       follow_up_tasks: [],
       member_reports: [],
       decisions: [{ id: "decision-stack" }],
+      // Closeout gate (§3.7): a GoalEvaluation object exists but no closeout
+      // Decision has been recorded yet, so the goal may not close.
+      closeout_decisions: [],
+      closeout_waivers: [],
+      has_closeout_decision: false,
+      has_evaluation: true,
+      has_closeout_waiver: false,
+      may_close: false,
+      closeout_blockers: [
+        "missing closeout decision (decision_kind=closeout with >=1 evidence_id)",
+      ],
     },
   ],
 };
