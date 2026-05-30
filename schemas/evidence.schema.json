@@ -28,6 +28,12 @@
     "created_at": {
       "type": "string",
       "minLength": 1
+    },
+    "evidence_kind": {
+      "type": ["string", "null"]
+    },
+    "goal_id": {
+      "type": ["string", "null"]
     }
   }
 }

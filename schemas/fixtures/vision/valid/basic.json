@@ -1,0 +1,6 @@
+{
+  "id": "vision-1",
+  "summary": "A generic, domain-neutral multi-agent harness that self-hosts its own development.",
+  "source_refs": ["docs/prd.md", "docs/design-basis.md"],
+  "created_at": "2026-05-26T00:00:00Z"
+}

@@ -24,6 +24,7 @@ consequences, affected modules, and validation path.
 | [0014](0014-react-vite-agent-dashboard.md) | React/Vite Agent Dashboard frontend |
 | [0015](0015-autonomous-proposals-use-evidence-message-decision.md) | Autonomous proposals use Evidence, Message, and Decision first |
 | [0016](0016-tailwind-shadcn-adoption.md) | Tailwind v4 + shadcn/ui adoption for Agent Workbench |
+| [0017](0017-generic-object-model.md) | Generic object model — additive-optional schema evolution |
 
 ## Split Rule
 

@@ -54,6 +54,15 @@
     "updated_at": {
       "type": "string",
       "minLength": 1
+    },
+    "vision_id": {
+      "type": ["string", "null"]
+    },
+    "goal_design_id": {
+      "type": ["string", "null"]
+    },
+    "closed_by_decision_id": {
+      "type": ["string", "null"]
     }
   }
 }

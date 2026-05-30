@@ -93,6 +93,22 @@
     "updated_at": {
       "type": "string",
       "minLength": 1
+    },
+    "phase": {
+      "type": ["string", "null"]
+    },
+    "scope_refs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "requires_human_approval": {
+      "type": "boolean"
+    },
+    "verdict_decision_id": {
+      "type": ["string", "null"]
     }
   }
 }

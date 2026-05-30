@@ -1,0 +1,17 @@
+{
+  "id": "goal-evaluation-1",
+  "goal_id": "goal-1",
+  "evaluator_agent_id": "evaluator-1",
+  "what_worked": "Additive-optional kept all existing fixtures valid.",
+  "what_failed": "Initial fixture omitted a required key.",
+  "missing_infra": [],
+  "missing_evidence": [],
+  "team_design_feedback": "Single schema-only WP kept the gate fast.",
+  "task_graph_feedback": "Linear graph was sufficient for a schema spine.",
+  "dashboard_feedback": "New arrays surface via direct serialization.",
+  "reusable_patterns": [],
+  "anti_patterns": [],
+  "follow_up_task_ids": [],
+  "proposed_goal_ids": [],
+  "created_at": "2026-05-26T00:00:00Z"
+}

@@ -1,0 +1,13 @@
+{
+  "id": "review-1",
+  "task_id": "task-1",
+  "goal_id": "goal-1",
+  "reviewer_agent_id": "evaluator-1",
+  "review_kind": "acceptance",
+  "summary": "Acceptance gates met; evidence backs the verdict.",
+  "blockers": [],
+  "residual_risk": null,
+  "missing_validation": [],
+  "evidence_ids": ["evidence-1"],
+  "created_at": "2026-05-26T00:00:00Z"
+}

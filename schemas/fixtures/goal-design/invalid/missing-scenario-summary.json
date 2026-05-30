@@ -1,0 +1,12 @@
+{
+  "id": "goal-design-1",
+  "goal_id": "goal-1",
+  "non_goals": [],
+  "risk_and_permission_boundaries": "No live or irreversible actions without human approval.",
+  "required_infra": [],
+  "agent_team": null,
+  "task_graph": [],
+  "evidence_plan": [],
+  "acceptance_gates": [],
+  "created_at": "2026-05-26T00:00:00Z"
+}

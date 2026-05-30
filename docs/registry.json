@@ -1262,6 +1262,39 @@
         "npx pnpm@9.15.4 check"
       ],
       "reorgTrigger": "Frontend styling stack, UI-primitive library, dependency boundary, or Workbench module boundary changes."
+    },
+    {
+      "path": "docs/decisions/0017-generic-object-model.md",
+      "ownerRole": "schema",
+      "status": "stable",
+      "lifecycle": "stable",
+      "canonicalFor": [
+        "additive-optional schema evolution policy",
+        "no schema_version field decision",
+        "the six generic objects (Review, Gap, GoalDesign, GoalEvaluation, GoalCase, Vision)",
+        "Bug is Gap(category=bug) and Phase is Task.phase",
+        "open-enum versus hard-enum pattern"
+      ],
+      "dependsOn": [
+        "docs/decisions/0003-minimal-first-types.md",
+        "docs/decisions/0015-autonomous-proposals-use-evidence-message-decision.md",
+        "docs/schemas.md",
+        "schemas/review.schema.json",
+        "schemas/gap.schema.json",
+        "schemas/goal-design.schema.json",
+        "schemas/goal-evaluation.schema.json",
+        "schemas/goal-case.schema.json",
+        "schemas/vision.schema.json"
+      ],
+      "machineConsumers": [
+        "check-doc-links",
+        "check-doc-governance"
+      ],
+      "reviewAfter": "2026-08-30",
+      "lastVerifiedWith": [
+        "npx pnpm@9.15.4 check"
+      ],
+      "reorgTrigger": "A new required field is needed on an existing object, a new generic object is added, or the open-enum/domain-neutrality policy changes."
     }
   ]
 }

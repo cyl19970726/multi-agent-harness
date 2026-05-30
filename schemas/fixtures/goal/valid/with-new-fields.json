@@ -1,0 +1,14 @@
+{
+  "id": "goal-2",
+  "title": "Adopt generic object model",
+  "objective": "Generalize the let-me-try coordination contract into harness core.",
+  "owner_agent_id": "leader-1",
+  "status": "active",
+  "success_criteria": ["Additive-optional schema spine merges green"],
+  "priority": "p0",
+  "created_at": "2026-05-26T00:00:00Z",
+  "updated_at": "2026-05-26T00:00:00Z",
+  "vision_id": "vision-1",
+  "goal_design_id": "goal-design-1",
+  "closed_by_decision_id": null
+}

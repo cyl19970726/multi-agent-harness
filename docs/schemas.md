@@ -69,6 +69,37 @@ schema contracts are checked with valid and invalid fixtures.
 | Provider session | [provider-session.schema.json](../schemas/provider-session.schema.json) |
 | Tool descriptor | [agent-harness-tool-descriptor.schema.json](../schemas/agent-harness-tool-descriptor.schema.json) |
 | Doc descriptor | [doc-descriptor.schema.json](../schemas/doc-descriptor.schema.json) |
+| Review | [review.schema.json](../schemas/review.schema.json) |
+| Gap | [gap.schema.json](../schemas/gap.schema.json) |
+| Goal design | [goal-design.schema.json](../schemas/goal-design.schema.json) |
+| Goal evaluation | [goal-evaluation.schema.json](../schemas/goal-evaluation.schema.json) |
+| Goal case | [goal-case.schema.json](../schemas/goal-case.schema.json) |
+| Vision | [vision.schema.json](../schemas/vision.schema.json) |
+
+## Schema Evolution
+
+Schemas evolve **additive-optional**: see
+[decisions/0017-generic-object-model.md](decisions/0017-generic-object-model.md).
+
+- New fields on existing objects are added as property-but-NOT-required, using
+  nullable type unions (`["string","null"]`) for scalars, arrays for lists, and
+  booleans for flags. Schemas stay `additionalProperties:false`, so old rows
+  that omit a new optional key still validate. This is the existing
+  `Evidence.task_id` precedent.
+- Rust models these as `Option<T>` / `Vec<T>` / `bool` with `#[serde(default)]`,
+  so old JSONL deserializes unchanged.
+- There is **no `schema_version` field** and there are no `*.v2` schema files. A
+  future *required* field is the only trigger for a versioned schema plus a
+  migration.
+- New objects get their own `<obj>.schema.json` (still
+  `additionalProperties:false`, with full `required` for their own mandatory
+  fields) plus valid and invalid fixtures.
+- Open enums (`verdict`, `decision`, `review_kind`, `evidence_kind`,
+  `decision_kind`) are free `string` in JSON Schema and validated against a
+  canonical set in Rust (`#[serde(other)] Other(String)`). Only truly closed,
+  harness-owned sets (`Gap.severity`, `Gap.status`) use a hard JSON `enum`.
+  Harness core carries zero domain vocabulary; domain values live in adapters,
+  skills, or free `*_detail` / `source_type` fields.
 
 ## Current Registries
 

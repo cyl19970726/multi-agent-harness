@@ -1,0 +1,10 @@
+{
+  "id": "evidence-2",
+  "task_id": "task-2",
+  "source_type": "command",
+  "source_ref": "npx pnpm@9.15.4 check",
+  "summary": "Schema fixtures validated.",
+  "created_at": "2026-05-26T00:00:00Z",
+  "evidence_kind": "check",
+  "goal_id": "goal-2"
+}
