@@ -1,9 +1,7 @@
+import type { ComponentProps, ReactNode } from "react";
 import {
-  BookOpen,
   Bot,
   Bug,
-  ClipboardList,
-  Gavel,
   GitBranch,
   Inbox,
   RefreshCw,
@@ -38,7 +36,6 @@ import { countBySeverity, taskTitle } from "../model/readModel";
 import type { WorkbenchModel } from "../model/readModel";
 import {
   DebugSurface,
-  DecisionCenter,
   DocsContext,
   GoalDocument,
   GraphKanban,
@@ -60,20 +57,28 @@ interface WorkbenchShellProps {
   selection: SelectionState;
   sourceError: string | null;
   sourceLabel: string;
+  /** True only when the snapshot is the live source; gates write actions. */
+  actionsEnabled: boolean;
+  /** POST a harness action then refresh the snapshot. */
+  onAction: (path: string, body?: unknown) => void;
 }
 
+/** Primary navigation rail: collapsed from 10 surfaces to 5 operating views. */
 const navItems: { id: SurfaceId; label: string; icon: typeof Users }[] = [
   { id: "team", label: "Team", icon: Users },
   { id: "vision", label: "Vision", icon: Target },
-  { id: "goal", label: "Goal", icon: ClipboardList },
-  { id: "task", label: "Task", icon: GitBranch },
-  { id: "graph", label: "Graph", icon: Workflow },
+  { id: "tasks", label: "Tasks", icon: Workflow },
   { id: "member", label: "Member", icon: Bot },
-  { id: "docs", label: "Docs", icon: BookOpen },
-  { id: "decisions", label: "Decision", icon: Gavel },
   { id: "warnings", label: "Warnings", icon: ShieldAlert },
-  { id: "debug", label: "Debug", icon: Bug },
 ];
+
+/**
+ * Surfaces reachable in code but intentionally off the primary rail:
+ * - goal / task: drill-in detail views reached by selecting an object
+ * - docs: kept reachable but not a rail slot
+ * - debug: moved behind a TopBar button
+ * - decisions: folded into the Warnings surface
+ */
 
 export function WorkbenchShell({
   apiUrl,
@@ -85,6 +90,8 @@ export function WorkbenchShell({
   selection,
   sourceError,
   sourceLabel,
+  actionsEnabled,
+  onAction,
 }: WorkbenchShellProps) {
   function updateSelection(next: Partial<SelectionState>) {
     onSelectionChange({ ...selection, ...next });
@@ -104,6 +111,10 @@ export function WorkbenchShell({
         onRefresh={onRefresh}
         sourceError={sourceError}
         sourceLabel={sourceLabel}
+        debugActive={selection.surface === "debug"}
+        onToggleDebug={() =>
+          updateSelection({ surface: selection.surface === "debug" ? "team" : "debug" })
+        }
       />
       <div className="flex min-h-0 flex-1">
         <AppRail
@@ -126,6 +137,8 @@ export function WorkbenchShell({
               selection={selection}
               onSelectionChange={updateSelection}
               sourceLabel={sourceLabel}
+              actionsEnabled={actionsEnabled}
+              onAction={onAction}
             />
           </div>
         </main>
@@ -133,6 +146,8 @@ export function WorkbenchShell({
           className="hidden xl:flex"
           model={model}
           onSelectionChange={updateSelection}
+          actionsEnabled={actionsEnabled}
+          onAction={onAction}
         />
       </div>
     </div>
@@ -148,8 +163,15 @@ function TopBar({
   onRefresh,
   sourceError,
   sourceLabel,
-}: Omit<WorkbenchShellProps, "selection" | "onSelectionChange"> & {
+  debugActive,
+  onToggleDebug,
+}: Omit<
+  WorkbenchShellProps,
+  "selection" | "onSelectionChange" | "actionsEnabled" | "onAction"
+> & {
   currentSurface: string;
+  debugActive: boolean;
+  onToggleDebug: () => void;
 }) {
   const isLive = sourceLabel.includes("live");
   return (
@@ -197,6 +219,25 @@ function TopBar({
           onChange={(event) => onApiUrlChange(event.target.value)}
           className="hidden h-8 w-44 rounded-md border border-border bg-background/50 px-2 font-mono text-[11px] text-foreground outline-none transition-colors focus:border-ring lg:block"
         />
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              aria-label="Debug"
+              aria-pressed={debugActive}
+              onClick={onToggleDebug}
+              className={cn(
+                "grid size-8 place-items-center rounded-md border border-border bg-background/50 text-muted-foreground transition-colors hover:border-input hover:text-foreground",
+                debugActive && "border-primary/40 bg-primary/12 text-primary",
+              )}
+            >
+              <Bug className="size-3.5" />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="bottom">
+            {debugActive ? "Close raw snapshot" : "Open raw snapshot"}
+          </TooltipContent>
+        </Tooltip>
         <Button size="sm" onClick={onRefresh} disabled={isLoading}>
           <RefreshCw className={cn("size-3.5", isLoading && "animate-spin")} />
           {isLoading ? "Loading" : "Load live"}
@@ -372,40 +413,37 @@ function SurfaceSwitch({
   selection,
   onSelectionChange,
   sourceLabel,
+  actionsEnabled,
+  onAction,
 }: {
   model: WorkbenchModel;
   selection: SelectionState;
   onSelectionChange: (selection: Partial<SelectionState>) => void;
   sourceLabel: string;
+  actionsEnabled: boolean;
+  onAction: (path: string, body?: unknown) => void;
 }) {
+  const shared = { model, onSelectionChange, actionsEnabled, onAction };
   switch (selection.surface) {
     case "vision":
-      return <VisionOverview model={model} onSelectionChange={onSelectionChange} />;
+      return <VisionOverview {...shared} />;
     case "goal":
-      return <GoalDocument model={model} onSelectionChange={onSelectionChange} />;
+      return <GoalDocument {...shared} />;
     case "task":
-      return <TaskDocument model={model} onSelectionChange={onSelectionChange} />;
-    case "graph":
-      return (
-        <GraphKanban
-          model={model}
-          mode={selection.mode ?? "kanban"}
-          onSelectionChange={onSelectionChange}
-        />
-      );
+      return <TaskDocument {...shared} />;
+    case "tasks":
+      return <GraphKanban {...shared} mode={selection.mode ?? "kanban"} />;
     case "member":
-      return <MemberWorkbench model={model} onSelectionChange={onSelectionChange} />;
+      return <MemberWorkbench {...shared} />;
     case "docs":
-      return <DocsContext model={model} onSelectionChange={onSelectionChange} />;
-    case "decisions":
-      return <DecisionCenter model={model} onSelectionChange={onSelectionChange} />;
+      return <DocsContext {...shared} />;
     case "warnings":
-      return <WarningsRepair model={model} onSelectionChange={onSelectionChange} />;
+      return <WarningsRepair {...shared} />;
     case "debug":
       return <DebugSurface model={model} sourceLabel={sourceLabel} />;
     case "team":
     default:
-      return <TeamWorkspace model={model} onSelectionChange={onSelectionChange} />;
+      return <TeamWorkspace {...shared} />;
   }
 }
 
@@ -413,10 +451,14 @@ function Inspector({
   className,
   model,
   onSelectionChange,
+  actionsEnabled,
+  onAction,
 }: {
   className?: string;
   model: WorkbenchModel;
   onSelectionChange: (selection: Partial<SelectionState>) => void;
+  actionsEnabled: boolean;
+  onAction: (path: string, body?: unknown) => void;
 }) {
   const member = model.selectedMember;
   const task = model.selectedTask;
@@ -465,14 +507,23 @@ function Inspector({
                   "Persistent AgentMember with role, prompt, runtime state, inbox/outbox and a current task."}
               </p>
               <div className="flex gap-2">
-                <Button size="sm" className="flex-1">
+                <InspectorAction
+                  enabled={actionsEnabled}
+                  className="flex-1"
+                  onClick={() => onAction("/v1/actions/message-member", { agent_id: member.id })}
+                >
                   <Send className="size-3.5" />
                   Message
-                </Button>
-                <Button size="sm" variant="secondary" className="flex-1">
+                </InspectorAction>
+                <InspectorAction
+                  enabled={actionsEnabled}
+                  variant="secondary"
+                  className="flex-1"
+                  onClick={() => onAction("/v1/actions/deliver-queued", { agent_id: member.id })}
+                >
                   <Inbox className="size-3.5" />
                   Deliver
-                </Button>
+                </InspectorAction>
               </div>
             </section>
           )}
@@ -540,6 +591,35 @@ function Inspector({
   );
 }
 
+const ACTIONS_DISABLED_HINT = "Connect a live source to enable actions";
+
+/** Inspector action button: visibly disabled with a tooltip when read-only. */
+function InspectorAction({
+  enabled,
+  children,
+  ...props
+}: ComponentProps<typeof Button> & { enabled: boolean; children: ReactNode }) {
+  if (enabled) {
+    return (
+      <Button size="sm" {...props}>
+        {children}
+      </Button>
+    );
+  }
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span className={cn("inline-flex", props.className)}>
+          <Button size="sm" {...props} className="w-full" disabled title={ACTIONS_DISABLED_HINT}>
+            {children}
+          </Button>
+        </span>
+      </TooltipTrigger>
+      <TooltipContent side="bottom">{ACTIONS_DISABLED_HINT}</TooltipContent>
+    </Tooltip>
+  );
+}
+
 function Metric({ label, value }: { label: string; value: number }) {
   return (
     <div className="rounded-md border border-border bg-background/40 px-3 py-2">
@@ -556,6 +636,17 @@ function shortBranch(value: string): string {
   return parts.length > 2 ? `…/${parts.slice(-1)[0]}` : value;
 }
 
+const offRailLabels: Partial<Record<SurfaceId, string>> = {
+  goal: "Goal",
+  task: "Task",
+  docs: "Docs",
+  debug: "Debug",
+};
+
 function surfaceLabel(surface: SurfaceId): string {
-  return navItems.find((item) => item.id === surface)?.label ?? surface;
+  return (
+    navItems.find((item) => item.id === surface)?.label ??
+    offRailLabels[surface] ??
+    surface
+  );
 }

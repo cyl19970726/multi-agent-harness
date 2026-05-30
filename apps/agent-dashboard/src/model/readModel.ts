@@ -24,6 +24,7 @@ export interface TimelineItem {
   body?: string;
   severity?: WorkflowWarning["severity"];
   objectRef?: string;
+  createdAt?: string;
 }
 
 export interface RoleGroup {
@@ -231,6 +232,7 @@ function buildMemberTimeline(snapshot: DashboardSnapshot, member: AgentMember, w
       meta: `${message.delivery_status} · ${message.created_at ? formatTime(message.created_at) : "no time"}`,
       body: message.content,
       objectRef: message.task_id ?? undefined,
+      createdAt: message.created_at ?? undefined,
     }));
 
   const sessions = (snapshot.provider_sessions ?? [])
@@ -242,6 +244,7 @@ function buildMemberTimeline(snapshot: DashboardSnapshot, member: AgentMember, w
       meta: session.provider ?? "provider",
       body: session.prompt_summary ?? session.command,
       objectRef: session.task_id ?? undefined,
+      createdAt: session.started_at ?? undefined,
     }));
 
   const events = (snapshot.events ?? [])
@@ -253,6 +256,7 @@ function buildMemberTimeline(snapshot: DashboardSnapshot, member: AgentMember, w
       meta: event.created_at ? formatTime(event.created_at) : "event",
       body: event.summary,
       objectRef: event.task_id ?? undefined,
+      createdAt: event.created_at ?? undefined,
     }));
 
   const memberWarnings = warnings
@@ -267,7 +271,7 @@ function buildMemberTimeline(snapshot: DashboardSnapshot, member: AgentMember, w
       objectRef: warning.taskId,
     }));
 
-  return [...messages, ...sessions, ...events, ...memberWarnings].slice(0, 12);
+  return sortTimelineDesc([...messages, ...sessions, ...events, ...memberWarnings]).slice(0, 12);
 }
 
 function buildActivity(snapshot: DashboardSnapshot, warnings: WorkflowWarning[]): TimelineItem[] {
@@ -278,6 +282,7 @@ function buildActivity(snapshot: DashboardSnapshot, warnings: WorkflowWarning[])
     meta: `${message.delivery_status} · ${message.created_at ? formatTime(message.created_at) : "no time"}`,
     body: message.content,
     objectRef: message.task_id ?? undefined,
+    createdAt: message.created_at ?? undefined,
   }));
 
   const proposals = (snapshot.proposals ?? []).map((proposal) => ({
@@ -308,7 +313,7 @@ function buildActivity(snapshot: DashboardSnapshot, warnings: WorkflowWarning[])
     objectRef: warning.taskId ?? warning.goalId ?? warning.memberId,
   }));
 
-  return [...warningRows, ...messages, ...proposals, ...decisions].slice(0, 14);
+  return sortTimelineDesc([...warningRows, ...messages, ...proposals, ...decisions]).slice(0, 14);
 }
 
 function buildDecisionQueue(snapshot: DashboardSnapshot, warnings: WorkflowWarning[]): TimelineItem[] {
@@ -332,7 +337,21 @@ function buildDecisionQueue(snapshot: DashboardSnapshot, warnings: WorkflowWarni
       objectRef: warning.taskId,
     }));
 
-  return [...warningItems, ...proposals].slice(0, 10);
+  return sortTimelineDesc([...warningItems, ...proposals]).slice(0, 10);
+}
+
+/** Newest-first sort by created_at; items without a timestamp keep their relative order at the end. */
+function sortTimelineDesc(items: TimelineItem[]): TimelineItem[] {
+  return [...items].sort((a, b) => {
+    const ta = a.createdAt ? Date.parse(a.createdAt) : NaN;
+    const tb = b.createdAt ? Date.parse(b.createdAt) : NaN;
+    const aHas = !Number.isNaN(ta);
+    const bHas = !Number.isNaN(tb);
+    if (aHas && bHas) return tb - ta;
+    if (aHas) return -1;
+    if (bHas) return 1;
+    return 0;
+  });
 }
 
 function labelStatus(status: string): string {
