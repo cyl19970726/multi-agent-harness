@@ -26,14 +26,20 @@ Non-goals:
 
 Canonical objects:
 
-- Vision context when available;
+- Vision (first-class object; goals link via `Goal.vision_id`);
 - Goal collection;
-- GoalDesign evidence;
-- GoalEvaluation evidence;
+- GoalDesign;
+- GoalEvaluation;
 - Decision;
 - GoalCase;
 - autonomous proposal;
 - follow-up Task or next Goal.
+
+Implemented: `Vision` is now a first-class object. VisionOverview renders the
+`visions` snapshot array and links goals through `Goal.vision_id`; goal rows
+show GoalDesign/GoalEvaluation presence (dual-read with legacy evidence) and the
+closeout Decision/GoalEvaluation state. This resolves the prior open question
+below in favor of a schema object.
 
 Workflow proof:
 
@@ -220,7 +226,7 @@ Screenshot acceptance:
 - Does completion require Decision/Evaluation proof?
 - Does the first viewport read as product planning context, not a card wall?
 
-Open questions:
+Resolved questions:
 
-- whether Vision becomes a first-class schema object or remains read-model
-  context for the next implementation slice.
+- Vision is now a first-class schema object (`schemas/vision.schema.json`), not
+  read-model-only context; goals reference it via `Goal.vision_id`.

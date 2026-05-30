@@ -213,6 +213,8 @@
         "Goal-to-Task semantics",
         "Agent-to-Task semantics",
         "Task-to-Message assignment semantics",
+        "generic object model (Review, Gap, GoalDesign, GoalEvaluation, GoalCase, Vision)",
+        "closeout gate and open-enum vocabularies",
         "anti-drift invariants"
       ],
       "dependsOn": [
@@ -220,17 +222,19 @@
         "docs/design-basis.md",
         "docs/architecture.md",
         "docs/core-modules.md",
-        "docs/schemas.md"
+        "docs/schemas.md",
+        "docs/decisions/0017-generic-object-model.md"
       ],
       "machineConsumers": [
         "check-doc-links",
         "check-doc-governance"
       ],
-      "reviewAfter": "2026-06-26",
+      "reviewAfter": "2026-08-31",
       "lastVerifiedWith": [
-        "npx pnpm@9.15.4 check"
+        "npx pnpm@9.15.4 check",
+        "cargo test"
       ],
-      "reorgTrigger": "Core object semantics, assignment flow, evidence flow, or Dashboard projection rules change."
+      "reorgTrigger": "Core object semantics, the generic object set, closeout gate, open-enum vocabularies, assignment flow, evidence flow, or Dashboard projection rules change."
     },
     {
       "path": "docs/architecture.md",
@@ -291,11 +295,11 @@
         "check-doc-links",
         "check-doc-governance"
       ],
-      "reviewAfter": "2026-06-26",
+      "reviewAfter": "2026-08-31",
       "lastVerifiedWith": [
         "npx pnpm@9.15.4 check"
       ],
-      "reorgTrigger": "Core module boundaries, source-of-truth ownership, or build order changes."
+      "reorgTrigger": "Core module boundaries, source-of-truth ownership, primary-object membership, or build order changes."
     },
     {
       "path": "docs/data-model.md",
@@ -306,23 +310,28 @@
         "data model relationships",
         "source-of-truth rules",
         "projection semantics",
-        "task graph edges"
+        "task graph edges",
+        "generic object edges",
+        "Evidence-to-object graduation (dual-read)"
       ],
       "dependsOn": [
         "docs/prd.md",
         "docs/concept-model.md",
         "docs/architecture.md",
-        "docs/schemas.md"
+        "docs/schemas.md",
+        "docs/goal-learning-loop.md",
+        "docs/decisions/0017-generic-object-model.md"
       ],
       "machineConsumers": [
         "check-doc-links",
         "check-doc-governance"
       ],
-      "reviewAfter": "2026-06-26",
+      "reviewAfter": "2026-08-31",
       "lastVerifiedWith": [
-        "npx pnpm@9.15.4 check"
+        "npx pnpm@9.15.4 check",
+        "cargo test"
       ],
-      "reorgTrigger": "Object relationships, projections, source-of-truth rules, or schema responsibilities change."
+      "reorgTrigger": "Object relationships, generic object edges, Evidence-to-object graduation, projections, source-of-truth rules, or schema responsibilities change."
     },
     {
       "path": "docs/agent-runtime.md",
@@ -701,23 +710,27 @@
       "canonicalFor": [
         "goal design artifacts",
         "goal evaluation workflow",
-        "reusable goal cases"
+        "reusable goal cases",
+        "Evidence-to-object graduation and dual-read",
+        "closeout gate and waiver enforcement"
       ],
       "dependsOn": [
         "docs/prd.md",
         "docs/design-basis.md",
         "docs/architecture.md",
+        "docs/decisions/0017-generic-object-model.md",
         "examples/goal-cases/README.md"
       ],
       "machineConsumers": [
         "check-doc-links",
         "check-doc-governance"
       ],
-      "reviewAfter": "2026-06-26",
+      "reviewAfter": "2026-08-31",
       "lastVerifiedWith": [
-        "npx pnpm@9.15.4 check"
+        "npx pnpm@9.15.4 check",
+        "cargo test"
       ],
-      "reorgTrigger": "GoalDesign, GoalEvaluation, or GoalCase fields stabilize enough to move into schemas and CLI/API."
+      "reorgTrigger": "GoalDesign, GoalEvaluation, GoalCase, or Vision fields, the dual-read graduation contract, or the closeout/waiver gates change."
     },
     {
       "path": "docs/integration/README.md",
@@ -943,6 +956,7 @@
       "lifecycle": "volatile",
       "canonicalFor": [
         "Vision goal collection page spec",
+        "first-class Vision rendering contract",
         "distance-to-vision UI contract",
         "page-local layout contract"
       ],
@@ -1034,6 +1048,7 @@
       "canonicalFor": [
         "Goal document page spec",
         "GoalDesign and GoalEvaluation UI contract",
+        "closeout-gate ProofRow contract",
         "page-local layout contract"
       ],
       "dependsOn": [
@@ -1064,6 +1079,7 @@
       "canonicalFor": [
         "Task document page spec",
         "assignment evidence review decision UI contract",
+        "first-class Review and task Gap rendering contract",
         "page-local layout contract"
       ],
       "dependsOn": [
@@ -1154,6 +1170,7 @@
       "canonicalFor": [
         "acceptance proof UI contract",
         "evidence review decision page spec",
+        "first-class Review and decision_kind/waiver rendering contract",
         "page-local layout contract"
       ],
       "dependsOn": [
@@ -1183,6 +1200,7 @@
       "lifecycle": "volatile",
       "canonicalFor": [
         "warning queue and repair UI contract",
+        "Gap ledger rendering contract",
         "workflow risk page spec",
         "page-local layout contract"
       ],

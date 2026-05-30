@@ -43,6 +43,12 @@ from harness state without relying on chat memory or provider transcripts.
 | Claim support | `Evidence` | chat summary |
 | Candidate change | `Proposal` | Git diff or PR URL alone |
 | Acceptance | `Decision` | PR merge, reviewer comment, provider self-report |
+| Evaluator output | `Review` | report message text |
+| Defect / risk ledger | `Gap` (Bug = `Gap(category=bug)`) | `product-gap-inbox.md` flat file |
+| Goal plan | `GoalDesign` (or legacy `Evidence(source_type=goal_design)`) | chat plan |
+| Goal retrospective | `GoalEvaluation` (or legacy `Evidence(source_type=goal_evaluation)`) | final chat summary |
+| Reusable lesson | `GoalCase` + `examples/goal-cases/**` | full transcript |
+| Long-lived target | `Vision`; `Goal.vision_id` links a goal | loose `vision_ref` text |
 
 ## Object Clusters
 
@@ -80,6 +86,38 @@ state machine.
 | Handoff | task-linked message | Context moved between members. |
 | Follow-up | decision or evaluation evidence | New task created from result or learning. |
 
+## Generic Objects And Edges
+
+Six generic objects extend the model (full field lists and vocabularies in
+[concept-model.md](concept-model.md) and [schemas.md](schemas.md)). They add the
+following edges over existing objects:
+
+| Object | Edge fields | Meaning |
+| --- | --- | --- |
+| `Review` | `task_id` / `goal_id`, `reviewer_agent_id`, `evidence_ids` | Structured evaluator verdict for a task or goal; backs a `Decision`. |
+| `Gap` | `goal_id` / `task_id`, `owner_agent_id`, `evidence_ids` | Defect or risk row; a Bug is `category=bug`. `severity`/`status` are closed enums. |
+| `GoalDesign` | `goal_id`, `task_graph[]` (task ids), `agent_team` | The goal's plan; `Goal.goal_design_id` may point back to it. |
+| `GoalEvaluation` | `goal_id`, `follow_up_task_ids[]`, `proposed_goal_ids[]` | The retrospective; closes the learning loop into the next round. |
+| `GoalCase` | `source_goal_id`, `goal_design_ref`, `evaluation_ref` | Sanitized reusable lesson. |
+| `Vision` | referenced by `Goal.vision_id` | Long-lived target a goal collection moves toward. |
+
+New scalar links on existing objects: `Goal.vision_id` /
+`Goal.goal_design_id` / `Goal.closed_by_decision_id`; `Task.phase` /
+`Task.scope_refs[]` / `Task.requires_human_approval` / `Task.verdict_decision_id`;
+`Evidence.evidence_kind` / `Evidence.goal_id`; `Decision.decision_kind` /
+`Decision.goal_id` / `Decision.is_waiver` / `Decision.follow_up_task_id`.
+
+### Evidence-to-Object Graduation (dual-read)
+
+`GoalDesign` and `GoalEvaluation` first existed as
+`Evidence(source_type=goal_design | goal_evaluation)`. They have now graduated
+to first-class objects, and **both representations are read at once**: the
+read model and the `goal_learning_status` gate union legacy `Evidence` rows and
+the graduated objects by `goal_id`, with no backfill. Old goals keep their
+`Evidence` rows; new goals write the objects; the gate is satisfied by either.
+The graduation contract is documented in
+[goal-learning-loop.md](goal-learning-loop.md).
+
 ## Projection Rules
 
 - `Task.assignee_agent_id` is allowed only as a read-model or convenience
@@ -94,9 +132,12 @@ state machine.
 
 ## Invariants To Gate
 
-These should become CLI/API/CI checks as implementation matures:
+These should become CLI/API/CI checks as implementation matures. Invariant 1 is
+now enforced by the CLI `goal close` closeout gate; the rest remain documented
+targets:
 
-1. A completed goal has a decision and goal evaluation.
+1. A completed goal has a closeout decision (with evidence) and a goal
+   evaluation, or an explicit waiver — **enforced** by CLI `goal close`.
 2. An assigned task has an earlier `Message(kind=task)` delivery attempt.
 3. Accepted non-trivial work has assignee report, evidence refs, and review.
 4. Accepted proposals name changed paths and check or review evidence.

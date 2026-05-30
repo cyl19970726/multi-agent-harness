@@ -141,16 +141,27 @@ Raw traces may be noisy or sensitive. Reusable examples should remove secrets,
 large logs, provider transcripts, and project-specific noise while preserving
 the workflow lesson.
 
-First-version lookup uses evidence records, not new schema types:
+### Object Graduation And Dual-Read
 
-| Artifact | First-version representation |
-| --- | --- |
-| GoalDesign | `Evidence(source_type=goal_design, source_ref=...)` |
-| GoalEvaluation | `Evidence(source_type=goal_evaluation, source_ref=...)` |
-| GoalCase | committed files under `examples/goal-cases/<case-id>/` |
+The learning artifacts started as evidence records and committed files. They
+have now **graduated into first-class objects** (`GoalDesign`,
+`GoalEvaluation`, `GoalCase`, `Vision`) with their own schemas, CLI commands
+(`harness goal-design|goal-evaluation|goal-case|vision create|list`), and
+review-gate checks. The original representations remain valid:
 
-After the fields stabilize, these can graduate into schemas, CLI commands, and
-review-gate checks.
+| Artifact | First-version representation | Graduated object | Read rule |
+| --- | --- | --- | --- |
+| GoalDesign | `Evidence(source_type=goal_design)` | `GoalDesign` schema/CLI | dual-read, union by `goal_id` |
+| GoalEvaluation | `Evidence(source_type=goal_evaluation)` | `GoalEvaluation` schema/CLI | dual-read, union by `goal_id` |
+| GoalCase | files under `examples/goal-cases/<case-id>/` | optional `case.json` manifest | files remain the human artifact |
+| Vision | loose `vision_ref` / `vision_summary` | `Vision` schema/CLI, `Goal.vision_id` | object preferred |
+
+Dual-read means **both representations are read at once**, with no backfill: the
+`goal_learning_status` gate and the dashboard read model union legacy `Evidence`
+rows and the graduated objects by `goal_id`. Old goals keep their `Evidence`
+rows; new goals write the objects; either satisfies the closeout gate. This is
+the graduation contract — the schema-evolution policy that makes it safe is in
+[decisions/0017-generic-object-model.md](decisions/0017-generic-object-model.md).
 
 ## Evaluator Workflow
 
@@ -174,26 +185,36 @@ At goal close:
 The autonomous runner uses this closeout as a scheduling boundary. It may close
 an active goal only after the task graph is complete, GoalEvaluation/final
 acceptance exists, strict goal learning has no warnings, and a vision context is
-supplied. After close, it compares GoalEvaluation with the supplied
-`vision_ref` or `vision_summary`, creates a next-goal proposal, and only creates
-the next GoalDesign/task graph after Lead disposition accepts the proposal.
+supplied. After close, it compares GoalEvaluation with the supplied `Vision`
+(via `Goal.vision_id`) or legacy `vision_ref`/`vision_summary`, creates a
+next-goal proposal, and only creates the next GoalDesign/task graph after Lead
+disposition accepts the proposal.
 
-Until schema and CLI support exist, a goal-close review should warn when
-`goal_design` or `goal_evaluation` evidence is missing. Once the fields are
-stable and dashboard support exists, accepted goals should require
-`goal_evaluation` evidence.
+The closeout gate is now enforced. CLI `goal close` refuses `complete` unless a
+closeout `Decision` (`decision_kind=closeout`) scoped to the goal with at least
+one backing `evidence_id` exists **and** a `GoalEvaluation` exists for the goal
+— or an explicit waiver `Decision`. The `goal_learning_status` snapshot surfaces
+this readiness (`has_closeout_decision`, `has_closeout_waiver`,
+`closeout_blockers`), and the dashboard raises a `goal_close_without_evaluation`
+warning when a goal's tasks are done but the closeout proof is missing.
 
 ## Waivers
 
 Skipping a lifecycle stage is not a bare CLI flag. It must be represented by a
-waiver `Decision` attached to a task in the same goal. The first-version CLI
-accepts a waiver only when:
+waiver `Decision` (`is_waiver=true`) attached to a task in the same goal. The
+CLI accepts a waiver only when:
 
 - the gate command passes `--waiver-decision <decision-id>`;
-- the decision text marks it as a waiver;
-- every referenced evidence id resolves;
+- the decision is marked a waiver (`is_waiver=true`);
+- every referenced evidence id resolves (a waiver requires at least one);
 - the decision task has an owner;
-- the rationale names a real follow-up task in the same goal.
+- the rationale names a real follow-up task (`follow_up_task_id`) in the same
+  goal.
+
+A waiver missing its follow-up task raises a `waiver_without_follow_up` warning
+in the dashboard. The self-evaluation stop loop is modeled by a
+`Decision(decision_kind=stop_gate)` whose `decision` is `stop_approved` or
+`continue_required`.
 
 This keeps temporary exceptions visible and turns them into future work instead
 of letting the Lead silently bypass GoalDesign, GoalEvaluation, or review.

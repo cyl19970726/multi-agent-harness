@@ -32,10 +32,17 @@ Canonical objects:
 - ProviderSession;
 - Evidence;
 - Proposal;
-- Review evidence;
-- Decision;
+- Review (first-class object: `verdict`, `blockers`, `residual_risk`,
+  `missing_validation`);
+- Decision (with `verdict_decision_id` link, `decision_kind`);
+- Gap rows scoped to the task;
 - branch/worktree/PR refs;
 - warnings.
+
+Implemented: TaskDocument renders structured `Review` objects (no longer just
+report messages) with verdict and blockers, shows the verdict `Decision`, and
+lists task-scoped `Gap` rows. A `phase` chip and a `requires_human_approval`
+lock are shown on the task header/card.
 
 Workflow proof:
 

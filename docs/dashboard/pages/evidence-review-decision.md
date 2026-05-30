@@ -28,11 +28,20 @@ Canonical objects:
 
 - Evidence;
 - Proposal;
-- review evidence/report;
-- Decision;
+- Review (first-class object: `review_kind`, `verdict`, `blockers`,
+  `residual_risk`, `missing_validation`, `evidence_ids`);
+- Decision (`decision_kind`: `verdict`/`closeout`/`stop_gate`/`waiver`/...;
+  `is_waiver`, `follow_up_task_id`);
 - Task;
 - Goal;
 - checks, screenshots, PR refs, GoalEvaluation.
+
+Implemented: the DecisionCenter is wired (previously unwired) and renders the
+Evidence -> `Review` -> `Decision` chain. `Review` is a first-class object whose
+`verdict` and `blockers` are visually distinct from the Leader `Decision`;
+`decision_kind` and waiver/`follow_up_task_id` are shown so closeout and
+stop-gate decisions are legible. A `Review` is evidence for a `Decision`, never
+the decision itself.
 
 Workflow proof:
 
