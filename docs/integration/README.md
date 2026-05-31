@@ -4,6 +4,14 @@ This directory contains provider-specific integration documents. It should not
 define the generic runtime contract. The provider-neutral contract lives in
 [../agent-runtime.md](../agent-runtime.md).
 
+To integrate a new agent, provider, or platform, start from the canonical
+[Agent Integration Model](../agent-integration-model.md): it defines the three
+pillars (base configuration, environment, platform adaptation), the
+provider-neutral launch spec, and the step-by-step integration checklist that
+produces a doc from the template below. The primary integration substrate is
+headless exec-stream, per
+[../decisions/0018-exec-stream-primary-substrate.md](../decisions/0018-exec-stream-primary-substrate.md).
+
 ## Vision Link
 
 Multi-Agent Harness must support Codex first while leaving room for other

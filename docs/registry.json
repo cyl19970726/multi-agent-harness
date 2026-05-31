@@ -1382,6 +1382,68 @@
         "npx pnpm@9.15.4 check"
       ],
       "reorgTrigger": "The three-signal model, runtime_health layers, /v1/events SSE frame contract, watcher/broadcast mechanism, or the frontend live/polling/offline mode logic changes."
+    },
+    {
+      "path": "docs/agent-integration-model.md",
+      "ownerRole": "provider-integration",
+      "status": "planned",
+      "lifecycle": "volatile",
+      "canonicalFor": [
+        "agent integration model",
+        "three pillars (base configuration, environment, platform adaptation)",
+        "provider-neutral launch spec",
+        "skill contract / MCP / provider capability declaration gaps",
+        "new-provider integration checklist"
+      ],
+      "dependsOn": [
+        "docs/agent-runtime.md",
+        "docs/agent-control-plane.md",
+        "docs/integration/README.md",
+        "docs/integration/codex.md",
+        "docs/integration/claude.md",
+        "docs/decisions/0011-provider-neutral-runtime.md",
+        "docs/decisions/0018-exec-stream-primary-substrate.md",
+        "examples/adapters/earning-engine/adapter.json",
+        "crates/harness-core/src/lib.rs",
+        "schemas/agent-member.schema.json"
+      ],
+      "machineConsumers": [
+        "check-doc-links",
+        "check-doc-governance"
+      ],
+      "reviewAfter": "2026-06-26",
+      "lastVerifiedWith": [
+        "npx pnpm@9.15.4 check"
+      ],
+      "reorgTrigger": "The three pillars, the neutral launch-spec field set, the skill/MCP/capability-declaration contracts, or the new-provider integration checklist change."
+    },
+    {
+      "path": "docs/decisions/0018-exec-stream-primary-substrate.md",
+      "ownerRole": "provider-integration",
+      "status": "stable",
+      "lifecycle": "stable",
+      "canonicalFor": [
+        "headless exec-stream as primary provider substrate",
+        "persistent app-server retained only as mid-turn-approval fallback",
+        "supersedes-in-part 0008, reinforces 0011"
+      ],
+      "dependsOn": [
+        "docs/decisions/0008-persistent-codex-agent-runtime.md",
+        "docs/decisions/0011-provider-neutral-runtime.md",
+        "docs/agent-integration-model.md",
+        "docs/agent-runtime.md",
+        "docs/integration/codex.md",
+        "docs/integration/claude.md"
+      ],
+      "machineConsumers": [
+        "check-doc-links",
+        "check-doc-governance"
+      ],
+      "reviewAfter": "2026-08-31",
+      "lastVerifiedWith": [
+        "npx pnpm@9.15.4 check"
+      ],
+      "reorgTrigger": "The primary substrate, the mid-turn-approval fallback policy, or the neutral launch-spec direction changes."
     }
   ]
 }
