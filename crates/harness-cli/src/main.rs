@@ -7782,11 +7782,25 @@ impl CodexExecEvent {
 
     /// Extract the terminal source from this event if it is a completion event.
     fn terminal_source(&self) -> Option<MessageTerminalSource> {
-        match self.event_type.as_str() {
-            "turn_completed" | "thread_idle" => Some(MessageTerminalSource::TurnCompleted),
-            _ => None,
+        if codex_event_is_terminal(&self.event_type) {
+            Some(MessageTerminalSource::TurnCompleted)
+        } else {
+            None
         }
     }
+}
+
+/// True when a codex exec event type marks the end of a turn/thread.
+///
+/// Codex 0.13x `exec --json` emits dot-separated discriminants
+/// (`turn.completed`, `thread.idle`). Older notes used underscore names
+/// (`turn_completed`, `thread_idle`); both are accepted so the parser is
+/// robust across codex versions.
+fn codex_event_is_terminal(event_type: &str) -> bool {
+    matches!(
+        event_type,
+        "turn.completed" | "thread.idle" | "turn_completed" | "thread_idle"
+    )
 }
 
 /// Parse NDJSON from codex exec stdout into CodexExecEvent stream.
@@ -7815,7 +7829,7 @@ fn infer_provider_session_status(
     // If we saw a terminal event, we succeeded.
     let has_terminal = events
         .iter()
-        .any(|e| matches!(e.event_type.as_str(), "turn_completed" | "thread_idle"));
+        .any(|e| codex_event_is_terminal(&e.event_type));
     if has_terminal {
         ProviderSessionStatus::Succeeded
     } else if events.is_empty() {
@@ -7827,19 +7841,41 @@ fn infer_provider_session_status(
 }
 
 /// Extract provider_thread_id from the exec output events if present.
-/// Codex exec does not expose thread id in --json output; fallback to None.
-fn extract_thread_id_from_exec_events(_events: &[CodexExecEvent]) -> Option<String> {
-    // Codex exec --json does not include explicit thread_id in output.
-    // The harness manages thread lifecycle; for exec-stream the session_id is the scope.
-    None
+///
+/// Codex `exec --json` emits a `thread.started` event carrying the real
+/// `thread_id` (e.g. `{"thread_id":"019e...","type":"thread.started"}`). We
+/// scan every event payload for a top-level `thread_id` string and return the
+/// first match so the ProviderSession records the provider's real thread id.
+fn extract_thread_id_from_exec_events(events: &[CodexExecEvent]) -> Option<String> {
+    events.iter().find_map(|event| {
+        event
+            .payload
+            .get("thread_id")
+            .and_then(|value| value.as_str())
+            .map(|value| value.to_string())
+    })
 }
 
 /// Extract provider_turn_id from the exec output events if present.
-/// Codex exec does not expose turn id in --json output; fallback to None.
-fn extract_turn_id_from_exec_events(_events: &[CodexExecEvent]) -> Option<String> {
-    // Codex exec --json does not include explicit turn_id in output.
-    // The harness session_id (delivery_id) serves as the scope.
-    None
+///
+/// Newer codex builds may attach a `turn_id` to turn lifecycle events. When
+/// present we surface it; otherwise None (the harness session id scopes the
+/// turn). We accept either a top-level `turn_id` or one nested under `turn`.
+fn extract_turn_id_from_exec_events(events: &[CodexExecEvent]) -> Option<String> {
+    events.iter().find_map(|event| {
+        event
+            .payload
+            .get("turn_id")
+            .and_then(|value| value.as_str())
+            .or_else(|| {
+                event
+                    .payload
+                    .get("turn")
+                    .and_then(|turn| turn.get("id"))
+                    .and_then(|value| value.as_str())
+            })
+            .map(|value| value.to_string())
+    })
 }
 
 /// Spawn `codex exec --json` with the delivery configuration and parse NDJSON output.
@@ -8141,10 +8177,31 @@ fn run_claude_delivery(
 
     let status = infer_claude_session_status(&events, process_success);
     let terminal_source = status_to_terminal_source(&status);
-    
+    let resolved_session_id = session_id.clone().unwrap_or_else(|| generated_id("session"));
+
+    // Record an Evidence row for the delivery session, mirroring the codex path
+    // so every provider delivery is auditable from the snapshot.
+    let evidence_id = generated_id("evidence");
+    let evidence = Evidence {
+        id: evidence_id.clone(),
+        task_id: message.task_id.clone(),
+        source_type: "claude_delivery_session".into(),
+        source_ref: format!("provider-session:{resolved_session_id}"),
+        summary: format!(
+            "Claude stream-json delivery {} for message {} ({} events)",
+            resolved_session_id,
+            message.id,
+            events.len()
+        ),
+        created_at: now_string(),
+        evidence_kind: None,
+        goal_id: None,
+    };
+    store.append_evidence(&evidence)?;
+
     // Record session in ProviderSession (neutral object, not provider-specific).
     let provider_session = ProviderSession {
-        id: session_id.clone().unwrap_or_else(|| generated_id("session")),
+        id: resolved_session_id.clone(),
         provider: "claude".into(),
         agent_member_id: member.id.clone(),
         task_id: message.task_id.clone(),
@@ -8165,7 +8222,7 @@ fn run_claude_delivery(
         exit_code: if process_success { Some(0) } else { Some(1) },
         started_at,
         ended_at: Some(now_string()),
-        evidence_ids: vec![],
+        evidence_ids: vec![evidence_id.clone()],
     };
     store.append_provider_session(&provider_session)?;
 
@@ -8184,8 +8241,8 @@ fn run_claude_delivery(
         },
         request_ref: Some(session_dir.display().to_string()),
         provider_request_id: None,
-        provider_session_id: session_id.clone(),
-        evidence_ids: vec![],
+        provider_session_id: Some(resolved_session_id),
+        evidence_ids: vec![evidence_id],
         exit_code: if process_success { Some(0) } else { Some(1) },
         summary: if process_success {
             format!("Claude delivery succeeded: {} events", events.len())
@@ -11759,12 +11816,23 @@ invalid json line
 
     #[test]
     fn test_codex_exec_event_terminal_source() {
-        let json = serde_json::json!({"type": "turn_completed"});
+        // Real codex 0.13x exec --json emits dot-separated discriminants.
+        let json = serde_json::json!({"type": "turn.completed"});
         let event = CodexExecEvent {
-            event_type: "turn_completed".into(),
+            event_type: "turn.completed".into(),
             payload: json,
         };
-        
+
+        assert_eq!(event.terminal_source(), Some(MessageTerminalSource::TurnCompleted));
+    }
+
+    #[test]
+    fn test_codex_exec_event_terminal_source_legacy_underscore() {
+        // Backward-compat: older underscore names still treated as terminal.
+        let event = CodexExecEvent {
+            event_type: "turn_completed".into(),
+            payload: serde_json::json!({"type": "turn_completed"}),
+        };
         assert_eq!(event.terminal_source(), Some(MessageTerminalSource::TurnCompleted));
     }
 
@@ -11788,13 +11856,51 @@ invalid json line
                 payload: serde_json::json!({}),
             },
             CodexExecEvent {
-                event_type: "turn_completed".into(),
-                payload: serde_json::json!({}),
+                event_type: "turn.completed".into(),
+                payload: serde_json::json!({"type": "turn.completed"}),
             },
         ];
-        
+
         let status = infer_provider_session_status(&events, true);
         assert_eq!(status, ProviderSessionStatus::Succeeded);
+    }
+
+    #[test]
+    fn test_infer_provider_session_status_succeeded_real_codex_stream() {
+        // Mirrors a real codex 0.13x exec --json stream.
+        let events = vec![
+            CodexExecEvent {
+                event_type: "thread.started".into(),
+                payload: serde_json::json!({
+                    "thread_id": "019e7ecf-42f4-7eb0-aa73-a4ae7a8f01f0",
+                    "type": "thread.started"
+                }),
+            },
+            CodexExecEvent {
+                event_type: "turn.started".into(),
+                payload: serde_json::json!({"type": "turn.started"}),
+            },
+            CodexExecEvent {
+                event_type: "item.completed".into(),
+                payload: serde_json::json!({
+                    "item": {"id": "item_0", "text": "codex exec acceptance OK", "type": "agent_message"},
+                    "type": "item.completed"
+                }),
+            },
+            CodexExecEvent {
+                event_type: "turn.completed".into(),
+                payload: serde_json::json!({"type": "turn.completed"}),
+            },
+        ];
+
+        assert_eq!(
+            infer_provider_session_status(&events, true),
+            ProviderSessionStatus::Succeeded
+        );
+        assert_eq!(
+            extract_thread_id_from_exec_events(&events).as_deref(),
+            Some("019e7ecf-42f4-7eb0-aa73-a4ae7a8f01f0")
+        );
     }
 
     #[test]
@@ -11858,31 +11964,54 @@ invalid json line
     }
 
     #[test]
-    fn test_extract_thread_id_from_exec_events_none() {
+    fn test_extract_thread_id_from_exec_events_present() {
         let events = vec![
             CodexExecEvent {
-                event_type: "tool_call".into(),
-                payload: serde_json::json!({"thread_id": "123"}),
+                event_type: "thread.started".into(),
+                payload: serde_json::json!({"thread_id": "123", "type": "thread.started"}),
             },
         ];
-        
-        // Codex exec does not expose thread_id; should always return None
+
+        // thread.started carries the real thread_id; surface it.
         let thread_id = extract_thread_id_from_exec_events(&events);
-        assert_eq!(thread_id, None);
+        assert_eq!(thread_id.as_deref(), Some("123"));
     }
 
     #[test]
-    fn test_extract_turn_id_from_exec_events_none() {
+    fn test_extract_thread_id_from_exec_events_absent_is_none() {
         let events = vec![
             CodexExecEvent {
-                event_type: "tool_call".into(),
-                payload: serde_json::json!({"turn_id": "456"}),
+                event_type: "turn.started".into(),
+                payload: serde_json::json!({"type": "turn.started"}),
             },
         ];
-        
-        // Codex exec does not expose turn_id; should always return None
+
+        assert_eq!(extract_thread_id_from_exec_events(&events), None);
+    }
+
+    #[test]
+    fn test_extract_turn_id_from_exec_events_present() {
+        let events = vec![
+            CodexExecEvent {
+                event_type: "turn.started".into(),
+                payload: serde_json::json!({"turn_id": "456", "type": "turn.started"}),
+            },
+        ];
+
         let turn_id = extract_turn_id_from_exec_events(&events);
-        assert_eq!(turn_id, None);
+        assert_eq!(turn_id.as_deref(), Some("456"));
+    }
+
+    #[test]
+    fn test_extract_turn_id_from_exec_events_absent_is_none() {
+        let events = vec![
+            CodexExecEvent {
+                event_type: "thread.started".into(),
+                payload: serde_json::json!({"thread_id": "789", "type": "thread.started"}),
+            },
+        ];
+
+        assert_eq!(extract_turn_id_from_exec_events(&events), None);
     }
 }
 
