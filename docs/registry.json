@@ -27,6 +27,7 @@
         "docs/integration/codex.md",
         "docs/integration/codex-message-delivery.md",
         "docs/integration/codex-source-audit.md",
+        "docs/integration/claude.md",
         "docs/operations.md",
         "docs/schemas.md",
         "docs/decisions/README.md"
@@ -92,6 +93,7 @@
         "docs/integration/codex.md",
         "docs/integration/codex-message-delivery.md",
         "docs/integration/codex-source-audit.md",
+        "docs/integration/claude.md",
         "docs/operations.md",
         "docs/schemas.md",
         "docs/decisions/README.md"
@@ -128,6 +130,7 @@
         "docs/workflow-git-pr.md",
         "docs/goal-learning-loop.md",
         "docs/integration/README.md",
+        "docs/integration/claude.md",
         "docs/decisions/README.md"
       ],
       "machineConsumers": [
@@ -257,6 +260,7 @@
         "docs/schemas.md",
         "docs/agent-control-plane.md",
         "docs/integration/README.md",
+        "docs/integration/claude.md",
         "docs/integration/codex.md",
         "docs/integration/codex-message-delivery.md",
         "docs/goal-learning-loop.md"
@@ -350,6 +354,7 @@
         "docs/data-model.md",
         "docs/agent-control-plane.md",
         "docs/integration/README.md",
+        "docs/integration/claude.md",
         "docs/schemas.md"
       ],
       "machineConsumers": [
@@ -846,6 +851,35 @@
       "reorgTrigger": "Codex app-server protocol, hooks, plugins, native subagents, or permission behavior changes."
     },
     {
+      "path": "docs/integration/claude.md",
+      "ownerRole": "provider-integration",
+      "status": "planned",
+      "lifecycle": "volatile",
+      "canonicalFor": [
+        "Claude Code provider integration",
+        "claude CLI vs HTTP API shape",
+        "Claude subagent-to-child-thread mapping",
+        "Claude fallback modes"
+      ],
+      "dependsOn": [
+        "docs/agent-runtime.md",
+        "docs/integration/README.md",
+        "docs/architecture.md",
+        "docs/mvp.md",
+        "docs/schemas.md"
+      ],
+      "machineConsumers": [
+        "check-doc-links",
+        "check-doc-governance"
+      ],
+      "reviewAfter": "2026-06-26",
+      "lastVerifiedWith": [
+        "https://code.claude.com/docs",
+        "cargo test -p harness-cli"
+      ],
+      "reorgTrigger": "Claude provider surfaces, CLI shape, session protocol, subagent lifecycle, or fallback strategy changes."
+    },
+    {
       "path": "docs/operations.md",
       "ownerRole": "operations",
       "status": "stable",
@@ -913,7 +947,8 @@
         "docs/workflow-git-pr.md",
         "docs/integration/codex.md",
         "docs/integration/codex-message-delivery.md",
-        "docs/integration/codex-source-audit.md"
+        "docs/integration/codex-source-audit.md",
+        "docs/integration/claude.md"
       ],
       "machineConsumers": [
         "check-doc-links",

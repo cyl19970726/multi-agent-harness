@@ -7840,7 +7840,7 @@ fn print_help() {
     println!(
         "harness commands:
   init
-  agent create --name <name> --role <role> [--description <text>] [--provider codex] [--team <team>] [--skill <skill>] [--prompt <text>] [--prompt-ref <path>] [--worktree <path>] [--permission-profile <profile>] [--runtime-workspace-root <path>] [--approval-policy <policy>] [--sandbox-policy <policy>] [--service-tier <tier>] [--collaboration-mode <mode>] [--provider-agent-path <path>] [--provider-agent-nickname <name>] [--provider-agent-role <role>] [--start]
+  agent create --name <name> --role <role> [--description <text>] [--provider codex|claude] [--team <team>] [--skill <skill>] [--prompt <text>] [--prompt-ref <path>] [--worktree <path>] [--permission-profile <profile>] [--runtime-workspace-root <path>] [--approval-policy <policy>] [--sandbox-policy <policy>] [--service-tier <tier>] [--collaboration-mode <mode>] [--provider-agent-path <path>] [--provider-agent-nickname <name>] [--provider-agent-role <role>] [--start]
   agent list
   agent start --id <agent>
   agent health --id <agent>
@@ -7856,7 +7856,7 @@ fn print_help() {
   team list [--all]
   team show --id <team>
   team close --id <team>
-  member register --name <name> --role <role> [--provider codex] [--capability <cap>] [--worktree <path>] [--permission-profile <profile>] [--runtime-workspace-root <path>]
+  member register --name <name> --role <role> [--provider codex|claude] [--capability <cap>] [--worktree <path>] [--permission-profile <profile>] [--runtime-workspace-root <path>]
   member list
   goal create --title <title> --objective <text> --owner <agent> [--success <text>]
   goal learning-status --id <goal> [--strict] [--require-evaluation] [--allow-waiver] [--waiver-decision <decision>]

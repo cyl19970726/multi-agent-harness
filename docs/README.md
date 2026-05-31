@@ -28,6 +28,7 @@
 | Codex provider integration | [integration/codex.md](integration/codex.md) |
 | Codex message delivery | [integration/codex-message-delivery.md](integration/codex-message-delivery.md) |
 | Codex source-audit findings | [integration/codex-source-audit.md](integration/codex-source-audit.md) |
+| Claude Code provider integration | [integration/claude.md](integration/claude.md) |
 | Operations | [operations.md](operations.md) |
 | Schemas and minimal object contracts | [schemas.md](schemas.md) |
 | Design decisions | [decisions/README.md](decisions/README.md) |
