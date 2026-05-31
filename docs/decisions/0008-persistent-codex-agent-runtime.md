@@ -1,5 +1,11 @@
 # 0008: Persistent Codex Agent Runtime
 
+> Superseded in part by
+> [0018 (Headless Exec-Stream as Primary Provider Substrate)](0018-exec-stream-primary-substrate.md):
+> exec-stream is now the primary substrate and the persistent app-server is an
+> optional fallback for mid-turn-approval members. The harness-owned mailbox and
+> atomic claim/lease decided here are kept verbatim.
+
 ## Decision
 
 The first provider integration is Codex, and the target MVP runtime is

@@ -123,13 +123,17 @@ correlation envelope.
 Use this split:
 
 ```text
+docs/agent-integration-model.md  # how to integrate a new agent (three pillars + launch spec)
 docs/agent-runtime.md        # provider-neutral A-ROM and interfaces
 docs/integration/README.md   # integration rules and template
 docs/integration/codex.md    # Codex implementation
 docs/integration/<name>.md   # future provider implementation
 ```
 
-Do not let the first provider implementation define the generic runtime.
+The [Agent Integration Model](agent-integration-model.md) is the canonical
+"to integrate a new agent you define X, Y, Z" doc; this file is the runtime
+object model it builds on. Do not let the first provider implementation define
+the generic runtime.
 
 ## Invariants
 
