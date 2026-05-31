@@ -38,6 +38,23 @@ export interface RoleGroup {
   members: AgentMember[];
 }
 
+/**
+ * The Lead's doctrinal loop, surfaced from existing canonical objects when the
+ * selected member is the Lead. No new schema — each lane is a filtered view:
+ *  - design goals: GoalDesign owned by this agent (via owning Goal.owner_agent_id)
+ *  - assignments: outbox Message(kind="task") authored by this Lead
+ *  - decisions authored: Decision rows for tasks the Lead owns
+ *  - evaluations: GoalEvaluation owned by this agent (evaluator/owner)
+ *  - team composition: member_ids of the teams this Lead owns
+ */
+export interface LeadResponsibilities {
+  goalDesigns: GoalDesign[];
+  assignments: Message[];
+  decisions: Decision[];
+  evaluations: GoalEvaluation[];
+  teamMemberIds: string[];
+}
+
 export interface Lane {
   id: string;
   title: string;
@@ -106,8 +123,23 @@ export interface WorkbenchModel {
    * field, so it can be used to render a Lead chip without inventing data.
    */
   leadMemberId?: string;
+  /**
+   * The selected member's Lead responsibilities, derived entirely from existing
+   * canonical objects (no schema invention). Only populated when the selected
+   * member IS the Lead (`selectedMemberIsLead`); otherwise empty.
+   */
+  leadResponsibilities: LeadResponsibilities;
+  /** True when the selected member is the Lead (role==="lead" OR team owner). */
+  selectedMemberIsLead: boolean;
   activity: TimelineItem[];
   decisionQueue: TimelineItem[];
+  /**
+   * The subset of the decision queue awaiting THIS team's Lead — proposals and
+   * review/decision warnings on tasks not owned by the Lead, keyed to the team
+   * `owner_agent_id`. Makes the anti-drift invariant (a worker cannot ratify
+   * their own proposal as a global decision) visible.
+   */
+  leadDecisionQueue: TimelineItem[];
   docs: RelatedDoc[];
   sessionsByMember: ProviderSession[];
   childThreadsByMember: ProviderChildThread[];
@@ -203,6 +235,13 @@ export function buildWorkbenchModel(snapshot: DashboardSnapshot, selection: Sele
       ? teams.find((team) => (selectedMember.team_ids ?? []).includes(team.id))?.owner_agent_id
       : undefined) ?? selectedTeam?.owner_agent_id;
 
+  // The selected member is the Lead when it owns the resolved team OR carries
+  // the doctrinal role==="lead". Both are frontend-derived, no schema field.
+  const selectedMemberIsLead = Boolean(
+    selectedMember &&
+      (selectedMember.id === leadMemberId || selectedMember.role?.toLowerCase() === "lead"),
+  );
+
   const reviewsForTask = selectedTask
     ? reviews.filter((review) => review.task_id === selectedTask.id)
     : [];
@@ -257,6 +296,13 @@ export function buildWorkbenchModel(snapshot: DashboardSnapshot, selection: Sele
       ? visions.find((vision) => vision.id === selectedGoal.vision_id)
       : undefined;
 
+  const leadResponsibilities = buildLeadResponsibilities(
+    selectedMemberIsLead ? selectedMember : undefined,
+    { goals, teams, tasks, goalDesigns, goalEvaluations, outboxMessages, decisions },
+  );
+
+  const leadDecisionQueue = buildLeadDecisionQueue(snapshot, warnings, leadMemberId);
+
   return {
     snapshot,
     selectedGoal,
@@ -297,11 +343,14 @@ export function buildWorkbenchModel(snapshot: DashboardSnapshot, selection: Sele
     outboxMessages,
     reviewsByMember,
     leadMemberId,
+    leadResponsibilities,
+    selectedMemberIsLead,
     selectedMemberTimeline: selectedMember
       ? buildMemberTimeline(snapshot, selectedMember, warnings)
       : [],
     activity: buildActivity(snapshot, warnings),
     decisionQueue: buildDecisionQueue(snapshot, warnings),
+    leadDecisionQueue,
     docs: docCatalog,
     sessionsByMember: selectedMember
       ? (snapshot.provider_sessions ?? []).filter((session) => session.agent_member_id === selectedMember.id)
@@ -393,13 +442,41 @@ function isGoalStatus(goal: Goal, ...statuses: string[]): boolean {
   return statuses.includes((goal.status ?? "active").toLowerCase());
 }
 
+/**
+ * Lead-band ordering. The Lead group renders first so the team's authority is
+ * visible at the top of the rail/picker, then the standard collaboration roles
+ * (critic → worker → observer), with anything else trailing. This is a stable
+ * sort: members keep their snapshot order within a role, and roles not in the
+ * canonical list keep their first-seen order after the known ones.
+ */
+const roleSortRank: Record<string, number> = {
+  lead: 0,
+  critic: 1,
+  worker: 2,
+  observer: 3,
+};
+
+export function roleGroupRank(role: string): number {
+  const rank = roleSortRank[role.toLowerCase()];
+  return rank ?? 4;
+}
+
 function groupMembersByRole(members: AgentMember[]): RoleGroup[] {
   const map = new Map<string, AgentMember[]>();
   for (const member of members) {
     const role = member.role || "Member";
     map.set(role, [...(map.get(role) ?? []), member]);
   }
-  return [...map.entries()].map(([role, groupMembers]) => ({ role, members: groupMembers }));
+  const groups = [...map.entries()].map(([role, groupMembers]) => ({ role, members: groupMembers }));
+  // Stable sort: known roles by canonical rank (lead first), unknown roles keep
+  // their first-seen order after the known ones (rank ties preserve index).
+  return groups
+    .map((group, index) => ({ group, index }))
+    .sort((a, b) => {
+      const rankDelta = roleGroupRank(a.group.role) - roleGroupRank(b.group.role);
+      return rankDelta !== 0 ? rankDelta : a.index - b.index;
+    })
+    .map((entry) => entry.group);
 }
 
 function buildLanes(tasks: Task[]): Lane[] {
@@ -639,6 +716,118 @@ function buildActivity(snapshot: DashboardSnapshot, warnings: WorkflowWarning[])
   }));
 
   return sortTimelineDesc([...warningRows, ...messages, ...proposals, ...decisions]).slice(0, 14);
+}
+
+/**
+ * The Lead's doctrinal loop, assembled from existing canonical objects. Nothing
+ * here is a new schema field — every lane is a filtered projection of what the
+ * snapshot already carries, attributed to the Lead via Goal/Task ownership and
+ * message authorship.
+ */
+function buildLeadResponsibilities(
+  lead: AgentMember | undefined,
+  data: {
+    goals: Goal[];
+    teams: AgentTeam[];
+    tasks: Task[];
+    goalDesigns: GoalDesign[];
+    goalEvaluations: GoalEvaluation[];
+    outboxMessages: Message[];
+    decisions: Decision[];
+  },
+): LeadResponsibilities {
+  if (!lead) {
+    return { goalDesigns: [], assignments: [], decisions: [], evaluations: [], teamMemberIds: [] };
+  }
+
+  // Goals this Lead owns; their designs/evaluations are the Lead's design+eval lanes.
+  const ownedGoalIds = new Set(
+    data.goals.filter((goal) => goal.owner_agent_id === lead.id).map((goal) => goal.id),
+  );
+  // Tasks this Lead owns; decisions on them are the Lead's close-out decisions.
+  const ownedTaskIds = new Set(
+    data.tasks.filter((task) => task.owner_agent_id === lead.id).map((task) => task.id),
+  );
+
+  const goalDesigns = data.goalDesigns.filter(
+    (design) => design.goal_id != null && ownedGoalIds.has(design.goal_id),
+  );
+
+  // Assignment truth is the outbox Message(kind="task"), not assignee_agent_id.
+  const assignments = data.outboxMessages.filter((message) => message.kind === "task");
+
+  const decisions = data.decisions.filter(
+    (decision) =>
+      ownedTaskIds.has(decision.task_id) ||
+      (decision.goal_id != null && ownedGoalIds.has(decision.goal_id)),
+  );
+
+  // Evaluations attributed to this Lead either by evaluator id or owned goal.
+  const evaluations = data.goalEvaluations.filter(
+    (evaluation) =>
+      evaluation.evaluator_agent_id === lead.id || ownedGoalIds.has(evaluation.goal_id),
+  );
+
+  // Team composition the Lead shapes: union of member_ids across teams it owns.
+  const teamMemberIds = [
+    ...new Set(
+      data.teams
+        .filter((team) => team.owner_agent_id === lead.id)
+        .flatMap((team) => team.member_ids ?? []),
+    ),
+  ];
+
+  return { goalDesigns, assignments, decisions, evaluations, teamMemberIds };
+}
+
+/**
+ * The "Awaiting Lead decision" partition: proposals and review/decision
+ * warnings on work the Lead does not own personally, surfaced as pending Lead
+ * decisions. Keyed to `leadMemberId` (team `owner_agent_id`). If there is no
+ * Lead, this is empty (no false attribution).
+ */
+function buildLeadDecisionQueue(
+  snapshot: DashboardSnapshot,
+  warnings: WorkflowWarning[],
+  leadMemberId?: string,
+): TimelineItem[] {
+  if (!leadMemberId) return [];
+  const tasksById = new Map((snapshot.tasks ?? []).map((task) => [task.id, task]));
+
+  // A proposal awaits the Lead when its author is NOT the Lead (the anti-drift
+  // invariant: a worker cannot ratify their own proposal as a global decision).
+  const proposals = (snapshot.proposals ?? [])
+    .filter((proposal) => proposal.agent_member_id !== leadMemberId)
+    .map((proposal) => ({
+      id: `lead-${proposal.id}`,
+      kind: "proposal" as const,
+      title: proposal.title ?? "Proposal",
+      meta: proposal.status ?? "pending",
+      body: proposal.summary,
+      objectRef: proposal.task_id,
+    }));
+
+  // Review/decision warnings on tasks the Lead does not personally own surface
+  // as pending Lead decisions.
+  const warningItems = warnings
+    .filter(
+      (warning) => warning.kind.includes("decision") || warning.kind === "review_needs_decision",
+    )
+    .filter((warning) => {
+      const task = warning.taskId ? tasksById.get(warning.taskId) : undefined;
+      return !task || task.owner_agent_id !== leadMemberId;
+    })
+    .map((warning) => ({
+      id: `lead-${warning.id}`,
+      kind: "warning" as const,
+      title: warning.kind,
+      meta: warning.severity,
+      body: warning.summary,
+      severity: warning.severity,
+      objectRef: warning.taskId,
+    }));
+
+  return sortTimelineDesc([...warningItems, ...proposals]);
 }
 
 function buildDecisionQueue(snapshot: DashboardSnapshot, warnings: WorkflowWarning[]): TimelineItem[] {

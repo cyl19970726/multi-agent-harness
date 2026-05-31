@@ -77,6 +77,7 @@ import {
 } from "../api/actions";
 import type {
   AgentMember,
+  Decision,
   Gap,
   Goal,
   GoalDesign,
@@ -488,6 +489,11 @@ export function TeamWorkspace({ model, onSelectionChange, actionsEnabled, onActi
   const team = model.selectedTeam;
   const goal = model.selectedGoal;
   const member = model.selectedMember;
+  // Lead band: the team Lead is the team owner (authoritative). Tie the active
+  // goal's owner to the Lead so it is visible whether goal ownership and team
+  // ownership are the same agent or have diverged.
+  const leadId = model.leadMemberId;
+  const goalOwnerIsLead = Boolean(goal?.owner_agent_id && goal.owner_agent_id === leadId);
   return (
     <div className="space-y-5">
       <SurfaceHeader
@@ -538,6 +544,26 @@ export function TeamWorkspace({ model, onSelectionChange, actionsEnabled, onActi
             <p className="mt-0.5 line-clamp-1 text-sm text-muted-foreground">
               {goal?.objective}
             </p>
+            <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+              {leadId && (
+                <button
+                  type="button"
+                  onClick={() => onSelectionChange({ memberId: leadId, surface: "member" })}
+                  className="inline-flex"
+                >
+                  <Badge tone="decision" className="gap-1">
+                    <Crown className="size-3" />
+                    Lead {memberName(model.members, leadId)}
+                  </Badge>
+                </button>
+              )}
+              {goal?.owner_agent_id && (
+                <Badge tone={goalOwnerIsLead ? "good" : "warn"} className="gap-1">
+                  Goal owner {memberName(model.members, goal.owner_agent_id)}
+                  {goalOwnerIsLead ? " · same as Lead" : " · differs from Lead"}
+                </Badge>
+              )}
+            </div>
           </div>
           <div className="flex shrink-0 items-center gap-2">
             <ProofStat label="Tasks" value={model.goalTasks.length} tone="info" />
@@ -608,6 +634,24 @@ export function TeamWorkspace({ model, onSelectionChange, actionsEnabled, onActi
           title="Decision Queue"
           className="rise"
         >
+          {leadId && model.leadDecisionQueue.length > 0 && (
+            <div className="border-b border-border bg-card/40">
+              <div className="flex items-center gap-1.5 px-3.5 pt-2.5 pb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                <Crown className="size-3 text-primary" />
+                Awaiting Lead decision
+                <span className="ml-auto font-mono normal-case text-muted-foreground/70">
+                  {memberName(model.members, leadId)}
+                </span>
+              </div>
+              <QueueList
+                items={model.leadDecisionQueue}
+                empty="Nothing awaiting the Lead"
+                onSelect={(ref) =>
+                  ref && onSelectionChange({ taskId: ref, surface: "task" })
+                }
+              />
+            </div>
+          )}
           <QueueList
             items={model.decisionQueue}
             empty="No pending decisions"
@@ -1846,6 +1890,7 @@ function MemberPicker({
             <div className="grid gap-1.5 sm:grid-cols-2">
               {group.members.map((m) => {
                 const active = activeId === m.id;
+                const isLead = m.id === model.leadMemberId;
                 const queue = (m.inbox_count ?? 0) + (m.queued_count ?? 0);
                 return (
                   <button
@@ -1868,8 +1913,16 @@ function MemberPicker({
                       tone={memberTone(m.runtime_status ?? m.status)}
                     />
                     <span className="min-w-0 flex-1">
-                      <span className="block truncate text-[13px] font-medium">
-                        {m.name ?? m.id}
+                      <span className="flex items-center gap-1.5">
+                        <span className="truncate text-[13px] font-medium">
+                          {m.name ?? m.id}
+                        </span>
+                        {isLead && (
+                          <Badge tone="decision" className="shrink-0 gap-0.5 px-1 py-0">
+                            <Crown className="size-2.5" />
+                            Lead / Owner
+                          </Badge>
+                        )}
                       </span>
                       <span className="block truncate text-[11px] text-muted-foreground">
                         {m.runtime_status ?? m.status ?? "unknown"}
@@ -2091,6 +2144,11 @@ export function MemberWorkbench({ model, onSelectionChange, actionsEnabled, onAc
               <EmptyState icon={Activity} title="No activity recorded for this member" />
             )}
           </Section>
+
+          {/* Lead responsibilities lane — only when this member IS the Lead. */}
+          {model.selectedMemberIsLead && (
+            <LeadResponsibilitiesLane model={model} onSelectionChange={onSelectionChange} />
+          )}
         </div>
 
         {/* D. Runtime panel — real four-layer health, sessions, child threads */}
@@ -2114,6 +2172,185 @@ export function MemberWorkbench({ model, onSelectionChange, actionsEnabled, onAc
           </Section>
         </div>
       </div>
+    </div>
+  );
+}
+
+/**
+ * The Lead's doctrinal loop, surfaced only when the selected member IS the Lead.
+ * Every lane is a projection of existing canonical objects (no invented schema):
+ * design goals → assign via task messages → decide/close out → evaluate → shape
+ * the team. This is the responsibility view the design calls for.
+ */
+function LeadResponsibilitiesLane({
+  model,
+  onSelectionChange,
+}: {
+  model: WorkbenchModel;
+  onSelectionChange: (selection: Partial<SelectionState>) => void;
+}) {
+  const { goalDesigns, assignments, decisions, evaluations, teamMemberIds } =
+    model.leadResponsibilities;
+  return (
+    <Section
+      kicker="design → assign → decide → evaluate → shape team"
+      title={
+        <span className="flex items-center gap-1.5">
+          <Crown className="size-3.5 text-primary" />
+          Lead responsibilities
+        </span>
+      }
+      className="rise"
+    >
+      <div className="grid gap-3 p-3 sm:grid-cols-2">
+        {/* Design goals — GoalDesign owned by this Lead. */}
+        <LeadLaneCard
+          icon={Target}
+          title="Design goals"
+          count={goalDesigns.length}
+          empty="No goal designs owned"
+        >
+          {goalDesigns.map((design: GoalDesign) => (
+            <button
+              key={design.id}
+              type="button"
+              onClick={() => onSelectionChange({ goalId: design.goal_id, surface: "goal" })}
+              className="block w-full truncate text-left text-xs text-foreground hover:text-primary"
+            >
+              {design.scenario_summary ?? design.id}
+            </button>
+          ))}
+        </LeadLaneCard>
+
+        {/* Assign — outbox Message(kind="task"): assignment truth. */}
+        <LeadLaneCard
+          icon={Send}
+          title="Assignments"
+          count={assignments.length}
+          empty="No task assignments sent"
+        >
+          {assignments.map((message: Message) => (
+            <button
+              key={message.id}
+              type="button"
+              onClick={() =>
+                message.task_id && onSelectionChange({ taskId: message.task_id, surface: "task" })
+              }
+              className="block w-full text-left text-xs hover:text-primary"
+            >
+              <span className="truncate text-foreground">
+                → {memberName(model.members, message.to_agent_id)}
+              </span>
+              <Badge tone={deliveryStatusTone(message.delivery_status)} className="ml-1">
+                {message.delivery_status}
+              </Badge>
+            </button>
+          ))}
+        </LeadLaneCard>
+
+        {/* Decide — Decision rows on the Lead's owned work. */}
+        <LeadLaneCard
+          icon={Gavel}
+          title="Decisions"
+          count={decisions.length}
+          empty="No decisions authored"
+        >
+          {decisions.map((decision: Decision) => (
+            <button
+              key={decision.id}
+              type="button"
+              onClick={() => onSelectionChange({ taskId: decision.task_id, surface: "task" })}
+              className="flex w-full items-center gap-1.5 text-left text-xs hover:text-primary"
+            >
+              <Badge tone="decision">{decision.decision ?? "pending"}</Badge>
+              <span className="truncate text-muted-foreground">
+                {decision.rationale ?? decision.task_id}
+              </span>
+            </button>
+          ))}
+        </LeadLaneCard>
+
+        {/* Evaluate — GoalEvaluation owned/authored by this Lead. */}
+        <LeadLaneCard
+          icon={Scale}
+          title="Evaluations"
+          count={evaluations.length}
+          empty="No goal evaluations owned"
+        >
+          {evaluations.map((evaluation: GoalEvaluation) => (
+            <button
+              key={evaluation.id}
+              type="button"
+              onClick={() => onSelectionChange({ goalId: evaluation.goal_id, surface: "goal" })}
+              className="flex w-full items-center gap-1.5 text-left text-xs hover:text-primary"
+            >
+              <Badge tone={evaluation.outcome === "success" ? "good" : "warn"}>
+                {evaluation.outcome ?? "pending"}
+              </Badge>
+              <span className="truncate text-muted-foreground">
+                {evaluation.what_worked ?? evaluation.goal_id}
+              </span>
+            </button>
+          ))}
+        </LeadLaneCard>
+      </div>
+
+      {/* Shape team — member_ids composition of teams the Lead owns. */}
+      <div className="border-t border-border px-3 py-2.5">
+        <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-muted-foreground">
+          <Users className="size-3.5" />
+          Team composition
+          <span className="font-mono">{teamMemberIds.length}</span>
+        </div>
+        {teamMemberIds.length ? (
+          <div className="mt-1.5 flex flex-wrap gap-1.5">
+            {teamMemberIds.map((id) => (
+              <button
+                key={id}
+                type="button"
+                onClick={() => onSelectionChange({ memberId: id, surface: "member" })}
+              >
+                <Badge tone="muted" className="gap-1">
+                  <User className="size-3" />
+                  {memberName(model.members, id)}
+                </Badge>
+              </button>
+            ))}
+          </div>
+        ) : (
+          <p className="mt-1 text-xs text-muted-foreground">No team members composed.</p>
+        )}
+      </div>
+    </Section>
+  );
+}
+
+/** One responsibility lane card: titled, counted, scrollable list or empty hint. */
+function LeadLaneCard({
+  icon: Icon,
+  title,
+  count,
+  empty,
+  children,
+}: {
+  icon: typeof Target;
+  title: string;
+  count: number;
+  empty: string;
+  children: ReactNode;
+}) {
+  return (
+    <div className="rounded-lg border border-border bg-background/40 p-2.5">
+      <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+        <Icon className="size-3.5" />
+        {title}
+        <span className="ml-auto font-mono text-muted-foreground/70">{count}</span>
+      </div>
+      {count ? (
+        <div className="mt-1.5 max-h-40 space-y-1.5 overflow-y-auto">{children}</div>
+      ) : (
+        <p className="mt-1 text-[11px] text-muted-foreground">{empty}</p>
+      )}
     </div>
   );
 }
@@ -2608,6 +2845,22 @@ export function WarningsRepair({ model, onSelectionChange }: SurfaceProps) {
         }
         className="rise"
       >
+        {model.leadMemberId && model.leadDecisionQueue.length > 0 && (
+          <div className="border-b border-border bg-card/40">
+            <div className="flex items-center gap-1.5 px-3.5 pt-2.5 pb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+              <Crown className="size-3 text-primary" />
+              Awaiting Lead decision
+              <span className="ml-auto font-mono normal-case text-muted-foreground/70">
+                {memberName(model.members, model.leadMemberId)}
+              </span>
+            </div>
+            <QueueList
+              items={model.leadDecisionQueue}
+              empty="Nothing awaiting the Lead"
+              onSelect={(ref) => ref && onSelectionChange({ taskId: ref, surface: "task" })}
+            />
+          </div>
+        )}
         <QueueList
           items={model.decisionQueue}
           empty="No pending decisions"
