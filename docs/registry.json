@@ -1348,6 +1348,40 @@
         "npx pnpm@9.15.4 check"
       ],
       "reorgTrigger": "A new required field is needed on an existing object, a new generic object is added, or the open-enum/domain-neutrality policy changes."
+    },
+    {
+      "path": "docs/member-runtime-observability.md",
+      "ownerRole": "provider-integration",
+      "status": "planned",
+      "lifecycle": "volatile",
+      "canonicalFor": [
+        "member real-time observability",
+        "three-signal runtime state model",
+        "SSE event stream contract",
+        "runtime health signal model"
+      ],
+      "dependsOn": [
+        "docs/agent-runtime.md",
+        "docs/agent-control-plane.md",
+        "docs/concept-model.md",
+        "docs/data-model.md",
+        "docs/integration/codex.md",
+        "docs/integration/claude.md",
+        "docs/decisions/0008-persistent-codex-agent-runtime.md",
+        "docs/decisions/0011-provider-neutral-runtime.md",
+        "crates/harness-cli/src/sse.rs",
+        "crates/harness-cli/src/main.rs",
+        "apps/agent-dashboard/src/api.ts"
+      ],
+      "machineConsumers": [
+        "check-doc-links",
+        "check-doc-governance"
+      ],
+      "reviewAfter": "2026-06-26",
+      "lastVerifiedWith": [
+        "npx pnpm@9.15.4 check"
+      ],
+      "reorgTrigger": "The three-signal model, runtime_health layers, /v1/events SSE frame contract, watcher/broadcast mechanism, or the frontend live/polling/offline mode logic changes."
     }
   ]
 }

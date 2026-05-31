@@ -202,3 +202,11 @@ The connection sends a keepalive comment every ~15 seconds (when no events are b
 ### Implementation
 
 The watcher thread monitors jsonl store files (`agent_events.jsonl`, `messages.jsonl`, `provider_sessions.jsonl`) for appends. On detection (~500ms poll), new records are parsed and broadcast to all connected SSE clients via a crossbeam channel fan-out. Each client connection receives events independently.
+
+### How A Member Looks Live
+
+The end-to-end model of how these events, the four-layer `runtime_health`
+probe, and the `ProviderSession` lifecycle compose into an `AgentMember`'s
+real-time state — and how that state reaches the Agent Dashboard — is the
+canonical contract in
+[member-runtime-observability.md](member-runtime-observability.md).
