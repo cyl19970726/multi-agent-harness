@@ -141,3 +141,64 @@ Do not let the first provider implementation define the generic runtime.
 5. Dashboard reads normalized harness state, not raw provider state directly.
 6. Delivery claims happen before provider side effects.
 7. Closed, closing, and retired members fail normal delivery.
+
+## Real-Time Event Streaming (SSE)
+
+The harness serves real-time events via Server-Sent Events (SSE) at the `/v1/events` endpoint. This allows clients to maintain a live view of harness state without polling.
+
+### Endpoint: `GET /v1/events`
+
+**Purpose**: Stream provider-neutral harness events (agent events, messages, provider sessions) to connected clients as they are recorded.
+
+**Response Headers**:
+```
+Content-Type: text/event-stream
+Cache-Control: no-cache
+Connection: keep-alive
+Access-Control-Allow-Origin: *
+```
+
+### Event Kinds
+
+The endpoint emits the following event types:
+
+- **`snapshot`**: Initial state sent on connection (contains `generated_at` timestamp). Clients use this to initialize their state during reconnect.
+- **`agent_event`**: A new `AgentEvent` was recorded (provider/runtime/hook event).
+- **`message`**: A new `Message` was created or its `delivery_status` changed.
+- **`provider_session`**: A new `ProviderSession` was recorded or its `status` changed.
+
+### Event Frame Format
+
+Each event is transmitted as:
+```
+event: <event_kind>
+data: <JSON object>
+
+```
+
+Example (agent_event):
+```
+event: agent_event
+data: {"id":"evt-001","agent_member_id":"mem-001","provider":"claude","event_type":"message_queued",...}
+
+```
+
+### Keepalive
+
+The connection sends a keepalive comment every ~15 seconds (when no events are being transmitted) to prevent proxy/client idle timeouts:
+
+```
+: keepalive
+
+```
+
+### Client Behavior
+
+1. On connection: receive `snapshot` event to initialize state.
+2. Stream in events as they arrive (typical latency <1s from append).
+3. On reconnect: fetch `/v1/snapshot` to resync, then reconnect to `/v1/events`.
+4. Handle client disconnect gracefully (connection drop, drop receiver).
+
+### Implementation
+
+The watcher thread monitors jsonl store files (`agent_events.jsonl`, `messages.jsonl`, `provider_sessions.jsonl`) for appends. On detection (~500ms poll), new records are parsed and broadcast to all connected SSE clients via a crossbeam channel fan-out. Each client connection receives events independently.
