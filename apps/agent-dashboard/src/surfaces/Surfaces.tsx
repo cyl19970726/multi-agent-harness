@@ -62,6 +62,12 @@ import {
   taskTitle,
   type WorkbenchModel,
 } from "../model/readModel";
+import {
+  deliverQueued,
+  messageMember,
+  requestReview,
+  type ActionDescriptor,
+} from "../api/actions";
 import type {
   Gap,
   Goal,
@@ -84,6 +90,30 @@ interface SurfaceProps {
 }
 
 const ACTIONS_DISABLED_HINT = "Connect a live source to enable actions";
+
+/** Dispatch an action descriptor through the snapshot-refreshing onAction prop. */
+function dispatch(
+  onAction: ((path: string, body?: unknown) => void) | undefined,
+  descriptor: ActionDescriptor,
+): void {
+  onAction?.(descriptor.path, descriptor.body);
+}
+
+/**
+ * Build a message-to-member descriptor from the model. `/v1/messages` requires
+ * an authoring agent and content, so the sender resolves to the team
+ * lead/owner (falling back to the recipient when no owner is known) and the
+ * content is a neutral default placeholder until a compose surface lands.
+ */
+function memberMessageDescriptor(model: WorkbenchModel, memberId: string): ActionDescriptor {
+  const from = model.selectedTeam?.owner_agent_id ?? memberId;
+  return messageMember({
+    from,
+    to: memberId,
+    content: "Message from the dashboard.",
+    task: model.selectedTask?.id,
+  });
+}
 
 /**
  * Primary action button that is honest about read-only mode: when actions are
@@ -430,7 +460,7 @@ export function TeamWorkspace({ model, onSelectionChange, actionsEnabled, onActi
               size="sm"
               onClick={() =>
                 model.selectedTask &&
-                onAction?.("/v1/actions/request-review", { task_id: model.selectedTask.id })
+                dispatch(onAction, requestReview(model.selectedTask.id))
               }
             >
               <ShieldCheck className="size-3.5" />
@@ -440,7 +470,7 @@ export function TeamWorkspace({ model, onSelectionChange, actionsEnabled, onActi
               enabled={actionsEnabled && Boolean(member)}
               size="sm"
               onClick={() =>
-                member && onAction?.("/v1/actions/message-member", { agent_id: member.id })
+                member && dispatch(onAction, memberMessageDescriptor(model, member.id))
               }
             >
               <Send className="size-3.5" />
@@ -1145,7 +1175,7 @@ export function TaskDocument({ model, onSelectionChange, actionsEnabled, onActio
               enabled={actionsEnabled}
               size="sm"
               variant="secondary"
-              onClick={() => onAction?.("/v1/actions/request-review", { task_id: task.id })}
+              onClick={() => dispatch(onAction, requestReview(task.id))}
             >
               <ShieldCheck className="size-3.5" />
               Request review
@@ -1855,7 +1885,7 @@ export function MemberWorkbench({ model, onSelectionChange, actionsEnabled, onAc
             enabled={actionsEnabled}
             size="sm"
             variant="secondary"
-            onClick={() => onAction?.("/v1/actions/deliver-queued", { agent_id: member.id })}
+            onClick={() => dispatch(onAction, deliverQueued(member.id))}
           >
             <Inbox className="size-3.5" />
             Deliver queued
@@ -1863,7 +1893,7 @@ export function MemberWorkbench({ model, onSelectionChange, actionsEnabled, onAc
           <ActionButton
             enabled={actionsEnabled}
             size="sm"
-            onClick={() => onAction?.("/v1/actions/message-member", { agent_id: member.id })}
+            onClick={() => dispatch(onAction, memberMessageDescriptor(model, member.id))}
           >
             <Send className="size-3.5" />
             Send message

@@ -45,6 +45,7 @@ import {
   VisionOverview,
   WarningsRepair,
 } from "../surfaces/Surfaces";
+import { deliverQueued, messageMember } from "../api/actions";
 import type { SelectionState, SurfaceId } from "./selection";
 
 interface WorkbenchShellProps {
@@ -510,7 +511,15 @@ function Inspector({
                 <InspectorAction
                   enabled={actionsEnabled}
                   className="flex-1"
-                  onClick={() => onAction("/v1/actions/message-member", { agent_id: member.id })}
+                  onClick={() => {
+                    const d = messageMember({
+                      from: model.selectedTeam?.owner_agent_id ?? member.id,
+                      to: member.id,
+                      content: "Message from the dashboard.",
+                      task: model.selectedTask?.id,
+                    });
+                    onAction(d.path, d.body);
+                  }}
                 >
                   <Send className="size-3.5" />
                   Message
@@ -519,7 +528,10 @@ function Inspector({
                   enabled={actionsEnabled}
                   variant="secondary"
                   className="flex-1"
-                  onClick={() => onAction("/v1/actions/deliver-queued", { agent_id: member.id })}
+                  onClick={() => {
+                    const d = deliverQueued(member.id);
+                    onAction(d.path, d.body);
+                  }}
                 >
                   <Inbox className="size-3.5" />
                   Deliver
