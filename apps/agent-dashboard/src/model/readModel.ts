@@ -15,6 +15,7 @@ import type {
   ProviderChildThread,
   ProviderSession,
   Review,
+  SenderKind,
   Task,
   TaskStatus,
   Vision,
@@ -43,6 +44,10 @@ export interface TimelineItem {
   deliveryStatus?: string;
   /** The other party in a message (from for inbound, to for outbound). */
   counterpartyId?: string;
+  /** Message author id (raw from_agent_id), so a bubble can show who spoke. */
+  fromAgentId?: string;
+  /** Identity class of a message author ("operator" renders distinctly). */
+  senderKind?: SenderKind;
   /** Provider-neutral provider label for a session row. */
   provider?: string;
   /** Raw provider-session status for a session block header/badge. */
@@ -594,6 +599,8 @@ function buildMemberTimeline(snapshot: DashboardSnapshot, member: AgentMember, w
         direction,
         deliveryStatus: message.delivery_status,
         counterpartyId: (direction === "in" ? message.from_agent_id : message.to_agent_id) ?? undefined,
+        fromAgentId: message.from_agent_id,
+        senderKind: message.sender_kind,
       };
     });
 

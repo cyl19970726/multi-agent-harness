@@ -18,6 +18,7 @@ import {
   Link2,
   ListChecks,
   MessageSquare,
+  Plus,
   RefreshCw,
   Scale,
   Send,
@@ -27,13 +28,14 @@ import {
   Terminal,
   Users,
   User,
+  UserPlus,
   Workflow,
   Wrench,
   X,
   Zap,
 } from "lucide-react";
 
-import { useState, type ComponentProps, type ReactNode } from "react";
+import { useEffect, useState, type ComponentProps, type ReactNode } from "react";
 
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
@@ -55,6 +57,15 @@ import {
   type StatusTone,
 } from "@/components/workbench/atoms";
 import { Avatar } from "@/components/workbench/Avatar";
+import {
+  Dialog,
+  DialogFooter,
+  Field,
+  parseList,
+  Select,
+  TextArea,
+  TextInput,
+} from "@/components/workbench/OperatorForms";
 import {
   gapSeverityTone,
   gapStatusTone,
@@ -78,8 +89,11 @@ import {
 } from "../model/readModel";
 import {
   closeMember,
+  createAgent,
+  createGoal,
+  createTeam,
   deliverQueued,
-  messageMember,
+  operatorMessage,
   reconcileSession,
   requestReview,
   retryDelivery,
@@ -119,22 +133,6 @@ function dispatch(
   descriptor: ActionDescriptor,
 ): void {
   onAction?.(descriptor.path, descriptor.body);
-}
-
-/**
- * Build a message-to-member descriptor from the model. `/v1/messages` requires
- * an authoring agent and content, so the sender resolves to the team
- * lead/owner (falling back to the recipient when no owner is known) and the
- * content is a neutral default placeholder until a compose surface lands.
- */
-function memberMessageDescriptor(model: WorkbenchModel, memberId: string): ActionDescriptor {
-  const from = model.selectedTeam?.owner_agent_id ?? memberId;
-  return messageMember({
-    from,
-    to: memberId,
-    content: "Message from the dashboard.",
-    task: model.selectedTask?.id,
-  });
 }
 
 /**
@@ -514,6 +512,7 @@ export function TeamWorkspace({ model, onSelectionChange, actionsEnabled, onActi
         }
         actions={
           <>
+            <OperatorBar model={model} actionsEnabled={actionsEnabled} onAction={onAction} />
             <ActionButton
               enabled={actionsEnabled && Boolean(model.selectedTask)}
               variant="secondary"
@@ -526,16 +525,17 @@ export function TeamWorkspace({ model, onSelectionChange, actionsEnabled, onActi
               <ShieldCheck className="size-3.5" />
               Request review
             </ActionButton>
-            <ActionButton
-              enabled={actionsEnabled && Boolean(member)}
+            <Button
+              variant="secondary"
               size="sm"
+              disabled={!member}
               onClick={() =>
-                member && dispatch(onAction, memberMessageDescriptor(model, member.id))
+                member && onSelectionChange({ memberId: member.id, surface: "member" })
               }
             >
               <Send className="size-3.5" />
-              Message member
-            </ActionButton>
+              Open conversation
+            </Button>
           </>
         }
       />
@@ -692,6 +692,506 @@ export function TeamWorkspace({ model, onSelectionChange, actionsEnabled, onActi
         </Section>
       </div>
     </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Operator forms (WP-iii): drive the team with ZERO CLI               */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The operator action bar in the Team workspace header: New team, New agent,
+ * Brief the Lead. Each opens a dialog wired to the matching WP-ii create route
+ * through the actions seam. Every write is gated on `actionsEnabled` (live);
+ * offline the buttons render disabled with the standard tooltip.
+ */
+function OperatorBar({
+  model,
+  actionsEnabled,
+  onAction,
+}: {
+  model: WorkbenchModel;
+  actionsEnabled?: boolean;
+  onAction?: (path: string, body?: unknown) => void;
+}) {
+  const [dialog, setDialog] = useState<null | "team" | "agent" | "goal">(null);
+  const live = Boolean(actionsEnabled);
+  return (
+    <>
+      <OperatorActionButton enabled={live} onClick={() => setDialog("team")}>
+        <Plus className="size-3.5" />
+        New team
+      </OperatorActionButton>
+      <OperatorActionButton
+        enabled={live}
+        variant="secondary"
+        onClick={() => setDialog("agent")}
+      >
+        <UserPlus className="size-3.5" />
+        New agent
+      </OperatorActionButton>
+      <OperatorActionButton
+        enabled={live}
+        variant="secondary"
+        onClick={() => setDialog("goal")}
+      >
+        <Target className="size-3.5" />
+        Brief the Lead
+      </OperatorActionButton>
+
+      <NewTeamForm
+        open={dialog === "team"}
+        model={model}
+        actionsEnabled={live}
+        onAction={onAction}
+        onClose={() => setDialog(null)}
+      />
+      <NewAgentForm
+        open={dialog === "agent"}
+        model={model}
+        actionsEnabled={live}
+        onAction={onAction}
+        onClose={() => setDialog(null)}
+      />
+      <BriefLeadForm
+        open={dialog === "goal"}
+        model={model}
+        actionsEnabled={live}
+        onAction={onAction}
+        onClose={() => setDialog(null)}
+      />
+    </>
+  );
+}
+
+/** Header action button that stays honest about read-only mode. */
+function OperatorActionButton({
+  enabled,
+  children,
+  variant = "default",
+  onClick,
+}: {
+  enabled: boolean;
+  children: ReactNode;
+  variant?: ComponentProps<typeof Button>["variant"];
+  onClick: () => void;
+}) {
+  if (enabled) {
+    return (
+      <Button size="sm" variant={variant} onClick={onClick}>
+        {children}
+      </Button>
+    );
+  }
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span className="inline-flex">
+          <Button size="sm" variant={variant} disabled title={ACTIONS_DISABLED_HINT}>
+            {children}
+          </Button>
+        </span>
+      </TooltipTrigger>
+      <TooltipContent side="bottom">{ACTIONS_DISABLED_HINT}</TooltipContent>
+    </Tooltip>
+  );
+}
+
+/** A member <select> for picking an owner/Lead, listing every known member. */
+function MemberSelect({
+  id,
+  value,
+  members,
+  onChange,
+  placeholder = "Select a member…",
+}: {
+  id: string;
+  value: string;
+  members: AgentMember[];
+  onChange: (value: string) => void;
+  placeholder?: string;
+}) {
+  return (
+    <Select id={id} value={value} onChange={(event) => onChange(event.target.value)}>
+      <option value="">{placeholder}</option>
+      {members.map((member) => (
+        <option key={member.id} value={member.id}>
+          {member.name ?? member.id}
+          {member.role ? ` · ${member.role}` : ""}
+        </option>
+      ))}
+    </Select>
+  );
+}
+
+/**
+ * NEW TEAM (POST /v1/teams). Requires name, description and an owner (the
+ * Lead/owner agent). On submit the team is created; it appears via the next
+ * snapshot refresh / SSE frame.
+ */
+function NewTeamForm({
+  open,
+  model,
+  actionsEnabled,
+  onAction,
+  onClose,
+}: {
+  open: boolean;
+  model: WorkbenchModel;
+  actionsEnabled: boolean;
+  onAction?: (path: string, body?: unknown) => void;
+  onClose: () => void;
+}) {
+  const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
+  const [owner, setOwner] = useState("");
+
+  useEffect(() => {
+    if (open) {
+      setName("");
+      setDescription("");
+      setOwner(model.leadMemberId ?? model.selectedTeam?.owner_agent_id ?? "");
+    }
+  }, [open, model.leadMemberId, model.selectedTeam?.owner_agent_id]);
+
+  const canSubmit = Boolean(name.trim() && description.trim() && owner.trim());
+  function submit() {
+    if (!canSubmit || !actionsEnabled) return;
+    dispatch(
+      onAction,
+      createTeam({
+        name: name.trim(),
+        description: description.trim(),
+        owner: owner.trim(),
+      }),
+    );
+    onClose();
+  }
+
+  return (
+    <Dialog
+      open={open}
+      title="New team"
+      description="Stand up a persistent AgentTeam. POST /v1/teams."
+      onClose={onClose}
+    >
+      <form
+        className="space-y-3"
+        onSubmit={(event) => {
+          event.preventDefault();
+          submit();
+        }}
+      >
+        <Field label="Name" required>
+          {(id) => (
+            <TextInput
+              id={id}
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+              placeholder="e.g. Polymarket HFT"
+            />
+          )}
+        </Field>
+        <Field label="Description" required>
+          {(id) => (
+            <TextArea
+              id={id}
+              value={description}
+              onChange={(event) => setDescription(event.target.value)}
+              placeholder="What this team owns."
+            />
+          )}
+        </Field>
+        <Field label="Owner (Lead)" required hint="The team Lead / owner agent.">
+          {(id) => (
+            <MemberSelect
+              id={id}
+              value={owner}
+              members={model.members}
+              onChange={setOwner}
+              placeholder="Select the Lead…"
+            />
+          )}
+        </Field>
+        <DialogFooter
+          submitLabel="Create team"
+          actionsEnabled={actionsEnabled}
+          canSubmit={canSubmit}
+          onCancel={onClose}
+          onSubmit={submit}
+        />
+      </form>
+    </Dialog>
+  );
+}
+
+/**
+ * NEW AGENT (POST /v1/agents). Requires name + role; provider (codex|claude),
+ * description and skills are optional. The new member joins the selected team
+ * and appears in the roster on the next snapshot.
+ */
+function NewAgentForm({
+  open,
+  model,
+  actionsEnabled,
+  onAction,
+  onClose,
+}: {
+  open: boolean;
+  model: WorkbenchModel;
+  actionsEnabled: boolean;
+  onAction?: (path: string, body?: unknown) => void;
+  onClose: () => void;
+}) {
+  const [name, setName] = useState("");
+  const [role, setRole] = useState("");
+  const [provider, setProvider] = useState("");
+  const [description, setDescription] = useState("");
+  const [skills, setSkills] = useState("");
+
+  useEffect(() => {
+    if (open) {
+      setName("");
+      setRole("");
+      setProvider("");
+      setDescription("");
+      setSkills("");
+    }
+  }, [open]);
+
+  const teamId = model.selectedTeam?.id;
+  const teamName = model.selectedTeam?.name ?? teamId;
+  const canSubmit = Boolean(name.trim() && role.trim());
+  function submit() {
+    if (!canSubmit || !actionsEnabled) return;
+    dispatch(
+      onAction,
+      createAgent({
+        name: name.trim(),
+        role: role.trim(),
+        provider: provider || undefined,
+        description: description.trim() || undefined,
+        skills: parseList(skills),
+        teamIds: teamId ? [teamId] : undefined,
+      }),
+    );
+    onClose();
+  }
+
+  return (
+    <Dialog
+      open={open}
+      title="New agent"
+      description={
+        teamName ? `Add an Agent Member to ${teamName}. POST /v1/agents.` : "Add an Agent Member. POST /v1/agents."
+      }
+      onClose={onClose}
+    >
+      <form
+        className="space-y-3"
+        onSubmit={(event) => {
+          event.preventDefault();
+          submit();
+        }}
+      >
+        <Field label="Name" required>
+          {(id) => (
+            <TextInput
+              id={id}
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+              placeholder="e.g. Backend Engineer"
+            />
+          )}
+        </Field>
+        <Field label="Role" required hint="e.g. lead, engineer, reviewer.">
+          {(id) => (
+            <TextInput
+              id={id}
+              value={role}
+              onChange={(event) => setRole(event.target.value)}
+              placeholder="e.g. engineer"
+            />
+          )}
+        </Field>
+        <Field label="Provider" hint="Defaults to codex when left as Default.">
+          {(id) => (
+            <Select id={id} value={provider} onChange={(event) => setProvider(event.target.value)}>
+              <option value="">Default (codex)</option>
+              <option value="codex">codex</option>
+              <option value="claude">claude</option>
+            </Select>
+          )}
+        </Field>
+        <Field label="Description">
+          {(id) => (
+            <TextArea
+              id={id}
+              value={description}
+              onChange={(event) => setDescription(event.target.value)}
+              placeholder="What this member does."
+            />
+          )}
+        </Field>
+        <Field label="Skills" hint="Comma or newline separated skill refs (optional).">
+          {(id) => (
+            <TextInput
+              id={id}
+              value={skills}
+              onChange={(event) => setSkills(event.target.value)}
+              placeholder="e.g. rust, code-review"
+            />
+          )}
+        </Field>
+        <DialogFooter
+          submitLabel="Create agent"
+          actionsEnabled={actionsEnabled}
+          canSubmit={canSubmit}
+          onCancel={onClose}
+          onSubmit={submit}
+        />
+      </form>
+    </Dialog>
+  );
+}
+
+/**
+ * BRIEF THE LEAD / SET GOAL. Creates a Goal owned by the Lead (POST /v1/goals)
+ * AND — when "also message the Lead" is on — emits an operator Message
+ * (kind=task, sender_kind=operator, from=operator, to=Lead) so the objective
+ * shows BOTH as durable Goal state and in the Lead's conversation.
+ */
+function BriefLeadForm({
+  open,
+  model,
+  actionsEnabled,
+  onAction,
+  onClose,
+}: {
+  open: boolean;
+  model: WorkbenchModel;
+  actionsEnabled: boolean;
+  onAction?: (path: string, body?: unknown) => void;
+  onClose: () => void;
+}) {
+  const [title, setTitle] = useState("");
+  const [objective, setObjective] = useState("");
+  const [owner, setOwner] = useState("");
+  const [success, setSuccess] = useState("");
+  const [alsoMessage, setAlsoMessage] = useState(true);
+
+  useEffect(() => {
+    if (open) {
+      setTitle("");
+      setObjective("");
+      setOwner(model.leadMemberId ?? model.selectedTeam?.owner_agent_id ?? "");
+      setSuccess("");
+      setAlsoMessage(true);
+    }
+  }, [open, model.leadMemberId, model.selectedTeam?.owner_agent_id]);
+
+  const canSubmit = Boolean(title.trim() && objective.trim() && owner.trim());
+  function submit() {
+    if (!canSubmit || !actionsEnabled) return;
+    const trimmedTitle = title.trim();
+    const trimmedObjective = objective.trim();
+    // 1) Durable Goal state, owned by the Lead.
+    dispatch(
+      onAction,
+      createGoal({
+        title: trimmedTitle,
+        objective: trimmedObjective,
+        owner: owner.trim(),
+        success: parseList(success),
+      }),
+    );
+    // 2) Optional operator brief into the Lead's conversation (kind=task).
+    if (alsoMessage) {
+      dispatch(
+        onAction,
+        operatorMessage({
+          to: owner.trim(),
+          kind: "task",
+          content: `Goal: ${trimmedTitle}\n\n${trimmedObjective}`,
+        }),
+      );
+    }
+    onClose();
+  }
+
+  return (
+    <Dialog
+      open={open}
+      title="Brief the Lead"
+      description="Set a Goal for the Lead. POST /v1/goals (+ optional operator message)."
+      onClose={onClose}
+    >
+      <form
+        className="space-y-3"
+        onSubmit={(event) => {
+          event.preventDefault();
+          submit();
+        }}
+      >
+        <Field label="Goal title" required>
+          {(id) => (
+            <TextInput
+              id={id}
+              value={title}
+              onChange={(event) => setTitle(event.target.value)}
+              placeholder="e.g. Ship the operator console"
+            />
+          )}
+        </Field>
+        <Field label="Objective" required>
+          {(id) => (
+            <TextArea
+              id={id}
+              value={objective}
+              onChange={(event) => setObjective(event.target.value)}
+              placeholder="What success looks like, in prose."
+            />
+          )}
+        </Field>
+        <Field label="Lead (owner)" required hint="The Lead who owns this goal.">
+          {(id) => (
+            <MemberSelect
+              id={id}
+              value={owner}
+              members={model.members}
+              onChange={setOwner}
+              placeholder="Select the Lead…"
+            />
+          )}
+        </Field>
+        <Field label="Success criteria" hint="One per line or comma separated (optional).">
+          {(id) => (
+            <TextArea
+              id={id}
+              value={success}
+              onChange={(event) => setSuccess(event.target.value)}
+              placeholder={"e.g. gate green\noperator can drive with zero CLI"}
+            />
+          )}
+        </Field>
+        <label className="flex items-center gap-2 text-[12px] text-foreground">
+          <input
+            type="checkbox"
+            checked={alsoMessage}
+            onChange={(event) => setAlsoMessage(event.target.checked)}
+            className="size-3.5 rounded border-border accent-primary"
+          />
+          Also message the Lead with this brief (operator → Lead)
+        </label>
+        <DialogFooter
+          submitLabel="Brief the Lead"
+          actionsEnabled={actionsEnabled}
+          canSubmit={canSubmit}
+          onCancel={onClose}
+          onSubmit={submit}
+        />
+      </form>
+    </Dialog>
   );
 }
 
@@ -2121,7 +2621,6 @@ function ConversationStream({
       </div>
 
       <Composer
-        model={model}
         member={member}
         actionsEnabled={actionsEnabled}
         onAction={onAction}
@@ -2249,9 +2748,14 @@ function StreamRow({
 }
 
 /**
- * A chat bubble for an operator↔agent message. Inbound (from the agent) sits on
- * the left; outbound (operator/owner→member) sits on the right. The delivery
- * status rides along as a small chip so delivery state stays legible.
+ * A chat bubble for an operator↔agent message, attributed by AUTHOR identity
+ * (Message.sender_kind), not raw inbox/outbox direction:
+ *  - operator-authored messages (sender_kind="operator") sit on the RIGHT with
+ *    an "Operator" badge — the human driving the team;
+ *  - everything else is agent-authored: left-aligned, labelled with the author
+ *    member's name.
+ * The delivery status rides along as a small chip so delivery state stays
+ * legible.
  */
 function ChatBubble({
   item,
@@ -2262,26 +2766,41 @@ function ChatBubble({
   members: AgentMember[];
   selfName: string;
 }) {
-  // Alignment is from the OPERATOR's point of view, like a chat client:
-  //  - the member timeline marks `in` for messages sent TO the member — those
-  //    are the operator/owner's OUTBOUND messages → right-aligned;
-  //  - `out` marks messages the member AUTHORED — the agent's replies →
-  //    left-aligned.
-  const operatorOutbound = item.direction === "in";
-  const speaker = operatorOutbound
-    ? memberName(members, item.counterpartyId)
-    : selfName;
+  // Operator messages are authored by the human, never a member. They are
+  // outbound TO the member (direction "in" in the member timeline) AND carry
+  // sender_kind="operator". An agent's own reply is authored by the member.
+  const isOperator = item.senderKind === "operator";
+  // Author label: "Operator" for operator rows; otherwise the authoring member
+  // (the counterparty for inbound rows, the selected member for its own
+  // outbound replies).
+  const authorName = isOperator
+    ? "Operator"
+    : item.direction === "in"
+      ? memberName(members, item.fromAgentId ?? item.counterpartyId)
+      : selfName;
   return (
-    <div className={cn("flex", operatorOutbound ? "justify-end" : "justify-start")}>
-      <div className={cn("max-w-[80%]", operatorOutbound ? "items-end text-right" : "items-start")}>
-        <div className="mb-0.5 flex items-center gap-1.5 text-[10px] text-muted-foreground">
-          <span className="font-semibold uppercase tracking-wider">{speaker}</span>
+    <div className={cn("flex", isOperator ? "justify-end" : "justify-start")}>
+      <div className={cn("max-w-[80%]", isOperator ? "items-end text-right" : "items-start")}>
+        <div
+          className={cn(
+            "mb-0.5 flex items-center gap-1.5 text-[10px] text-muted-foreground",
+            isOperator && "justify-end",
+          )}
+        >
+          {isOperator ? (
+            <Badge tone="decision" className="gap-0.5 px-1 py-0 uppercase tracking-wider">
+              <User className="size-2.5" />
+              Operator
+            </Badge>
+          ) : (
+            <span className="font-semibold uppercase tracking-wider">{authorName}</span>
+          )}
           {item.createdAt && <span>{fmtTime(item.createdAt)}</span>}
         </div>
         <div
           className={cn(
             "rounded-2xl border px-3 py-2 text-left text-[13px] leading-relaxed",
-            operatorOutbound
+            isOperator
               ? "rounded-br-sm border-primary/30 bg-primary/12 text-foreground"
               : "rounded-bl-sm border-border bg-background text-foreground",
           )}
@@ -2289,7 +2808,7 @@ function ChatBubble({
           {item.body ?? item.title}
         </div>
         {item.deliveryStatus && (
-          <div className={cn("mt-1 flex items-center gap-1", operatorOutbound && "justify-end")}>
+          <div className={cn("mt-1 flex items-center gap-1", isOperator && "justify-end")}>
             <Badge tone={deliveryStatusTone(item.deliveryStatus)}>{item.deliveryStatus}</Badge>
           </div>
         )}
@@ -2382,38 +2901,46 @@ function sessionRunLine(item: TimelineItem): string {
 }
 
 /**
- * Composer pinned to the bottom of the stream. Sends a real message via the
- * actions seam (POST /v1/messages, from = team owner/lead, to = member, kind =
- * message); the App refreshes the snapshot after the action. Disabled with the
- * standard tooltip while actions are read-only.
+ * Composer pinned to the bottom of the stream. Authors a real message AS THE
+ * OPERATOR (POST /v1/messages, from=OPERATOR_ID + sender_kind=operator, to =
+ * member, kind = message) — it does NOT impersonate the Lead. The App refreshes
+ * the snapshot after the action. Disabled with the standard tooltip while
+ * actions are read-only.
  */
 function Composer({
-  model,
   member,
   actionsEnabled,
   onAction,
 }: {
-  model: WorkbenchModel;
   member: AgentMember;
   actionsEnabled?: boolean;
   onAction?: (path: string, body?: unknown) => void;
 }) {
   const [draft, setDraft] = useState("");
-  const from = model.selectedTeam?.owner_agent_id ?? member.id;
   const canSend = Boolean(actionsEnabled && draft.trim());
 
   function send() {
     const content = draft.trim();
     if (!content || !actionsEnabled) return;
-    dispatch(onAction, messageMember({ from, to: member.id, content, task: member.current_task_id ?? undefined }));
+    dispatch(
+      onAction,
+      operatorMessage({ to: member.id, content, task: member.current_task_id ?? undefined }),
+    );
     setDraft("");
   }
 
   return (
     <div className="shrink-0 border-t border-border bg-card/60 p-2.5">
+      <div className="mb-1.5 flex items-center gap-1.5 text-[10px] text-muted-foreground">
+        <Badge tone="decision" className="gap-0.5 px-1 py-0 uppercase tracking-wider">
+          <User className="size-2.5" />
+          Operator
+        </Badge>
+        <span>authoring as the operator (not the Lead)</span>
+      </div>
       <div className="flex items-end gap-2">
         <textarea
-          aria-label="Message to member"
+          aria-label="Operator message to member"
           value={draft}
           onChange={(event) => setDraft(event.target.value)}
           onKeyDown={(event) => {
@@ -2424,7 +2951,7 @@ function Composer({
           }}
           rows={1}
           placeholder={
-            actionsEnabled ? `Message ${member.name ?? member.id}…` : ACTIONS_DISABLED_HINT
+            actionsEnabled ? `Message ${member.name ?? member.id} as operator…` : ACTIONS_DISABLED_HINT
           }
           disabled={!actionsEnabled}
           className="min-h-9 max-h-32 flex-1 resize-y rounded-md border border-border bg-background px-3 py-2 text-[13px] text-foreground outline-none transition-colors focus:border-ring disabled:cursor-not-allowed disabled:opacity-60"

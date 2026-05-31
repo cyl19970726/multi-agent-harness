@@ -1,7 +1,10 @@
 // Maps dashboard write intents to the REAL harness HTTP routes.
 //
 // The backend (crates/harness-cli/src/main.rs `handle_http_action`) exposes:
-//   POST /v1/messages                          { from, to, content, kind, task }
+//   POST /v1/messages                          { from, to, content, kind, task, sender_kind }
+//   POST /v1/teams                             { name, description, owner }
+//   POST /v1/agents                            { name, role, provider?, skill[], team[], ... }
+//   POST /v1/goals                             { title, objective, owner, success[], priority? }
 //   POST /v1/agents/{id}/deliver               { start_runtime?, dry_run?, ... }
 //   POST /v1/agents/{id}/retry-delivery        { message_id, ... }
 //   POST /v1/agents/{id}/reconcile-session     { session_id, status, ... }
@@ -18,14 +21,28 @@ export interface ActionDescriptor {
   body: Record<string, unknown>;
 }
 
+/**
+ * The synthetic identity the dashboard authors operator messages as. The
+ * backend keys delivery off the recipient member, so `from` does not need to be
+ * a real member id — `sender_kind=operator` marks the row as operator-authored
+ * (vs an agent), and `from="operator"` keeps the conversation attributable to
+ * the human driving the team rather than impersonating the Lead.
+ */
+export const OPERATOR_ID = "operator";
+
 function encodeId(id: string): string {
   return encodeURIComponent(id);
 }
 
 /**
  * Queue a message to a member. `to` is the recipient member id; `from` is the
- * authoring agent (typically the team lead/owner). Both `from` and `content`
- * are required by the backend, so callers must supply them.
+ * authoring identity. Both `from` and `content` are required by the backend.
+ *
+ * `senderKind` marks the message's identity class (additive Message.sender_kind,
+ * WP-i): omit it (defaults agent-side) for an agent-authored message, or pass
+ * `"operator"` for an operator/human-authored one. The dashboard composer
+ * authors as the operator (`from=OPERATOR_ID`, `senderKind="operator"`), never
+ * impersonating the Lead.
  */
 export function messageMember(params: {
   from: string;
@@ -33,6 +50,7 @@ export function messageMember(params: {
   content: string;
   kind?: string;
   task?: string;
+  senderKind?: "agent" | "operator" | "system";
 }): ActionDescriptor {
   const body: Record<string, unknown> = {
     from: params.from,
@@ -43,7 +61,111 @@ export function messageMember(params: {
   if (params.task) {
     body.task = params.task;
   }
+  if (params.senderKind) {
+    body.sender_kind = params.senderKind;
+  }
   return { method: "POST", path: "/v1/messages", body };
+}
+
+/**
+ * Author a message as the OPERATOR (the human driving the team). Sets
+ * `from=OPERATOR_ID` + `sender_kind=operator` so the row is attributable to the
+ * operator and renders distinctly from agent messages — it does NOT impersonate
+ * the team Lead.
+ */
+export function operatorMessage(params: {
+  to: string;
+  content: string;
+  kind?: string;
+  task?: string;
+}): ActionDescriptor {
+  return messageMember({
+    from: OPERATOR_ID,
+    to: params.to,
+    content: params.content,
+    kind: params.kind,
+    task: params.task,
+    senderKind: "operator",
+  });
+}
+
+/**
+ * Create a new team. POST /v1/teams requires name, description and owner (the
+ * Lead/owner agent id). Returns the created AgentTeam in the action result.
+ */
+export function createTeam(params: {
+  name: string;
+  description: string;
+  owner: string;
+}): ActionDescriptor {
+  return {
+    method: "POST",
+    path: "/v1/teams",
+    body: {
+      name: params.name,
+      description: params.description,
+      owner: params.owner,
+    },
+  };
+}
+
+/**
+ * Create a new Agent Member. POST /v1/agents requires name and role; provider
+ * (codex|claude), description, skills and team membership are optional. Does NOT
+ * start a runtime — that stays a separate action.
+ */
+export function createAgent(params: {
+  name: string;
+  role: string;
+  provider?: string;
+  description?: string;
+  skills?: string[];
+  teamIds?: string[];
+}): ActionDescriptor {
+  const body: Record<string, unknown> = {
+    name: params.name,
+    role: params.role,
+  };
+  if (params.provider) {
+    body.provider = params.provider;
+  }
+  if (params.description) {
+    body.description = params.description;
+  }
+  // The backend reads repeatable `--skill` / `--team` flags as string arrays
+  // off the `skill` / `team` JSON keys.
+  if (params.skills && params.skills.length) {
+    body.skill = params.skills;
+  }
+  if (params.teamIds && params.teamIds.length) {
+    body.team = params.teamIds;
+  }
+  return { method: "POST", path: "/v1/agents", body };
+}
+
+/**
+ * Create a new Goal. POST /v1/goals requires title, objective and owner (the
+ * Lead). Success criteria and priority are optional.
+ */
+export function createGoal(params: {
+  title: string;
+  objective: string;
+  owner: string;
+  success?: string[];
+  priority?: string;
+}): ActionDescriptor {
+  const body: Record<string, unknown> = {
+    title: params.title,
+    objective: params.objective,
+    owner: params.owner,
+  };
+  if (params.success && params.success.length) {
+    body.success = params.success;
+  }
+  if (params.priority) {
+    body.priority = params.priority;
+  }
+  return { method: "POST", path: "/v1/goals", body };
 }
 
 /**
