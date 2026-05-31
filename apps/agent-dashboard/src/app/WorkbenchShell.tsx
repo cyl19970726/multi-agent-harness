@@ -49,7 +49,7 @@ import {
   VisionOverview,
   WarningsRepair,
 } from "../surfaces/Surfaces";
-import { deliverQueued, messageMember } from "../api/actions";
+import { deliverQueued } from "../api/actions";
 import type { SelectionState, SurfaceId } from "./selection";
 
 interface WorkbenchShellProps {
@@ -409,6 +409,53 @@ function AppRail({
   );
 }
 
+/**
+ * Team switcher. The snapshot returns every active team but the read model only
+ * resolves one selected team (teams[0] / ?team=); this control sets ?team= so an
+ * operator can switch between teams. Renders a <select> when there is more than
+ * one team; a single team just shows its name (no needless dropdown). Switching
+ * team also clears the member/task selection so the rail isn't left pointing at
+ * a member from the previous team.
+ */
+function TeamPicker({
+  model,
+  onSelectionChange,
+}: {
+  model: WorkbenchModel;
+  onSelectionChange: (selection: Partial<SelectionState>) => void;
+}) {
+  const teams = model.snapshot.teams ?? [];
+  const selectedId = model.selectedTeam?.id ?? "";
+  if (teams.length <= 1) {
+    return (
+      <p className="truncate text-sm font-semibold">
+        {model.selectedTeam?.name ?? "No team"}
+      </p>
+    );
+  }
+  return (
+    <select
+      aria-label="Select team"
+      value={selectedId}
+      onChange={(event) =>
+        onSelectionChange({
+          teamId: event.target.value,
+          // Reset member/task so the rail re-resolves within the new team.
+          memberId: undefined,
+          taskId: undefined,
+        })
+      }
+      className="mt-0.5 h-8 w-full appearance-none truncate rounded-md border border-border bg-background/60 px-2 text-sm font-semibold text-foreground outline-none transition-colors hover:border-input focus:border-ring"
+    >
+      {teams.map((team) => (
+        <option key={team.id} value={team.id}>
+          {team.name ?? team.id}
+        </option>
+      ))}
+    </select>
+  );
+}
+
 function TeamRail({
   className,
   model,
@@ -433,9 +480,7 @@ function TeamRail({
         <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
           Team
         </p>
-        <p className="truncate text-sm font-semibold">
-          {model.selectedTeam?.name ?? "No team"}
-        </p>
+        <TeamPicker model={model} onSelectionChange={onSelectionChange} />
       </div>
       <ScrollArea className="min-h-0 flex-1">
         <div className="space-y-4 p-3">
@@ -630,22 +675,17 @@ function Inspector({
                   "Persistent AgentMember with role, prompt, runtime state, inbox/outbox and a current task."}
               </p>
               <div className="flex gap-2">
-                <InspectorAction
-                  enabled={actionsEnabled}
+                <Button
+                  variant="default"
+                  size="sm"
                   className="flex-1"
-                  onClick={() => {
-                    const d = messageMember({
-                      from: model.selectedTeam?.owner_agent_id ?? member.id,
-                      to: member.id,
-                      content: "Message from the dashboard.",
-                      task: model.selectedTask?.id,
-                    });
-                    onAction(d.path, d.body);
-                  }}
+                  onClick={() =>
+                    onSelectionChange({ memberId: member.id, surface: "member" })
+                  }
                 >
                   <Send className="size-3.5" />
-                  Message
-                </InspectorAction>
+                  Open chat
+                </Button>
                 <InspectorAction
                   enabled={actionsEnabled}
                   variant="secondary"
