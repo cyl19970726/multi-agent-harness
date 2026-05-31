@@ -5,6 +5,7 @@ import {
   Bug,
   CheckCircle2,
   ClipboardList,
+  Crown,
   ExternalLink,
   FileText,
   Gavel,
@@ -13,14 +14,17 @@ import {
   Link2,
   ListChecks,
   MessageSquare,
+  RefreshCw,
   Scale,
   Send,
   ShieldAlert,
   ShieldCheck,
   Target,
+  Users,
   User,
   Workflow,
   Wrench,
+  X,
 } from "lucide-react";
 
 import type { ComponentProps, ReactNode } from "react";
@@ -63,9 +67,12 @@ import {
   type WorkbenchModel,
 } from "../model/readModel";
 import {
+  closeMember,
   deliverQueued,
   messageMember,
+  reconcileSession,
   requestReview,
+  retryDelivery,
   type ActionDescriptor,
 } from "../api/actions";
 import type {
@@ -74,6 +81,9 @@ import type {
   Goal,
   GoalDesign,
   GoalEvaluation,
+  Message,
+  ProviderChildThread,
+  ProviderSession,
   Review,
   RuntimeHealth,
   Task,
@@ -115,6 +125,39 @@ function memberMessageDescriptor(model: WorkbenchModel, memberId: string): Actio
     content: "Message from the dashboard.",
     task: model.selectedTask?.id,
   });
+}
+
+/**
+ * Tone the member by DELIVERY health, not mere presence. A live process whose
+ * delivery probe failed/unknown must not read as healthy/green. Falls back to
+ * the coarse runtime/status tone when no health object is present.
+ */
+function deliveryHealthTone(member: AgentMember): StatusTone {
+  const health = member.runtime_health;
+  if (health) {
+    const probe = (health.delivery_probe ?? "").toLowerCase();
+    if (probe.startsWith("pass")) return "good";
+    if (probe.startsWith("fail")) return "bad";
+    // Process alive but delivery not yet (or never) confirmed → amber, not green.
+    if (health.process_alive) return "warn";
+    return "bad";
+  }
+  return memberTone(member.runtime_status ?? member.status);
+}
+
+/** Tone for a message delivery_status chip. */
+function deliveryStatusTone(status?: string | null): StatusTone {
+  switch ((status ?? "").toLowerCase()) {
+    case "delivered":
+    case "acknowledged":
+      return "good";
+    case "failed":
+      return "bad";
+    case "queued":
+      return "warn";
+    default:
+      return "idle";
+  }
 }
 
 /**
@@ -1864,25 +1907,45 @@ export function MemberWorkbench({ model, onSelectionChange, actionsEnabled, onAc
       </div>
     );
   }
-  const tone = memberTone(member.runtime_status ?? member.status);
+
+  // Avatar/identity is toned by DELIVERY health (not mere process presence): a
+  // live process whose delivery is unconfirmed reads amber, never green.
+  const tone = deliveryHealthTone(member);
+  const isLead = member.role?.toLowerCase() === "lead" || member.id === model.leadMemberId;
+  const currentProposal = member.current_proposal_id
+    ? model.proposals.find((proposal) => proposal.id === member.current_proposal_id)
+    : undefined;
+
   return (
     <div className="space-y-5">
+      {/* A. Identity / role header band */}
       <div className="rise flex flex-wrap items-center gap-4">
         <Avatar name={member.name ?? member.id} tone={tone} size="lg" />
         <div className="min-w-0">
           <p className="text-[11px] uppercase tracking-wider text-muted-foreground">
             AgentMember workbench
+            <span className="mx-1 text-border">·</span>
+            <MonoId>members/{member.id}</MonoId>
           </p>
-          <h1 className="text-lg font-semibold tracking-tight">
+          <h1 className="flex items-center gap-2 text-lg font-semibold tracking-tight">
             {member.name ?? member.id}
+            {isLead && (
+              <Badge tone="decision" className="gap-1">
+                <Crown className="size-3" />
+                Lead
+              </Badge>
+            )}
           </h1>
           <div className="mt-1 flex flex-wrap items-center gap-1.5">
-            <Badge tone={tone}>{member.runtime_status ?? member.status ?? "unknown"}</Badge>
+            <Badge tone={tone}>delivery {member.runtime_health?.delivery_probe ? "probed" : "unknown"}</Badge>
+            <Badge tone={memberTone(member.runtime_status ?? member.status)}>
+              {member.runtime_status ?? member.status ?? "unknown"}
+            </Badge>
             <Badge tone="info">{member.role ?? "Member"}</Badge>
             {member.provider && <Badge tone="muted">{member.provider}</Badge>}
           </div>
         </div>
-        <div className="ml-auto flex gap-2">
+        <div className="ml-auto flex flex-wrap items-center gap-2">
           <ActionButton
             enabled={actionsEnabled}
             size="sm"
@@ -1900,6 +1963,13 @@ export function MemberWorkbench({ model, onSelectionChange, actionsEnabled, onAc
             <Send className="size-3.5" />
             Send message
           </ActionButton>
+          <MemberOverflowActions
+            member={member}
+            sessions={model.sessionsByMember}
+            inbox={model.inboxMessages}
+            actionsEnabled={actionsEnabled}
+            onAction={onAction}
+          />
         </div>
       </div>
 
@@ -1908,53 +1978,394 @@ export function MemberWorkbench({ model, onSelectionChange, actionsEnabled, onAc
         <MemberPicker model={model} onSelectionChange={onSelectionChange} />
       </div>
 
-      <div className="grid gap-4 lg:grid-cols-[20rem_1fr]">
+      {/* B. member rail · C. workspace · D. runtime — spec 280 / 700 / 376 */}
+      <div className="grid gap-4 lg:grid-cols-[18rem_minmax(0,1fr)] xl:grid-cols-[18rem_minmax(0,1fr)_22rem]">
+        {/* B. Member rail — identity & policy */}
         <div className="space-y-4">
-          <Section kicker="Identity" title="Member profile" className="rise">
+          <Section kicker="Current work" title="Task & proposal" className="rise">
+            <div className="space-y-2 p-3">
+              <button
+                type="button"
+                onClick={() =>
+                  member.current_task_id &&
+                  onSelectionChange({ surface: "task", taskId: member.current_task_id })
+                }
+                className="block w-full text-left text-[13px] font-medium text-foreground hover:text-primary"
+              >
+                {taskTitle(model.tasks, member.current_task_id)}
+              </button>
+              {currentProposal ? (
+                <div className="rounded-md border border-border bg-background/40 px-2.5 py-1.5">
+                  <p className="text-[10px] uppercase tracking-wider text-muted-foreground">
+                    Current proposal
+                  </p>
+                  <p className="truncate text-xs font-medium">{currentProposal.title ?? currentProposal.id}</p>
+                  <Badge tone="decision" className="mt-1">{currentProposal.status ?? "draft"}</Badge>
+                </div>
+              ) : member.current_proposal_id ? (
+                <p className="text-[11px] text-muted-foreground">
+                  Proposal <MonoId>{member.current_proposal_id}</MonoId>
+                </p>
+              ) : null}
+            </div>
+          </Section>
+
+          {/* Inbox / Outbox as distinct, countable tiles */}
+          <div className="grid grid-cols-2 gap-2">
+            <CountTile label="Inbox" value={model.inboxMessages.length} icon={Inbox} />
+            <CountTile label="Outbox" value={model.outboxMessages.length} icon={Send} />
+          </div>
+
+          <Section kicker="Policy" title="Prompt · skills · teams" className="rise">
             <div className="p-4">
               <MetaList
                 items={[
-                  { label: "Current task", value: taskTitle(model.tasks, member.current_task_id) },
                   { label: "Prompt", value: member.prompt_ref ? <MonoId>{member.prompt_ref}</MonoId> : "—" },
                   { label: "Skills", value: member.skill_refs?.join(", ") || "—" },
-                  { label: "Inbox", value: member.inbox_count ?? 0 },
+                  {
+                    label: "Teams",
+                    value: member.team_ids?.length ? (
+                      <span className="flex flex-wrap gap-1">
+                        {member.team_ids.map((id) => (
+                          <Badge key={id} tone="muted" className="gap-1">
+                            <Users className="size-3" />
+                            {id}
+                          </Badge>
+                        ))}
+                      </span>
+                    ) : (
+                      "—"
+                    ),
+                  },
                   { label: "Queued", value: member.queued_count ?? 0 },
                 ]}
               />
             </div>
           </Section>
-          <Section kicker="Health" title="Runtime" className="rise">
-            <RuntimeHealthPanel member={member} />
+        </div>
+
+        {/* C. Workspace — inbox/outbox split + merged timeline */}
+        <div className="min-w-0 space-y-4">
+          <div className="grid gap-3 sm:grid-cols-2">
+            <MessageColumn
+              title="Inbox"
+              icon={Inbox}
+              messages={model.inboxMessages}
+              direction="in"
+              members={model.members}
+              onSelectionChange={onSelectionChange}
+            />
+            <MessageColumn
+              title="Outbox"
+              icon={Send}
+              messages={model.outboxMessages}
+              direction="out"
+              members={model.members}
+              onSelectionChange={onSelectionChange}
+            />
+          </div>
+
+          <Section
+            kicker="assignment → report → evidence · sessions · events · reviews · delivery"
+            title="Activity timeline"
+            className="rise"
+          >
+            {model.selectedMemberTimeline.length ? (
+              <div className="max-h-[34rem] overflow-y-auto">
+                {model.selectedMemberTimeline.map((item) => (
+                  <TimelineRow
+                    key={item.id}
+                    kind={item.kind}
+                    title={item.title}
+                    meta={item.meta}
+                    body={item.body}
+                    tone={timelineTone(item.kind, item.severity)}
+                    onClick={() =>
+                      item.objectRef &&
+                      onSelectionChange({ taskId: item.objectRef, surface: "task" })
+                    }
+                  />
+                ))}
+              </div>
+            ) : (
+              <EmptyState icon={Activity} title="No activity recorded for this member" />
+            )}
           </Section>
         </div>
 
-        <Section
-          kicker="inbox · outbox · sessions · events"
-          title="Activity timeline"
-          className="rise"
-        >
-          {model.selectedMemberTimeline.length ? (
-            <div className="max-h-[34rem] overflow-y-auto">
-              {model.selectedMemberTimeline.map((item) => (
-                <TimelineRow
-                  key={item.id}
-                  kind={item.kind}
-                  title={item.title}
-                  meta={item.meta}
-                  body={item.body}
-                  tone={timelineTone(item.kind, item.severity)}
-                  onClick={() =>
-                    item.objectRef &&
-                    onSelectionChange({ taskId: item.objectRef, surface: "task" })
-                  }
-                />
-              ))}
-            </div>
-          ) : (
-            <EmptyState icon={Activity} title="No activity recorded for this member" />
-          )}
-        </Section>
+        {/* D. Runtime panel — real four-layer health, sessions, child threads */}
+        <div className="space-y-4 xl:col-span-1 lg:col-span-2 xl:col-start-3 xl:row-start-1">
+          <Section kicker="Health" title="Runtime" className="rise">
+            <RuntimeHealthPanel member={member} />
+          </Section>
+          <Section
+            kicker={`${model.sessionsByMember.length} sessions`}
+            title="Provider sessions"
+            className="rise"
+          >
+            <SessionList sessions={model.sessionsByMember} />
+          </Section>
+          <Section
+            kicker={`${member.provider_child_thread_count ?? model.childThreadsByMember.length} child threads`}
+            title="Child threads"
+            className="rise"
+          >
+            <ChildThreadList threads={model.childThreadsByMember} parent={member} />
+          </Section>
+        </div>
       </div>
+    </div>
+  );
+}
+
+/** A compact labelled count tile (inbox/outbox), distinct and countable. */
+function CountTile({
+  label,
+  value,
+  icon: Icon,
+}: {
+  label: string;
+  value: number;
+  icon: typeof Inbox;
+}) {
+  return (
+    <div className="rounded-lg border border-border bg-card px-3 py-2.5">
+      <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-muted-foreground">
+        <Icon className="size-3.5" />
+        {label}
+      </div>
+      <div className="mt-0.5 text-xl font-semibold tabular-nums">{value}</div>
+    </div>
+  );
+}
+
+/**
+ * One side of the inbox/outbox split: messages filtered by recipient/author,
+ * each carrying its own delivery_status and a queued/delivered/failed count
+ * footer so the operator can read delivery state per direction.
+ */
+function MessageColumn({
+  title,
+  icon: Icon,
+  messages,
+  direction,
+  members,
+  onSelectionChange,
+}: {
+  title: string;
+  icon: typeof Inbox;
+  messages: Message[];
+  direction: "in" | "out";
+  members: AgentMember[];
+  onSelectionChange: (selection: Partial<SelectionState>) => void;
+}) {
+  const queued = messages.filter((m) => m.delivery_status === "queued").length;
+  const delivered = messages.filter(
+    (m) => m.delivery_status === "delivered" || m.delivery_status === "acknowledged",
+  ).length;
+  const failed = messages.filter((m) => m.delivery_status === "failed").length;
+  const ordered = [...messages].sort((a, b) =>
+    (b.created_at ?? "").localeCompare(a.created_at ?? ""),
+  );
+  return (
+    <Section
+      kicker={`${messages.length} messages`}
+      title={
+        <span className="flex items-center gap-1.5">
+          <Icon className="size-3.5" />
+          {title}
+        </span>
+      }
+      className="rise"
+      action={
+        <span className="flex items-center gap-1">
+          {queued > 0 && <Badge tone="warn">{queued} queued</Badge>}
+          {delivered > 0 && <Badge tone="good">{delivered} ok</Badge>}
+          {failed > 0 && <Badge tone="bad">{failed} failed</Badge>}
+        </span>
+      }
+    >
+      {ordered.length ? (
+        <div className="max-h-56 overflow-y-auto">
+          {ordered.map((message) => {
+            const counterparty = direction === "in" ? message.from_agent_id : message.to_agent_id;
+            return (
+              <button
+                key={message.id}
+                type="button"
+                onClick={() =>
+                  message.task_id && onSelectionChange({ surface: "task", taskId: message.task_id })
+                }
+                className="flex w-full items-start gap-2 border-b border-border/60 px-3 py-2 text-left transition-colors last:border-b-0 hover:bg-accent/50"
+              >
+                <StatusDot tone={deliveryStatusTone(message.delivery_status)} className="mt-1" />
+                <span className="min-w-0 flex-1">
+                  <span className="flex items-center gap-1.5">
+                    <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                      {message.kind}
+                    </span>
+                    <span className="truncate text-[11px] text-muted-foreground">
+                      {direction === "in" ? "from" : "to"} {memberName(members, counterparty)}
+                    </span>
+                  </span>
+                  <span className="block truncate text-xs text-foreground">
+                    {message.content ?? message.id}
+                  </span>
+                  <span className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
+                    <Badge tone={deliveryStatusTone(message.delivery_status)}>
+                      {message.delivery_status}
+                    </Badge>
+                    {message.created_at && <span>{fmtTime(message.created_at)}</span>}
+                  </span>
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      ) : (
+        <EmptyState icon={Icon} title={`No ${title.toLowerCase()} messages`} />
+      )}
+    </Section>
+  );
+}
+
+/** Provider sessions under the member identity (id, status, thread/turn, source, evidence). */
+function SessionList({ sessions }: { sessions: ProviderSession[] }) {
+  if (!sessions.length) {
+    return <EmptyState icon={Activity} title="No provider sessions" />;
+  }
+  return (
+    <div className="space-y-2 p-3">
+      {sessions.map((session) => (
+        <div key={session.id} className="rounded-md border border-border bg-background/40 px-3 py-2">
+          <div className="flex items-center justify-between gap-2">
+            <span className="truncate text-[13px] font-medium">
+              {session.command ?? session.provider ?? "session"}
+            </span>
+            <Badge tone={timelineTone("session")}>{session.status ?? "unknown"}</Badge>
+          </div>
+          {session.prompt_summary && (
+            <p className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">
+              {session.prompt_summary}
+            </p>
+          )}
+          <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[10px] text-muted-foreground">
+            {session.provider_thread_id && (
+              <span>thread <MonoId>{session.provider_thread_id}</MonoId></span>
+            )}
+            {session.provider_turn_id && (
+              <span>turn <MonoId>{session.provider_turn_id}</MonoId></span>
+            )}
+            {session.terminal_source && <span>via {session.terminal_source}</span>}
+            {session.evidence_ids?.length ? (
+              <span>{session.evidence_ids.length} evidence</span>
+            ) : null}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * Provider-native child threads stay UNDER the parent member (doctrine: they
+ * are not promoted to members). Renders agent path/nickname/role + status and
+ * carries the provider_child_thread_count from the parent member card.
+ */
+function ChildThreadList({ threads, parent }: { threads: ProviderChildThread[]; parent: AgentMember }) {
+  if (!threads.length) {
+    return (
+      <EmptyState
+        icon={Bot}
+        title="No child threads"
+        description={
+          parent.provider_child_thread_count
+            ? `Parent reports ${parent.provider_child_thread_count} child thread(s) not yet in the snapshot.`
+            : undefined
+        }
+      />
+    );
+  }
+  return (
+    <div className="space-y-2 p-3">
+      {threads.map((thread) => (
+        <div key={thread.id} className="rounded-md border border-border bg-background/40 px-3 py-2">
+          <div className="flex items-center justify-between gap-2">
+            <span className="truncate text-[13px] font-medium">
+              {thread.provider_agent_nickname ?? thread.provider_agent_path ?? thread.provider_thread_id ?? thread.id}
+            </span>
+            <Badge tone={timelineTone("session")}>{thread.status ?? "unknown"}</Badge>
+          </div>
+          <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[10px] text-muted-foreground">
+            {thread.provider_agent_role && <span>role {thread.provider_agent_role}</span>}
+            {thread.provider_agent_path && (
+              <span>path <MonoId>{thread.provider_agent_path}</MonoId></span>
+            )}
+            {thread.provider_thread_id && (
+              <span>thread <MonoId>{thread.provider_thread_id}</MonoId></span>
+            )}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * Secondary/destructive member actions, wired to the real backend routes:
+ * retry the most recent failed delivery, reconcile the latest running session,
+ * and close the member. All gated on `actionsEnabled`.
+ */
+function MemberOverflowActions({
+  member,
+  sessions,
+  inbox,
+  actionsEnabled,
+  onAction,
+}: {
+  member: AgentMember;
+  sessions: ProviderSession[];
+  inbox: Message[];
+  actionsEnabled?: boolean;
+  onAction?: (path: string, body?: unknown) => void;
+}) {
+  const failedMessage = inbox.find((m) => m.delivery_status === "failed");
+  const activeSession = sessions.find((s) => s.status === "running") ?? sessions[0];
+  return (
+    <div className="flex items-center gap-2">
+      <ActionButton
+        enabled={Boolean(actionsEnabled && failedMessage)}
+        size="sm"
+        variant="secondary"
+        onClick={() =>
+          failedMessage &&
+          dispatch(onAction, retryDelivery(member.id, { messageId: failedMessage.id }))
+        }
+      >
+        <RefreshCw className="size-3.5" />
+        Retry
+      </ActionButton>
+      <ActionButton
+        enabled={Boolean(actionsEnabled && activeSession)}
+        size="sm"
+        variant="secondary"
+        onClick={() =>
+          activeSession &&
+          dispatch(onAction, reconcileSession(member.id, { sessionId: activeSession.id }))
+        }
+      >
+        <Wrench className="size-3.5" />
+        Reconcile
+      </ActionButton>
+      <ActionButton
+        enabled={actionsEnabled}
+        size="sm"
+        variant="ghost"
+        onClick={() => dispatch(onAction, closeMember(member.id))}
+      >
+        <X className="size-3.5" />
+        Close
+      </ActionButton>
     </div>
   );
 }
