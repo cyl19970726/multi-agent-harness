@@ -691,7 +691,10 @@ function Inspector({
                   variant="secondary"
                   className="flex-1"
                   onClick={() => {
-                    const d = deliverQueued(member.id);
+                    // Pass start_runtime so a runtime is spun up if none is
+                    // alive — otherwise queued messages just sit in Queued
+                    // because deliver against a dead/absent runtime fails.
+                    const d = deliverQueued(member.id, { startRuntime: true });
                     onAction(d.path, d.body);
                   }}
                 >

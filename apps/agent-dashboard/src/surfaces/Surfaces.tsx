@@ -3270,8 +3270,26 @@ function MemberOverflowActions({
 }) {
   const failedMessage = inbox.find((m) => m.delivery_status === "failed");
   const activeSession = sessions.find((s) => s.status === "running") ?? sessions[0];
+  const queuedCount =
+    (member.queued_count ?? 0) ||
+    inbox.filter((m) => m.delivery_status === "queued").length;
   return (
     <div className="flex items-center gap-2">
+      <ActionButton
+        enabled={Boolean(actionsEnabled && queuedCount)}
+        size="sm"
+        variant="default"
+        onClick={() =>
+          // start_runtime so deliver spins a runtime up when none is alive —
+          // without it queued messages never leave Queued. The post returns the
+          // refreshed snapshot, so the delivery_status chips (Queued →
+          // Delivered/Acknowledged) flip live in the stream.
+          dispatch(onAction, deliverQueued(member.id, { startRuntime: true }))
+        }
+      >
+        <Inbox className="size-3.5" />
+        Deliver{queuedCount ? ` (${queuedCount})` : ""}
+      </ActionButton>
       <ActionButton
         enabled={Boolean(actionsEnabled && failedMessage)}
         size="sm"
