@@ -1,0 +1,7 @@
+{"type": "system", "session_id": "sess_test_12345", "model": "claude-4.5", "tools": []}
+{"type": "stream_event", "event": "message_start", "index": 0}
+{"type": "stream_event", "event": "content_block_start", "index": 0, "content_block": {"type": "text"}}
+{"type": "stream_event", "event": "text_delta", "index": 0, "delta": {"type": "text_delta", "text": "The task has been completed successfully."}}
+{"type": "stream_event", "event": "content_block_stop", "index": 0}
+{"type": "stream_event", "event": "message_stop"}
+{"type": "result", "session_id": "sess_test_12345", "usage": {"input_tokens": 42, "output_tokens": 15}}

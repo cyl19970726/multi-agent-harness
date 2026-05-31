@@ -5095,12 +5095,7 @@ fn ingest_provider_output(
         .unwrap_or_else(|_| ProviderKind::Codex.to_string());
     match ProviderKind::from(provider.as_str()) {
         ProviderKind::Codex => {}
-        ProviderKind::Claude => {
-            // WP-3: Parse Claude stream-json NDJSON output using neutral reducer
-            let text = fs::read_to_string(source_ref).unwrap_or_default();
-            ingest_claude_stream_json(store, agent_member_id, runtime_id, task_id, &text)?;
-            return Ok(());
-        }
+        ProviderKind::Claude => return Err(claude_not_implemented("output ingest")),
         ProviderKind::Unknown(provider) => {
             return Err(unknown_provider_error(&provider, "output ingest"));
         }
@@ -7529,225 +7524,6 @@ fn start_provider_runtime(store: &HarnessStore, member: &AgentMember) -> CliResu
     }
 }
 
-// ============================================================================
-// WP-3: Claude stream-json event parser and delivery (replaces stub)
-// ============================================================================
-
-/// Represents a single event from `claude -p --output-format stream-json --verbose` NDJSON stream.
-/// Stream-json format emits: system (init), stream_event (message lifecycle), result (terminal).
-#[derive(Debug, Clone, PartialEq)]
-struct ClaudeStreamEvent {
-    /// Event type: "system", "stream_event", "result"
-    event_type: String,
-    /// Raw JSON payload for extraction
-    payload: serde_json::Value,
-}
-
-impl ClaudeStreamEvent {
-    /// Parse one NDJSON line into a ClaudeStreamEvent if valid, else None (skip).
-    fn parse_line(line: &str) -> Option<ClaudeStreamEvent> {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            return None;
-        }
-        match serde_json::from_str::<serde_json::Value>(trimmed) {
-            Ok(payload) => {
-                let event_type = payload
-                    .get("type")
-                    .and_then(|t| t.as_str())
-                    .unwrap_or("unknown")
-                    .to_string();
-                Some(ClaudeStreamEvent { event_type, payload })
-            }
-            Err(_) => None,
-        }
-    }
-
-    /// Extract terminal source if this is a result event.
-    fn terminal_source(&self) -> Option<MessageTerminalSource> {
-        match self.event_type.as_str() {
-            "result" => {
-                if self.payload.get("error").is_some() {
-                    Some(MessageTerminalSource::Failed)
-                } else {
-                    Some(MessageTerminalSource::TurnCompleted)
-                }
-            }
-            _ => None,
-        }
-    }
-
-    /// Extract session_id from system init event.
-    fn session_id(&self) -> Option<String> {
-        if self.event_type == "system" {
-            self.payload
-                .get("session_id")
-                .and_then(|s| s.as_str())
-                .map(|s| s.to_string())
-        } else {
-            None
-        }
-    }
-}
-
-/// Parse NDJSON from claude -p stream-json stdout into ClaudeStreamEvent stream.
-/// Resilient: silently skip invalid lines, partial final lines, unknown events.
-fn parse_claude_stream_json(reader: impl BufRead) -> Vec<ClaudeStreamEvent> {
-    let mut events = Vec::new();
-    for line in reader.lines() {
-        if let Ok(line_str) = line {
-            if let Some(event) = ClaudeStreamEvent::parse_line(&line_str) {
-                events.push(event);
-            }
-        }
-    }
-    events
-}
-
-/// Infer provider session status from Claude stream-json events.
-fn infer_claude_session_status(
-    events: &[ClaudeStreamEvent],
-    process_success: bool,
-) -> ProviderSessionStatus {
-    if !process_success {
-        return ProviderSessionStatus::Failed;
-    }
-    let has_result = events
-        .iter()
-        .any(|e| e.event_type == "result");
-    if has_result {
-        if let Some(result_event) = events.iter().find(|e| e.event_type == "result") {
-            if result_event.payload.get("error").is_some() {
-                return ProviderSessionStatus::Failed;
-            }
-        }
-        ProviderSessionStatus::Succeeded
-    } else if events.is_empty() {
-        ProviderSessionStatus::Failed
-    } else {
-        ProviderSessionStatus::Stale
-    }
-}
-
-/// Extract session_id from Claude stream events.
-fn extract_session_id_from_claude_events(events: &[ClaudeStreamEvent]) -> Option<String> {
-    events.iter().find_map(|e| e.session_id())
-}
-
-/// Extract provider_thread_id from Claude stream events if present.
-fn extract_thread_id_from_claude_events(_events: &[ClaudeStreamEvent]) -> Option<String> {
-    None
-}
-
-/// Extract provider_turn_id from Claude stream events if present.
-fn extract_turn_id_from_claude_events(_events: &[ClaudeStreamEvent]) -> Option<String> {
-    None
-}
-
-/// Parse Claude stream-json NDJSON and ingest as neutral AgentEvent / ProviderSession.
-/// Mirrors the Codex exec reducer: same neutral objects, provider-specific parsing.
-fn ingest_claude_stream_json(
-    store: &HarnessStore,
-    agent_member_id: &str,
-    runtime_id: Option<&str>,
-    task_id: Option<&str>,
-    text: &str,
-) -> CliResult<()> {
-    // Parse NDJSON from text
-    let mut events = Vec::new();
-    for line in text.lines() {
-        let trimmed = line.trim();
-        if !trimmed.is_empty() {
-            if let Some(event) = ClaudeStreamEvent::parse_line(trimmed) {
-                events.push(event);
-            }
-        }
-    }
-
-    // Extract session_id and infer status from the event stream.
-    let session_id = extract_session_id_from_claude_events(&events)
-        .unwrap_or_else(|| generated_id("session"));
-    let process_success = true; // Stream was parsed successfully.
-    let status = infer_claude_session_status(&events, process_success);
-
-    // Ingest each event as a neutral AgentEvent.
-    for event in &events {
-        let event_kind = match event.event_type.as_str() {
-            "system" => "stream_system_init",
-            "stream_event" => {
-                // Extract the stream_event subtype if present.
-                event
-                    .payload
-                    .get("event")
-                    .and_then(|e| e.as_str())
-                    .unwrap_or("stream_event")
-            }
-            "result" => "stream_result",
-            _ => "unknown",
-        };
-
-        let summary = summarize_json_value(&event.payload);
-        let thread_id = extract_thread_id_from_claude_events(&[event.clone()]);
-        let turn_id = extract_turn_id_from_claude_events(&[event.clone()]);
-
-        let agent_event = AgentEvent {
-            id: generated_id("event"),
-            agent_member_id: agent_member_id.into(),
-            provider_runtime_id: runtime_id.map(str::to_string),
-            task_id: task_id.map(str::to_string),
-            provider: "claude".into(),
-            provider_thread_id: thread_id,
-            provider_turn_id: turn_id,
-            provider_child_thread_id: None, // Subagents handled separately per ADR 0011
-            event_type: event_kind.to_string(),
-            summary,
-            payload_ref: None, // Inline payload
-            created_at: now_string(),
-        };
-        store.append_event(&agent_event)?;
-    }
-
-    // Create one ProviderSession record for the entire delivery.
-    let provider_session = ProviderSession {
-        id: session_id.clone(),
-        provider: "claude".into(),
-        agent_member_id: agent_member_id.into(),
-        task_id: task_id.map(str::to_string),
-        workspace_ref: None,
-        provider_thread_id: None,
-        provider_turn_id: None,
-        terminal_source: status_to_terminal_source(&status),
-        status,
-        command: "claude".into(),
-        args: vec!["-p".into(), "--output-format".into(), "stream-json".into(), "--verbose".into()],
-        prompt_ref: None,
-        prompt_summary: Some("delivered via claude -p stream-json".into()),
-        provider_session_ref: None,
-        stdout_ref: None,
-        jsonl_ref: None,
-        transcript_ref: None,
-        last_message_ref: None,
-        exit_code: if process_success { Some(0) } else { Some(1) },
-        started_at: now_string(),
-        ended_at: Some(now_string()),
-        evidence_ids: Vec::new(),
-    };
-    store.append_provider_session(&provider_session)?;
-
-    Ok(())
-}
-
-/// Map ProviderSessionStatus to terminal source.
-fn status_to_terminal_source(status: &ProviderSessionStatus) -> Option<MessageTerminalSource> {
-    match status {
-        ProviderSessionStatus::Succeeded => Some(MessageTerminalSource::TurnCompleted),
-        ProviderSessionStatus::Failed => Some(MessageTerminalSource::Failed),
-        _ => None,
-    }
-}
-
-
-
 // --- Codex exec --json delivery (WP-2) ---
 // Parse NDJSON output from `codex exec --json` into AgentEvent + ProviderSession lifecycle.
 // Row parity with app-server path: identical ProviderSession/Evidence structure.
@@ -8113,213 +7889,74 @@ fn start_claude_runtime(store: &HarnessStore, member: &AgentMember) -> CliResult
 fn run_claude_delivery(
     store: &HarnessStore,
     member: &AgentMember,
-    _runtime: &AgentRuntime,
+    runtime: &AgentRuntime,
     message: &Message,
     delivery_id: &str,
     timeout_ms: u64,
 ) -> CliResult<DeliveryOutcome> {
+    let runtime_endpoint = runtime.control_endpoint.as_deref().ok_or_else(|| {
+        CliError::Usage(format!("runtime {} has no control endpoint", runtime.id))
+    })?;
+    
+    // Extract runtime directory from endpoint
+    let runtime_dir_str = runtime_endpoint
+        .strip_prefix("claude-runtime://")
+        .ok_or_else(|| {
+            CliError::Usage(format!(
+                "invalid claude runtime endpoint: {runtime_endpoint}"
+            ))
+        })?;
+    let _runtime_dir = PathBuf::from(runtime_dir_str);
+    
     let session_dir = store.root().join("provider-sessions").join(delivery_id);
     fs::create_dir_all(&session_dir)?;
     let started_at = now_string();
     
-    // WP-3: Spawn real `claude -p --output-format stream-json --verbose`
-    let (process_success, events, session_id, stderr_log) = run_claude_exec_delivery_real(
+    // Build the delivery prompt from the message content
+    let prompt = build_claude_delivery_prompt(member, message)?;
+    
+    // Run claude with the prompt via stdin
+    let delivery_outcome = run_claude_exchange(
         &session_dir,
-        member,
-        message,
+        &prompt,
         timeout_ms,
     )?;
-
-    // Save NDJSON events to jsonl_ref for ingest.
-    let ndjson_ref = session_dir.join("claude.stream-json.ndjson");
-    let mut ndjson_content = String::new();
-    for event in &events {
-        ndjson_content.push_str(&serde_json::to_string(&event.payload).unwrap_or_default());
-        ndjson_content.push_str("\n");
-    }
-    fs::write(&ndjson_ref, &ndjson_content)?;
-
-    let status = infer_claude_session_status(&events, process_success);
-    let terminal_source = status_to_terminal_source(&status);
     
-    // Record session in ProviderSession (neutral object, not provider-specific).
-    let provider_session = ProviderSession {
-        id: session_id.clone().unwrap_or_else(|| generated_id("session")),
-        provider: "claude".into(),
-        agent_member_id: member.id.clone(),
-        task_id: message.task_id.clone(),
-        workspace_ref: None,
-        provider_thread_id: None,
-        provider_turn_id: None,
-        terminal_source: terminal_source.clone(),
-        status: status.clone(),
-        command: "claude".into(),
-        args: vec!["-p".into(), "--output-format".into(), "stream-json".into(), "--verbose".into()],
-        prompt_ref: member.prompt_ref.clone(),
-        prompt_summary: Some(format!("deliver message {}", message.id)),
-        provider_session_ref: None,
-        stdout_ref: None,
-        jsonl_ref: Some(ndjson_ref.display().to_string()),
-        transcript_ref: if stderr_log.is_empty() { None } else { Some(session_dir.join("claude.stderr").display().to_string()) },
-        last_message_ref: None,
-        exit_code: if process_success { Some(0) } else { Some(1) },
-        started_at,
-        ended_at: Some(now_string()),
-        evidence_ids: vec![],
-    };
-    store.append_provider_session(&provider_session)?;
-
+    // Record the session and evidence
+    let evidence_id = record_claude_delivery_session(
+        store,
+        DeliverySessionRecord {
+            delivery_id,
+            member,
+            runtime,
+            message,
+            session_dir: &session_dir,
+            socket_path: &PathBuf::from(runtime_dir_str), // Repurposed for runtime_dir
+            status: delivery_outcome.status.clone(),
+            started_at,
+            stdout_ref: delivery_outcome.stdout_ref.clone(),
+            stderr_ref: delivery_outcome.stderr_ref.clone(),
+            exit_code: delivery_outcome.exit_code,
+            provider_thread_id: None, // Claude CLI doesn't use explicit threads
+            provider_turn_id: None,   // Claude CLI turns are implicit in session
+            terminal_source: delivery_outcome.terminal_source.clone(),
+        },
+    )?;
+    
     Ok(DeliveryOutcome {
         provider_thread_id: None,
         provider_turn_id: None,
-        terminal_source,
-        status,
-        stdout_ref: None,
-        stderr_ref: if !stderr_log.is_empty() {
-            let stderr_path = session_dir.join("claude.stderr");
-            fs::write(&stderr_path, &stderr_log)?;
-            Some(stderr_path.display().to_string())
-        } else {
-            None
-        },
+        terminal_source: delivery_outcome.terminal_source,
+        status: delivery_outcome.status,
+        stdout_ref: delivery_outcome.stdout_ref,
+        stderr_ref: delivery_outcome.stderr_ref,
         request_ref: Some(session_dir.display().to_string()),
         provider_request_id: None,
-        provider_session_id: session_id.clone(),
-        evidence_ids: vec![],
-        exit_code: if process_success { Some(0) } else { Some(1) },
-        summary: if process_success {
-            format!("Claude delivery succeeded: {} events", events.len())
-        } else {
-            format!("Claude delivery failed: {}", stderr_log)
-        },
+        provider_session_id: Some(delivery_id.to_string()),
+        evidence_ids: vec![evidence_id],
+        exit_code: delivery_outcome.exit_code,
+        summary: delivery_outcome.summary,
     })
-}
-
-/// Spawn `claude -p --output-format stream-json --verbose` and parse NDJSON output.
-/// WP-3: Real implementation replacing the stub; parses session_id and events.
-fn run_claude_exec_delivery_real(
-    session_dir: &Path,
-    member: &AgentMember,
-    message: &Message,
-    timeout_ms: u64,
-) -> CliResult<(bool, Vec<ClaudeStreamEvent>, Option<String>, String)> {
-    // Build the message content envelope (harness context).
-    let message_content = format!(
-        "Harness message envelope:\nmessage_id: {}\nkind: task\ntask_id: {}\nfrom_agent_id: {}\nto_agent_id: {}\nchannel: -\ncontent:\n{}",
-        message.id,
-        message.task_id.as_deref().unwrap_or("-"),
-        message.from_agent_id,
-        message.to_agent_id.as_deref().unwrap_or("-"),
-        message.content
-    );
-
-    // Compose system prompt (developer instructions from member prompt_ref).
-    let system_prompt = provider_developer_instructions(member);
-    
-    // Determine CWD from member or current directory.
-    let cwd = member.worktree_ref.clone().or_else(|| {
-        env::current_dir()
-            .ok()
-            .map(|path| path.display().to_string())
-    });
-
-    // Build command: claude -p "<message_content>" --output-format stream-json --verbose
-    // plus mapped flags from launch spec (member config).
-    let mut cmd = Command::new("claude");
-    cmd.arg("-p")
-        .arg(&message_content)
-        .arg("--output-format")
-        .arg("stream-json")
-        .arg("--verbose");
-
-    // Append system prompt if present.
-    if !system_prompt.is_empty() {
-        cmd.arg("--append-system-prompt").arg(&system_prompt);
-    }
-
-    // Map member.model to --model flag if present.
-    if let Some(model) = &member.model {
-        cmd.arg("--model").arg(model);
-    }
-
-    // Map workspace roots to --add-dir if present.
-    if !member.runtime_workspace_roots.is_empty() {
-        for root in &member.runtime_workspace_roots {
-            cmd.arg("--add-dir").arg(root);
-        }
-    }
-
-    // Add working directory.
-    let cwd_str = cwd.unwrap_or_else(|| ".".to_string());
-    cmd.current_dir(&cwd_str);
-
-    // Spawn the process.
-    let mut child = cmd
-        .stderr(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .map_err(|error| {
-            CliError::Usage(format!("failed to spawn claude -p process: {error}"))
-        })?;
-
-    let stdout = child.stdout.take().ok_or_else(|| {
-        CliError::Usage("claude -p stdout not available".into())
-    })?;
-    let stderr = child.stderr.take().ok_or_else(|| {
-        CliError::Usage("claude -p stderr not available".into())
-    })?;
-
-    // Parse stdout as NDJSON in real time.
-    let reader = BufReader::new(stdout);
-    let events = parse_claude_stream_json(reader);
-
-    // Capture stderr.
-    let mut stderr_log = String::new();
-    BufReader::new(stderr).read_to_string(&mut stderr_log).ok();
-
-    // Wait for process with timeout.
-    let start = Instant::now();
-    let timeout = Duration::from_millis(timeout_ms.max(1));
-    loop {
-        match child.try_wait() {
-            Ok(Some(_status)) => break,
-            Ok(None) => {
-                if start.elapsed() > timeout {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    let session_id = extract_session_id_from_claude_events(&events);
-                    return Ok((
-                        false,
-                        events,
-                        session_id,
-                        "timeout waiting for claude -p process".into(),
-                    ));
-                }
-                std::thread::sleep(Duration::from_millis(50));
-            }
-            Err(error) => {
-                let session_id = extract_session_id_from_claude_events(&events);
-                return Ok((
-                    false,
-                    events,
-                    session_id,
-                    format!("wait failed: {error}"),
-                ));
-            }
-        }
-    }
-
-    let final_output = child.wait_with_output().map_err(|error| {
-        CliError::Usage(format!("failed to collect claude -p output: {error}"))
-    })?;
-
-    let session_id = extract_session_id_from_claude_events(&events);
-    Ok((
-        final_output.status.success(),
-        events,
-        session_id,
-        stderr_log,
-    ))
 }
 
 fn build_claude_delivery_prompt(
@@ -9192,7 +8829,6 @@ mod tests {
 
     #[test]
     fn claude_member_delivery_dispatches_to_claude_stub() {
-        // WP-3: Test the new real claude -p delivery (replaces stub).
         let root = std::env::temp_dir()
             .join(format!("harness-cli-test-{}", generated_id("claude-deliver")));
         let store = HarnessStore::new(&root);
@@ -9204,7 +8840,7 @@ mod tests {
             provider: "claude".into(),
             status: AgentRuntimeStatus::Running,
             pid: None,
-            control_endpoint: Some(format!("claude-runtime://{}", root.display())),
+            control_endpoint: Some("https://api.example/claude".into()),
             command: "claude".into(),
             args: Vec::new(),
             started_at: "unix-ms:1".into(),
@@ -9233,17 +8869,20 @@ mod tests {
             sender_kind: SenderKind::Agent,
         };
 
-        // WP-3: Real claude -p delivery. In test without a live claude binary,
-        // spawn will fail gracefully, but the harness structure is in place.
-        let _outcome = run_provider_delivery(
+        // Claude delivery expects claude-runtime:// endpoints; this will error due to invalid endpoint
+        let error = run_provider_delivery(
             &store,
             &member,
             &runtime,
             &message,
             "delivery-claude",
-            100, // Short timeout; no claude binary in test env
+            1_000,
         )
-        .expect("claude delivery dispatch should succeed");
+        .expect_err("invalid endpoint should error");
+        assert!(
+            error.to_string().contains("invalid claude runtime endpoint"),
+            "expected endpoint parse error, got: {error}"
+        );
 
         let _ = std::fs::remove_dir_all(root);
     }
@@ -9260,40 +8899,38 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn claude_member_ingest_dispatches_to_claude_stub() {
-        // WP-3: Test claude stream-json ingest (replaces stub).
         let root = std::env::temp_dir()
             .join(format!("harness-cli-test-{}", generated_id("claude-ingest")));
         let store = HarnessStore::new(&root);
         let mut member = make_member("claude-agent");
         member.provider = "claude".into();
         store.append_member(&member).expect("append member");
-        let source = root.join("provider-output.ndjson");
+        let source = root.join("provider-output.jsonl");
         std::fs::create_dir_all(&root).expect("create root");
-        // Use Claude stream-json format (NDJSON).
         std::fs::write(
             &source,
-            r#"{"type": "system", "session_id": "sess_test_123"}
-{"type": "stream_event", "event": "text_delta"}
-{"type": "result", "session_id": "sess_test_123"}"#,
+            r#"{"method":"turn/completed","params":{"threadId":"thread-1"}}"#,
         )
         .expect("write provider output");
 
-        // WP-3: Real claude ingest parses stream-json and creates neutral AgentEvent/ProviderSession
-        ingest_provider_output(
+        let error = ingest_provider_output(
             &store,
             "claude-agent",
             None,
             None,
             &source.display().to_string(),
         )
-        .expect("claude ingest dispatch should succeed");
-        
-        // Verify neutral objects were created from the stream.
-        let events = store.events().expect("events");
-        assert!(!events.is_empty(), "claude ingest should create AgentEvent from stream");
-        assert_eq!(events.len(), 3, "should ingest 3 events from stream-json");
+        .expect_err("claude ingest must route to the claude stub, not codex");
+        assert!(
+            error.to_string().contains("claude provider"),
+            "expected claude dispatch error, got: {error}"
+        );
+        // The stub must short-circuit before writing any codex-shaped events.
+        assert!(
+            store.events().expect("events").is_empty(),
+            "claude ingest stub must not persist codex-parsed events"
+        );
 
         let _ = std::fs::remove_dir_all(root);
     }
