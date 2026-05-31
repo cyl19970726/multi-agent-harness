@@ -15,7 +15,7 @@ use harness_core::{
     AgentRuntimeHealth, AgentRuntimeStatus, AgentTeam, AgentTeamStatus, Decision, EvaluationOutcome,
     Evidence, Gap, GapSeverity, GapStatus, Goal, GoalCase, GoalDesign, GoalEvaluation, GoalStatus,
     Message, MessageDelivery, MessageDeliveryStatus, MessageKind, MessageTerminalSource, Proposal,
-    ProposalStatus, ProviderChildThread, ProviderChildThreadStatus, ProviderSession,
+    ProposalStatus, ProviderChildThread, ProviderChildThreadStatus, ProviderKind, ProviderSession,
     ProviderSessionStatus, Review, ReviewVerdict, Task, TaskStatus, Vision,
 };
 use harness_store::{HarnessStore, MessageDeliveryClaimResult};
@@ -115,7 +115,7 @@ fn agent_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
             member.prompt_ref = Some(prompt_ref);
             if has_flag(args, "--start") {
                 store.append_member(&member)?;
-                let runtime = start_codex_runtime(store, &member)?;
+                let runtime = start_provider_runtime(store, &member)?;
                 let now = now_string();
                 member.status = AgentMemberStatus::Idle;
                 member.provider_runtime_id = Some(runtime.id.clone());
@@ -2686,7 +2686,7 @@ fn start_agent_runtime(store: &HarnessStore, agent_id: &str) -> CliResult<AgentM
     member.status = AgentMemberStatus::Creating;
     member.last_seen_at = Some(now_string());
     store.append_member(&member)?;
-    let runtime = match start_codex_runtime(store, &member) {
+    let runtime = match start_provider_runtime(store, &member) {
         Ok(runtime) => runtime,
         Err(error) => {
             member.status = AgentMemberStatus::Error;
@@ -2698,7 +2698,7 @@ fn start_agent_runtime(store: &HarnessStore, agent_id: &str) -> CliResult<AgentM
                 member.provider_runtime_id.as_deref(),
                 None,
                 "runtime_start_failed",
-                &format!("Codex app-server runtime failed to start: {error}"),
+                &format!("{} runtime failed to start: {error}", member.provider),
                 None,
             )?;
             return Err(error);
@@ -2824,7 +2824,7 @@ fn agent_health(store: &HarnessStore, agent_id: &str) -> CliResult<serde_json::V
             .unwrap_or(1_500);
         socket_path
             .as_ref()
-            .map(|path| probe_codex_protocol(path, timeout_ms))
+            .map(|path| probe_provider_protocol(&member.provider, path, timeout_ms))
             .transpose()?
             .flatten()
             .or_else(|| Some("unknown".into()))
@@ -3215,7 +3215,8 @@ fn deliver_agent_messages_value(
                 None
             };
             if let Some(error) = start_error {
-                let summary = format!("Codex runtime start failed after claim: {error}");
+                let summary =
+                    format!("{} runtime start failed after claim: {error}", member.provider);
                 let evidence_ids = record_claimed_delivery_terminal(
                     store,
                     &delivery_id,
@@ -3272,7 +3273,7 @@ fn deliver_agent_messages_value(
                 }
             } else {
                 let runtime = runtime.clone().expect("runtime checked");
-                run_codex_delivery(
+                run_provider_delivery(
                     store,
                     &member,
                     &runtime,
@@ -3778,7 +3779,7 @@ fn build_claimed_provider_session(
 ) -> ProviderSession {
     ProviderSession {
         id: delivery_id.into(),
-        provider: "codex".into(),
+        provider: member.provider.clone(),
         agent_member_id: member.id.clone(),
         task_id: message.task_id.clone(),
         workspace_ref: member.worktree_ref.clone(),
@@ -3788,7 +3789,7 @@ fn build_claimed_provider_session(
         status: ProviderSessionStatus::Running,
         command: "harness".into(),
         args: vec![
-            "codex".into(),
+            member.provider.clone(),
             "message-delivery-claim".into(),
             message.id.clone(),
         ],
@@ -4636,11 +4637,19 @@ fn frame_jsonrpc_requests(requests: &[serde_json::Value]) -> CliResult<Vec<u8>> 
     Ok(framed)
 }
 
+/// Resolve a control endpoint to a filesystem path.
+///
+/// Codex uses a `unix://` socket endpoint, so its path is the prefix-stripped
+/// value. Other providers (e.g. the claude CLI shape, or HTTP/stdio transports)
+/// do not present a unix-socket endpoint; for any non-`unix://` scheme we return
+/// the endpoint verbatim so callers that only inspect existence/format keep
+/// working without assuming a unix socket. This keeps the seam provider-neutral
+/// per ADR 0011 — the endpoint format is the one place Codex assumed a socket.
 fn socket_path_from_endpoint(endpoint: &str) -> CliResult<PathBuf> {
-    endpoint
-        .strip_prefix("unix://")
-        .map(PathBuf::from)
-        .ok_or_else(|| CliError::Usage(format!("unsupported control endpoint: {endpoint}")))
+    match endpoint.strip_prefix("unix://") {
+        Some(path) => Ok(PathBuf::from(path)),
+        None => Ok(PathBuf::from(endpoint)),
+    }
 }
 
 fn ingest_provider_output(
@@ -4650,6 +4659,20 @@ fn ingest_provider_output(
     task_id: Option<&str>,
     source_ref: &str,
 ) -> CliResult<()> {
+    // The member's declared provider is the source of truth for which native
+    // output shape we are parsing and which provider string we stamp on the
+    // resulting events/child-threads (BE-WP6). Codex uses the existing neutral
+    // parser; Claude's native shape lands in BE-WP8.
+    let provider = latest_member(store, agent_member_id)
+        .map(|member| member.provider)
+        .unwrap_or_else(|_| ProviderKind::Codex.to_string());
+    match ProviderKind::from(provider.as_str()) {
+        ProviderKind::Codex => {}
+        ProviderKind::Claude => return Err(claude_not_implemented("output ingest")),
+        ProviderKind::Unknown(provider) => {
+            return Err(unknown_provider_error(&provider, "output ingest"));
+        }
+    }
     let text = fs::read_to_string(source_ref).unwrap_or_default();
     for value in extract_provider_json_values(&text) {
         let method = value
@@ -4668,7 +4691,7 @@ fn ingest_provider_output(
             agent_member_id: agent_member_id.into(),
             provider_runtime_id: runtime_id.map(str::to_string),
             task_id: task_id.map(str::to_string),
-            provider: "codex".into(),
+            provider: provider.clone(),
             provider_thread_id: provider_thread_id.clone(),
             provider_turn_id: provider_turn_id.clone(),
             provider_child_thread_id: provider_child_thread_id.clone(),
@@ -4679,6 +4702,7 @@ fn ingest_provider_output(
         };
         store.append_event(&event)?;
         if let Some(child_thread) = provider_child_thread_from_event(
+            &provider,
             agent_member_id,
             runtime_id,
             task_id,
@@ -5271,6 +5295,7 @@ fn provider_child_thread_id_from_container(value: &serde_json::Value) -> Option<
 }
 
 fn provider_child_thread_from_event(
+    provider: &str,
     agent_member_id: &str,
     runtime_id: Option<&str>,
     task_id: Option<&str>,
@@ -5304,7 +5329,7 @@ fn provider_child_thread_from_event(
     };
     Some(ProviderChildThread {
         id: generated_id("provider-child"),
-        provider: "codex".into(),
+        provider: provider.into(),
         agent_member_id: agent_member_id.into(),
         provider_runtime_id: runtime_id.map(str::to_string),
         task_id: task_id.map(str::to_string),
@@ -7021,6 +7046,98 @@ fn absolute_store_root(store: &HarnessStore) -> CliResult<PathBuf> {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Provider dispatch seam (BE-WP6)
+//
+// The harness core stays provider-neutral (ADR 0011); all provider-specific
+// behaviour lives behind these four dispatch points keyed on `member.provider`.
+// Codex routes to the existing, regression-clean implementation. Claude routes
+// to stubs that return a clear "not yet implemented" error until BE-WP7/WP8
+// land the real claude-CLI runtime/delivery/ingest. Unknown providers fail
+// fast with an explicit, debuggable message rather than silently assuming Codex.
+// ---------------------------------------------------------------------------
+
+/// Build the standard "provider not yet supported" error for a given concern.
+fn claude_not_implemented(concern: &str) -> CliError {
+    CliError::Usage(format!(
+        "claude provider {concern} is not yet implemented (tracked by BE-WP7/WP8); use --provider codex"
+    ))
+}
+
+/// Build the standard error for a provider the harness does not recognise.
+fn unknown_provider_error(provider: &str, concern: &str) -> CliError {
+    CliError::Usage(format!(
+        "unknown provider {provider:?} for {concern}; supported providers: codex, claude"
+    ))
+}
+
+/// Spawn (or attach) the runtime for a member, routed by `member.provider`.
+fn start_provider_runtime(store: &HarnessStore, member: &AgentMember) -> CliResult<AgentRuntime> {
+    match ProviderKind::from(member.provider.as_str()) {
+        ProviderKind::Codex => start_codex_runtime(store, member),
+        ProviderKind::Claude => start_claude_runtime(store, member),
+        ProviderKind::Unknown(provider) => {
+            Err(unknown_provider_error(&provider, "runtime start"))
+        }
+    }
+}
+
+/// Run a single message delivery against the member's runtime, routed by provider.
+fn run_provider_delivery(
+    store: &HarnessStore,
+    member: &AgentMember,
+    runtime: &AgentRuntime,
+    message: &Message,
+    delivery_id: &str,
+    timeout_ms: u64,
+) -> CliResult<DeliveryOutcome> {
+    match ProviderKind::from(member.provider.as_str()) {
+        ProviderKind::Codex => {
+            run_codex_delivery(store, member, runtime, message, delivery_id, timeout_ms)
+        }
+        ProviderKind::Claude => {
+            run_claude_delivery(store, member, runtime, message, delivery_id, timeout_ms)
+        }
+        ProviderKind::Unknown(provider) => Err(unknown_provider_error(&provider, "delivery")),
+    }
+}
+
+/// Probe the live protocol layer of a runtime socket, routed by provider.
+fn probe_provider_protocol(
+    provider: &str,
+    socket_path: &Path,
+    timeout_ms: u64,
+) -> CliResult<Option<String>> {
+    match ProviderKind::from(provider) {
+        ProviderKind::Codex => probe_codex_protocol(socket_path, timeout_ms),
+        ProviderKind::Claude => probe_claude_protocol(socket_path, timeout_ms),
+        ProviderKind::Unknown(provider) => {
+            Err(unknown_provider_error(&provider, "protocol probe"))
+        }
+    }
+}
+
+// --- Claude stubs (BE-WP7/WP8 will replace these with the claude-CLI shape) ---
+
+fn start_claude_runtime(_store: &HarnessStore, _member: &AgentMember) -> CliResult<AgentRuntime> {
+    Err(claude_not_implemented("runtime start"))
+}
+
+fn run_claude_delivery(
+    _store: &HarnessStore,
+    _member: &AgentMember,
+    _runtime: &AgentRuntime,
+    _message: &Message,
+    _delivery_id: &str,
+    _timeout_ms: u64,
+) -> CliResult<DeliveryOutcome> {
+    Err(claude_not_implemented("message delivery"))
+}
+
+fn probe_claude_protocol(_socket_path: &Path, _timeout_ms: u64) -> CliResult<Option<String>> {
+    Err(claude_not_implemented("protocol probe"))
+}
+
 fn start_codex_runtime(store: &HarnessStore, member: &AgentMember) -> CliResult<AgentRuntime> {
     let runtime_id = generated_id("runtime");
     let runtime_dir = store.root().join("runtimes").join(&member.id);
@@ -7642,6 +7759,188 @@ mod tests {
             message_status_for_delivery(&ProviderSessionStatus::Failed),
             MessageDeliveryStatus::Failed
         );
+    }
+
+    #[test]
+    fn claude_member_runtime_start_dispatches_to_claude_stub() {
+        let root =
+            std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("claude-start")));
+        let store = HarnessStore::new(&root);
+        let mut member = make_member("claude-agent");
+        member.provider = "claude".into();
+
+        let error = start_provider_runtime(&store, &member)
+            .expect_err("claude runtime start must route to the claude stub, not codex");
+        let message = error.to_string();
+        assert!(
+            message.contains("claude provider"),
+            "expected claude dispatch error, got: {message}"
+        );
+        assert!(
+            message.contains("not yet implemented"),
+            "claude stub must report not-yet-implemented, got: {message}"
+        );
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn claude_member_delivery_dispatches_to_claude_stub() {
+        let root = std::env::temp_dir()
+            .join(format!("harness-cli-test-{}", generated_id("claude-deliver")));
+        let store = HarnessStore::new(&root);
+        let mut member = make_member("claude-agent");
+        member.provider = "claude".into();
+        let runtime = AgentRuntime {
+            id: "runtime-claude".into(),
+            agent_member_id: member.id.clone(),
+            provider: "claude".into(),
+            status: AgentRuntimeStatus::Running,
+            pid: None,
+            control_endpoint: Some("https://api.example/claude".into()),
+            command: "claude".into(),
+            args: Vec::new(),
+            started_at: "unix-ms:1".into(),
+            ended_at: None,
+            last_event_at: Some("unix-ms:1".into()),
+            health: AgentRuntimeHealth {
+                process_alive: false,
+                socket_exists: false,
+                protocol_probe: None,
+                delivery_probe: None,
+                checked_at: None,
+            },
+        };
+        let message = Message {
+            id: "message-claude".into(),
+            task_id: None,
+            from_agent_id: "lead-1".into(),
+            to_agent_id: Some(member.id.clone()),
+            channel: Some("agent-direct".into()),
+            kind: MessageKind::Message,
+            delivery_status: MessageDeliveryStatus::Queued,
+            content: "Hello".into(),
+            evidence_ids: Vec::new(),
+            created_at: "unix-ms:1".into(),
+            delivery: None,
+        };
+
+        let error = run_provider_delivery(
+            &store,
+            &member,
+            &runtime,
+            &message,
+            "delivery-claude",
+            1_000,
+        )
+        .expect_err("claude delivery must route to the claude stub, not codex");
+        assert!(
+            error.to_string().contains("claude provider"),
+            "expected claude dispatch error, got: {error}"
+        );
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn claude_member_protocol_probe_dispatches_to_claude_stub() {
+        let error =
+            probe_provider_protocol("claude", Path::new("/tmp/does-not-matter.sock"), 1_000)
+                .expect_err("claude protocol probe must route to the claude stub");
+        assert!(
+            error.to_string().contains("claude provider"),
+            "expected claude dispatch error, got: {error}"
+        );
+    }
+
+    #[test]
+    fn claude_member_ingest_dispatches_to_claude_stub() {
+        let root = std::env::temp_dir()
+            .join(format!("harness-cli-test-{}", generated_id("claude-ingest")));
+        let store = HarnessStore::new(&root);
+        let mut member = make_member("claude-agent");
+        member.provider = "claude".into();
+        store.append_member(&member).expect("append member");
+        let source = root.join("provider-output.jsonl");
+        std::fs::create_dir_all(&root).expect("create root");
+        std::fs::write(
+            &source,
+            r#"{"method":"turn/completed","params":{"threadId":"thread-1"}}"#,
+        )
+        .expect("write provider output");
+
+        let error = ingest_provider_output(
+            &store,
+            "claude-agent",
+            None,
+            None,
+            &source.display().to_string(),
+        )
+        .expect_err("claude ingest must route to the claude stub, not codex");
+        assert!(
+            error.to_string().contains("claude provider"),
+            "expected claude dispatch error, got: {error}"
+        );
+        // The stub must short-circuit before writing any codex-shaped events.
+        assert!(
+            store.events().expect("events").is_empty(),
+            "claude ingest stub must not persist codex-parsed events"
+        );
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn unknown_provider_runtime_start_fails_fast() {
+        let root = std::env::temp_dir()
+            .join(format!("harness-cli-test-{}", generated_id("unknown-start")));
+        let store = HarnessStore::new(&root);
+        let mut member = make_member("gemini-agent");
+        member.provider = "gemini".into();
+
+        let error = start_provider_runtime(&store, &member)
+            .expect_err("unknown provider must fail fast rather than assume codex");
+        let message = error.to_string();
+        assert!(
+            message.contains("unknown provider") && message.contains("gemini"),
+            "expected explicit unknown-provider error, got: {message}"
+        );
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn codex_member_ingest_stays_on_codex_path() {
+        // Regression guard: a codex member must still flow through the existing
+        // (regression-clean) codex parser and persist a codex-stamped event.
+        let root = std::env::temp_dir()
+            .join(format!("harness-cli-test-{}", generated_id("codex-ingest")));
+        let store = HarnessStore::new(&root);
+        let member = make_member("codex-agent");
+        assert_eq!(member.provider, "codex");
+        store.append_member(&member).expect("append member");
+        std::fs::create_dir_all(&root).expect("create root");
+        let source = root.join("provider-output.jsonl");
+        std::fs::write(
+            &source,
+            r#"{"method":"thread/started","params":{"threadId":"thread-1"}}"#,
+        )
+        .expect("write provider output");
+
+        ingest_provider_output(
+            &store,
+            "codex-agent",
+            None,
+            None,
+            &source.display().to_string(),
+        )
+        .expect("codex ingest must succeed via the codex dispatch branch");
+
+        let events = store.events().expect("events");
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].provider, "codex");
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
