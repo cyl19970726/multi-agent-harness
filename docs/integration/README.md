@@ -20,6 +20,7 @@ docs/integration/README.md   # provider documentation rules
 docs/integration/codex.md    # Codex implementation
 docs/integration/codex-message-delivery.md
                                  # Codex mailbox and turn delivery detail
+docs/integration/claude.md       # Claude Code integration
 docs/integration/<name>.md   # future provider implementation
 ```
 
@@ -67,7 +68,7 @@ Provider
 | Codex | [codex.md](codex.md) | planned / implemented in slices | First persistent provider, app-server + hooks + skills + plugin path. |
 | Codex message delivery | [codex-message-delivery.md](codex-message-delivery.md) | planned / implemented in slices | Persistent member mailbox, dispatcher, queue policy, and delivery proof. |
 | Codex source audit | [codex-source-audit.md](codex-source-audit.md) | planned / reference | Source-level notes that support Codex integration decisions. |
-| Claude Code | not yet created | idea | Future provider implementation when there is concrete integration work. |
+| Claude Code | [claude.md](claude.md) | planned / implemented in slices | On-demand provider via claude CLI, native subagent-to-child-thread mapping. |
 | OpenClaw / cloud agent | not yet created | idea | Future remote or cloud-hosted provider implementation. |
 | Permission Agent | not yet created | idea | Future approval/safety specialist or provider-side permission service. |
 
