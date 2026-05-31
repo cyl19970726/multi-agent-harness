@@ -2,6 +2,7 @@ import type { ComponentProps, ReactNode } from "react";
 import {
   Bot,
   Bug,
+  Crown,
   GitBranch,
   Inbox,
   RefreshCw,
@@ -349,6 +350,7 @@ function TeamRail({
               <div className="space-y-0.5">
                 {group.members.map((member) => {
                   const active = activeMemberId === member.id;
+                  const isLead = member.id === model.leadMemberId;
                   const queue =
                     (member.inbox_count ?? 0) + (member.queued_count ?? 0);
                   return (
@@ -372,8 +374,16 @@ function TeamRail({
                         tone={memberTone(member.runtime_status ?? member.status)}
                       />
                       <span className="min-w-0 flex-1">
-                        <span className="block truncate text-[13px] font-medium">
-                          {member.name ?? member.id}
+                        <span className="flex items-center gap-1.5">
+                          <span className="truncate text-[13px] font-medium">
+                            {member.name ?? member.id}
+                          </span>
+                          {isLead && (
+                            <Badge tone="decision" className="shrink-0 gap-0.5 px-1 py-0">
+                              <Crown className="size-2.5" />
+                              Lead / Owner
+                            </Badge>
+                          )}
                         </span>
                         <span className="block truncate text-[11px] text-muted-foreground">
                           {member.runtime_status ?? member.status ?? "unknown"}

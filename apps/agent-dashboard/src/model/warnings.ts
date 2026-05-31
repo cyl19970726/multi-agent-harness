@@ -46,6 +46,38 @@ export function deriveWarnings(snapshot: DashboardSnapshot): WorkflowWarning[] {
     }
   }
 
+  // Advisory: the unbound-Lead gap. Nothing in the schema binds
+  // AgentTeam.owner_agent_id to a member with role==="lead"; surface the
+  // divergence so the doctrinal Lead and the team owner are visibly reconciled
+  // (or visibly not). Frontend-derived, non-gating, low/medium severity.
+  const memberById = new Map((snapshot.members ?? []).map((member) => [member.id, member]));
+  for (const team of snapshot.teams ?? []) {
+    const ownerId = team.owner_agent_id;
+    if (!ownerId) continue;
+    const owner = memberById.get(ownerId);
+    const ownerRole = owner?.role?.toLowerCase();
+    // Owner resolves to a known member whose role is not "lead": medium (a real
+    // mismatch). Owner does not resolve to any member at all: low (stale/partial
+    // snapshot, not a doctrine violation we can assert).
+    if (owner && ownerRole !== "lead") {
+      warnings.push({
+        id: `lead_owner_role_mismatch:${team.id}`,
+        kind: "lead_owner_role_mismatch",
+        severity: "medium",
+        memberId: ownerId,
+        summary: `Team "${team.name ?? team.id}" owner ${owner.name ?? ownerId} has role "${owner.role ?? "unset"}", not "lead" — owner_agent_id and the Lead role are unbound.`,
+      });
+    } else if (!owner) {
+      warnings.push({
+        id: `lead_owner_role_mismatch:${team.id}`,
+        kind: "lead_owner_role_mismatch",
+        severity: "low",
+        memberId: ownerId,
+        summary: `Team "${team.name ?? team.id}" owner_agent_id ${ownerId} does not resolve to a member in this snapshot.`,
+      });
+    }
+  }
+
   const failingVerdicts = new Set(["fail", "blocked", "needs_changes"]);
   for (const review of reviews) {
     const verdict = (review.verdict ?? "").toLowerCase();
