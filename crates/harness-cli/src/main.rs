@@ -133,19 +133,22 @@ fn agent_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
                     "Codex app-server runtime started",
                     None,
                 )?;
+                store.append_member(&member)?;
+                append_agent_event(
+                    store,
+                    &member.id,
+                    member.provider_runtime_id.as_deref(),
+                    None,
+                    "agent_created",
+                    "Agent Member created",
+                    member.prompt_ref.as_deref(),
+                )?;
             } else {
+                // No runtime requested: persist the member and emit the
+                // creation event via the shared path used by POST /v1/agents.
                 member.status = AgentMemberStatus::Idle;
+                finalize_member_creation(store, &member)?;
             }
-            store.append_member(&member)?;
-            append_agent_event(
-                store,
-                &member.id,
-                member.provider_runtime_id.as_deref(),
-                None,
-                "agent_created",
-                "Agent Member created",
-                member.prompt_ref.as_deref(),
-            )?;
             print_json(&member)?;
         }
         "list" => print_json(&latest_members(store)?.into_values().collect::<Vec<_>>())?,
@@ -309,7 +312,7 @@ fn team_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
                 created_at: now_string(),
                 updated_at: now_string(),
             };
-            store.append_team(&team)?;
+            persist_new_team(store, &team)?;
             print_json(&team)?;
         }
         "list" => {
@@ -359,7 +362,7 @@ fn goal_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
                 goal_design_id: value(args, "--goal-design"),
                 closed_by_decision_id: value(args, "--closed-by-decision"),
             };
-            store.append_goal(&goal)?;
+            persist_new_goal(store, &goal)?;
             print_json(&goal)?;
         }
         "learning-status" => {
@@ -455,45 +458,20 @@ fn task_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
                 requires_human_approval: has_flag(args, "--requires-human-approval"),
                 verdict_decision_id: value(args, "--verdict-decision"),
             };
-            store.append_task(&task)?;
+            persist_new_task(store, &task)?;
             print_json(&task)?;
         }
         "assign" => {
-            let task_id = required(args, "--id")?;
-            let assignee = required(args, "--assignee")?;
-            let mut task = latest_task(store, &task_id)?;
-            if let Some(goal_id) = task.goal_id.as_deref() {
-                let status = goal_learning_status(store, goal_id)?;
-                if status.goal_design.is_empty() {
-                    if has_flag(args, "--allow-missing-goal-design") {
-                        let waiver_decision_id = value(args, "--waiver-decision");
-                        status.require_valid_waiver(store, waiver_decision_id.as_deref())?;
-                    } else {
-                        return Err(CliError::Usage(format!(
-                            "task {task_id} cannot be assigned before goal {goal_id} has goal_design evidence; use --allow-missing-goal-design with --waiver-decision <id> only for an explicit design-stage waiver"
-                        )));
-                    }
-                }
-            }
-            task.assignee_agent_id = Some(assignee.clone());
-            task.status = TaskStatus::Assigned;
-            task.updated_at = now_string();
-            store.append_task(&task)?;
-            let message = Message {
-                id: generated_id("msg"),
-                task_id: Some(task.id.clone()),
-                from_agent_id: task.owner_agent_id.clone(),
-                to_agent_id: Some(assignee),
-                channel: Some(value(args, "--channel").unwrap_or_else(|| "task-assignment".into())),
-                kind: MessageKind::Task,
-                delivery_status: MessageDeliveryStatus::Queued,
-                content: format!("Assigned task {}", task.id),
-                evidence_ids: Vec::new(),
-                created_at: now_string(),
-                delivery: None,
-                sender_kind: SenderKind::Agent,
-            };
-            store.append_message(&message)?;
+            let task = assign_task(
+                store,
+                &required(args, "--id")?,
+                &TaskAssignment {
+                    assignee: required(args, "--assignee")?,
+                    channel: value(args, "--channel"),
+                    allow_missing_goal_design: has_flag(args, "--allow-missing-goal-design"),
+                    waiver_decision_id: value(args, "--waiver-decision"),
+                },
+            )?;
             print_json(&task)?;
         }
         "status" => {
@@ -2365,6 +2343,24 @@ fn handle_http_action(
     if path == "/v1/messages" {
         return create_message_value(store, body);
     }
+    if path == "/v1/teams" {
+        return create_team_value(store, body);
+    }
+    if path == "/v1/agents" {
+        return create_agent_value(store, body);
+    }
+    if path == "/v1/goals" {
+        return create_goal_value(store, body);
+    }
+    if path == "/v1/tasks" {
+        return create_task_value(store, body);
+    }
+    if let Some(task_id) = path
+        .strip_prefix("/v1/tasks/")
+        .and_then(|rest| rest.strip_suffix("/assign"))
+    {
+        return assign_task_value(store, task_id, body);
+    }
     if path == "/v1/gateway/tick" {
         return provider_gateway_tick_value(
             store,
@@ -2487,6 +2483,272 @@ fn create_message_value(
         )?;
     }
     Ok(serde_json::to_value(message)?)
+}
+
+// ---------------------------------------------------------------------------
+// Create-entity side-effect helpers (WP-ii)
+//
+// These functions own the *persistence + event* logic for creating each core
+// entity, so the CLI command arms and the HTTP create routes (POST /v1/teams,
+// /agents, /goals, /tasks[+assign]) share one implementation. The CLI builds
+// the struct from `--flag` args; the HTTP value-fns below build the same struct
+// from a JSON body. Both then call these helpers, so behaviour cannot diverge.
+// ---------------------------------------------------------------------------
+
+/// Persist a freshly-built team. Mirrors the `team create` CLI arm.
+fn persist_new_team(store: &HarnessStore, team: &AgentTeam) -> CliResult<()> {
+    store.append_team(team)?;
+    Ok(())
+}
+
+/// Persist a freshly-built goal. Mirrors the `goal create` CLI arm.
+fn persist_new_goal(store: &HarnessStore, goal: &Goal) -> CliResult<()> {
+    store.append_goal(goal)?;
+    Ok(())
+}
+
+/// Persist a freshly-built task. Mirrors the `task create` CLI arm.
+fn persist_new_task(store: &HarnessStore, task: &Task) -> CliResult<()> {
+    store.append_task(task)?;
+    Ok(())
+}
+
+/// Persist a freshly-built member (no runtime start) and emit the
+/// `agent_created` event. Shared by the non-`--start` CLI path and the
+/// POST /v1/agents route. Runtime start stays a separate action.
+fn finalize_member_creation(store: &HarnessStore, member: &AgentMember) -> CliResult<()> {
+    store.append_member(member)?;
+    append_agent_event(
+        store,
+        &member.id,
+        member.provider_runtime_id.as_deref(),
+        None,
+        "agent_created",
+        "Agent Member created",
+        member.prompt_ref.as_deref(),
+    )?;
+    Ok(())
+}
+
+/// Parameters for assigning a task, shared by the `task assign` CLI arm and the
+/// POST /v1/tasks/{id}/assign route.
+struct TaskAssignment {
+    assignee: String,
+    channel: Option<String>,
+    allow_missing_goal_design: bool,
+    waiver_decision_id: Option<String>,
+}
+
+/// Assign a task to an agent, enforcing the goal-design gate, and queue the
+/// task-assignment message. Shared by the CLI and HTTP assign paths.
+fn assign_task(
+    store: &HarnessStore,
+    task_id: &str,
+    assignment: &TaskAssignment,
+) -> CliResult<Task> {
+    let mut task = latest_task(store, task_id)?;
+    if let Some(goal_id) = task.goal_id.as_deref() {
+        let status = goal_learning_status(store, goal_id)?;
+        if status.goal_design.is_empty() {
+            if assignment.allow_missing_goal_design {
+                status.require_valid_waiver(store, assignment.waiver_decision_id.as_deref())?;
+            } else {
+                return Err(CliError::Usage(format!(
+                    "task {task_id} cannot be assigned before goal {goal_id} has goal_design evidence; use --allow-missing-goal-design with --waiver-decision <id> only for an explicit design-stage waiver"
+                )));
+            }
+        }
+    }
+    task.assignee_agent_id = Some(assignment.assignee.clone());
+    task.status = TaskStatus::Assigned;
+    task.updated_at = now_string();
+    store.append_task(&task)?;
+    let message = Message {
+        id: generated_id("msg"),
+        task_id: Some(task.id.clone()),
+        from_agent_id: task.owner_agent_id.clone(),
+        to_agent_id: Some(assignment.assignee.clone()),
+        channel: Some(
+            assignment
+                .channel
+                .clone()
+                .unwrap_or_else(|| "task-assignment".into()),
+        ),
+        kind: MessageKind::Task,
+        delivery_status: MessageDeliveryStatus::Queued,
+        content: format!("Assigned task {}", task.id),
+        evidence_ids: Vec::new(),
+        created_at: now_string(),
+        delivery: None,
+        sender_kind: SenderKind::Agent,
+    };
+    store.append_message(&message)?;
+    Ok(task)
+}
+
+// ---------------------------------------------------------------------------
+// HTTP create value-fns (WP-ii)
+//
+// Thin wrappers that build each entity from a JSON body and delegate to the
+// shared persistence helpers above. Missing required fields surface as
+// `CliError::Usage`, which the serve loop maps to a 400 response.
+// ---------------------------------------------------------------------------
+
+/// POST /v1/teams — build a team from the JSON body and persist it.
+fn create_team_value(
+    store: &HarnessStore,
+    body: &serde_json::Value,
+) -> CliResult<serde_json::Value> {
+    let team = AgentTeam {
+        id: json_string(body, "id").unwrap_or_else(|| generated_id("team")),
+        name: required_json_string(body, "name")?,
+        description: required_json_string(body, "description")?,
+        owner_agent_id: required_json_string(body, "owner")
+            .or_else(|_| required_json_string(body, "owner_agent_id"))?,
+        status: AgentTeamStatus::Active,
+        member_ids: json_string_array(body, "member"),
+        created_at: now_string(),
+        updated_at: now_string(),
+    };
+    persist_new_team(store, &team)?;
+    Ok(serde_json::to_value(team)?)
+}
+
+/// POST /v1/agents — build an Agent Member from the JSON body and persist it.
+/// Does NOT start a runtime: `--start` / runtime spawn stays a separate action.
+fn create_agent_value(
+    store: &HarnessStore,
+    body: &serde_json::Value,
+) -> CliResult<serde_json::Value> {
+    let mut member = build_member_from_json(body)?;
+    let prompt_ref =
+        ensure_agent_prompt_with_override(store, &member, json_string(body, "prompt"))?;
+    member.prompt_ref = Some(prompt_ref);
+    member.status = AgentMemberStatus::Idle;
+    finalize_member_creation(store, &member)?;
+    Ok(serde_json::to_value(member)?)
+}
+
+/// POST /v1/goals — build a goal from the JSON body and persist it.
+fn create_goal_value(
+    store: &HarnessStore,
+    body: &serde_json::Value,
+) -> CliResult<serde_json::Value> {
+    let goal = Goal {
+        id: json_string(body, "id").unwrap_or_else(|| generated_id("goal")),
+        title: required_json_string(body, "title")?,
+        objective: required_json_string(body, "objective")?,
+        owner_agent_id: required_json_string(body, "owner")
+            .or_else(|_| required_json_string(body, "owner_agent_id"))?,
+        status: GoalStatus::Active,
+        success_criteria: json_string_array(body, "success"),
+        priority: json_string(body, "priority").unwrap_or_else(|| "p0".into()),
+        created_at: now_string(),
+        updated_at: now_string(),
+        vision_id: json_string(body, "vision"),
+        goal_design_id: json_string(body, "goal_design"),
+        closed_by_decision_id: json_string(body, "closed_by_decision"),
+    };
+    persist_new_goal(store, &goal)?;
+    Ok(serde_json::to_value(goal)?)
+}
+
+/// POST /v1/tasks — build a task from the JSON body and persist it.
+fn create_task_value(
+    store: &HarnessStore,
+    body: &serde_json::Value,
+) -> CliResult<serde_json::Value> {
+    let task = Task {
+        id: json_string(body, "id").unwrap_or_else(|| generated_id("task")),
+        goal_id: json_string(body, "goal"),
+        parent_task_id: json_string(body, "parent"),
+        title: required_json_string(body, "title")?,
+        objective: required_json_string(body, "objective")?,
+        owner_agent_id: required_json_string(body, "owner")
+            .or_else(|_| required_json_string(body, "owner_agent_id"))?,
+        assignee_agent_id: json_string(body, "assignee"),
+        reviewer_agent_id: json_string(body, "reviewer"),
+        status: TaskStatus::Planned,
+        depends_on_task_ids: json_string_array(body, "depends_on"),
+        workspace_ref: json_string(body, "workspace"),
+        branch_ref: json_string(body, "branch"),
+        pr_ref: json_string(body, "pr"),
+        owned_paths: json_string_array(body, "owned_path"),
+        acceptance_criteria: json_string_array(body, "acceptance"),
+        created_at: now_string(),
+        updated_at: now_string(),
+        phase: json_string(body, "phase"),
+        scope_refs: json_string_array(body, "scope_ref"),
+        requires_human_approval: json_bool(body, "requires_human_approval").unwrap_or(false),
+        verdict_decision_id: json_string(body, "verdict_decision"),
+    };
+    persist_new_task(store, &task)?;
+    Ok(serde_json::to_value(task)?)
+}
+
+/// POST /v1/tasks/{id}/assign — assign a task to an agent from the JSON body.
+fn assign_task_value(
+    store: &HarnessStore,
+    task_id: &str,
+    body: &serde_json::Value,
+) -> CliResult<serde_json::Value> {
+    let task = assign_task(
+        store,
+        task_id,
+        &TaskAssignment {
+            assignee: required_json_string(body, "assignee")
+                .or_else(|_| required_json_string(body, "assignee_agent_id"))?,
+            channel: json_string(body, "channel"),
+            allow_missing_goal_design: json_bool(body, "allow_missing_goal_design")
+                .unwrap_or(false),
+            waiver_decision_id: json_string(body, "waiver_decision"),
+        },
+    )?;
+    Ok(serde_json::to_value(task)?)
+}
+
+/// Build an Agent Member from a JSON body, mirroring `build_member_from_args`.
+/// The member is created in `Creating` status; callers set the final status.
+fn build_member_from_json(body: &serde_json::Value) -> CliResult<AgentMember> {
+    Ok(AgentMember {
+        id: json_string(body, "id").unwrap_or_else(|| generated_id("agent")),
+        name: required_json_string(body, "name")?,
+        description: json_string(body, "description")
+            .unwrap_or_else(|| "Codex-backed Agent Member".into()),
+        role: required_json_string(body, "role")?,
+        provider: json_string(body, "provider").unwrap_or_else(|| "codex".into()),
+        model: json_string(body, "model"),
+        profile: json_string(body, "profile"),
+        provider_config: AgentProviderConfig {
+            service_tier: json_string(body, "service_tier"),
+            collaboration_mode: json_string(body, "collaboration_mode"),
+            approval_policy: json_string(body, "approval_policy"),
+            approvals_reviewer: json_string(body, "approvals_reviewer"),
+            sandbox_policy: json_string(body, "sandbox_policy"),
+            permission_profile: json_string(body, "permission_profile"),
+            runtime_workspace_roots: json_string_array(body, "runtime_workspace_root"),
+            environment_id: json_string(body, "environment"),
+        },
+        capabilities: json_string_array(body, "capability"),
+        team_ids: json_string_array(body, "team"),
+        prompt_ref: json_string(body, "prompt_ref"),
+        skill_refs: json_string_array(body, "skill"),
+        workspace_policy: json_string(body, "workspace_policy"),
+        worktree_ref: json_string(body, "worktree"),
+        permission_profile: json_string(body, "permission_profile"),
+        runtime_workspace_roots: json_string_array(body, "runtime_workspace_root"),
+        status: AgentMemberStatus::Creating,
+        current_task_id: None,
+        current_proposal_id: None,
+        provider_runtime_id: None,
+        provider_thread_id: None,
+        provider_agent_path: json_string(body, "provider_agent_path"),
+        provider_agent_nickname: json_string(body, "provider_agent_nickname"),
+        provider_agent_role: json_string(body, "provider_agent_role"),
+        control_endpoint: None,
+        created_at: now_string(),
+        last_seen_at: None,
+    })
 }
 
 fn request_task_review_value(
@@ -7121,6 +7383,19 @@ fn ensure_agent_prompt(
     member: &AgentMember,
     args: &[String],
 ) -> CliResult<String> {
+    ensure_agent_prompt_with_override(store, member, value(args, "--prompt"))
+}
+
+/// Persist (or reuse) the bootstrap prompt for a member. Shared by the CLI
+/// (`--prompt`) and the HTTP create route (`prompt` JSON field). When the member
+/// already carries an explicit `prompt_ref` it is returned untouched; otherwise a
+/// prompt file is written under the store's `prompts/` dir, using the caller's
+/// override text or a generated bootstrap prompt.
+fn ensure_agent_prompt_with_override(
+    store: &HarnessStore,
+    member: &AgentMember,
+    prompt_override: Option<String>,
+) -> CliResult<String> {
     if let Some(prompt_ref) = member.prompt_ref.clone() {
         return Ok(prompt_ref);
     }
@@ -7130,7 +7405,7 @@ fn ensure_agent_prompt(
         .root()
         .join("prompts")
         .join(format!("{}.md", member.id));
-    let prompt = value(args, "--prompt").unwrap_or_else(|| build_bootstrap_prompt(member));
+    let prompt = prompt_override.unwrap_or_else(|| build_bootstrap_prompt(member));
     fs::write(&prompt_path, prompt)?;
     Ok(prompt_path.display().to_string())
 }
@@ -10476,6 +10751,134 @@ mod tests {
 
     fn strings(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| (*value).to_string()).collect()
+    }
+
+    fn temp_store(label: &str) -> (HarnessStore, PathBuf) {
+        let root = std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id(label)));
+        (HarnessStore::new(&root), root)
+    }
+
+    #[test]
+    fn create_team_value_persists_team_and_appears_in_snapshot() {
+        let (store, root) = temp_store("wp-ii-team");
+        let body = serde_json::json!({
+            "name": "Platform Squad",
+            "description": "Owns the dashboard",
+            "owner": "lead-1",
+            "member": ["worker-1", "worker-2"]
+        });
+
+        let created = create_team_value(&store, &body).expect("team create succeeds");
+        let team_id = created["id"].as_str().expect("created team has id").to_string();
+        assert_eq!(created["name"], "Platform Squad");
+        assert_eq!(created["owner_agent_id"], "lead-1");
+
+        // Persisted as a domain entity.
+        let teams = latest_teams(&store).expect("teams readable");
+        let persisted = teams.get(&team_id).expect("team persisted in store");
+        assert_eq!(persisted.name, "Platform Squad");
+        assert_eq!(persisted.owner_agent_id, "lead-1");
+        assert_eq!(persisted.member_ids, vec!["worker-1", "worker-2"]);
+        assert_eq!(persisted.status, AgentTeamStatus::Active);
+
+        // Visible in the dashboard snapshot the HTTP layer returns.
+        let snapshot = dashboard_snapshot(&store).expect("snapshot builds");
+        let snapshot_teams = snapshot["teams"].as_array().expect("teams array in snapshot");
+        assert!(
+            snapshot_teams
+                .iter()
+                .any(|team| team["id"].as_str() == Some(team_id.as_str())),
+            "new team must appear in snapshot teams"
+        );
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn create_team_value_missing_required_field_is_usage_error() {
+        let (store, root) = temp_store("wp-ii-team-bad");
+        // No owner / name -> CliError::Usage (mapped to HTTP 400 by serve loop).
+        let body = serde_json::json!({"description": "no name or owner"});
+        let error = create_team_value(&store, &body).expect_err("missing fields must error");
+        assert!(
+            matches!(error, CliError::Usage(_)),
+            "malformed body must be a Usage error, got: {error:?}"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn create_agent_value_persists_member_and_appears_in_snapshot() {
+        let (store, root) = temp_store("wp-ii-agent");
+        let body = serde_json::json!({
+            "name": "Worker One",
+            "role": "worker",
+            "provider": "codex",
+            "skill": ["frontend-design"]
+        });
+
+        let created = create_agent_value(&store, &body).expect("agent create succeeds");
+        let member_id = created["id"].as_str().expect("created member has id").to_string();
+        assert_eq!(created["name"], "Worker One");
+        assert_eq!(created["role"], "worker");
+        // Idle, not started: runtime start stays a separate action.
+        assert_eq!(created["status"], "idle");
+        assert!(
+            created["provider_runtime_id"].is_null(),
+            "create must NOT auto-start a runtime"
+        );
+
+        // Persisted member with a prompt_ref written to the store.
+        let members = latest_members(&store).expect("members readable");
+        let persisted = members.get(&member_id).expect("member persisted in store");
+        assert_eq!(persisted.name, "Worker One");
+        assert_eq!(persisted.status, AgentMemberStatus::Idle);
+        assert_eq!(persisted.skill_refs, vec!["frontend-design"]);
+        assert!(
+            persisted.prompt_ref.is_some(),
+            "create must persist a bootstrap prompt_ref"
+        );
+        assert!(persisted.provider_runtime_id.is_none(), "no runtime started");
+
+        // No runtime persisted.
+        assert!(
+            store.runtimes().expect("runtimes readable").is_empty(),
+            "create must not append any runtime"
+        );
+
+        // Member appears in the snapshot roster.
+        let snapshot = dashboard_snapshot(&store).expect("snapshot builds");
+        let snapshot_members = snapshot["members"].as_array().expect("members array in snapshot");
+        assert!(
+            snapshot_members
+                .iter()
+                .any(|member| member["id"].as_str() == Some(member_id.as_str())),
+            "new member must appear in snapshot roster"
+        );
+
+        // The agent_created event was emitted.
+        let events = store.events().expect("events readable");
+        assert!(
+            events
+                .iter()
+                .any(|event| event.agent_member_id == member_id
+                    && event.event_type == "agent_created"),
+            "create must emit an agent_created event"
+        );
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn create_agent_value_missing_role_is_usage_error() {
+        let (store, root) = temp_store("wp-ii-agent-bad");
+        let body = serde_json::json!({"name": "No Role"});
+        let error = create_agent_value(&store, &body).expect_err("missing role must error");
+        assert!(
+            matches!(error, CliError::Usage(_)),
+            "malformed body must be a Usage error, got: {error:?}"
+        );
+        let _ = std::fs::remove_dir_all(root);
     }
 }
 
