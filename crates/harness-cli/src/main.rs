@@ -2223,10 +2223,37 @@ fn serve_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     })?;
     
     for stream in listener.incoming() {
-        handle_http_connection(store, stream?, sse_manager.clone())?;
+        let stream = match stream {
+            Ok(stream) => stream,
+            Err(error) => {
+                // A failed accept (e.g. a client that hung up before the
+                // handshake) must not take the whole server down.
+                eprintln!("serve: accept failed: {error}");
+                continue;
+            }
+        };
+
         if once {
+            // Single-shot mode (tests): handle inline for deterministic ordering.
+            if let Err(error) = handle_http_connection(store, stream, sse_manager.clone()) {
+                eprintln!("serve: connection error: {error}");
+            }
             break;
         }
+
+        // Handle each connection on its own thread so a long-lived SSE stream
+        // (/v1/events blocks for the life of the client) cannot starve other
+        // requests — POST actions, snapshot polling, and additional clients
+        // must still be served while a stream is open. Per-connection errors
+        // (most commonly a broken pipe when a client disconnects mid-write) are
+        // logged and contained to that thread instead of aborting the loop.
+        let conn_store = store.clone();
+        let conn_manager = sse_manager.clone();
+        std::thread::spawn(move || {
+            if let Err(error) = handle_http_connection(&conn_store, stream, conn_manager) {
+                eprintln!("serve: connection error: {error}");
+            }
+        });
     }
     Ok(())
 }
@@ -10472,5 +10499,85 @@ mod sse_tests {
             .expect("rx1 should receive event");
         let _ = rx2.recv_timeout(std::time::Duration::from_secs(1))
             .expect("rx2 should receive event");
+    }
+
+    /// Regression: a long-lived `/v1/events` SSE connection must not starve
+    /// other HTTP requests. Before per-connection threading the single accept
+    /// loop blocked inside the SSE handler, so a concurrent `/v1/snapshot` (or a
+    /// composer POST) hung until the stream closed. Here we hold an SSE stream
+    /// open and assert a concurrent snapshot still returns promptly. The inline
+    /// accept loop mirrors serve_command's per-connection threading.
+    #[test]
+    fn sse_stream_does_not_block_concurrent_requests() {
+        use std::io::{BufRead, BufReader, Read, Write};
+        use std::net::{TcpListener, TcpStream};
+        use std::time::Duration;
+
+        let root = std::env::temp_dir()
+            .join(format!("harness-cli-test-{}", generated_id("serve-concurrency")));
+        let store = HarnessStore::new(&root);
+        store.init().expect("init store");
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral");
+        let addr = listener.local_addr().expect("local addr");
+        let serve_store = store.clone();
+        std::thread::spawn(move || {
+            let sse_manager = sse::SseManager::new();
+            sse::start_sse_watcher(&serve_store, sse_manager.clone()).expect("watcher");
+            for stream in listener.incoming() {
+                let Ok(stream) = stream else { continue };
+                let conn_store = serve_store.clone();
+                let conn_manager = sse_manager.clone();
+                std::thread::spawn(move || {
+                    let _ = handle_http_connection(&conn_store, stream, conn_manager);
+                });
+            }
+        });
+
+        // Open and hold an SSE stream; read its initial `snapshot` frame so we
+        // know the server thread is parked inside the SSE handler.
+        let mut sse_conn = TcpStream::connect(addr).expect("connect sse");
+        sse_conn
+            .write_all(b"GET /v1/events HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .expect("send sse request");
+        sse_conn
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .expect("set sse read timeout");
+        let mut sse_reader = BufReader::new(sse_conn.try_clone().expect("clone sse"));
+        let mut saw_snapshot = false;
+        for _ in 0..40 {
+            let mut line = String::new();
+            if sse_reader.read_line(&mut line).unwrap_or(0) == 0 {
+                break;
+            }
+            if line.contains("event: snapshot") {
+                saw_snapshot = true;
+                break;
+            }
+        }
+        assert!(saw_snapshot, "SSE stream did not emit an initial snapshot frame");
+
+        // With the stream still held open, a concurrent snapshot request must
+        // complete. A short read timeout makes a regression (blocked accept
+        // loop) fail fast instead of hanging the whole test.
+        let mut snap_conn = TcpStream::connect(addr).expect("connect snapshot");
+        snap_conn
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("set snapshot read timeout");
+        snap_conn
+            .write_all(b"GET /v1/snapshot HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            .expect("send snapshot request");
+        let mut response = String::new();
+        snap_conn
+            .read_to_string(&mut response)
+            .expect("snapshot must respond while an SSE stream is open");
+        assert!(
+            response.starts_with("HTTP/1.1 200 OK"),
+            "expected 200 snapshot while SSE held, got: {}",
+            response.lines().next().unwrap_or("<empty>")
+        );
+
+        drop(sse_conn);
+        let _ = std::fs::remove_dir_all(root);
     }
 }
