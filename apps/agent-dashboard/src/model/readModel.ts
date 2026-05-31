@@ -24,7 +24,7 @@ import { deriveWarnings } from "./warnings";
 
 export interface TimelineItem {
   id: string;
-  kind: "message" | "event" | "session" | "evidence" | "proposal" | "decision" | "warning";
+  kind: "message" | "event" | "session" | "evidence" | "proposal" | "decision" | "review" | "warning";
   title: string;
   meta: string;
   body?: string;
@@ -93,7 +93,19 @@ export interface WorkbenchModel {
   visionForGoal?: Vision;
   warnings: WorkflowWarning[];
   selectedMemberMessages: Message[];
+  /** Messages addressed TO the selected member (to_agent_id match). */
+  inboxMessages: Message[];
+  /** Messages authored BY the selected member (from_agent_id match). */
+  outboxMessages: Message[];
   selectedMemberTimeline: TimelineItem[];
+  /** Reviews authored by the selected member (reviewer_agent_id match). */
+  reviewsByMember: Review[];
+  /**
+   * The id of the team Lead for the selected member's team. Authoritative
+   * source is `team.owner_agent_id`; this is frontend-derived, not a schema
+   * field, so it can be used to render a Lead chip without inventing data.
+   */
+  leadMemberId?: string;
   activity: TimelineItem[];
   decisionQueue: TimelineItem[];
   docs: RelatedDoc[];
@@ -174,6 +186,22 @@ export function buildWorkbenchModel(snapshot: DashboardSnapshot, selection: Sele
   const selectedMemberMessages = selectedMember
     ? messages.filter((message) => message.from_agent_id === selectedMember.id || message.to_agent_id === selectedMember.id)
     : [];
+  const inboxMessages = selectedMember
+    ? messages.filter((message) => message.to_agent_id === selectedMember.id)
+    : [];
+  const outboxMessages = selectedMember
+    ? messages.filter((message) => message.from_agent_id === selectedMember.id)
+    : [];
+  const reviewsByMember = selectedMember
+    ? reviews.filter((review) => review.reviewer_agent_id === selectedMember.id)
+    : [];
+  // The team Lead is authoritative as the team's owner_agent_id. We resolve the
+  // owning team from the selected member's team_ids first, falling back to the
+  // selected team. This stays frontend-derived (no schema field) per the design.
+  const leadMemberId =
+    (selectedMember
+      ? teams.find((team) => (selectedMember.team_ids ?? []).includes(team.id))?.owner_agent_id
+      : undefined) ?? selectedTeam?.owner_agent_id;
 
   const reviewsForTask = selectedTask
     ? reviews.filter((review) => review.task_id === selectedTask.id)
@@ -265,6 +293,10 @@ export function buildWorkbenchModel(snapshot: DashboardSnapshot, selection: Sele
     visionForGoal,
     warnings,
     selectedMemberMessages,
+    inboxMessages,
+    outboxMessages,
+    reviewsByMember,
+    leadMemberId,
     selectedMemberTimeline: selectedMember
       ? buildMemberTimeline(snapshot, selectedMember, warnings)
       : [],
@@ -378,20 +410,66 @@ function buildLanes(tasks: Task[]): Lane[] {
   }));
 }
 
+/**
+ * The member's single merged chronological stream. Per
+ * docs/dashboard/pages/agent-member-workbench.md it unifies task assignment,
+ * reports, sessions, events, evidence, delivery state, proposals, and the
+ * reviews this member authored, so a reviewer can trace assignment BEFORE
+ * report/evidence in one place.
+ *
+ * Sort is ascending-by-time then displayed in that order, with a per-kind tie
+ * rank so a task assignment provably precedes its report/evidence when they
+ * share a timestamp. Warnings carry a synthetic timestamp (NOW) so urgent items
+ * surface at the head instead of sinking to the bottom. No hard cap — the
+ * surface scrolls.
+ */
 function buildMemberTimeline(snapshot: DashboardSnapshot, member: AgentMember, warnings: WorkflowWarning[]): TimelineItem[] {
-  const messages = (snapshot.messages ?? [])
+  const messages: TimelineItem[] = (snapshot.messages ?? [])
     .filter((message) => message.from_agent_id === member.id || message.to_agent_id === member.id)
-    .map((message) => ({
-      id: message.id,
-      kind: "message" as const,
-      title: message.kind === "task" ? "Task assignment" : message.kind === "report" ? "Member report" : "Message",
-      meta: `${message.delivery_status} · ${message.created_at ? formatTime(message.created_at) : "no time"}`,
-      body: message.content,
-      objectRef: message.task_id ?? undefined,
-      createdAt: message.created_at ?? undefined,
-    }));
+    .map((message) => {
+      const direction = message.to_agent_id === member.id ? "in" : "out";
+      const title =
+        message.kind === "task"
+          ? "Task assignment"
+          : message.kind === "report"
+            ? "Member report"
+            : direction === "in"
+              ? "Inbox message"
+              : "Outbox message";
+      return {
+        id: message.id,
+        kind: "message" as const,
+        title,
+        meta: `${direction === "in" ? "inbox" : "outbox"} · ${message.delivery_status} · ${message.created_at ? formatTime(message.created_at) : "no time"}`,
+        body: message.content,
+        objectRef: message.task_id ?? undefined,
+        createdAt: message.created_at ?? undefined,
+      };
+    });
 
-  const sessions = (snapshot.provider_sessions ?? [])
+  // Delivery state of this member's messages (terminal_source / errors) is part
+  // of the timeline per the spec; surface it as its own row when present.
+  const deliveries: TimelineItem[] = (snapshot.messages ?? [])
+    .filter((message) => message.from_agent_id === member.id || message.to_agent_id === member.id)
+    .filter((message) => message.delivery != null && (message.delivery.delivered_at || message.delivery.last_error))
+    .map((message) => {
+      const delivery = message.delivery!;
+      const failed = Boolean(delivery.last_error);
+      return {
+        id: `delivery-${message.id}`,
+        kind: "event" as const,
+        title: failed ? "Delivery failed" : "Delivery completed",
+        meta: delivery.terminal_source
+          ? `${delivery.terminal_source}${delivery.delivered_at ? ` · ${formatTime(delivery.delivered_at)}` : ""}`
+          : (delivery.delivered_at ? formatTime(delivery.delivered_at) : "delivery"),
+        body: delivery.last_error ?? delivery.provider_turn_id ?? message.content,
+        severity: failed ? ("high" as const) : undefined,
+        objectRef: message.task_id ?? undefined,
+        createdAt: delivery.delivered_at ?? message.created_at ?? undefined,
+      };
+    });
+
+  const sessions: TimelineItem[] = (snapshot.provider_sessions ?? [])
     .filter((session) => session.agent_member_id === member.id)
     .map((session) => ({
       id: session.id,
@@ -403,7 +481,7 @@ function buildMemberTimeline(snapshot: DashboardSnapshot, member: AgentMember, w
       createdAt: session.started_at ?? undefined,
     }));
 
-  const events = (snapshot.events ?? [])
+  const events: TimelineItem[] = (snapshot.events ?? [])
     .filter((event) => event.agent_member_id === member.id)
     .map((event) => ({
       id: event.id,
@@ -415,7 +493,55 @@ function buildMemberTimeline(snapshot: DashboardSnapshot, member: AgentMember, w
       createdAt: event.created_at ?? undefined,
     }));
 
-  const memberWarnings = warnings
+  // Evidence linked to this member's tasks. Member rows carry no member id, so
+  // we scope by the tasks the member touched (current task + tasks referenced
+  // by their messages).
+  const memberTaskIds = new Set<string>(
+    [
+      member.current_task_id,
+      ...(snapshot.messages ?? [])
+        .filter((message) => message.from_agent_id === member.id || message.to_agent_id === member.id)
+        .map((message) => message.task_id),
+    ].filter((id): id is string => Boolean(id)),
+  );
+  const evidence: TimelineItem[] = (snapshot.evidence ?? [])
+    .filter((item) => item.task_id != null && memberTaskIds.has(item.task_id))
+    .map((item) => ({
+      id: item.id,
+      kind: "evidence" as const,
+      title: `Evidence: ${item.source_type ?? item.evidence_kind ?? "artifact"}`,
+      meta: item.source_ref ?? "evidence",
+      body: item.summary,
+      objectRef: item.task_id ?? undefined,
+    }));
+
+  const proposals: TimelineItem[] = (snapshot.proposals ?? [])
+    .filter((proposal) => proposal.agent_member_id === member.id)
+    .map((proposal) => ({
+      id: proposal.id,
+      kind: "proposal" as const,
+      title: proposal.title ?? "Proposal",
+      meta: proposal.status ?? "draft",
+      body: proposal.summary,
+      objectRef: proposal.task_id,
+    }));
+
+  const reviews: TimelineItem[] = (snapshot.reviews ?? [])
+    .filter((review) => review.reviewer_agent_id === member.id)
+    .map((review) => ({
+      id: review.id,
+      kind: "review" as const,
+      title: `Review: ${review.verdict ?? review.review_kind ?? "review"}`,
+      meta: `${review.review_kind ?? "review"}${review.created_at ? ` · ${formatTime(review.created_at)}` : ""}`,
+      body: review.summary,
+      objectRef: review.task_id ?? undefined,
+      createdAt: review.created_at ?? undefined,
+    }));
+
+  // Warnings get a synthetic NOW timestamp so they no longer sink below dated
+  // rows; severity still drives their tone.
+  const syntheticNow = new Date().toISOString();
+  const memberWarnings: TimelineItem[] = warnings
     .filter((warning) => warning.memberId === member.id)
     .map((warning) => ({
       id: warning.id,
@@ -425,9 +551,52 @@ function buildMemberTimeline(snapshot: DashboardSnapshot, member: AgentMember, w
       body: warning.summary,
       severity: warning.severity,
       objectRef: warning.taskId,
+      createdAt: syntheticNow,
     }));
 
-  return sortTimelineDesc([...messages, ...sessions, ...events, ...memberWarnings]).slice(0, 12);
+  return sortTimelineChronological([
+    ...messages,
+    ...deliveries,
+    ...sessions,
+    ...events,
+    ...evidence,
+    ...proposals,
+    ...reviews,
+    ...memberWarnings,
+  ]);
+}
+
+/**
+ * Per-kind tie-break rank used when two items share (or lack) a timestamp, so
+ * an assignment always renders before the report/evidence it produced.
+ */
+const timelineKindRank: Record<TimelineItem["kind"], number> = {
+  message: 0,
+  session: 1,
+  event: 2,
+  proposal: 3,
+  evidence: 4,
+  review: 5,
+  decision: 6,
+  warning: 7,
+};
+
+/**
+ * Sort ascending by time (oldest first) so the displayed order proves causality
+ * (assignment → report → evidence). Items without a timestamp keep a stable
+ * tail ordered by kind rank. Equal timestamps tie-break by kind rank.
+ */
+function sortTimelineChronological(items: TimelineItem[]): TimelineItem[] {
+  return [...items].sort((a, b) => {
+    const ta = a.createdAt ? Date.parse(a.createdAt) : NaN;
+    const tb = b.createdAt ? Date.parse(b.createdAt) : NaN;
+    const aHas = !Number.isNaN(ta);
+    const bHas = !Number.isNaN(tb);
+    if (aHas && bHas && ta !== tb) return ta - tb;
+    if (aHas && !bHas) return -1;
+    if (!aHas && bHas) return 1;
+    return timelineKindRank[a.kind] - timelineKindRank[b.kind];
+  });
 }
 
 function buildActivity(snapshot: DashboardSnapshot, warnings: WorkflowWarning[]): TimelineItem[] {
