@@ -63,6 +63,8 @@ export interface Lane {
 
 export interface WorkbenchModel {
   snapshot: DashboardSnapshot;
+  /** Snapshot freshness anchor (snapshot.generated_at); used by the TopBar chip. */
+  generatedAt?: string;
   selectedGoal?: Goal;
   selectedTeam?: AgentTeam;
   selectedMember?: AgentMember;
@@ -305,6 +307,7 @@ export function buildWorkbenchModel(snapshot: DashboardSnapshot, selection: Sele
 
   return {
     snapshot,
+    generatedAt: snapshot.generated_at,
     selectedGoal,
     selectedTeam,
     selectedMember,
@@ -318,7 +321,7 @@ export function buildWorkbenchModel(snapshot: DashboardSnapshot, selection: Sele
     roleGroups: groupMembersByRole(members),
     tasks,
     goalTasks,
-    lanes: buildLanes(goalTasks),
+    lanes: buildLanes(goalTasks, snapshot.kanban),
     messages,
     evidence,
     proposals,
@@ -479,7 +482,34 @@ function groupMembersByRole(members: AgentMember[]): RoleGroup[] {
     .map((entry) => entry.group);
 }
 
-function buildLanes(tasks: Task[]): Lane[] {
+/**
+ * Lanes for the kanban. The backend emits a `kanban` map (status → task-id[])
+ * which is the owner-decided source of truth for lane membership and ordering;
+ * we resolve those ids against the goal-scoped task set. When the map is
+ * empty/absent (e.g. the offline fixture, or a backend that does not emit it)
+ * we fall back to the local build that buckets tasks by their own `status`.
+ */
+function buildLanes(tasks: Task[], kanban?: Record<TaskStatus, string[]>): Lane[] {
+  if (kanban && Object.values(kanban).some((ids) => ids.length > 0)) {
+    return buildLanesFromKanban(tasks, kanban);
+  }
+  return buildLanesLocal(tasks);
+}
+
+/** Backend-emitted kanban as source of truth: order/membership comes from the map. */
+function buildLanesFromKanban(tasks: Task[], kanban: Record<TaskStatus, string[]>): Lane[] {
+  const byId = new Map(tasks.map((task) => [task.id, task]));
+  return laneOrder.map((status) => ({
+    id: status,
+    title: labelStatus(status),
+    tasks: (kanban[status] ?? [])
+      .map((id) => byId.get(id))
+      .filter((task): task is Task => task != null),
+  }));
+}
+
+/** Local fallback: bucket the goal-scoped tasks by their own status. */
+function buildLanesLocal(tasks: Task[]): Lane[] {
   return laneOrder.map((status) => ({
     id: status,
     title: labelStatus(status),

@@ -14,6 +14,8 @@ import { WorkbenchShell } from "./WorkbenchShell";
 
 const apiDefault = "http://127.0.0.1:8787";
 const liveSourceLabel = "live /v1/snapshot";
+/** Live-poll cadence: re-fetch /v1/snapshot roughly every 5s while enabled. */
+const pollIntervalMs = 5000;
 
 export function App() {
   const [apiUrl, setApiUrl] = useState(apiDefault);
@@ -21,6 +23,9 @@ export function App() {
   const [sourceLabel, setSourceLabel] = useState("offline design fixture");
   const [sourceError, setSourceError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  // Opt-in live polling: off by default so the page is a one-shot read unless
+  // the operator explicitly asks for a refreshing view.
+  const [pollEnabled, setPollEnabled] = useState(false);
   // Seed selection from the URL so a member view (?surface=member&member=:id,
   // i.e. the /members/:memberId workbench) is directly addressable and
   // deep-linkable without pulling in a router.
@@ -59,6 +64,36 @@ export function App() {
     }
   }
 
+  // Opt-in interval poll. Only runs while polling is enabled AND the current
+  // source is live (polling the offline fixture is meaningless). A failed poll
+  // surfaces the error but keeps the last good snapshot — it does not tear the
+  // view down to the demo fixture the way a manual "Load live" failure does.
+  // The interval is cleared on unmount, on toggle-off, and whenever apiUrl
+  // changes so we never poll a stale endpoint.
+  useEffect(() => {
+    if (!pollEnabled || !isLive) return;
+    let cancelled = false;
+    const id = window.setInterval(() => {
+      void (async () => {
+        try {
+          const next = await fetchSnapshot(apiUrl);
+          if (!cancelled) {
+            setSnapshot(next);
+            setSourceError(null);
+          }
+        } catch (error) {
+          if (!cancelled) {
+            setSourceError(error instanceof Error ? error.message : String(error));
+          }
+        }
+      })();
+    }, pollIntervalMs);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [pollEnabled, isLive, apiUrl]);
+
   async function runAction(path: string, body?: unknown) {
     if (!isLive) return;
     setSourceError(null);
@@ -88,6 +123,9 @@ export function App() {
         sourceLabel={sourceLabel}
         actionsEnabled={isLive}
         onAction={(path, body) => void runAction(path, body)}
+        pollEnabled={pollEnabled}
+        canPoll={isLive}
+        onTogglePoll={() => setPollEnabled((on) => !on)}
       />
     </TooltipProvider>
   );
