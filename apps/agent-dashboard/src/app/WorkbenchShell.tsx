@@ -113,6 +113,10 @@ export function WorkbenchShell({
 
   const severity = countBySeverity(model.warnings);
   const showTeamRail = selection.surface === "team" || selection.surface === "member";
+  // The Member surface is a self-contained desktop-app view that OWNS its own
+  // right rail, so the global Inspector is suppressed there to avoid a duplicate
+  // rail. Every other surface keeps the global Inspector.
+  const showInspector = selection.surface !== "member";
 
   return (
     <div className="flex h-screen flex-col overflow-hidden text-foreground">
@@ -159,13 +163,15 @@ export function WorkbenchShell({
             />
           </div>
         </main>
-        <Inspector
-          className="hidden xl:flex"
-          model={model}
-          onSelectionChange={updateSelection}
-          actionsEnabled={actionsEnabled}
-          onAction={onAction}
-        />
+        {showInspector && (
+          <Inspector
+            className="hidden xl:flex"
+            model={model}
+            onSelectionChange={updateSelection}
+            actionsEnabled={actionsEnabled}
+            onAction={onAction}
+          />
+        )}
       </div>
     </div>
   );
