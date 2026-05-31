@@ -106,6 +106,258 @@ pub struct AgentMember {
     pub last_seen_at: Option<String>,
 }
 
+/// Neutral permission posture for a single delivery turn.
+///
+/// This is the launch-spec `permission` enum from the launch-spec table in
+/// [docs/agent-integration-model.md](../../../docs/agent-integration-model.md).
+/// It deliberately does **not** reuse Codex wire vocabulary
+/// (`readOnly` / `workspaceWrite` / `dangerFullAccess`): each provider adapter
+/// (Pillar 3) translates this neutral enum onto its own controls — Codex
+/// sandbox/approval flags, Claude `--permission-mode`, a future platform's
+/// controls — per ADR 0011. The snake_case wire values (`read_only`,
+/// `workspace_write`, `full_access`) are the neutral spelling, distinct from any
+/// platform's own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LaunchPermission {
+    ReadOnly,
+    WorkspaceWrite,
+    FullAccess,
+}
+
+impl LaunchPermission {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            LaunchPermission::ReadOnly => "read_only",
+            LaunchPermission::WorkspaceWrite => "workspace_write",
+            LaunchPermission::FullAccess => "full_access",
+        }
+    }
+}
+
+impl Default for LaunchPermission {
+    /// The safe default posture: a turn that has not declared a writable
+    /// permission is read-only, never silently writable.
+    fn default() -> Self {
+        LaunchPermission::WorkspaceWrite
+    }
+}
+
+/// One neutral MCP server entry for the launch spec.
+///
+/// This is the minimal neutral shape from the PROPOSED `mcp` block in
+/// [docs/agent-integration-model.md](../../../docs/agent-integration-model.md)
+/// (Pillar 2). It carries no platform wire vocabulary: each adapter maps it onto
+/// `--config mcp_servers.*` (Codex) or `--mcp-config` (Claude). Provider-neutral.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LaunchMcpServer {
+    /// Stable id for the server.
+    pub id: String,
+    /// Transport hint (`stdio` / `http` / `sse`); free string, neutral.
+    #[serde(default)]
+    pub transport: Option<String>,
+    /// argv for a local stdio server.
+    #[serde(default)]
+    pub command: Vec<String>,
+    /// endpoint for a remote http/sse server.
+    #[serde(default)]
+    pub url: Option<String>,
+    /// Tool allowlist for this server; empty = all tools on the server.
+    #[serde(default)]
+    pub allowed_tools: Vec<String>,
+}
+
+/// Minimal neutral MCP block for the launch spec (PROPOSED shape, Pillar 2).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct LaunchMcp {
+    #[serde(default)]
+    pub servers: Vec<LaunchMcpServer>,
+}
+
+/// The provider-neutral launch spec: one normalized per-turn request.
+///
+/// This is the launch-spec table in
+/// [docs/agent-integration-model.md](../../../docs/agent-integration-model.md).
+/// The harness builds it from the member (Pillars 1–2) and the claimed
+/// [`Message`] via [`build_launch_spec`]; each provider adapter (Pillar 3) then
+/// maps it onto its own CLI/SDK call. It is the seam that keeps the operator
+/// composer and Dashboard uniform across Codex, Claude, and future platforms.
+///
+/// Per ADR 0011 this neutral object carries **no** Codex wire vocabulary:
+/// `permission` is the neutral [`LaunchPermission`] enum and `writable_roots`
+/// replaces Codex's `workspaceWrite.writableRoots`. The Codex-leaking
+/// `AgentProviderConfig` fields (`sandbox_policy`, `approval_policy`,
+/// `service_tier`, `collaboration_mode`, …) are abstracted here, not reused.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LaunchSpec {
+    /// Composed system/developer instructions (Pillar 1 prompt stack), read as a
+    /// durable artifact reference — not inline chat text. `None` when the member
+    /// has no role prompt.
+    #[serde(default)]
+    pub prompt_ref: Option<String>,
+    /// The turn input: the claimed [`Message`] envelope + content.
+    pub message_content: String,
+    /// Model selection (Pillar 1). `None` = provider default.
+    #[serde(default)]
+    pub model: Option<String>,
+    /// Neutral permission posture for this turn.
+    pub permission: LaunchPermission,
+    /// Paths the turn may write (basis for `workspaceWrite` / `--add-dir`).
+    #[serde(default)]
+    pub writable_roots: Vec<String>,
+    /// Abstract allowed-tool set; empty = adapter default.
+    #[serde(default)]
+    pub tools: Vec<String>,
+    /// cwd / worktree root the turn runs in.
+    #[serde(default)]
+    pub workspace: Option<String>,
+    /// Neutral MCP block (PROPOSED, Pillar 2). `None` = no MCP attachment.
+    #[serde(default)]
+    pub mcp: Option<LaunchMcp>,
+    /// Skills to inject (Pillar 1 skill contract); skill `<id>` refs.
+    #[serde(default)]
+    pub skill_refs: Vec<String>,
+    /// Resume an existing provider session (Codex `--session`, Claude
+    /// `--resume`); `None` = a fresh session.
+    #[serde(default)]
+    pub resume: Option<String>,
+    /// The event-stream output contract the adapter should request so its native
+    /// output normalizes into [`AgentEvent`] (Codex `--json`, Claude
+    /// `--output-format stream-json`). Free string, neutral.
+    #[serde(default)]
+    pub output: Option<String>,
+}
+
+/// Provider-neutral delivery handle: how the harness reaches a member's runtime
+/// for a delivery.
+///
+/// This generalizes `control_endpoint` (a raw `unix://socket`) into a
+/// process/session descriptor, per ADR 0018 ("Generalize the `control_endpoint`
+/// … neither provider needs a long-lived socket in the target design"). It is
+/// **additive and pass-through only** in this work package: it does not remove
+/// `control_endpoint` and does not change delivery behavior. The existing
+/// `socket_path_from_endpoint` resolution stays where it is; this handle simply
+/// preserves the raw endpoint string verbatim so callers that still inspect it
+/// keep working while the exec-stream path is built in later work packages.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeliveryHandle {
+    /// The raw control endpoint as stored on the member / runtime (e.g.
+    /// `unix://…/codex.sock`, or a future exec/session descriptor). Preserved
+    /// verbatim; no scheme is assumed.
+    pub endpoint: String,
+}
+
+impl DeliveryHandle {
+    /// Construct a handle that passes the endpoint through unchanged.
+    pub fn from_endpoint(endpoint: impl Into<String>) -> Self {
+        DeliveryHandle {
+            endpoint: endpoint.into(),
+        }
+    }
+
+    /// The raw endpoint string, verbatim.
+    pub fn endpoint(&self) -> &str {
+        &self.endpoint
+    }
+}
+
+/// Map a member's existing (Codex-flavored) `sandbox_policy` onto the neutral
+/// [`LaunchPermission`] enum.
+///
+/// Accepts both the dashed and camelCase spellings that the CLI provider layer
+/// already tolerates (`read-only`/`readOnly`, `workspace-write`/`workspaceWrite`,
+/// `danger-full-access`/`dangerFullAccess`). An absent or unrecognized policy
+/// falls back to the safe [`LaunchPermission::default`] posture, so a member that
+/// never declared one is not silently elevated.
+fn permission_from_sandbox_policy(policy: Option<&str>) -> LaunchPermission {
+    match policy {
+        Some("read-only") | Some("readOnly") => LaunchPermission::ReadOnly,
+        Some("workspace-write") | Some("workspaceWrite") => LaunchPermission::WorkspaceWrite,
+        Some("danger-full-access") | Some("dangerFullAccess") => LaunchPermission::FullAccess,
+        _ => LaunchPermission::default(),
+    }
+}
+
+/// Compose the neutral turn-input envelope for a claimed [`Message`].
+///
+/// This mirrors the harness message-envelope shape the CLI provider layer
+/// already hands to a turn (message id / kind / task / routing + content) but
+/// keeps it provider-neutral text: the adapter decides how to deliver it (Codex
+/// `input` item, Claude `-p`, …).
+fn compose_message_content(message: &Message) -> String {
+    format!(
+        "Harness message envelope:\nmessage_id: {}\nkind: {}\ntask_id: {}\nfrom_agent_id: {}\nto_agent_id: {}\nchannel: {}\ncontent:\n{}",
+        message.id,
+        message_kind_wire(&message.kind),
+        message.task_id.as_deref().unwrap_or("-"),
+        message.from_agent_id,
+        message.to_agent_id.as_deref().unwrap_or("-"),
+        message.channel.as_deref().unwrap_or("-"),
+        message.content
+    )
+}
+
+fn message_kind_wire(kind: &MessageKind) -> &'static str {
+    match kind {
+        MessageKind::Message => "message",
+        MessageKind::Task => "task",
+        MessageKind::Report => "report",
+    }
+}
+
+/// Build the provider-neutral [`LaunchSpec`] for one turn from a member and the
+/// claimed [`Message`].
+///
+/// This is the additive composition seam (ADR 0018 WP-1). It reads the existing
+/// `AgentMember` / `AgentProviderConfig` fields — including the Codex-flavored
+/// `sandbox_policy` — and produces a neutral spec: the permission posture and
+/// `writable_roots` are abstracted out of the Codex `workspaceWrite` vocabulary,
+/// and no Codex wire names appear on the result (ADR 0011). It does not perform
+/// any delivery side effect and does not require a live provider binary.
+pub fn build_launch_spec(member: &AgentMember, message: &Message) -> LaunchSpec {
+    let permission =
+        permission_from_sandbox_policy(member.provider_config.sandbox_policy.as_deref());
+
+    // Writable roots are member-level then provider_config-level roots, in that
+    // order, de-duplicated. They are only meaningful when the turn may write, so
+    // a read-only posture carries no writable roots.
+    let writable_roots = if matches!(permission, LaunchPermission::ReadOnly) {
+        Vec::new()
+    } else {
+        let mut roots: Vec<String> = Vec::new();
+        for root in member
+            .runtime_workspace_roots
+            .iter()
+            .chain(member.provider_config.runtime_workspace_roots.iter())
+        {
+            if !roots.contains(root) {
+                roots.push(root.clone());
+            }
+        }
+        roots
+    };
+
+    LaunchSpec {
+        prompt_ref: member.prompt_ref.clone(),
+        message_content: compose_message_content(message),
+        model: member.model.clone(),
+        permission,
+        writable_roots,
+        // The abstract allowed-tool set is not yet sourced from a neutral member
+        // field; left empty until the tool contract lands (Pillar 1/3). Adapters
+        // apply their own default meanwhile.
+        tools: Vec::new(),
+        workspace: member.worktree_ref.clone(),
+        // MCP has no neutral member field yet (PROPOSED, Pillar 2); omitted here.
+        mcp: None,
+        skill_refs: member.skill_refs.clone(),
+        // Resume is resolved by the delivery path from prior session state, not
+        // from the member record; a fresh spec carries no resume token.
+        resume: None,
+        output: None,
+    }
+}
+
 /// Dispatch discriminant for the provider seam.
 ///
 /// This is **not** a schema field: `AgentMember.provider` (and the other
@@ -1365,5 +1617,209 @@ mod tests {
         assert_eq!(parsed, operator);
         assert_eq!(parsed.sender_kind, SenderKind::Operator);
         assert!(parsed.validate().is_ok());
+    }
+
+    fn sample_member() -> AgentMember {
+        AgentMember {
+            id: "agent-1".to_string(),
+            name: "Worker".to_string(),
+            description: "A worker member".to_string(),
+            role: "worker".to_string(),
+            provider: "codex".to_string(),
+            model: Some("o3".to_string()),
+            profile: None,
+            provider_config: AgentProviderConfig::default(),
+            capabilities: vec!["code".to_string()],
+            team_ids: vec![],
+            prompt_ref: Some(".harness/prompts/worker.md".to_string()),
+            skill_refs: vec!["harness-workflow".to_string()],
+            workspace_policy: None,
+            worktree_ref: Some("../worktrees/task-1".to_string()),
+            permission_profile: None,
+            runtime_workspace_roots: Vec::new(),
+            status: AgentMemberStatus::Idle,
+            current_task_id: None,
+            current_proposal_id: None,
+            provider_runtime_id: None,
+            provider_thread_id: None,
+            provider_agent_path: None,
+            provider_agent_nickname: None,
+            provider_agent_role: None,
+            control_endpoint: None,
+            created_at: "2026-05-26T00:00:00Z".to_string(),
+            last_seen_at: None,
+        }
+    }
+
+    fn sample_message() -> Message {
+        Message {
+            id: "msg-1".to_string(),
+            task_id: Some("task-1".to_string()),
+            from_agent_id: "leader-1".to_string(),
+            to_agent_id: Some("agent-1".to_string()),
+            channel: Some("team".to_string()),
+            kind: MessageKind::Task,
+            delivery_status: MessageDeliveryStatus::Queued,
+            content: "Implement the launch spec.".to_string(),
+            evidence_ids: vec![],
+            created_at: "2026-05-26T00:00:00Z".to_string(),
+            delivery: None,
+            sender_kind: SenderKind::Agent,
+        }
+    }
+
+    #[test]
+    fn launch_spec_composes_from_member_and_message() {
+        let mut member = sample_member();
+        member.provider_config.sandbox_policy = Some("workspace-write".to_string());
+        member.runtime_workspace_roots = vec!["crates/harness-core".to_string()];
+        member.provider_config.runtime_workspace_roots = vec!["crates/harness-cli".to_string()];
+        let message = sample_message();
+
+        let spec = build_launch_spec(&member, &message);
+
+        // Pillar 1 base configuration flows through unchanged.
+        assert_eq!(spec.prompt_ref.as_deref(), Some(".harness/prompts/worker.md"));
+        assert_eq!(spec.model.as_deref(), Some("o3"));
+        assert_eq!(spec.skill_refs, vec!["harness-workflow".to_string()]);
+        // Pillar 2 workspace flows through as the cwd / worktree root.
+        assert_eq!(spec.workspace.as_deref(), Some("../worktrees/task-1"));
+        // The turn input carries the message envelope + content.
+        assert!(spec.message_content.contains("message_id: msg-1"));
+        assert!(spec.message_content.contains("kind: task"));
+        assert!(spec.message_content.contains("task_id: task-1"));
+        assert!(spec.message_content.contains("Implement the launch spec."));
+        // Fields with no neutral source yet are empty/none, not invented.
+        assert!(spec.tools.is_empty());
+        assert!(spec.mcp.is_none());
+        assert!(spec.resume.is_none());
+        assert!(spec.output.is_none());
+    }
+
+    #[test]
+    fn launch_spec_maps_codex_sandbox_vocabulary_onto_neutral_permission() {
+        // Each Codex sandbox spelling (dashed and camelCase) maps onto the neutral
+        // permission enum; no Codex wire vocabulary survives onto the spec.
+        let cases = [
+            ("read-only", LaunchPermission::ReadOnly),
+            ("readOnly", LaunchPermission::ReadOnly),
+            ("workspace-write", LaunchPermission::WorkspaceWrite),
+            ("workspaceWrite", LaunchPermission::WorkspaceWrite),
+            ("danger-full-access", LaunchPermission::FullAccess),
+            ("dangerFullAccess", LaunchPermission::FullAccess),
+        ];
+        for (policy, expected) in cases {
+            let mut member = sample_member();
+            member.provider_config.sandbox_policy = Some(policy.to_string());
+            let spec = build_launch_spec(&member, &sample_message());
+            assert_eq!(spec.permission, expected, "policy {policy} should map to {expected:?}");
+        }
+    }
+
+    #[test]
+    fn launch_spec_writable_roots_dedupe_and_drop_on_read_only() {
+        // workspace_write carries de-duplicated member + provider_config roots.
+        let mut member = sample_member();
+        member.provider_config.sandbox_policy = Some("workspaceWrite".to_string());
+        member.runtime_workspace_roots = vec!["shared".to_string(), "a".to_string()];
+        member.provider_config.runtime_workspace_roots =
+            vec!["shared".to_string(), "b".to_string()];
+        let spec = build_launch_spec(&member, &sample_message());
+        assert_eq!(
+            spec.writable_roots,
+            vec!["shared".to_string(), "a".to_string(), "b".to_string()],
+            "writable roots must be member-then-config order, de-duplicated"
+        );
+
+        // read_only never carries writable roots even if the member declares them.
+        member.provider_config.sandbox_policy = Some("read-only".to_string());
+        let spec = build_launch_spec(&member, &sample_message());
+        assert_eq!(spec.permission, LaunchPermission::ReadOnly);
+        assert!(
+            spec.writable_roots.is_empty(),
+            "a read-only turn must not carry writable roots"
+        );
+    }
+
+    #[test]
+    fn launch_spec_absent_sandbox_policy_falls_back_to_safe_default() {
+        // A member that never declared a sandbox policy must not be silently
+        // elevated; it falls back to the default posture.
+        let member = sample_member();
+        assert!(member.provider_config.sandbox_policy.is_none());
+        let spec = build_launch_spec(&member, &sample_message());
+        assert_eq!(spec.permission, LaunchPermission::default());
+    }
+
+    #[test]
+    fn launch_spec_round_trips_json() {
+        let mut member = sample_member();
+        member.provider_config.sandbox_policy = Some("workspaceWrite".to_string());
+        member.runtime_workspace_roots = vec!["crates".to_string()];
+        let spec = build_launch_spec(&member, &sample_message());
+
+        let json = serde_json::to_string(&spec).expect("serialize launch spec");
+        let parsed: LaunchSpec = serde_json::from_str(&json).expect("deserialize launch spec");
+        assert_eq!(parsed, spec);
+        // The neutral permission serializes to its snake_case wire spelling, not
+        // the Codex `workspaceWrite` vocabulary it was mapped from.
+        assert!(json.contains("\"permission\":\"workspace_write\""));
+        assert!(!json.contains("workspaceWrite"));
+    }
+
+    #[test]
+    fn launch_permission_wire_values_are_neutral() {
+        assert_eq!(LaunchPermission::ReadOnly.as_str(), "read_only");
+        assert_eq!(LaunchPermission::WorkspaceWrite.as_str(), "workspace_write");
+        assert_eq!(LaunchPermission::FullAccess.as_str(), "full_access");
+        // Round-trip each variant through serde to confirm the wire spelling.
+        for variant in [
+            LaunchPermission::ReadOnly,
+            LaunchPermission::WorkspaceWrite,
+            LaunchPermission::FullAccess,
+        ] {
+            let json = serde_json::to_string(&variant).expect("serialize permission");
+            assert_eq!(json, format!("\"{}\"", variant.as_str()));
+            let parsed: LaunchPermission =
+                serde_json::from_str(&json).expect("deserialize permission");
+            assert_eq!(parsed, variant);
+        }
+    }
+
+    #[test]
+    fn delivery_handle_passes_endpoint_through_verbatim() {
+        // The neutral delivery handle preserves any endpoint scheme verbatim; it
+        // does not interpret or strip `unix://` (that stays in the CLI layer).
+        for endpoint in [
+            "unix:///tmp/agent/codex.sock",
+            "exec://session/abc",
+            "/tmp/plain/path",
+        ] {
+            let handle = DeliveryHandle::from_endpoint(endpoint);
+            assert_eq!(handle.endpoint(), endpoint);
+            let json = serde_json::to_string(&handle).expect("serialize handle");
+            let parsed: DeliveryHandle =
+                serde_json::from_str(&json).expect("deserialize handle");
+            assert_eq!(parsed, handle);
+            assert_eq!(parsed.endpoint(), endpoint);
+        }
+    }
+
+    #[test]
+    fn launch_mcp_block_round_trips_when_present() {
+        // The MCP block is omitted by build_launch_spec today, but the neutral
+        // shape must round-trip so later WPs can populate it.
+        let mcp = LaunchMcp {
+            servers: vec![LaunchMcpServer {
+                id: "fs".to_string(),
+                transport: Some("stdio".to_string()),
+                command: vec!["mcp-fs".to_string(), "--root".to_string()],
+                url: None,
+                allowed_tools: vec!["read".to_string()],
+            }],
+        };
+        let json = serde_json::to_string(&mcp).expect("serialize mcp");
+        let parsed: LaunchMcp = serde_json::from_str(&json).expect("deserialize mcp");
+        assert_eq!(parsed, mcp);
     }
 }
