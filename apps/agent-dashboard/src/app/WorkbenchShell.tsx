@@ -199,7 +199,14 @@ function TopBar({
   debugActive: boolean;
   onToggleDebug: () => void;
 }) {
-  const isLive = sourceLabel.includes("live");
+  // Source mode reflected in the chip: "live (SSE)" while the stream is
+  // connected, "polling" once we fall back, "offline fixture" otherwise. The
+  // pulsing green dot is reserved for a connected stream; polling (live but no
+  // push) gets a steady "good" dot; offline is neutral. The freshness
+  // ("updated Ns ago") shows in any online mode.
+  const isStreaming = sourceLabel.includes("SSE");
+  const isOnline = isStreaming || sourceLabel === "polling";
+  const statusTone = sourceError ? "warn" : isOnline ? "good" : "info";
   return (
     <header className="flex h-14 shrink-0 items-center gap-3 border-b border-border bg-card/70 px-3 backdrop-blur-md">
       <div className="flex items-center gap-2.5">
@@ -235,10 +242,10 @@ function TopBar({
 
       <div className="ml-auto flex items-center gap-2">
         <div className="hidden items-center gap-1.5 rounded-md border border-border bg-background/50 px-2 py-1.5 sm:flex">
-          <StatusDot tone={sourceError ? "warn" : isLive ? "good" : "info"} pulse={isLive} />
+          <StatusDot tone={statusTone} pulse={isStreaming} />
           <span className="text-[11px] text-muted-foreground">{sourceLabel}</span>
         </div>
-        {isLive && <FreshnessChip generatedAt={model.generatedAt} />}
+        {isOnline && <FreshnessChip generatedAt={model.generatedAt} />}
         <Tooltip>
           <TooltipTrigger asChild>
             <button
