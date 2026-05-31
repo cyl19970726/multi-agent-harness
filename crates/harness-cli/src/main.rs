@@ -23,6 +23,8 @@ use thiserror::Error;
 use tungstenite::client::IntoClientRequest;
 use tungstenite::{Message as WebSocketMessage, WebSocket};
 
+mod sse;
+
 unsafe extern "C" {
     fn setsid() -> i32;
 }
@@ -2119,13 +2121,109 @@ fn codex_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     }
 }
 
+fn handle_sse_stream(
+    store: &HarnessStore,
+    mut stream: TcpStream,
+    sse_manager: sse::SseManager,
+) -> CliResult<()> {
+    use std::time::Duration;
+    
+    // Send SSE header
+    sse::write_sse_header(&mut stream)?;
+    
+    // Send initial snapshot
+    let events = store.events()?;
+    let messages = store.messages()?;
+    let sessions = store.provider_sessions()?;
+    // Initial snapshot sent to client for sync
+    let _snapshot = sse::SseEventFrame::Snapshot {
+        agent_events: events,
+        messages,
+        provider_sessions: sessions,
+        generated_at: now_string(),
+    };
+    
+    // Convert snapshot to JSON for transmission
+    let snapshot_json = serde_json::json!({
+        "generated_at": now_string(),
+    });
+    sse::write_sse_frame(&mut stream, "snapshot", &snapshot_json)?;
+    
+    // Subscribe to the SSE channel
+    let rx = sse_manager.subscribe();
+    let mut last_keepalive = std::time::Instant::now();
+    
+    // Wait for events and stream them to the client
+    loop {
+        // Calculate timeout for the next keepalive
+        let elapsed = last_keepalive.elapsed();
+        let timeout = if elapsed < Duration::from_secs(15) {
+            Duration::from_secs(15) - elapsed
+        } else {
+            Duration::from_millis(100)
+        };
+        
+        match rx.recv_timeout(timeout) {
+            Ok(frame) => {
+                match frame {
+                    sse::SseEventFrame::Snapshot { .. } => {
+                        // Don't re-send snapshots after initial
+                    }
+                    sse::SseEventFrame::AgentEvent(event) => {
+                        if let Ok(json) = serde_json::to_value(&event) {
+                            if let Err(_) = sse::write_sse_frame(&mut stream, "agent_event", &json) {
+                                break; // Client disconnected
+                            }
+                        }
+                    }
+                    sse::SseEventFrame::Message(msg) => {
+                        if let Ok(json) = serde_json::to_value(&msg) {
+                            if let Err(_) = sse::write_sse_frame(&mut stream, "message", &json) {
+                                break; // Client disconnected
+                            }
+                        }
+                    }
+                    sse::SseEventFrame::ProviderSession(session) => {
+                        if let Ok(json) = serde_json::to_value(&session) {
+                            if let Err(_) = sse::write_sse_frame(&mut stream, "provider_session", &json) {
+                                break; // Client disconnected
+                            }
+                        }
+                    }
+                }
+                last_keepalive = std::time::Instant::now();
+            }
+            Err(crossbeam::channel::RecvTimeoutError::Timeout) => {
+                // Send keepalive to keep connection alive
+                if let Err(_) = sse::write_sse_keepalive(&mut stream) {
+                    break; // Client disconnected
+                }
+                last_keepalive = std::time::Instant::now();
+            }
+            Err(crossbeam::channel::RecvTimeoutError::Disconnected) => {
+                break; // Channel closed, exit
+            }
+        }
+    }
+    
+    Ok(())
+}
+
 fn serve_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     let addr = value(args, "--addr").unwrap_or_else(|| "127.0.0.1:8787".into());
     let once = has_flag(args, "--once");
     let listener = TcpListener::bind(&addr)?;
     println!("serving harness API on http://{addr}");
+    
+    let sse_manager = sse::SseManager::new();
+    
+    // Start the SSE watcher thread
+    sse::start_sse_watcher(store, sse_manager.clone()).map_err(|e| {
+        CliError::Io(e)
+    })?;
+    
     for stream in listener.incoming() {
-        handle_http_connection(store, stream?)?;
+        handle_http_connection(store, stream?, sse_manager.clone())?;
         if once {
             break;
         }
@@ -2133,7 +2231,7 @@ fn serve_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     Ok(())
 }
 
-fn handle_http_connection(store: &HarnessStore, mut stream: TcpStream) -> CliResult<()> {
+fn handle_http_connection(store: &HarnessStore, mut stream: TcpStream, sse_manager: sse::SseManager) -> CliResult<()> {
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut request_line = String::new();
     reader.read_line(&mut request_line)?;
@@ -2183,7 +2281,10 @@ fn handle_http_connection(store: &HarnessStore, mut stream: TcpStream) -> CliRes
             "/v1/snapshot" | "/v1/dashboard/snapshot" => {
                 write_http_json(&mut stream, "200 OK", &dashboard_snapshot(store)?)?
             }
-            "/v1/events" => write_http_json(&mut stream, "200 OK", &store.events()?)?,
+            "/v1/events" => {
+                // Handle SSE endpoint
+                handle_sse_stream(store, stream, sse_manager)?
+            }
             _ => write_http_json(
                 &mut stream,
                 "404 Not Found",
@@ -10301,5 +10402,75 @@ mod tests {
 
     fn strings(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| (*value).to_string()).collect()
+    }
+}
+
+#[cfg(test)]
+mod sse_tests {
+    use super::*;
+
+    #[test]
+    fn test_sse_manager_broadcast_to_subscriber() {
+        let manager = sse::SseManager::new();
+        let rx = manager.subscribe();
+        
+        let event = sse::SseEventFrame::AgentEvent(AgentEvent {
+            id: "evt-test".into(),
+            agent_member_id: "mem-test".into(),
+            provider_runtime_id: None,
+            task_id: None,
+            provider: "claude".into(),
+            provider_thread_id: None,
+            provider_turn_id: None,
+            provider_child_thread_id: None,
+            event_type: "test_event".into(),
+            summary: "Test Event".into(),
+            payload_ref: None,
+            created_at: "2025-01-01T00:00:00Z".into(),
+        });
+        
+        manager.broadcast(event.clone());
+        
+        // Verify the event is received
+        match rx.recv_timeout(std::time::Duration::from_secs(1)) {
+            Ok(received) => {
+                if let sse::SseEventFrame::AgentEvent(evt) = received {
+                    assert_eq!(evt.id, "evt-test");
+                } else {
+                    panic!("Expected AgentEvent");
+                }
+            }
+            Err(_) => panic!("Did not receive event in time"),
+        }
+    }
+
+    #[test]
+    fn test_sse_manager_multiple_subscribers() {
+        let manager = sse::SseManager::new();
+        let rx1 = manager.subscribe();
+        let rx2 = manager.subscribe();
+        
+        let event = sse::SseEventFrame::AgentEvent(AgentEvent {
+            id: "evt-multi".into(),
+            agent_member_id: "mem-test".into(),
+            provider_runtime_id: None,
+            task_id: None,
+            provider: "claude".into(),
+            provider_thread_id: None,
+            provider_turn_id: None,
+            provider_child_thread_id: None,
+            event_type: "test_event".into(),
+            summary: "Multi Test".into(),
+            payload_ref: None,
+            created_at: "2025-01-01T00:00:00Z".into(),
+        });
+        
+        manager.broadcast(event);
+        
+        // Both subscribers should receive the event
+        let _ = rx1.recv_timeout(std::time::Duration::from_secs(1))
+            .expect("rx1 should receive event");
+        let _ = rx2.recv_timeout(std::time::Duration::from_secs(1))
+            .expect("rx2 should receive event");
     }
 }
