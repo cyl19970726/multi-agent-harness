@@ -1,10 +1,13 @@
-import type { ComponentProps, ReactNode } from "react";
+import { useEffect, useState, type ComponentProps, type ReactNode } from "react";
 import {
   Bot,
   Bug,
+  Clock,
   Crown,
   GitBranch,
   Inbox,
+  Pause,
+  Play,
   RefreshCw,
   Search,
   Send,
@@ -63,6 +66,12 @@ interface WorkbenchShellProps {
   actionsEnabled: boolean;
   /** POST a harness action then refresh the snapshot. */
   onAction: (path: string, body?: unknown) => void;
+  /** Whether opt-in interval polling of /v1/snapshot is currently on. */
+  pollEnabled: boolean;
+  /** Whether polling is meaningful right now (only against a live source). */
+  canPoll: boolean;
+  /** Toggle interval polling on/off. */
+  onTogglePoll: () => void;
 }
 
 /** Primary navigation rail: collapsed from 10 surfaces to 5 operating views. */
@@ -94,6 +103,9 @@ export function WorkbenchShell({
   sourceLabel,
   actionsEnabled,
   onAction,
+  pollEnabled,
+  canPoll,
+  onTogglePoll,
 }: WorkbenchShellProps) {
   function updateSelection(next: Partial<SelectionState>) {
     onSelectionChange({ ...selection, ...next });
@@ -117,6 +129,9 @@ export function WorkbenchShell({
         onToggleDebug={() =>
           updateSelection({ surface: selection.surface === "debug" ? "team" : "debug" })
         }
+        pollEnabled={pollEnabled}
+        canPoll={canPoll}
+        onTogglePoll={onTogglePoll}
       />
       <div className="flex min-h-0 flex-1">
         <AppRail
@@ -167,6 +182,9 @@ function TopBar({
   sourceLabel,
   debugActive,
   onToggleDebug,
+  pollEnabled,
+  canPoll,
+  onTogglePoll,
 }: Omit<
   WorkbenchShellProps,
   "selection" | "onSelectionChange" | "actionsEnabled" | "onAction"
@@ -214,6 +232,33 @@ function TopBar({
           <StatusDot tone={sourceError ? "warn" : isLive ? "good" : "info"} pulse={isLive} />
           <span className="text-[11px] text-muted-foreground">{sourceLabel}</span>
         </div>
+        {isLive && <FreshnessChip generatedAt={model.generatedAt} />}
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              aria-label="Live poll"
+              aria-pressed={pollEnabled}
+              onClick={onTogglePoll}
+              disabled={!canPoll}
+              className={cn(
+                "hidden h-8 items-center gap-1.5 rounded-md border border-border bg-background/50 px-2 text-[11px] text-muted-foreground transition-colors hover:border-input hover:text-foreground sm:flex",
+                pollEnabled && "border-primary/40 bg-primary/12 text-primary",
+                !canPoll && "cursor-not-allowed opacity-50",
+              )}
+            >
+              {pollEnabled ? <Pause className="size-3.5" /> : <Play className="size-3.5" />}
+              <span>Live poll</span>
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="bottom">
+            {!canPoll
+              ? "Load a live source to enable polling"
+              : pollEnabled
+                ? "Stop auto-refresh (~5s)"
+                : "Auto-refresh every ~5s"}
+          </TooltipContent>
+        </Tooltip>
         <input
           aria-label="Harness API URL"
           value={apiUrl}
@@ -247,6 +292,60 @@ function TopBar({
       </div>
     </header>
   );
+}
+
+/** Beyond this age the snapshot is considered stale and the chip turns amber. */
+const STALE_AFTER_S = 30;
+
+/**
+ * Freshness chip: how long ago the snapshot was generated, recomputed every
+ * second so a paused (or slow) feed visibly ages. Amber once the snapshot is
+ * older than STALE_AFTER_S; muted/neutral while fresh. Renders nothing when the
+ * snapshot carries no generated_at (the chip would have nothing honest to say).
+ */
+function FreshnessChip({ generatedAt }: { generatedAt?: string }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, []);
+
+  if (!generatedAt) return null;
+  const generatedMs = new Date(generatedAt).getTime();
+  if (Number.isNaN(generatedMs)) return null;
+
+  const ageS = Math.max(0, Math.round((now - generatedMs) / 1000));
+  const stale = ageS > STALE_AFTER_S;
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <div
+          className={cn(
+            "hidden items-center gap-1.5 rounded-md border border-border bg-background/50 px-2 py-1.5 text-[11px] tabular-nums text-muted-foreground sm:flex",
+            stale && "border-status-warn/40 bg-status-warn/10 text-status-warn",
+          )}
+        >
+          <Clock className="size-3" />
+          <span>updated {formatAge(ageS)}</span>
+        </div>
+      </TooltipTrigger>
+      <TooltipContent side="bottom">
+        {stale
+          ? `Snapshot is stale (older than ${STALE_AFTER_S}s) — reload or enable live poll`
+          : `Generated ${new Date(generatedMs).toLocaleTimeString()}`}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+/** Compact relative age: "just now", "12s ago", "3m ago", "2h ago". */
+function formatAge(ageS: number): string {
+  if (ageS < 2) return "just now";
+  if (ageS < 60) return `${ageS}s ago`;
+  const ageM = Math.floor(ageS / 60);
+  if (ageM < 60) return `${ageM}m ago`;
+  const ageH = Math.floor(ageM / 60);
+  return `${ageH}h ago`;
 }
 
 function AppRail({
