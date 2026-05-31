@@ -16,7 +16,7 @@ use harness_core::{
     Evidence, Gap, GapSeverity, GapStatus, Goal, GoalCase, GoalDesign, GoalEvaluation, GoalStatus,
     Message, MessageDelivery, MessageDeliveryStatus, MessageKind, MessageTerminalSource, Proposal,
     ProposalStatus, ProviderChildThread, ProviderChildThreadStatus, ProviderKind, ProviderSession,
-    ProviderSessionStatus, Review, ReviewVerdict, Task, TaskStatus, Vision,
+    ProviderSessionStatus, Review, ReviewVerdict, SenderKind, Task, TaskStatus, Vision,
 };
 use harness_store::{HarnessStore, MessageDeliveryClaimResult};
 use thiserror::Error;
@@ -228,6 +228,7 @@ fn agent_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
                 evidence_ids: many(args, "--evidence"),
                 created_at: now_string(),
                 delivery: None,
+                sender_kind: sender_kind_from_args(args)?,
             };
             store.append_message(&message)?;
             append_agent_event(
@@ -490,6 +491,7 @@ fn task_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
                 evidence_ids: Vec::new(),
                 created_at: now_string(),
                 delivery: None,
+                sender_kind: SenderKind::Agent,
             };
             store.append_message(&message)?;
             print_json(&task)?;
@@ -527,6 +529,7 @@ fn message_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
                 evidence_ids: many(args, "--evidence"),
                 created_at: now_string(),
                 delivery: None,
+                sender_kind: sender_kind_from_args(args)?,
             };
             store.append_message(&message)?;
             print_json(&message)?;
@@ -870,6 +873,7 @@ fn autonomy_observe_value(store: &HarnessStore, args: &[String]) -> CliResult<se
         evidence_ids: vec![evidence.id.clone()],
         created_at: now_string(),
         delivery: None,
+        sender_kind: SenderKind::Agent,
     };
     store.append_evidence(&evidence)?;
     store.append_message(&message)?;
@@ -966,6 +970,7 @@ fn autonomy_plan_next_value(store: &HarnessStore, args: &[String]) -> CliResult<
         evidence_ids: vec![plan.id.clone(), proposal.id.clone()],
         created_at: now_string(),
         delivery: None,
+        sender_kind: SenderKind::Agent,
     };
     store.append_message(&message)?;
     append_agent_event(
@@ -1126,6 +1131,7 @@ fn autonomy_decide_value(store: &HarnessStore, args: &[String]) -> CliResult<ser
                     evidence_ids: vec![proposal_id.clone()],
                     created_at: now_string(),
                     delivery: None,
+                    sender_kind: SenderKind::Agent,
                 };
                 store.append_message(&message)?;
                 assignment_message = Some(message);
@@ -2463,6 +2469,10 @@ fn create_message_value(
         evidence_ids: json_string_array(body, "evidence_ids"),
         created_at: now_string(),
         delivery: None,
+        sender_kind: match json_string(body, "sender_kind") {
+            Some(value) => parse_sender_kind(&value)?,
+            None => SenderKind::default(),
+        },
     };
     store.append_message(&message)?;
     if let Some(member) = target.as_ref() {
@@ -2510,6 +2520,7 @@ fn request_task_review_value(
         evidence_ids: json_string_array(body, "evidence_ids"),
         created_at: now_string(),
         delivery: None,
+        sender_kind: SenderKind::Agent,
     };
     store.append_message(&message)?;
     task.status = TaskStatus::Review;
@@ -2691,6 +2702,7 @@ fn codex_run(store: &HarnessStore, args: &[String]) -> CliResult<()> {
             delivered_at: Some(now_string()),
             last_error: None,
         }),
+        sender_kind: SenderKind::Agent,
     };
     store.append_message(&report)?;
     print_json(&session)?;
@@ -2786,6 +2798,7 @@ fn codex_review(store: &HarnessStore, args: &[String]) -> CliResult<()> {
         content: format!("Codex review session {session_id} finished with exit_code={exit_code:?}"),
         evidence_ids: vec![evidence_id.clone()],
         created_at: now_string(),
+        sender_kind: SenderKind::Agent,
         delivery: Some(MessageDelivery {
             provider_session_id: Some(session_id),
             provider_request_id: None,
@@ -3438,6 +3451,7 @@ fn deliver_agent_messages_value(
                 evidence_ids: delivery.evidence_ids.clone(),
                 created_at: now_string(),
                 delivery: delivered_message.delivery.clone(),
+                sender_kind: SenderKind::Agent,
             };
             store.append_message(&report)?;
         }
@@ -4890,6 +4904,7 @@ fn ingest_provider_output(
                     delivered_at: Some(now_string()),
                     last_error: None,
                 }),
+                sender_kind: SenderKind::Agent,
             };
             store.append_message(&report)?;
         }
@@ -5037,6 +5052,7 @@ fn mark_delivery_messages_terminal(
             evidence_ids: session.evidence_ids.clone(),
             created_at: now_string(),
             delivery: message.delivery.clone(),
+            sender_kind: SenderKind::Agent,
         };
         store.append_message(&report)?;
     }
@@ -7835,6 +7851,24 @@ fn message_kind_label(kind: &MessageKind) -> &'static str {
     }
 }
 
+fn parse_sender_kind(value: &str) -> CliResult<SenderKind> {
+    match value {
+        "agent" => Ok(SenderKind::Agent),
+        "operator" => Ok(SenderKind::Operator),
+        "system" => Ok(SenderKind::System),
+        other => Err(CliError::Usage(format!("unknown sender kind: {other}"))),
+    }
+}
+
+/// Reads the optional `--sender-kind` flag, defaulting to [`SenderKind::Agent`]
+/// when absent so callers that do not specify a sender identity behave as before.
+fn sender_kind_from_args(args: &[String]) -> CliResult<SenderKind> {
+    match value(args, "--sender-kind") {
+        Some(raw) => parse_sender_kind(&raw),
+        None => Ok(SenderKind::default()),
+    }
+}
+
 fn parse_delivery_status(value: &str) -> CliResult<MessageDeliveryStatus> {
     match value {
         "queued" => Ok(MessageDeliveryStatus::Queued),
@@ -8264,6 +8298,7 @@ mod tests {
             evidence_ids: Vec::new(),
             created_at: "unix-ms:1".into(),
             delivery: None,
+            sender_kind: SenderKind::Agent,
         };
 
         // Claude delivery expects claude-runtime:// endpoints; this will error due to invalid endpoint
@@ -8438,6 +8473,7 @@ mod tests {
                     delivered_at: Some("unix-ms:1".into()),
                     last_error: None,
                 }),
+                sender_kind: SenderKind::Agent,
             })
             .expect("append acknowledged assignment");
         let evidence = Evidence {
@@ -8577,6 +8613,7 @@ mod tests {
                     delivered_at: Some("unix-ms:1".into()),
                     last_error: None,
                 }),
+                sender_kind: SenderKind::Agent,
             })
             .expect("append acknowledged message");
         store
@@ -8760,6 +8797,7 @@ mod tests {
                     delivered_at: Some("unix-ms:1".into()),
                     last_error: None,
                 }),
+                sender_kind: SenderKind::Agent,
             })
             .expect("append acknowledged message");
         store
@@ -9061,6 +9099,7 @@ mod tests {
             evidence_ids: Vec::new(),
             created_at: "unix-ms:1".into(),
             delivery: None,
+            sender_kind: SenderKind::Agent,
         };
         store
             .append_message(&message)
@@ -9105,6 +9144,7 @@ mod tests {
             evidence_ids: Vec::new(),
             created_at: "unix-ms:1".into(),
             delivery: None,
+            sender_kind: SenderKind::Agent,
         };
         store.append_message(&message).expect("append queued");
         message.delivery_status = MessageDeliveryStatus::Acknowledged;
@@ -9148,6 +9188,7 @@ mod tests {
                 evidence_ids: Vec::new(),
                 created_at: "unix-ms:1".into(),
                 delivery: None,
+                sender_kind: SenderKind::Agent,
             })
             .expect("append queued");
 
@@ -9205,6 +9246,7 @@ mod tests {
             evidence_ids: Vec::new(),
             created_at: "unix-ms:1".into(),
             delivery: None,
+            sender_kind: SenderKind::Agent,
         };
         store.append_message(&message).expect("append queued");
         claim_message_for_delivery(&store, &member, None, &message, "delivery-1")
@@ -9258,6 +9300,7 @@ mod tests {
             evidence_ids: Vec::new(),
             created_at: "unix-ms:1".into(),
             delivery: None,
+            sender_kind: SenderKind::Agent,
         };
         store.append_message(&message).expect("append queued");
         claim_message_for_delivery(&store, &member, None, &message, "delivery-1")
@@ -9321,6 +9364,7 @@ mod tests {
                     evidence_ids: Vec::new(),
                     created_at: "unix-ms:1".into(),
                     delivery: None,
+                    sender_kind: SenderKind::Agent,
                 })
                 .expect("append queued");
         }
@@ -9452,6 +9496,7 @@ mod tests {
                 evidence_ids: Vec::new(),
                 created_at: "unix-ms:1".into(),
                 delivery: None,
+                sender_kind: SenderKind::Agent,
             })
             .expect("append queued");
 
@@ -9504,6 +9549,7 @@ mod tests {
             evidence_ids: Vec::new(),
             created_at: "unix-ms:1".into(),
             delivery: None,
+            sender_kind: SenderKind::Agent,
         };
 
         let input = build_turn_input(&message, "delivery-1");
@@ -10394,6 +10440,7 @@ mod tests {
             evidence_ids: Vec::new(),
             created_at: created_at.into(),
             delivery: None,
+            sender_kind: SenderKind::Agent,
         }
     }
 

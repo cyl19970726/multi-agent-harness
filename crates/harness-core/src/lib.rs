@@ -250,6 +250,24 @@ pub enum ProviderSessionStatus {
     Stale,
 }
 
+/// Identity class of a [`Message`] sender. Distinguishes harness-managed agents
+/// from external operators (humans / external agents acting on their own behalf)
+/// and system-emitted messages, so an operator-authored message is never
+/// rendered as if it came from the Lead agent. Provider-neutral.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SenderKind {
+    Agent,
+    Operator,
+    System,
+}
+
+impl Default for SenderKind {
+    fn default() -> Self {
+        SenderKind::Agent
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MessageTerminalSource {
@@ -437,6 +455,12 @@ pub struct Message {
     pub created_at: String,
     #[serde(default)]
     pub delivery: Option<MessageDelivery>,
+    /// Identity class of the sender. Defaults to [`SenderKind::Agent`] so existing
+    /// records (which omit the field) deserialize unchanged. When
+    /// [`SenderKind::Operator`], `from_agent_id` uses the reserved `"operator"` id
+    /// convention rather than a roster member id.
+    #[serde(default)]
+    pub sender_kind: SenderKind,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1292,5 +1316,54 @@ mod tests {
                 field: "AgentMember.id"
             })
         );
+    }
+
+    #[test]
+    fn message_sender_kind_defaults_to_agent_and_persists_operator() {
+        // A record persisted before sender_kind existed omits the field entirely.
+        // It must deserialize as SenderKind::Agent (additive-optional backfill).
+        let legacy_json = r#"{
+            "id": "msg-legacy",
+            "task_id": null,
+            "from_agent_id": "leader-1",
+            "to_agent_id": "agent-1",
+            "channel": null,
+            "kind": "message",
+            "delivery_status": "queued",
+            "content": "hello",
+            "evidence_ids": [],
+            "created_at": "2026-05-26T00:00:00Z",
+            "delivery": null
+        }"#;
+        let legacy: Message =
+            serde_json::from_str(legacy_json).expect("deserialize legacy message");
+        assert_eq!(legacy.sender_kind, SenderKind::Agent);
+        assert!(legacy.validate().is_ok());
+
+        // An operator-authored message uses the reserved "operator" from id and
+        // round-trips its sender_kind without loss.
+        let operator = Message {
+            id: "msg-op".to_string(),
+            task_id: None,
+            from_agent_id: "operator".to_string(),
+            to_agent_id: Some("agent-1".to_string()),
+            channel: None,
+            kind: MessageKind::Task,
+            delivery_status: MessageDeliveryStatus::Queued,
+            content: "do the thing".to_string(),
+            evidence_ids: vec![],
+            created_at: "2026-05-26T00:00:00Z".to_string(),
+            delivery: None,
+            sender_kind: SenderKind::Operator,
+        };
+        let json = serde_json::to_string(&operator).expect("serialize operator message");
+        assert!(
+            json.contains("\"sender_kind\":\"operator\""),
+            "operator message must serialize sender_kind as snake_case: {json}"
+        );
+        let parsed: Message = serde_json::from_str(&json).expect("deserialize operator message");
+        assert_eq!(parsed, operator);
+        assert_eq!(parsed.sender_kind, SenderKind::Operator);
+        assert!(parsed.validate().is_ok());
     }
 }

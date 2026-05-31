@@ -364,7 +364,7 @@ mod tests {
     use std::sync::{Arc, Barrier};
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use harness_core::{Goal, GoalStatus, MessageKind};
+    use harness_core::{Goal, GoalStatus, MessageKind, SenderKind};
 
     use super::*;
 
@@ -564,6 +564,7 @@ mod tests {
             evidence_ids: Vec::new(),
             created_at: "unix-ms:1".into(),
             delivery: None,
+            sender_kind: SenderKind::Agent,
         }
     }
 

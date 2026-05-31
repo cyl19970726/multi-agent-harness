@@ -40,6 +40,11 @@
       "type": "string",
       "enum": ["queued", "delivered", "acknowledged", "failed"]
     },
+    "sender_kind": {
+      "type": "string",
+      "enum": ["agent", "operator", "system"],
+      "default": "agent"
+    },
     "content": {
       "type": "string",
       "minLength": 1

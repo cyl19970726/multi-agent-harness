@@ -1,6 +1,7 @@
 export type TaskStatus = "planned" | "assigned" | "running" | "blocked" | "review" | "done" | "archived";
 export type DeliveryStatus = "queued" | "delivered" | "acknowledged" | "failed";
 export type MessageKind = "message" | "task" | "report";
+export type SenderKind = "agent" | "operator" | "system";
 export type ProviderSessionStatus = "queued" | "running" | "succeeded" | "failed" | "canceled" | "stale";
 
 export interface Goal {
@@ -103,6 +104,9 @@ export interface Message {
   evidence_ids?: string[];
   created_at?: string;
   delivery?: MessageDelivery | null;
+  // Identity class of the sender; absent on legacy rows (defaults to "agent"
+  // server-side). Rendering distinction is handled in a later work package.
+  sender_kind?: SenderKind;
 }
 
 export interface MessageDelivery {
