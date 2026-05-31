@@ -106,6 +106,56 @@ pub struct AgentMember {
     pub last_seen_at: Option<String>,
 }
 
+/// Dispatch discriminant for the provider seam.
+///
+/// This is **not** a schema field: `AgentMember.provider` (and the other
+/// `provider` fields across the model) remain free `String`s, serialized
+/// verbatim and validated only as non-empty. `ProviderKind` exists purely so
+/// the CLI provider layer can `match` on a member's provider when routing to
+/// runtime spawn / delivery / probe / ingest, while keeping the core
+/// provider-neutral per ADR 0011.
+///
+/// Any provider string the harness does not recognise round-trips through
+/// [`ProviderKind::Unknown`] so fidelity is never lost.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProviderKind {
+    Codex,
+    Claude,
+    Unknown(String),
+}
+
+impl ProviderKind {
+    pub fn as_str(&self) -> &str {
+        match self {
+            ProviderKind::Codex => "codex",
+            ProviderKind::Claude => "claude",
+            ProviderKind::Unknown(value) => value,
+        }
+    }
+}
+
+impl From<&str> for ProviderKind {
+    fn from(value: &str) -> Self {
+        match value {
+            "codex" => ProviderKind::Codex,
+            "claude" => ProviderKind::Claude,
+            other => ProviderKind::Unknown(other.to_string()),
+        }
+    }
+}
+
+impl From<String> for ProviderKind {
+    fn from(value: String) -> Self {
+        ProviderKind::from(value.as_str())
+    }
+}
+
+impl std::fmt::Display for ProviderKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentTeamStatus {
@@ -858,6 +908,29 @@ impl Validate for Vision {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn provider_kind_round_trips_via_str() {
+        for (input, expected) in [
+            ("codex", ProviderKind::Codex),
+            ("claude", ProviderKind::Claude),
+        ] {
+            let kind = ProviderKind::from(input);
+            assert_eq!(kind, expected);
+            // Display must reproduce the original provider string verbatim.
+            assert_eq!(kind.to_string(), input);
+            assert_eq!(kind.as_str(), input);
+        }
+    }
+
+    #[test]
+    fn provider_kind_unknown_preserves_value() {
+        let kind = ProviderKind::from("gemini");
+        assert_eq!(kind, ProviderKind::Unknown("gemini".to_string()));
+        // Unknown providers round-trip without losing fidelity.
+        assert_eq!(kind.to_string(), "gemini");
+        assert_eq!(ProviderKind::from("gemini".to_string()), kind);
+    }
 
     #[test]
     fn task_round_trips_json() {
