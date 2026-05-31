@@ -69,11 +69,13 @@ import {
   type ActionDescriptor,
 } from "../api/actions";
 import type {
+  AgentMember,
   Gap,
   Goal,
   GoalDesign,
   GoalEvaluation,
   Review,
+  RuntimeHealth,
   Task,
   Vision,
   WorkflowWarning,
@@ -1922,12 +1924,7 @@ export function MemberWorkbench({ model, onSelectionChange, actionsEnabled, onAc
             </div>
           </Section>
           <Section kicker="Health" title="Runtime" className="rise">
-            <div className="grid grid-cols-2 gap-2 p-3">
-              <HealthCell label="Process" ok={Boolean(member.runtime_alive)} />
-              <HealthCell label="Provider" ok={Boolean(member.provider)} />
-              <HealthCell label="Endpoint" ok={Boolean(member.control_endpoint)} />
-              <HealthCell label="Thread" ok={Boolean(member.provider_thread_id)} />
-            </div>
+            <RuntimeHealthPanel member={member} />
           </Section>
         </div>
 
@@ -1962,11 +1959,92 @@ export function MemberWorkbench({ model, onSelectionChange, actionsEnabled, onAc
   );
 }
 
-function HealthCell({ label, ok }: { label: string; ok: boolean }) {
+/**
+ * The four-layer runtime health panel. Reads the real `member.runtime_health`
+ * object emitted by the backend (process_alive / socket_exists /
+ * protocol_probe / delivery_probe / checked_at) and renders one separated row
+ * per layer.
+ *
+ * Doctrine (docs/agent-control-plane.md): the Dashboard must NOT present
+ * process health as execution readiness when protocol or delivery health is
+ * unknown. A null/unknown probe therefore renders amber "unknown", never green.
+ */
+function RuntimeHealthPanel({ member }: { member: AgentMember }) {
+  const health: RuntimeHealth = member.runtime_health ?? {};
   return (
-    <div className="flex items-center gap-2 rounded-md border border-border bg-background/40 px-3 py-2">
-      <StatusDot tone={ok ? "good" : "idle"} pulse={ok} />
-      <span className="text-xs text-muted-foreground">{label}</span>
+    <div className="space-y-2 p-3">
+      <HealthRow
+        label="Process"
+        tone={health.process_alive ? "good" : "bad"}
+        status={health.process_alive ? "running" : "not running"}
+        detail={member.runtime_pid != null ? `pid ${member.runtime_pid}` : "no pid"}
+      />
+      <HealthRow
+        label="Endpoint"
+        tone={health.socket_exists ? "good" : "bad"}
+        status={health.socket_exists ? "reachable" : "missing"}
+        detail={member.control_endpoint ?? "no endpoint"}
+      />
+      <HealthRow label="Protocol" {...probeHealth(health.protocol_probe)} />
+      <HealthRow label="Delivery" {...probeHealth(health.delivery_probe)} />
+      <p className="pt-1 text-[11px] text-muted-foreground">
+        {health.checked_at ? `Checked ${health.checked_at}` : "Never checked"}
+      </p>
+    </div>
+  );
+}
+
+/**
+ * Classify a probe string into a tone + status + detail. A `null`/missing probe
+ * or the literal "unknown" is amber "unknown" (NOT green): execution readiness
+ * is undetermined. Prefixes follow the backend probe vocabulary
+ * (pass / pending / stale / failed / skipped).
+ */
+function probeHealth(probe?: string | null): {
+  tone: StatusTone;
+  status: string;
+  detail: string;
+} {
+  if (probe == null || probe.trim() === "" || probe.toLowerCase() === "unknown") {
+    return { tone: "warn", status: "unknown", detail: "not yet probed" };
+  }
+  const lower = probe.toLowerCase();
+  if (lower.startsWith("pass")) return { tone: "good", status: "pass", detail: probe };
+  if (lower.startsWith("fail")) return { tone: "bad", status: "fail", detail: probe };
+  if (lower.startsWith("stale")) return { tone: "warn", status: "stale", detail: probe };
+  if (lower.startsWith("pending")) return { tone: "warn", status: "pending", detail: probe };
+  if (lower.startsWith("skipped")) return { tone: "idle", status: "skipped", detail: probe };
+  // Any other non-empty value is an explicit report we cannot certify as healthy.
+  return { tone: "warn", status: "unknown", detail: probe };
+}
+
+function HealthRow({
+  label,
+  tone,
+  status,
+  detail,
+}: {
+  label: string;
+  tone: StatusTone;
+  status: string;
+  detail?: string;
+}) {
+  return (
+    <div className="flex items-start gap-2 rounded-md border border-border bg-background/40 px-3 py-2">
+      <StatusDot tone={tone} pulse={tone === "good"} className="mt-1" />
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-xs font-medium text-foreground">{label}</span>
+          <span className={cn("text-[11px] font-medium", toneText[tone])}>
+            {status}
+          </span>
+        </div>
+        {detail && (
+          <p className="truncate text-[11px] text-muted-foreground" title={detail}>
+            {detail}
+          </p>
+        )}
+      </div>
     </div>
   );
 }

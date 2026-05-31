@@ -42,6 +42,19 @@ export interface Task {
   verdict_decision_id?: string | null;
 }
 
+/**
+ * The backend's four-layer runtime health snapshot (serialized
+ * `AgentRuntimeHealth`). A `null`/missing probe means "unknown" — it must NOT
+ * be rendered as healthy/green; treat it as amber.
+ */
+export interface RuntimeHealth {
+  process_alive?: boolean;
+  socket_exists?: boolean;
+  protocol_probe?: string | null;
+  delivery_probe?: string | null;
+  checked_at?: string | null;
+}
+
 export interface AgentMember {
   id: string;
   name?: string;
@@ -53,7 +66,7 @@ export interface AgentMember {
   runtime_id?: string | null;
   runtime_pid?: number | null;
   runtime_alive?: boolean;
-  runtime_health?: Record<string, unknown> | null;
+  runtime_health?: RuntimeHealth | null;
   control_endpoint?: string | null;
   provider_thread_id?: string | null;
   provider_agent_path?: string | null;
