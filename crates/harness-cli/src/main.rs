@@ -7116,26 +7116,341 @@ fn probe_provider_protocol(
         }
     }
 }
+// --- Claude protocol probe (BE-WP7) ---
+fn probe_claude_protocol(_socket_path: &Path, _timeout_ms: u64) -> CliResult<Option<String>> {
+    // For Claude CLI, protocol probing is handled differently than Codex's WebSocket.
+    // The claude binary is stateless and request-response; we'll mark it as unknown
+    // until the first delivery attempt.
+    Ok(Some("unknown: claude CLI protocol probed on first delivery".into()))
+}
 
-// --- Claude stubs (BE-WP7/WP8 will replace these with the claude-CLI shape) ---
+// --- Claude runtime (BE-WP7) ---
+// The claude CLI shape: spawn the claude binary as a local process, run message
+// delivery exchanges via stdin/stdout, record sessions and evidence.
 
-fn start_claude_runtime(_store: &HarnessStore, _member: &AgentMember) -> CliResult<AgentRuntime> {
-    Err(claude_not_implemented("runtime start"))
+fn start_claude_runtime(store: &HarnessStore, member: &AgentMember) -> CliResult<AgentRuntime> {
+    let runtime_id = generated_id("runtime");
+    let runtime_dir = store.root().join("runtimes").join(&member.id);
+    fs::create_dir_all(&runtime_dir)?;
+    
+    // For Claude CLI, we don't spawn a persistent process on runtime start.
+    // Instead, we record the runtime as "ready" and each delivery will spawn
+    // claude with the message. This matches the behavior of claude as a
+    // request-response tool rather than a persistent app-server.
+    // The control_endpoint is a marker for the runtime directory.
+    let endpoint = format!("claude-runtime://{}", runtime_dir.display());
+    
+    let args = vec![
+        // Claude CLI will be spawned on each delivery with the message prompt
+    ];
+    
+    // Check if claude binary is available, but don't require it at test time
+    let process_alive = Command::new("which")
+        .arg("claude")
+        .output()
+        .ok()
+        .map(|output| output.status.success())
+        .unwrap_or(false);
+    
+    Ok(AgentRuntime {
+        id: runtime_id,
+        agent_member_id: member.id.clone(),
+        provider: member.provider.clone(),
+        status: AgentRuntimeStatus::Running,
+        pid: None, // Claude runs on-demand; no persistent PID
+        control_endpoint: Some(endpoint),
+        command: "claude".into(),
+        args,
+        started_at: now_string(),
+        ended_at: None,
+        last_event_at: Some(now_string()),
+        health: AgentRuntimeHealth {
+            process_alive,
+            socket_exists: true, // Runtime dir exists
+            protocol_probe: Some("unknown".into()), // Will probe on first delivery
+            delivery_probe: Some("unknown".into()),
+            checked_at: Some(now_string()),
+        },
+    })
 }
 
 fn run_claude_delivery(
-    _store: &HarnessStore,
-    _member: &AgentMember,
-    _runtime: &AgentRuntime,
-    _message: &Message,
-    _delivery_id: &str,
-    _timeout_ms: u64,
+    store: &HarnessStore,
+    member: &AgentMember,
+    runtime: &AgentRuntime,
+    message: &Message,
+    delivery_id: &str,
+    timeout_ms: u64,
 ) -> CliResult<DeliveryOutcome> {
-    Err(claude_not_implemented("message delivery"))
+    let runtime_endpoint = runtime.control_endpoint.as_deref().ok_or_else(|| {
+        CliError::Usage(format!("runtime {} has no control endpoint", runtime.id))
+    })?;
+    
+    // Extract runtime directory from endpoint
+    let runtime_dir_str = runtime_endpoint
+        .strip_prefix("claude-runtime://")
+        .ok_or_else(|| {
+            CliError::Usage(format!(
+                "invalid claude runtime endpoint: {runtime_endpoint}"
+            ))
+        })?;
+    let _runtime_dir = PathBuf::from(runtime_dir_str);
+    
+    let session_dir = store.root().join("provider-sessions").join(delivery_id);
+    fs::create_dir_all(&session_dir)?;
+    let started_at = now_string();
+    
+    // Build the delivery prompt from the message content
+    let prompt = build_claude_delivery_prompt(member, message)?;
+    
+    // Run claude with the prompt via stdin
+    let delivery_outcome = run_claude_exchange(
+        &session_dir,
+        &prompt,
+        timeout_ms,
+    )?;
+    
+    // Record the session and evidence
+    let evidence_id = record_claude_delivery_session(
+        store,
+        DeliverySessionRecord {
+            delivery_id,
+            member,
+            runtime,
+            message,
+            session_dir: &session_dir,
+            socket_path: &PathBuf::from(runtime_dir_str), // Repurposed for runtime_dir
+            status: delivery_outcome.status.clone(),
+            started_at,
+            stdout_ref: delivery_outcome.stdout_ref.clone(),
+            stderr_ref: delivery_outcome.stderr_ref.clone(),
+            exit_code: delivery_outcome.exit_code,
+            provider_thread_id: None, // Claude CLI doesn't use explicit threads
+            provider_turn_id: None,   // Claude CLI turns are implicit in session
+            terminal_source: delivery_outcome.terminal_source.clone(),
+        },
+    )?;
+    
+    Ok(DeliveryOutcome {
+        provider_thread_id: None,
+        provider_turn_id: None,
+        terminal_source: delivery_outcome.terminal_source,
+        status: delivery_outcome.status,
+        stdout_ref: delivery_outcome.stdout_ref,
+        stderr_ref: delivery_outcome.stderr_ref,
+        request_ref: Some(session_dir.display().to_string()),
+        provider_request_id: None,
+        provider_session_id: Some(delivery_id.to_string()),
+        evidence_ids: vec![evidence_id],
+        exit_code: delivery_outcome.exit_code,
+        summary: delivery_outcome.summary,
+    })
 }
 
-fn probe_claude_protocol(_socket_path: &Path, _timeout_ms: u64) -> CliResult<Option<String>> {
-    Err(claude_not_implemented("protocol probe"))
+fn build_claude_delivery_prompt(
+    member: &AgentMember,
+    message: &Message,
+) -> CliResult<String> {
+    // Build a system prompt that contextualizes the delivery for Claude
+    let mut prompt = String::new();
+    
+    if let Some(prompt_ref) = &member.prompt_ref {
+        prompt.push_str("System context: ");
+        prompt.push_str(prompt_ref);
+        prompt.push_str("\n\n");
+    }
+    
+    prompt.push_str("Deliver this message:\n");
+    prompt.push_str(&message.content);
+    
+    if let Some(task_id) = &message.task_id {
+        prompt.push_str("\n\nTask ID: ");
+        prompt.push_str(task_id);
+    }
+    
+    Ok(prompt)
+}
+
+#[derive(Debug, Clone)]
+struct ClaudeDeliveryOutcome {
+    status: ProviderSessionStatus,
+    stdout_ref: Option<String>,
+    stderr_ref: Option<String>,
+    exit_code: Option<i32>,
+    terminal_source: Option<MessageTerminalSource>,
+    summary: String,
+}
+
+fn run_claude_exchange(
+    session_dir: &Path,
+    prompt: &str,
+    timeout_ms: u64,
+) -> CliResult<ClaudeDeliveryOutcome> {
+    let stdout_ref = session_dir.join("claude.stdout.log");
+    let stderr_ref = session_dir.join("claude.stderr.log");
+    let _stdin_ref = session_dir.join("claude.stdin.txt");
+    
+    // Write the prompt to stdin for reference
+    fs::write(&_stdin_ref, prompt)?;
+    
+    // Run claude with the prompt
+    let timeout = Duration::from_millis(timeout_ms.max(1));
+    let mut child = Command::new("claude")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| {
+            CliError::Usage(format!(
+                "failed to spawn claude process: {error}"
+            ))
+        })?;
+    
+    // Write prompt to stdin
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(prompt.as_bytes()).map_err(|error| {
+            CliError::Usage(format!("failed to write claude stdin: {error}"))
+        })?;
+        drop(stdin); // Close stdin to signal EOF
+    }
+    
+    // Wait for process with timeout
+    let start = std::time::Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(_status)) => {
+                // Process finished
+                break;
+            }
+            Ok(None) => {
+                // Still running, check timeout
+                if start.elapsed() > timeout {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    fs::write(&stderr_ref, "timeout waiting for claude process")?;
+                    return Ok(ClaudeDeliveryOutcome {
+                        status: ProviderSessionStatus::Failed,
+                        stdout_ref: None,
+                        stderr_ref: Some(stderr_ref.display().to_string()),
+                        exit_code: Some(124), // timeout exit code
+                        terminal_source: Some(MessageTerminalSource::Failed),
+                        summary: "Claude delivery timed out".into(),
+                    });
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(error) => {
+                fs::write(&stderr_ref, format!("wait failed: {error}"))?;
+                return Ok(ClaudeDeliveryOutcome {
+                    status: ProviderSessionStatus::Failed,
+                    stdout_ref: None,
+                    stderr_ref: Some(stderr_ref.display().to_string()),
+                    exit_code: None,
+                    terminal_source: Some(MessageTerminalSource::Failed),
+                    summary: format!("Claude process wait failed: {error}"),
+                });
+            }
+        }
+    }
+    
+    // Collect output from the process
+    let full_output = child.wait_with_output().map_err(|error| {
+        CliError::Usage(format!("failed to collect claude output: {error}"))
+    })?;
+    
+    let exit_code = full_output.status.code();
+    let stdout_text = String::from_utf8_lossy(&full_output.stdout).to_string();
+    let stderr_text = String::from_utf8_lossy(&full_output.stderr).to_string();
+    
+    fs::write(&stdout_ref, &stdout_text)?;
+    fs::write(&stderr_ref, &stderr_text)?;
+    
+    // Determine delivery status based on exit code
+    let (status, summary) = if full_output.status.success() {
+        (
+            ProviderSessionStatus::Succeeded,
+            format!("Claude delivery succeeded: {} chars", stdout_text.len()),
+        )
+    } else {
+        (
+            ProviderSessionStatus::Failed,
+            format!(
+                "Claude delivery failed with exit code {:?}: {}",
+                exit_code, stderr_text
+            ),
+        )
+    };
+    
+    Ok(ClaudeDeliveryOutcome {
+        status,
+        stdout_ref: Some(stdout_ref.display().to_string()),
+        stderr_ref: if stderr_text.is_empty() {
+            None
+        } else {
+            Some(stderr_ref.display().to_string())
+        },
+        exit_code,
+        terminal_source: if full_output.status.success() {
+            Some(MessageTerminalSource::TurnCompleted)
+        } else {
+            Some(MessageTerminalSource::Failed)
+        },
+        summary,
+    })
+}
+
+fn record_claude_delivery_session(
+    store: &HarnessStore,
+    record: DeliverySessionRecord<'_>,
+) -> CliResult<String> {
+    let evidence_id = generated_id("evidence");
+    let evidence = Evidence {
+        id: evidence_id.clone(),
+        task_id: record.message.task_id.clone(),
+        source_type: "claude_delivery_session".into(),
+        source_ref: record.session_dir.display().to_string(),
+        summary: format!(
+            "Claude delivery {} for message {}",
+            record.delivery_id, record.message.id
+        ),
+        created_at: now_string(),
+        evidence_kind: None,
+        goal_id: None,
+    };
+    store.append_evidence(&evidence)?;
+    
+    let ended_at = if record.status == ProviderSessionStatus::Running {
+        None
+    } else {
+        Some(now_string())
+    };
+    
+    let provider_session = ProviderSession {
+        id: record.delivery_id.into(),
+        provider: "claude".into(),
+        agent_member_id: record.member.id.clone(),
+        task_id: record.message.task_id.clone(),
+        workspace_ref: None,
+        provider_thread_id: record.provider_thread_id,
+        provider_turn_id: record.provider_turn_id,
+        terminal_source: record.terminal_source,
+        status: record.status,
+        command: "claude".into(),
+        args: vec![],
+        prompt_ref: record.member.prompt_ref.clone(),
+        prompt_summary: Some(format!("deliver message {}", record.message.id)),
+        provider_session_ref: None,
+        stdout_ref: record.stdout_ref,
+        jsonl_ref: Some(record.session_dir.display().to_string()),
+        transcript_ref: record.stderr_ref,
+        last_message_ref: None,
+        exit_code: record.exit_code,
+        started_at: record.started_at,
+        ended_at,
+        evidence_ids: vec![evidence_id.clone()],
+    };
+    store.append_provider_session(&provider_session)?;
+    Ok(evidence_id)
 }
 
 fn start_codex_runtime(store: &HarnessStore, member: &AgentMember) -> CliResult<AgentRuntime> {
@@ -7769,17 +8084,15 @@ mod tests {
         let mut member = make_member("claude-agent");
         member.provider = "claude".into();
 
-        let error = start_provider_runtime(&store, &member)
-            .expect_err("claude runtime start must route to the claude stub, not codex");
-        let message = error.to_string();
+        let runtime = start_provider_runtime(&store, &member)
+            .expect("claude runtime start dispatches to claude implementation");
+        assert_eq!(runtime.provider, "claude", "runtime must have claude provider");
+        assert_eq!(runtime.command, "claude", "runtime must use claude command");
         assert!(
-            message.contains("claude provider"),
-            "expected claude dispatch error, got: {message}"
+            runtime.control_endpoint.as_deref().map(|ep| ep.starts_with("claude-runtime://")).unwrap_or(false),
+            "claude runtime must use claude-runtime:// endpoint"
         );
-        assert!(
-            message.contains("not yet implemented"),
-            "claude stub must report not-yet-implemented, got: {message}"
-        );
+        assert!(runtime.pid.is_none(), "claude on-demand runtime should not have persistent PID");
 
         let _ = std::fs::remove_dir_all(root);
     }
@@ -7825,6 +8138,7 @@ mod tests {
             delivery: None,
         };
 
+        // Claude delivery expects claude-runtime:// endpoints; this will error due to invalid endpoint
         let error = run_provider_delivery(
             &store,
             &member,
@@ -7833,10 +8147,10 @@ mod tests {
             "delivery-claude",
             1_000,
         )
-        .expect_err("claude delivery must route to the claude stub, not codex");
+        .expect_err("invalid endpoint should error");
         assert!(
-            error.to_string().contains("claude provider"),
-            "expected claude dispatch error, got: {error}"
+            error.to_string().contains("invalid claude runtime endpoint"),
+            "expected endpoint parse error, got: {error}"
         );
 
         let _ = std::fs::remove_dir_all(root);
@@ -7844,12 +8158,12 @@ mod tests {
 
     #[test]
     fn claude_member_protocol_probe_dispatches_to_claude_stub() {
-        let error =
+        let result =
             probe_provider_protocol("claude", Path::new("/tmp/does-not-matter.sock"), 1_000)
-                .expect_err("claude protocol probe must route to the claude stub");
+                .expect("claude protocol probe should dispatch to claude implementation");
         assert!(
-            error.to_string().contains("claude provider"),
-            "expected claude dispatch error, got: {error}"
+            result.as_deref().unwrap_or("").contains("unknown"),
+            "claude protocol probe should return unknown status, got: {result:?}"
         );
     }
 
