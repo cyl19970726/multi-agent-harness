@@ -4,9 +4,13 @@ import {
   Bot,
   Bug,
   CheckCircle2,
+  ChevronDown,
+  ChevronRight,
   ClipboardList,
+  Clock,
   Crown,
   ExternalLink,
+  FileCheck2,
   FileText,
   Gavel,
   GitBranch,
@@ -20,14 +24,16 @@ import {
   ShieldAlert,
   ShieldCheck,
   Target,
+  Terminal,
   Users,
   User,
   Workflow,
   Wrench,
   X,
+  Zap,
 } from "lucide-react";
 
-import type { ComponentProps, ReactNode } from "react";
+import { useState, type ComponentProps, type ReactNode } from "react";
 
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
@@ -61,9 +67,13 @@ import {
 } from "@/components/workbench/tones";
 
 import {
+  formatDuration,
   gapIsResolved,
+  groupMemberTimelineBySession,
   memberName,
   taskTitle,
+  type MemberSessionGroup,
+  type TimelineItem,
   type WorkbenchModel,
 } from "../model/readModel";
 import {
@@ -77,7 +87,6 @@ import {
 } from "../api/actions";
 import type {
   AgentMember,
-  Decision,
   Gap,
   Goal,
   GoalDesign,
@@ -1946,6 +1955,18 @@ function MemberPicker({
   );
 }
 
+/**
+ * AgentMember surface, redesigned as a Claude/Codex DESKTOP-APP two-pane layout:
+ *  - LEFT (flex-1): the conversation + action stream, grouped by provider
+ *    session, with a composer pinned at the bottom.
+ *  - RIGHT (member-owned rail, ~340px): current task, inbox/outbox tiles,
+ *    runtime health + sessions + child threads, and identity/policy.
+ *  - HEADER band: delivery-toned avatar, name, role + provider (neutral) badges,
+ *    status, and gated overflow actions.
+ *
+ * This member view OWNS its right rail; the global Inspector is suppressed for
+ * the member surface in WorkbenchShell so there is no duplicate rail.
+ */
 export function MemberWorkbench({ model, onSelectionChange, actionsEnabled, onAction }: SurfaceProps) {
   const member = model.selectedMember;
   if (!member) {
@@ -1954,404 +1975,648 @@ export function MemberWorkbench({ model, onSelectionChange, actionsEnabled, onAc
         <SurfaceHeader
           kicker="AgentMember workbench"
           title="Select a member"
-          description="Pick a durable AgentMember to inspect its inbox, runtime and activity timeline."
+          description="Pick a durable AgentMember to open its conversation, runtime and current work."
         />
         <MemberPicker model={model} onSelectionChange={onSelectionChange} />
       </div>
     );
   }
 
-  // Avatar/identity is toned by DELIVERY health (not mere process presence): a
-  // live process whose delivery is unconfirmed reads amber, never green.
-  const tone = deliveryHealthTone(member);
-  const isLead = member.role?.toLowerCase() === "lead" || member.id === model.leadMemberId;
-  const currentProposal = member.current_proposal_id
-    ? model.proposals.find((proposal) => proposal.id === member.current_proposal_id)
-    : undefined;
-
   return (
-    <div className="space-y-5">
-      {/* A. Identity / role header band */}
-      <div className="rise flex flex-wrap items-center gap-4">
-        <Avatar name={member.name ?? member.id} tone={tone} size="lg" />
-        <div className="min-w-0">
-          <p className="text-[11px] uppercase tracking-wider text-muted-foreground">
-            AgentMember workbench
-            <span className="mx-1 text-border">·</span>
-            <MonoId>members/{member.id}</MonoId>
-          </p>
-          <h1 className="flex items-center gap-2 text-lg font-semibold tracking-tight">
-            {member.name ?? member.id}
-            {isLead && (
-              <Badge tone="decision" className="gap-1">
-                <Crown className="size-3" />
-                Lead
-              </Badge>
-            )}
-          </h1>
-          <div className="mt-1 flex flex-wrap items-center gap-1.5">
-            <Badge tone={tone}>delivery {member.runtime_health?.delivery_probe ? "probed" : "unknown"}</Badge>
-            <Badge tone={memberTone(member.runtime_status ?? member.status)}>
-              {member.runtime_status ?? member.status ?? "unknown"}
-            </Badge>
-            <Badge tone="info">{member.role ?? "Member"}</Badge>
-            {member.provider && <Badge tone="muted">{member.provider}</Badge>}
-          </div>
-        </div>
-        <div className="ml-auto flex flex-wrap items-center gap-2">
-          <ActionButton
-            enabled={actionsEnabled}
-            size="sm"
-            variant="secondary"
-            onClick={() => dispatch(onAction, deliverQueued(member.id))}
-          >
-            <Inbox className="size-3.5" />
-            Deliver queued
-          </ActionButton>
-          <ActionButton
-            enabled={actionsEnabled}
-            size="sm"
-            onClick={() => dispatch(onAction, memberMessageDescriptor(model, member.id))}
-          >
-            <Send className="size-3.5" />
-            Send message
-          </ActionButton>
-          <MemberOverflowActions
-            member={member}
-            sessions={model.sessionsByMember}
-            inbox={model.inboxMessages}
-            actionsEnabled={actionsEnabled}
-            onAction={onAction}
-          />
-        </div>
-      </div>
+    <div className="space-y-4">
+      <MemberHeaderBand
+        model={model}
+        member={member}
+        actionsEnabled={actionsEnabled}
+        onAction={onAction}
+      />
 
       {/* Picker stays available so members can be switched without the lg-only rail. */}
       <div className="lg:hidden">
         <MemberPicker model={model} onSelectionChange={onSelectionChange} />
       </div>
 
-      {/* B. member rail · C. workspace · D. runtime — spec 280 / 700 / 376 */}
-      <div className="grid gap-4 lg:grid-cols-[18rem_minmax(0,1fr)] xl:grid-cols-[18rem_minmax(0,1fr)_22rem]">
-        {/* B. Member rail — identity & policy */}
-        <div className="space-y-4">
-          <Section kicker="Current work" title="Task & proposal" className="rise">
-            <div className="space-y-2 p-3">
-              <button
-                type="button"
-                onClick={() =>
-                  member.current_task_id &&
-                  onSelectionChange({ surface: "task", taskId: member.current_task_id })
-                }
-                className="block w-full text-left text-[13px] font-medium text-foreground hover:text-primary"
-              >
-                {taskTitle(model.tasks, member.current_task_id)}
-              </button>
-              {currentProposal ? (
-                <div className="rounded-md border border-border bg-background/40 px-2.5 py-1.5">
-                  <p className="text-[10px] uppercase tracking-wider text-muted-foreground">
-                    Current proposal
-                  </p>
-                  <p className="truncate text-xs font-medium">{currentProposal.title ?? currentProposal.id}</p>
-                  <Badge tone="decision" className="mt-1">{currentProposal.status ?? "draft"}</Badge>
-                </div>
-              ) : member.current_proposal_id ? (
-                <p className="text-[11px] text-muted-foreground">
-                  Proposal <MonoId>{member.current_proposal_id}</MonoId>
-                </p>
-              ) : null}
-            </div>
-          </Section>
-
-          {/* Inbox / Outbox as distinct, countable tiles */}
-          <div className="grid grid-cols-2 gap-2">
-            <CountTile label="Inbox" value={model.inboxMessages.length} icon={Inbox} />
-            <CountTile label="Outbox" value={model.outboxMessages.length} icon={Send} />
-          </div>
-
-          <Section kicker="Policy" title="Prompt · skills · teams" className="rise">
-            <div className="p-4">
-              <MetaList
-                items={[
-                  { label: "Prompt", value: member.prompt_ref ? <MonoId>{member.prompt_ref}</MonoId> : "—" },
-                  { label: "Skills", value: member.skill_refs?.join(", ") || "—" },
-                  {
-                    label: "Teams",
-                    value: member.team_ids?.length ? (
-                      <span className="flex flex-wrap gap-1">
-                        {member.team_ids.map((id) => (
-                          <Badge key={id} tone="muted" className="gap-1">
-                            <Users className="size-3" />
-                            {id}
-                          </Badge>
-                        ))}
-                      </span>
-                    ) : (
-                      "—"
-                    ),
-                  },
-                  { label: "Queued", value: member.queued_count ?? 0 },
-                ]}
-              />
-            </div>
-          </Section>
-        </div>
-
-        {/* C. Workspace — inbox/outbox split + merged timeline */}
-        <div className="min-w-0 space-y-4">
-          <div className="grid gap-3 sm:grid-cols-2">
-            <MessageColumn
-              title="Inbox"
-              icon={Inbox}
-              messages={model.inboxMessages}
-              direction="in"
-              members={model.members}
-              onSelectionChange={onSelectionChange}
-            />
-            <MessageColumn
-              title="Outbox"
-              icon={Send}
-              messages={model.outboxMessages}
-              direction="out"
-              members={model.members}
-              onSelectionChange={onSelectionChange}
-            />
-          </div>
-
-          <Section
-            kicker="assignment → report → evidence · sessions · events · reviews · delivery"
-            title="Activity timeline"
-            className="rise"
-          >
-            {model.selectedMemberTimeline.length ? (
-              <div className="max-h-[34rem] overflow-y-auto">
-                {model.selectedMemberTimeline.map((item) => (
-                  <TimelineRow
-                    key={item.id}
-                    kind={item.kind}
-                    title={item.title}
-                    meta={item.meta}
-                    body={item.body}
-                    tone={timelineTone(item.kind, item.severity)}
-                    onClick={() =>
-                      item.objectRef &&
-                      onSelectionChange({ taskId: item.objectRef, surface: "task" })
-                    }
-                  />
-                ))}
-              </div>
-            ) : (
-              <EmptyState icon={Activity} title="No activity recorded for this member" />
-            )}
-          </Section>
-
-          {/* Lead responsibilities lane — only when this member IS the Lead. */}
-          {model.selectedMemberIsLead && (
-            <LeadResponsibilitiesLane model={model} onSelectionChange={onSelectionChange} />
-          )}
-        </div>
-
-        {/* D. Runtime panel — real four-layer health, sessions, child threads */}
-        <div className="space-y-4 xl:col-span-1 lg:col-span-2 xl:col-start-3 xl:row-start-1">
-          <Section kicker="Health" title="Runtime" className="rise">
-            <RuntimeHealthPanel member={member} />
-          </Section>
-          <Section
-            kicker={`${model.sessionsByMember.length} sessions`}
-            title="Provider sessions"
-            className="rise"
-          >
-            <SessionList sessions={model.sessionsByMember} />
-          </Section>
-          <Section
-            kicker={`${member.provider_child_thread_count ?? model.childThreadsByMember.length} child threads`}
-            title="Child threads"
-            className="rise"
-          >
-            <ChildThreadList threads={model.childThreadsByMember} parent={member} />
-          </Section>
-        </div>
+      {/* Two-pane desktop-app body: conversation+action stream | member rail. */}
+      <div className="grid min-h-0 gap-4 xl:grid-cols-[minmax(0,1fr)_22rem]">
+        <ConversationStream
+          model={model}
+          member={member}
+          actionsEnabled={actionsEnabled}
+          onAction={onAction}
+          onSelectionChange={onSelectionChange}
+        />
+        <MemberRail model={model} member={member} onSelectionChange={onSelectionChange} />
       </div>
     </div>
   );
 }
 
 /**
- * The Lead's doctrinal loop, surfaced only when the selected member IS the Lead.
- * Every lane is a projection of existing canonical objects (no invented schema):
- * design goals → assign via task messages → decide/close out → evaluate → shape
- * the team. This is the responsibility view the design calls for.
+ * Header band: delivery-toned avatar, name, role + provider (neutral) + status
+ * badges, and the overflow actions (deliver / retry / reconcile / close), all
+ * gated on `actionsEnabled`. Provider-neutral: the provider only ever appears as
+ * a muted badge.
  */
-function LeadResponsibilitiesLane({
+function MemberHeaderBand({
   model,
-  onSelectionChange,
+  member,
+  actionsEnabled,
+  onAction,
 }: {
   model: WorkbenchModel;
-  onSelectionChange: (selection: Partial<SelectionState>) => void;
+  member: AgentMember;
+  actionsEnabled?: boolean;
+  onAction?: (path: string, body?: unknown) => void;
 }) {
-  const { goalDesigns, assignments, decisions, evaluations, teamMemberIds } =
-    model.leadResponsibilities;
+  // Avatar/identity is toned by DELIVERY health (not mere process presence): a
+  // live process whose delivery is unconfirmed reads amber, never green.
+  const tone = deliveryHealthTone(member);
   return (
-    <Section
-      kicker="design → assign → decide → evaluate → shape team"
-      title={
-        <span className="flex items-center gap-1.5">
-          <Crown className="size-3.5 text-primary" />
-          Lead responsibilities
-        </span>
-      }
-      className="rise"
-    >
-      <div className="grid gap-3 p-3 sm:grid-cols-2">
-        {/* Design goals — GoalDesign owned by this Lead. */}
-        <LeadLaneCard
-          icon={Target}
-          title="Design goals"
-          count={goalDesigns.length}
-          empty="No goal designs owned"
-        >
-          {goalDesigns.map((design: GoalDesign) => (
-            <button
-              key={design.id}
-              type="button"
-              onClick={() => onSelectionChange({ goalId: design.goal_id, surface: "goal" })}
-              className="block w-full truncate text-left text-xs text-foreground hover:text-primary"
-            >
-              {design.scenario_summary ?? design.id}
-            </button>
-          ))}
-        </LeadLaneCard>
-
-        {/* Assign — outbox Message(kind="task"): assignment truth. */}
-        <LeadLaneCard
-          icon={Send}
-          title="Assignments"
-          count={assignments.length}
-          empty="No task assignments sent"
-        >
-          {assignments.map((message: Message) => (
-            <button
-              key={message.id}
-              type="button"
-              onClick={() =>
-                message.task_id && onSelectionChange({ taskId: message.task_id, surface: "task" })
-              }
-              className="block w-full text-left text-xs hover:text-primary"
-            >
-              <span className="truncate text-foreground">
-                → {memberName(model.members, message.to_agent_id)}
-              </span>
-              <Badge tone={deliveryStatusTone(message.delivery_status)} className="ml-1">
-                {message.delivery_status}
-              </Badge>
-            </button>
-          ))}
-        </LeadLaneCard>
-
-        {/* Decide — Decision rows on the Lead's owned work. */}
-        <LeadLaneCard
-          icon={Gavel}
-          title="Decisions"
-          count={decisions.length}
-          empty="No decisions authored"
-        >
-          {decisions.map((decision: Decision) => (
-            <button
-              key={decision.id}
-              type="button"
-              onClick={() => onSelectionChange({ taskId: decision.task_id, surface: "task" })}
-              className="flex w-full items-center gap-1.5 text-left text-xs hover:text-primary"
-            >
-              <Badge tone="decision">{decision.decision ?? "pending"}</Badge>
-              <span className="truncate text-muted-foreground">
-                {decision.rationale ?? decision.task_id}
-              </span>
-            </button>
-          ))}
-        </LeadLaneCard>
-
-        {/* Evaluate — GoalEvaluation owned/authored by this Lead. */}
-        <LeadLaneCard
-          icon={Scale}
-          title="Evaluations"
-          count={evaluations.length}
-          empty="No goal evaluations owned"
-        >
-          {evaluations.map((evaluation: GoalEvaluation) => (
-            <button
-              key={evaluation.id}
-              type="button"
-              onClick={() => onSelectionChange({ goalId: evaluation.goal_id, surface: "goal" })}
-              className="flex w-full items-center gap-1.5 text-left text-xs hover:text-primary"
-            >
-              <Badge tone={evaluation.outcome === "success" ? "good" : "warn"}>
-                {evaluation.outcome ?? "pending"}
-              </Badge>
-              <span className="truncate text-muted-foreground">
-                {evaluation.what_worked ?? evaluation.goal_id}
-              </span>
-            </button>
-          ))}
-        </LeadLaneCard>
-      </div>
-
-      {/* Shape team — member_ids composition of teams the Lead owns. */}
-      <div className="border-t border-border px-3 py-2.5">
-        <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-muted-foreground">
-          <Users className="size-3.5" />
-          Team composition
-          <span className="font-mono">{teamMemberIds.length}</span>
+    <div className="rise flex flex-wrap items-center gap-4 rounded-lg border border-border bg-card px-4 py-3">
+      <Avatar name={member.name ?? member.id} tone={tone} size="lg" />
+      <div className="min-w-0">
+        <p className="text-[11px] uppercase tracking-wider text-muted-foreground">
+          AgentMember
+          <span className="mx-1 text-border">·</span>
+          <MonoId>members/{member.id}</MonoId>
+        </p>
+        <h1 className="truncate text-lg font-semibold tracking-tight">
+          {member.name ?? member.id}
+        </h1>
+        <div className="mt-1 flex flex-wrap items-center gap-1.5">
+          <Badge tone={tone}>delivery {member.runtime_health?.delivery_probe ? "probed" : "unknown"}</Badge>
+          <Badge tone={memberTone(member.runtime_status ?? member.status)}>
+            {member.runtime_status ?? member.status ?? "unknown"}
+          </Badge>
+          <Badge tone="info">{member.role ?? "Member"}</Badge>
+          {member.provider && <Badge tone="muted">{member.provider}</Badge>}
         </div>
-        {teamMemberIds.length ? (
-          <div className="mt-1.5 flex flex-wrap gap-1.5">
-            {teamMemberIds.map((id) => (
-              <button
-                key={id}
-                type="button"
-                onClick={() => onSelectionChange({ memberId: id, surface: "member" })}
-              >
-                <Badge tone="muted" className="gap-1">
-                  <User className="size-3" />
-                  {memberName(model.members, id)}
-                </Badge>
-              </button>
-            ))}
-          </div>
-        ) : (
-          <p className="mt-1 text-xs text-muted-foreground">No team members composed.</p>
-        )}
       </div>
-    </Section>
+      <div className="ml-auto flex flex-wrap items-center gap-2">
+        <MemberOverflowActions
+          member={member}
+          sessions={model.sessionsByMember}
+          inbox={model.inboxMessages}
+          actionsEnabled={actionsEnabled}
+          onAction={onAction}
+        />
+      </div>
+    </div>
   );
 }
 
-/** One responsibility lane card: titled, counted, scrollable list or empty hint. */
-function LeadLaneCard({
-  icon: Icon,
-  title,
-  count,
-  empty,
-  children,
+/**
+ * LEFT pane: the conversation + action stream, grouped by provider session, with
+ * a composer pinned at the bottom. Reuses the merged member timeline (re-skin +
+ * regroup, no new data layer): rows nest under the session whose window they
+ * fall in; session-less rows collect in a default time-ordered group at the
+ * head. Operator↔agent messages render as chat bubbles; agent actions render as
+ * inline cards.
+ */
+function ConversationStream({
+  model,
+  member,
+  actionsEnabled,
+  onAction,
+  onSelectionChange,
 }: {
-  icon: typeof Target;
-  title: string;
-  count: number;
-  empty: string;
-  children: ReactNode;
+  model: WorkbenchModel;
+  member: AgentMember;
+  actionsEnabled?: boolean;
+  onAction?: (path: string, body?: unknown) => void;
+  onSelectionChange: (selection: Partial<SelectionState>) => void;
 }) {
+  const groups = groupMemberTimelineBySession(
+    model.selectedMemberTimeline,
+    model.sessionsByMember,
+  );
   return (
-    <div className="rounded-lg border border-border bg-background/40 p-2.5">
-      <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-        <Icon className="size-3.5" />
-        {title}
-        <span className="ml-auto font-mono text-muted-foreground/70">{count}</span>
+    <section className="rise flex min-h-[36rem] min-w-0 flex-col overflow-hidden rounded-lg border border-border bg-card">
+      <header className="flex items-center justify-between gap-2 border-b border-border px-3.5 py-2.5">
+        <div className="min-w-0">
+          <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+            conversation · sessions · actions
+          </p>
+          <h2 className="truncate text-[13px] font-semibold text-foreground">
+            Conversation &amp; action stream
+          </h2>
+        </div>
+        <Badge tone="muted">{model.selectedMemberTimeline.length} events</Badge>
+      </header>
+
+      <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3">
+        {model.selectedMemberTimeline.length ? (
+          groups.map((group) => (
+            <SessionBlock
+              key={group.id}
+              group={group}
+              members={model.members}
+              memberName={member.name ?? member.id}
+              onSelectionChange={onSelectionChange}
+            />
+          ))
+        ) : (
+          <EmptyState icon={MessageSquare} title="No conversation yet for this member" />
+        )}
       </div>
-      {count ? (
-        <div className="mt-1.5 max-h-40 space-y-1.5 overflow-y-auto">{children}</div>
-      ) : (
-        <p className="mt-1 text-[11px] text-muted-foreground">{empty}</p>
+
+      <Composer
+        model={model}
+        member={member}
+        actionsEnabled={actionsEnabled}
+        onAction={onAction}
+      />
+    </section>
+  );
+}
+
+/**
+ * One collapsible session block: header (provider, status, start→end/duration,
+ * thread/turn id) and the nested rows. The default (session-less) group renders
+ * a plain "Standalone messages" header. Within a block, input order is preserved
+ * so assignment renders before its report.
+ */
+function SessionBlock({
+  group,
+  members,
+  memberName,
+  onSelectionChange,
+}: {
+  group: MemberSessionGroup;
+  members: AgentMember[];
+  memberName: string;
+  onSelectionChange: (selection: Partial<SelectionState>) => void;
+}) {
+  const [open, setOpen] = useState(true);
+  const session = group.session;
+  const duration = session
+    ? formatDuration(session.started_at, session.ended_at)
+    : undefined;
+  const tone = session ? timelineTone("session") : "idle";
+  return (
+    <div className="overflow-hidden rounded-lg border border-border bg-background/40">
+      <button
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+        className="flex w-full items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-accent/40"
+      >
+        {open ? (
+          <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" />
+        ) : (
+          <ChevronRight className="size-3.5 shrink-0 text-muted-foreground" />
+        )}
+        {session ? (
+          <Terminal className="size-3.5 shrink-0 text-status-running" />
+        ) : (
+          <MessageSquare className="size-3.5 shrink-0 text-muted-foreground" />
+        )}
+        <span className="min-w-0 flex-1">
+          <span className="flex items-center gap-1.5">
+            <span className="truncate text-[12px] font-semibold text-foreground">
+              {session
+                ? `Provider session${session.provider ? ` · ${session.provider}` : ""}`
+                : "Standalone messages"}
+            </span>
+            {session && (
+              <Badge tone={tone}>{session.status ?? "unknown"}</Badge>
+            )}
+          </span>
+          {session && (
+            <span className="mt-0.5 flex flex-wrap items-center gap-x-2.5 gap-y-0.5 text-[10px] text-muted-foreground">
+              {session.started_at && <span>{fmtTime(session.started_at)}</span>}
+              {duration && (
+                <span className="inline-flex items-center gap-1">
+                  <Clock className="size-3" />
+                  {session.ended_at ? duration : `running ${duration}`}
+                </span>
+              )}
+              {session.provider_thread_id && (
+                <span>thread <MonoId>{session.provider_thread_id}</MonoId></span>
+              )}
+              {session.provider_turn_id && (
+                <span>turn <MonoId>{session.provider_turn_id}</MonoId></span>
+              )}
+            </span>
+          )}
+        </span>
+        <span className="shrink-0 font-mono text-[10px] text-muted-foreground/70">
+          {group.items.length}
+        </span>
+      </button>
+      {open && (
+        <div className="space-y-2 border-t border-border/60 px-3 py-2.5">
+          {group.items.length ? (
+            group.items.map((item) => (
+              <StreamRow
+                key={item.id}
+                item={item}
+                members={members}
+                memberName={memberName}
+                onSelectionChange={onSelectionChange}
+              />
+            ))
+          ) : (
+            <p className="px-1 py-2 text-[11px] text-muted-foreground">
+              No activity recorded in this session window.
+            </p>
+          )}
+        </div>
       )}
     </div>
+  );
+}
+
+/**
+ * One row in the stream. Messages render as chat bubbles (operator/outbound
+ * right-aligned, agent/inbound left); every other kind renders as an inline
+ * action card.
+ */
+function StreamRow({
+  item,
+  members,
+  memberName,
+  onSelectionChange,
+}: {
+  item: TimelineItem;
+  members: AgentMember[];
+  memberName: string;
+  onSelectionChange: (selection: Partial<SelectionState>) => void;
+}) {
+  if (item.kind === "message") {
+    return <ChatBubble item={item} members={members} selfName={memberName} />;
+  }
+  return <ActionCard item={item} onSelectionChange={onSelectionChange} />;
+}
+
+/**
+ * A chat bubble for an operator↔agent message. Inbound (from the agent) sits on
+ * the left; outbound (operator/owner→member) sits on the right. The delivery
+ * status rides along as a small chip so delivery state stays legible.
+ */
+function ChatBubble({
+  item,
+  members,
+  selfName,
+}: {
+  item: TimelineItem;
+  members: AgentMember[];
+  selfName: string;
+}) {
+  // Alignment is from the OPERATOR's point of view, like a chat client:
+  //  - the member timeline marks `in` for messages sent TO the member — those
+  //    are the operator/owner's OUTBOUND messages → right-aligned;
+  //  - `out` marks messages the member AUTHORED — the agent's replies →
+  //    left-aligned.
+  const operatorOutbound = item.direction === "in";
+  const speaker = operatorOutbound
+    ? memberName(members, item.counterpartyId)
+    : selfName;
+  return (
+    <div className={cn("flex", operatorOutbound ? "justify-end" : "justify-start")}>
+      <div className={cn("max-w-[80%]", operatorOutbound ? "items-end text-right" : "items-start")}>
+        <div className="mb-0.5 flex items-center gap-1.5 text-[10px] text-muted-foreground">
+          <span className="font-semibold uppercase tracking-wider">{speaker}</span>
+          {item.createdAt && <span>{fmtTime(item.createdAt)}</span>}
+        </div>
+        <div
+          className={cn(
+            "rounded-2xl border px-3 py-2 text-left text-[13px] leading-relaxed",
+            operatorOutbound
+              ? "rounded-br-sm border-primary/30 bg-primary/12 text-foreground"
+              : "rounded-bl-sm border-border bg-background text-foreground",
+          )}
+        >
+          {item.body ?? item.title}
+        </div>
+        {item.deliveryStatus && (
+          <div className={cn("mt-1 flex items-center gap-1", operatorOutbound && "justify-end")}>
+            <Badge tone={deliveryStatusTone(item.deliveryStatus)}>{item.deliveryStatus}</Badge>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** Lucide icon + tone for a non-message stream row, by kind/verdict. */
+function actionVisual(item: TimelineItem): { icon: typeof Activity; tone: StatusTone } {
+  switch (item.kind) {
+    case "session":
+      return { icon: Terminal, tone: timelineTone("session") };
+    case "evidence":
+      return { icon: FileCheck2, tone: "good" };
+    case "proposal":
+      return { icon: FileText, tone: "decision" };
+    case "review":
+      return { icon: Gavel, tone: reviewVerdictTone(item.verdict) };
+    case "warning":
+      return { icon: AlertTriangle, tone: severityTone(item.severity) };
+    case "event":
+    default:
+      return { icon: Zap, tone: "info" };
+  }
+}
+
+/**
+ * Inline action card for an agent action: session start/stop, AgentEvent,
+ * Evidence, Proposal, Review, or Warning. Shows an icon, a label, a count/refs
+ * line when present ("Ran N commands" / "Edited N files"), and links to the
+ * referenced object when one exists.
+ */
+function ActionCard({
+  item,
+  onSelectionChange,
+}: {
+  item: TimelineItem;
+  onSelectionChange: (selection: Partial<SelectionState>) => void;
+}) {
+  const { icon: Icon, tone } = actionVisual(item);
+  const countLabel =
+    item.count != null && item.countNoun
+      ? `${item.count} ${item.countNoun}${item.count === 1 ? "" : "s"}`
+      : undefined;
+  const sessionLine =
+    item.kind === "session"
+      ? sessionRunLine(item)
+      : undefined;
+  return (
+    <button
+      type="button"
+      onClick={() => item.objectRef && onSelectionChange({ taskId: item.objectRef, surface: "task" })}
+      className="flex w-full items-start gap-2.5 rounded-lg border border-border bg-card px-3 py-2 text-left transition-colors hover:bg-accent/40"
+    >
+      <span className={cn("mt-0.5 grid size-6 shrink-0 place-items-center rounded-md bg-background", toneText[tone])}>
+        <Icon className="size-3.5" />
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="flex flex-wrap items-center gap-1.5">
+          <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+            {item.eventType ?? item.kind}
+          </span>
+          {item.verdict && <Badge tone={reviewVerdictTone(item.verdict)}>{item.verdict}</Badge>}
+          {countLabel && <span className="text-[11px] text-muted-foreground">{countLabel}</span>}
+          {item.createdAt && (
+            <span className="ml-auto text-[10px] text-muted-foreground">{fmtTime(item.createdAt)}</span>
+          )}
+        </span>
+        <span className="block truncate text-[13px] font-medium text-foreground">
+          {sessionLine ?? item.title}
+        </span>
+        {item.body && (
+          <span className="mt-0.5 block line-clamp-2 text-xs text-muted-foreground">{item.body}</span>
+        )}
+      </span>
+    </button>
+  );
+}
+
+/** "Provider session running 1m54s" / "Provider session succeeded · 2m" line. */
+function sessionRunLine(item: TimelineItem): string {
+  const status = item.sessionStatus ?? "session";
+  const duration = formatDuration(item.startedAt, item.endedAt);
+  if (!duration) return `Provider session ${status}`;
+  const running = status === "running" || !item.endedAt;
+  return running
+    ? `Provider session running ${duration}`
+    : `Provider session ${status} · ${duration}`;
+}
+
+/**
+ * Composer pinned to the bottom of the stream. Sends a real message via the
+ * actions seam (POST /v1/messages, from = team owner/lead, to = member, kind =
+ * message); the App refreshes the snapshot after the action. Disabled with the
+ * standard tooltip while actions are read-only.
+ */
+function Composer({
+  model,
+  member,
+  actionsEnabled,
+  onAction,
+}: {
+  model: WorkbenchModel;
+  member: AgentMember;
+  actionsEnabled?: boolean;
+  onAction?: (path: string, body?: unknown) => void;
+}) {
+  const [draft, setDraft] = useState("");
+  const from = model.selectedTeam?.owner_agent_id ?? member.id;
+  const canSend = Boolean(actionsEnabled && draft.trim());
+
+  function send() {
+    const content = draft.trim();
+    if (!content || !actionsEnabled) return;
+    dispatch(onAction, messageMember({ from, to: member.id, content, task: member.current_task_id ?? undefined }));
+    setDraft("");
+  }
+
+  return (
+    <div className="shrink-0 border-t border-border bg-card/60 p-2.5">
+      <div className="flex items-end gap-2">
+        <textarea
+          aria-label="Message to member"
+          value={draft}
+          onChange={(event) => setDraft(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+              event.preventDefault();
+              send();
+            }
+          }}
+          rows={1}
+          placeholder={
+            actionsEnabled ? `Message ${member.name ?? member.id}…` : ACTIONS_DISABLED_HINT
+          }
+          disabled={!actionsEnabled}
+          className="min-h-9 max-h-32 flex-1 resize-y rounded-md border border-border bg-background px-3 py-2 text-[13px] text-foreground outline-none transition-colors focus:border-ring disabled:cursor-not-allowed disabled:opacity-60"
+        />
+        {actionsEnabled ? (
+          <Button size="sm" onClick={send} disabled={!canSend} className="shrink-0">
+            <Send className="size-3.5" />
+            Send
+          </Button>
+        ) : (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span className="inline-flex shrink-0">
+                <Button size="sm" disabled title={ACTIONS_DISABLED_HINT}>
+                  <Send className="size-3.5" />
+                  Send
+                </Button>
+              </span>
+            </TooltipTrigger>
+            <TooltipContent side="top">{ACTIONS_DISABLED_HINT}</TooltipContent>
+          </Tooltip>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * RIGHT pane: the member-owned rail. Carries current task (title / status /
+ * branch / acceptance + current proposal), distinct inbox/outbox count tiles,
+ * the four-layer runtime panel (+ checked_at + sessions + child threads, in a
+ * collapsible block), and the identity/policy block (prompt / skills /
+ * permission profile / team membership). Provider-neutral throughout. The Lead
+ * responsibilities lane and Lead chip are intentionally NOT here.
+ */
+function MemberRail({
+  model,
+  member,
+  onSelectionChange,
+}: {
+  model: WorkbenchModel;
+  member: AgentMember;
+  onSelectionChange: (selection: Partial<SelectionState>) => void;
+}) {
+  const currentTask = member.current_task_id
+    ? model.tasks.find((task) => task.id === member.current_task_id)
+    : undefined;
+  const currentProposal = member.current_proposal_id
+    ? model.proposals.find((proposal) => proposal.id === member.current_proposal_id)
+    : undefined;
+  return (
+    <aside aria-label="Member rail" className="min-w-0 space-y-4">
+      <Section kicker="Current work" title="Current task" className="rise">
+        <div className="space-y-2 p-3">
+          <button
+            type="button"
+            onClick={() =>
+              member.current_task_id &&
+              onSelectionChange({ surface: "task", taskId: member.current_task_id })
+            }
+            className="block w-full text-left text-[13px] font-medium text-foreground hover:text-primary"
+          >
+            {taskTitle(model.tasks, member.current_task_id)}
+          </button>
+          {currentTask && (
+            <div className="flex flex-wrap items-center gap-1.5">
+              <Badge tone={taskTone(currentTask.status)}>{currentTask.status}</Badge>
+              {currentTask.branch_ref && (
+                <span className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
+                  <GitBranch className="size-3" />
+                  <MonoId>{shortBranch(currentTask.branch_ref)}</MonoId>
+                </span>
+              )}
+            </div>
+          )}
+          {currentTask?.acceptance_criteria?.length ? (
+            <div className="rounded-md border border-border bg-background/40 px-2.5 py-1.5">
+              <p className="text-[10px] uppercase tracking-wider text-muted-foreground">
+                Acceptance
+              </p>
+              <ul className="mt-1 space-y-0.5">
+                {currentTask.acceptance_criteria.slice(0, 4).map((criterion, index) => (
+                  <li key={index} className="flex items-start gap-1.5 text-[11px] text-muted-foreground">
+                    <CheckCircle2 className="mt-0.5 size-3 shrink-0 text-status-good" />
+                    <span className="min-w-0">{criterion}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+          {currentProposal ? (
+            <div className="rounded-md border border-border bg-background/40 px-2.5 py-1.5">
+              <p className="text-[10px] uppercase tracking-wider text-muted-foreground">
+                Current proposal
+              </p>
+              <p className="truncate text-xs font-medium">{currentProposal.title ?? currentProposal.id}</p>
+              <Badge tone="decision" className="mt-1">{currentProposal.status ?? "draft"}</Badge>
+            </div>
+          ) : member.current_proposal_id ? (
+            <p className="text-[11px] text-muted-foreground">
+              Proposal <MonoId>{member.current_proposal_id}</MonoId>
+            </p>
+          ) : null}
+        </div>
+      </Section>
+
+      {/* Inbox / Outbox as distinct, countable tiles */}
+      <div className="grid grid-cols-2 gap-2">
+        <CountTile label="Inbox" value={model.inboxMessages.length} icon={Inbox} />
+        <CountTile label="Outbox" value={model.outboxMessages.length} icon={Send} />
+      </div>
+
+      <RuntimeRail model={model} member={member} />
+
+      <Section kicker="Identity · policy" title="Prompt · skills · profile" className="rise">
+        <div className="p-4">
+          <MetaList
+            items={[
+              { label: "Prompt", value: member.prompt_ref ? <MonoId>{member.prompt_ref}</MonoId> : "—" },
+              { label: "Skills", value: member.skill_refs?.join(", ") || "—" },
+              {
+                label: "Profile",
+                value: member.provider_agent_role ? (
+                  <Badge tone="muted">{member.provider_agent_role}</Badge>
+                ) : (
+                  "—"
+                ),
+              },
+              {
+                label: "Teams",
+                value: member.team_ids?.length ? (
+                  <span className="flex flex-wrap gap-1">
+                    {member.team_ids.map((id) => (
+                      <Badge key={id} tone="muted" className="gap-1">
+                        <Users className="size-3" />
+                        {id}
+                      </Badge>
+                    ))}
+                  </span>
+                ) : (
+                  "—"
+                ),
+              },
+            ]}
+          />
+        </div>
+      </Section>
+    </aside>
+  );
+}
+
+/**
+ * Runtime block in the member rail: the four-layer RuntimeHealthPanel
+ * (process / endpoint / protocol / delivery + checked_at), the provider session
+ * list and the child-thread list, collapsible to keep the rail compact.
+ */
+function RuntimeRail({ model, member }: { model: WorkbenchModel; member: AgentMember }) {
+  const [open, setOpen] = useState(true);
+  return (
+    <Section
+      kicker="Health · sessions · child threads"
+      title={
+        <button
+          type="button"
+          onClick={() => setOpen((value) => !value)}
+          className="flex items-center gap-1.5 text-[13px] font-semibold hover:text-primary"
+        >
+          {open ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
+          Runtime
+        </button>
+      }
+      action={
+        <Badge tone={memberTone(member.runtime_status ?? member.status)}>
+          {member.runtime_status ?? member.status ?? "unknown"}
+        </Badge>
+      }
+      className="rise"
+    >
+      {open && (
+        <div>
+          <RuntimeHealthPanel member={member} />
+          <div className="border-t border-border px-3 pt-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+            {model.sessionsByMember.length} provider sessions
+          </div>
+          <SessionList sessions={model.sessionsByMember} />
+          <div className="border-t border-border px-3 pt-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+            {member.provider_child_thread_count ?? model.childThreadsByMember.length} child threads
+          </div>
+          <ChildThreadList threads={model.childThreadsByMember} parent={member} />
+        </div>
+      )}
+    </Section>
   );
 }
 
@@ -2373,96 +2638,6 @@ function CountTile({
       </div>
       <div className="mt-0.5 text-xl font-semibold tabular-nums">{value}</div>
     </div>
-  );
-}
-
-/**
- * One side of the inbox/outbox split: messages filtered by recipient/author,
- * each carrying its own delivery_status and a queued/delivered/failed count
- * footer so the operator can read delivery state per direction.
- */
-function MessageColumn({
-  title,
-  icon: Icon,
-  messages,
-  direction,
-  members,
-  onSelectionChange,
-}: {
-  title: string;
-  icon: typeof Inbox;
-  messages: Message[];
-  direction: "in" | "out";
-  members: AgentMember[];
-  onSelectionChange: (selection: Partial<SelectionState>) => void;
-}) {
-  const queued = messages.filter((m) => m.delivery_status === "queued").length;
-  const delivered = messages.filter(
-    (m) => m.delivery_status === "delivered" || m.delivery_status === "acknowledged",
-  ).length;
-  const failed = messages.filter((m) => m.delivery_status === "failed").length;
-  const ordered = [...messages].sort((a, b) =>
-    (b.created_at ?? "").localeCompare(a.created_at ?? ""),
-  );
-  return (
-    <Section
-      kicker={`${messages.length} messages`}
-      title={
-        <span className="flex items-center gap-1.5">
-          <Icon className="size-3.5" />
-          {title}
-        </span>
-      }
-      className="rise"
-      action={
-        <span className="flex items-center gap-1">
-          {queued > 0 && <Badge tone="warn">{queued} queued</Badge>}
-          {delivered > 0 && <Badge tone="good">{delivered} ok</Badge>}
-          {failed > 0 && <Badge tone="bad">{failed} failed</Badge>}
-        </span>
-      }
-    >
-      {ordered.length ? (
-        <div className="max-h-56 overflow-y-auto">
-          {ordered.map((message) => {
-            const counterparty = direction === "in" ? message.from_agent_id : message.to_agent_id;
-            return (
-              <button
-                key={message.id}
-                type="button"
-                onClick={() =>
-                  message.task_id && onSelectionChange({ surface: "task", taskId: message.task_id })
-                }
-                className="flex w-full items-start gap-2 border-b border-border/60 px-3 py-2 text-left transition-colors last:border-b-0 hover:bg-accent/50"
-              >
-                <StatusDot tone={deliveryStatusTone(message.delivery_status)} className="mt-1" />
-                <span className="min-w-0 flex-1">
-                  <span className="flex items-center gap-1.5">
-                    <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-                      {message.kind}
-                    </span>
-                    <span className="truncate text-[11px] text-muted-foreground">
-                      {direction === "in" ? "from" : "to"} {memberName(members, counterparty)}
-                    </span>
-                  </span>
-                  <span className="block truncate text-xs text-foreground">
-                    {message.content ?? message.id}
-                  </span>
-                  <span className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
-                    <Badge tone={deliveryStatusTone(message.delivery_status)}>
-                      {message.delivery_status}
-                    </Badge>
-                    {message.created_at && <span>{fmtTime(message.created_at)}</span>}
-                  </span>
-                </span>
-              </button>
-            );
-          })}
-        </div>
-      ) : (
-        <EmptyState icon={Icon} title={`No ${title.toLowerCase()} messages`} />
-      )}
-    </Section>
   );
 }
 

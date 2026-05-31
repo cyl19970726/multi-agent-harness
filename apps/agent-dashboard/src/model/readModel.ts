@@ -31,6 +31,46 @@ export interface TimelineItem {
   severity?: WorkflowWarning["severity"];
   objectRef?: string;
   createdAt?: string;
+  /**
+   * Structured re-skin metadata. The merged-timeline data layer is unchanged —
+   * these optional fields just expose, in typed form, what was previously baked
+   * into the `meta`/`title` strings so the chat-app view can render bubbles and
+   * action cards without re-parsing text. Nothing here is a new data source.
+   */
+  /** Message direction relative to the selected member ("in" = inbound/agent). */
+  direction?: "in" | "out";
+  /** Raw message delivery_status, for the bubble's delivery chip. */
+  deliveryStatus?: string;
+  /** The other party in a message (from for inbound, to for outbound). */
+  counterpartyId?: string;
+  /** Provider-neutral provider label for a session row. */
+  provider?: string;
+  /** Raw provider-session status for a session block header/badge. */
+  sessionStatus?: string;
+  /** Session window bounds (used to nest rows and show duration). */
+  startedAt?: string;
+  endedAt?: string;
+  /** Session thread/turn identifiers, surfaced on the session block header. */
+  threadId?: string;
+  turnId?: string;
+  /** Review verdict (open enum), for the review action card. */
+  verdict?: string;
+  /** AgentEvent event_type, for the event action card icon/label. */
+  eventType?: string;
+  /** Optional count + noun a row can render ("Ran 3 commands" / "Edited 2 files"). */
+  count?: number;
+  countNoun?: string;
+}
+
+/**
+ * One session block in the chat-app stream: a provider session and the timeline
+ * rows whose time falls inside its window. `session` is undefined for the
+ * default group that collects session-less rows (standalone operator messages).
+ */
+export interface MemberSessionGroup {
+  id: string;
+  session?: ProviderSession;
+  items: TimelineItem[];
 }
 
 export interface RoleGroup {
@@ -551,6 +591,9 @@ function buildMemberTimeline(snapshot: DashboardSnapshot, member: AgentMember, w
         body: message.content,
         objectRef: message.task_id ?? undefined,
         createdAt: message.created_at ?? undefined,
+        direction,
+        deliveryStatus: message.delivery_status,
+        counterpartyId: (direction === "in" ? message.from_agent_id : message.to_agent_id) ?? undefined,
       };
     });
 
@@ -586,19 +629,31 @@ function buildMemberTimeline(snapshot: DashboardSnapshot, member: AgentMember, w
       body: session.prompt_summary ?? session.command,
       objectRef: session.task_id ?? undefined,
       createdAt: session.started_at ?? undefined,
+      provider: session.provider ?? undefined,
+      sessionStatus: session.status ?? undefined,
+      startedAt: session.started_at ?? undefined,
+      endedAt: session.ended_at ?? undefined,
+      threadId: session.provider_thread_id ?? undefined,
+      turnId: session.provider_turn_id ?? undefined,
     }));
 
   const events: TimelineItem[] = (snapshot.events ?? [])
     .filter((event) => event.agent_member_id === member.id)
-    .map((event) => ({
-      id: event.id,
-      kind: "event" as const,
-      title: event.event_type ?? "event",
-      meta: event.created_at ? formatTime(event.created_at) : "event",
-      body: event.summary,
-      objectRef: event.task_id ?? undefined,
-      createdAt: event.created_at ?? undefined,
-    }));
+    .map((event) => {
+      const counted = extractEventCount(event.event_type, event.summary);
+      return {
+        id: event.id,
+        kind: "event" as const,
+        title: event.event_type ?? "event",
+        meta: event.created_at ? formatTime(event.created_at) : "event",
+        body: event.summary,
+        objectRef: event.task_id ?? undefined,
+        createdAt: event.created_at ?? undefined,
+        eventType: event.event_type ?? undefined,
+        count: counted?.count,
+        countNoun: counted?.noun,
+      };
+    });
 
   // Evidence linked to this member's tasks. Member rows carry no member id, so
   // we scope by the tasks the member touched (current task + tasks referenced
@@ -631,6 +686,8 @@ function buildMemberTimeline(snapshot: DashboardSnapshot, member: AgentMember, w
       meta: proposal.status ?? "draft",
       body: proposal.summary,
       objectRef: proposal.task_id,
+      count: proposal.changed_paths?.length || undefined,
+      countNoun: proposal.changed_paths?.length ? "file" : undefined,
     }));
 
   const reviews: TimelineItem[] = (snapshot.reviews ?? [])
@@ -643,6 +700,7 @@ function buildMemberTimeline(snapshot: DashboardSnapshot, member: AgentMember, w
       body: review.summary,
       objectRef: review.task_id ?? undefined,
       createdAt: review.created_at ?? undefined,
+      verdict: review.verdict ?? undefined,
     }));
 
   // Warnings get a synthetic NOW timestamp so they no longer sink below dated
@@ -704,6 +762,126 @@ function sortTimelineChronological(items: TimelineItem[]): TimelineItem[] {
     if (!aHas && bHas) return 1;
     return timelineKindRank[a.kind] - timelineKindRank[b.kind];
   });
+}
+
+/**
+ * Best-effort "N <noun>" extraction from an AgentEvent's type/summary, so an
+ * event card can show "Ran 3 commands" / "Edited 2 files" when the count is
+ * already present in the text. Provider-neutral: it reads whatever the neutral
+ * AgentEvent already carries and never fabricates a count.
+ */
+function extractEventCount(
+  eventType?: string,
+  summary?: string,
+): { count: number; noun: string } | undefined {
+  const haystack = `${eventType ?? ""} ${summary ?? ""}`;
+  const match = haystack.match(
+    /(\d+)\s+(commands?|files?|edits?|tools?|calls?|tests?|diffs?|changes?)/i,
+  );
+  if (!match) return undefined;
+  const count = Number(match[1]);
+  if (!Number.isFinite(count)) return undefined;
+  return { count, noun: match[2].toLowerCase().replace(/s$/, "") };
+}
+
+/**
+ * Regroup the (already merged + sorted) member timeline into provider-session
+ * blocks for the chat-app view. This is a PURE re-projection of the existing
+ * timeline — no new data source, no re-sort beyond preserving the input order.
+ *
+ * A row nests under a session when (a) it IS that session's own row, or (b) its
+ * timestamp falls inside the session window [started_at, ended_at] (open-ended
+ * sessions extend to the next session's start, else to +∞). Rows that match no
+ * window collect into a single default group at the head, time-ordered like the
+ * input. Assignment-before-report is preserved because we keep input order
+ * within every group (the input is already chronological with the kind
+ * tie-break applied in sortTimelineChronological).
+ */
+export function groupMemberTimelineBySession(
+  timeline: TimelineItem[],
+  sessions: ProviderSession[],
+): MemberSessionGroup[] {
+  // Order sessions by start time so window boundaries are well-defined.
+  const ordered = [...sessions].sort((a, b) =>
+    (a.started_at ?? "").localeCompare(b.started_at ?? ""),
+  );
+  const windows = ordered.map((session, index) => {
+    const start = session.started_at ? Date.parse(session.started_at) : NaN;
+    const explicitEnd = session.ended_at ? Date.parse(session.ended_at) : NaN;
+    const nextStart = ordered[index + 1]?.started_at
+      ? Date.parse(ordered[index + 1].started_at!)
+      : NaN;
+    const end = !Number.isNaN(explicitEnd)
+      ? explicitEnd
+      : !Number.isNaN(nextStart)
+        ? nextStart
+        : Number.POSITIVE_INFINITY;
+    return { session, start, end };
+  });
+
+  const groups = new Map<string, TimelineItem[]>();
+  for (const window of windows) groups.set(window.session.id, []);
+  const defaultItems: TimelineItem[] = [];
+
+  for (const item of timeline) {
+    // A session's own row always nests under itself.
+    if (item.kind === "session") {
+      const own = groups.get(item.id);
+      if (own) {
+        own.push(item);
+        continue;
+      }
+    }
+    const ts = item.createdAt ? Date.parse(item.createdAt) : NaN;
+    let placed = false;
+    if (!Number.isNaN(ts)) {
+      // Last (most recent) matching window wins so a row co-owned by adjacent
+      // windows lands in the session it actually started under.
+      for (let i = windows.length - 1; i >= 0; i -= 1) {
+        const window = windows[i];
+        if (Number.isNaN(window.start)) continue;
+        if (ts >= window.start && ts <= window.end) {
+          groups.get(window.session.id)!.push(item);
+          placed = true;
+          break;
+        }
+      }
+    }
+    if (!placed) defaultItems.push(item);
+  }
+
+  const result: MemberSessionGroup[] = [];
+  if (defaultItems.length) {
+    result.push({ id: "__standalone__", items: defaultItems });
+  }
+  for (const window of windows) {
+    result.push({
+      id: window.session.id,
+      session: window.session,
+      items: groups.get(window.session.id) ?? [],
+    });
+  }
+  return result;
+}
+
+/** Human duration between two ISO timestamps: "1m54s", "2h3m", "45s". */
+export function formatDuration(
+  start?: string | null,
+  end?: string | null,
+): string | undefined {
+  if (!start) return undefined;
+  const startMs = Date.parse(start);
+  if (Number.isNaN(startMs)) return undefined;
+  const endMs = end ? Date.parse(end) : Date.now();
+  if (Number.isNaN(endMs)) return undefined;
+  const totalS = Math.max(0, Math.round((endMs - startMs) / 1000));
+  if (totalS < 60) return `${totalS}s`;
+  const m = Math.floor(totalS / 60);
+  const s = totalS % 60;
+  if (m < 60) return s ? `${m}m${s}s` : `${m}m`;
+  const h = Math.floor(m / 60);
+  const remM = m % 60;
+  return remM ? `${h}h${remM}m` : `${h}h`;
 }
 
 function buildActivity(snapshot: DashboardSnapshot, warnings: WorkflowWarning[]): TimelineItem[] {
