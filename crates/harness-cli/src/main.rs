@@ -7228,6 +7228,11 @@ fn run_codex_exec_process(
         .arg("--json")
         .arg(&message_content)
         .env("CODEX_DEVELOPER_INSTRUCTIONS", developer_instructions)
+        // Close stdin: the prompt is supplied as an arg, so codex must not block
+        // on "Reading additional input from stdin...". Without this, codex inherits
+        // the parent's stdin (a pipe/tty), waits forever for an EOF that never comes,
+        // and the timeout below is never reached because the stdout read blocks first.
+        .stdin(Stdio::null())
         .stderr(Stdio::piped())
         .stdout(Stdio::piped())
         .current_dir(cwd.clone().unwrap_or_else(|| ".".into()))
@@ -7733,8 +7738,11 @@ fn run_claude_exec_delivery_real(
     let cwd_str = cwd.unwrap_or_else(|| ".".to_string());
     cmd.current_dir(&cwd_str);
 
-    // Spawn the process.
+    // Spawn the process. Close stdin: the prompt is supplied via `-p`, so claude
+    // must not block reading piped stdin. Without this it inherits the parent's
+    // stdin and can hang waiting for an EOF that never arrives.
     let mut child = cmd
+        .stdin(Stdio::null())
         .stderr(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
