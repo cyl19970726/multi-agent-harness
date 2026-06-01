@@ -78,7 +78,7 @@ interface WorkbenchShellProps {
 const navItems: { id: SurfaceId; label: string; icon: typeof Users }[] = [
   { id: "team", label: "Team", icon: Users },
   { id: "vision", label: "Vision", icon: Target },
-  { id: "tasks", label: "Tasks", icon: Workflow },
+  { id: "tasks", label: "Work", icon: Workflow },
   { id: "member", label: "Member", icon: Bot },
   { id: "warnings", label: "Warnings", icon: ShieldAlert },
 ];
@@ -600,7 +600,13 @@ function SurfaceSwitch({
     case "task":
       return <TaskDocument {...shared} />;
     case "tasks":
-      return <GraphKanban {...shared} mode={selection.mode ?? "kanban"} />;
+      return (
+        <GraphKanban
+          {...shared}
+          boardScope={selection.boardScope ?? "tasks"}
+          boardGoal={selection.boardGoal}
+        />
+      );
     case "member":
       return <MemberWorkbench {...shared} />;
     case "docs":

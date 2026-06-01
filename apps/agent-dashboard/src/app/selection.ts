@@ -16,11 +16,16 @@ export interface SelectionState {
   memberId?: string;
   taskId?: string;
   mode?: "kanban" | "graph" | "split";
+  /** Unified Work board: which object the board lays out. Defaults to "tasks". */
+  boardScope?: "goals" | "tasks";
+  /** Work board (tasks scope) filter: only show this goal's tasks. */
+  boardGoal?: string;
 }
 
 export const defaultSelection: SelectionState = {
   surface: "team",
   mode: "kanban",
+  boardScope: "tasks",
 };
 
 const surfaceIds: SurfaceId[] = [
@@ -67,6 +72,10 @@ export function selectionFromLocation(base: SelectionState): SelectionState {
   if (goal) next.goalId = goal;
   const task = params.get("task");
   if (task) next.taskId = task;
+  const boardScope = params.get("board");
+  if (boardScope === "goals" || boardScope === "tasks") next.boardScope = boardScope;
+  const boardGoal = params.get("boardGoal");
+  if (boardGoal) next.boardGoal = boardGoal;
   return next;
 }
 
@@ -86,6 +95,8 @@ export function syncSelectionToLocation(selection: SelectionState): void {
   if (selection.teamId) params.set("team", selection.teamId);
   if (selection.goalId) params.set("goal", selection.goalId);
   if (selection.taskId) params.set("task", selection.taskId);
+  if (selection.boardScope === "goals") params.set("board", "goals");
+  if (selection.boardGoal) params.set("boardGoal", selection.boardGoal);
 
   const query = params.toString();
   const url = `${window.location.pathname}${query ? `?${query}` : ""}${window.location.hash}`;

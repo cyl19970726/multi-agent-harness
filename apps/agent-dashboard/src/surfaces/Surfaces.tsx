@@ -78,11 +78,14 @@ import {
 } from "@/components/workbench/tones";
 
 import {
+  displayGoalStatus,
   formatDuration,
   gapIsResolved,
   groupMemberTimelineBySession,
   memberName,
   taskTitle,
+  tasksBlockedBy,
+  taskGitMetadata,
   type MemberSessionGroup,
   type TimelineItem,
   type WorkbenchModel,
@@ -316,13 +319,60 @@ function DependencyChips({
   );
 }
 
-function TaskCard({ task, onClick }: { task: Task; onClick: () => void }) {
+/** Dependency readiness for a TaskCard, derived from the task graph. */
+type Readiness = { ready: boolean; waiting: number };
+
+/** A ready 🟢 / waiting ⏳(N) chip — derived, distinct from status=blocked. */
+function ReadinessChip({ readiness }: { readiness?: Readiness }) {
+  if (!readiness) return null;
+  if (readiness.waiting > 0) {
+    return (
+      <span className="inline-flex items-center gap-1 rounded bg-status-warn/12 px-1.5 py-0.5 text-[10px] font-medium text-status-warn">
+        <Clock className="size-2.5" />
+        waiting ({readiness.waiting})
+      </span>
+    );
+  }
+  if (readiness.ready) {
+    return (
+      <span className="inline-flex items-center gap-1 rounded bg-status-good/12 px-1.5 py-0.5 text-[10px] font-medium text-status-good">
+        <CheckCircle2 className="size-2.5" />
+        ready
+      </span>
+    );
+  }
+  return null;
+}
+
+function TaskCard({
+  task,
+  onClick,
+  readiness,
+  goalLabel,
+}: {
+  task: Task;
+  onClick: () => void;
+  readiness?: Readiness;
+  goalLabel?: string;
+}) {
   return (
     <button
       type="button"
       onClick={onClick}
       className="group block w-full rounded-md border border-border bg-background/40 p-2.5 text-left transition-colors hover:border-input hover:bg-accent/40"
     >
+      <div className="mb-1 flex items-center gap-2">
+        <MonoId>{task.id}</MonoId>
+        {goalLabel && (
+          <span className="inline-flex items-center gap-1 truncate text-[10px] text-muted-foreground">
+            <Target className="size-2.5" />
+            <span className="max-w-28 truncate">{goalLabel}</span>
+          </span>
+        )}
+        <span className="ml-auto">
+          <ReadinessChip readiness={readiness} />
+        </span>
+      </div>
       <div className="flex items-start justify-between gap-2">
         <span className="line-clamp-2 text-[13px] font-medium leading-snug">
           {task.title ?? task.id}
@@ -345,6 +395,17 @@ function TaskCard({ task, onClick }: { task: Task; onClick: () => void }) {
       </div>
     </button>
   );
+}
+
+/** Build a readiness lookup for a task list from the model's task graph. */
+function readinessFor(
+  task: Task,
+  graph: WorkbenchModel["taskGraph"],
+): Readiness {
+  return {
+    ready: graph.ready.has(task.id),
+    waiting: graph.waiting.get(task.id)?.length ?? 0,
+  };
 }
 
 function LaneStack({
@@ -1387,6 +1448,93 @@ function VisionRow({
 /* Goal document                                                      */
 /* ------------------------------------------------------------------ */
 
+/**
+ * A bounded section that is collapsed by default — used to push the
+ * design/evaluation/closeout depth below the fold so the Goal page reads like a
+ * clean Notion document, not a proof wall (ADR 0019).
+ */
+function CollapsibleSection({
+  kicker,
+  title,
+  badge,
+  defaultOpen = false,
+  children,
+}: {
+  kicker: string;
+  title: string;
+  badge?: ReactNode;
+  defaultOpen?: boolean;
+  children: ReactNode;
+}) {
+  return (
+    <details className="rise group rounded-lg border border-border bg-card" open={defaultOpen}>
+      <summary className="flex cursor-pointer list-none items-center gap-2.5 px-4 py-3">
+        <ChevronRight className="size-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-90" />
+        <div className="min-w-0">
+          <div className="text-[10px] uppercase tracking-wider text-muted-foreground">{kicker}</div>
+          <div className="text-[13px] font-semibold">{title}</div>
+        </div>
+        {badge && <span className="ml-auto">{badge}</span>}
+      </summary>
+      <div className="border-t border-border">{children}</div>
+    </details>
+  );
+}
+
+/** Compact per-status task counts + a jump to the goal-filtered Work board. */
+function GoalTasksJump({
+  model,
+  onSelectionChange,
+}: {
+  model: WorkbenchModel;
+  onSelectionChange: (selection: Partial<SelectionState>) => void;
+}) {
+  const goal = model.selectedGoal;
+  const tasks = model.goalTasks;
+  const done = tasks.filter((task) => task.status === "done").length;
+  const counts = TASK_COLUMNS.map((status) => ({
+    status,
+    n: tasks.filter((task) => task.status === status).length,
+  })).filter((entry) => entry.n > 0);
+  return (
+    <div className="p-4">
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="text-2xl font-semibold tabular-nums">
+          {done}
+          <span className="text-base font-normal text-muted-foreground">/{tasks.length}</span>
+        </div>
+        <span className="text-xs text-muted-foreground">tasks done</span>
+        <Button
+          size="sm"
+          className="ml-auto"
+          disabled={!goal}
+          onClick={() =>
+            goal &&
+            onSelectionChange({ surface: "tasks", boardScope: "tasks", boardGoal: goal.id })
+          }
+        >
+          <Workflow className="size-3.5" />
+          View tasks ({tasks.length})
+        </Button>
+      </div>
+      {counts.length > 0 && (
+        <div className="mt-3 flex flex-wrap gap-1.5">
+          {counts.map((entry) => (
+            <span
+              key={entry.status}
+              className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background/50 px-2 py-1 text-[11px]"
+            >
+              <StatusDot tone={taskTone(entry.status)} />
+              <span className="capitalize">{entry.status}</span>
+              <span className="font-mono text-muted-foreground">{entry.n}</span>
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function GoalDocument({ model, onSelectionChange }: SurfaceProps) {
   const goal = model.selectedGoal;
   if (!goal) {
@@ -1451,18 +1599,22 @@ export function GoalDocument({ model, onSelectionChange }: SurfaceProps) {
             <CriteriaList items={goal.success_criteria} empty="No success criteria recorded" />
           </Section>
 
-          <Section kicker="Executable thesis" title="Goal design" className="rise">
+          <Section kicker="Task graph / Kanban" title="Tasks for this goal" className="rise">
+            <GoalTasksJump model={model} onSelectionChange={onSelectionChange} />
+          </Section>
+
+          <CollapsibleSection kicker="Executable thesis" title="Goal design">
             <GoalDesignSection design={design} />
-          </Section>
+          </CollapsibleSection>
 
-          <Section kicker="Retrospective" title="Goal evaluation" className="rise">
+          <CollapsibleSection kicker="Retrospective" title="Goal evaluation">
             <GoalEvaluationSection evaluation={evaluation} />
-          </Section>
+          </CollapsibleSection>
 
-          <Section
+          <CollapsibleSection
             kicker="Closeout invariant"
-            title="Goal evaluation & decision"
-            className="rise"
+            title="Closeout & decision"
+            badge={<Badge tone={mayClose ? "good" : "warn"}>{mayClose ? "may close" : "blocked"}</Badge>}
           >
             <div className="space-y-3 p-4">
               <p className="text-xs text-muted-foreground">
@@ -1491,14 +1643,7 @@ export function GoalDocument({ model, onSelectionChange }: SurfaceProps) {
                 }
               />
             </div>
-          </Section>
-
-          <Section kicker="Task graph / Kanban" title="Tasks for this goal" className="rise">
-            <LaneStack
-              model={model}
-              onSelect={(task) => onSelectionChange({ taskId: task.id, surface: "task" })}
-            />
-          </Section>
+          </CollapsibleSection>
         </div>
 
         <div className="space-y-4">
@@ -1726,9 +1871,9 @@ export function TaskDocument({ model, onSelectionChange, actionsEnabled, onActio
   );
   const taskWarnings = model.warnings.filter((warning) => warning.taskId === task.id);
   const dependsOn = task.depends_on_task_ids ?? [];
-  const blocks = model.tasks
-    .filter((t) => (t.depends_on_task_ids ?? []).includes(task.id))
-    .map((t) => t.id);
+  const blocks = tasksBlockedBy(task.id, model.tasks).map((t) => t.id);
+  const readiness = readinessFor(task, model.taskGraph);
+  const git = taskGitMetadata(task);
 
   return (
     <div className="space-y-5">
@@ -1768,6 +1913,7 @@ export function TaskDocument({ model, onSelectionChange, actionsEnabled, onActio
         title={task.title ?? task.id}
         actions={
           <>
+            <ReadinessChip readiness={readiness} />
             <Badge tone={taskTone(task.status)}>{task.status}</Badge>
             <ActionButton
               enabled={actionsEnabled}
@@ -1789,6 +1935,14 @@ export function TaskDocument({ model, onSelectionChange, actionsEnabled, onActio
               {task.objective ?? "No objective recorded."}
             </p>
           </Section>
+
+          {task.description && (
+            <Section kicker="Full write-up" title="Description" className="rise">
+              <p className="whitespace-pre-wrap p-4 text-[13px] leading-relaxed text-foreground/90">
+                {task.description}
+              </p>
+            </Section>
+          )}
 
           <Section
             kicker="Verifiable at review"
@@ -1955,10 +2109,11 @@ export function TaskDocument({ model, onSelectionChange, actionsEnabled, onActio
             <div className="p-4">
               <MetaList
                 items={[
-                  { label: "Branch", value: task.branch_ref ? <MonoId>{task.branch_ref}</MonoId> : "—" },
-                  { label: "PR", value: task.pr_ref ? <MonoId>{shortBranch(task.pr_ref)}</MonoId> : "—" },
-                  { label: "Workspace", value: task.workspace_ref ? <MonoId>{task.workspace_ref}</MonoId> : "—" },
-                  { label: "Owned paths", value: <PathList paths={task.owned_paths} /> },
+                  { label: "Branch", value: git.branch ? <MonoId>{git.branch}</MonoId> : "—" },
+                  { label: "Base", value: git.base_branch ? <MonoId>{git.base_branch}</MonoId> : "—" },
+                  { label: "PR", value: git.pr_ref ? <MonoId>{shortBranch(git.pr_ref)}</MonoId> : "—" },
+                  { label: "Worktree", value: git.worktree_path ? <MonoId>{git.worktree_path}</MonoId> : "—" },
+                  { label: "Owned paths", value: <PathList paths={git.owned_paths} /> },
                   { label: "Sessions", value: sessions.length },
                 ]}
               />
@@ -2296,78 +2451,168 @@ function GapRow({ gap, onSelect }: { gap: Gap; onSelect: () => void }) {
 /* Graph / Kanban                                                     */
 /* ------------------------------------------------------------------ */
 
+/** Product columns (archived hidden); legacy `complete` folds into `done`. */
+const GOAL_COLUMNS = ["active", "blocked", "review", "done"] as const;
+const TASK_COLUMNS = ["planned", "assigned", "running", "blocked", "review", "done"] as const;
+
+function BoardColumn({
+  title,
+  tone,
+  count,
+  children,
+}: {
+  title: string;
+  tone: StatusTone;
+  count: number;
+  children: ReactNode;
+}) {
+  return (
+    <div className="flex w-72 shrink-0 flex-col rounded-lg border border-border bg-card/60">
+      <div className="flex items-center gap-2 border-b border-border px-3 py-2.5">
+        <StatusDot tone={tone} />
+        <span className="text-[12px] font-semibold capitalize">{title}</span>
+        <span className="ml-auto font-mono text-[11px] text-muted-foreground">{count}</span>
+      </div>
+      <div className="min-h-16 space-y-1.5 p-2">{children}</div>
+    </div>
+  );
+}
+
+/**
+ * Unified Work board. A `[ Goals | Tasks ]` switch lays out either the Goal
+ * collection (4 columns: active/blocked/review/done) or the Task graph (6
+ * columns). Tasks mode supports a goal filter (`boardGoal`). Task cards carry a
+ * derived ready/waiting chip distinct from the stored `blocked` column. The
+ * per-goal board is just this board pre-filtered via `boardGoal`.
+ */
 export function GraphKanban({
   model,
-  mode,
   onSelectionChange,
-}: SurfaceProps & { mode: "kanban" | "graph" | "split" }) {
-  const lanes = model.lanes.filter((lane) => lane.tasks.length);
+  boardScope = "tasks",
+  boardGoal,
+}: SurfaceProps & { boardScope?: "goals" | "tasks"; boardGoal?: string }) {
+  const goalsMode = boardScope === "goals";
+  const goalById = new Map(model.goals.map((goal) => [goal.id, goal]));
+  const filterGoal = boardGoal ? goalById.get(boardGoal) : undefined;
+  const boardTasks = boardGoal
+    ? model.tasks.filter((task) => task.goal_id === boardGoal)
+    : model.tasks;
+
   return (
     <div className="space-y-5">
       <SurfaceHeader
-        kicker="Task relationships"
-        title="Tasks"
-        description="Synchronized projections of the same task read model. Kanban is the default view; the graph canvas arrives once task counts need pan/zoom."
+        kicker={goalsMode ? "Goal collection" : "Task graph"}
+        title="Work"
+        description={
+          goalsMode
+            ? "Goals by lifecycle. A goal reaches done only after a closeout decision and evaluation — never from task activity alone."
+            : "Tasks by status. The ready / waiting chip is derived from dependencies and is distinct from the blocked column."
+        }
         actions={
-          <div className="flex items-center gap-1 rounded-md border border-border bg-card p-0.5">
-            {(["kanban", "graph"] as const).map((value) => (
-              <button
-                key={value}
-                type="button"
-                onClick={() => onSelectionChange({ mode: value })}
-                className={cn(
-                  "rounded px-2.5 py-1 text-xs font-medium capitalize transition-colors",
-                  (mode === value || (value === "kanban" && mode === "split"))
-                    ? "bg-primary/15 text-primary"
-                    : "text-muted-foreground hover:text-foreground",
-                )}
+          <div className="flex items-center gap-2">
+            {!goalsMode && (
+              <select
+                aria-label="Filter tasks by goal"
+                value={boardGoal ?? ""}
+                onChange={(event) =>
+                  onSelectionChange({ boardGoal: event.target.value || undefined })
+                }
+                className="h-8 max-w-44 truncate rounded-md border border-border bg-background/60 px-2 text-xs text-foreground outline-none transition-colors hover:border-input focus:border-ring"
               >
-                {value}
-              </button>
-            ))}
+                <option value="">All goals</option>
+                {model.goals.map((goal) => (
+                  <option key={goal.id} value={goal.id}>
+                    {goal.title ?? goal.id}
+                  </option>
+                ))}
+              </select>
+            )}
+            <div className="flex items-center gap-1 rounded-md border border-border bg-card p-0.5">
+              {(["goals", "tasks"] as const).map((value) => (
+                <button
+                  key={value}
+                  type="button"
+                  onClick={() => onSelectionChange({ boardScope: value })}
+                  className={cn(
+                    "rounded px-2.5 py-1 text-xs font-medium capitalize transition-colors",
+                    boardScope === value
+                      ? "bg-primary/15 text-primary"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  {value}
+                </button>
+              ))}
+            </div>
           </div>
         }
       />
 
-      {mode === "graph" ? (
-        <Section title="Dependency graph" kicker="Coming in WP5" className="rise">
-          <EmptyState
-            icon={Workflow}
-            title="Graph canvas coming in WP5"
-            description="Tasks ship as Kanban today; the semantic dependency graph canvas lands in WP5."
-          />
-        </Section>
-      ) : lanes.length ? (
-        <div className="flex gap-3 overflow-x-auto pb-2">
-          {lanes.map((lane) => (
-            <div
-              key={lane.id}
-              className="flex w-72 shrink-0 flex-col rounded-lg border border-border bg-card/60"
-            >
-              <div className="flex items-center gap-2 border-b border-border px-3 py-2.5">
-                <StatusDot tone={taskTone(lane.id)} />
-                <span className="text-[12px] font-semibold">{lane.title}</span>
-                <span className="ml-auto font-mono text-[11px] text-muted-foreground">
-                  {lane.tasks.length}
-                </span>
-              </div>
-              <div className="space-y-1.5 p-2">
-                {lane.tasks.map((task) => (
-                  <TaskCard
-                    key={task.id}
-                    task={task}
-                    onClick={() => onSelectionChange({ taskId: task.id, surface: "task" })}
-                  />
-                ))}
-              </div>
-            </div>
-          ))}
+      {filterGoal && (
+        <div className="flex items-center gap-2 rounded-md border border-border bg-card/40 px-3 py-2 text-xs">
+          <Target className="size-3.5 text-primary" />
+          <span className="text-muted-foreground">Filtered to goal</span>
+          <button
+            type="button"
+            className="font-medium hover:text-primary"
+            onClick={() => onSelectionChange({ goalId: filterGoal.id, surface: "goal" })}
+          >
+            {filterGoal.title ?? filterGoal.id}
+          </button>
+          <button
+            type="button"
+            className="ml-auto inline-flex items-center gap-1 text-muted-foreground hover:text-foreground"
+            onClick={() => onSelectionChange({ boardGoal: undefined })}
+          >
+            <X className="size-3" /> Clear
+          </button>
         </div>
-      ) : (
-        <Section title="Task lanes" className="rise">
-          <EmptyState icon={ClipboardList} title="No tasks to lay out" />
-        </Section>
       )}
+
+      <div className="flex gap-3 overflow-x-auto pb-2">
+        {goalsMode
+          ? GOAL_COLUMNS.map((status) => {
+              const goals = model.goals.filter((goal) => displayGoalStatus(goal) === status);
+              return (
+                <BoardColumn key={status} title={status} tone={goalTone(status)} count={goals.length}>
+                  {goals.length ? (
+                    goals.map((goal) => (
+                      <GoalCard
+                        key={goal.id}
+                        goal={goal}
+                        model={model}
+                        onSelect={() => onSelectionChange({ goalId: goal.id, surface: "goal" })}
+                      />
+                    ))
+                  ) : (
+                    <p className="px-1 py-3 text-center text-[11px] text-muted-foreground/60">None</p>
+                  )}
+                </BoardColumn>
+              );
+            })
+          : TASK_COLUMNS.map((status) => {
+              const tasks = boardTasks.filter((task) => task.status === status);
+              return (
+                <BoardColumn key={status} title={status} tone={taskTone(status)} count={tasks.length}>
+                  {tasks.length ? (
+                    tasks.map((task) => (
+                      <TaskCard
+                        key={task.id}
+                        task={task}
+                        readiness={readinessFor(task, model.taskGraph)}
+                        goalLabel={
+                          boardGoal ? undefined : goalById.get(task.goal_id ?? "")?.title
+                        }
+                        onClick={() => onSelectionChange({ taskId: task.id, surface: "task" })}
+                      />
+                    ))
+                  ) : (
+                    <p className="px-1 py-3 text-center text-[11px] text-muted-foreground/60">None</p>
+                  )}
+                </BoardColumn>
+              );
+            })}
+      </div>
     </div>
   );
 }
