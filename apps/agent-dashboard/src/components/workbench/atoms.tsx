@@ -71,9 +71,11 @@ export function SurfaceHeader({
 }) {
   return (
     <header
-      className={cn("flex items-start justify-between gap-4", className)}
+      className={cn("flex flex-wrap items-start justify-between gap-x-4 gap-y-3", className)}
     >
-      <div className="min-w-0 space-y-1">
+      {/* min-w keeps the title readable; when the actions can't fit beside it the
+          flex-wrap drops them to their own row instead of collapsing the title. */}
+      <div className="min-w-[15rem] flex-1 space-y-1">
         {kicker && (
           <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
             {kicker}
@@ -86,7 +88,9 @@ export function SurfaceHeader({
           <p className="max-w-2xl text-sm text-muted-foreground">{description}</p>
         )}
       </div>
-      {actions && <div className="flex shrink-0 items-center gap-2">{actions}</div>}
+      {actions && (
+        <div className="flex shrink-0 flex-wrap items-center gap-2">{actions}</div>
+      )}
     </header>
   );
 }
@@ -129,6 +133,78 @@ export function Section({
       </header>
       <div className={cn("min-h-0 flex-1", bodyClassName)}>{children}</div>
     </section>
+  );
+}
+
+/**
+ * Centered Notion-style document column for text-heavy detail pages (Goal /
+ * Task). Caps line length for readability and sets vertical rhythm between
+ * document sections.
+ */
+export function DocumentSurface({
+  children,
+  className,
+}: {
+  children: React.ReactNode;
+  className?: string;
+}) {
+  return (
+    <div className={cn("mx-auto w-full max-w-[800px] space-y-7", className)}>
+      {children}
+    </div>
+  );
+}
+
+/**
+ * Borderless document section: a small uppercase label (optional action) over
+ * content, separated by whitespace rather than card borders. The Notion-style
+ * counterpart to the bordered `Section` used on dashboards/boards.
+ */
+export function DocSection({
+  label,
+  action,
+  className,
+  children,
+}: {
+  label?: string;
+  action?: React.ReactNode;
+  className?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <section className={cn("space-y-2.5", className)}>
+      {(label || action) && (
+        <div className="flex items-center justify-between gap-2">
+          {label && (
+            <h2 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+              {label}
+            </h2>
+          )}
+          {action && <div className="flex shrink-0 items-center gap-1.5">{action}</div>}
+        </div>
+      )}
+      {children}
+    </section>
+  );
+}
+
+/** Notion-style page properties: borderless label/value rows at the top of a doc. */
+export function DocProperties({
+  items,
+  className,
+}: {
+  items: { label: string; value: React.ReactNode }[];
+  className?: string;
+}) {
+  return (
+    <dl className={cn("space-y-2", className)}>
+      {items.map((item) => (
+        <div key={item.label} className="flex items-start gap-3 text-[13px]">
+          <dt className="w-32 shrink-0 text-muted-foreground">{item.label}</dt>
+          <dd className="min-w-0 flex-1 break-words text-foreground">{item.value}</dd>
+        </div>
+      ))}
+    </dl>
   );
 }
 

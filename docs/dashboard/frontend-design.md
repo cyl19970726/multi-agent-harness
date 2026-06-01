@@ -12,8 +12,10 @@ candidates, critique, and the selected/killed/deprecated decision ledger stay in
 [layout-history.md](layout-history.md). Page-level specs live under
 [pages/](pages/), and each page file owns its current `## Layout Contract`
 with detailed desktop/tablet/mobile ASCII diagrams. Architecture and stack
-decisions stay in [frontend-architecture.md](frontend-architecture.md) and ADR
-[0016](../decisions/0016-tailwind-shadcn-adoption.md). Acceptance gates stay in
+decisions stay in [frontend-architecture.md](frontend-architecture.md) and ADRs
+[0016](../decisions/0016-tailwind-shadcn-adoption.md) (stack) +
+[0019](../decisions/0019-vision-goal-task-workbench-redesign.md) (light Notion
+theme + Vision→Goal→Task redesign). Acceptance gates stay in
 [acceptance.md](acceptance.md).
 
 ## Current Design Status
@@ -23,7 +25,9 @@ status:
   top_level_direction: shipped
   current_implementation: merged (PR #7)
   stack: React 18 + TypeScript + Vite + Tailwind v4 + shadcn/Radix + lucide + Geist
-  frontend_design_source: page specs with page-local layout contracts
+  theme: light, Notion-like document surface (ADR 0019, supersedes 0016 dark theme)
+  vision_goal_task: unified Work board + Notion document detail (work-board-design.md)
+  frontend_design_source: page specs + work-board-design.md + ADR 0019
   implementation_allowed: yes
 ```
 
@@ -35,8 +39,12 @@ recorded in [layout-history.md](layout-history.md). Further changes must:
 - start from the active page specs in [pages/](pages/) and their
   `## Layout Contract` sections;
 - follow the architecture and stack decision in
-  [frontend-architecture.md](frontend-architecture.md) and ADR
-  [0016](../decisions/0016-tailwind-shadcn-adoption.md);
+  [frontend-architecture.md](frontend-architecture.md) and ADRs
+  [0016](../decisions/0016-tailwind-shadcn-adoption.md) +
+  [0019](../decisions/0019-vision-goal-task-workbench-redesign.md);
+- for Vision/Goal/Task surfaces, follow
+  [work-board-design.md](work-board-design.md) (Notion document layout, unified
+  Work board) rather than the removed per-page specs;
 - keep desktop/tablet/mobile ASCII diagrams in each changed page spec current;
 - pass screenshot-first acceptance in [acceptance.md](acceptance.md).
 
@@ -69,15 +77,20 @@ Vision -> Goal collection -> GoalDesign -> AgentTeam -> TaskGraph
 
 ## Page Specs
 
+The **Vision, Goal, Task, Work-board (graph/Kanban), and Docs** surfaces are now
+owned by [work-board-design.md](work-board-design.md) and ADR
+[0019](../decisions/0019-vision-goal-task-workbench-redesign.md): a light,
+Notion-like document layout, a unified `[Goals | Tasks]` Work board with a goal
+filter and derived ready/waiting chips, full-page Goal documents, a Task
+slide-over, and live docs rendering for Vision `source_refs`. Their old
+per-page specs were removed. The page specs below cover the surfaces not yet
+folded into that redesign.
+
 | Page spec | Owns |
 | --- | --- |
-| [Vision overview](pages/vision-overview.md) | Vision context, goal collection, completion state, distance-to-vision, next goals. |
+| [work-board-design.md](work-board-design.md) | Vision/Goal/Task structures + examples, unified Work board, Goal/Task/Vision detail document layout, derived task-graph. |
 | [Team workspace](pages/team-workspace.md) | Persistent AgentTeam collaboration space, role groups, queues, activity, decision pressure. |
 | [AgentMember workbench](pages/agent-member-workbench.md) | One durable member as a teammate: current work, inbox/outbox, activity, runtime, prompt/skills, actions. |
-| [Goal document](pages/goal-document.md) | GoalDesign, team design, branch policy, graph/Kanban, evidence, decision, evaluation, next round. |
-| [Task document](pages/task-document.md) | Assignment proof, report, evidence, proposal, review, decision, Git refs, warnings. |
-| [Graph/Kanban](pages/graph-kanban.md) | Relationship graph plus execution lanes for Goals and Tasks. |
-| [Docs context](pages/docs-context.md) | Mounted project docs linked to active Vision, Goal, Task, Member, Evidence, or Decision. |
 | [Evidence/Review/Decision](pages/evidence-review-decision.md) | Acceptance proof chain and decision queues. |
 | [Warnings/repair](pages/warnings-repair.md) | Workflow risks, affected objects, navigation, repair metadata. |
 | [Debug](pages/debug.md) | Raw snapshot, import/export, and low-level object views outside the primary work surface. |

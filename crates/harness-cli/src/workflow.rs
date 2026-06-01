@@ -156,7 +156,11 @@ pub struct WorkflowOutcome {
 /// required step transitions the run to "failed" but the parallel steps are
 /// still collected (nulls tolerated). This is the minimal faithful shape: serial
 /// then parallel, over a codex + a claude member, provider-neutral.
-pub fn investigate(driver: &AgentStepFn<'_>, members: &WorkflowMembers, topic: &str) -> WorkflowOutcome {
+pub fn investigate(
+    driver: &AgentStepFn<'_>,
+    members: &WorkflowMembers,
+    topic: &str,
+) -> WorkflowOutcome {
     let mut steps = Vec::new();
 
     // --- SERIAL phase: scope the investigation with the codex member. ---
@@ -205,7 +209,11 @@ pub fn investigate(driver: &AgentStepFn<'_>, members: &WorkflowMembers, topic: &
         )
     };
 
-    WorkflowOutcome { steps, status, summary }
+    WorkflowOutcome {
+        steps,
+        status,
+        summary,
+    }
 }
 
 /// Signature of a registered built-in workflow body (§3 option C).
@@ -265,7 +273,9 @@ mod tests {
     }
 
     /// A mock driver that always succeeds and records the order of invocation.
-    fn recording_driver<'a>(order: &'a Mutex<Vec<String>>) -> impl Fn(&AgentStepSpec) -> StepResult + Sync + 'a {
+    fn recording_driver<'a>(
+        order: &'a Mutex<Vec<String>>,
+    ) -> impl Fn(&AgentStepSpec) -> StepResult + Sync + 'a {
         move |spec: &AgentStepSpec| {
             order.lock().unwrap().push(spec.label.clone());
             StepResult {
@@ -385,7 +395,11 @@ mod tests {
                 member_id: spec.member_id.clone(),
                 ok,
                 provider_session_id: if ok { Some("s".to_string()) } else { None },
-                output_summary: if ok { "ok".to_string() } else { "failed".to_string() },
+                output_summary: if ok {
+                    "ok".to_string()
+                } else {
+                    "failed".to_string()
+                },
             }
         };
         let outcome = investigate(&driver, &members(), "failure Y");

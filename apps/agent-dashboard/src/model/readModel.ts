@@ -6,6 +6,7 @@ import type {
   Decision,
   Evidence,
   Gap,
+  GitMetadata,
   Goal,
   GoalCase,
   GoalDesign,
@@ -124,6 +125,8 @@ export interface WorkbenchModel {
   tasks: Task[];
   goalTasks: Task[];
   lanes: Lane[];
+  /** Derived dependency graph over ALL tasks (ready/waiting/edges). */
+  taskGraph: TaskGraph;
   messages: Message[];
   evidence: Evidence[];
   proposals: Proposal[];
@@ -367,6 +370,7 @@ export function buildWorkbenchModel(snapshot: DashboardSnapshot, selection: Sele
     tasks,
     goalTasks,
     lanes: buildLanes(goalTasks, snapshot.kanban),
+    taskGraph: taskGraph(tasks),
     messages,
     evidence,
     proposals,
@@ -488,6 +492,86 @@ function groupBy<T>(items: T[], key: (item: T) => string): Map<string, T[]> {
 
 function isGoalStatus(goal: Goal, ...statuses: string[]): boolean {
   return statuses.includes((goal.status ?? "active").toLowerCase());
+}
+
+/**
+ * Product column for a Goal: the legacy `complete` status folds into `done`
+ * (ADR 0019). `archived` is returned as-is so callers can hide it.
+ */
+export function displayGoalStatus(goal: Goal): string {
+  const status = (goal.status ?? "active").toLowerCase();
+  return status === "complete" ? "done" : status;
+}
+
+export interface TaskGraphEdge {
+  /** The dependency (prerequisite) task id. */
+  from: string;
+  /** The dependent task id (waits for `from`). */
+  to: string;
+}
+
+export interface TaskGraph {
+  nodes: Task[];
+  /** dependency -> dependent edges, derived from depends_on_task_ids. */
+  edges: TaskGraphEdge[];
+  /** Tasks whose every dependency is `done` AND that are still planned/assigned. */
+  ready: Set<string>;
+  /** taskId -> unfinished dependency ids (the reason it is waiting). */
+  waiting: Map<string, string[]>;
+}
+
+/** Self-statuses that can become "ready" once dependencies clear. */
+const READY_SELF_STATUSES: TaskStatus[] = ["planned", "assigned"];
+
+/**
+ * Derive the task graph from `depends_on_task_ids` alone (ADR 0019 / 0009): one
+ * stored edge, everything else derived. `ready` = all dependencies `done` and
+ * self planned/assigned; `waiting` = at least one unfinished dependency. Note
+ * `waiting` (derived) is distinct from the stored `status==="blocked"`: a
+ * `planned` task with an unfinished dependency is waiting, not blocked. An
+ * unknown dependency id counts as unfinished (we cannot prove it is done).
+ */
+export function taskGraph(tasks: Task[]): TaskGraph {
+  const byId = new Map(tasks.map((task) => [task.id, task]));
+  const edges: TaskGraphEdge[] = [];
+  const ready = new Set<string>();
+  const waiting = new Map<string, string[]>();
+  for (const task of tasks) {
+    const unfinished: string[] = [];
+    for (const depId of task.depends_on_task_ids ?? []) {
+      edges.push({ from: depId, to: task.id });
+      const dep = byId.get(depId);
+      if (!dep || dep.status !== "done") unfinished.push(depId);
+    }
+    if (unfinished.length > 0) {
+      waiting.set(task.id, unfinished);
+    } else if (READY_SELF_STATUSES.includes(task.status)) {
+      ready.add(task.id);
+    }
+  }
+  return { nodes: tasks, edges, ready, waiting };
+}
+
+/** Tasks that depend on `taskId` (reverse edges = what this task blocks). */
+export function tasksBlockedBy(taskId: string, tasks: Task[]): Task[] {
+  return tasks.filter((task) => (task.depends_on_task_ids ?? []).includes(taskId));
+}
+
+/**
+ * Effective git context for a Task: prefer `git_metadata`, fall back to the flat
+ * fields retained for back-compat (ADR 0019).
+ */
+export function taskGitMetadata(task: Task): GitMetadata {
+  const meta = task.git_metadata ?? {};
+  return {
+    repo: meta.repo ?? null,
+    worktree_path: meta.worktree_path ?? task.workspace_ref ?? null,
+    branch: meta.branch ?? task.branch_ref ?? null,
+    base_branch: meta.base_branch ?? null,
+    pr_ref: meta.pr_ref ?? task.pr_ref ?? null,
+    commit: meta.commit ?? null,
+    owned_paths: meta.owned_paths ?? task.owned_paths ?? [],
+  };
 }
 
 /**

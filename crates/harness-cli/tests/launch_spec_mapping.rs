@@ -1,7 +1,5 @@
 #[cfg(test)]
 mod launch_spec_mapping_tests {
-    use std::collections::HashMap;
-
     // Minimal mock types for testing (these would come from harness_core in real code)
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     enum LaunchPermission {
@@ -11,7 +9,7 @@ mod launch_spec_mapping_tests {
     }
 
     impl LaunchPermission {
-        fn to_claude_mode(&self) -> &'static str {
+        fn to_claude_mode(self) -> &'static str {
             match self {
                 LaunchPermission::ReadOnly => "plan",
                 LaunchPermission::WorkspaceWrite => "acceptEdits",
@@ -19,7 +17,7 @@ mod launch_spec_mapping_tests {
             }
         }
 
-        fn to_codex_sandbox(&self) -> &'static str {
+        fn to_codex_sandbox(self) -> &'static str {
             match self {
                 LaunchPermission::ReadOnly => "read-only",
                 LaunchPermission::WorkspaceWrite => "workspace-write",
@@ -100,7 +98,11 @@ mod launch_spec_mapping_tests {
 
     #[test]
     fn test_codex_argv_construction_with_permission() {
-        let mut args = vec!["codex".to_string(), "exec".to_string(), "--json".to_string()];
+        let mut args = vec![
+            "codex".to_string(),
+            "exec".to_string(),
+            "--json".to_string(),
+        ];
 
         let permission = LaunchPermission::ReadOnly;
         let sandbox = permission.to_codex_sandbox();
@@ -138,10 +140,7 @@ mod launch_spec_mapping_tests {
 
             // Claude modes
             assert!(
-                matches!(
-                    claude_mode,
-                    "plan" | "acceptEdits" | "bypassPermissions"
-                ),
+                matches!(claude_mode, "plan" | "acceptEdits" | "bypassPermissions"),
                 "Invalid Claude permission mode: {}",
                 claude_mode
             );
@@ -160,7 +159,7 @@ mod launch_spec_mapping_tests {
 
     #[test]
     fn test_allowed_tools_comma_separation() {
-        let tools = vec!["Bash", "Edit", "Read"];
+        let tools = ["Bash", "Edit", "Read"];
         let tools_arg = tools.join(",");
 
         assert_eq!(tools_arg, "Bash,Edit,Read");

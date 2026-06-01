@@ -10,25 +10,32 @@ recorded as ADR [0016](../decisions/0016-tailwind-shadcn-adoption.md).
 ## Current Decision
 
 ```text
-status: shipped (PR #7)
-implementation_allowed: yes, from page-local layout contracts
+status: shipped (PR #7); theme repivoted to light Notion (ADR 0019)
+implementation_allowed: yes, from page-local layout contracts + work-board-design.md
 decision:
   React 18 + TypeScript + Vite build/runtime shell
   Tailwind CSS v4 (@tailwindcss/vite) for styling and tokens
   shadcn/ui primitives over Radix (components.json, style new-york)
   lucide-react icons; Geist + Geist Mono fonts
+  light, Notion-like token theme in src/index.css (ADR 0019 supersedes the
+    0016 dark operator-console theme; decoration removed)
+  document atoms (DocumentSurface / DocSection / DocProperties) for the
+    Notion-style Goal/Task detail pages
   dependencies live in the ROOT package.json (no per-app package.json)
   module boundary: src/app, src/surfaces, src/model, src/components
 ```
 
-The Agent Workbench frontend was rebuilt and merged in PR #7. React +
-TypeScript + Vite remain the build/runtime shell; the rebuild adopted Tailwind
-CSS v4, shadcn/ui primitives over Radix, lucide-react icons, and the Geist font
-family on top of a dark operator-console token theme in `src/index.css`. The
-earlier hand-rolled-CSS shell was rejected for product-architecture and
-acceptance reasons (card/tab dumps, vague layout specs), not because of the build
-path. The full stack rationale is recorded in ADR
-[0016](../decisions/0016-tailwind-shadcn-adoption.md), which supersedes ADR
+The Agent Workbench frontend was rebuilt and merged in PR #7 on React +
+TypeScript + Vite with Tailwind CSS v4, shadcn/ui primitives over Radix,
+lucide-react icons, and the Geist font family. The original rebuild used a dark
+operator-console token theme; ADR
+[0019](../decisions/0019-vision-goal-task-workbench-redesign.md) **repivoted the
+theme to a light, Notion-like document surface** (decoration removed) and added
+the document atoms used by the Goal/Task detail pages, superseding the theme
+tokens of ADR [0016](../decisions/0016-tailwind-shadcn-adoption.md) (the stack
+decision itself stands). The earlier hand-rolled-CSS shell was rejected for
+product-architecture and acceptance reasons (card/tab dumps, vague layout specs),
+not because of the build path. ADR 0016 supersedes ADR
 [0014](../decisions/0014-react-vite-agent-dashboard.md) in part.
 
 This decision must be re-opened if implementation needs routing, graph,
@@ -114,8 +121,8 @@ out of scope.
   `apps/agent-dashboard/package.json`.
 - Do not add a second full component framework without a recorded Reviewer
   decision.
-- Do not add a graph/canvas library until [pages/graph-kanban.md](pages/graph-kanban.md)
-  and its page-local layout contract require capabilities that custom SVG/HTML cannot
+- Do not add a graph/canvas library until [work-board-design.md](work-board-design.md)
+  and its layout contract require capabilities that custom SVG/HTML cannot
   provide.
 - Any dependency must name the page spec it serves and how it will be
   screenshot-accepted.

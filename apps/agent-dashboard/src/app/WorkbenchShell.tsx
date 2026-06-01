@@ -78,7 +78,7 @@ interface WorkbenchShellProps {
 const navItems: { id: SurfaceId; label: string; icon: typeof Users }[] = [
   { id: "team", label: "Team", icon: Users },
   { id: "vision", label: "Vision", icon: Target },
-  { id: "tasks", label: "Tasks", icon: Workflow },
+  { id: "tasks", label: "Work", icon: Workflow },
   { id: "member", label: "Member", icon: Bot },
   { id: "warnings", label: "Warnings", icon: ShieldAlert },
 ];
@@ -113,10 +113,12 @@ export function WorkbenchShell({
 
   const severity = countBySeverity(model.warnings);
   const showTeamRail = selection.surface === "team" || selection.surface === "member";
-  // The Member surface is a self-contained desktop-app view that OWNS its own
-  // right rail, so the global Inspector is suppressed there to avoid a duplicate
-  // rail. Every other surface keeps the global Inspector.
-  const showInspector = selection.surface !== "member";
+  // The Member surface owns its own right rail; the Work board needs full width
+  // for its columns; the Goal/Task detail pages are centered Notion documents
+  // that read better without a competing rail. All four suppress the global
+  // Inspector; Team and the rest keep it.
+  const noInspector: SurfaceId[] = ["member", "tasks", "goal", "task"];
+  const showInspector = !noInspector.includes(selection.surface);
 
   return (
     <div className="flex h-screen flex-col overflow-hidden text-foreground">
@@ -160,6 +162,7 @@ export function WorkbenchShell({
               sourceLabel={sourceLabel}
               actionsEnabled={actionsEnabled}
               onAction={onAction}
+              apiUrl={apiUrl}
             />
           </div>
         </main>
@@ -583,6 +586,7 @@ function SurfaceSwitch({
   sourceLabel,
   actionsEnabled,
   onAction,
+  apiUrl,
 }: {
   model: WorkbenchModel;
   selection: SelectionState;
@@ -590,8 +594,9 @@ function SurfaceSwitch({
   sourceLabel: string;
   actionsEnabled: boolean;
   onAction: (path: string, body?: unknown) => void;
+  apiUrl: string;
 }) {
-  const shared = { model, onSelectionChange, actionsEnabled, onAction };
+  const shared = { model, onSelectionChange, actionsEnabled, onAction, apiUrl };
   switch (selection.surface) {
     case "vision":
       return <VisionOverview {...shared} />;
@@ -600,7 +605,14 @@ function SurfaceSwitch({
     case "task":
       return <TaskDocument {...shared} />;
     case "tasks":
-      return <GraphKanban {...shared} mode={selection.mode ?? "kanban"} />;
+      return (
+        <GraphKanban
+          {...shared}
+          boardScope={selection.boardScope ?? "tasks"}
+          boardGoal={selection.boardGoal}
+          peekTaskId={selection.taskId}
+        />
+      );
     case "member":
       return <MemberWorkbench {...shared} />;
     case "docs":

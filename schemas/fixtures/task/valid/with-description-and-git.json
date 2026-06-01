@@ -1,0 +1,33 @@
+{
+  "id": "task-3",
+  "goal_id": "goal-3",
+  "parent_task_id": null,
+  "title": "Add additive-optional schema fields",
+  "objective": "Carry description + git_metadata without breaking old data.",
+  "description": "## Context\nThe spine stays additionalProperties:false.\n\n## Key points\n- `description` is the full task write-up (markdown)\n- old rows that omit it still validate\n\n## Done when\n- fixtures green",
+  "owner_agent_id": "agent-1",
+  "assignee_agent_id": "worker-1",
+  "reviewer_agent_id": "evaluator-1",
+  "status": "done",
+  "depends_on_task_ids": ["task-1"],
+  "workspace_ref": ".worktrees/task-3",
+  "branch_ref": "schema/wp-a-object-spine",
+  "pr_ref": null,
+  "owned_paths": ["schemas"],
+  "acceptance_criteria": ["Existing fixtures stay valid", "New fields documented"],
+  "created_at": "2026-06-01T00:00:00Z",
+  "updated_at": "2026-06-01T00:00:00Z",
+  "phase": "phase-0-schema",
+  "scope_refs": ["schemas/goal.schema.json", "schemas/task.schema.json"],
+  "requires_human_approval": false,
+  "verdict_decision_id": null,
+  "git_metadata": {
+    "repo": "multi-agent-harness",
+    "worktree_path": ".worktrees/task-3",
+    "branch": "schema/wp-a-object-spine",
+    "base_branch": "master",
+    "pr_ref": null,
+    "commit": null,
+    "owned_paths": ["schemas"]
+  }
+}

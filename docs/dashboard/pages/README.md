@@ -48,15 +48,16 @@ open_questions:
 
 ## Core Page Specs
 
+The Vision, Goal, Task, Work-board (graph/Kanban), and Docs surfaces are now
+owned by [../work-board-design.md](../work-board-design.md) and ADR
+[0019](../../decisions/0019-vision-goal-task-workbench-redesign.md) (light Notion
+document layout + unified Work board); their old page specs were removed. The
+specs below cover the surfaces not yet folded into that redesign.
+
 | Page | Status | Layout |
 | --- | --- | --- |
-| [Vision overview](vision-overview.md) | planned | page-local contract |
 | [Team workspace](team-workspace.md) | planned | page-local contract |
 | [AgentMember workbench](agent-member-workbench.md) | planned | page-local contract |
-| [Goal document](goal-document.md) | planned | page-local contract |
-| [Task document](task-document.md) | planned | page-local contract |
-| [Graph/Kanban](graph-kanban.md) | planned | page-local contract |
-| [Docs context](docs-context.md) | planned | page-local contract |
 | [Evidence/Review/Decision](evidence-review-decision.md) | planned | page-local contract |
 | [Warnings/repair](warnings-repair.md) | planned | page-local contract |
 | [Debug](debug.md) | planned | page-local contract |

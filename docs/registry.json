@@ -529,6 +529,34 @@
       "reorgTrigger": "Workbench page specs, page-local layout contracts, implementation readiness, or frontend design reading order changes."
     },
     {
+      "path": "docs/dashboard/work-board-design.md",
+      "ownerRole": "product-design",
+      "status": "stable",
+      "lifecycle": "volatile",
+      "canonicalFor": [
+        "Vision/Goal/Task structures and examples",
+        "unified Work board IA",
+        "Goal/Task/Vision detail document layout",
+        "derived task-graph (ready/waiting)"
+      ],
+      "dependsOn": [
+        "docs/concept-model.md",
+        "docs/data-model.md",
+        "docs/decisions/0019-vision-goal-task-workbench-redesign.md",
+        "docs/dashboard/read-model.md",
+        "docs/dashboard/acceptance.md"
+      ],
+      "machineConsumers": [
+        "check-doc-links",
+        "check-doc-governance"
+      ],
+      "reviewAfter": "2026-09-01",
+      "lastVerifiedWith": [
+        "npx pnpm@9.15.4 check"
+      ],
+      "reorgTrigger": "Vision/Goal/Task structures, Work board IA, detail document layout, or task-graph derivation change."
+    },
+    {
       "path": "docs/dashboard/frontend-architecture.md",
       "ownerRole": "frontend-architecture",
       "status": "planned",
@@ -985,37 +1013,6 @@
       "reorgTrigger": "Core Workbench page list, page-spec template, page-local layout contract template, or page-spec boundary changes."
     },
     {
-      "path": "docs/dashboard/pages/vision-overview.md",
-      "ownerRole": "product-design",
-      "status": "planned",
-      "lifecycle": "volatile",
-      "canonicalFor": [
-        "Vision goal collection page spec",
-        "first-class Vision rendering contract",
-        "distance-to-vision UI contract",
-        "page-local layout contract"
-      ],
-      "dependsOn": [
-        "docs/prd.md",
-        "docs/concept-model.md",
-        "docs/dashboard.md",
-        "docs/dashboard/frontend-design.md",
-        "docs/dashboard/design-principles.md",
-        "docs/dashboard/layout-history.md",
-        "docs/dashboard/read-model.md",
-        ".agents/skills/harness-frontend-product-design/SKILL.md"
-      ],
-      "machineConsumers": [
-        "check-doc-links",
-        "check-doc-governance"
-      ],
-      "reviewAfter": "2026-06-26",
-      "lastVerifiedWith": [
-        "npx pnpm@9.15.4 check"
-      ],
-      "reorgTrigger": "Vision overview page contract, layout contract dimensions, ASCII diagrams, first viewport, or scroll ownership changes."
-    },
-    {
       "path": "docs/dashboard/pages/team-workspace.md",
       "ownerRole": "product-design",
       "status": "planned",
@@ -1074,128 +1071,6 @@
         "npx pnpm@9.15.4 check"
       ],
       "reorgTrigger": "AgentMember workbench page contract, layout contract dimensions, ASCII diagrams, first viewport, or scroll ownership changes."
-    },
-    {
-      "path": "docs/dashboard/pages/goal-document.md",
-      "ownerRole": "product-design",
-      "status": "planned",
-      "lifecycle": "volatile",
-      "canonicalFor": [
-        "Goal document page spec",
-        "GoalDesign and GoalEvaluation UI contract",
-        "closeout-gate ProofRow contract",
-        "page-local layout contract"
-      ],
-      "dependsOn": [
-        "docs/prd.md",
-        "docs/concept-model.md",
-        "docs/dashboard.md",
-        "docs/dashboard/frontend-design.md",
-        "docs/dashboard/design-principles.md",
-        "docs/dashboard/layout-history.md",
-        "docs/dashboard/read-model.md",
-        ".agents/skills/harness-frontend-product-design/SKILL.md"
-      ],
-      "machineConsumers": [
-        "check-doc-links",
-        "check-doc-governance"
-      ],
-      "reviewAfter": "2026-06-26",
-      "lastVerifiedWith": [
-        "npx pnpm@9.15.4 check"
-      ],
-      "reorgTrigger": "Goal document page contract, layout contract dimensions, ASCII diagrams, first viewport, or scroll ownership changes."
-    },
-    {
-      "path": "docs/dashboard/pages/task-document.md",
-      "ownerRole": "product-design",
-      "status": "planned",
-      "lifecycle": "volatile",
-      "canonicalFor": [
-        "Task document page spec",
-        "assignment evidence review decision UI contract",
-        "first-class Review and task Gap rendering contract",
-        "page-local layout contract"
-      ],
-      "dependsOn": [
-        "docs/prd.md",
-        "docs/concept-model.md",
-        "docs/dashboard.md",
-        "docs/dashboard/frontend-design.md",
-        "docs/dashboard/design-principles.md",
-        "docs/dashboard/layout-history.md",
-        "docs/dashboard/read-model.md",
-        ".agents/skills/harness-frontend-product-design/SKILL.md"
-      ],
-      "machineConsumers": [
-        "check-doc-links",
-        "check-doc-governance"
-      ],
-      "reviewAfter": "2026-06-26",
-      "lastVerifiedWith": [
-        "npx pnpm@9.15.4 check"
-      ],
-      "reorgTrigger": "Task document page contract, layout contract dimensions, ASCII diagrams, first viewport, or scroll ownership changes."
-    },
-    {
-      "path": "docs/dashboard/pages/graph-kanban.md",
-      "ownerRole": "product-design",
-      "status": "planned",
-      "lifecycle": "volatile",
-      "canonicalFor": [
-        "Goal/Task graph and Kanban UI contract",
-        "relationship and execution projection page spec",
-        "page-local layout contract"
-      ],
-      "dependsOn": [
-        "docs/prd.md",
-        "docs/concept-model.md",
-        "docs/dashboard.md",
-        "docs/dashboard/frontend-design.md",
-        "docs/dashboard/design-principles.md",
-        "docs/dashboard/layout-history.md",
-        "docs/dashboard/read-model.md",
-        ".agents/skills/harness-frontend-product-design/SKILL.md"
-      ],
-      "machineConsumers": [
-        "check-doc-links",
-        "check-doc-governance"
-      ],
-      "reviewAfter": "2026-06-26",
-      "lastVerifiedWith": [
-        "npx pnpm@9.15.4 check"
-      ],
-      "reorgTrigger": "Graph and Kanban page contract, layout contract dimensions, ASCII diagrams, first viewport, or scroll ownership changes."
-    },
-    {
-      "path": "docs/dashboard/pages/docs-context.md",
-      "ownerRole": "product-design",
-      "status": "planned",
-      "lifecycle": "volatile",
-      "canonicalFor": [
-        "mounted docs context page spec",
-        "object-linked docs UI contract",
-        "page-local layout contract"
-      ],
-      "dependsOn": [
-        "docs/prd.md",
-        "docs/concept-model.md",
-        "docs/dashboard.md",
-        "docs/dashboard/frontend-design.md",
-        "docs/dashboard/design-principles.md",
-        "docs/dashboard/layout-history.md",
-        "docs/dashboard/read-model.md",
-        ".agents/skills/harness-frontend-product-design/SKILL.md"
-      ],
-      "machineConsumers": [
-        "check-doc-links",
-        "check-doc-governance"
-      ],
-      "reviewAfter": "2026-06-26",
-      "lastVerifiedWith": [
-        "npx pnpm@9.15.4 check"
-      ],
-      "reorgTrigger": "Docs context page contract, layout contract dimensions, ASCII diagrams, first viewport, or scroll ownership changes."
     },
     {
       "path": "docs/dashboard/pages/evidence-review-decision.md",

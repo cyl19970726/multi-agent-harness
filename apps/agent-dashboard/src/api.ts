@@ -25,6 +25,26 @@ export async function fetchSnapshot(baseUrl: string): Promise<DashboardSnapshot>
 }
 
 /**
+ * Fetch a project doc body via `GET /v1/docs?path=docs/...` (ADR 0019). The
+ * backend allow-lists the `docs/` tree. Used to render Vision `source_refs`.
+ * Only works against a live source; the offline fixture has no docs server.
+ */
+export async function fetchDoc(
+  baseUrl: string,
+  path: string,
+): Promise<{ path: string; content: string }> {
+  const normalized = normalizeBaseUrl(baseUrl);
+  if (!normalized) {
+    throw new Error("Harness API URL is required");
+  }
+  const response = await fetch(`${normalized}/v1/docs?path=${encodeURIComponent(path)}`);
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}`);
+  }
+  return (await response.json()) as { path: string; content: string };
+}
+
+/**
  * A single frame off the backend `/v1/events` SSE stream. The backend emits
  * provider-neutral objects (ADR 0011): an `AgentEvent`, `Message`, or
  * `ProviderSession` payload identical for Codex and Claude, plus a `snapshot`

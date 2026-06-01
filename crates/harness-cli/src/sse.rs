@@ -11,7 +11,6 @@ use crossbeam::channel::{bounded, Receiver, Sender};
 use harness_core::{AgentEvent, Message, ProviderSession};
 use harness_store::HarnessStore;
 
-
 /// An event frame sent to SSE clients
 #[derive(Clone, Debug)]
 #[allow(dead_code)]
@@ -79,7 +78,7 @@ impl Clone for SseManager {
 /// and broadcasts new records to all SSE clients
 pub fn start_sse_watcher(store: &HarnessStore, manager: SseManager) -> std::io::Result<()> {
     let store_root = store.root().to_path_buf();
-    
+
     thread::spawn(move || {
         // Track, per file, the byte offset through the last *complete*
         // (newline-terminated) line we have already broadcast. A torn trailing
@@ -91,7 +90,11 @@ pub fn start_sse_watcher(store: &HarnessStore, manager: SseManager) -> std::io::
 
         // Seed offsets at current EOF so we only stream rows appended after the
         // watcher starts (the initial snapshot covers pre-existing rows).
-        for filename in &["agent_events.jsonl", "messages.jsonl", "provider_sessions.jsonl"] {
+        for filename in &[
+            "agent_events.jsonl",
+            "messages.jsonl",
+            "provider_sessions.jsonl",
+        ] {
             let path = store_root.join(filename);
             if let Ok(metadata) = fs::metadata(&path) {
                 consumed_offsets.insert(filename.to_string(), metadata.len());
@@ -239,12 +242,12 @@ pub fn write_sse_header(stream: &mut TcpStream) -> std::io::Result<()> {
 }
 
 /// Write a single SSE frame to the client
-pub fn write_sse_frame(stream: &mut TcpStream, event_kind: &str, data: &serde_json::Value) -> std::io::Result<()> {
-    let frame = format!(
-        "event: {}\ndata: {}\n\n",
-        event_kind,
-        data.to_string()
-    );
+pub fn write_sse_frame(
+    stream: &mut TcpStream,
+    event_kind: &str,
+    data: &serde_json::Value,
+) -> std::io::Result<()> {
+    let frame = format!("event: {}\ndata: {}\n\n", event_kind, data);
     stream.write_all(frame.as_bytes())?;
     stream.flush()?;
     Ok(())
@@ -334,20 +337,44 @@ mod tests {
 
         // Poll 1: row_a delivered, row_b fragment buffered (offset not advanced
         // past it).
-        check_and_broadcast_appends(&root, "messages.jsonl", &mut offsets, message_frame, &manager);
+        check_and_broadcast_appends(
+            &root,
+            "messages.jsonl",
+            &mut offsets,
+            message_frame,
+            &manager,
+        );
 
         // Poll 1.5: nothing new on disk, the torn fragment must NOT be emitted.
-        check_and_broadcast_appends(&root, "messages.jsonl", &mut offsets, message_frame, &manager);
+        check_and_broadcast_appends(
+            &root,
+            "messages.jsonl",
+            &mut offsets,
+            message_frame,
+            &manager,
+        );
 
         // Complete row_b.
         file.write_all(&bytes[split..]).expect("write second half");
         file.flush().expect("flush second half");
 
         // Poll 2: row_b now complete and delivered exactly once.
-        check_and_broadcast_appends(&root, "messages.jsonl", &mut offsets, message_frame, &manager);
+        check_and_broadcast_appends(
+            &root,
+            "messages.jsonl",
+            &mut offsets,
+            message_frame,
+            &manager,
+        );
 
         // Poll 3: idempotent — no re-delivery.
-        check_and_broadcast_appends(&root, "messages.jsonl", &mut offsets, message_frame, &manager);
+        check_and_broadcast_appends(
+            &root,
+            "messages.jsonl",
+            &mut offsets,
+            message_frame,
+            &manager,
+        );
 
         let mut received = Vec::new();
         while let Ok(frame) = rx.try_recv() {
@@ -384,17 +411,33 @@ mod tests {
             .append(true)
             .open(&path)
             .expect("open");
-        file.write_all(format!("{row}\n").as_bytes()).expect("write");
+        file.write_all(format!("{row}\n").as_bytes())
+            .expect("write");
         file.flush().expect("flush");
 
-        check_and_broadcast_appends(&root, "messages.jsonl", &mut offsets, message_frame, &manager);
-        check_and_broadcast_appends(&root, "messages.jsonl", &mut offsets, message_frame, &manager);
+        check_and_broadcast_appends(
+            &root,
+            "messages.jsonl",
+            &mut offsets,
+            message_frame,
+            &manager,
+        );
+        check_and_broadcast_appends(
+            &root,
+            "messages.jsonl",
+            &mut offsets,
+            message_frame,
+            &manager,
+        );
 
         let mut count = 0;
         while rx.try_recv().is_ok() {
             count += 1;
         }
-        assert_eq!(count, 1, "complete row broadcast exactly once across two polls");
+        assert_eq!(
+            count, 1,
+            "complete row broadcast exactly once across two polls"
+        );
 
         std::fs::remove_dir_all(&root).expect("cleanup");
     }

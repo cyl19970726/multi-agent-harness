@@ -26,6 +26,7 @@ consequences, affected modules, and validation path.
 | [0016](0016-tailwind-shadcn-adoption.md) | Tailwind v4 + shadcn/ui adoption for Agent Workbench |
 | [0017](0017-generic-object-model.md) | Generic object model — additive-optional schema evolution |
 | [0018](0018-exec-stream-primary-substrate.md) | Headless exec-stream as primary provider substrate |
+| [0019](0019-vision-goal-task-workbench-redesign.md) | Vision → Goal → Task Workbench redesign (board + detail + derived graph) |
 
 ## Split Rule
 

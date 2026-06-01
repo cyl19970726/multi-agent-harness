@@ -46,6 +46,9 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import {
+  DocProperties,
+  DocSection,
+  DocumentSurface,
   EmptyState,
   MetaList,
   MonoId,
@@ -57,6 +60,8 @@ import {
   type StatusTone,
 } from "@/components/workbench/atoms";
 import { Avatar } from "@/components/workbench/Avatar";
+import { Markdown } from "@/components/workbench/Markdown";
+import { fetchDoc } from "../api";
 import {
   Dialog,
   DialogFooter,
@@ -78,11 +83,14 @@ import {
 } from "@/components/workbench/tones";
 
 import {
+  displayGoalStatus,
   formatDuration,
   gapIsResolved,
   groupMemberTimelineBySession,
   memberName,
   taskTitle,
+  tasksBlockedBy,
+  taskGitMetadata,
   type MemberSessionGroup,
   type TimelineItem,
   type WorkbenchModel,
@@ -123,6 +131,8 @@ interface SurfaceProps {
   actionsEnabled?: boolean;
   /** POST a harness action then refresh the snapshot. */
   onAction?: (path: string, body?: unknown) => void;
+  /** Live harness base URL; used to fetch doc bodies (GET /v1/docs). */
+  apiUrl?: string;
 }
 
 const ACTIONS_DISABLED_HINT = "Connect a live source to enable actions";
@@ -233,8 +243,8 @@ function ProofStat({
   caption?: string;
 }) {
   return (
-    <div className="rounded-md border border-border bg-background/50 px-3.5 py-2 text-center">
-      <div className={cn("text-xl font-semibold tabular-nums", toneText[tone])}>
+    <div className="px-3 py-1 text-center">
+      <div className={cn("text-lg font-semibold tabular-nums", toneText[tone])}>
         {value}
       </div>
       <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
@@ -316,13 +326,60 @@ function DependencyChips({
   );
 }
 
-function TaskCard({ task, onClick }: { task: Task; onClick: () => void }) {
+/** Dependency readiness for a TaskCard, derived from the task graph. */
+type Readiness = { ready: boolean; waiting: number };
+
+/** A ready 🟢 / waiting ⏳(N) chip — derived, distinct from status=blocked. */
+function ReadinessChip({ readiness }: { readiness?: Readiness }) {
+  if (!readiness) return null;
+  if (readiness.waiting > 0) {
+    return (
+      <span className="inline-flex items-center gap-1 rounded bg-status-warn/12 px-1.5 py-0.5 text-[10px] font-medium text-status-warn">
+        <Clock className="size-2.5" />
+        waiting ({readiness.waiting})
+      </span>
+    );
+  }
+  if (readiness.ready) {
+    return (
+      <span className="inline-flex items-center gap-1 rounded bg-status-good/12 px-1.5 py-0.5 text-[10px] font-medium text-status-good">
+        <CheckCircle2 className="size-2.5" />
+        ready
+      </span>
+    );
+  }
+  return null;
+}
+
+function TaskCard({
+  task,
+  onClick,
+  readiness,
+  goalLabel,
+}: {
+  task: Task;
+  onClick: () => void;
+  readiness?: Readiness;
+  goalLabel?: string;
+}) {
   return (
     <button
       type="button"
       onClick={onClick}
       className="group block w-full rounded-md border border-border bg-background/40 p-2.5 text-left transition-colors hover:border-input hover:bg-accent/40"
     >
+      <div className="mb-1 flex items-center gap-2">
+        <MonoId>{task.id}</MonoId>
+        {goalLabel && (
+          <span className="inline-flex items-center gap-1 truncate text-[10px] text-muted-foreground">
+            <Target className="size-2.5" />
+            <span className="max-w-28 truncate">{goalLabel}</span>
+          </span>
+        )}
+        <span className="ml-auto">
+          <ReadinessChip readiness={readiness} />
+        </span>
+      </div>
       <div className="flex items-start justify-between gap-2">
         <span className="line-clamp-2 text-[13px] font-medium leading-snug">
           {task.title ?? task.id}
@@ -345,6 +402,17 @@ function TaskCard({ task, onClick }: { task: Task; onClick: () => void }) {
       </div>
     </button>
   );
+}
+
+/** Build a readiness lookup for a task list from the model's task graph. */
+function readinessFor(
+  task: Task,
+  graph: WorkbenchModel["taskGraph"],
+): Readiness {
+  return {
+    ready: graph.ready.has(task.id),
+    waiting: graph.waiting.get(task.id)?.length ?? 0,
+  };
 }
 
 function LaneStack({
@@ -540,9 +608,8 @@ export function TeamWorkspace({ model, onSelectionChange, actionsEnabled, onActi
         }
       />
 
-      <div className="rise relative overflow-hidden rounded-lg border border-border bg-card">
-        <span className="absolute inset-y-0 left-0 w-1 bg-primary" />
-        <div className="flex flex-wrap items-center justify-between gap-4 p-4 pl-5">
+      <div className="rounded-lg border border-border bg-card">
+        <div className="flex flex-wrap items-center justify-between gap-4 p-4">
           <div className="min-w-0">
             <div className="flex items-center gap-1.5 text-[11px] uppercase tracking-wider text-muted-foreground">
               <Target className="size-3.5 text-primary" /> Active Vision / Goal
@@ -1199,7 +1266,93 @@ function BriefLeadForm({
 /* Vision overview                                                    */
 /* ------------------------------------------------------------------ */
 
-export function VisionOverview({ model, onSelectionChange }: SurfaceProps) {
+/**
+ * Right-side slide-over that renders a project doc (a Vision `source_ref` or a
+ * mounted doc). Fetches `GET /v1/docs?path=…` from the live source and renders
+ * markdown; offline (no live source) it shows an honest fallback with the path.
+ */
+function DocSheet({
+  apiUrl,
+  path,
+  onClose,
+}: {
+  apiUrl?: string;
+  path: string;
+  onClose: () => void;
+}) {
+  const [state, setState] = useState<
+    { status: "loading" } | { status: "ok"; content: string } | { status: "error"; detail: string }
+  >({ status: "loading" });
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!apiUrl) {
+      setState({ status: "error", detail: "No live source — connect the harness to render docs." });
+      return;
+    }
+    setState({ status: "loading" });
+    fetchDoc(apiUrl, path)
+      .then((doc) => {
+        if (!cancelled) setState({ status: "ok", content: doc.content });
+      })
+      .catch((error: unknown) => {
+        if (!cancelled)
+          setState({ status: "error", detail: error instanceof Error ? error.message : String(error) });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [apiUrl, path]);
+
+  return (
+    <div className="fixed inset-0 z-50 flex justify-end">
+      <button
+        type="button"
+        aria-label="Close document panel"
+        className="absolute inset-0 bg-foreground/20 backdrop-blur-[1px]"
+        onClick={onClose}
+      />
+      <aside
+        role="dialog"
+        aria-label="Document"
+        className="relative flex h-full w-full max-w-[680px] flex-col border-l border-border bg-background shadow-xl"
+      >
+        <div className="flex h-12 shrink-0 items-center gap-2 border-b border-border px-3">
+          <FileText className="size-4 text-muted-foreground" />
+          <MonoId>{path}</MonoId>
+          <button
+            type="button"
+            aria-label="Close"
+            onClick={onClose}
+            className="ml-auto grid size-8 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+          >
+            <X className="size-4" />
+          </button>
+        </div>
+        <div className="min-h-0 flex-1 overflow-y-auto p-5">
+          {state.status === "loading" && (
+            <p className="text-[13px] text-muted-foreground">Loading {path}…</p>
+          )}
+          {state.status === "error" && (
+            <EmptyState icon={FileText} title="Cannot render doc" description={state.detail} />
+          )}
+          {state.status === "ok" && <Markdown source={state.content} />}
+        </div>
+      </aside>
+    </div>
+  );
+}
+
+export function VisionOverview({ model, onSelectionChange, apiUrl }: SurfaceProps) {
+  const [docPath, setDocPath] = useState<string | null>(null);
   const groups: { id: string; title: string; goals: Goal[] }[] = [
     { id: "active", title: "Active", goals: model.activeGoals },
     { id: "complete", title: "Completed", goals: model.completeGoals },
@@ -1253,6 +1406,7 @@ export function VisionOverview({ model, onSelectionChange }: SurfaceProps) {
                 vision={vision}
                 goals={goalsByVision.get(vision.id) ?? []}
                 onSelectGoal={(goalId) => onSelectionChange({ goalId, surface: "goal" })}
+                onOpenDoc={setDocPath}
               />
             ))
           ) : (
@@ -1334,6 +1488,10 @@ export function VisionOverview({ model, onSelectionChange }: SurfaceProps) {
           </div>
         </Section>
       </div>
+
+      {docPath && (
+        <DocSheet apiUrl={apiUrl} path={docPath} onClose={() => setDocPath(null)} />
+      )}
     </div>
   );
 }
@@ -1343,10 +1501,12 @@ function VisionRow({
   vision,
   goals,
   onSelectGoal,
+  onOpenDoc,
 }: {
   vision: Vision;
   goals: Goal[];
   onSelectGoal: (goalId: string) => void;
+  onOpenDoc: (path: string) => void;
 }) {
   return (
     <div className="rounded-md border border-border bg-background/40 p-3">
@@ -1373,9 +1533,18 @@ function VisionRow({
         </div>
       )}
       {vision.source_refs && vision.source_refs.length > 0 && (
-        <div className="mt-2 flex flex-col gap-0.5">
+        <div className="mt-2 flex flex-col items-start gap-1">
+          <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Narrative</p>
           {vision.source_refs.map((ref) => (
-            <MonoId key={ref}>{ref}</MonoId>
+            <button
+              key={ref}
+              type="button"
+              onClick={() => onOpenDoc(ref)}
+              className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background/50 px-2 py-1 text-[11px] transition-colors hover:border-input hover:bg-accent/40"
+            >
+              <FileText className="size-3 text-muted-foreground" />
+              <MonoId>{ref}</MonoId>
+            </button>
           ))}
         </div>
       )}
@@ -1386,6 +1555,93 @@ function VisionRow({
 /* ------------------------------------------------------------------ */
 /* Goal document                                                      */
 /* ------------------------------------------------------------------ */
+
+/**
+ * A bounded section that is collapsed by default — used to push the
+ * design/evaluation/closeout depth below the fold so the Goal page reads like a
+ * clean Notion document, not a proof wall (ADR 0019).
+ */
+function CollapsibleSection({
+  kicker,
+  title,
+  badge,
+  defaultOpen = false,
+  children,
+}: {
+  kicker: string;
+  title: string;
+  badge?: ReactNode;
+  defaultOpen?: boolean;
+  children: ReactNode;
+}) {
+  return (
+    <details className="rise group rounded-lg border border-border bg-card" open={defaultOpen}>
+      <summary className="flex cursor-pointer list-none items-center gap-2.5 px-4 py-3">
+        <ChevronRight className="size-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-90" />
+        <div className="min-w-0">
+          <div className="text-[10px] uppercase tracking-wider text-muted-foreground">{kicker}</div>
+          <div className="text-[13px] font-semibold">{title}</div>
+        </div>
+        {badge && <span className="ml-auto">{badge}</span>}
+      </summary>
+      <div className="border-t border-border">{children}</div>
+    </details>
+  );
+}
+
+/** Compact per-status task counts + a jump to the goal-filtered Work board. */
+function GoalTasksJump({
+  model,
+  onSelectionChange,
+}: {
+  model: WorkbenchModel;
+  onSelectionChange: (selection: Partial<SelectionState>) => void;
+}) {
+  const goal = model.selectedGoal;
+  const tasks = model.goalTasks;
+  const done = tasks.filter((task) => task.status === "done").length;
+  const counts = TASK_COLUMNS.map((status) => ({
+    status,
+    n: tasks.filter((task) => task.status === status).length,
+  })).filter((entry) => entry.n > 0);
+  return (
+    <div className="p-4">
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="text-2xl font-semibold tabular-nums">
+          {done}
+          <span className="text-base font-normal text-muted-foreground">/{tasks.length}</span>
+        </div>
+        <span className="text-xs text-muted-foreground">tasks done</span>
+        <Button
+          size="sm"
+          className="ml-auto"
+          disabled={!goal}
+          onClick={() =>
+            goal &&
+            onSelectionChange({ surface: "tasks", boardScope: "tasks", boardGoal: goal.id })
+          }
+        >
+          <Workflow className="size-3.5" />
+          View tasks ({tasks.length})
+        </Button>
+      </div>
+      {counts.length > 0 && (
+        <div className="mt-3 flex flex-wrap gap-1.5">
+          {counts.map((entry) => (
+            <span
+              key={entry.status}
+              className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background/50 px-2 py-1 text-[11px]"
+            >
+              <StatusDot tone={taskTone(entry.status)} />
+              <span className="capitalize">{entry.status}</span>
+              <span className="font-mono text-muted-foreground">{entry.n}</span>
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 export function GoalDocument({ model, onSelectionChange }: SurfaceProps) {
   const goal = model.selectedGoal;
@@ -1425,149 +1681,131 @@ export function GoalDocument({ model, onSelectionChange }: SurfaceProps) {
   const closeoutBlockers = learning?.closeout_blockers ?? [];
   const blockedTasks = model.goalTasks.filter((t) => t.status === "blocked");
 
+  const learningChips = [
+    { label: "Goal design", n: model.goalDesignsForGoal.length + learningCount(learning?.goal_design) },
+    { label: "Evaluation", n: model.goalEvaluationsForGoal.length + learningCount(learning?.goal_evaluation) },
+    { label: "Goal cases", n: model.goalCasesForGoal.length + learningCount(learning?.goal_cases) },
+    { label: "Reports", n: learningCount(learning?.member_reports) },
+    { label: "Follow-ups", n: learningCount(learning?.follow_up_tasks) },
+    { label: "Blocked", n: blockedTasks.length },
+  ];
+
   return (
-    <div className="space-y-5">
-      <SurfaceHeader
-        kicker="Goal document"
-        title={goal.title ?? goal.id}
-        description={goal.objective}
-        actions={
-          <>
-            {goal.priority && <Badge tone="info">priority: {goal.priority}</Badge>}
-            <Badge tone={goalTone(goal.status)}>{goal.status ?? "active"}</Badge>
-          </>
-        }
-      />
-
-      <div className="grid gap-4 lg:grid-cols-[1fr_19rem]">
-        <div className="space-y-4">
-          <Section kicker="Durable outcome" title="Objective" className="rise">
-            <p className="p-4 text-[13px] leading-relaxed text-foreground/90">
-              {goal.objective ?? "No objective recorded."}
-            </p>
-          </Section>
-
-          <Section kicker="What done looks like" title="Success criteria" className="rise">
-            <CriteriaList items={goal.success_criteria} empty="No success criteria recorded" />
-          </Section>
-
-          <Section kicker="Executable thesis" title="Goal design" className="rise">
-            <GoalDesignSection design={design} />
-          </Section>
-
-          <Section kicker="Retrospective" title="Goal evaluation" className="rise">
-            <GoalEvaluationSection evaluation={evaluation} />
-          </Section>
-
-          <Section
-            kicker="Closeout invariant"
-            title="Goal evaluation & decision"
-            className="rise"
-          >
-            <div className="space-y-3 p-4">
-              <p className="text-xs text-muted-foreground">
-                A goal is complete only after a Leader decision and a GoalEvaluation —
-                never just because its tasks are done.
-              </p>
-              <ProofRow ok={hasDesign} label="GoalDesign" detail={hasDesign ? "recorded" : "missing"} />
-              <ProofRow ok={hasDecision} label="Leader decision" detail={goalDecision?.decision ?? "missing"} />
-              <ProofRow ok={hasEvaluation} label="GoalEvaluation" detail={hasEvaluation ? "recorded" : "missing"} />
-              <ProofRow
-                ok={hasCloseoutDecision}
-                label="Closeout decision"
-                detail={hasCloseoutDecision ? "recorded (kind=closeout, evidence)" : "missing"}
-              />
-              <ProofRow
-                ok={mayClose}
-                label="May close"
-                detail={
-                  mayClose
-                    ? hasCloseoutWaiver
-                      ? "yes (via waiver)"
-                      : "yes (decision + evaluation)"
-                    : closeoutBlockers.length
-                      ? closeoutBlockers.join("; ")
-                      : "blocked"
-                }
-              />
-            </div>
-          </Section>
-
-          <Section kicker="Task graph / Kanban" title="Tasks for this goal" className="rise">
-            <LaneStack
-              model={model}
-              onSelect={(task) => onSelectionChange({ taskId: task.id, surface: "task" })}
-            />
-          </Section>
+    <DocumentSurface>
+      <header className="space-y-3">
+        <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+          <Target className="size-3.5" /> Goal
         </div>
-
-        <div className="space-y-4">
-          <Section kicker="Ownership & governance" title="Governance" className="rise">
-            <div className="p-4">
-              <MetaList
-                items={[
-                  { label: "Owner", value: memberName(model.members, goal.owner_agent_id) },
-                  { label: "Team", value: model.selectedTeam?.name ?? "—" },
-                  { label: "Priority", value: goal.priority ?? "—" },
-                  { label: "Created", value: fmtTime(goal.created_at) },
-                  { label: "Updated", value: fmtTime(goal.updated_at) },
-                ]}
-              />
-            </div>
-          </Section>
-
-          <Section kicker="Goal learning" title="Design & evaluation" className="rise">
-            <div className="p-4">
-              <MetaList
-                items={[
-                  {
-                    label: "Goal design",
-                    value:
-                      model.goalDesignsForGoal.length +
-                      learningCount(learning?.goal_design),
-                  },
-                  {
-                    label: "Evaluation",
-                    value:
-                      model.goalEvaluationsForGoal.length +
-                      learningCount(learning?.goal_evaluation),
-                  },
-                  {
-                    label: "Goal cases",
-                    value:
-                      model.goalCasesForGoal.length +
-                      learningCount(learning?.goal_cases),
-                  },
-                  { label: "Member reports", value: learningCount(learning?.member_reports) },
-                  { label: "Follow-ups", value: learningCount(learning?.follow_up_tasks) },
-                  { label: "Blocked tasks", value: blockedTasks.length },
-                ]}
-              />
-            </div>
-          </Section>
-
-          <Section kicker="Distance-to-vision" title="Next-round proposals" className="rise">
-            <div className="space-y-2 p-3">
-              {goalProposals.length ? (
-                goalProposals.slice(0, 4).map((proposal) => (
-                  <div key={proposal.id} className="rounded-md border border-border bg-background/40 p-2.5">
-                    <div className="flex items-center gap-2">
-                      <Badge tone="decision">{proposal.disposition ?? "pending"}</Badge>
-                      <MonoId>{proposal.source_type ?? "observer"}</MonoId>
-                    </div>
-                    <p className="mt-1 line-clamp-2 text-xs text-foreground/90">
-                      {proposal.summary ?? "Proposed next step"}
-                    </p>
-                  </div>
-                ))
-              ) : (
-                <EmptyState icon={Target} title="No proposals for this goal" />
-              )}
-            </div>
-          </Section>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <h1 className="text-2xl font-semibold tracking-tight text-foreground">
+            {goal.title ?? goal.id}
+          </h1>
+          <div className="flex shrink-0 items-center gap-1.5 pt-1">
+            {goal.priority && <Badge tone="info">{goal.priority}</Badge>}
+            <Badge tone={goalTone(goal.status)}>{displayGoalStatus(goal)}</Badge>
+          </div>
         </div>
-      </div>
-    </div>
+        <DocProperties
+          items={[
+            { label: "Owner", value: memberName(model.members, goal.owner_agent_id) },
+            { label: "Team", value: model.selectedTeam?.name ?? "—" },
+            { label: "Vision", value: model.visionForGoal?.summary ?? "—" },
+            { label: "Created", value: fmtTime(goal.created_at) },
+            { label: "Updated", value: fmtTime(goal.updated_at) },
+          ]}
+        />
+      </header>
+
+      <DocSection label="Objective">
+        <p className="text-[15px] leading-relaxed text-foreground/90">
+          {goal.objective ?? "No objective recorded."}
+        </p>
+      </DocSection>
+
+      <DocSection label="Success criteria">
+        <CriteriaList items={goal.success_criteria} empty="No success criteria recorded" />
+      </DocSection>
+
+      <DocSection label="Tasks">
+        <div className="rounded-lg border border-border bg-card">
+          <GoalTasksJump model={model} onSelectionChange={onSelectionChange} />
+        </div>
+      </DocSection>
+
+      <CollapsibleSection kicker="Executable thesis" title="Goal design">
+        <GoalDesignSection design={design} />
+      </CollapsibleSection>
+
+      <CollapsibleSection kicker="Retrospective" title="Goal evaluation">
+        <GoalEvaluationSection evaluation={evaluation} />
+      </CollapsibleSection>
+
+      <CollapsibleSection
+        kicker="Closeout invariant"
+        title="Closeout & decision"
+        badge={<Badge tone={mayClose ? "good" : "warn"}>{mayClose ? "may close" : "blocked"}</Badge>}
+      >
+        <div className="space-y-3 p-4">
+          <p className="text-xs text-muted-foreground">
+            A goal is complete only after a Leader decision and a GoalEvaluation —
+            never just because its tasks are done.
+          </p>
+          <ProofRow ok={hasDesign} label="GoalDesign" detail={hasDesign ? "recorded" : "missing"} />
+          <ProofRow ok={hasDecision} label="Leader decision" detail={goalDecision?.decision ?? "missing"} />
+          <ProofRow ok={hasEvaluation} label="GoalEvaluation" detail={hasEvaluation ? "recorded" : "missing"} />
+          <ProofRow
+            ok={hasCloseoutDecision}
+            label="Closeout decision"
+            detail={hasCloseoutDecision ? "recorded (kind=closeout, evidence)" : "missing"}
+          />
+          <ProofRow
+            ok={mayClose}
+            label="May close"
+            detail={
+              mayClose
+                ? hasCloseoutWaiver
+                  ? "yes (via waiver)"
+                  : "yes (decision + evaluation)"
+                : closeoutBlockers.length
+                  ? closeoutBlockers.join("; ")
+                  : "blocked"
+            }
+          />
+        </div>
+      </CollapsibleSection>
+
+      <DocSection label="Learning">
+        <div className="flex flex-wrap gap-1.5">
+          {learningChips.map((chip) => (
+            <span
+              key={chip.label}
+              className="inline-flex items-center gap-1.5 rounded-md border border-border bg-card px-2 py-1 text-[11px]"
+            >
+              {chip.label}
+              <span className="font-mono text-muted-foreground">{chip.n}</span>
+            </span>
+          ))}
+        </div>
+      </DocSection>
+
+      {goalProposals.length > 0 && (
+        <DocSection label="Next-round proposals">
+          <div className="space-y-2">
+            {goalProposals.slice(0, 4).map((proposal) => (
+              <div key={proposal.id} className="rounded-lg border border-border bg-card p-3">
+                <div className="flex items-center gap-2">
+                  <Badge tone="decision">{proposal.disposition ?? "pending"}</Badge>
+                  <MonoId>{proposal.source_type ?? "observer"}</MonoId>
+                </div>
+                <p className="mt-1.5 text-[13px] text-foreground/90">
+                  {proposal.summary ?? "Proposed next step"}
+                </p>
+              </div>
+            ))}
+          </div>
+        </DocSection>
+      )}
+    </DocumentSurface>
   );
 }
 
@@ -1702,7 +1940,12 @@ function evaluationOutcomeTone(outcome?: string): StatusTone {
 /* Task document                                                      */
 /* ------------------------------------------------------------------ */
 
-export function TaskDocument({ model, onSelectionChange, actionsEnabled, onAction }: SurfaceProps) {
+export function TaskDocument({
+  model,
+  onSelectionChange,
+  actionsEnabled,
+  onAction,
+}: SurfaceProps) {
   const task = model.selectedTask;
   if (!task) {
     return (
@@ -1726,48 +1969,48 @@ export function TaskDocument({ model, onSelectionChange, actionsEnabled, onActio
   );
   const taskWarnings = model.warnings.filter((warning) => warning.taskId === task.id);
   const dependsOn = task.depends_on_task_ids ?? [];
-  const blocks = model.tasks
-    .filter((t) => (t.depends_on_task_ids ?? []).includes(task.id))
-    .map((t) => t.id);
+  const blocks = tasksBlockedBy(task.id, model.tasks).map((t) => t.id);
+  const readiness = readinessFor(task, model.taskGraph);
+  const git = taskGitMetadata(task);
 
   return (
-    <div className="space-y-5">
-      {/* breadcrumb */}
-      <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
-        {goal && (
-          <>
-            <button
-              type="button"
-              className="inline-flex items-center gap-1 hover:text-foreground"
-              onClick={() => onSelectionChange({ goalId: goal.id, surface: "goal" })}
-            >
-              <Target className="size-3" />
-              {goal.title ?? goal.id}
-            </button>
-            <span className="text-border">/</span>
-          </>
-        )}
-        {parent && (
-          <>
-            <button
-              type="button"
-              className="inline-flex items-center gap-1 hover:text-foreground"
-              onClick={() => onSelectionChange({ taskId: parent.id, surface: "task" })}
-            >
-              <GitBranch className="size-3" />
-              {parent.title ?? parent.id}
-            </button>
-            <span className="text-border">/</span>
-          </>
-        )}
-        <span className="text-foreground/70">{task.title ?? task.id}</span>
-      </div>
-
-      <SurfaceHeader
-        kicker="Task document"
-        title={task.title ?? task.id}
-        actions={
-          <>
+    <DocumentSurface>
+      <header className="space-y-3">
+        <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
+          {goal && (
+            <>
+              <button
+                type="button"
+                className="inline-flex items-center gap-1 hover:text-foreground"
+                onClick={() => onSelectionChange({ goalId: goal.id, surface: "goal" })}
+              >
+                <Target className="size-3" />
+                {goal.title ?? goal.id}
+              </button>
+              <span className="text-border">/</span>
+            </>
+          )}
+          {parent && (
+            <>
+              <button
+                type="button"
+                className="inline-flex items-center gap-1 hover:text-foreground"
+                onClick={() => onSelectionChange({ taskId: parent.id, surface: "task" })}
+              >
+                <GitBranch className="size-3" />
+                {parent.title ?? parent.id}
+              </button>
+              <span className="text-border">/</span>
+            </>
+          )}
+          <MonoId>{task.id}</MonoId>
+        </div>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <h1 className="text-2xl font-semibold tracking-tight text-foreground">
+            {task.title ?? task.id}
+          </h1>
+          <div className="flex shrink-0 items-center gap-1.5 pt-1">
+            <ReadinessChip readiness={readiness} />
             <Badge tone={taskTone(task.status)}>{task.status}</Badge>
             <ActionButton
               enabled={actionsEnabled}
@@ -1778,246 +2021,223 @@ export function TaskDocument({ model, onSelectionChange, actionsEnabled, onActio
               <ShieldCheck className="size-3.5" />
               Request review
             </ActionButton>
-          </>
-        }
-      />
-
-      <div className="grid gap-4 lg:grid-cols-[1fr_19rem]">
-        <div className="space-y-4">
-          <Section kicker="What this delivers when done" title="Objective" className="rise">
-            <p className="p-4 text-[13px] leading-relaxed text-foreground/90">
-              {task.objective ?? "No objective recorded."}
-            </p>
-          </Section>
-
-          <Section
-            kicker="Verifiable at review"
-            title="Acceptance criteria"
-            action={
-              <Badge tone={task.acceptance_criteria?.length ? "info" : "warn"}>
-                {task.acceptance_criteria?.length ?? 0}
-              </Badge>
-            }
-            className="rise"
-          >
-            <CriteriaList
-              items={task.acceptance_criteria}
-              empty="No acceptance criteria — this task cannot be objectively reviewed yet."
-            />
-          </Section>
-
-          <Section kicker="Assignment → report → evidence → decision" title="Proof chain" className="rise">
-            <div className="space-y-3 p-4">
-              <ProofRow
-                ok={messages.some((m) => m.kind === "task")}
-                label="Assignment message"
-                detail={`${messages.filter((m) => m.kind === "task").length} task message(s)`}
-              />
-              <ProofRow
-                ok={messages.some((m) => m.kind === "report")}
-                label="Member report"
-                detail={`${messages.filter((m) => m.kind === "report").length} report(s)`}
-              />
-              <ProofRow ok={evidence.length > 0} label="Evidence" detail={`${evidence.length} item(s)`} />
-              <ProofRow
-                ok={reviews.length > 0}
-                label="Evaluator review"
-                detail={reviews.length ? `${reviews.length} review(s)` : "no structured review"}
-              />
-              <ProofRow ok={Boolean(decision)} label="Leader decision" detail={decision?.decision ?? "missing"} />
-            </div>
-          </Section>
-
-          <Section
-            kicker="Structured evaluator output · pass/fail/blocked/needs_changes"
-            title="Reviews"
-            action={
-              <Badge tone={reviews.some((r) => ["fail", "blocked"].includes((r.verdict ?? "").toLowerCase())) ? "bad" : reviews.length ? "good" : "muted"}>
-                {reviews.length}
-              </Badge>
-            }
-            className="rise"
-          >
-            <ReviewList reviews={reviews} />
-          </Section>
-
-          <Section kicker="Acceptance" title="Decision & rationale" className="rise">
-            {decision ? (
-              <div className="space-y-2 p-4">
-                <div className="flex items-center gap-2">
-                  <Scale className="size-4 text-status-good" />
-                  <Badge tone="good">{decision.decision ?? "decided"}</Badge>
-                </div>
-                <p className="text-[13px] text-foreground/90">
-                  {decision.rationale ?? "No rationale recorded."}
-                </p>
-                {Boolean(decision.evidence_ids?.length) && (
-                  <div className="flex flex-wrap gap-1.5">
-                    {decision.evidence_ids!.map((id) => (
-                      <Badge key={id} tone="muted">
-                        <MonoId>{id}</MonoId>
-                      </Badge>
-                    ))}
-                  </div>
-                )}
-              </div>
-            ) : (
-              <EmptyState icon={Gavel} title="No decision yet" description="Awaiting review and a Leader decision." />
-            )}
-          </Section>
-
-          <Section
-            kicker="Proof artifacts"
-            title="Evidence & proposals"
-            action={<Badge tone="muted">{evidence.length + proposals.length}</Badge>}
-            className="rise"
-          >
-            {evidence.length || proposals.length ? (
-              <div className="divide-y divide-border/60">
-                {evidence.map((item) => (
-                  <div key={item.id} className="flex items-start gap-2.5 px-4 py-2.5">
-                    <FileText className="mt-0.5 size-3.5 shrink-0 text-status-info" />
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-2">
-                        <Badge tone="info">{item.source_type ?? "evidence"}</Badge>
-                        {item.source_ref && <MonoId>{item.source_ref}</MonoId>}
-                      </div>
-                      <p className="mt-0.5 text-xs text-muted-foreground">{item.summary}</p>
-                    </div>
-                  </div>
-                ))}
-                {proposals.map((item) => (
-                  <div key={item.id} className="flex items-start gap-2.5 px-4 py-2.5">
-                    <ListChecks className="mt-0.5 size-3.5 shrink-0 text-status-decision" />
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-2">
-                        <span className="text-[13px] font-medium">{item.title ?? "Proposal"}</span>
-                        <Badge tone="decision">{item.status ?? "draft"}</Badge>
-                      </div>
-                      <p className="mt-0.5 text-xs text-muted-foreground">{item.summary}</p>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <EmptyState icon={FileText} title="No evidence or proposals yet" />
-            )}
-          </Section>
-
-          <Section kicker="Messages" title="Assignment & reports" className="rise">
-            {messages.length ? (
-              <div className="max-h-72 overflow-y-auto">
-                {messages.map((message) => (
-                  <TimelineRow
-                    key={message.id}
-                    kind={message.kind}
-                    title={
-                      message.kind === "task"
-                        ? "Task assignment"
-                        : message.kind === "report"
-                          ? "Member report"
-                          : "Message"
-                    }
-                    meta={message.delivery_status}
-                    body={message.content}
-                    tone={message.delivery_status === "failed" ? "bad" : "info"}
-                  />
-                ))}
-              </div>
-            ) : (
-              <EmptyState icon={MessageSquare} title="No messages for this task" />
-            )}
-          </Section>
+          </div>
         </div>
+        <DocProperties
+          items={[
+            { label: "Owner", value: ownerLine(model, task.owner_agent_id) },
+            {
+              label: "Assignee",
+              value: (
+                <span>
+                  {memberName(model.members, task.assignee_agent_id)}
+                  <span className="ml-1 text-[10px] text-muted-foreground">(projection)</span>
+                </span>
+              ),
+            },
+            { label: "Reviewer", value: memberName(model.members, task.reviewer_agent_id) },
+            { label: "Branch", value: git.branch ? <MonoId>{git.branch}</MonoId> : "—" },
+            { label: "PR", value: git.pr_ref ? <MonoId>{shortBranch(git.pr_ref)}</MonoId> : "—" },
+            { label: "Worktree", value: git.worktree_path ? <MonoId>{git.worktree_path}</MonoId> : "—" },
+            { label: "Owned paths", value: <PathList paths={git.owned_paths} /> },
+            { label: "Sessions", value: sessions.length },
+            { label: "Updated", value: fmtTime(task.updated_at) },
+          ]}
+        />
+      </header>
 
-        <div className="space-y-4">
-          <Section kicker="Accountability" title="Ownership" className="rise">
-            <div className="p-4">
-              <MetaList
-                items={[
-                  { label: "Owner", value: ownerLine(model, task.owner_agent_id) },
-                  {
-                    label: "Assignee",
-                    value: (
-                      <span>
-                        {memberName(model.members, task.assignee_agent_id)}
-                        <span className="ml-1 text-[10px] text-muted-foreground">(projection)</span>
-                      </span>
-                    ),
-                  },
-                  { label: "Reviewer", value: memberName(model.members, task.reviewer_agent_id) },
-                ]}
-              />
+      <DocSection label="Objective">
+        <p className="text-[15px] leading-relaxed text-foreground/90">
+          {task.objective ?? "No objective recorded."}
+        </p>
+      </DocSection>
+
+      {task.description && (
+        <DocSection label="Description">
+          <p className="whitespace-pre-wrap text-[15px] leading-relaxed text-foreground/90">
+            {task.description}
+          </p>
+        </DocSection>
+      )}
+
+      <DocSection
+        label="Acceptance criteria"
+        action={
+          <Badge tone={task.acceptance_criteria?.length ? "info" : "warn"}>
+            {task.acceptance_criteria?.length ?? 0}
+          </Badge>
+        }
+      >
+        <div className="rounded-lg border border-border bg-card">
+          <CriteriaList
+            items={task.acceptance_criteria}
+            empty="No acceptance criteria — this task cannot be objectively reviewed yet."
+          />
+        </div>
+      </DocSection>
+
+      <DocSection label="Dependencies">
+        <div className="grid gap-3 sm:grid-cols-2">
+          <div>
+            <p className="mb-1.5 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+              <Link2 className="size-3" /> Depends on
+            </p>
+            <DependencyChips
+              ids={dependsOn}
+              tasks={model.tasks}
+              empty="No upstream dependencies."
+              onSelect={(id) => onSelectionChange({ taskId: id, surface: "task" })}
+            />
+          </div>
+          <div>
+            <p className="mb-1.5 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+              <Link2 className="size-3 rotate-90" /> Blocks
+            </p>
+            <DependencyChips
+              ids={blocks}
+              tasks={model.tasks}
+              empty="Nothing depends on this task."
+              onSelect={(id) => onSelectionChange({ taskId: id, surface: "task" })}
+            />
+          </div>
+        </div>
+      </DocSection>
+
+      <DocSection label="Proof chain">
+        <div className="space-y-3 rounded-lg border border-border bg-card p-4">
+          <ProofRow
+            ok={messages.some((m) => m.kind === "task")}
+            label="Assignment message"
+            detail={`${messages.filter((m) => m.kind === "task").length} task message(s)`}
+          />
+          <ProofRow
+            ok={messages.some((m) => m.kind === "report")}
+            label="Member report"
+            detail={`${messages.filter((m) => m.kind === "report").length} report(s)`}
+          />
+          <ProofRow ok={evidence.length > 0} label="Evidence" detail={`${evidence.length} item(s)`} />
+          <ProofRow
+            ok={reviews.length > 0}
+            label="Evaluator review"
+            detail={reviews.length ? `${reviews.length} review(s)` : "no structured review"}
+          />
+          <ProofRow ok={Boolean(decision)} label="Leader decision" detail={decision?.decision ?? "missing"} />
+        </div>
+      </DocSection>
+
+      <DocSection
+        label="Reviews"
+        action={
+          <Badge tone={reviews.some((r) => ["fail", "blocked"].includes((r.verdict ?? "").toLowerCase())) ? "bad" : reviews.length ? "good" : "muted"}>
+            {reviews.length}
+          </Badge>
+        }
+      >
+        <div className="rounded-lg border border-border bg-card">
+          <ReviewList reviews={reviews} />
+        </div>
+      </DocSection>
+
+      <DocSection label="Decision & rationale">
+        {decision ? (
+          <div className="space-y-2 rounded-lg border border-border bg-card p-4">
+            <div className="flex items-center gap-2">
+              <Scale className="size-4 text-status-good" />
+              <Badge tone="good">{decision.decision ?? "decided"}</Badge>
             </div>
-          </Section>
-
-          <Section kicker="Where it runs" title="Workspace" className="rise">
-            <div className="p-4">
-              <MetaList
-                items={[
-                  { label: "Branch", value: task.branch_ref ? <MonoId>{task.branch_ref}</MonoId> : "—" },
-                  { label: "PR", value: task.pr_ref ? <MonoId>{shortBranch(task.pr_ref)}</MonoId> : "—" },
-                  { label: "Workspace", value: task.workspace_ref ? <MonoId>{task.workspace_ref}</MonoId> : "—" },
-                  { label: "Owned paths", value: <PathList paths={task.owned_paths} /> },
-                  { label: "Sessions", value: sessions.length },
-                ]}
-              />
-            </div>
-          </Section>
-
-          <Section kicker="Execution order" title="Dependencies" className="rise">
-            <div className="space-y-3 p-3.5">
-              <div>
-                <p className="mb-1.5 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-                  <Link2 className="size-3" /> Depends on
-                </p>
-                <DependencyChips
-                  ids={dependsOn}
-                  tasks={model.tasks}
-                  empty="No upstream dependencies."
-                  onSelect={(id) => onSelectionChange({ taskId: id, surface: "task" })}
-                />
+            <p className="text-[13px] text-foreground/90">
+              {decision.rationale ?? "No rationale recorded."}
+            </p>
+            {Boolean(decision.evidence_ids?.length) && (
+              <div className="flex flex-wrap gap-1.5">
+                {decision.evidence_ids!.map((id) => (
+                  <Badge key={id} tone="muted">
+                    <MonoId>{id}</MonoId>
+                  </Badge>
+                ))}
               </div>
-              <div>
-                <p className="mb-1.5 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-                  <Link2 className="size-3 rotate-90" /> Blocks
-                </p>
-                <DependencyChips
-                  ids={blocks}
-                  tasks={model.tasks}
-                  empty="Nothing depends on this task."
-                  onSelect={(id) => onSelectionChange({ taskId: id, surface: "task" })}
+            )}
+          </div>
+        ) : (
+          <div className="rounded-lg border border-border bg-card">
+            <EmptyState icon={Gavel} title="No decision yet" description="Awaiting review and a Leader decision." />
+          </div>
+        )}
+      </DocSection>
+
+      <DocSection label="Evidence & proposals" action={<Badge tone="muted">{evidence.length + proposals.length}</Badge>}>
+        <div className="rounded-lg border border-border bg-card">
+          {evidence.length || proposals.length ? (
+            <div className="divide-y divide-border/60">
+              {evidence.map((item) => (
+                <div key={item.id} className="flex items-start gap-2.5 px-4 py-2.5">
+                  <FileText className="mt-0.5 size-3.5 shrink-0 text-status-info" />
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <Badge tone="info">{item.source_type ?? "evidence"}</Badge>
+                      {item.source_ref && <MonoId>{item.source_ref}</MonoId>}
+                    </div>
+                    <p className="mt-0.5 text-xs text-muted-foreground">{item.summary}</p>
+                  </div>
+                </div>
+              ))}
+              {proposals.map((item) => (
+                <div key={item.id} className="flex items-start gap-2.5 px-4 py-2.5">
+                  <ListChecks className="mt-0.5 size-3.5 shrink-0 text-status-decision" />
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="text-[13px] font-medium">{item.title ?? "Proposal"}</span>
+                      <Badge tone="decision">{item.status ?? "draft"}</Badge>
+                    </div>
+                    <p className="mt-0.5 text-xs text-muted-foreground">{item.summary}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <EmptyState icon={FileText} title="No evidence or proposals yet" />
+          )}
+        </div>
+      </DocSection>
+
+      <DocSection label="Assignment & reports">
+        <div className="rounded-lg border border-border bg-card">
+          {messages.length ? (
+            <div className="max-h-72 overflow-y-auto">
+              {messages.map((message) => (
+                <TimelineRow
+                  key={message.id}
+                  kind={message.kind}
+                  title={
+                    message.kind === "task"
+                      ? "Task assignment"
+                      : message.kind === "report"
+                        ? "Member report"
+                        : "Message"
+                  }
+                  meta={message.delivery_status}
+                  body={message.content}
+                  tone={message.delivery_status === "failed" ? "bad" : "info"}
                 />
-              </div>
+              ))}
             </div>
-          </Section>
+          ) : (
+            <EmptyState icon={MessageSquare} title="No messages for this task" />
+          )}
+        </div>
+      </DocSection>
 
-          <Section kicker="History" title="Lifecycle" className="rise">
-            <div className="p-4">
-              <MetaList
-                items={[
-                  { label: "Status", value: <Badge tone={taskTone(task.status)}>{task.status}</Badge> },
-                  { label: "Created", value: fmtTime(task.created_at) },
-                  { label: "Updated", value: fmtTime(task.updated_at) },
-                ]}
-              />
-            </div>
-          </Section>
-
-          <Section
-            kicker="Risks"
-            title="Warnings"
-            action={<Badge tone={taskWarnings.length ? "bad" : "good"}>{taskWarnings.length}</Badge>}
-            className="rise"
-          >
+      {taskWarnings.length > 0 && (
+        <DocSection label="Warnings" action={<Badge tone="bad">{taskWarnings.length}</Badge>}>
+          <div className="rounded-lg border border-border bg-card">
             <WarningList
               warnings={taskWarnings}
               onSelect={() => onSelectionChange({ surface: "warnings" })}
             />
-          </Section>
-        </div>
-      </div>
-    </div>
+          </div>
+        </DocSection>
+      )}
+    </DocumentSurface>
   );
 }
 
@@ -2296,77 +2516,258 @@ function GapRow({ gap, onSelect }: { gap: Gap; onSelect: () => void }) {
 /* Graph / Kanban                                                     */
 /* ------------------------------------------------------------------ */
 
+/** Product columns (archived hidden); legacy `complete` folds into `done`. */
+const GOAL_COLUMNS = ["active", "blocked", "review", "done"] as const;
+const TASK_COLUMNS = ["planned", "assigned", "running", "blocked", "review", "done"] as const;
+
+function BoardColumn({
+  title,
+  tone,
+  count,
+  children,
+}: {
+  title: string;
+  tone: StatusTone;
+  count: number;
+  children: ReactNode;
+}) {
+  return (
+    <div className="flex w-72 shrink-0 flex-col rounded-lg border border-border bg-card/60">
+      <div className="flex items-center gap-2 border-b border-border px-3 py-2.5">
+        <StatusDot tone={tone} />
+        <span className="text-[12px] font-semibold capitalize">{title}</span>
+        <span className="ml-auto font-mono text-[11px] text-muted-foreground">{count}</span>
+      </div>
+      <div className="min-h-16 space-y-1.5 p-2">{children}</div>
+    </div>
+  );
+}
+
+/**
+ * Right-side Task slide-over (peek). Opened from the Work board by selecting a
+ * card; reuses the full `TaskDocument` content (driven by `model.selectedTask`)
+ * inside a narrow panel, with Close and "Open full page" affordances. Esc and
+ * backdrop click close it. The full page stays reachable at `surface:"task"`.
+ */
+function TaskSheet({
+  model,
+  onSelectionChange,
+  actionsEnabled,
+  onAction,
+  onClose,
+}: SurfaceProps & { onClose: () => void }) {
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  return (
+    <div className="fixed inset-0 z-50 flex justify-end">
+      <button
+        type="button"
+        aria-label="Close task panel"
+        className="absolute inset-0 bg-foreground/20 backdrop-blur-[1px]"
+        onClick={onClose}
+      />
+      <aside
+        role="dialog"
+        aria-label="Task detail"
+        className="relative flex h-full w-full max-w-[660px] flex-col border-l border-border bg-background shadow-xl"
+      >
+        <div className="flex h-12 shrink-0 items-center gap-2 border-b border-border px-3">
+          <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+            Task
+          </span>
+          <div className="ml-auto flex items-center gap-1">
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={() => onSelectionChange({ surface: "task" })}
+            >
+              <ExternalLink className="size-3.5" />
+              Open full page
+            </Button>
+            <button
+              type="button"
+              aria-label="Close"
+              onClick={onClose}
+              className="grid size-8 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+            >
+              <X className="size-4" />
+            </button>
+          </div>
+        </div>
+        <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden p-4">
+          <TaskDocument
+            model={model}
+            onSelectionChange={onSelectionChange}
+            actionsEnabled={actionsEnabled}
+            onAction={onAction}
+          />
+        </div>
+      </aside>
+    </div>
+  );
+}
+
+/**
+ * Unified Work board. A `[ Goals | Tasks ]` switch lays out either the Goal
+ * collection (4 columns: active/blocked/review/done) or the Task graph (6
+ * columns). Tasks mode supports a goal filter (`boardGoal`). Task cards carry a
+ * derived ready/waiting chip distinct from the stored `blocked` column. The
+ * per-goal board is just this board pre-filtered via `boardGoal`. Selecting a
+ * card opens the Task slide-over (`peekTaskId`) without leaving the board.
+ */
 export function GraphKanban({
   model,
-  mode,
   onSelectionChange,
-}: SurfaceProps & { mode: "kanban" | "graph" | "split" }) {
-  const lanes = model.lanes.filter((lane) => lane.tasks.length);
+  boardScope = "tasks",
+  boardGoal,
+  peekTaskId,
+  actionsEnabled,
+  onAction,
+}: SurfaceProps & {
+  boardScope?: "goals" | "tasks";
+  boardGoal?: string;
+  peekTaskId?: string;
+}) {
+  const peekTask = peekTaskId
+    ? model.tasks.find((task) => task.id === peekTaskId)
+    : undefined;
+  const goalsMode = boardScope === "goals";
+  const goalById = new Map(model.goals.map((goal) => [goal.id, goal]));
+  const filterGoal = boardGoal ? goalById.get(boardGoal) : undefined;
+  const boardTasks = boardGoal
+    ? model.tasks.filter((task) => task.goal_id === boardGoal)
+    : model.tasks;
+
   return (
     <div className="space-y-5">
       <SurfaceHeader
-        kicker="Task relationships"
-        title="Tasks"
-        description="Synchronized projections of the same task read model. Kanban is the default view; the graph canvas arrives once task counts need pan/zoom."
+        kicker={goalsMode ? "Goal collection" : "Task graph"}
+        title="Work"
+        description={
+          goalsMode
+            ? "Goals by lifecycle. A goal reaches done only after a closeout decision and evaluation — never from task activity alone."
+            : "Tasks by status. The ready / waiting chip is derived from dependencies and is distinct from the blocked column."
+        }
         actions={
-          <div className="flex items-center gap-1 rounded-md border border-border bg-card p-0.5">
-            {(["kanban", "graph"] as const).map((value) => (
-              <button
-                key={value}
-                type="button"
-                onClick={() => onSelectionChange({ mode: value })}
-                className={cn(
-                  "rounded px-2.5 py-1 text-xs font-medium capitalize transition-colors",
-                  (mode === value || (value === "kanban" && mode === "split"))
-                    ? "bg-primary/15 text-primary"
-                    : "text-muted-foreground hover:text-foreground",
-                )}
+          <div className="flex items-center gap-2">
+            {!goalsMode && (
+              <select
+                aria-label="Filter tasks by goal"
+                value={boardGoal ?? ""}
+                onChange={(event) =>
+                  onSelectionChange({ boardGoal: event.target.value || undefined })
+                }
+                className="h-8 max-w-44 truncate rounded-md border border-border bg-background/60 px-2 text-xs text-foreground outline-none transition-colors hover:border-input focus:border-ring"
               >
-                {value}
-              </button>
-            ))}
+                <option value="">All goals</option>
+                {model.goals.map((goal) => (
+                  <option key={goal.id} value={goal.id}>
+                    {goal.title ?? goal.id}
+                  </option>
+                ))}
+              </select>
+            )}
+            <div className="flex items-center gap-1 rounded-md border border-border bg-card p-0.5">
+              {(["goals", "tasks"] as const).map((value) => (
+                <button
+                  key={value}
+                  type="button"
+                  onClick={() => onSelectionChange({ boardScope: value })}
+                  className={cn(
+                    "rounded px-2.5 py-1 text-xs font-medium capitalize transition-colors",
+                    boardScope === value
+                      ? "bg-primary/15 text-primary"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  {value}
+                </button>
+              ))}
+            </div>
           </div>
         }
       />
 
-      {mode === "graph" ? (
-        <Section title="Dependency graph" kicker="Coming in WP5" className="rise">
-          <EmptyState
-            icon={Workflow}
-            title="Graph canvas coming in WP5"
-            description="Tasks ship as Kanban today; the semantic dependency graph canvas lands in WP5."
-          />
-        </Section>
-      ) : lanes.length ? (
-        <div className="flex gap-3 overflow-x-auto pb-2">
-          {lanes.map((lane) => (
-            <div
-              key={lane.id}
-              className="flex w-72 shrink-0 flex-col rounded-lg border border-border bg-card/60"
-            >
-              <div className="flex items-center gap-2 border-b border-border px-3 py-2.5">
-                <StatusDot tone={taskTone(lane.id)} />
-                <span className="text-[12px] font-semibold">{lane.title}</span>
-                <span className="ml-auto font-mono text-[11px] text-muted-foreground">
-                  {lane.tasks.length}
-                </span>
-              </div>
-              <div className="space-y-1.5 p-2">
-                {lane.tasks.map((task) => (
-                  <TaskCard
-                    key={task.id}
-                    task={task}
-                    onClick={() => onSelectionChange({ taskId: task.id, surface: "task" })}
-                  />
-                ))}
-              </div>
-            </div>
-          ))}
+      {filterGoal && (
+        <div className="flex items-center gap-2 rounded-md border border-border bg-card/40 px-3 py-2 text-xs">
+          <Target className="size-3.5 text-primary" />
+          <span className="text-muted-foreground">Filtered to goal</span>
+          <button
+            type="button"
+            className="font-medium hover:text-primary"
+            onClick={() => onSelectionChange({ goalId: filterGoal.id, surface: "goal" })}
+          >
+            {filterGoal.title ?? filterGoal.id}
+          </button>
+          <button
+            type="button"
+            className="ml-auto inline-flex items-center gap-1 text-muted-foreground hover:text-foreground"
+            onClick={() => onSelectionChange({ boardGoal: undefined })}
+          >
+            <X className="size-3" /> Clear
+          </button>
         </div>
-      ) : (
-        <Section title="Task lanes" className="rise">
-          <EmptyState icon={ClipboardList} title="No tasks to lay out" />
-        </Section>
+      )}
+
+      <div className="flex gap-3 overflow-x-auto pb-2">
+        {goalsMode
+          ? GOAL_COLUMNS.map((status) => {
+              const goals = model.goals.filter((goal) => displayGoalStatus(goal) === status);
+              return (
+                <BoardColumn key={status} title={status} tone={goalTone(status)} count={goals.length}>
+                  {goals.length ? (
+                    goals.map((goal) => (
+                      <GoalCard
+                        key={goal.id}
+                        goal={goal}
+                        model={model}
+                        onSelect={() => onSelectionChange({ goalId: goal.id, surface: "goal" })}
+                      />
+                    ))
+                  ) : (
+                    <p className="px-1 py-3 text-center text-[11px] text-muted-foreground/60">None</p>
+                  )}
+                </BoardColumn>
+              );
+            })
+          : TASK_COLUMNS.map((status) => {
+              const tasks = boardTasks.filter((task) => task.status === status);
+              return (
+                <BoardColumn key={status} title={status} tone={taskTone(status)} count={tasks.length}>
+                  {tasks.length ? (
+                    tasks.map((task) => (
+                      <TaskCard
+                        key={task.id}
+                        task={task}
+                        readiness={readinessFor(task, model.taskGraph)}
+                        goalLabel={
+                          boardGoal ? undefined : goalById.get(task.goal_id ?? "")?.title
+                        }
+                        onClick={() => onSelectionChange({ taskId: task.id })}
+                      />
+                    ))
+                  ) : (
+                    <p className="px-1 py-3 text-center text-[11px] text-muted-foreground/60">None</p>
+                  )}
+                </BoardColumn>
+              );
+            })}
+      </div>
+
+      {peekTask && (
+        <TaskSheet
+          model={model}
+          onSelectionChange={onSelectionChange}
+          actionsEnabled={actionsEnabled}
+          onAction={onAction}
+          onClose={() => onSelectionChange({ taskId: undefined })}
+        />
       )}
     </div>
   );
@@ -2544,7 +2945,6 @@ function MemberHeaderBand({
           {member.name ?? member.id}
         </h1>
         <div className="mt-1 flex flex-wrap items-center gap-1.5">
-          <Badge tone={tone}>delivery {member.runtime_health?.delivery_probe ? "probed" : "unknown"}</Badge>
           <Badge tone={memberTone(member.runtime_status ?? member.status)}>
             {member.runtime_status ?? member.status ?? "unknown"}
           </Badge>
@@ -3421,7 +3821,8 @@ function HealthRow({
 /* Docs context                                                       */
 /* ------------------------------------------------------------------ */
 
-export function DocsContext({ model }: SurfaceProps) {
+export function DocsContext({ model, apiUrl }: SurfaceProps) {
+  const [docPath, setDocPath] = useState<string | null>(null);
   return (
     <div className="space-y-5">
       <SurfaceHeader
@@ -3432,7 +3833,12 @@ export function DocsContext({ model }: SurfaceProps) {
       <Section title="Mounted documents" className="rise">
         <div className="divide-y divide-border">
           {model.docs.map((doc) => (
-            <div key={doc.path} className="flex items-start gap-3 px-4 py-3">
+            <button
+              key={doc.path}
+              type="button"
+              onClick={() => setDocPath(doc.path)}
+              className="flex w-full items-start gap-3 px-4 py-3 text-left transition-colors hover:bg-accent/40"
+            >
               <FileText className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2">
@@ -3443,10 +3849,14 @@ export function DocsContext({ model }: SurfaceProps) {
                 <MonoId>{doc.path}</MonoId>
               </div>
               <ExternalLink className="size-3.5 shrink-0 text-muted-foreground" />
-            </div>
+            </button>
           ))}
         </div>
       </Section>
+
+      {docPath && (
+        <DocSheet apiUrl={apiUrl} path={docPath} onClose={() => setDocPath(null)} />
+      )}
     </div>
   );
 }
