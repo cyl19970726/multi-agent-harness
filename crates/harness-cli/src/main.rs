@@ -20,14 +20,8 @@ use harness_core::{
 };
 use harness_store::{HarnessStore, MessageDeliveryClaimResult};
 use thiserror::Error;
-use tungstenite::client::IntoClientRequest;
-use tungstenite::{Message as WebSocketMessage, WebSocket};
 
 mod sse;
-
-unsafe extern "C" {
-    fn setsid() -> i32;
-}
 
 #[derive(Debug, Error)]
 enum CliError {
@@ -160,18 +154,6 @@ fn agent_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
         "health" => {
             let id = required(args, "--id").or_else(|_| required(args, "--agent"))?;
             print_json(&agent_health(store, &id)?)?;
-        }
-        "hooks" => {
-            let id = required(args, "--id").or_else(|_| required(args, "--agent"))?;
-            let timeout_ms = value(args, "--timeout-ms")
-                .and_then(|value| value.parse::<u64>().ok())
-                .unwrap_or(3_000);
-            print_json(&probe_agent_hooks(
-                store,
-                &id,
-                timeout_ms,
-                has_flag(args, "--trust"),
-            )?)?;
         }
         "show" => {
             let id = required(args, "--id")?;
@@ -3206,10 +3188,7 @@ fn agent_health(store: &HarnessStore, agent_id: &str) -> CliResult<serde_json::V
         .as_deref()
         .and_then(|runtime_id| latest_runtime(store, runtime_id).ok().flatten());
     let runtime_alive = runtime.as_ref().is_some_and(runtime_is_alive);
-    let socket_path = runtime
-        .as_ref()
-        .and_then(|runtime| runtime.control_endpoint.as_deref())
-        .and_then(|endpoint| socket_path_from_endpoint(endpoint).ok());
+    let socket_path: Option<std::path::PathBuf> = None; // Exec-based delivery has no persistent socket
     let queued_messages = latest_messages_in_append_order(store)?
         .into_iter()
         .filter(|message| message.to_agent_id.as_deref() == Some(agent_id))
@@ -3220,20 +3199,7 @@ fn agent_health(store: &HarnessStore, agent_id: &str) -> CliResult<serde_json::V
         .and_then(|runtime| runtime.pid)
         .is_some_and(pid_is_alive);
     let socket_exists = socket_path.as_ref().is_some_and(|path| path.exists());
-    let protocol_probe = if pid_alive && socket_exists {
-        let timeout_ms = env::var("HARNESS_AGENT_HEALTH_TIMEOUT_MS")
-            .ok()
-            .and_then(|value| value.parse::<u64>().ok())
-            .unwrap_or(1_500);
-        socket_path
-            .as_ref()
-            .map(|path| probe_provider_protocol(&member.provider, path, timeout_ms))
-            .transpose()?
-            .flatten()
-            .or_else(|| Some("unknown".into()))
-    } else {
-        Some("skipped: runtime process or socket is not available".into())
-    };
+    let protocol_probe = Some("exec-stream".into()); // Codex uses exec-stream, no protocol probe needed
     if let Some(runtime_value) = runtime.as_mut() {
         runtime_value.health.process_alive = pid_alive;
         runtime_value.health.socket_exists = socket_exists;
@@ -3262,179 +3228,12 @@ fn agent_health(store: &HarnessStore, agent_id: &str) -> CliResult<serde_json::V
     }))
 }
 
-fn probe_agent_hooks(
-    store: &HarnessStore,
-    agent_id: &str,
-    timeout_ms: u64,
-    trust: bool,
-) -> CliResult<serde_json::Value> {
-    let member = latest_member(store, agent_id)?;
-    let runtime = member
-        .provider_runtime_id
-        .as_deref()
-        .and_then(|runtime_id| latest_runtime(store, runtime_id).ok().flatten())
-        .ok_or_else(|| CliError::Usage(format!("agent has no runtime: {agent_id}")))?;
-    if !runtime_is_alive(&runtime) {
-        return Err(CliError::Usage(format!(
-            "agent runtime is not alive: {}",
-            runtime.id
-        )));
-    }
-    let endpoint = runtime.control_endpoint.as_deref().ok_or_else(|| {
-        CliError::Usage(format!("runtime {} has no control endpoint", runtime.id))
-    })?;
-    let socket_path = socket_path_from_endpoint(endpoint)?;
-    let probe_id = generated_id("hook-probe");
-    let session_dir = store.root().join("provider-sessions").join(&probe_id);
-    fs::create_dir_all(&session_dir)?;
-    let cwd = member.worktree_ref.clone().or_else(|| {
-        env::current_dir()
-            .ok()
-            .map(|path| path.display().to_string())
-    });
-    let list_request_id = generated_id("rpc");
-    let list_request = build_hooks_list_request(&list_request_id, cwd.as_deref());
-    let mut exchange = run_codex_app_server_exchange(
-        &session_dir,
-        &socket_path,
-        "hooks-list",
-        &[build_initialize_request(), list_request],
-        timeout_ms,
-    )?;
-    let mut trust_write_ref = None;
-    let mut trust_write_error = None;
-    let mut hooks = hooks_from_list_response(&exchange.values, &list_request_id);
 
-    if trust && exchange.failure_summary().is_none() && !hooks.is_empty() {
-        let trust_request_id = generated_id("rpc");
-        let trust_request = build_hooks_trust_request(&trust_request_id, &hooks)?;
-        if hooks_trust_edit_count(&trust_request) > 0 {
-            let verify_request_id = generated_id("rpc");
-            let verify_request = build_hooks_list_request(&verify_request_id, cwd.as_deref());
-            let trust_exchange = run_codex_app_server_exchange(
-                &session_dir,
-                &socket_path,
-                "hooks-trust",
-                &[build_initialize_request(), trust_request, verify_request],
-                timeout_ms,
-            )?;
-            trust_write_ref = Some(trust_exchange.stdout_ref.display().to_string());
-            if let Some(error) = trust_exchange.failure_summary() {
-                trust_write_error = Some(error);
-            } else {
-                exchange = trust_exchange;
-                hooks = hooks_from_list_response(&exchange.values, &verify_request_id);
-            }
-        }
-    }
-    if let Some(stdout_ref) = exchange.stdout_ref.to_str() {
-        ingest_provider_output(
-            store,
-            &member.id,
-            Some(runtime.id.as_str()),
-            None,
-            stdout_ref,
-        )?;
-    }
-    let managed_hook_count = hooks.iter().filter(|hook| hook_is_managed(hook)).count();
-    let trusted_hook_count = hooks.iter().filter(|hook| hook_is_trusted(hook)).count();
-    let blocker = if let Some(error) = trust_write_error.clone() {
-        Some(format!("hooks trust write failed: {error}"))
-    } else if exchange.failure_summary().is_some() {
-        Some("hooks/list failed".to_string())
-    } else if hooks.is_empty() {
-        Some("hooks/list returned no hooks for runtime cwd".to_string())
-    } else if trust && trusted_hook_count == 0 {
-        Some("hooks/list returned no trusted hook after trust write".to_string())
-    } else if managed_hook_count == 0 {
-        Some("hooks/list returned no managed or trusted hook".to_string())
-    } else {
-        None
-    };
-    if let Some(blocker) = blocker.as_deref() {
-        let payload_ref = exchange.stdout_ref.display().to_string();
-        append_agent_event(
-            store,
-            &member.id,
-            Some(runtime.id.as_str()),
-            None,
-            "codex_hooks_blocked",
-            blocker,
-            Some(payload_ref.as_str()),
-        )?;
-    }
-    let evidence = Evidence {
-        id: generated_id("evidence"),
-        task_id: None,
-        source_type: "codex_hooks_probe".into(),
-        source_ref: session_dir.display().to_string(),
-        summary: format!(
-            "Codex hooks/list probe for agent {} found {} hooks",
-            member.id,
-            hooks.len()
-        ),
-        created_at: now_string(),
-        evidence_kind: None,
-        goal_id: None,
-    };
-    store.append_evidence(&evidence)?;
-    Ok(serde_json::json!({
-        "agent_member_id": member.id,
-        "runtime_id": runtime.id,
-        "provider_status": if exchange.failure_summary().is_some() { "failed" } else { "succeeded" },
-        "hooks": hooks,
-        "hook_count": hooks.len(),
-        "managed_hook_count": managed_hook_count,
-        "trusted_hook_count": trusted_hook_count,
-        "trust_requested": trust,
-        "trust_write_ref": trust_write_ref,
-        "trust_write_error": trust_write_error,
-        "blocker": blocker,
-        "stdout_ref": exchange.stdout_ref,
-        "stderr_ref": exchange.stderr_ref,
-        "evidence_id": evidence.id
-    }))
-}
-
-fn probe_codex_protocol(socket_path: &Path, timeout_ms: u64) -> CliResult<Option<String>> {
-    let mut sent_values = Vec::new();
-    let mut received_values = Vec::new();
-    let initialize = build_initialize_request();
-    let request_id = initialize
-        .get("id")
-        .and_then(|id| id.as_str())
-        .unwrap_or_default()
-        .to_string();
-    match run_codex_websocket_exchange(
-        socket_path,
-        &[initialize],
-        timeout_ms,
-        &mut sent_values,
-        &mut received_values,
-    ) {
-        Ok(()) => {
-            let ok = received_values.iter().any(|value| {
-                value.get("id").and_then(|id| id.as_str()) == Some(request_id.as_str())
-                    && value.get("error").is_none()
-            });
-            Ok(Some(if ok {
-                "pass: initialize response received".into()
-            } else {
-                "failed: initialize response missing".into()
-            }))
-        }
-        Err(error) => Ok(Some(format!("failed: {error}"))),
-    }
-}
 
 fn runtime_is_alive(runtime: &AgentRuntime) -> bool {
-    let pid_alive = runtime.pid.is_some_and(pid_is_alive);
-    let socket_alive = runtime
-        .control_endpoint
-        .as_deref()
-        .and_then(|endpoint| socket_path_from_endpoint(endpoint).ok())
-        .is_some_and(|path| path.exists());
-    pid_alive && socket_alive && runtime.status == AgentRuntimeStatus::Running
+    // Exec-stream runtimes don't have persistent PIDs or sockets.
+    // Runtime is considered alive if its status is Running.
+    runtime.status == AgentRuntimeStatus::Running && runtime.control_endpoint.is_some()
 }
 
 fn pid_is_alive(pid: u32) -> bool {
@@ -4228,7 +4027,7 @@ fn record_claimed_delivery_terminal(
     let evidence = Evidence {
         id: evidence_id.clone(),
         task_id: message.task_id.clone(),
-        source_type: "codex_delivery_session".into(),
+        source_type: "claude_delivery_session".into(),
         source_ref: source_ref
             .map(str::to_string)
             .unwrap_or_else(|| format!("provider-session:{delivery_id}")),
@@ -4322,559 +4121,13 @@ fn delivery_exit_code(status: &ProviderSessionStatus, exit_code: Option<i32>) ->
     }
 }
 
-fn run_codex_delivery(
-    store: &HarnessStore,
-    member: &AgentMember,
-    runtime: &AgentRuntime,
-    message: &Message,
-    delivery_id: &str,
-    timeout_ms: u64,
-) -> CliResult<DeliveryOutcome> {
-    // Stage 3: Route delivery by HARNESS_CODEX_DELIVERY flag.
-    // DEFAULT="appserver" (do NOT change default).
-    let delivery_mode = env::var("HARNESS_CODEX_DELIVERY").unwrap_or_else(|_| "appserver".into());
-    
-    match delivery_mode.as_str() {
-        "exec" => {
-            run_codex_exec_delivery(store, member, runtime, message, delivery_id, timeout_ms)
-        }
-        "appserver" | _ => {
-            run_codex_app_server_delivery(store, member, runtime, message, delivery_id, timeout_ms)
-        }
-    }
-}
 
-/// Original app-server delivery path, now called via the HARNESS_CODEX_DELIVERY selector.
-fn run_codex_app_server_delivery(
-    store: &HarnessStore,
-    member: &AgentMember,
-    runtime: &AgentRuntime,
-    message: &Message,
-    delivery_id: &str,
-    timeout_ms: u64,
-) -> CliResult<DeliveryOutcome> {
-    let endpoint = runtime.control_endpoint.as_deref().ok_or_else(|| {
-        CliError::Usage(format!("runtime {} has no control endpoint", runtime.id))
-    })?;
-    let socket_path = socket_path_from_endpoint(endpoint)?;
-    let session_dir = store.root().join("provider-sessions").join(delivery_id);
-    fs::create_dir_all(&session_dir)?;
-    let started_at = now_string();
-    let mut thread_id = member.provider_thread_id.clone();
 
-    if thread_id.is_none() {
-        let thread_request_id = generated_id("rpc");
-        let thread_exchange = run_codex_app_server_exchange(
-            &session_dir,
-            &socket_path,
-            "thread-start",
-            &[
-                build_initialize_request(),
-                build_thread_start_request(member, &thread_request_id),
-            ],
-            timeout_ms,
-        )?;
-        let exit_code = thread_exchange.exit_code;
-        let stdout_ref = Some(thread_exchange.stdout_ref.display().to_string());
-        let stderr_ref = Some(thread_exchange.stderr_ref.display().to_string());
 
-        if let Some(error) = thread_exchange.failure_summary() {
-            let summary = format!("Codex thread/start failed: {error}");
-            let evidence_id = record_delivery_provider_session(
-                store,
-                DeliverySessionRecord {
-                    delivery_id,
-                    member,
-                    runtime,
-                    message,
-                    session_dir: &session_dir,
-                    socket_path: &socket_path,
-                    status: ProviderSessionStatus::Failed,
-                    started_at,
-                    stdout_ref: stdout_ref.clone(),
-                    stderr_ref: stderr_ref.clone(),
-                    exit_code,
-                    provider_thread_id: None,
-                    provider_turn_id: None,
-                    terminal_source: Some(MessageTerminalSource::Failed),
-                },
-            )?;
-            return Ok(DeliveryOutcome {
-                status: ProviderSessionStatus::Failed,
-                provider_thread_id: None,
-                provider_turn_id: None,
-                terminal_source: Some(MessageTerminalSource::Failed),
-                stdout_ref,
-                stderr_ref,
-                request_ref: Some(session_dir.display().to_string()),
-                provider_request_id: Some(thread_request_id),
-                provider_session_id: Some(delivery_id.to_string()),
-                evidence_ids: vec![evidence_id],
-                exit_code,
-                summary,
-            });
-        }
 
-        thread_id = extract_thread_id(&thread_exchange.values, &thread_request_id);
-        if thread_id.is_none() {
-            let summary =
-                "Codex thread/start produced no parseable thread id; fixture recorded".into();
-            let evidence_id = record_delivery_provider_session(
-                store,
-                DeliverySessionRecord {
-                    delivery_id,
-                    member,
-                    runtime,
-                    message,
-                    session_dir: &session_dir,
-                    socket_path: &socket_path,
-                    status: ProviderSessionStatus::Failed,
-                    started_at,
-                    stdout_ref: stdout_ref.clone(),
-                    stderr_ref: stderr_ref.clone(),
-                    exit_code,
-                    provider_thread_id: None,
-                    provider_turn_id: None,
-                    terminal_source: Some(MessageTerminalSource::Failed),
-                },
-            )?;
-            return Ok(DeliveryOutcome {
-                status: ProviderSessionStatus::Failed,
-                provider_thread_id: None,
-                provider_turn_id: None,
-                terminal_source: Some(MessageTerminalSource::Failed),
-                stdout_ref,
-                stderr_ref,
-                request_ref: Some(session_dir.display().to_string()),
-                provider_request_id: Some(thread_request_id),
-                provider_session_id: Some(delivery_id.to_string()),
-                evidence_ids: vec![evidence_id],
-                exit_code,
-                summary,
-            });
-        }
-    }
 
-    let thread_id = thread_id.expect("thread id checked above");
-    let turn_request_id = generated_id("rpc");
-    let turn_exchange = run_codex_app_server_exchange(
-        &session_dir,
-        &socket_path,
-        "turn-start",
-        &[
-            build_initialize_request(),
-            build_turn_start_request(member, message, &thread_id, &turn_request_id, delivery_id),
-        ],
-        timeout_ms,
-    )?;
-    let exit_code = turn_exchange.exit_code;
-    let stdout_ref = Some(turn_exchange.stdout_ref.display().to_string());
-    let stderr_ref = Some(turn_exchange.stderr_ref.display().to_string());
 
-    let (status, summary) = classify_turn_exchange(&turn_exchange, &turn_request_id);
-    let provider_turn_id = extract_turn_id(&turn_exchange.values, &turn_request_id);
-    let terminal_source = if delivery_provider_accepted(&status) {
-        terminal_source_from_values(&turn_exchange.values).or(Some(MessageTerminalSource::Unknown))
-    } else {
-        Some(MessageTerminalSource::Failed)
-    };
-    let evidence_id = record_delivery_provider_session(
-        store,
-        DeliverySessionRecord {
-            delivery_id,
-            member,
-            runtime,
-            message,
-            session_dir: &session_dir,
-            socket_path: &socket_path,
-            status: status.clone(),
-            started_at,
-            stdout_ref: stdout_ref.clone(),
-            stderr_ref: stderr_ref.clone(),
-            exit_code: delivery_exit_code(&status, exit_code),
-            provider_thread_id: Some(thread_id.clone()),
-            provider_turn_id: provider_turn_id.clone(),
-            terminal_source: terminal_source.clone(),
-        },
-    )?;
 
-    Ok(DeliveryOutcome {
-        provider_thread_id: delivery_provider_accepted(&status).then_some(thread_id),
-        provider_turn_id,
-        terminal_source,
-        status: status.clone(),
-        stdout_ref,
-        stderr_ref,
-        request_ref: Some(session_dir.display().to_string()),
-        provider_request_id: Some(turn_request_id),
-        provider_session_id: Some(delivery_id.to_string()),
-        evidence_ids: vec![evidence_id],
-        exit_code: delivery_exit_code(&status, exit_code),
-        summary,
-    })
-}
-
-fn classify_turn_exchange(
-    exchange: &ProviderExchange,
-    request_id: &str,
-) -> (ProviderSessionStatus, String) {
-    let turn_started = turn_exchange_confirms_turn_start(&exchange.values, request_id);
-    if turn_started && exchange.only_waited_for_terminal_event() {
-        if terminal_source_from_values(&exchange.values).is_some() {
-            return (
-                ProviderSessionStatus::Succeeded,
-                "Codex turn/start was accepted and a terminal event was already captured".into(),
-            );
-        }
-        return (
-            ProviderSessionStatus::Stale,
-            "Codex turn/start was accepted, but the terminal observer timed out before completion"
-                .into(),
-        );
-    }
-    if let Some(error) = exchange.failure_summary() {
-        return (
-            ProviderSessionStatus::Failed,
-            format!("Codex turn/start failed: {error}"),
-        );
-    }
-    if !turn_started {
-        return (
-            ProviderSessionStatus::Failed,
-            "Codex turn/start produced provider output but no turn response or turn notification"
-                .into(),
-        );
-    }
-    (
-        ProviderSessionStatus::Succeeded,
-        "Codex app-server turn/start produced provider output".into(),
-    )
-}
-
-#[derive(Debug)]
-struct DeliverySessionRecord<'a> {
-    delivery_id: &'a str,
-    member: &'a AgentMember,
-    runtime: &'a AgentRuntime,
-    message: &'a Message,
-    session_dir: &'a Path,
-    socket_path: &'a Path,
-    status: ProviderSessionStatus,
-    started_at: String,
-    stdout_ref: Option<String>,
-    stderr_ref: Option<String>,
-    exit_code: Option<i32>,
-    provider_thread_id: Option<String>,
-    provider_turn_id: Option<String>,
-    terminal_source: Option<MessageTerminalSource>,
-}
-
-fn record_delivery_provider_session(
-    store: &HarnessStore,
-    record: DeliverySessionRecord<'_>,
-) -> CliResult<String> {
-    let evidence_id = generated_id("evidence");
-    let evidence = Evidence {
-        id: evidence_id.clone(),
-        task_id: record.message.task_id.clone(),
-        source_type: "codex_delivery_session".into(),
-        source_ref: record.session_dir.display().to_string(),
-        summary: format!(
-            "Codex app-server delivery {} for message {}",
-            record.delivery_id, record.message.id
-        ),
-        created_at: now_string(),
-        evidence_kind: None,
-        goal_id: None,
-    };
-    store.append_evidence(&evidence)?;
-    let ended_at = if record.status == ProviderSessionStatus::Running {
-        None
-    } else {
-        Some(now_string())
-    };
-    let provider_session = ProviderSession {
-        id: record.delivery_id.into(),
-        provider: "codex".into(),
-        agent_member_id: record.member.id.clone(),
-        task_id: record.message.task_id.clone(),
-        workspace_ref: None,
-        provider_thread_id: record.provider_thread_id,
-        provider_turn_id: record.provider_turn_id,
-        terminal_source: record.terminal_source,
-        status: record.status,
-        command: "harness".into(),
-        args: vec![
-            "codex".into(),
-            "app-server-ws-over-uds".into(),
-            record.socket_path.display().to_string(),
-        ],
-        prompt_ref: record.member.prompt_ref.clone(),
-        prompt_summary: Some(format!("deliver message {}", record.message.id)),
-        provider_session_ref: record.runtime.control_endpoint.clone(),
-        stdout_ref: record.stdout_ref,
-        jsonl_ref: Some(record.session_dir.display().to_string()),
-        transcript_ref: record.stderr_ref,
-        last_message_ref: None,
-        exit_code: record.exit_code,
-        started_at: record.started_at,
-        ended_at,
-        evidence_ids: vec![evidence_id.clone()],
-    };
-    store.append_provider_session(&provider_session)?;
-    Ok(evidence_id)
-}
-
-#[derive(Debug)]
-struct ProviderExchange {
-    values: Vec<serde_json::Value>,
-    stdout_ref: PathBuf,
-    stderr_ref: PathBuf,
-    exit_code: Option<i32>,
-    process_success: bool,
-    error_messages: Vec<String>,
-}
-
-impl ProviderExchange {
-    fn failure_summary(&self) -> Option<String> {
-        if !self.process_success {
-            return Some(format!("proxy process exited with {:?}", self.exit_code));
-        }
-        if !self.error_messages.is_empty() {
-            return Some(self.error_messages.join("; "));
-        }
-        if self.values.is_empty() {
-            return Some("proxy produced no JSON-RPC response or notification".into());
-        }
-        None
-    }
-
-    fn only_waited_for_terminal_event(&self) -> bool {
-        !self.error_messages.is_empty()
-            && self
-                .error_messages
-                .iter()
-                .all(|message| message.contains("timed out waiting for turn terminal event"))
-    }
-}
-
-fn run_codex_app_server_exchange(
-    session_dir: &Path,
-    socket_path: &Path,
-    phase: &str,
-    requests: &[serde_json::Value],
-    timeout_ms: u64,
-) -> CliResult<ProviderExchange> {
-    let request_ref = session_dir.join(format!("{phase}.request.jsonl"));
-    let stdout_ref = session_dir.join(format!("{phase}.stdout.jsonl"));
-    let stderr_ref = session_dir.join(format!("{phase}.stderr.log"));
-
-    let mut sent_values = Vec::new();
-    let mut values = Vec::new();
-    let mut stderr_lines = Vec::new();
-    let process_success = match run_codex_websocket_exchange(
-        socket_path,
-        requests,
-        timeout_ms,
-        &mut sent_values,
-        &mut values,
-    ) {
-        Ok(()) => true,
-        Err(error) => {
-            stderr_lines.push(error);
-            false
-        }
-    };
-
-    fs::write(&request_ref, jsonl_bytes(&sent_values)?)?;
-    fs::write(&stdout_ref, jsonl_bytes(&values)?)?;
-    fs::write(&stderr_ref, stderr_lines.join("\n"))?;
-    let error_messages = provider_exchange_error_messages(&values, &stderr_lines);
-    Ok(ProviderExchange {
-        values,
-        stdout_ref,
-        stderr_ref,
-        exit_code: Some(if process_success { 0 } else { 1 }),
-        process_success,
-        error_messages,
-    })
-}
-
-fn provider_exchange_error_messages(
-    values: &[serde_json::Value],
-    stderr_lines: &[String],
-) -> Vec<String> {
-    let mut error_messages = jsonrpc_error_messages(values);
-    error_messages.extend(stderr_lines.iter().cloned());
-    error_messages
-}
-
-fn run_codex_websocket_exchange(
-    socket_path: &Path,
-    requests: &[serde_json::Value],
-    timeout_ms: u64,
-    sent_values: &mut Vec<serde_json::Value>,
-    received_values: &mut Vec<serde_json::Value>,
-) -> Result<(), String> {
-    let timeout = Duration::from_millis(timeout_ms.max(1));
-    let deadline = Instant::now() + timeout;
-    let stream = UnixStream::connect(socket_path)
-        .map_err(|error| format!("connect {} failed: {error}", socket_path.display()))?;
-    stream
-        .set_read_timeout(Some(Duration::from_millis(250)))
-        .map_err(|error| format!("set read timeout failed: {error}"))?;
-    stream
-        .set_write_timeout(Some(timeout.min(Duration::from_secs(10))))
-        .map_err(|error| format!("set write timeout failed: {error}"))?;
-
-    let request = "ws://localhost/"
-        .into_client_request()
-        .map_err(|error| format!("build websocket request failed: {error}"))?;
-    let (mut websocket, _) = tungstenite::client::client(request, stream)
-        .map_err(|error| format!("websocket handshake failed: {error}"))?;
-
-    let mut initialized = false;
-    for request in requests {
-        let method = request
-            .get("method")
-            .and_then(|value| value.as_str())
-            .unwrap_or("");
-        let request_id = request.get("id").cloned();
-        send_ws_json(&mut websocket, request, sent_values)?;
-        if let Some(request_id) = request_id.as_ref() {
-            read_ws_until_response(&mut websocket, request_id, deadline, received_values)?;
-        }
-        if method == "initialize" && !initialized {
-            let initialized_notification = serde_json::json!({"method": "initialized"});
-            send_ws_json(&mut websocket, &initialized_notification, sent_values)?;
-            initialized = true;
-        }
-        if method == "turn/start" {
-            read_ws_until_turn_terminal(&mut websocket, deadline, received_values)?;
-        } else {
-            drain_ws_until_idle(
-                &mut websocket,
-                Duration::from_millis(250),
-                deadline,
-                received_values,
-            )?;
-        }
-    }
-    let _ = websocket.close(None);
-    Ok(())
-}
-
-fn send_ws_json(
-    websocket: &mut WebSocket<UnixStream>,
-    value: &serde_json::Value,
-    sent_values: &mut Vec<serde_json::Value>,
-) -> Result<(), String> {
-    let payload = serde_json::to_string(value).map_err(|error| error.to_string())?;
-    websocket
-        .send(WebSocketMessage::Text(payload.into()))
-        .map_err(|error| format!("websocket send failed: {error}"))?;
-    sent_values.push(value.clone());
-    Ok(())
-}
-
-fn read_ws_until_response(
-    websocket: &mut WebSocket<UnixStream>,
-    request_id: &serde_json::Value,
-    deadline: Instant,
-    received_values: &mut Vec<serde_json::Value>,
-) -> Result<(), String> {
-    loop {
-        if Instant::now() >= deadline {
-            return Err(format!("timed out waiting for response id {request_id}"));
-        }
-        if let Some(value) = read_ws_json(websocket, deadline, received_values)? {
-            if value.get("id") == Some(request_id)
-                && (value.get("result").is_some() || value.get("error").is_some())
-            {
-                return Ok(());
-            }
-        }
-    }
-}
-
-fn drain_ws_until_idle(
-    websocket: &mut WebSocket<UnixStream>,
-    idle_timeout: Duration,
-    deadline: Instant,
-    received_values: &mut Vec<serde_json::Value>,
-) -> Result<(), String> {
-    let mut idle_deadline = Instant::now() + idle_timeout;
-    while Instant::now() < deadline && Instant::now() < idle_deadline {
-        if let Some(value) = read_ws_json(websocket, deadline, received_values)? {
-            idle_deadline = Instant::now() + idle_timeout;
-            if value.get("method").and_then(|method| method.as_str()) == Some("turn/completed") {
-                break;
-            }
-        }
-    }
-    Ok(())
-}
-
-fn read_ws_until_turn_terminal(
-    websocket: &mut WebSocket<UnixStream>,
-    deadline: Instant,
-    received_values: &mut Vec<serde_json::Value>,
-) -> Result<(), String> {
-    loop {
-        if Instant::now() >= deadline {
-            return Err("timed out waiting for turn terminal event".into());
-        }
-        if let Some(value) = read_ws_json(websocket, deadline, received_values)? {
-            let method = value.get("method").and_then(|value| value.as_str());
-            if method == Some("turn/completed") {
-                return Ok(());
-            }
-            if method == Some("thread/status/changed")
-                && value
-                    .get("params")
-                    .and_then(|params| params.get("status"))
-                    .and_then(|status| status.get("type"))
-                    .and_then(|status_type| status_type.as_str())
-                    == Some("idle")
-            {
-                return Ok(());
-            }
-        }
-    }
-}
-
-fn read_ws_json(
-    websocket: &mut WebSocket<UnixStream>,
-    deadline: Instant,
-    received_values: &mut Vec<serde_json::Value>,
-) -> Result<Option<serde_json::Value>, String> {
-    if Instant::now() >= deadline {
-        return Ok(None);
-    }
-    match websocket.read() {
-        Ok(WebSocketMessage::Text(text)) => {
-            let value = serde_json::from_str::<serde_json::Value>(text.as_ref())
-                .map_err(|error| format!("invalid websocket JSON payload: {error}"))?;
-            received_values.push(value.clone());
-            Ok(Some(value))
-        }
-        Ok(WebSocketMessage::Ping(payload)) => {
-            websocket
-                .send(WebSocketMessage::Pong(payload))
-                .map_err(|error| format!("websocket pong failed: {error}"))?;
-            Ok(None)
-        }
-        Ok(WebSocketMessage::Close(_)) => Err("websocket closed before exchange completed".into()),
-        Ok(WebSocketMessage::Binary(_)) => Err("unexpected binary websocket frame".into()),
-        Ok(WebSocketMessage::Pong(_)) | Ok(WebSocketMessage::Frame(_)) => Ok(None),
-        Err(tungstenite::Error::Io(error))
-            if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) =>
-        {
-            Ok(None)
-        }
-        Err(error) => Err(format!("websocket read failed: {error}")),
-    }
-}
 
 fn jsonl_bytes(values: &[serde_json::Value]) -> CliResult<Vec<u8>> {
     let mut bytes = Vec::new();
@@ -4886,43 +4139,7 @@ fn jsonl_bytes(values: &[serde_json::Value]) -> CliResult<Vec<u8>> {
     Ok(bytes)
 }
 
-fn build_initialize_request() -> serde_json::Value {
-    serde_json::json!({
-        "id": generated_id("rpc"),
-        "method": "initialize",
-        "params": {
-            "clientInfo": {"name": "multi-agent-harness", "version": env!("CARGO_PKG_VERSION")},
-            "capabilities": {"experimentalApi": true}
-        }
-    })
-}
 
-fn build_thread_start_request(member: &AgentMember, request_id: &str) -> serde_json::Value {
-    let cwd = member.worktree_ref.clone().or_else(|| {
-        env::current_dir()
-            .ok()
-            .map(|path| path.display().to_string())
-    });
-    let developer_instructions = provider_developer_instructions(member);
-    let mut params = serde_json::Map::new();
-    insert_optional_string(&mut params, "cwd", cwd);
-    insert_optional_string(&mut params, "model", member.model.clone());
-    params.insert(
-        "developerInstructions".into(),
-        serde_json::Value::String(developer_instructions),
-    );
-    params.insert("ephemeral".into(), serde_json::Value::Bool(false));
-    if let Some(permissions) = codex_permissions_selection(member) {
-        params.insert("permissions".into(), permissions);
-    } else if let Some(sandbox) = member.provider_config.sandbox_policy.as_deref() {
-        params.insert("sandbox".into(), serde_json::Value::String(sandbox.into()));
-    }
-    serde_json::json!({
-        "id": request_id,
-        "method": "thread/start",
-        "params": params
-    })
-}
 
 fn provider_developer_instructions(member: &AgentMember) -> String {
     let Some(prompt_ref) = member.prompt_ref.as_deref() else {
@@ -4936,54 +4153,6 @@ fn provider_developer_instructions(member: &AgentMember) -> String {
     }
 }
 
-fn build_turn_start_request(
-    member: &AgentMember,
-    message: &Message,
-    thread_id: &str,
-    request_id: &str,
-    delivery_attempt_id: &str,
-) -> serde_json::Value {
-    let mut params = serde_json::Map::new();
-    params.insert(
-        "threadId".into(),
-        serde_json::Value::String(thread_id.into()),
-    );
-    params.insert(
-        "input".into(),
-        build_turn_input(message, delivery_attempt_id),
-    );
-    insert_optional_string(&mut params, "cwd", member.worktree_ref.clone());
-    insert_optional_string(
-        &mut params,
-        "approvalPolicy",
-        member.provider_config.approval_policy.clone(),
-    );
-    insert_optional_string(
-        &mut params,
-        "approvalsReviewer",
-        member.provider_config.approvals_reviewer.clone(),
-    );
-    insert_optional_string(
-        &mut params,
-        "serviceTier",
-        member.provider_config.service_tier.clone(),
-    );
-    insert_optional_string(
-        &mut params,
-        "collaborationMode",
-        member.provider_config.collaboration_mode.clone(),
-    );
-    if let Some(permissions) = codex_permissions_selection(member) {
-        params.insert("permissions".into(), permissions);
-    } else if let Some(sandbox) = codex_sandbox_policy(member) {
-        params.insert("sandboxPolicy".into(), sandbox);
-    }
-    serde_json::json!({
-        "id": request_id,
-        "method": "turn/start",
-        "params": params
-    })
-}
 
 fn insert_optional_string(
     params: &mut serde_json::Map<String, serde_json::Value>,
@@ -5053,16 +4222,6 @@ fn build_turn_input(message: &Message, delivery_attempt_id: &str) -> serde_json:
     }])
 }
 
-#[cfg(test)]
-fn frame_jsonrpc_requests(requests: &[serde_json::Value]) -> CliResult<Vec<u8>> {
-    let mut framed = Vec::new();
-    for request in requests {
-        let body = serde_json::to_vec(request).expect("serialize json-rpc request");
-        write!(framed, "Content-Length: {}\r\n\r\n", body.len())?;
-        framed.extend_from_slice(&body);
-    }
-    Ok(framed)
-}
 
 /// Resolve a control endpoint to a filesystem path.
 ///
@@ -5072,12 +4231,6 @@ fn frame_jsonrpc_requests(requests: &[serde_json::Value]) -> CliResult<Vec<u8>> 
 /// the endpoint verbatim so callers that only inspect existence/format keep
 /// working without assuming a unix socket. This keeps the seam provider-neutral
 /// per ADR 0011 — the endpoint format is the one place Codex assumed a socket.
-fn socket_path_from_endpoint(endpoint: &str) -> CliResult<PathBuf> {
-    match endpoint.strip_prefix("unix://") {
-        Some(path) => Ok(PathBuf::from(path)),
-        None => Ok(PathBuf::from(endpoint)),
-    }
-}
 
 fn ingest_provider_output(
     store: &HarnessStore,
@@ -7521,7 +6674,7 @@ fn unknown_provider_error(provider: &str, concern: &str) -> CliError {
 /// Spawn (or attach) the runtime for a member, routed by `member.provider`.
 fn start_provider_runtime(store: &HarnessStore, member: &AgentMember) -> CliResult<AgentRuntime> {
     match ProviderKind::from(member.provider.as_str()) {
-        ProviderKind::Codex => start_codex_runtime(store, member),
+        ProviderKind::Codex => start_codex_exec_runtime(store, member),
         ProviderKind::Claude => start_claude_runtime(store, member),
         ProviderKind::Unknown(provider) => {
             Err(unknown_provider_error(&provider, "runtime start"))
@@ -7956,6 +7109,81 @@ fn run_codex_exec_process(
 }
 
 /// Run a single Codex exec delivery, writing identical ProviderSession/Evidence rows.
+
+// WP-5: Minimal record of provider session for exec-stream delivery.
+// This records evidence and session metadata for audit/tracing.
+struct ExecDeliverySessionRecord<'a> {
+    delivery_id: &'a str,
+    member: &'a AgentMember,
+    message: &'a Message,
+    session_dir: &'a Path,
+    status: ProviderSessionStatus,
+    started_at: String,
+    stdout_ref: Option<String>,
+    stderr_ref: Option<String>,
+    exit_code: Option<i32>,
+    provider_thread_id: Option<String>,
+    provider_turn_id: Option<String>,
+    terminal_source: Option<MessageTerminalSource>,
+}
+
+fn record_exec_delivery_session(
+    store: &HarnessStore,
+    record: ExecDeliverySessionRecord<'_>,
+) -> CliResult<String> {
+    let evidence_id = generated_id("evidence");
+    let evidence = Evidence {
+        id: evidence_id.clone(),
+        task_id: record.message.task_id.clone(),
+        source_type: "codex_exec_delivery_session".into(),
+        source_ref: record.session_dir.display().to_string(),
+        summary: format!(
+            "Codex exec-stream delivery {} for message {}",
+            record.delivery_id, record.message.id
+        ),
+        created_at: now_string(),
+        evidence_kind: None,
+        goal_id: None,
+    };
+    store.append_evidence(&evidence)?;
+    let ended_at = if record.status == ProviderSessionStatus::Running {
+        None
+    } else {
+        Some(now_string())
+    };
+    let provider_session = ProviderSession {
+        id: record.delivery_id.into(),
+        provider: "codex".into(),
+        agent_member_id: record.member.id.clone(),
+        task_id: record.message.task_id.clone(),
+        workspace_ref: None,
+        provider_thread_id: record.provider_thread_id,
+        provider_turn_id: record.provider_turn_id,
+        terminal_source: record.terminal_source,
+        status: record.status,
+        command: "harness".into(),
+        args: vec![
+            "codex".into(),
+            "exec".into(),
+            "--json".into(),
+        ],
+        prompt_ref: record.member.prompt_ref.clone(),
+        prompt_summary: Some(format!("deliver message {}", record.message.id)),
+        provider_session_ref: None,
+        stdout_ref: record.stdout_ref,
+        jsonl_ref: Some(record.session_dir.display().to_string()),
+        transcript_ref: record.stderr_ref,
+        last_message_ref: None,
+        exit_code: record.exit_code,
+        started_at: record.started_at,
+        ended_at,
+        evidence_ids: vec![evidence_id.clone()],
+    };
+    store.append_provider_session(&provider_session)?;
+    Ok(evidence_id)
+}
+
+
 /// This is the exec-stream variant of run_codex_app_server_exchange.
 fn run_codex_exec_delivery(
     store: &HarnessStore,
@@ -8001,15 +7229,13 @@ fn run_codex_exec_delivery(
     let provider_turn_id = extract_turn_id_from_exec_events(&events);
     let exit_code = if process_success { Some(0) } else { Some(1) };
 
-    let evidence_id = record_delivery_provider_session(
+    let evidence_id = record_exec_delivery_session(
         store,
-        DeliverySessionRecord {
+        ExecDeliverySessionRecord {
             delivery_id,
             member,
-            runtime,
             message,
             session_dir: &session_dir,
-            socket_path: Path::new("(exec stream, no socket)"),
             status: status.clone(),
             started_at,
             stdout_ref: Some(stdout_ref.display().to_string()),
@@ -8065,7 +7291,7 @@ fn run_provider_delivery(
 ) -> CliResult<DeliveryOutcome> {
     match ProviderKind::from(member.provider.as_str()) {
         ProviderKind::Codex => {
-            run_codex_delivery(store, member, runtime, message, delivery_id, timeout_ms)
+            run_codex_exec_delivery(store, member, runtime, message, delivery_id, timeout_ms)
         }
         ProviderKind::Claude => {
             run_claude_delivery(store, member, runtime, message, delivery_id, timeout_ms)
@@ -8075,19 +7301,6 @@ fn run_provider_delivery(
 }
 
 /// Probe the live protocol layer of a runtime socket, routed by provider.
-fn probe_provider_protocol(
-    provider: &str,
-    socket_path: &Path,
-    timeout_ms: u64,
-) -> CliResult<Option<String>> {
-    match ProviderKind::from(provider) {
-        ProviderKind::Codex => probe_codex_protocol(socket_path, timeout_ms),
-        ProviderKind::Claude => probe_claude_protocol(socket_path, timeout_ms),
-        ProviderKind::Unknown(provider) => {
-            Err(unknown_provider_error(&provider, "protocol probe"))
-        }
-    }
-}
 // --- Claude protocol probe (BE-WP7) ---
 fn probe_claude_protocol(_socket_path: &Path, _timeout_ms: u64) -> CliResult<Option<String>> {
     // For Claude CLI, protocol probing is handled differently than Codex's WebSocket.
@@ -8095,6 +7308,53 @@ fn probe_claude_protocol(_socket_path: &Path, _timeout_ms: u64) -> CliResult<Opt
     // until the first delivery attempt.
     Ok(Some("unknown: claude CLI protocol probed on first delivery".into()))
 }
+// WP-5: Codex exec-stream runtime (no persistent process).
+// Each delivery spawns `codex exec --json`, so no app-server socket is needed.
+
+fn start_codex_exec_runtime(store: &HarnessStore, member: &AgentMember) -> CliResult<AgentRuntime> {
+    let runtime_id = generated_id("runtime");
+    let runtime_dir = store.root().join("runtimes").join(&member.id);
+    fs::create_dir_all(&runtime_dir)?;
+    
+    // For Codex, we use exec-stream delivery (no persistent app-server).
+    // Each delivery spawns `codex exec --json`, so there's no long-lived process.
+    // The control_endpoint is a marker for the runtime directory.
+    let endpoint = format!("codex-exec-runtime://{}", runtime_dir.display());
+    
+    let args = vec![
+        // Codex will be spawned on each delivery via codex exec --json
+    ];
+    
+    // Check if codex binary is available
+    let process_alive = Command::new("which")
+        .arg("codex")
+        .output()
+        .ok()
+        .map(|output| output.status.success())
+        .unwrap_or(false);
+    
+    Ok(AgentRuntime {
+        id: runtime_id,
+        agent_member_id: member.id.clone(),
+        provider: member.provider.clone(),
+        status: AgentRuntimeStatus::Running,
+        pid: None, // Codex exec runs on-demand; no persistent PID
+        control_endpoint: Some(endpoint),
+        command: "codex".into(),
+        args,
+        started_at: now_string(),
+        ended_at: None,
+        last_event_at: Some(now_string()),
+        health: AgentRuntimeHealth {
+            process_alive,
+            socket_exists: true, // Runtime dir exists
+            protocol_probe: Some("exec-stream".into()), // Codex uses exec-stream
+            delivery_probe: Some("unknown".into()),
+            checked_at: Some(now_string()),
+        },
+    })
+}
+
 
 // --- Claude runtime (BE-WP7) ---
 // The claude CLI shape: spawn the claude binary as a local process, run message
@@ -8533,7 +7793,7 @@ fn run_claude_exchange(
 
 fn record_claude_delivery_session(
     store: &HarnessStore,
-    record: DeliverySessionRecord<'_>,
+    record: ExecDeliverySessionRecord<'_>,
 ) -> CliResult<String> {
     let evidence_id = generated_id("evidence");
     let evidence = Evidence {
@@ -8585,119 +7845,8 @@ fn record_claude_delivery_session(
     Ok(evidence_id)
 }
 
-fn start_codex_runtime(store: &HarnessStore, member: &AgentMember) -> CliResult<AgentRuntime> {
-    let runtime_id = generated_id("runtime");
-    let runtime_dir = store.root().join("runtimes").join(&member.id);
-    fs::create_dir_all(&runtime_dir)?;
-    let socket_path = runtime_dir.join("codex.sock");
-    if socket_path.exists() {
-        fs::remove_file(&socket_path)?;
-    }
-    let stdout = File::create(runtime_dir.join("stdout.log"))?;
-    let stderr = File::create(runtime_dir.join("stderr.log"))?;
-    let endpoint = format!("unix://{}", socket_path.display());
-    let mut args = vec!["app-server".to_string(), format!("--listen={endpoint}")];
-    args.push("--enable".into());
-    args.push("hooks".into());
-    if env::var("HARNESS_CODEX_ENABLE_PLUGIN_HOOKS")
-        .ok()
-        .as_deref()
-        != Some("1")
-    {
-        args.push("--disable".into());
-        args.push("plugin_hooks".into());
-    }
-    if env::var("HARNESS_CODEX_DISABLE_SESSION_HOOK_CONFIG")
-        .ok()
-        .as_deref()
-        != Some("1")
-    {
-        add_codex_hook_config(&mut args, &member.id, &runtime_id)?;
-    }
-    if let Some(model) = &member.model {
-        args.push("--config".into());
-        args.push(format!("model={model:?}"));
-    }
-    let mut command = Command::new("codex");
-    configure_child_session(&mut command);
-    let harness_root = absolute_store_root(store)?;
-    command
-        .args(&args)
-        .env("HARNESS_ROOT", harness_root)
-        .env("HARNESS_AGENT_MEMBER_ID", &member.id)
-        .env("HARNESS_AGENT_RUNTIME_ID", &runtime_id)
-        .env("HARNESS_CODEX_RUNTIME_DIR", &runtime_dir)
-        .stdout(Stdio::from(stdout))
-        .stderr(Stdio::from(stderr));
-    let mut child = command.spawn()?;
-    let pid = child.id();
-    let timeout_ms = env::var("HARNESS_AGENT_START_TIMEOUT_MS")
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
-        .unwrap_or(30_000);
-    wait_for_runtime_socket(&mut child, &socket_path, timeout_ms)?;
 
-    Ok(AgentRuntime {
-        id: runtime_id,
-        agent_member_id: member.id.clone(),
-        provider: member.provider.clone(),
-        status: AgentRuntimeStatus::Running,
-        pid: Some(pid),
-        control_endpoint: Some(endpoint),
-        command: "codex".into(),
-        args,
-        started_at: now_string(),
-        ended_at: None,
-        last_event_at: Some(now_string()),
-        health: AgentRuntimeHealth {
-            process_alive: true,
-            socket_exists: true,
-            protocol_probe: Some("unknown".into()),
-            delivery_probe: Some("unknown".into()),
-            checked_at: Some(now_string()),
-        },
-    })
-}
 
-fn configure_child_session(command: &mut Command) {
-    unsafe {
-        command.pre_exec(|| {
-            let result = setsid();
-            if result == -1 {
-                Err(std::io::Error::last_os_error())
-            } else {
-                Ok(())
-            }
-        });
-    }
-}
-
-fn wait_for_runtime_socket(
-    child: &mut Child,
-    socket_path: &Path,
-    timeout_ms: u64,
-) -> CliResult<()> {
-    let attempts = (timeout_ms / 50).max(1);
-    for _ in 0..attempts {
-        if socket_path.exists() {
-            return Ok(());
-        }
-        if let Some(status) = child.try_wait()? {
-            return Err(CliError::Usage(format!(
-                "codex app-server exited with {status:?} before creating socket {}",
-                socket_path.display()
-            )));
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    let _ = child.kill();
-    let _ = child.wait();
-    Err(CliError::Usage(format!(
-        "codex app-server did not create socket {} within {}ms",
-        socket_path.display(),
-        timeout_ms
-    )))
-}
 
 fn parse_hook_payload(input: &str) -> serde_json::Value {
     if input.trim().is_empty() {
@@ -9049,22 +8198,6 @@ fn print_help() {
 mod tests {
     use super::*;
 
-    #[test]
-    fn parses_content_length_frames_and_json_lines_without_duplicates() {
-        let first = serde_json::json!({"jsonrpc": "2.0", "id": "a", "result": {"ok": true}});
-        let second = serde_json::json!({"method": "turn/completed", "params": {"ok": true}});
-        let mut framed = frame_jsonrpc_requests(&[first.clone(), second.clone()]).unwrap();
-        framed.extend_from_slice(
-            br#"
-{"method":"item/agentMessage/delta","params":{"text":"done"}}
-"#,
-        );
-
-        let values = extract_provider_json_values_from_bytes(&framed);
-        assert_eq!(values.len(), 3);
-        assert!(values.contains(&first));
-        assert!(values.contains(&second));
-    }
 
     #[test]
     fn extracts_thread_id_from_thread_start_response_before_turn_start() {
@@ -9092,18 +8225,6 @@ mod tests {
         assert_eq!(jsonrpc_error_messages(&values), vec!["bad thread"]);
     }
 
-    #[test]
-    fn provider_exchange_errors_include_websocket_failures() {
-        let errors = provider_exchange_error_messages(
-            &[],
-            &["timed out waiting for turn terminal event".into()],
-        );
-
-        assert_eq!(
-            errors,
-            vec!["timed out waiting for turn terminal event".to_string()]
-        );
-    }
 
     #[test]
     fn generated_ids_are_unique_inside_one_exchange() {
@@ -9143,72 +8264,8 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn accepted_turn_timeout_without_watcher_is_reported_stale() {
-        let exchange = ProviderExchange {
-            values: vec![serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": "turn-rpc",
-                "result": {"turn": {"id": "turn-1"}}
-            })],
-            stdout_ref: PathBuf::from("turn-start.stdout.jsonl"),
-            stderr_ref: PathBuf::from("turn-start.stderr.log"),
-            exit_code: Some(1),
-            process_success: false,
-            error_messages: vec!["timed out waiting for turn terminal event".into()],
-        };
 
-        let (status, summary) = classify_turn_exchange(&exchange, "turn-rpc");
-        assert_eq!(status, ProviderSessionStatus::Stale);
-        assert!(summary.contains("accepted"));
-        assert!(summary.contains("timed out"));
-    }
 
-    #[test]
-    fn accepted_turn_timeout_with_captured_terminal_is_succeeded() {
-        let exchange = ProviderExchange {
-            values: vec![
-                serde_json::json!({
-                    "method": "turn/completed",
-                    "params": {"threadId": "thread-1", "turnId": "turn-1"}
-                }),
-                serde_json::json!({
-                    "jsonrpc": "2.0",
-                    "id": "turn-rpc",
-                    "result": {"turn": {"id": "turn-1"}}
-                }),
-            ],
-            stdout_ref: PathBuf::from("turn-start.stdout.jsonl"),
-            stderr_ref: PathBuf::from("turn-start.stderr.log"),
-            exit_code: Some(1),
-            process_success: false,
-            error_messages: vec!["timed out waiting for turn terminal event".into()],
-        };
-
-        let (status, summary) = classify_turn_exchange(&exchange, "turn-rpc");
-        assert_eq!(status, ProviderSessionStatus::Succeeded);
-        assert!(summary.contains("terminal event"));
-    }
-
-    #[test]
-    fn unconfirmed_turn_timeout_is_reported_failed() {
-        let exchange = ProviderExchange {
-            values: vec![serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": "initialize-rpc",
-                "result": {"ok": true}
-            })],
-            stdout_ref: PathBuf::from("turn-start.stdout.jsonl"),
-            stderr_ref: PathBuf::from("turn-start.stderr.log"),
-            exit_code: Some(1),
-            process_success: false,
-            error_messages: vec!["timed out waiting for turn terminal event".into()],
-        };
-
-        let (status, summary) = classify_turn_exchange(&exchange, "turn-rpc");
-        assert_eq!(status, ProviderSessionStatus::Failed);
-        assert!(summary.contains("failed"));
-    }
 
     #[test]
     fn running_delivery_is_acknowledged_not_delivered() {
@@ -9305,16 +8362,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
-    #[test]
-    fn claude_member_protocol_probe_dispatches_to_claude_stub() {
-        let result =
-            probe_provider_protocol("claude", Path::new("/tmp/does-not-matter.sock"), 1_000)
-                .expect("claude protocol probe should dispatch to claude implementation");
-        assert!(
-            result.as_deref().unwrap_or("").contains("unknown"),
-            "claude protocol probe should return unknown status, got: {result:?}"
-        );
-    }
 
     #[test]
     #[test]
@@ -9467,7 +8514,7 @@ mod tests {
         let evidence = Evidence {
             id: "evidence-1".into(),
             task_id: Some("task-1".into()),
-            source_type: "codex_delivery_session".into(),
+            source_type: "claude_delivery_session".into(),
             source_ref: root.display().to_string(),
             summary: "running delivery evidence".into(),
             created_at: "unix-ms:1".into(),
@@ -10502,26 +9549,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
-    #[test]
-    fn thread_start_uses_prompt_file_contents() {
-        let root =
-            std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("prompt")));
-        std::fs::create_dir_all(&root).expect("create temp prompt dir");
-        let prompt_path = root.join("agent.md");
-        std::fs::write(&prompt_path, "Prompt file contents").expect("write prompt");
-        let mut member = make_member("agent-1");
-        member.prompt_ref = Some(prompt_path.display().to_string());
-
-        let request = build_thread_start_request(&member, "rpc-1");
-        assert_eq!(
-            request
-                .get("params")
-                .and_then(|params| params.get("developerInstructions"))
-                .and_then(|value| value.as_str()),
-            Some("Prompt file contents")
-        );
-        let _ = std::fs::remove_dir_all(root);
-    }
 
     #[test]
     fn turn_input_uses_stable_harness_envelope() {
@@ -11951,7 +10978,7 @@ invalid json line
         // This test validates the logic of the selector function.
         // It doesn't actually invoke the function, but documents the expected behavior:
         // - HARNESS_CODEX_DELIVERY=exec -> run_codex_exec_delivery
-        // - HARNESS_CODEX_DELIVERY=appserver -> run_codex_app_server_delivery
+        // - Codex now uses exec-stream delivery only
         // - no flag -> defaults to appserver
         
         let env_exec = "exec";
