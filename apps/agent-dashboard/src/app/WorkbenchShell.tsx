@@ -606,6 +606,7 @@ function SurfaceSwitch({
           {...shared}
           boardScope={selection.boardScope ?? "tasks"}
           boardGoal={selection.boardGoal}
+          peekTaskId={selection.taskId}
         />
       );
     case "member":

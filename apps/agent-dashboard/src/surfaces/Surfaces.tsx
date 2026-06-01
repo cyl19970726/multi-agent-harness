@@ -2479,18 +2479,99 @@ function BoardColumn({
 }
 
 /**
+ * Right-side Task slide-over (peek). Opened from the Work board by selecting a
+ * card; reuses the full `TaskDocument` content (driven by `model.selectedTask`)
+ * inside a narrow panel, with Close and "Open full page" affordances. Esc and
+ * backdrop click close it. The full page stays reachable at `surface:"task"`.
+ */
+function TaskSheet({
+  model,
+  onSelectionChange,
+  actionsEnabled,
+  onAction,
+  onClose,
+}: SurfaceProps & { onClose: () => void }) {
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  return (
+    <div className="fixed inset-0 z-50 flex justify-end">
+      <button
+        type="button"
+        aria-label="Close task panel"
+        className="absolute inset-0 bg-foreground/20 backdrop-blur-[1px]"
+        onClick={onClose}
+      />
+      <aside
+        role="dialog"
+        aria-label="Task detail"
+        className="relative flex h-full w-full max-w-[560px] flex-col border-l border-border bg-background shadow-xl"
+      >
+        <div className="flex h-12 shrink-0 items-center gap-2 border-b border-border px-3">
+          <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+            Task
+          </span>
+          <div className="ml-auto flex items-center gap-1">
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={() => onSelectionChange({ surface: "task" })}
+            >
+              <ExternalLink className="size-3.5" />
+              Open full page
+            </Button>
+            <button
+              type="button"
+              aria-label="Close"
+              onClick={onClose}
+              className="grid size-8 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+            >
+              <X className="size-4" />
+            </button>
+          </div>
+        </div>
+        <div className="min-h-0 flex-1 overflow-y-auto p-4">
+          <TaskDocument
+            model={model}
+            onSelectionChange={onSelectionChange}
+            actionsEnabled={actionsEnabled}
+            onAction={onAction}
+          />
+        </div>
+      </aside>
+    </div>
+  );
+}
+
+/**
  * Unified Work board. A `[ Goals | Tasks ]` switch lays out either the Goal
  * collection (4 columns: active/blocked/review/done) or the Task graph (6
  * columns). Tasks mode supports a goal filter (`boardGoal`). Task cards carry a
  * derived ready/waiting chip distinct from the stored `blocked` column. The
- * per-goal board is just this board pre-filtered via `boardGoal`.
+ * per-goal board is just this board pre-filtered via `boardGoal`. Selecting a
+ * card opens the Task slide-over (`peekTaskId`) without leaving the board.
  */
 export function GraphKanban({
   model,
   onSelectionChange,
   boardScope = "tasks",
   boardGoal,
-}: SurfaceProps & { boardScope?: "goals" | "tasks"; boardGoal?: string }) {
+  peekTaskId,
+  actionsEnabled,
+  onAction,
+}: SurfaceProps & {
+  boardScope?: "goals" | "tasks";
+  boardGoal?: string;
+  peekTaskId?: string;
+}) {
+  const peekTask = peekTaskId
+    ? model.tasks.find((task) => task.id === peekTaskId)
+    : undefined;
   const goalsMode = boardScope === "goals";
   const goalById = new Map(model.goals.map((goal) => [goal.id, goal]));
   const filterGoal = boardGoal ? goalById.get(boardGoal) : undefined;
@@ -2603,7 +2684,7 @@ export function GraphKanban({
                         goalLabel={
                           boardGoal ? undefined : goalById.get(task.goal_id ?? "")?.title
                         }
-                        onClick={() => onSelectionChange({ taskId: task.id, surface: "task" })}
+                        onClick={() => onSelectionChange({ taskId: task.id })}
                       />
                     ))
                   ) : (
@@ -2613,6 +2694,16 @@ export function GraphKanban({
               );
             })}
       </div>
+
+      {peekTask && (
+        <TaskSheet
+          model={model}
+          onSelectionChange={onSelectionChange}
+          actionsEnabled={actionsEnabled}
+          onAction={onAction}
+          onClose={() => onSelectionChange({ taskId: undefined })}
+        />
+      )}
     </div>
   );
 }
