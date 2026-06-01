@@ -12,11 +12,13 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use harness_core::{
     AgentEvent, AgentMember, AgentMemberStatus, AgentProviderConfig, AgentRuntime,
-    AgentRuntimeHealth, AgentRuntimeStatus, AgentTeam, AgentTeamStatus, Decision, EvaluationOutcome,
-    Evidence, Gap, GapSeverity, GapStatus, Goal, GoalCase, GoalDesign, GoalEvaluation, GoalStatus,
-    Message, MessageDelivery, MessageDeliveryStatus, MessageKind, MessageTerminalSource, Proposal,
-    ProposalStatus, ProviderChildThread, ProviderChildThreadStatus, ProviderKind, ProviderSession,
-    ProviderSessionStatus, Review, ReviewVerdict, SenderKind, Task, TaskStatus, Vision,
+    AgentRuntimeHealth, AgentRuntimeStatus, AgentTeam, AgentTeamStatus, build_launch_spec,
+    Decision, EvaluationOutcome, Evidence, Gap, GapSeverity, GapStatus, Goal, GoalCase,
+    GoalDesign, GoalEvaluation, GoalStatus, LaunchMcp, LaunchMcpServer, LaunchPermission,
+    LaunchSpec, Message, MessageDelivery, MessageDeliveryStatus, MessageKind,
+    MessageTerminalSource, Proposal, ProposalStatus, ProviderChildThread,
+    ProviderChildThreadStatus, ProviderKind, ProviderSession, ProviderSessionStatus, Review,
+    ReviewVerdict, SenderKind, Task, TaskStatus, Vision,
 };
 use harness_store::{HarnessStore, MessageDeliveryClaimResult};
 use thiserror::Error;
@@ -7198,6 +7200,78 @@ fn extract_turn_id_from_exec_events(events: &[CodexExecEvent]) -> Option<String>
 ///
 /// Returns (process_success: bool, events: Vec<CodexExecEvent>, stderr_log: String).
 /// process_success = exit code 0; events = parsed NDJSON; stderr_log = captured stderr.
+/// Map LaunchPermission to Claude --permission-mode value.
+fn launch_permission_to_claude_mode(perm: LaunchPermission) -> &'static str {
+    match perm {
+        LaunchPermission::ReadOnly => "plan",
+        LaunchPermission::WorkspaceWrite => "acceptEdits",
+        LaunchPermission::FullAccess => "bypassPermissions",
+    }
+}
+
+/// Map LaunchPermission to Codex --sandbox value.
+fn launch_permission_to_codex_sandbox(perm: LaunchPermission) -> &'static str {
+    match perm {
+        LaunchPermission::ReadOnly => "read-only",
+        LaunchPermission::WorkspaceWrite => "workspace-write",
+        LaunchPermission::FullAccess => "danger-full-access",
+    }
+}
+
+/// Write a temporary MCP config JSON file for Claude.
+/// Returns the path to the temporary file, or None if mcp is empty/None.
+fn write_temp_mcp_config(mcp: Option<&LaunchMcp>) -> CliResult<Option<String>> {
+    if let Some(mcp_config) = mcp {
+        if mcp_config.servers.is_empty() {
+            return Ok(None);
+        }
+
+        // Build MCP servers config as expected by Claude
+        let mut servers = serde_json::Map::new();
+        for server in &mcp_config.servers {
+            let mut server_obj = serde_json::Map::new();
+            server_obj.insert("id".to_string(), serde_json::json!(server.id));
+            
+            if let Some(transport) = &server.transport {
+                server_obj.insert("transport".to_string(), serde_json::json!(transport));
+            }
+            
+            if !server.command.is_empty() {
+                server_obj.insert("command".to_string(), serde_json::json!(server.command));
+            }
+            
+            if let Some(url) = &server.url {
+                server_obj.insert("url".to_string(), serde_json::json!(url));
+            }
+            
+            if !server.allowed_tools.is_empty() {
+                server_obj.insert("allowed_tools".to_string(), serde_json::json!(server.allowed_tools));
+            }
+            
+            servers.insert(server.id.clone(), serde_json::Value::Object(server_obj));
+        }
+
+        let config = serde_json::json!({
+            "mcp_servers": servers
+        });
+
+        // Write to temp file
+        let config_str = serde_json::to_string(&config)
+            .map_err(|e| CliError::Usage(format!("failed to serialize MCP config: {e}")))?;
+        
+        let temp_path = std::env::temp_dir()
+            .join(format!("mcp_config_{}.json", std::process::id()));
+        let temp_path_str = temp_path.to_string_lossy().to_string();
+        
+        std::fs::write(&temp_path, config_str)
+            .map_err(|e| CliError::Usage(format!("failed to write MCP config to temp file: {e}")))?;
+        
+        Ok(Some(temp_path_str))
+    } else {
+        Ok(None)
+    }
+}
+
 fn run_codex_exec_process(
     _session_dir: &Path,
     member: &AgentMember,
@@ -7223,15 +7297,40 @@ fn run_codex_exec_process(
             .map(|path| path.display().to_string())
     });
 
-    let mut child = Command::new("codex")
-        .arg("exec")
+    // Build LaunchSpec from member and message
+    let spec = build_launch_spec(member, message);
+
+    let mut cmd = Command::new("codex");
+    cmd.arg("exec")
         .arg("--json")
         .arg(&message_content)
-        .env("CODEX_DEVELOPER_INSTRUCTIONS", developer_instructions)
-        // Close stdin: the prompt is supplied as an arg, so codex must not block
-        // on "Reading additional input from stdin...". Without this, codex inherits
-        // the parent's stdin (a pipe/tty), waits forever for an EOF that never comes,
-        // and the timeout below is never reached because the stdout read blocks first.
+        .env("CODEX_DEVELOPER_INSTRUCTIONS", developer_instructions);
+
+    // Map LaunchSpec to codex flags
+    if let Some(model) = &spec.model {
+        cmd.arg("-m").arg(model);
+    }
+
+    // Map permission to sandbox
+    let sandbox = launch_permission_to_codex_sandbox(spec.permission);
+    cmd.arg("--sandbox").arg(sandbox);
+
+    // Map workspace and writable roots
+    if let Some(workspace) = &spec.workspace {
+        cmd.arg("-C").arg(workspace);
+    }
+    for root in &spec.writable_roots {
+        cmd.arg("--add-dir").arg(root);
+    }
+
+    // Map MCP config if present
+    if let Some(mcp) = &spec.mcp {
+        if !mcp.servers.is_empty() {
+            // TODO: Map LaunchMcp to codex --config mcp_servers format when Codex MCP support is complete
+        }
+    }
+
+    let mut child = cmd
         .stdin(Stdio::null())
         .stderr(Stdio::piped())
         .stdout(Stdio::piped())
@@ -7708,8 +7807,11 @@ fn run_claude_exec_delivery_real(
             .map(|path| path.display().to_string())
     });
 
+    // Build LaunchSpec from member and message
+    let spec = build_launch_spec(member, message);
+
     // Build command: claude -p "<message_content>" --output-format stream-json --verbose
-    // plus mapped flags from launch spec (member config).
+    // plus mapped flags from launch spec.
     let mut cmd = Command::new("claude");
     cmd.arg("-p")
         .arg(&message_content)
@@ -7722,16 +7824,33 @@ fn run_claude_exec_delivery_real(
         cmd.arg("--append-system-prompt").arg(&system_prompt);
     }
 
-    // Map member.model to --model flag if present.
-    if let Some(model) = &member.model {
+    // Map LaunchSpec to claude flags
+    // Model selection
+    if let Some(model) = &spec.model {
         cmd.arg("--model").arg(model);
     }
 
-    // Map workspace roots to --add-dir if present.
-    if !member.runtime_workspace_roots.is_empty() {
-        for root in &member.runtime_workspace_roots {
-            cmd.arg("--add-dir").arg(root);
-        }
+    // Permission mapping
+    let permission_mode = launch_permission_to_claude_mode(spec.permission);
+    cmd.arg("--permission-mode").arg(permission_mode);
+
+    // Tools (allowed-tools if spec.tools is non-empty)
+    if !spec.tools.is_empty() {
+        let tools_arg = spec.tools.join(",");
+        cmd.arg("--allowedTools").arg(tools_arg);
+    }
+
+    // MCP config (write temp JSON if present)
+    if let Some(mcp_path) = write_temp_mcp_config(spec.mcp.as_ref())? {
+        cmd.arg("--mcp-config").arg(&mcp_path);
+    }
+
+    // Workspace roots (from spec.workspace and spec.writable_roots)
+    if let Some(workspace) = &spec.workspace {
+        cmd.arg("--add-dir").arg(workspace);
+    }
+    for root in &spec.writable_roots {
+        cmd.arg("--add-dir").arg(root);
     }
 
     // Add working directory.
