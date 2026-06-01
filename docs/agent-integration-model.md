@@ -83,39 +83,34 @@ instructions to the platform. Task-specific content does **not** go into
 `prompt_ref`; it arrives as `message_content` (the turn input), so the member
 identity is never rewritten per turn.
 
-### Skills: the skill contract (PROPOSED — currently undefined)
+### Skills: the skill contract (WP-6 — implemented)
 
-Today `AgentMember.skill_refs` is a `string[]` and `.agents/skills/<id>/`
-holds skill folders, but **there is no formal contract** for what a `skill_ref`
-resolves to or how a provider injects it. The integration model proposes the
-minimal contract below. It is descriptive prose only; no schema change is made
-in this document.
+`AgentMember.skill_refs` is a `string[]`. The harness implements the following
+contract for resolving and injecting skills:
 
 - **Location.** A skill lives at `.agents/skills/<id>/SKILL.md` with YAML
-  frontmatter carrying at least `name` (matching the folder) and a complete
-  `description` (already enforced by `check:skills`). Optional adapter skills may
-  live under an adapter directory and be registered by the adapter.
-- **Resolution.** A `skill_ref` is the skill `<id>`. Resolving it means reading
+  frontmatter carrying `name` (matching the folder) and a complete `description`
+  (enforced by `check:skills`).
+- **Resolution.** A `skill_ref` is the skill `<id>`. The harness resolves it via
+  the [`skill_resolver` module](../crates/harness-core/src/lib.rs): read
   `.agents/skills/<id>/SKILL.md` (and any files it links). The ref is durable
-  and inspectable; it is not a copy of the skill body in the member record.
+  and inspectable; it is not a copy.
 - **Discovery.** The harness can enumerate `.agents/skills/*/SKILL.md`. A member
   declares which skills apply via `skill_refs`; the harness does not force a
-  model to self-search for skills (which adds latency and nondeterminism).
+  model to self-search for skills.
+- **Validation.** `check:skills` now validates that any `skill_ref` in a member
+  JSON resolves to an existing skill directory. Dangling refs fail fast with a
+  clear error message.
 - **Injection.** A provider injects resolved skills as **explicit turn input**,
   not as ambient context. On exec-stream this is part of the composed prompt /
   developer instructions (Pillar 1 prompt stack), referenced in the launch spec
-  via `skill_refs`. Codex can pass an explicit skill input item on `turn/start`;
-  Claude injects via the system prompt. Either way the rule is the same: the
-  harness chooses skills, the platform consumes them.
+  via `skill_refs`. Codex passes a skill input item on `turn/start`; Claude
+  injects via the system prompt. Either way the rule is the same: the harness
+  chooses skills, the platform consumes them.
 - **Kinds.** Two skill kinds are recognized: a **generic harness skill** (how to
   use the `Goal -> Task -> Message -> Evidence -> Decision -> GoalEvaluation`
   workflow) and a **project/adapter skill** (how to use a project's CLI,
   dashboard, evidence, and safety boundaries).
-
-Proposed minimal additive fields (prose only — see ADR 0017 additive-optional
-policy; no schema file is edited here): a future `skill_descriptor` could carry
-`id`, `kind` (`harness` | `adapter`), `path`, and `applies_to_roles[]` so the
-Dashboard and providers can resolve skills uniformly.
 
 ### Capabilities: the vocabulary
 
@@ -169,24 +164,20 @@ The fields that bind a member to a workspace:
 The launch spec's `workspace` field carries the resolved cwd / worktree root to
 the platform (`cwd` for Codex exec, `--add-dir` / process cwd for Claude).
 
-### MCP integration (PROPOSED — currently missing)
+### MCP integration (WP-6 — implemented)
 
-The harness has **no MCP contract today**. This is a key gap: both target
-platforms consume MCP servers, but no neutral shape exists on the member or
-launch spec. The model proposes the following neutral shape. It is **PROPOSED
-only**; no schema file is edited in this document.
+The harness now implements MCP server attachment via a neutral contract. Both
+target platforms consume MCP servers uniformly.
 
-A proposed neutral `mcp` block on the launch spec (and, additively, on
-`provider_config`):
+A neutral `mcp` block on the launch spec, sourced from `AgentProviderConfig.mcp`:
 
 ```text
 mcp:
   servers:
     - id: <stable id>
       transport: stdio | http | sse
-      command: <for stdio>            # argv for a local server
+      command: [<argv for stdio>]     # argv array for a local server
       url: <for http/sse>             # endpoint for a remote server
-      env: { ... }                    # non-secret env; secrets via ref
       allowed_tools: [<tool id>, ...] # allowlist; omit = all tools on server
 ```
 
@@ -199,9 +190,12 @@ How each platform consumes the same neutral block:
 | `command` / `url` | server launch entry in Codex config | server entry in the `--mcp-config` JSON |
 | `allowed_tools` | tool allowlist on the member permission profile | `--allowedTools mcp__<server>__<tool>` |
 
-Until this contract is built, MCP attachment is undefined and any MCP a member
-needs must be configured out-of-band by the platform install. Flagging it here
-is the deliverable; building it is a separate work package.
+**Implementation:** A member declares MCP servers via `AgentProviderConfig.mcp`
+(additive field, defaults to None). The `build_launch_spec` function carries it
+to the neutral launch spec. Providers map the spec onto their own MCP config
+format (Codex `--config`, Claude `--mcp-config`). See
+[`skill_resolver` module](../crates/harness-core/src/lib.rs) for the
+`LaunchMcp` / `LaunchMcpServer` types.
 
 ### Declaring resource requirements
 
@@ -276,33 +270,38 @@ explicit so the Dashboard shows honest capability state (invariant 4,
 mid-turn `turn/interrupt`; that is a declared unsupported surface, not a silent
 gap.
 
-### Provider capability declaration (PROPOSED — currently missing)
+### Provider capability declaration (WP-6 — implemented)
 
-There is **no neutral way for a platform to declare what it supports** today;
-capability lives implicitly in code branches. The model proposes a neutral
-declaration so the harness and UI can adapt. PROPOSED only — no schema edit
-here:
+The harness now provides a neutral way for platforms to declare what they
+technically support. The `ProviderCapabilities` struct in
+[harness-core](../crates/harness-core/src/lib.rs) carries this:
 
-```text
-provider_capabilities:
-  streaming:          true | false   # incremental event stream during a turn
-  resume:             true | false   # session resume (--session / --resume)
-  mid_turn_approval:  true | false   # approve/deny a tool call mid-turn
-  subagents:          true | false   # native child threads
-  mcp:                true | false   # MCP server attachment
-  hooks:              true | false   # lifecycle hook surface
+```rust
+pub struct ProviderCapabilities {
+    pub streaming: bool,          // incremental event stream during a turn
+    pub resume: bool,             // session resume (--session / --resume)
+    pub mid_turn_approval: bool,  // approve/deny a tool call mid-turn
+    pub subagents: bool,          // native child threads
+    pub mcp: bool,                // MCP server attachment
+    pub hooks: bool,              // lifecycle hook surface
+}
 ```
 
-Indicative values for current targets:
+Each provider implements a static method to declare its capabilities. Current
+values per implementation:
 
-| Capability | Codex exec | Codex app-server | Claude -p / SDK |
-| --- | --- | --- | --- |
-| streaming | yes (`--json` NDJSON) | yes (notifications) | yes (`stream-json`) |
-| resume | yes (`--session`) | yes (thread) | yes (`--resume`) |
-| mid_turn_approval | **no** (policy pre-approve) | yes | no (Tier-3 only) |
-| subagents | observed | observed | observed |
-| mcp | yes (config) | yes | yes (`--mcp-config`) |
-| hooks | limited | yes | no |
+| Capability | Codex exec | Claude -p / SDK |
+| --- | --- | --- |
+| streaming | yes (`--json` NDJSON) | yes (`stream-json`) |
+| resume | yes (`--session`) | yes (`--resume`) |
+| mid_turn_approval | **no** (policy pre-approve) | no (Tier-3 only) |
+| subagents | yes (observed) | yes (observed) |
+| mcp | yes (config) | yes (`--mcp-config`) |
+| hooks | no (limited) | no |
+
+**Implementation:** `ProviderCapabilities::codex_exec()` and
+`ProviderCapabilities::claude_exec()` return the tables above. The snapshot can
+include these capabilities so the Dashboard shows honest per-provider support.
 
 ### The adapter boundary (generalized from earning-engine)
 
@@ -423,13 +422,13 @@ is the concrete "define X, Y, Z" deliverable.
 
 | Gap | Status | Where addressed |
 | --- | --- | --- |
-| Skill contract (resolve / discover / inject) | PROPOSED, prose only | Pillar 1 |
-| MCP neutral config shape | PROPOSED, prose only | Pillar 2 |
-| Provider capability declaration | PROPOSED, prose only | Pillar 3 |
+| Skill contract (resolve / discover / inject) | WP-6: Implemented | Pillar 1, `skill_resolver` module |
+| MCP neutral config shape | WP-6: Implemented | Pillar 2, `LaunchMcp` / `LaunchMcpServer` on `AgentProviderConfig` |
+| Provider capability declaration | WP-6: Implemented | Pillar 3, `ProviderCapabilities` struct |
 | `AgentProviderConfig` leaks Codex vocabulary | documented; abstraction is additive future work | Launch Spec |
 
-None of these gaps changes a schema or crate in this document; each is a future
-additive work package under the ADR 0017 policy.
+The first three gaps are now closed. The `AgentProviderConfig` vocabulary
+abstraction remains additive future work under ADR 0017.
 
 ## Non-Goals
 

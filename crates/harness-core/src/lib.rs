@@ -66,6 +66,10 @@ pub struct AgentProviderConfig {
     pub runtime_workspace_roots: Vec<String>,
     #[serde(default)]
     pub environment_id: Option<String>,
+    /// Optional MCP servers attached to this member (Pillar 2).
+    /// When present, `build_launch_spec` carries this to the neutral launch spec.
+    #[serde(default)]
+    pub mcp: Option<LaunchMcp>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -348,8 +352,8 @@ pub fn build_launch_spec(member: &AgentMember, message: &Message) -> LaunchSpec 
         // apply their own default meanwhile.
         tools: Vec::new(),
         workspace: member.worktree_ref.clone(),
-        // MCP has no neutral member field yet (PROPOSED, Pillar 2); omitted here.
-        mcp: None,
+        // MCP from provider_config (Pillar 2); now available.
+        mcp: member.provider_config.mcp.clone(),
         skill_refs: member.skill_refs.clone(),
         // Resume is resolved by the delivery path from prior session state, not
         // from the member record; a fresh spec carries no resume token.
@@ -1821,5 +1825,293 @@ mod tests {
         let json = serde_json::to_string(&mcp).expect("serialize mcp");
         let parsed: LaunchMcp = serde_json::from_str(&json).expect("deserialize mcp");
         assert_eq!(parsed, mcp);
+    }
+
+    #[test]
+    fn build_launch_spec_carries_mcp_from_provider_config() {
+        let mut member = sample_member();
+        member.provider_config.mcp = Some(LaunchMcp {
+            servers: vec![LaunchMcpServer {
+                id: "fs".to_string(),
+                transport: Some("stdio".to_string()),
+                command: vec!["mcp-fs".to_string()],
+                url: None,
+                allowed_tools: vec![],
+            }],
+        });
+        let spec = build_launch_spec(&member, &sample_message());
+        assert!(spec.mcp.is_some(), "launch spec should carry mcp from provider_config");
+        let mcp = spec.mcp.as_ref().unwrap();
+        assert_eq!(mcp.servers.len(), 1);
+        assert_eq!(mcp.servers[0].id, "fs");
+    }
+
+    #[test]
+    fn build_launch_spec_mcp_none_when_absent() {
+        let member = sample_member();
+        assert!(member.provider_config.mcp.is_none());
+        let spec = build_launch_spec(&member, &sample_message());
+        assert!(
+            spec.mcp.is_none(),
+            "launch spec mcp should be none when member has no mcp"
+        );
+    }
+
+    #[test]
+    fn build_launch_spec_mcp_round_trips_json() {
+        let mut member = sample_member();
+        member.provider_config.mcp = Some(LaunchMcp {
+            servers: vec![LaunchMcpServer {
+                id: "api".to_string(),
+                transport: Some("http".to_string()),
+                command: vec![],
+                url: Some("http://localhost:3000".to_string()),
+                allowed_tools: vec!["query".to_string()],
+            }],
+        });
+        let spec = build_launch_spec(&member, &sample_message());
+        let json = serde_json::to_string(&spec).expect("serialize spec");
+        let parsed: LaunchSpec = serde_json::from_str(&json).expect("deserialize spec");
+        assert_eq!(parsed.mcp, spec.mcp);
+    }
+
+    #[test]
+    fn provider_capabilities_codex_matches_doc_table() {
+        let cap = ProviderCapabilities::codex_exec();
+        assert!(cap.streaming, "Codex exec has --json streaming");
+        assert!(cap.resume, "Codex exec has --session resume");
+        assert!(!cap.mid_turn_approval, "Codex exec has policy pre-approve, no mid-turn");
+        assert!(cap.subagents, "Codex supports subagents");
+        assert!(cap.mcp, "Codex exec has --config mcp_servers");
+        assert!(!cap.hooks, "Codex exec has limited hooks");
+    }
+
+    #[test]
+    fn provider_capabilities_claude_matches_doc_table() {
+        let cap = ProviderCapabilities::claude_exec();
+        assert!(cap.streaming, "Claude -p has --output-format stream-json");
+        assert!(cap.resume, "Claude has --resume");
+        assert!(!cap.mid_turn_approval, "Claude -p has no mid-turn approval");
+        assert!(cap.subagents, "Claude supports subagents");
+        assert!(cap.mcp, "Claude has --mcp-config");
+        assert!(!cap.hooks, "Claude has no documented hooks");
+    }
+
+    #[test]
+    fn provider_capabilities_round_trips_json() {
+        let cap = ProviderCapabilities::codex_exec();
+        let json = serde_json::to_string(&cap).expect("serialize capabilities");
+        let parsed: ProviderCapabilities =
+            serde_json::from_str(&json).expect("deserialize capabilities");
+        assert_eq!(parsed, cap);
+    }
+
+    #[test]
+    fn provider_capabilities_display_shows_enabled_features() {
+        let cap = ProviderCapabilities::codex_exec();
+        let display = cap.to_string();
+        assert!(display.contains("streaming"));
+        assert!(display.contains("resume"));
+        assert!(display.contains("mcp"));
+        assert!(display.contains("subagents"));
+        assert!(!display.contains("mid_turn_approval"), "disabled features should not show");
+    }
+
+    #[test]
+    fn supports_streaming_exec_check() {
+        let mut cap = ProviderCapabilities::codex_exec();
+        assert!(cap.supports_streaming_exec(), "streaming + no mid-turn should be ok");
+        cap.mid_turn_approval = true;
+        assert!(!cap.supports_streaming_exec(), "mid-turn approval blocks streaming exec");
+    }
+}
+
+/// Skill reference resolution: maps skill_refs to SKILL.md content.
+///
+/// A skill is durable at `.agents/skills/<id>/SKILL.md`. This module provides
+/// the contract for resolving and validating skill references (Pillar 1 skill
+/// contract from docs/agent-integration-model.md).
+pub mod skill_resolver {
+    use std::path::PathBuf;
+
+    /// Result of resolving a skill reference.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct ResolvedSkill {
+        /// The skill id (matches `.agents/skills/<id>/`)
+        pub id: String,
+        /// The absolute or relative path to SKILL.md
+        pub path: PathBuf,
+        /// The full content of SKILL.md (header + body)
+        pub content: String,
+    }
+
+    /// Error type for skill resolution.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub enum SkillResolutionError {
+        /// The skill reference does not resolve to an existing SKILL.md.
+        SkillNotFound { skill_id: String, path: PathBuf },
+        /// An IO error occurred while reading the skill file.
+        IoError {
+            skill_id: String,
+            reason: String,
+        },
+    }
+
+    impl std::fmt::Display for SkillResolutionError {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            match self {
+                SkillResolutionError::SkillNotFound { skill_id, path } => {
+                    write!(f, "skill '{}' not found at {}", skill_id, path.display())
+                }
+                SkillResolutionError::IoError { skill_id, reason } => {
+                    write!(f, "failed to read skill '{}': {}", skill_id, reason)
+                }
+            }
+        }
+    }
+
+    impl std::error::Error for SkillResolutionError {}
+
+    /// Resolve a single skill reference using the given skills root directory.
+    ///
+    /// The contract: a skill_ref `<id>` resolves to `.agents/skills/<id>/SKILL.md`.
+    /// If the file exists and is readable, returns the content and path.
+    /// If not found or unreadable, returns SkillResolutionError.
+    ///
+    /// This function is synchronous and does not require a live provider binary.
+    pub fn resolve_skill(
+        skill_id: &str,
+        skills_root: &std::path::Path,
+    ) -> Result<ResolvedSkill, SkillResolutionError> {
+        let skill_path = skills_root.join(skill_id).join("SKILL.md");
+        let content = std::fs::read_to_string(&skill_path).map_err(|e| {
+            SkillResolutionError::IoError {
+                skill_id: skill_id.to_string(),
+                reason: e.to_string(),
+            }
+        })?;
+        Ok(ResolvedSkill {
+            id: skill_id.to_string(),
+            path: skill_path,
+            content,
+        })
+    }
+
+    /// Resolve all skill references at once using the given skills root directory.
+    ///
+    /// Returns a Vec of resolved skills in the order they appear in the input.
+    /// If any skill fails to resolve, returns an error (fail-fast); the caller
+    /// must decide whether to report it or continue.
+    pub fn resolve_skills(
+        skill_ids: &[String],
+        skills_root: &std::path::Path,
+    ) -> Result<Vec<ResolvedSkill>, SkillResolutionError> {
+        let mut resolved = Vec::new();
+        for id in skill_ids {
+            resolved.push(resolve_skill(id, skills_root)?);
+        }
+        Ok(resolved)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn skill_resolution_error_displays_clearly() {
+            let err = SkillResolutionError::SkillNotFound {
+                skill_id: "my-skill".to_string(),
+                path: PathBuf::from(".agents/skills/my-skill/SKILL.md"),
+            };
+            let msg = err.to_string();
+            assert!(msg.contains("my-skill"));
+            assert!(msg.contains(".agents/skills"));
+        }
+
+        #[test]
+        fn skill_not_found_error() {
+            let result = resolve_skill("nonexistent", PathBuf::from(".").as_path());
+            assert!(result.is_err());
+            match result {
+                Err(SkillResolutionError::IoError { skill_id, .. }) => {
+                    assert_eq!(skill_id, "nonexistent");
+                }
+                _ => panic!("expected IoError"),
+            }
+        }
+    }
+}
+
+/// Provider capabilities declaration: what a platform can technically support.
+///
+/// This is distinct from member-level `AgentMember.capabilities` (intent: what
+/// the member is *meant* to do). This declares what the *platform* can do
+/// (streaming, resume, mid-turn approval, subagents, MCP, hooks).
+///
+/// See Pillar 3 and the capability declaration table in
+/// docs/agent-integration-model.md for the current capability set per provider.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderCapabilities {
+    /// Platform supports incremental event stream during a turn.
+    pub streaming: bool,
+    /// Platform supports session resume (`--session`, `--resume`, etc).
+    pub resume: bool,
+    /// Platform supports mid-turn tool approval/denial (approve/reject before execution).
+    pub mid_turn_approval: bool,
+    /// Platform supports native child threads / subagents.
+    pub subagents: bool,
+    /// Platform supports MCP server attachment.
+    pub mcp: bool,
+    /// Platform supports lifecycle hooks.
+    pub hooks: bool,
+}
+
+impl ProviderCapabilities {
+    /// Codex exec capabilities per the capability declaration table in
+    /// docs/agent-integration-model.md.
+    pub fn codex_exec() -> Self {
+        ProviderCapabilities {
+            streaming: true,   // --json NDJSON
+            resume: true,      // --session
+            mid_turn_approval: false,  // policy pre-approve only
+            subagents: true,   // observed in Codex
+            mcp: true,         // --config mcp_servers.*
+            hooks: false,      // limited in exec mode
+        }
+    }
+
+    /// Claude exec capabilities per the capability declaration table.
+    pub fn claude_exec() -> Self {
+        ProviderCapabilities {
+            streaming: true,   // --output-format stream-json
+            resume: true,      // --resume
+            mid_turn_approval: false,  // not documented for -p; Tier-3 only
+            subagents: true,   // observed in Claude
+            mcp: true,         // --mcp-config JSON
+            hooks: false,      // not documented
+        }
+    }
+
+    /// Check if all critical capabilities for basic streaming exec are present.
+    pub fn supports_streaming_exec(&self) -> bool {
+        self.streaming && !self.mid_turn_approval
+    }
+}
+
+impl std::fmt::Display for ProviderCapabilities {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let features = [
+            ("streaming", self.streaming),
+            ("resume", self.resume),
+            ("mid_turn_approval", self.mid_turn_approval),
+            ("subagents", self.subagents),
+            ("mcp", self.mcp),
+            ("hooks", self.hooks),
+        ];
+        let enabled: Vec<&str> = features
+            .iter()
+            .filter_map(|(name, enabled)| if *enabled { Some(*name) } else { None })
+            .collect();
+        write!(f, "{{{}}}", enabled.join(", "))
     }
 }
