@@ -9,7 +9,7 @@ use harness_core::{
     AgentEvent, AgentMember, AgentRuntime, AgentTeam, Decision, Evidence, Gap, Goal, GoalCase,
     GoalDesign, GoalEvaluation, Message, MessageDelivery, MessageDeliveryStatus,
     MessageTerminalSource, Proposal, ProviderChildThread, ProviderSession, ProviderSessionStatus,
-    Review, Task, Vision,
+    Review, Task, Vision, WorkflowRun, WorkflowStep,
 };
 use serde::{de::DeserializeOwned, Serialize};
 use thiserror::Error;
@@ -135,6 +135,14 @@ impl HarnessStore {
         self.append_jsonl("provider_child_threads.jsonl", value)
     }
 
+    pub fn append_workflow_run(&self, value: &WorkflowRun) -> StoreResult<()> {
+        self.append_jsonl("workflow_runs.jsonl", value)
+    }
+
+    pub fn append_workflow_step(&self, value: &WorkflowStep) -> StoreResult<()> {
+        self.append_jsonl("workflow_steps.jsonl", value)
+    }
+
     pub fn claim_queued_message_delivery(
         &self,
         agent_member_id: &str,
@@ -250,6 +258,14 @@ impl HarnessStore {
 
     pub fn provider_child_threads(&self) -> StoreResult<Vec<ProviderChildThread>> {
         self.read_jsonl("provider_child_threads.jsonl")
+    }
+
+    pub fn workflow_runs(&self) -> StoreResult<Vec<WorkflowRun>> {
+        self.read_jsonl("workflow_runs.jsonl")
+    }
+
+    pub fn workflow_steps(&self) -> StoreResult<Vec<WorkflowStep>> {
+        self.read_jsonl("workflow_steps.jsonl")
     }
 
     fn append_jsonl<T: Serialize>(&self, file_name: &str, value: &T) -> StoreResult<()> {
