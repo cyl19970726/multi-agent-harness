@@ -1461,6 +1461,7 @@
         "docs/research/multica-architecture.md",
         "docs/research/multica-architecture-diagrams.md",
         "docs/research/runtime-persistence-decision.md",
+        "docs/research/dynamic-workflow-runtime-design.md",
         "docs/decisions/0018-exec-stream-primary-substrate.md",
         "docs/agent-integration-model.md"
       ],
@@ -1599,6 +1600,34 @@
         "npx pnpm@9.15.4 check"
       ],
       "reorgTrigger": "The recommended runtime/persistence model, the WP plan, or provider resume support changes; or a related ADR is accepted."
+    },
+    {
+      "path": "docs/research/dynamic-workflow-runtime-design.md",
+      "ownerRole": "architect",
+      "status": "idea",
+      "lifecycle": "volatile",
+      "canonicalFor": [
+        "Rust-native Dynamic Workflow runtime design (no embedded JS interpreter)",
+        "the Rust-expression decision (compiled fn vs orchestration IR vs hybrid registry) and the hybrid recommendation",
+        "CC-primitive-to-harness mapping (agent/parallel/pipeline/phase, journal/resume, concurrency cap) and the tokio-vs-std choice",
+        "independent WorkflowDef/WorkflowRun/WorkflowStep object + run model not bound to Task/Goal",
+        "multi-provider codex+claude fan-out-then-synthesize scenario and the sequenced WP plan"
+      ],
+      "dependsOn": [
+        "docs/research/multica-architecture.md",
+        "docs/decisions/0018-exec-stream-primary-substrate.md",
+        "docs/decisions/0011-provider-neutral-runtime.md",
+        "docs/decisions/0017-generic-object-model.md"
+      ],
+      "machineConsumers": [
+        "check-doc-links",
+        "check-doc-governance"
+      ],
+      "reviewAfter": "2026-09-30",
+      "lastVerifiedWith": [
+        "npx pnpm@9.15.4 check"
+      ],
+      "reorgTrigger": "The Rust-expression recommendation, the CC-primitive mapping, the Workflow object/run model, or the WP plan changes; or the runtime is implemented and a related ADR is accepted."
     }
   ]
 }
