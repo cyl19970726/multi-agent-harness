@@ -1,4 +1,3 @@
-
 #[cfg(test)]
 mod claude_stream_tests {
     use std::fs;
@@ -24,7 +23,10 @@ mod claude_stream_tests {
                         .and_then(|t| t.as_str())
                         .unwrap_or("unknown")
                         .to_string();
-                    Some(ClaudeStreamEvent { event_type, payload })
+                    Some(ClaudeStreamEvent {
+                        event_type,
+                        payload,
+                    })
                 }
                 Err(_) => None,
             }
@@ -46,8 +48,7 @@ mod claude_stream_tests {
     fn test_parse_claude_stream_json_sample() {
         // Load the sample NDJSON file without requiring a live claude binary
         let sample_path = "tests/data/claude_stream_sample.ndjson";
-        let content = fs::read_to_string(sample_path)
-            .expect("Failed to load sample NDJSON");
+        let content = fs::read_to_string(sample_path).expect("Failed to load sample NDJSON");
 
         // Parse events
         let mut events = Vec::new();
@@ -61,7 +62,10 @@ mod claude_stream_tests {
         }
 
         // Verify events were parsed
-        assert!(!events.is_empty(), "Events should be parsed from sample NDJSON");
+        assert!(
+            !events.is_empty(),
+            "Events should be parsed from sample NDJSON"
+        );
         assert_eq!(events.len(), 7, "Sample NDJSON has 7 events");
 
         // Verify event types

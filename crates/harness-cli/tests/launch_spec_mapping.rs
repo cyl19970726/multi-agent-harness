@@ -100,7 +100,11 @@ mod launch_spec_mapping_tests {
 
     #[test]
     fn test_codex_argv_construction_with_permission() {
-        let mut args = vec!["codex".to_string(), "exec".to_string(), "--json".to_string()];
+        let mut args = vec![
+            "codex".to_string(),
+            "exec".to_string(),
+            "--json".to_string(),
+        ];
 
         let permission = LaunchPermission::ReadOnly;
         let sandbox = permission.to_codex_sandbox();
@@ -138,10 +142,7 @@ mod launch_spec_mapping_tests {
 
             // Claude modes
             assert!(
-                matches!(
-                    claude_mode,
-                    "plan" | "acceptEdits" | "bypassPermissions"
-                ),
+                matches!(claude_mode, "plan" | "acceptEdits" | "bypassPermissions"),
                 "Invalid Claude permission mode: {}",
                 claude_mode
             );

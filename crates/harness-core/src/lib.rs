@@ -792,8 +792,7 @@ pub struct Decision {
 ///
 /// `#[serde(other)]` only supports unit variants and would discard the original
 /// string, so this uses `from`/`into` String conversions to preserve fidelity.
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(from = "String", into = "String")]
 pub enum ReviewVerdict {
     Pass,
@@ -928,8 +927,7 @@ pub struct GoalDesign {
 ///
 /// `#[serde(other)]` only supports unit variants and would discard the original
 /// string, so this uses `from`/`into` String conversions to preserve fidelity.
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(from = "String", into = "String")]
 pub enum EvaluationOutcome {
     Success,
@@ -1195,7 +1193,10 @@ impl Validate for GoalEvaluation {
     fn validate(&self) -> Result<(), ValidationError> {
         require_non_empty(&self.id, "GoalEvaluation.id")?;
         require_non_empty(&self.goal_id, "GoalEvaluation.goal_id")?;
-        require_non_empty(&self.evaluator_agent_id, "GoalEvaluation.evaluator_agent_id")?;
+        require_non_empty(
+            &self.evaluator_agent_id,
+            "GoalEvaluation.evaluator_agent_id",
+        )?;
         require_non_empty(self.outcome.as_str(), "GoalEvaluation.outcome")?;
         require_non_empty(&self.what_worked, "GoalEvaluation.what_worked")?;
         require_non_empty(&self.what_failed, "GoalEvaluation.what_failed")?;
@@ -1458,7 +1459,10 @@ mod tests {
         assert!(json.contains("\"verdict\":\"conditional_pass\""));
 
         let parsed: Review = serde_json::from_str(&json).expect("deserialize review");
-        assert_eq!(parsed.verdict, ReviewVerdict::Other("conditional_pass".to_string()));
+        assert_eq!(
+            parsed.verdict,
+            ReviewVerdict::Other("conditional_pass".to_string())
+        );
         assert_eq!(parsed, review);
         assert!(parsed.validate().is_ok());
 
@@ -1540,7 +1544,10 @@ mod tests {
             agent_team: Some("team-1".to_string()),
             task_graph: vec!["task-1".to_string(), "task-2".to_string()],
             evidence_plan: vec!["screenshot of GoalDocument".to_string()],
-            acceptance_gates: vec!["cargo test green".to_string(), "pnpm check green".to_string()],
+            acceptance_gates: vec![
+                "cargo test green".to_string(),
+                "pnpm check green".to_string(),
+            ],
             created_at: "2026-05-30T00:00:00Z".to_string(),
         };
 
@@ -1590,7 +1597,10 @@ mod tests {
         assert_eq!(json, "\"partially_blocked\"");
 
         let parsed: EvaluationOutcome = serde_json::from_str(&json).expect("deserialize outcome");
-        assert_eq!(parsed, EvaluationOutcome::Other("partially_blocked".to_string()));
+        assert_eq!(
+            parsed,
+            EvaluationOutcome::Other("partially_blocked".to_string())
+        );
 
         // A canonical value deserialized from the wire collapses to its named variant.
         let canonical: EvaluationOutcome =
@@ -1823,7 +1833,10 @@ mod tests {
         let spec = build_launch_spec(&member, &message);
 
         // Pillar 1 base configuration flows through unchanged.
-        assert_eq!(spec.prompt_ref.as_deref(), Some(".harness/prompts/worker.md"));
+        assert_eq!(
+            spec.prompt_ref.as_deref(),
+            Some(".harness/prompts/worker.md")
+        );
         assert_eq!(spec.model.as_deref(), Some("o3"));
         assert_eq!(spec.skill_refs, vec!["harness-workflow".to_string()]);
         // Pillar 2 workspace flows through as the cwd / worktree root.
@@ -1871,7 +1884,10 @@ mod tests {
             let mut member = sample_member();
             member.provider_config.sandbox_policy = Some(policy.to_string());
             let spec = build_launch_spec(&member, &sample_message());
-            assert_eq!(spec.permission, expected, "policy {policy} should map to {expected:?}");
+            assert_eq!(
+                spec.permission, expected,
+                "policy {policy} should map to {expected:?}"
+            );
         }
     }
 
@@ -1957,8 +1973,7 @@ mod tests {
             let handle = DeliveryHandle::from_endpoint(endpoint);
             assert_eq!(handle.endpoint(), endpoint);
             let json = serde_json::to_string(&handle).expect("serialize handle");
-            let parsed: DeliveryHandle =
-                serde_json::from_str(&json).expect("deserialize handle");
+            let parsed: DeliveryHandle = serde_json::from_str(&json).expect("deserialize handle");
             assert_eq!(parsed, handle);
             assert_eq!(parsed.endpoint(), endpoint);
         }
@@ -1995,7 +2010,10 @@ mod tests {
             }],
         });
         let spec = build_launch_spec(&member, &sample_message());
-        assert!(spec.mcp.is_some(), "launch spec should carry mcp from provider_config");
+        assert!(
+            spec.mcp.is_some(),
+            "launch spec should carry mcp from provider_config"
+        );
         let mcp = spec.mcp.as_ref().unwrap();
         assert_eq!(mcp.servers.len(), 1);
         assert_eq!(mcp.servers[0].id, "fs");
@@ -2035,7 +2053,10 @@ mod tests {
         let cap = ProviderCapabilities::codex_exec();
         assert!(cap.streaming, "Codex exec has --json streaming");
         assert!(cap.resume, "Codex exec has --session resume");
-        assert!(!cap.mid_turn_approval, "Codex exec has policy pre-approve, no mid-turn");
+        assert!(
+            !cap.mid_turn_approval,
+            "Codex exec has policy pre-approve, no mid-turn"
+        );
         assert!(cap.subagents, "Codex supports subagents");
         assert!(cap.mcp, "Codex exec has --config mcp_servers");
         assert!(!cap.hooks, "Codex exec has limited hooks");
@@ -2069,15 +2090,24 @@ mod tests {
         assert!(display.contains("resume"));
         assert!(display.contains("mcp"));
         assert!(display.contains("subagents"));
-        assert!(!display.contains("mid_turn_approval"), "disabled features should not show");
+        assert!(
+            !display.contains("mid_turn_approval"),
+            "disabled features should not show"
+        );
     }
 
     #[test]
     fn supports_streaming_exec_check() {
         let mut cap = ProviderCapabilities::codex_exec();
-        assert!(cap.supports_streaming_exec(), "streaming + no mid-turn should be ok");
+        assert!(
+            cap.supports_streaming_exec(),
+            "streaming + no mid-turn should be ok"
+        );
         cap.mid_turn_approval = true;
-        assert!(!cap.supports_streaming_exec(), "mid-turn approval blocks streaming exec");
+        assert!(
+            !cap.supports_streaming_exec(),
+            "mid-turn approval blocks streaming exec"
+        );
     }
 }
 
@@ -2106,10 +2136,7 @@ pub mod skill_resolver {
         /// The skill reference does not resolve to an existing SKILL.md.
         SkillNotFound { skill_id: String, path: PathBuf },
         /// An IO error occurred while reading the skill file.
-        IoError {
-            skill_id: String,
-            reason: String,
-        },
+        IoError { skill_id: String, reason: String },
     }
 
     impl std::fmt::Display for SkillResolutionError {
@@ -2139,12 +2166,11 @@ pub mod skill_resolver {
         skills_root: &std::path::Path,
     ) -> Result<ResolvedSkill, SkillResolutionError> {
         let skill_path = skills_root.join(skill_id).join("SKILL.md");
-        let content = std::fs::read_to_string(&skill_path).map_err(|e| {
-            SkillResolutionError::IoError {
+        let content =
+            std::fs::read_to_string(&skill_path).map_err(|e| SkillResolutionError::IoError {
                 skill_id: skill_id.to_string(),
                 reason: e.to_string(),
-            }
-        })?;
+            })?;
         Ok(ResolvedSkill {
             id: skill_id.to_string(),
             path: skill_path,
@@ -2226,24 +2252,24 @@ impl ProviderCapabilities {
     /// docs/agent-integration-model.md.
     pub fn codex_exec() -> Self {
         ProviderCapabilities {
-            streaming: true,   // --json NDJSON
-            resume: true,      // --session
-            mid_turn_approval: false,  // policy pre-approve only
-            subagents: true,   // observed in Codex
-            mcp: true,         // --config mcp_servers.*
-            hooks: false,      // limited in exec mode
+            streaming: true,          // --json NDJSON
+            resume: true,             // --session
+            mid_turn_approval: false, // policy pre-approve only
+            subagents: true,          // observed in Codex
+            mcp: true,                // --config mcp_servers.*
+            hooks: false,             // limited in exec mode
         }
     }
 
     /// Claude exec capabilities per the capability declaration table.
     pub fn claude_exec() -> Self {
         ProviderCapabilities {
-            streaming: true,   // --output-format stream-json
-            resume: true,      // --resume
-            mid_turn_approval: false,  // not documented for -p; Tier-3 only
-            subagents: true,   // observed in Claude
-            mcp: true,         // --mcp-config JSON
-            hooks: false,      // not documented
+            streaming: true,          // --output-format stream-json
+            resume: true,             // --resume
+            mid_turn_approval: false, // not documented for -p; Tier-3 only
+            subagents: true,          // observed in Claude
+            mcp: true,                // --mcp-config JSON
+            hooks: false,             // not documented
         }
     }
 

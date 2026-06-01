@@ -11,15 +11,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use harness_core::{
-    AgentEvent, AgentMember, AgentMemberStatus, AgentProviderConfig, AgentRuntime,
-    AgentRuntimeHealth, AgentRuntimeStatus, AgentTeam, AgentTeamStatus, build_launch_spec,
-    Decision, EvaluationOutcome, Evidence, Gap, GapSeverity, GapStatus, Goal, GoalCase,
-    GoalDesign, GoalEvaluation, GoalStatus, LaunchMcp, LaunchMcpServer, LaunchPermission,
-    LaunchSpec, Message, MessageDelivery, MessageDeliveryStatus, MessageKind,
-    MessageTerminalSource, Proposal, ProposalStatus, ProviderChildThread,
-    ProviderChildThreadStatus, ProviderKind, ProviderSession, ProviderSessionStatus, Review,
-    ReviewVerdict, SenderKind, Task, TaskStatus, Vision, WorkflowRun, WorkflowRunStatus,
-    WorkflowStep,
+    build_launch_spec, AgentEvent, AgentMember, AgentMemberStatus, AgentProviderConfig,
+    AgentRuntime, AgentRuntimeHealth, AgentRuntimeStatus, AgentTeam, AgentTeamStatus, Decision,
+    EvaluationOutcome, Evidence, Gap, GapSeverity, GapStatus, Goal, GoalCase, GoalDesign,
+    GoalEvaluation, GoalStatus, LaunchMcp, LaunchMcpServer, LaunchPermission, LaunchSpec, Message,
+    MessageDelivery, MessageDeliveryStatus, MessageKind, MessageTerminalSource, Proposal,
+    ProposalStatus, ProviderChildThread, ProviderChildThreadStatus, ProviderKind, ProviderSession,
+    ProviderSessionStatus, Review, ReviewVerdict, SenderKind, Task, TaskStatus, Vision,
+    WorkflowRun, WorkflowRunStatus, WorkflowStep,
 };
 use harness_store::{HarnessStore, MessageDeliveryClaimResult};
 use thiserror::Error;
@@ -1977,10 +1976,7 @@ fn gap_export(store: &HarnessStore) -> CliResult<()> {
         return Ok(());
     }
     for severity in [GapSeverity::P0, GapSeverity::P1, GapSeverity::P2] {
-        let rows: Vec<&Gap> = gaps
-            .iter()
-            .filter(|gap| gap.severity == severity)
-            .collect();
+        let rows: Vec<&Gap> = gaps.iter().filter(|gap| gap.severity == severity).collect();
         if rows.is_empty() {
             continue;
         }
@@ -2134,7 +2130,9 @@ fn goal_case_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
             print_json(&latest_goal_cases_in_append_order(store)?)?;
             Ok(())
         }
-        other => Err(CliError::Usage(format!("unknown goal-case command: {other}"))),
+        other => Err(CliError::Usage(format!(
+            "unknown goal-case command: {other}"
+        ))),
     }
 }
 
@@ -2265,10 +2263,10 @@ fn handle_sse_stream(
     sse_manager: sse::SseManager,
 ) -> CliResult<()> {
     use std::time::Duration;
-    
+
     // Send SSE header
     sse::write_sse_header(&mut stream)?;
-    
+
     // Send initial snapshot
     let events = store.events()?;
     let messages = store.messages()?;
@@ -2280,17 +2278,17 @@ fn handle_sse_stream(
         provider_sessions: sessions,
         generated_at: now_string(),
     };
-    
+
     // Convert snapshot to JSON for transmission
     let snapshot_json = serde_json::json!({
         "generated_at": now_string(),
     });
     sse::write_sse_frame(&mut stream, "snapshot", &snapshot_json)?;
-    
+
     // Subscribe to the SSE channel
     let rx = sse_manager.subscribe();
     let mut last_keepalive = std::time::Instant::now();
-    
+
     // Wait for events and stream them to the client
     loop {
         // Calculate timeout for the next keepalive
@@ -2300,7 +2298,7 @@ fn handle_sse_stream(
         } else {
             Duration::from_millis(100)
         };
-        
+
         match rx.recv_timeout(timeout) {
             Ok(frame) => {
                 match frame {
@@ -2309,7 +2307,8 @@ fn handle_sse_stream(
                     }
                     sse::SseEventFrame::AgentEvent(event) => {
                         if let Ok(json) = serde_json::to_value(&event) {
-                            if let Err(_) = sse::write_sse_frame(&mut stream, "agent_event", &json) {
+                            if let Err(_) = sse::write_sse_frame(&mut stream, "agent_event", &json)
+                            {
                                 break; // Client disconnected
                             }
                         }
@@ -2323,7 +2322,9 @@ fn handle_sse_stream(
                     }
                     sse::SseEventFrame::ProviderSession(session) => {
                         if let Ok(json) = serde_json::to_value(&session) {
-                            if let Err(_) = sse::write_sse_frame(&mut stream, "provider_session", &json) {
+                            if let Err(_) =
+                                sse::write_sse_frame(&mut stream, "provider_session", &json)
+                            {
                                 break; // Client disconnected
                             }
                         }
@@ -2343,7 +2344,7 @@ fn handle_sse_stream(
             }
         }
     }
-    
+
     Ok(())
 }
 
@@ -2352,14 +2353,12 @@ fn serve_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     let once = has_flag(args, "--once");
     let listener = TcpListener::bind(&addr)?;
     println!("serving harness API on http://{addr}");
-    
+
     let sse_manager = sse::SseManager::new();
-    
+
     // Start the SSE watcher thread
-    sse::start_sse_watcher(store, sse_manager.clone()).map_err(|e| {
-        CliError::Io(e)
-    })?;
-    
+    sse::start_sse_watcher(store, sse_manager.clone()).map_err(|e| CliError::Io(e))?;
+
     for stream in listener.incoming() {
         let stream = match stream {
             Ok(stream) => stream,
@@ -2396,7 +2395,11 @@ fn serve_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     Ok(())
 }
 
-fn handle_http_connection(store: &HarnessStore, mut stream: TcpStream, sse_manager: sse::SseManager) -> CliResult<()> {
+fn handle_http_connection(
+    store: &HarnessStore,
+    mut stream: TcpStream,
+    sse_manager: sse::SseManager,
+) -> CliResult<()> {
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut request_line = String::new();
     reader.read_line(&mut request_line)?;
@@ -3019,7 +3022,9 @@ fn read_allowed_doc(request_target: &str) -> Result<(String, String), String> {
         .replace("%2f", "/")
         .replace("%20", " ");
     if !decoded.starts_with("docs/") || decoded.contains("..") {
-        return Err(format!("path must be under docs/ and contain no ..: {decoded}"));
+        return Err(format!(
+            "path must be under docs/ and contain no ..: {decoded}"
+        ));
     }
     let base = std::env::current_dir()
         .and_then(|dir| dir.canonicalize())
@@ -3450,8 +3455,6 @@ fn agent_health(store: &HarnessStore, agent_id: &str) -> CliResult<serde_json::V
     }))
 }
 
-
-
 fn runtime_is_alive(runtime: &AgentRuntime) -> bool {
     // Exec-stream runtimes don't have persistent PIDs or sockets.
     // Runtime is considered alive if its status is Running.
@@ -3632,7 +3635,11 @@ fn workflow_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
             let result = workflow_run_value(store, &args[1..])?;
             print_json(&result)?;
         }
-        other => return Err(CliError::Usage(format!("unknown workflow command: {other}"))),
+        other => {
+            return Err(CliError::Usage(format!(
+                "unknown workflow command: {other}"
+            )))
+        }
     }
     Ok(())
 }
@@ -3663,9 +3670,8 @@ fn workflow_run_value(store: &HarnessStore, args: &[String]) -> CliResult<serde_
     // Build the injectable real driver. The store and options are captured by
     // reference; the closure is Sync (HarnessStore serializes writes via flock)
     // so it can be shared across the parallel barrier's scoped threads.
-    let driver = move |spec: &workflow::AgentStepSpec| {
-        workflow_real_agent_step(store, &options, spec)
-    };
+    let driver =
+        move |spec: &workflow::AgentStepSpec| workflow_real_agent_step(store, &options, spec);
 
     run_workflow_with_driver(store, def, &members, &prompt, &driver)
 }
@@ -3875,8 +3881,10 @@ fn deliver_agent_messages_value(
                 None
             };
             if let Some(error) = start_error {
-                let summary =
-                    format!("{} runtime start failed after claim: {error}", member.provider);
+                let summary = format!(
+                    "{} runtime start failed after claim: {error}",
+                    member.provider
+                );
                 let evidence_ids = record_claimed_delivery_terminal(
                     store,
                     &delivery_id,
@@ -4579,14 +4587,6 @@ fn delivery_exit_code(status: &ProviderSessionStatus, exit_code: Option<i32>) ->
     }
 }
 
-
-
-
-
-
-
-
-
 fn jsonl_bytes(values: &[serde_json::Value]) -> CliResult<Vec<u8>> {
     let mut bytes = Vec::new();
     for value in values {
@@ -4596,8 +4596,6 @@ fn jsonl_bytes(values: &[serde_json::Value]) -> CliResult<Vec<u8>> {
     }
     Ok(bytes)
 }
-
-
 
 fn provider_developer_instructions(member: &AgentMember) -> String {
     let Some(prompt_ref) = member.prompt_ref.as_deref() else {
@@ -4610,7 +4608,6 @@ fn provider_developer_instructions(member: &AgentMember) -> String {
         prompt_ref.to_string()
     }
 }
-
 
 fn insert_optional_string(
     params: &mut serde_json::Map<String, serde_json::Value>,
@@ -4679,7 +4676,6 @@ fn build_turn_input(message: &Message, delivery_attempt_id: &str) -> serde_json:
         )
     }])
 }
-
 
 /// Resolve a control endpoint to a filesystem path.
 ///
@@ -5637,7 +5633,8 @@ impl GoalLearningStatus {
     /// The §3.7 closeout gate: a goal may become complete only with BOTH a closeout
     /// Decision and a GoalEvaluation, OR an explicit valid waiver.
     fn may_close(&self) -> bool {
-        (self.has_closeout_decision() && self.has_goal_evaluation()) || self.has_valid_closeout_waiver()
+        (self.has_closeout_decision() && self.has_goal_evaluation())
+            || self.has_valid_closeout_waiver()
     }
 
     /// Human-readable reasons the closeout gate is not yet satisfied. Empty when
@@ -6048,7 +6045,9 @@ fn evidence_times(evidence: &[Evidence]) -> Vec<u128> {
 /// Parse a sequence of `created_at` strings into unix-ms times. Used to fold the
 /// graduated learning objects into the same event-order check as legacy evidence.
 fn created_at_times<'a>(created_at: impl Iterator<Item = &'a String>) -> Vec<u128> {
-    created_at.filter_map(|value| parse_unix_ms(value)).collect()
+    created_at
+        .filter_map(|value| parse_unix_ms(value))
+        .collect()
 }
 
 /// Union two time sets so the dual-read gate treats legacy evidence and graduated
@@ -6908,9 +6907,7 @@ fn latest_goal_designs_in_append_order(store: &HarnessStore) -> CliResult<Vec<Go
     Ok(ids.into_iter().filter_map(|id| by_id.remove(&id)).collect())
 }
 
-fn latest_goal_evaluations_in_append_order(
-    store: &HarnessStore,
-) -> CliResult<Vec<GoalEvaluation>> {
+fn latest_goal_evaluations_in_append_order(store: &HarnessStore) -> CliResult<Vec<GoalEvaluation>> {
     let mut ids = Vec::new();
     let mut by_id = BTreeMap::new();
     for evaluation in store.goal_evaluations()? {
@@ -7161,9 +7158,7 @@ fn start_provider_runtime(store: &HarnessStore, member: &AgentMember) -> CliResu
     match ProviderKind::from(member.provider.as_str()) {
         ProviderKind::Codex => start_codex_exec_runtime(store, member),
         ProviderKind::Claude => start_claude_runtime(store, member),
-        ProviderKind::Unknown(provider) => {
-            Err(unknown_provider_error(&provider, "runtime start"))
-        }
+        ProviderKind::Unknown(provider) => Err(unknown_provider_error(&provider, "runtime start")),
     }
 }
 
@@ -7195,7 +7190,10 @@ impl ClaudeStreamEvent {
                     .and_then(|t| t.as_str())
                     .unwrap_or("unknown")
                     .to_string();
-                Some(ClaudeStreamEvent { event_type, payload })
+                Some(ClaudeStreamEvent {
+                    event_type,
+                    payload,
+                })
             }
             Err(_) => None,
         }
@@ -7250,9 +7248,7 @@ fn infer_claude_session_status(
     if !process_success {
         return ProviderSessionStatus::Failed;
     }
-    let has_result = events
-        .iter()
-        .any(|e| e.event_type == "result");
+    let has_result = events.iter().any(|e| e.event_type == "result");
     if has_result {
         if let Some(result_event) = events.iter().find(|e| e.event_type == "result") {
             if result_event.payload.get("error").is_some() {
@@ -7303,8 +7299,8 @@ fn ingest_claude_stream_json(
     }
 
     // Extract session_id and infer status from the event stream.
-    let session_id = extract_session_id_from_claude_events(&events)
-        .unwrap_or_else(|| generated_id("session"));
+    let session_id =
+        extract_session_id_from_claude_events(&events).unwrap_or_else(|| generated_id("session"));
     let process_success = true; // Stream was parsed successfully.
     let status = infer_claude_session_status(&events, process_success);
 
@@ -7357,7 +7353,12 @@ fn ingest_claude_stream_json(
         terminal_source: status_to_terminal_source(&status),
         status,
         command: "claude".into(),
-        args: vec!["-p".into(), "--output-format".into(), "stream-json".into(), "--verbose".into()],
+        args: vec![
+            "-p".into(),
+            "--output-format".into(),
+            "stream-json".into(),
+            "--verbose".into(),
+        ],
         prompt_ref: None,
         prompt_summary: Some("delivered via claude -p stream-json".into()),
         provider_session_ref: None,
@@ -7383,8 +7384,6 @@ fn status_to_terminal_source(status: &ProviderSessionStatus) -> Option<MessageTe
         _ => None,
     }
 }
-
-
 
 // --- Codex exec --json delivery (WP-2) ---
 // Parse NDJSON output from `codex exec --json` into AgentEvent + ProviderSession lifecycle.
@@ -7412,7 +7411,10 @@ impl CodexExecEvent {
                     .and_then(|t| t.as_str())
                     .unwrap_or("unknown")
                     .to_string();
-                Some(CodexExecEvent { event_type, payload })
+                Some(CodexExecEvent {
+                    event_type,
+                    payload,
+                })
             }
             Err(_) => None,
         }
@@ -7551,23 +7553,26 @@ fn write_temp_mcp_config(mcp: Option<&LaunchMcp>) -> CliResult<Option<String>> {
         for server in &mcp_config.servers {
             let mut server_obj = serde_json::Map::new();
             server_obj.insert("id".to_string(), serde_json::json!(server.id));
-            
+
             if let Some(transport) = &server.transport {
                 server_obj.insert("transport".to_string(), serde_json::json!(transport));
             }
-            
+
             if !server.command.is_empty() {
                 server_obj.insert("command".to_string(), serde_json::json!(server.command));
             }
-            
+
             if let Some(url) = &server.url {
                 server_obj.insert("url".to_string(), serde_json::json!(url));
             }
-            
+
             if !server.allowed_tools.is_empty() {
-                server_obj.insert("allowed_tools".to_string(), serde_json::json!(server.allowed_tools));
+                server_obj.insert(
+                    "allowed_tools".to_string(),
+                    serde_json::json!(server.allowed_tools),
+                );
             }
-            
+
             servers.insert(server.id.clone(), serde_json::Value::Object(server_obj));
         }
 
@@ -7578,14 +7583,15 @@ fn write_temp_mcp_config(mcp: Option<&LaunchMcp>) -> CliResult<Option<String>> {
         // Write to temp file
         let config_str = serde_json::to_string(&config)
             .map_err(|e| CliError::Usage(format!("failed to serialize MCP config: {e}")))?;
-        
-        let temp_path = std::env::temp_dir()
-            .join(format!("mcp_config_{}.json", std::process::id()));
+
+        let temp_path =
+            std::env::temp_dir().join(format!("mcp_config_{}.json", std::process::id()));
         let temp_path_str = temp_path.to_string_lossy().to_string();
-        
-        std::fs::write(&temp_path, config_str)
-            .map_err(|e| CliError::Usage(format!("failed to write MCP config to temp file: {e}")))?;
-        
+
+        std::fs::write(&temp_path, config_str).map_err(|e| {
+            CliError::Usage(format!("failed to write MCP config to temp file: {e}"))
+        })?;
+
         Ok(Some(temp_path_str))
     } else {
         Ok(None)
@@ -7672,16 +7678,16 @@ fn run_codex_exec_process(
         .stdout(Stdio::piped())
         .current_dir(cwd.clone().unwrap_or_else(|| ".".into()))
         .spawn()
-        .map_err(|error| {
-            CliError::Usage(format!("spawn codex exec failed: {error}"))
-        })?;
+        .map_err(|error| CliError::Usage(format!("spawn codex exec failed: {error}")))?;
 
-    let stdout = child.stdout.take().ok_or_else(|| {
-        CliError::Usage("codex exec stdout not available".into())
-    })?;
-    let stderr = child.stderr.take().ok_or_else(|| {
-        CliError::Usage("codex exec stderr not available".into())
-    })?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| CliError::Usage("codex exec stdout not available".into()))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| CliError::Usage("codex exec stderr not available".into()))?;
 
     // Parse stdout as NDJSON.
     let reader = BufReader::new(stdout);
@@ -7819,7 +7825,6 @@ fn record_exec_delivery_session(
     Ok(evidence_id)
 }
 
-
 /// This is the exec-stream variant of run_codex_app_server_exchange.
 fn run_codex_exec_delivery(
     store: &HarnessStore,
@@ -7889,14 +7894,15 @@ fn run_codex_exec_delivery(
     )?;
 
     let summary = match status {
-        ProviderSessionStatus::Succeeded => {
-            "Codex exec --json turn completed successfully".into()
-        }
+        ProviderSessionStatus::Succeeded => "Codex exec --json turn completed successfully".into(),
         ProviderSessionStatus::Failed => {
             if stderr_log.is_empty() {
                 "Codex exec --json failed: no output".into()
             } else {
-                format!("Codex exec --json failed: {}", stderr_log.lines().next().unwrap_or("unknown error"))
+                format!(
+                    "Codex exec --json failed: {}",
+                    stderr_log.lines().next().unwrap_or("unknown error")
+                )
             }
         }
         ProviderSessionStatus::Stale => {
@@ -7947,7 +7953,9 @@ fn probe_claude_protocol(_socket_path: &Path, _timeout_ms: u64) -> CliResult<Opt
     // For Claude CLI, protocol probing is handled differently than Codex's WebSocket.
     // The claude binary is stateless and request-response; we'll mark it as unknown
     // until the first delivery attempt.
-    Ok(Some("unknown: claude CLI protocol probed on first delivery".into()))
+    Ok(Some(
+        "unknown: claude CLI protocol probed on first delivery".into(),
+    ))
 }
 // WP-5: Codex exec-stream runtime (no persistent process).
 // Each delivery spawns `codex exec --json`, so no app-server socket is needed.
@@ -7956,16 +7964,16 @@ fn start_codex_exec_runtime(store: &HarnessStore, member: &AgentMember) -> CliRe
     let runtime_id = generated_id("runtime");
     let runtime_dir = store.root().join("runtimes").join(&member.id);
     fs::create_dir_all(&runtime_dir)?;
-    
+
     // For Codex, we use exec-stream delivery (no persistent app-server).
     // Each delivery spawns `codex exec --json`, so there's no long-lived process.
     // The control_endpoint is a marker for the runtime directory.
     let endpoint = format!("codex-exec-runtime://{}", runtime_dir.display());
-    
+
     let args = vec![
         // Codex will be spawned on each delivery via codex exec --json
     ];
-    
+
     // Check if codex binary is available
     let process_alive = Command::new("which")
         .arg("codex")
@@ -7973,7 +7981,7 @@ fn start_codex_exec_runtime(store: &HarnessStore, member: &AgentMember) -> CliRe
         .ok()
         .map(|output| output.status.success())
         .unwrap_or(false);
-    
+
     Ok(AgentRuntime {
         id: runtime_id,
         agent_member_id: member.id.clone(),
@@ -7988,14 +7996,13 @@ fn start_codex_exec_runtime(store: &HarnessStore, member: &AgentMember) -> CliRe
         last_event_at: Some(now_string()),
         health: AgentRuntimeHealth {
             process_alive,
-            socket_exists: true, // Runtime dir exists
+            socket_exists: true,                        // Runtime dir exists
             protocol_probe: Some("exec-stream".into()), // Codex uses exec-stream
             delivery_probe: Some("unknown".into()),
             checked_at: Some(now_string()),
         },
     })
 }
-
 
 // --- Claude runtime (BE-WP7) ---
 // The claude CLI shape: spawn the claude binary as a local process, run message
@@ -8005,18 +8012,18 @@ fn start_claude_runtime(store: &HarnessStore, member: &AgentMember) -> CliResult
     let runtime_id = generated_id("runtime");
     let runtime_dir = store.root().join("runtimes").join(&member.id);
     fs::create_dir_all(&runtime_dir)?;
-    
+
     // For Claude CLI, we don't spawn a persistent process on runtime start.
     // Instead, we record the runtime as "ready" and each delivery will spawn
     // claude with the message. This matches the behavior of claude as a
     // request-response tool rather than a persistent app-server.
     // The control_endpoint is a marker for the runtime directory.
     let endpoint = format!("claude-runtime://{}", runtime_dir.display());
-    
+
     let args = vec![
         // Claude CLI will be spawned on each delivery with the message prompt
     ];
-    
+
     // Check if claude binary is available, but don't require it at test time
     let process_alive = Command::new("which")
         .arg("claude")
@@ -8024,7 +8031,7 @@ fn start_claude_runtime(store: &HarnessStore, member: &AgentMember) -> CliResult
         .ok()
         .map(|output| output.status.success())
         .unwrap_or(false);
-    
+
     Ok(AgentRuntime {
         id: runtime_id,
         agent_member_id: member.id.clone(),
@@ -8039,7 +8046,7 @@ fn start_claude_runtime(store: &HarnessStore, member: &AgentMember) -> CliResult
         last_event_at: Some(now_string()),
         health: AgentRuntimeHealth {
             process_alive,
-            socket_exists: true, // Runtime dir exists
+            socket_exists: true,                    // Runtime dir exists
             protocol_probe: Some("unknown".into()), // Will probe on first delivery
             delivery_probe: Some("unknown".into()),
             checked_at: Some(now_string()),
@@ -8058,14 +8065,10 @@ fn run_claude_delivery(
     let session_dir = store.root().join("provider-sessions").join(delivery_id);
     fs::create_dir_all(&session_dir)?;
     let started_at = now_string();
-    
+
     // WP-3: Spawn real `claude -p --output-format stream-json --verbose`
-    let (process_success, events, session_id, stderr_log) = run_claude_exec_delivery_real(
-        &session_dir,
-        member,
-        message,
-        timeout_ms,
-    )?;
+    let (process_success, events, session_id, stderr_log) =
+        run_claude_exec_delivery_real(&session_dir, member, message, timeout_ms)?;
 
     // Save NDJSON events to jsonl_ref for ingest.
     let ndjson_ref = session_dir.join("claude.stream-json.ndjson");
@@ -8078,7 +8081,9 @@ fn run_claude_delivery(
 
     let status = infer_claude_session_status(&events, process_success);
     let terminal_source = status_to_terminal_source(&status);
-    let resolved_session_id = session_id.clone().unwrap_or_else(|| generated_id("session"));
+    let resolved_session_id = session_id
+        .clone()
+        .unwrap_or_else(|| generated_id("session"));
 
     // The id we hand back as the member's provider thread for the NEXT delivery
     // to resume. Only a real session id parsed from the provider output is
@@ -8136,7 +8141,11 @@ fn run_claude_delivery(
         provider_session_ref: None,
         stdout_ref: None,
         jsonl_ref: Some(ndjson_ref.display().to_string()),
-        transcript_ref: if stderr_log.is_empty() { None } else { Some(session_dir.join("claude.stderr").display().to_string()) },
+        transcript_ref: if stderr_log.is_empty() {
+            None
+        } else {
+            Some(session_dir.join("claude.stderr").display().to_string())
+        },
         last_message_ref: None,
         exit_code: if process_success { Some(0) } else { Some(1) },
         started_at,
@@ -8193,7 +8202,7 @@ fn run_claude_exec_delivery_real(
 
     // Compose system prompt (developer instructions from member prompt_ref).
     let system_prompt = provider_developer_instructions(member);
-    
+
     // Determine CWD from member or current directory.
     let cwd = member.worktree_ref.clone().or_else(|| {
         env::current_dir()
@@ -8266,16 +8275,16 @@ fn run_claude_exec_delivery_real(
         .stderr(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
-        .map_err(|error| {
-            CliError::Usage(format!("failed to spawn claude -p process: {error}"))
-        })?;
+        .map_err(|error| CliError::Usage(format!("failed to spawn claude -p process: {error}")))?;
 
-    let stdout = child.stdout.take().ok_or_else(|| {
-        CliError::Usage("claude -p stdout not available".into())
-    })?;
-    let stderr = child.stderr.take().ok_or_else(|| {
-        CliError::Usage("claude -p stderr not available".into())
-    })?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| CliError::Usage("claude -p stdout not available".into()))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| CliError::Usage("claude -p stderr not available".into()))?;
 
     // Parse stdout as NDJSON in real time.
     let reader = BufReader::new(stdout);
@@ -8307,19 +8316,14 @@ fn run_claude_exec_delivery_real(
             }
             Err(error) => {
                 let session_id = extract_session_id_from_claude_events(&events);
-                return Ok((
-                    false,
-                    events,
-                    session_id,
-                    format!("wait failed: {error}"),
-                ));
+                return Ok((false, events, session_id, format!("wait failed: {error}")));
             }
         }
     }
 
-    let final_output = child.wait_with_output().map_err(|error| {
-        CliError::Usage(format!("failed to collect claude -p output: {error}"))
-    })?;
+    let final_output = child
+        .wait_with_output()
+        .map_err(|error| CliError::Usage(format!("failed to collect claude -p output: {error}")))?;
 
     let session_id = extract_session_id_from_claude_events(&events);
     Ok((
@@ -8330,27 +8334,24 @@ fn run_claude_exec_delivery_real(
     ))
 }
 
-fn build_claude_delivery_prompt(
-    member: &AgentMember,
-    message: &Message,
-) -> CliResult<String> {
+fn build_claude_delivery_prompt(member: &AgentMember, message: &Message) -> CliResult<String> {
     // Build a system prompt that contextualizes the delivery for Claude
     let mut prompt = String::new();
-    
+
     if let Some(prompt_ref) = &member.prompt_ref {
         prompt.push_str("System context: ");
         prompt.push_str(prompt_ref);
         prompt.push_str("\n\n");
     }
-    
+
     prompt.push_str("Deliver this message:\n");
     prompt.push_str(&message.content);
-    
+
     if let Some(task_id) = &message.task_id {
         prompt.push_str("\n\nTask ID: ");
         prompt.push_str(task_id);
     }
-    
+
     Ok(prompt)
 }
 
@@ -8372,10 +8373,10 @@ fn run_claude_exchange(
     let stdout_ref = session_dir.join("claude.stdout.log");
     let stderr_ref = session_dir.join("claude.stderr.log");
     let _stdin_ref = session_dir.join("claude.stdin.txt");
-    
+
     // Write the prompt to stdin for reference
     fs::write(&_stdin_ref, prompt)?;
-    
+
     // Run claude with the prompt
     let timeout = Duration::from_millis(timeout_ms.max(1));
     let mut child = Command::new("claude")
@@ -8383,20 +8384,16 @@ fn run_claude_exchange(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|error| {
-            CliError::Usage(format!(
-                "failed to spawn claude process: {error}"
-            ))
-        })?;
-    
+        .map_err(|error| CliError::Usage(format!("failed to spawn claude process: {error}")))?;
+
     // Write prompt to stdin
     if let Some(mut stdin) = child.stdin.take() {
-        stdin.write_all(prompt.as_bytes()).map_err(|error| {
-            CliError::Usage(format!("failed to write claude stdin: {error}"))
-        })?;
+        stdin
+            .write_all(prompt.as_bytes())
+            .map_err(|error| CliError::Usage(format!("failed to write claude stdin: {error}")))?;
         drop(stdin); // Close stdin to signal EOF
     }
-    
+
     // Wait for process with timeout
     let start = std::time::Instant::now();
     loop {
@@ -8435,19 +8432,19 @@ fn run_claude_exchange(
             }
         }
     }
-    
+
     // Collect output from the process
-    let full_output = child.wait_with_output().map_err(|error| {
-        CliError::Usage(format!("failed to collect claude output: {error}"))
-    })?;
-    
+    let full_output = child
+        .wait_with_output()
+        .map_err(|error| CliError::Usage(format!("failed to collect claude output: {error}")))?;
+
     let exit_code = full_output.status.code();
     let stdout_text = String::from_utf8_lossy(&full_output.stdout).to_string();
     let stderr_text = String::from_utf8_lossy(&full_output.stderr).to_string();
-    
+
     fs::write(&stdout_ref, &stdout_text)?;
     fs::write(&stderr_ref, &stderr_text)?;
-    
+
     // Determine delivery status based on exit code
     let (status, summary) = if full_output.status.success() {
         (
@@ -8463,7 +8460,7 @@ fn run_claude_exchange(
             ),
         )
     };
-    
+
     Ok(ClaudeDeliveryOutcome {
         status,
         stdout_ref: Some(stdout_ref.display().to_string()),
@@ -8501,13 +8498,13 @@ fn record_claude_delivery_session(
         goal_id: None,
     };
     store.append_evidence(&evidence)?;
-    
+
     let ended_at = if record.status == ProviderSessionStatus::Running {
         None
     } else {
         Some(now_string())
     };
-    
+
     let provider_session = ProviderSession {
         id: record.delivery_id.into(),
         provider: "claude".into(),
@@ -8535,9 +8532,6 @@ fn record_claude_delivery_session(
     store.append_provider_session(&provider_session)?;
     Ok(evidence_id)
 }
-
-
-
 
 fn parse_hook_payload(input: &str) -> serde_json::Value {
     if input.trim().is_empty() {
@@ -8925,14 +8919,19 @@ mod workflow_runtime_tests {
         // Mock driver: never spawns a provider; always succeeds.
         let driver = |spec: &workflow::AgentStepSpec| ok_step(spec);
 
-        let result =
-            run_workflow_with_driver(&store, def, &mock_members(), "failure X", &driver)
-                .expect("run workflow");
+        let result = run_workflow_with_driver(&store, def, &mock_members(), "failure X", &driver)
+            .expect("run workflow");
 
         // The returned run is completed and references 3 steps (serial + 2 parallel).
         let run = result.get("run").expect("run key");
-        assert_eq!(run.get("status").and_then(|s| s.as_str()), Some("completed"));
-        let step_ids = run.get("step_ids").and_then(|s| s.as_array()).expect("step_ids");
+        assert_eq!(
+            run.get("status").and_then(|s| s.as_str()),
+            Some("completed")
+        );
+        let step_ids = run
+            .get("step_ids")
+            .and_then(|s| s.as_array())
+            .expect("step_ids");
         assert_eq!(step_ids.len(), 3);
 
         // The journal holds two WorkflowRun rows (running -> completed) for one id.
@@ -8975,9 +8974,8 @@ mod workflow_runtime_tests {
             }
         };
 
-        let result =
-            run_workflow_with_driver(&store, def, &mock_members(), "failure Y", &driver)
-                .expect("run workflow");
+        let result = run_workflow_with_driver(&store, def, &mock_members(), "failure Y", &driver)
+            .expect("run workflow");
         let run = result.get("run").expect("run key");
         assert_eq!(run.get("status").and_then(|s| s.as_str()), Some("failed"));
 
@@ -9066,7 +9064,6 @@ mod tests {
         assert_eq!(jsonrpc_error_messages(&values), vec!["bad thread"]);
     }
 
-
     #[test]
     fn generated_ids_are_unique_inside_one_exchange() {
         let ids: BTreeSet<_> = (0..64).map(|_| generated_id("rpc")).collect();
@@ -9105,9 +9102,6 @@ mod tests {
         ));
     }
 
-
-
-
     #[test]
     fn running_delivery_is_acknowledged_not_delivered() {
         assert_eq!(
@@ -9134,13 +9128,23 @@ mod tests {
 
         let runtime = start_provider_runtime(&store, &member)
             .expect("claude runtime start dispatches to claude implementation");
-        assert_eq!(runtime.provider, "claude", "runtime must have claude provider");
+        assert_eq!(
+            runtime.provider, "claude",
+            "runtime must have claude provider"
+        );
         assert_eq!(runtime.command, "claude", "runtime must use claude command");
         assert!(
-            runtime.control_endpoint.as_deref().map(|ep| ep.starts_with("claude-runtime://")).unwrap_or(false),
+            runtime
+                .control_endpoint
+                .as_deref()
+                .map(|ep| ep.starts_with("claude-runtime://"))
+                .unwrap_or(false),
             "claude runtime must use claude-runtime:// endpoint"
         );
-        assert!(runtime.pid.is_none(), "claude on-demand runtime should not have persistent PID");
+        assert!(
+            runtime.pid.is_none(),
+            "claude on-demand runtime should not have persistent PID"
+        );
 
         let _ = std::fs::remove_dir_all(root);
     }
@@ -9148,8 +9152,10 @@ mod tests {
     #[test]
     fn claude_member_delivery_dispatches_to_claude_stub() {
         // WP-3: Test the new real claude -p delivery (replaces stub).
-        let root = std::env::temp_dir()
-            .join(format!("harness-cli-test-{}", generated_id("claude-deliver")));
+        let root = std::env::temp_dir().join(format!(
+            "harness-cli-test-{}",
+            generated_id("claude-deliver")
+        ));
         let store = HarnessStore::new(&root);
         let mut member = make_member("claude-agent");
         member.provider = "claude".into();
@@ -9203,13 +9209,14 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
-
     #[test]
     #[test]
     fn claude_member_ingest_dispatches_to_claude_stub() {
         // WP-3: Test claude stream-json ingest (replaces stub).
-        let root = std::env::temp_dir()
-            .join(format!("harness-cli-test-{}", generated_id("claude-ingest")));
+        let root = std::env::temp_dir().join(format!(
+            "harness-cli-test-{}",
+            generated_id("claude-ingest")
+        ));
         let store = HarnessStore::new(&root);
         let mut member = make_member("claude-agent");
         member.provider = "claude".into();
@@ -9234,10 +9241,13 @@ mod tests {
             &source.display().to_string(),
         )
         .expect("claude ingest dispatch should succeed");
-        
+
         // Verify neutral objects were created from the stream.
         let events = store.events().expect("events");
-        assert!(!events.is_empty(), "claude ingest should create AgentEvent from stream");
+        assert!(
+            !events.is_empty(),
+            "claude ingest should create AgentEvent from stream"
+        );
         assert_eq!(events.len(), 3, "should ingest 3 events from stream-json");
 
         let _ = std::fs::remove_dir_all(root);
@@ -9245,8 +9255,10 @@ mod tests {
 
     #[test]
     fn unknown_provider_runtime_start_fails_fast() {
-        let root = std::env::temp_dir()
-            .join(format!("harness-cli-test-{}", generated_id("unknown-start")));
+        let root = std::env::temp_dir().join(format!(
+            "harness-cli-test-{}",
+            generated_id("unknown-start")
+        ));
         let store = HarnessStore::new(&root);
         let mut member = make_member("gemini-agent");
         member.provider = "gemini".into();
@@ -9266,8 +9278,8 @@ mod tests {
     fn codex_member_ingest_stays_on_codex_path() {
         // Regression guard: a codex member must still flow through the existing
         // (regression-clean) codex parser and persist a codex-stamped event.
-        let root = std::env::temp_dir()
-            .join(format!("harness-cli-test-{}", generated_id("codex-ingest")));
+        let root =
+            std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("codex-ingest")));
         let store = HarnessStore::new(&root);
         let member = make_member("codex-agent");
         assert_eq!(member.provider, "codex");
@@ -10390,7 +10402,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
-
     #[test]
     fn turn_input_uses_stable_harness_envelope() {
         let message = Message {
@@ -10792,7 +10803,9 @@ mod tests {
     fn closeout_gate_allows_close_with_decision_and_evaluation() {
         let root = std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("store")));
         let store = HarnessStore::new(&root);
-        store.append_goal(&make_goal("goal-1")).expect("append goal");
+        store
+            .append_goal(&make_goal("goal-1"))
+            .expect("append goal");
         store
             .append_task(&make_task("task-1", "goal-1"))
             .expect("append task");
@@ -10817,7 +10830,9 @@ mod tests {
     fn closeout_gate_blocks_close_when_evaluation_missing() {
         let root = std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("store")));
         let store = HarnessStore::new(&root);
-        store.append_goal(&make_goal("goal-1")).expect("append goal");
+        store
+            .append_goal(&make_goal("goal-1"))
+            .expect("append goal");
         store
             .append_task(&make_task("task-1", "goal-1"))
             .expect("append task");
@@ -10841,7 +10856,9 @@ mod tests {
     fn closeout_gate_blocks_close_when_closeout_decision_missing() {
         let root = std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("store")));
         let store = HarnessStore::new(&root);
-        store.append_goal(&make_goal("goal-1")).expect("append goal");
+        store
+            .append_goal(&make_goal("goal-1"))
+            .expect("append goal");
         store
             .append_task(&make_task("task-1", "goal-1"))
             .expect("append task");
@@ -10867,7 +10884,9 @@ mod tests {
     fn closeout_gate_rejects_closeout_decision_without_evidence() {
         let root = std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("store")));
         let store = HarnessStore::new(&root);
-        store.append_goal(&make_goal("goal-1")).expect("append goal");
+        store
+            .append_goal(&make_goal("goal-1"))
+            .expect("append goal");
         store
             .append_task(&make_task("task-1", "goal-1"))
             .expect("append task");
@@ -10894,7 +10913,9 @@ mod tests {
     fn closeout_gate_allows_close_via_waiver() {
         let root = std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("store")));
         let store = HarnessStore::new(&root);
-        store.append_goal(&make_goal("goal-1")).expect("append goal");
+        store
+            .append_goal(&make_goal("goal-1"))
+            .expect("append goal");
         store
             .append_task(&make_task("task-1", "goal-1"))
             .expect("append task");
@@ -10932,7 +10953,9 @@ mod tests {
     fn closeout_gate_rejects_waiver_without_follow_up() {
         let root = std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("store")));
         let store = HarnessStore::new(&root);
-        store.append_goal(&make_goal("goal-1")).expect("append goal");
+        store
+            .append_goal(&make_goal("goal-1"))
+            .expect("append goal");
         store
             .append_task(&make_task("task-1", "goal-1"))
             .expect("append task");
@@ -11089,7 +11112,10 @@ mod tests {
         let after = goal_learning_status(&store, "goal-1").expect("status");
         assert!(after.has_goal_evaluation());
         assert_eq!(after.goal_evaluation_objects.len(), 1);
-        assert!(after.goal_evaluation.is_empty(), "no legacy evaluation note");
+        assert!(
+            after.goal_evaluation.is_empty(),
+            "no legacy evaluation note"
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -11121,7 +11147,10 @@ mod tests {
         let status = goal_learning_status(&store, "goal-1").expect("status");
         assert!(status.has_closeout_decision());
         assert!(status.has_goal_evaluation());
-        assert!(status.may_close(), "typed decision + typed evaluation allow close");
+        assert!(
+            status.may_close(),
+            "typed decision + typed evaluation allow close"
+        );
         status
             .require_closeout()
             .expect("closeout gate passes with typed decision + typed evaluation");
@@ -11157,8 +11186,7 @@ mod tests {
         // The goal has a complete task graph + full learning chain, but NO evaluation
         // yet: the runner must NOT see a candidate (item 3 regression: typed-only seam).
         let options = make_tick_options();
-        let before =
-            autonomy_next_round_candidates(&store, &options).expect("candidate query");
+        let before = autonomy_next_round_candidates(&store, &options).expect("candidate query");
         assert!(
             before.is_empty(),
             "no candidate before a typed evaluation exists"
@@ -11186,7 +11214,11 @@ mod tests {
         .expect("goal evaluate");
 
         let after = autonomy_next_round_candidates(&store, &options).expect("candidate query");
-        assert_eq!(after.len(), 1, "typed evaluation makes the goal a candidate");
+        assert_eq!(
+            after.len(),
+            1,
+            "typed evaluation makes the goal a candidate"
+        );
         let candidate = &after[0];
         assert_eq!(candidate.goal_id, "goal-1");
         assert_eq!(candidate.source_task_id, "task-1");
@@ -11249,8 +11281,7 @@ mod tests {
 
         // An arbitrary decision value is rejected for a stop_gate.
         decision.decision = "maybe".into();
-        let error =
-            validate_decision(&decision).expect_err("invalid stop_gate decision rejected");
+        let error = validate_decision(&decision).expect_err("invalid stop_gate decision rejected");
         assert!(error.to_string().contains("stop_gate"));
 
         // Both canonical values pass.
@@ -11613,7 +11644,10 @@ mod tests {
         });
 
         let created = create_team_value(&store, &body).expect("team create succeeds");
-        let team_id = created["id"].as_str().expect("created team has id").to_string();
+        let team_id = created["id"]
+            .as_str()
+            .expect("created team has id")
+            .to_string();
         assert_eq!(created["name"], "Platform Squad");
         assert_eq!(created["owner_agent_id"], "lead-1");
 
@@ -11627,7 +11661,9 @@ mod tests {
 
         // Visible in the dashboard snapshot the HTTP layer returns.
         let snapshot = dashboard_snapshot(&store).expect("snapshot builds");
-        let snapshot_teams = snapshot["teams"].as_array().expect("teams array in snapshot");
+        let snapshot_teams = snapshot["teams"]
+            .as_array()
+            .expect("teams array in snapshot");
         assert!(
             snapshot_teams
                 .iter()
@@ -11662,7 +11698,10 @@ mod tests {
         });
 
         let created = create_agent_value(&store, &body).expect("agent create succeeds");
-        let member_id = created["id"].as_str().expect("created member has id").to_string();
+        let member_id = created["id"]
+            .as_str()
+            .expect("created member has id")
+            .to_string();
         assert_eq!(created["name"], "Worker One");
         assert_eq!(created["role"], "worker");
         // Idle, not started: runtime start stays a separate action.
@@ -11682,7 +11721,10 @@ mod tests {
             persisted.prompt_ref.is_some(),
             "create must persist a bootstrap prompt_ref"
         );
-        assert!(persisted.provider_runtime_id.is_none(), "no runtime started");
+        assert!(
+            persisted.provider_runtime_id.is_none(),
+            "no runtime started"
+        );
 
         // No runtime persisted.
         assert!(
@@ -11692,7 +11734,9 @@ mod tests {
 
         // Member appears in the snapshot roster.
         let snapshot = dashboard_snapshot(&store).expect("snapshot builds");
-        let snapshot_members = snapshot["members"].as_array().expect("members array in snapshot");
+        let snapshot_members = snapshot["members"]
+            .as_array()
+            .expect("members array in snapshot");
         assert!(
             snapshot_members
                 .iter()
@@ -11734,7 +11778,7 @@ mod sse_tests {
     fn test_sse_manager_broadcast_to_subscriber() {
         let manager = sse::SseManager::new();
         let rx = manager.subscribe();
-        
+
         let event = sse::SseEventFrame::AgentEvent(AgentEvent {
             id: "evt-test".into(),
             agent_member_id: "mem-test".into(),
@@ -11749,9 +11793,9 @@ mod sse_tests {
             payload_ref: None,
             created_at: "2025-01-01T00:00:00Z".into(),
         });
-        
+
         manager.broadcast(event.clone());
-        
+
         // Verify the event is received
         match rx.recv_timeout(std::time::Duration::from_secs(1)) {
             Ok(received) => {
@@ -11770,7 +11814,7 @@ mod sse_tests {
         let manager = sse::SseManager::new();
         let rx1 = manager.subscribe();
         let rx2 = manager.subscribe();
-        
+
         let event = sse::SseEventFrame::AgentEvent(AgentEvent {
             id: "evt-multi".into(),
             agent_member_id: "mem-test".into(),
@@ -11785,13 +11829,15 @@ mod sse_tests {
             payload_ref: None,
             created_at: "2025-01-01T00:00:00Z".into(),
         });
-        
+
         manager.broadcast(event);
-        
+
         // Both subscribers should receive the event
-        let _ = rx1.recv_timeout(std::time::Duration::from_secs(1))
+        let _ = rx1
+            .recv_timeout(std::time::Duration::from_secs(1))
             .expect("rx1 should receive event");
-        let _ = rx2.recv_timeout(std::time::Duration::from_secs(1))
+        let _ = rx2
+            .recv_timeout(std::time::Duration::from_secs(1))
             .expect("rx2 should receive event");
     }
 
@@ -11807,8 +11853,10 @@ mod sse_tests {
         use std::net::{TcpListener, TcpStream};
         use std::time::Duration;
 
-        let root = std::env::temp_dir()
-            .join(format!("harness-cli-test-{}", generated_id("serve-concurrency")));
+        let root = std::env::temp_dir().join(format!(
+            "harness-cli-test-{}",
+            generated_id("serve-concurrency")
+        ));
         let store = HarnessStore::new(&root);
         store.init().expect("init store");
 
@@ -11849,7 +11897,10 @@ mod sse_tests {
                 break;
             }
         }
-        assert!(saw_snapshot, "SSE stream did not emit an initial snapshot frame");
+        assert!(
+            saw_snapshot,
+            "SSE stream did not emit an initial snapshot frame"
+        );
 
         // With the stream still held open, a concurrent snapshot request must
         // complete. A short read timeout makes a regression (blocked accept
@@ -11892,7 +11943,7 @@ mod tests_wp2_codex_exec {
 "#;
         let reader = Cursor::new(ndjson.as_bytes());
         let events = parse_codex_ndjson(reader);
-        
+
         assert_eq!(events.len(), 3);
         assert_eq!(events[0].event_type, "tool_call");
         assert_eq!(events[1].event_type, "tool_output");
@@ -11907,7 +11958,7 @@ invalid json line
 "#;
         let reader = Cursor::new(ndjson.as_bytes());
         let events = parse_codex_ndjson(reader);
-        
+
         // Should skip the invalid line
         assert_eq!(events.len(), 2);
         assert_eq!(events[0].event_type, "tool_call");
@@ -11922,7 +11973,7 @@ invalid json line
 "#;
         let reader = Cursor::new(ndjson.as_bytes());
         let events = parse_codex_ndjson(reader);
-        
+
         // Should skip empty lines
         assert_eq!(events.len(), 2);
     }
@@ -11931,16 +11982,19 @@ invalid json line
     fn test_codex_exec_event_parse_line_valid() {
         let line = r#"{"type": "tool_call", "payload": "test"}"#;
         let event = CodexExecEvent::parse_line(line).expect("should parse");
-        
+
         assert_eq!(event.event_type, "tool_call");
-        assert_eq!(event.payload.get("type").and_then(|v| v.as_str()), Some("tool_call"));
+        assert_eq!(
+            event.payload.get("type").and_then(|v| v.as_str()),
+            Some("tool_call")
+        );
     }
 
     #[test]
     fn test_codex_exec_event_parse_line_missing_type() {
         let line = r#"{"payload": "test"}"#;
         let event = CodexExecEvent::parse_line(line).expect("should parse");
-        
+
         // Should default to "unknown" when type is missing
         assert_eq!(event.event_type, "unknown");
     }
@@ -11954,7 +12008,10 @@ invalid json line
             payload: json,
         };
 
-        assert_eq!(event.terminal_source(), Some(MessageTerminalSource::TurnCompleted));
+        assert_eq!(
+            event.terminal_source(),
+            Some(MessageTerminalSource::TurnCompleted)
+        );
     }
 
     #[test]
@@ -11964,7 +12021,10 @@ invalid json line
             event_type: "turn_completed".into(),
             payload: serde_json::json!({"type": "turn_completed"}),
         };
-        assert_eq!(event.terminal_source(), Some(MessageTerminalSource::TurnCompleted));
+        assert_eq!(
+            event.terminal_source(),
+            Some(MessageTerminalSource::TurnCompleted)
+        );
     }
 
     #[test]
@@ -11974,7 +12034,7 @@ invalid json line
             event_type: "tool_call".into(),
             payload: json,
         };
-        
+
         assert_eq!(event.terminal_source(), None);
     }
 
@@ -12036,26 +12096,22 @@ invalid json line
 
     #[test]
     fn test_infer_provider_session_status_failed_exit() {
-        let events = vec![
-            CodexExecEvent {
-                event_type: "tool_call".into(),
-                payload: serde_json::json!({}),
-            },
-        ];
-        
+        let events = vec![CodexExecEvent {
+            event_type: "tool_call".into(),
+            payload: serde_json::json!({}),
+        }];
+
         let status = infer_provider_session_status(&events, false);
         assert_eq!(status, ProviderSessionStatus::Failed);
     }
 
     #[test]
     fn test_infer_provider_session_status_stale() {
-        let events = vec![
-            CodexExecEvent {
-                event_type: "tool_call".into(),
-                payload: serde_json::json!({}),
-            },
-        ];
-        
+        let events = vec![CodexExecEvent {
+            event_type: "tool_call".into(),
+            payload: serde_json::json!({}),
+        }];
+
         let status = infer_provider_session_status(&events, true);
         assert_eq!(status, ProviderSessionStatus::Stale);
     }
@@ -12063,7 +12119,7 @@ invalid json line
     #[test]
     fn test_infer_provider_session_status_no_events_and_failed() {
         let events = vec![];
-        
+
         let status = infer_provider_session_status(&events, false);
         assert_eq!(status, ProviderSessionStatus::Failed);
     }
@@ -12071,7 +12127,7 @@ invalid json line
     #[test]
     fn test_infer_provider_session_status_empty_success() {
         let events = vec![];
-        
+
         let status = infer_provider_session_status(&events, true);
         assert_eq!(status, ProviderSessionStatus::Failed);
     }
@@ -12084,11 +12140,11 @@ invalid json line
         // - HARNESS_CODEX_DELIVERY=exec -> run_codex_exec_delivery
         // - Codex now uses exec-stream delivery only
         // - no flag -> defaults to appserver
-        
+
         let env_exec = "exec";
         let env_appserver = "appserver";
         let env_default = "";
-        
+
         assert_eq!(env_exec, "exec");
         assert_eq!(env_appserver, "appserver");
         assert!(!env_default.is_empty() || env_default.is_empty()); // vacuous, but documents fallback
@@ -12096,12 +12152,10 @@ invalid json line
 
     #[test]
     fn test_extract_thread_id_from_exec_events_present() {
-        let events = vec![
-            CodexExecEvent {
-                event_type: "thread.started".into(),
-                payload: serde_json::json!({"thread_id": "123", "type": "thread.started"}),
-            },
-        ];
+        let events = vec![CodexExecEvent {
+            event_type: "thread.started".into(),
+            payload: serde_json::json!({"thread_id": "123", "type": "thread.started"}),
+        }];
 
         // thread.started carries the real thread_id; surface it.
         let thread_id = extract_thread_id_from_exec_events(&events);
@@ -12110,24 +12164,20 @@ invalid json line
 
     #[test]
     fn test_extract_thread_id_from_exec_events_absent_is_none() {
-        let events = vec![
-            CodexExecEvent {
-                event_type: "turn.started".into(),
-                payload: serde_json::json!({"type": "turn.started"}),
-            },
-        ];
+        let events = vec![CodexExecEvent {
+            event_type: "turn.started".into(),
+            payload: serde_json::json!({"type": "turn.started"}),
+        }];
 
         assert_eq!(extract_thread_id_from_exec_events(&events), None);
     }
 
     #[test]
     fn test_extract_turn_id_from_exec_events_present() {
-        let events = vec![
-            CodexExecEvent {
-                event_type: "turn.started".into(),
-                payload: serde_json::json!({"turn_id": "456", "type": "turn.started"}),
-            },
-        ];
+        let events = vec![CodexExecEvent {
+            event_type: "turn.started".into(),
+            payload: serde_json::json!({"turn_id": "456", "type": "turn.started"}),
+        }];
 
         let turn_id = extract_turn_id_from_exec_events(&events);
         assert_eq!(turn_id.as_deref(), Some("456"));
@@ -12135,14 +12185,11 @@ invalid json line
 
     #[test]
     fn test_extract_turn_id_from_exec_events_absent_is_none() {
-        let events = vec![
-            CodexExecEvent {
-                event_type: "thread.started".into(),
-                payload: serde_json::json!({"thread_id": "789", "type": "thread.started"}),
-            },
-        ];
+        let events = vec![CodexExecEvent {
+            event_type: "thread.started".into(),
+            payload: serde_json::json!({"thread_id": "789", "type": "thread.started"}),
+        }];
 
         assert_eq!(extract_turn_id_from_exec_events(&events), None);
     }
 }
-
