@@ -86,6 +86,7 @@ export interface AgentMember {
   description?: string;
   role?: string;
   provider?: string;
+  model?: string | null;
   status?: string;
   runtime_status?: string | null;
   runtime_id?: string | null;

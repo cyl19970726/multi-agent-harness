@@ -18,7 +18,6 @@ import {
   Link2,
   ListChecks,
   MessageSquare,
-  Plus,
   RefreshCw,
   Scale,
   Send,
@@ -26,7 +25,6 @@ import {
   ShieldCheck,
   Target,
   Terminal,
-  Users,
   User,
   UserPlus,
   Workflow,
@@ -50,7 +48,6 @@ import {
   DocSection,
   DocumentSurface,
   EmptyState,
-  MetaList,
   MonoId,
   Section,
   StatusDot,
@@ -96,10 +93,9 @@ import {
   type WorkbenchModel,
 } from "../model/readModel";
 import {
+  assignTask,
   closeMember,
   createAgent,
-  createGoal,
-  createTeam,
   deliverQueued,
   operatorMessage,
   reconcileSession,
@@ -415,47 +411,6 @@ function readinessFor(
   };
 }
 
-function LaneStack({
-  model,
-  onSelect,
-}: {
-  model: WorkbenchModel;
-  onSelect: (task: Task) => void;
-}) {
-  const lanes = model.lanes.filter((lane) => lane.tasks.length);
-  if (!lanes.length) {
-    return (
-      <EmptyState
-        icon={ClipboardList}
-        title="No tasks in scope"
-        description="Tasks for the active goal will appear here."
-      />
-    );
-  }
-  return (
-    <div className="space-y-3 p-3">
-      {lanes.map((lane) => (
-        <div key={lane.id}>
-          <div className="mb-1.5 flex items-center gap-2">
-            <StatusDot tone={taskTone(lane.id)} />
-            <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-              {lane.title}
-            </span>
-            <span className="font-mono text-[11px] text-muted-foreground/60">
-              {lane.tasks.length}
-            </span>
-          </div>
-          <div className="space-y-1.5">
-            {lane.tasks.map((task) => (
-              <TaskCard key={task.id} task={task} onClick={() => onSelect(task)} />
-            ))}
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-}
-
 function QueueList({
   items,
   empty,
@@ -557,279 +512,119 @@ function GoalCard({
 }
 
 /* ------------------------------------------------------------------ */
-/* Team workspace (flagship)                                          */
+/* Agents area (list)                                                  */
 /* ------------------------------------------------------------------ */
 
-export function TeamWorkspace({ model, onSelectionChange, actionsEnabled, onAction }: SurfaceProps) {
-  const team = model.selectedTeam;
-  const goal = model.selectedGoal;
-  const member = model.selectedMember;
-  // Lead band: the team Lead is the team owner (authoritative). Tie the active
-  // goal's owner to the Lead so it is visible whether goal ownership and team
-  // ownership are the same agent or have diverged.
-  const leadId = model.leadMemberId;
-  const goalOwnerIsLead = Boolean(goal?.owner_agent_id && goal.owner_agent_id === leadId);
-  return (
-    <div className="space-y-5">
-      <SurfaceHeader
-        kicker="Persistent AgentTeam"
-        title={team?.name ?? "No active team"}
-        description={
-          team?.description ??
-          "Standing members, current work, messages, decisions and warnings in one operating surface."
-        }
-        actions={
-          <>
-            <OperatorBar model={model} actionsEnabled={actionsEnabled} onAction={onAction} />
-            <ActionButton
-              enabled={actionsEnabled && Boolean(model.selectedTask)}
-              variant="secondary"
-              size="sm"
-              onClick={() =>
-                model.selectedTask &&
-                dispatch(onAction, requestReview(model.selectedTask.id))
-              }
-            >
-              <ShieldCheck className="size-3.5" />
-              Request review
-            </ActionButton>
-            <Button
-              variant="secondary"
-              size="sm"
-              disabled={!member}
-              onClick={() =>
-                member && onSelectionChange({ memberId: member.id, surface: "member" })
-              }
-            >
-              <Send className="size-3.5" />
-              Open conversation
-            </Button>
-          </>
-        }
-      />
-
-      <div className="rounded-lg border border-border bg-card">
-        <div className="flex flex-wrap items-center justify-between gap-4 p-4">
-          <div className="min-w-0">
-            <div className="flex items-center gap-1.5 text-[11px] uppercase tracking-wider text-muted-foreground">
-              <Target className="size-3.5 text-primary" /> Active Vision / Goal
-            </div>
-            <p className="mt-1 truncate text-[15px] font-semibold">
-              {goal?.title ?? "Missing active goal"}
-            </p>
-            <p className="mt-0.5 line-clamp-1 text-sm text-muted-foreground">
-              {goal?.objective}
-            </p>
-            <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-              {leadId && (
-                <button
-                  type="button"
-                  onClick={() => onSelectionChange({ memberId: leadId, surface: "member" })}
-                  className="inline-flex"
-                >
-                  <Badge tone="decision" className="gap-1">
-                    <Crown className="size-3" />
-                    Lead {memberName(model.members, leadId)}
-                  </Badge>
-                </button>
-              )}
-              {goal?.owner_agent_id && (
-                <Badge tone={goalOwnerIsLead ? "good" : "warn"} className="gap-1">
-                  Goal owner {memberName(model.members, goal.owner_agent_id)}
-                  {goalOwnerIsLead ? " · same as Lead" : " · differs from Lead"}
-                </Badge>
-              )}
-            </div>
-          </div>
-          <div className="flex shrink-0 items-center gap-2">
-            <ProofStat label="Tasks" value={model.goalTasks.length} tone="info" />
-            <ProofStat
-              label="Warnings"
-              value={model.warnings.length}
-              tone={model.warnings.length ? "warn" : "good"}
-            />
-            <ProofStat
-              label="Decisions"
-              value={model.decisionQueue.length}
-              tone={model.decisionQueue.length ? "decision" : "good"}
-            />
-          </div>
-        </div>
-      </div>
-
-      <div className="grid gap-4 xl:grid-cols-[1.35fr_1fr]">
-        <Section
-          kicker="Messages · evidence · decisions"
-          title="Canonical Activity"
-          action={<Badge tone="muted">{model.activity.length}</Badge>}
-          className="rise"
-        >
-          <div className="max-h-[28rem] overflow-y-auto">
-            {model.activity.length ? (
-              model.activity.map((item) => (
-                <TimelineRow
-                  key={item.id}
-                  kind={item.kind}
-                  title={item.title}
-                  meta={item.meta}
-                  body={item.body}
-                  tone={timelineTone(item.kind, item.severity)}
-                  onClick={() =>
-                    item.objectRef &&
-                    onSelectionChange({ taskId: item.objectRef, surface: "task" })
-                  }
-                />
-              ))
-            ) : (
-              <EmptyState
-                icon={Activity}
-                title="No activity yet"
-                description="Messages, proposals and decisions will stream here."
-              />
-            )}
-          </div>
-        </Section>
-
-        <Section
-          kicker="What can move now"
-          title="Current Work Pressure"
-          className="rise"
-        >
-          <LaneStack
-            model={model}
-            onSelect={(task) =>
-              onSelectionChange({ taskId: task.id, surface: "task" })
-            }
-          />
-        </Section>
-      </div>
-
-      <div className="grid gap-4 lg:grid-cols-2">
-        <Section
-          kicker="Reviews · waivers · missing proof"
-          title="Decision Queue"
-          className="rise"
-        >
-          {leadId && model.leadDecisionQueue.length > 0 && (
-            <div className="border-b border-border bg-card/40">
-              <div className="flex items-center gap-1.5 px-3.5 pt-2.5 pb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-                <Crown className="size-3 text-primary" />
-                Awaiting Lead decision
-                <span className="ml-auto font-mono normal-case text-muted-foreground/70">
-                  {memberName(model.members, leadId)}
-                </span>
-              </div>
-              <QueueList
-                items={model.leadDecisionQueue}
-                empty="Nothing awaiting the Lead"
-                onSelect={(ref) =>
-                  ref && onSelectionChange({ taskId: ref, surface: "task" })
-                }
-              />
-            </div>
-          )}
-          <QueueList
-            items={model.decisionQueue}
-            empty="No pending decisions"
-            onSelect={(ref) =>
-              ref && onSelectionChange({ taskId: ref, surface: "task" })
-            }
-          />
-        </Section>
-        <Section
-          kicker="Broken workflow invariants"
-          title="Warnings"
-          action={
-            <Badge tone={model.warnings.length ? "bad" : "good"}>
-              {model.warnings.length}
-            </Badge>
-          }
-          className="rise"
-        >
-          <WarningList
-            warnings={model.warnings.slice(0, 6)}
-            onSelect={(warning) =>
-              onSelectionChange(
-                warning.taskId
-                  ? { taskId: warning.taskId, surface: "warnings" }
-                  : { surface: "warnings" },
-              )
-            }
-          />
-        </Section>
-      </div>
-    </div>
-  );
+/** A small provider badge: codex / claude (or any provider) as a muted chip. */
+function ProviderBadge({ provider }: { provider?: string | null }) {
+  if (!provider) return <span className="text-muted-foreground">—</span>;
+  return <Badge tone="muted">{provider}</Badge>;
 }
-
-/* ------------------------------------------------------------------ */
-/* Operator forms (WP-iii): drive the team with ZERO CLI               */
-/* ------------------------------------------------------------------ */
 
 /**
- * The operator action bar in the Team workspace header: New team, New agent,
- * Brief the Lead. Each opens a dialog wired to the matching WP-ii create route
- * through the actions seam. Every write is gated on `actionsEnabled` (live);
- * offline the buttons render disabled with the standard tooltip.
+ * The Agents area: a clean Notion-style list of every agent in the snapshot
+ * (`snapshot.members`), de-centered from any Team. Columns: name, provider,
+ * status/runtime, current task. A "New agent" affordance opens a small dialog
+ * (POST /v1/agents). Selecting a row opens the agent detail page (`?agent=<id>`).
+ * Whitespace-led, muted labels, no tile chrome.
  */
-function OperatorBar({
-  model,
-  actionsEnabled,
-  onAction,
-}: {
-  model: WorkbenchModel;
-  actionsEnabled?: boolean;
-  onAction?: (path: string, body?: unknown) => void;
-}) {
-  const [dialog, setDialog] = useState<null | "team" | "agent" | "goal">(null);
+export function AgentsList({ model, onSelectionChange, actionsEnabled, onAction }: SurfaceProps) {
+  const [newAgentOpen, setNewAgentOpen] = useState(false);
+  const agents = model.members;
   const live = Boolean(actionsEnabled);
   return (
-    <>
-      <OperatorActionButton enabled={live} onClick={() => setDialog("team")}>
-        <Plus className="size-3.5" />
-        New team
-      </OperatorActionButton>
-      <OperatorActionButton
-        enabled={live}
-        variant="secondary"
-        onClick={() => setDialog("agent")}
-      >
-        <UserPlus className="size-3.5" />
-        New agent
-      </OperatorActionButton>
-      <OperatorActionButton
-        enabled={live}
-        variant="secondary"
-        onClick={() => setDialog("goal")}
-      >
-        <Target className="size-3.5" />
-        Brief the Lead
-      </OperatorActionButton>
+    <DocumentSurface className="max-w-[940px]">
+      <header className="flex flex-wrap items-end justify-between gap-3">
+        <div className="space-y-1">
+          <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+            <Bot className="size-3.5" /> Agents
+          </div>
+          <h1 className="text-2xl font-semibold tracking-tight text-foreground">
+            Agents
+          </h1>
+          <p className="text-sm text-muted-foreground">
+            Every agent in the workspace. Open one to message it, inspect its
+            runtime, and assign work.
+          </p>
+        </div>
+        <OperatorActionButton enabled={live} onClick={() => setNewAgentOpen(true)}>
+          <UserPlus className="size-3.5" />
+          New agent
+        </OperatorActionButton>
+      </header>
 
-      <NewTeamForm
-        open={dialog === "team"}
-        model={model}
-        actionsEnabled={live}
-        onAction={onAction}
-        onClose={() => setDialog(null)}
-      />
+      <DocSection label={`${agents.length} ${agents.length === 1 ? "agent" : "agents"}`}>
+        {agents.length ? (
+          <div className="overflow-hidden">
+            <div className="grid grid-cols-[minmax(0,2fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1.5fr)] gap-3 border-b border-border px-2 pb-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+              <span>Name</span>
+              <span>Provider</span>
+              <span>Status</span>
+              <span>Current task</span>
+            </div>
+            <div>
+              {agents.map((agent) => {
+                const status = agent.runtime_status ?? agent.status ?? "unknown";
+                return (
+                  <button
+                    key={agent.id}
+                    type="button"
+                    onClick={() => onSelectionChange({ surface: "agents", memberId: agent.id })}
+                    className="grid w-full grid-cols-[minmax(0,2fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1.5fr)] items-center gap-3 border-b border-border/60 px-2 py-2.5 text-left transition-colors last:border-b-0 hover:bg-accent/40"
+                  >
+                    <span className="flex min-w-0 items-center gap-2.5">
+                      <Avatar
+                        name={agent.name ?? agent.id}
+                        tone={deliveryHealthTone(agent)}
+                      />
+                      <span className="min-w-0">
+                        <span className="block truncate text-[13px] font-medium text-foreground">
+                          {agent.name ?? agent.id}
+                        </span>
+                        <span className="block truncate text-[11px] text-muted-foreground">
+                          {agent.role ?? "Member"}
+                        </span>
+                      </span>
+                    </span>
+                    <span className="min-w-0">
+                      <ProviderBadge provider={agent.provider} />
+                    </span>
+                    <span className="flex min-w-0 items-center gap-1.5 text-[12px] text-foreground">
+                      <StatusDot tone={memberTone(status)} />
+                      <span className="truncate">{status}</span>
+                    </span>
+                    <span className="min-w-0 truncate text-[12px] text-muted-foreground">
+                      {agent.current_task_id
+                        ? taskTitle(model.tasks, agent.current_task_id)
+                        : "—"}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        ) : (
+          <EmptyState
+            icon={Bot}
+            title="No agents yet"
+            description="Create an agent to start delegating work."
+          />
+        )}
+      </DocSection>
+
       <NewAgentForm
-        open={dialog === "agent"}
-        model={model}
+        open={newAgentOpen}
         actionsEnabled={live}
         onAction={onAction}
-        onClose={() => setDialog(null)}
+        onClose={() => setNewAgentOpen(false)}
       />
-      <BriefLeadForm
-        open={dialog === "goal"}
-        model={model}
-        actionsEnabled={live}
-        onAction={onAction}
-        onClose={() => setDialog(null)}
-      />
-    </>
+    </DocumentSurface>
   );
 }
+
+/* ------------------------------------------------------------------ */
+/* Operator forms: create an agent with ZERO CLI                       */
+/* ------------------------------------------------------------------ */
 
 /** Header action button that stays honest about read-only mode. */
 function OperatorActionButton({
@@ -864,148 +659,19 @@ function OperatorActionButton({
   );
 }
 
-/** A member <select> for picking an owner/Lead, listing every known member. */
-function MemberSelect({
-  id,
-  value,
-  members,
-  onChange,
-  placeholder = "Select a member…",
-}: {
-  id: string;
-  value: string;
-  members: AgentMember[];
-  onChange: (value: string) => void;
-  placeholder?: string;
-}) {
-  return (
-    <Select id={id} value={value} onChange={(event) => onChange(event.target.value)}>
-      <option value="">{placeholder}</option>
-      {members.map((member) => (
-        <option key={member.id} value={member.id}>
-          {member.name ?? member.id}
-          {member.role ? ` · ${member.role}` : ""}
-        </option>
-      ))}
-    </Select>
-  );
-}
-
-/**
- * NEW TEAM (POST /v1/teams). Requires name, description and an owner (the
- * Lead/owner agent). On submit the team is created; it appears via the next
- * snapshot refresh / SSE frame.
- */
-function NewTeamForm({
-  open,
-  model,
-  actionsEnabled,
-  onAction,
-  onClose,
-}: {
-  open: boolean;
-  model: WorkbenchModel;
-  actionsEnabled: boolean;
-  onAction?: (path: string, body?: unknown) => void;
-  onClose: () => void;
-}) {
-  const [name, setName] = useState("");
-  const [description, setDescription] = useState("");
-  const [owner, setOwner] = useState("");
-
-  useEffect(() => {
-    if (open) {
-      setName("");
-      setDescription("");
-      setOwner(model.leadMemberId ?? model.selectedTeam?.owner_agent_id ?? "");
-    }
-  }, [open, model.leadMemberId, model.selectedTeam?.owner_agent_id]);
-
-  const canSubmit = Boolean(name.trim() && description.trim() && owner.trim());
-  function submit() {
-    if (!canSubmit || !actionsEnabled) return;
-    dispatch(
-      onAction,
-      createTeam({
-        name: name.trim(),
-        description: description.trim(),
-        owner: owner.trim(),
-      }),
-    );
-    onClose();
-  }
-
-  return (
-    <Dialog
-      open={open}
-      title="New team"
-      description="Stand up a persistent AgentTeam. POST /v1/teams."
-      onClose={onClose}
-    >
-      <form
-        className="space-y-3"
-        onSubmit={(event) => {
-          event.preventDefault();
-          submit();
-        }}
-      >
-        <Field label="Name" required>
-          {(id) => (
-            <TextInput
-              id={id}
-              value={name}
-              onChange={(event) => setName(event.target.value)}
-              placeholder="e.g. Polymarket HFT"
-            />
-          )}
-        </Field>
-        <Field label="Description" required>
-          {(id) => (
-            <TextArea
-              id={id}
-              value={description}
-              onChange={(event) => setDescription(event.target.value)}
-              placeholder="What this team owns."
-            />
-          )}
-        </Field>
-        <Field label="Owner (Lead)" required hint="The team Lead / owner agent.">
-          {(id) => (
-            <MemberSelect
-              id={id}
-              value={owner}
-              members={model.members}
-              onChange={setOwner}
-              placeholder="Select the Lead…"
-            />
-          )}
-        </Field>
-        <DialogFooter
-          submitLabel="Create team"
-          actionsEnabled={actionsEnabled}
-          canSubmit={canSubmit}
-          onCancel={onClose}
-          onSubmit={submit}
-        />
-      </form>
-    </Dialog>
-  );
-}
-
 /**
  * NEW AGENT (POST /v1/agents). Requires name + role; provider (codex|claude),
- * description and skills are optional. The new member joins the selected team
- * and appears in the roster on the next snapshot.
+ * model, description and skills are optional. The new agent appears in the
+ * Agents list on the next snapshot. De-centered: an agent does not require a
+ * team, so this form never asks for one.
  */
 function NewAgentForm({
   open,
-  model,
   actionsEnabled,
   onAction,
   onClose,
 }: {
   open: boolean;
-  model: WorkbenchModel;
   actionsEnabled: boolean;
   onAction?: (path: string, body?: unknown) => void;
   onClose: () => void;
@@ -1013,6 +679,7 @@ function NewAgentForm({
   const [name, setName] = useState("");
   const [role, setRole] = useState("");
   const [provider, setProvider] = useState("");
+  const [modelName, setModelName] = useState("");
   const [description, setDescription] = useState("");
   const [skills, setSkills] = useState("");
 
@@ -1021,13 +688,12 @@ function NewAgentForm({
       setName("");
       setRole("");
       setProvider("");
+      setModelName("");
       setDescription("");
       setSkills("");
     }
   }, [open]);
 
-  const teamId = model.selectedTeam?.id;
-  const teamName = model.selectedTeam?.name ?? teamId;
   const canSubmit = Boolean(name.trim() && role.trim());
   function submit() {
     if (!canSubmit || !actionsEnabled) return;
@@ -1037,9 +703,9 @@ function NewAgentForm({
         name: name.trim(),
         role: role.trim(),
         provider: provider || undefined,
+        model: modelName.trim() || undefined,
         description: description.trim() || undefined,
         skills: parseList(skills),
-        teamIds: teamId ? [teamId] : undefined,
       }),
     );
     onClose();
@@ -1049,9 +715,7 @@ function NewAgentForm({
     <Dialog
       open={open}
       title="New agent"
-      description={
-        teamName ? `Add an Agent Member to ${teamName}. POST /v1/agents.` : "Add an Agent Member. POST /v1/agents."
-      }
+      description="Create an agent. POST /v1/agents."
       onClose={onClose}
     >
       <form
@@ -1090,6 +754,16 @@ function NewAgentForm({
             </Select>
           )}
         </Field>
+        <Field label="Model" hint="Optional provider model id (e.g. gpt-5-codex, claude-opus).">
+          {(id) => (
+            <TextInput
+              id={id}
+              value={modelName}
+              onChange={(event) => setModelName(event.target.value)}
+              placeholder="provider default"
+            />
+          )}
+        </Field>
         <Field label="Description">
           {(id) => (
             <TextArea
@@ -1112,146 +786,6 @@ function NewAgentForm({
         </Field>
         <DialogFooter
           submitLabel="Create agent"
-          actionsEnabled={actionsEnabled}
-          canSubmit={canSubmit}
-          onCancel={onClose}
-          onSubmit={submit}
-        />
-      </form>
-    </Dialog>
-  );
-}
-
-/**
- * BRIEF THE LEAD / SET GOAL. Creates a Goal owned by the Lead (POST /v1/goals)
- * AND — when "also message the Lead" is on — emits an operator Message
- * (kind=task, sender_kind=operator, from=operator, to=Lead) so the objective
- * shows BOTH as durable Goal state and in the Lead's conversation.
- */
-function BriefLeadForm({
-  open,
-  model,
-  actionsEnabled,
-  onAction,
-  onClose,
-}: {
-  open: boolean;
-  model: WorkbenchModel;
-  actionsEnabled: boolean;
-  onAction?: (path: string, body?: unknown) => void;
-  onClose: () => void;
-}) {
-  const [title, setTitle] = useState("");
-  const [objective, setObjective] = useState("");
-  const [owner, setOwner] = useState("");
-  const [success, setSuccess] = useState("");
-  const [alsoMessage, setAlsoMessage] = useState(true);
-
-  useEffect(() => {
-    if (open) {
-      setTitle("");
-      setObjective("");
-      setOwner(model.leadMemberId ?? model.selectedTeam?.owner_agent_id ?? "");
-      setSuccess("");
-      setAlsoMessage(true);
-    }
-  }, [open, model.leadMemberId, model.selectedTeam?.owner_agent_id]);
-
-  const canSubmit = Boolean(title.trim() && objective.trim() && owner.trim());
-  function submit() {
-    if (!canSubmit || !actionsEnabled) return;
-    const trimmedTitle = title.trim();
-    const trimmedObjective = objective.trim();
-    // 1) Durable Goal state, owned by the Lead.
-    dispatch(
-      onAction,
-      createGoal({
-        title: trimmedTitle,
-        objective: trimmedObjective,
-        owner: owner.trim(),
-        success: parseList(success),
-      }),
-    );
-    // 2) Optional operator brief into the Lead's conversation (kind=task).
-    if (alsoMessage) {
-      dispatch(
-        onAction,
-        operatorMessage({
-          to: owner.trim(),
-          kind: "task",
-          content: `Goal: ${trimmedTitle}\n\n${trimmedObjective}`,
-        }),
-      );
-    }
-    onClose();
-  }
-
-  return (
-    <Dialog
-      open={open}
-      title="Brief the Lead"
-      description="Set a Goal for the Lead. POST /v1/goals (+ optional operator message)."
-      onClose={onClose}
-    >
-      <form
-        className="space-y-3"
-        onSubmit={(event) => {
-          event.preventDefault();
-          submit();
-        }}
-      >
-        <Field label="Goal title" required>
-          {(id) => (
-            <TextInput
-              id={id}
-              value={title}
-              onChange={(event) => setTitle(event.target.value)}
-              placeholder="e.g. Ship the operator console"
-            />
-          )}
-        </Field>
-        <Field label="Objective" required>
-          {(id) => (
-            <TextArea
-              id={id}
-              value={objective}
-              onChange={(event) => setObjective(event.target.value)}
-              placeholder="What success looks like, in prose."
-            />
-          )}
-        </Field>
-        <Field label="Lead (owner)" required hint="The Lead who owns this goal.">
-          {(id) => (
-            <MemberSelect
-              id={id}
-              value={owner}
-              members={model.members}
-              onChange={setOwner}
-              placeholder="Select the Lead…"
-            />
-          )}
-        </Field>
-        <Field label="Success criteria" hint="One per line or comma separated (optional).">
-          {(id) => (
-            <TextArea
-              id={id}
-              value={success}
-              onChange={(event) => setSuccess(event.target.value)}
-              placeholder={"e.g. gate green\noperator can drive with zero CLI"}
-            />
-          )}
-        </Field>
-        <label className="flex items-center gap-2 text-[12px] text-foreground">
-          <input
-            type="checkbox"
-            checked={alsoMessage}
-            onChange={(event) => setAlsoMessage(event.target.checked)}
-            className="size-3.5 rounded border-border accent-primary"
-          />
-          Also message the Lead with this brief (operator → Lead)
-        </label>
-        <DialogFooter
-          submitLabel="Brief the Lead"
           actionsEnabled={actionsEnabled}
           canSubmit={canSubmit}
           onCancel={onClose}
@@ -2774,131 +2308,122 @@ export function GraphKanban({
 }
 
 /* ------------------------------------------------------------------ */
-/* Member workbench                                                   */
+/* Agent detail (Notion document)                                     */
 /* ------------------------------------------------------------------ */
 
 /**
- * Role-grouped member picker. The team rail is hidden below `lg`, so the Member
- * surface ships its own picker to keep member selection working at all widths.
+ * One-line summary of an agent's runtime health, for the properties table:
+ * "delivery pass · process alive" style. Falls back to the coarse status when
+ * no health object is present.
  */
-function MemberPicker({
-  model,
-  onSelectionChange,
-}: SurfaceProps) {
-  const activeId = model.selectedMember?.id;
-  if (!model.members.length) {
-    return <EmptyState icon={Bot} title="No members in this team" />;
-  }
-  return (
-    <Section kicker="Pick a member" title="Team members" className="rise">
-      <div className="space-y-4 p-3">
-        {model.roleGroups.map((group) => (
-          <div key={group.role}>
-            <p className="px-1 pb-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-              {group.role}
-            </p>
-            <div className="grid gap-1.5 sm:grid-cols-2">
-              {group.members.map((m) => {
-                const active = activeId === m.id;
-                const isLead = m.id === model.leadMemberId;
-                const queue = (m.inbox_count ?? 0) + (m.queued_count ?? 0);
-                return (
-                  <button
-                    key={m.id}
-                    type="button"
-                    onClick={() =>
-                      onSelectionChange({
-                        memberId: m.id,
-                        taskId: m.current_task_id ?? undefined,
-                        surface: "member",
-                      })
-                    }
-                    className={cn(
-                      "flex w-full items-center gap-2.5 rounded-md border border-transparent px-2 py-1.5 text-left transition-colors hover:bg-accent/50",
-                      active && "border-border bg-accent/60",
-                    )}
-                  >
-                    <Avatar
-                      name={m.name ?? m.id}
-                      tone={memberTone(m.runtime_status ?? m.status)}
-                    />
-                    <span className="min-w-0 flex-1">
-                      <span className="flex items-center gap-1.5">
-                        <span className="truncate text-[13px] font-medium">
-                          {m.name ?? m.id}
-                        </span>
-                        {isLead && (
-                          <Badge tone="decision" className="shrink-0 gap-0.5 px-1 py-0">
-                            <Crown className="size-2.5" />
-                            Lead / Owner
-                          </Badge>
-                        )}
-                      </span>
-                      <span className="block truncate text-[11px] text-muted-foreground">
-                        {m.runtime_status ?? m.status ?? "unknown"}
-                        <span className="mx-1 text-border">·</span>
-                        {taskTitle(model.tasks, m.current_task_id)}
-                      </span>
-                    </span>
-                    {queue > 0 && (
-                      <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
-                        {queue}
-                      </span>
-                    )}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-        ))}
-      </div>
-    </Section>
-  );
+function runtimeHealthSummary(member: AgentMember): string {
+  const health = member.runtime_health;
+  if (!health) return member.runtime_status ?? member.status ?? "unknown";
+  const parts: string[] = [];
+  parts.push(health.process_alive ? "process alive" : "process down");
+  const delivery = (health.delivery_probe ?? "").trim();
+  if (delivery) parts.push(`delivery ${delivery.toLowerCase().startsWith("pass") ? "pass" : delivery.toLowerCase().startsWith("fail") ? "fail" : "unknown"}`);
+  return parts.join(" · ");
 }
 
 /**
- * AgentMember surface, redesigned as a Claude/Codex DESKTOP-APP two-pane layout:
- *  - LEFT (flex-1): the conversation + action stream, grouped by provider
- *    session, with a composer pinned at the bottom.
- *  - RIGHT (member-owned rail, ~340px): current task, inbox/outbox tiles,
- *    runtime health + sessions + child threads, and identity/policy.
- *  - HEADER band: delivery-toned avatar, name, role + provider (neutral) badges,
- *    status, and gated overflow actions.
+ * The AGENT DETAIL page, rendered as a light Notion document (the same atoms as
+ * the Goal/Task documents): identity header, a properties table, an assignable
+ * current task, the conversation (real POST /v1/messages composer), and the
+ * runtime data rendered as document sections rather than dense tiles.
  *
- * This member view OWNS its right rail; the global Inspector is suppressed for
- * the member surface in WorkbenchShell so there is no duplicate rail.
+ * URL-addressable via `?agent=<id>`. Owns its own layout, so the global
+ * Inspector is suppressed for the Agents area in WorkbenchShell.
  */
-export function MemberWorkbench({ model, onSelectionChange, actionsEnabled, onAction }: SurfaceProps) {
+export function AgentDetail({ model, onSelectionChange, actionsEnabled, onAction }: SurfaceProps) {
   const member = model.selectedMember;
   if (!member) {
     return (
-      <div className="space-y-5">
-        <SurfaceHeader
-          kicker="AgentMember workbench"
-          title="Select a member"
-          description="Pick a durable AgentMember to open its conversation, runtime and current work."
-        />
-        <MemberPicker model={model} onSelectionChange={onSelectionChange} />
-      </div>
+      <EmptyState
+        icon={Bot}
+        title="No agent selected"
+        description="Pick an agent from the Agents list."
+      />
     );
   }
-
+  const status = member.runtime_status ?? member.status ?? "unknown";
+  const currentTask = member.current_task_id
+    ? model.tasks.find((task) => task.id === member.current_task_id)
+    : undefined;
   return (
-    <div className="space-y-4">
-      <MemberHeaderBand
-        model={model}
-        member={member}
-        actionsEnabled={actionsEnabled}
-        onAction={onAction}
-      />
+    <DocumentSurface>
+      <header className="space-y-3">
+        <button
+          type="button"
+          onClick={() => onSelectionChange({ surface: "agents", memberId: undefined })}
+          className="inline-flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground transition-colors hover:text-foreground"
+        >
+          <Bot className="size-3.5" /> Agents
+        </button>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="flex min-w-0 items-center gap-3">
+            <Avatar name={member.name ?? member.id} tone={deliveryHealthTone(member)} size="lg" />
+            <div className="min-w-0">
+              <h1 className="truncate text-2xl font-semibold tracking-tight text-foreground">
+                {member.name ?? member.id}
+              </h1>
+              <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                <Badge tone={memberTone(status)}>{status}</Badge>
+                <ProviderBadge provider={member.provider} />
+                <MonoId>{member.id}</MonoId>
+              </div>
+            </div>
+          </div>
+          <div className="flex shrink-0 flex-wrap items-center gap-2 pt-1">
+            <MemberOverflowActions
+              member={member}
+              sessions={model.sessionsByMember}
+              inbox={model.inboxMessages}
+              actionsEnabled={actionsEnabled}
+              onAction={onAction}
+            />
+          </div>
+        </div>
+        <DocProperties
+          items={[
+            { label: "Provider", value: <ProviderBadge provider={member.provider} /> },
+            { label: "Model", value: member.model ?? "—" },
+            { label: "Status", value: status },
+            { label: "Runtime health", value: runtimeHealthSummary(member) },
+            {
+              label: "Current task",
+              value: member.current_task_id ? (
+                <button
+                  type="button"
+                  onClick={() =>
+                    onSelectionChange({ surface: "task", taskId: member.current_task_id ?? undefined })
+                  }
+                  className="text-left text-foreground hover:text-primary"
+                >
+                  {taskTitle(model.tasks, member.current_task_id)}
+                </button>
+              ) : (
+                "—"
+              ),
+            },
+            { label: "Prompt", value: member.prompt_ref ? <MonoId>{member.prompt_ref}</MonoId> : "—" },
+            { label: "Skills", value: member.skill_refs?.join(", ") || "—" },
+          ]}
+        />
+      </header>
 
-      {/* Picker stays available so members can be switched without the lg-only rail. */}
-      <div className="lg:hidden">
-        <MemberPicker model={model} onSelectionChange={onSelectionChange} />
-      </div>
+      <DocSection label="Current task">
+        <AgentCurrentTask
+          model={model}
+          member={member}
+          currentTask={currentTask}
+          actionsEnabled={actionsEnabled}
+          onAction={onAction}
+          onSelectionChange={onSelectionChange}
+        />
+      </DocSection>
 
-      {/* Two-pane desktop-app body: conversation+action stream | member rail. */}
-      <div className="grid min-h-0 gap-4 xl:grid-cols-[minmax(0,1fr)_22rem]">
+      <DocSection label="Conversation">
         <ConversationStream
           model={model}
           member={member}
@@ -2906,60 +2431,164 @@ export function MemberWorkbench({ model, onSelectionChange, actionsEnabled, onAc
           onAction={onAction}
           onSelectionChange={onSelectionChange}
         />
-        <MemberRail model={model} member={member} onSelectionChange={onSelectionChange} />
-      </div>
+      </DocSection>
+
+      <DocSection label="Runtime">
+        <AgentRuntimeSection model={model} member={member} />
+      </DocSection>
+    </DocumentSurface>
+  );
+}
+
+/**
+ * Current-task block on the agent detail: shows the task (when assigned) plus a
+ * minimal Notion-style "assign" affordance — a picker of unassigned tasks wired
+ * to POST /v1/tasks/{id}/assign. The heavy task management stays on the Work
+ * board; this is just a lightweight assign from the agent's own page.
+ */
+function AgentCurrentTask({
+  model,
+  member,
+  currentTask,
+  actionsEnabled,
+  onAction,
+  onSelectionChange,
+}: {
+  model: WorkbenchModel;
+  member: AgentMember;
+  currentTask?: Task;
+  actionsEnabled?: boolean;
+  onAction?: (path: string, body?: unknown) => void;
+  onSelectionChange: (selection: Partial<SelectionState>) => void;
+}) {
+  // Assignable = no assignee yet (assignment truth is assignee_agent_id), not
+  // already done/archived.
+  const assignable = model.tasks.filter(
+    (task) =>
+      !task.assignee_agent_id &&
+      task.status !== "done" &&
+      task.status !== "archived",
+  );
+  return (
+    <div className="space-y-3">
+      {currentTask ? (
+        <button
+          type="button"
+          onClick={() => onSelectionChange({ surface: "task", taskId: currentTask.id })}
+          className="block w-full rounded-lg border border-border bg-card p-3 text-left transition-colors hover:border-input hover:bg-accent/40"
+        >
+          <div className="flex items-start justify-between gap-2">
+            <span className="line-clamp-2 text-[13px] font-medium leading-snug">
+              {currentTask.title ?? currentTask.id}
+            </span>
+            <Badge tone={taskTone(currentTask.status)}>{currentTask.status}</Badge>
+          </div>
+          {currentTask.branch_ref && (
+            <span className="mt-1.5 inline-flex items-center gap-1 text-[11px] text-muted-foreground">
+              <GitBranch className="size-3" />
+              <MonoId>{shortBranch(currentTask.branch_ref)}</MonoId>
+            </span>
+          )}
+        </button>
+      ) : (
+        <p className="text-[13px] text-muted-foreground">No task assigned.</p>
+      )}
+      <AssignTaskControl
+        agent={member}
+        assignable={assignable}
+        actionsEnabled={actionsEnabled}
+        onAction={onAction}
+      />
     </div>
   );
 }
 
 /**
- * Header band: delivery-toned avatar, name, role + provider (neutral) + status
- * badges, and the overflow actions (deliver / retry / reconcile / close), all
- * gated on `actionsEnabled`. Provider-neutral: the provider only ever appears as
- * a muted badge.
+ * A minimal assign affordance: pick an unassigned task and assign it to this
+ * agent (POST /v1/tasks/{id}/assign). Gated on `actionsEnabled`; disabled with
+ * the standard tooltip offline or when there is nothing to assign.
  */
-function MemberHeaderBand({
-  model,
-  member,
+function AssignTaskControl({
+  agent,
+  assignable,
   actionsEnabled,
   onAction,
 }: {
-  model: WorkbenchModel;
-  member: AgentMember;
+  agent: AgentMember;
+  assignable: Task[];
   actionsEnabled?: boolean;
   onAction?: (path: string, body?: unknown) => void;
 }) {
-  // Avatar/identity is toned by DELIVERY health (not mere process presence): a
-  // live process whose delivery is unconfirmed reads amber, never green.
-  const tone = deliveryHealthTone(member);
+  const [taskId, setTaskId] = useState("");
+  const live = Boolean(actionsEnabled);
+  const canAssign = live && Boolean(taskId);
+  function assign() {
+    if (!canAssign) return;
+    dispatch(onAction, assignTask(taskId, agent.id));
+    setTaskId("");
+  }
   return (
-    <div className="rise flex flex-wrap items-center gap-4 rounded-lg border border-border bg-card px-4 py-3">
-      <Avatar name={member.name ?? member.id} tone={tone} size="lg" />
-      <div className="min-w-0">
-        <p className="text-[11px] uppercase tracking-wider text-muted-foreground">
-          AgentMember
-          <span className="mx-1 text-border">·</span>
-          <MonoId>members/{member.id}</MonoId>
+    <div className="flex flex-wrap items-center gap-2">
+      <Select
+        aria-label="Pick an unassigned task"
+        value={taskId}
+        disabled={!live || assignable.length === 0}
+        onChange={(event) => setTaskId(event.target.value)}
+        className="h-9 max-w-xs flex-1"
+      >
+        <option value="">
+          {assignable.length ? "Assign an unassigned task…" : "No unassigned tasks"}
+        </option>
+        {assignable.map((task) => (
+          <option key={task.id} value={task.id}>
+            {task.title ?? task.id}
+          </option>
+        ))}
+      </Select>
+      <ActionButton
+        enabled={canAssign}
+        size="sm"
+        variant="secondary"
+        onClick={assign}
+      >
+        <ClipboardList className="size-3.5" />
+        Assign to {agent.name ?? agent.id}
+      </ActionButton>
+    </div>
+  );
+}
+
+/**
+ * Runtime data rendered Notion-style: the four-layer health rows, provider
+ * sessions and provider-native child threads, as borderless document blocks
+ * (DocSection rows) rather than the old dense StatusDot tile rail. The data is
+ * unchanged — only the skin.
+ */
+function AgentRuntimeSection({ model, member }: { model: WorkbenchModel; member: AgentMember }) {
+  const sessionCount = model.sessionsByMember.length;
+  const threadCount = member.provider_child_thread_count ?? model.childThreadsByMember.length;
+  return (
+    <div className="space-y-5">
+      <div className="rounded-lg border border-border bg-card">
+        <RuntimeHealthPanel member={member} />
+      </div>
+
+      <div>
+        <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+          {sessionCount} provider {sessionCount === 1 ? "session" : "sessions"}
         </p>
-        <h1 className="truncate text-lg font-semibold tracking-tight">
-          {member.name ?? member.id}
-        </h1>
-        <div className="mt-1 flex flex-wrap items-center gap-1.5">
-          <Badge tone={memberTone(member.runtime_status ?? member.status)}>
-            {member.runtime_status ?? member.status ?? "unknown"}
-          </Badge>
-          <Badge tone="info">{member.role ?? "Member"}</Badge>
-          {member.provider && <Badge tone="muted">{member.provider}</Badge>}
+        <div className="overflow-hidden rounded-lg border border-border bg-card">
+          <SessionList sessions={model.sessionsByMember} />
         </div>
       </div>
-      <div className="ml-auto flex flex-wrap items-center gap-2">
-        <MemberOverflowActions
-          member={member}
-          sessions={model.sessionsByMember}
-          inbox={model.inboxMessages}
-          actionsEnabled={actionsEnabled}
-          onAction={onAction}
-        />
+
+      <div>
+        <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+          {threadCount} child {threadCount === 1 ? "thread" : "threads"}
+        </p>
+        <div className="overflow-hidden rounded-lg border border-border bg-card">
+          <ChildThreadList threads={model.childThreadsByMember} parent={member} />
+        </div>
       </div>
     </div>
   );
@@ -2991,16 +2620,11 @@ function ConversationStream({
     model.sessionsByMember,
   );
   return (
-    <section className="rise flex min-h-[36rem] min-w-0 flex-col overflow-hidden rounded-lg border border-border bg-card">
+    <section className="flex min-h-[34rem] min-w-0 flex-col overflow-hidden rounded-lg border border-border bg-card">
       <header className="flex items-center justify-between gap-2 border-b border-border px-3.5 py-2.5">
-        <div className="min-w-0">
-          <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-            conversation · sessions · actions
-          </p>
-          <h2 className="truncate text-[13px] font-semibold text-foreground">
-            Conversation &amp; action stream
-          </h2>
-        </div>
+        <span className="text-[11px] text-muted-foreground">
+          Messages, sessions and actions, oldest first
+        </span>
         <Badge tone="muted">{model.selectedMemberTimeline.length} events</Badge>
       </header>
 
@@ -3375,195 +2999,6 @@ function Composer({
           </Tooltip>
         )}
       </div>
-    </div>
-  );
-}
-
-/**
- * RIGHT pane: the member-owned rail. Carries current task (title / status /
- * branch / acceptance + current proposal), distinct inbox/outbox count tiles,
- * the four-layer runtime panel (+ checked_at + sessions + child threads, in a
- * collapsible block), and the identity/policy block (prompt / skills /
- * permission profile / team membership). Provider-neutral throughout. The Lead
- * responsibilities lane and Lead chip are intentionally NOT here.
- */
-function MemberRail({
-  model,
-  member,
-  onSelectionChange,
-}: {
-  model: WorkbenchModel;
-  member: AgentMember;
-  onSelectionChange: (selection: Partial<SelectionState>) => void;
-}) {
-  const currentTask = member.current_task_id
-    ? model.tasks.find((task) => task.id === member.current_task_id)
-    : undefined;
-  const currentProposal = member.current_proposal_id
-    ? model.proposals.find((proposal) => proposal.id === member.current_proposal_id)
-    : undefined;
-  return (
-    <aside aria-label="Member rail" className="min-w-0 space-y-4">
-      <Section kicker="Current work" title="Current task" className="rise">
-        <div className="space-y-2 p-3">
-          <button
-            type="button"
-            onClick={() =>
-              member.current_task_id &&
-              onSelectionChange({ surface: "task", taskId: member.current_task_id })
-            }
-            className="block w-full text-left text-[13px] font-medium text-foreground hover:text-primary"
-          >
-            {taskTitle(model.tasks, member.current_task_id)}
-          </button>
-          {currentTask && (
-            <div className="flex flex-wrap items-center gap-1.5">
-              <Badge tone={taskTone(currentTask.status)}>{currentTask.status}</Badge>
-              {currentTask.branch_ref && (
-                <span className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
-                  <GitBranch className="size-3" />
-                  <MonoId>{shortBranch(currentTask.branch_ref)}</MonoId>
-                </span>
-              )}
-            </div>
-          )}
-          {currentTask?.acceptance_criteria?.length ? (
-            <div className="rounded-md border border-border bg-background/40 px-2.5 py-1.5">
-              <p className="text-[10px] uppercase tracking-wider text-muted-foreground">
-                Acceptance
-              </p>
-              <ul className="mt-1 space-y-0.5">
-                {currentTask.acceptance_criteria.slice(0, 4).map((criterion, index) => (
-                  <li key={index} className="flex items-start gap-1.5 text-[11px] text-muted-foreground">
-                    <CheckCircle2 className="mt-0.5 size-3 shrink-0 text-status-good" />
-                    <span className="min-w-0">{criterion}</span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          ) : null}
-          {currentProposal ? (
-            <div className="rounded-md border border-border bg-background/40 px-2.5 py-1.5">
-              <p className="text-[10px] uppercase tracking-wider text-muted-foreground">
-                Current proposal
-              </p>
-              <p className="truncate text-xs font-medium">{currentProposal.title ?? currentProposal.id}</p>
-              <Badge tone="decision" className="mt-1">{currentProposal.status ?? "draft"}</Badge>
-            </div>
-          ) : member.current_proposal_id ? (
-            <p className="text-[11px] text-muted-foreground">
-              Proposal <MonoId>{member.current_proposal_id}</MonoId>
-            </p>
-          ) : null}
-        </div>
-      </Section>
-
-      {/* Inbox / Outbox as distinct, countable tiles */}
-      <div className="grid grid-cols-2 gap-2">
-        <CountTile label="Inbox" value={model.inboxMessages.length} icon={Inbox} />
-        <CountTile label="Outbox" value={model.outboxMessages.length} icon={Send} />
-      </div>
-
-      <RuntimeRail model={model} member={member} />
-
-      <Section kicker="Identity · policy" title="Prompt · skills · profile" className="rise">
-        <div className="p-4">
-          <MetaList
-            items={[
-              { label: "Prompt", value: member.prompt_ref ? <MonoId>{member.prompt_ref}</MonoId> : "—" },
-              { label: "Skills", value: member.skill_refs?.join(", ") || "—" },
-              {
-                label: "Profile",
-                value: member.provider_agent_role ? (
-                  <Badge tone="muted">{member.provider_agent_role}</Badge>
-                ) : (
-                  "—"
-                ),
-              },
-              {
-                label: "Teams",
-                value: member.team_ids?.length ? (
-                  <span className="flex flex-wrap gap-1">
-                    {member.team_ids.map((id) => (
-                      <Badge key={id} tone="muted" className="gap-1">
-                        <Users className="size-3" />
-                        {id}
-                      </Badge>
-                    ))}
-                  </span>
-                ) : (
-                  "—"
-                ),
-              },
-            ]}
-          />
-        </div>
-      </Section>
-    </aside>
-  );
-}
-
-/**
- * Runtime block in the member rail: the four-layer RuntimeHealthPanel
- * (process / endpoint / protocol / delivery + checked_at), the provider session
- * list and the child-thread list, collapsible to keep the rail compact.
- */
-function RuntimeRail({ model, member }: { model: WorkbenchModel; member: AgentMember }) {
-  const [open, setOpen] = useState(true);
-  return (
-    <Section
-      kicker="Health · sessions · child threads"
-      title={
-        <button
-          type="button"
-          onClick={() => setOpen((value) => !value)}
-          className="flex items-center gap-1.5 text-[13px] font-semibold hover:text-primary"
-        >
-          {open ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
-          Runtime
-        </button>
-      }
-      action={
-        <Badge tone={memberTone(member.runtime_status ?? member.status)}>
-          {member.runtime_status ?? member.status ?? "unknown"}
-        </Badge>
-      }
-      className="rise"
-    >
-      {open && (
-        <div>
-          <RuntimeHealthPanel member={member} />
-          <div className="border-t border-border px-3 pt-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-            {model.sessionsByMember.length} provider sessions
-          </div>
-          <SessionList sessions={model.sessionsByMember} />
-          <div className="border-t border-border px-3 pt-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-            {member.provider_child_thread_count ?? model.childThreadsByMember.length} child threads
-          </div>
-          <ChildThreadList threads={model.childThreadsByMember} parent={member} />
-        </div>
-      )}
-    </Section>
-  );
-}
-
-/** A compact labelled count tile (inbox/outbox), distinct and countable. */
-function CountTile({
-  label,
-  value,
-  icon: Icon,
-}: {
-  label: string;
-  value: number;
-  icon: typeof Inbox;
-}) {
-  return (
-    <div className="rounded-lg border border-border bg-card px-3 py-2.5">
-      <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-muted-foreground">
-        <Icon className="size-3.5" />
-        {label}
-      </div>
-      <div className="mt-0.5 text-xl font-semibold tabular-nums">{value}</div>
     </div>
   );
 }

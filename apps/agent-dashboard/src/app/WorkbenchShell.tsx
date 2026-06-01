@@ -3,7 +3,6 @@ import {
   Bot,
   Bug,
   Clock,
-  Crown,
   GitBranch,
   Inbox,
   Pause,
@@ -36,16 +35,16 @@ import {
 import { Avatar } from "@/components/workbench/Avatar";
 import { memberTone, taskTone, timelineTone } from "@/components/workbench/tones";
 
-import { countBySeverity, taskTitle } from "../model/readModel";
+import { countBySeverity } from "../model/readModel";
 import type { WorkbenchModel } from "../model/readModel";
 import {
+  AgentDetail,
+  AgentsList,
   DebugSurface,
   DocsContext,
   GoalDocument,
   GraphKanban,
-  MemberWorkbench,
   TaskDocument,
-  TeamWorkspace,
   VisionOverview,
   WarningsRepair,
 } from "../surfaces/Surfaces";
@@ -74,17 +73,17 @@ interface WorkbenchShellProps {
   onTogglePoll: () => void;
 }
 
-/** Primary navigation rail: collapsed from 10 surfaces to 5 operating views. */
+/** Primary navigation rail: Agents, Vision, Work, Warnings. */
 const navItems: { id: SurfaceId; label: string; icon: typeof Users }[] = [
-  { id: "team", label: "Team", icon: Users },
+  { id: "agents", label: "Agents", icon: Bot },
   { id: "vision", label: "Vision", icon: Target },
   { id: "tasks", label: "Work", icon: Workflow },
-  { id: "member", label: "Member", icon: Bot },
   { id: "warnings", label: "Warnings", icon: ShieldAlert },
 ];
 
 /**
  * Surfaces reachable in code but intentionally off the primary rail:
+ * - agent detail: the Agents surface with a selected agent (?agent=<id>)
  * - goal / task: drill-in detail views reached by selecting an object
  * - docs: kept reachable but not a rail slot
  * - debug: moved behind a TopBar button
@@ -112,12 +111,11 @@ export function WorkbenchShell({
   }
 
   const severity = countBySeverity(model.warnings);
-  const showTeamRail = selection.surface === "team" || selection.surface === "member";
-  // The Member surface owns its own right rail; the Work board needs full width
-  // for its columns; the Goal/Task detail pages are centered Notion documents
-  // that read better without a competing rail. All four suppress the global
-  // Inspector; Team and the rest keep it.
-  const noInspector: SurfaceId[] = ["member", "tasks", "goal", "task"];
+  // The Agents area (list + agent detail) owns its own layout; the Work board
+  // needs full width for its columns; the Goal/Task detail pages are centered
+  // Notion documents that read better without a competing rail. All suppress the
+  // global Inspector; the rest keep it.
+  const noInspector: SurfaceId[] = ["agents", "tasks", "goal", "task"];
   const showInspector = !noInspector.includes(selection.surface);
 
   return (
@@ -133,7 +131,7 @@ export function WorkbenchShell({
         sourceLabel={sourceLabel}
         debugActive={selection.surface === "debug"}
         onToggleDebug={() =>
-          updateSelection({ surface: selection.surface === "debug" ? "team" : "debug" })
+          updateSelection({ surface: selection.surface === "debug" ? "agents" : "debug" })
         }
         pollEnabled={pollEnabled}
         canPoll={canPoll}
@@ -145,14 +143,6 @@ export function WorkbenchShell({
           onSurfaceChange={(surface) => updateSelection({ surface })}
           warnings={severity.high}
         />
-        {showTeamRail && (
-          <TeamRail
-            className="hidden lg:flex"
-            model={model}
-            selection={selection}
-            onSelectionChange={updateSelection}
-          />
-        )}
         <main className="relative min-w-0 flex-1 overflow-y-auto">
           <div className="mx-auto w-full max-w-[1480px] p-5 xl:p-6">
             <SurfaceSwitch
@@ -412,173 +402,6 @@ function AppRail({
   );
 }
 
-/**
- * Team switcher. The snapshot returns every active team but the read model only
- * resolves one selected team (teams[0] / ?team=); this control sets ?team= so an
- * operator can switch between teams. Renders a <select> when there is more than
- * one team; a single team just shows its name (no needless dropdown). Switching
- * team also clears the member/task selection so the rail isn't left pointing at
- * a member from the previous team.
- */
-function TeamPicker({
-  model,
-  onSelectionChange,
-}: {
-  model: WorkbenchModel;
-  onSelectionChange: (selection: Partial<SelectionState>) => void;
-}) {
-  const teams = model.snapshot.teams ?? [];
-  const selectedId = model.selectedTeam?.id ?? "";
-  if (teams.length <= 1) {
-    return (
-      <p className="truncate text-sm font-semibold">
-        {model.selectedTeam?.name ?? "No team"}
-      </p>
-    );
-  }
-  return (
-    <select
-      aria-label="Select team"
-      value={selectedId}
-      onChange={(event) =>
-        onSelectionChange({
-          teamId: event.target.value,
-          // Reset member/task so the rail re-resolves within the new team.
-          memberId: undefined,
-          taskId: undefined,
-        })
-      }
-      className="mt-0.5 h-8 w-full appearance-none truncate rounded-md border border-border bg-background/60 px-2 text-sm font-semibold text-foreground outline-none transition-colors hover:border-input focus:border-ring"
-    >
-      {teams.map((team) => (
-        <option key={team.id} value={team.id}>
-          {team.name ?? team.id}
-        </option>
-      ))}
-    </select>
-  );
-}
-
-function TeamRail({
-  className,
-  model,
-  selection,
-  onSelectionChange,
-}: {
-  className?: string;
-  model: WorkbenchModel;
-  selection: SelectionState;
-  onSelectionChange: (selection: Partial<SelectionState>) => void;
-}) {
-  const activeMemberId = selection.memberId ?? model.selectedMember?.id;
-  return (
-    <aside
-      aria-label="Team and member rail"
-      className={cn(
-        "w-72 shrink-0 flex-col border-r border-border bg-card/40",
-        className,
-      )}
-    >
-      <div className="border-b border-border p-3">
-        <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-          Team
-        </p>
-        <TeamPicker model={model} onSelectionChange={onSelectionChange} />
-      </div>
-      <ScrollArea className="min-h-0 flex-1">
-        <div className="space-y-4 p-3">
-          <div className="rounded-lg border border-border bg-background/40 p-3">
-            <p className="text-[10px] uppercase tracking-wider text-muted-foreground">
-              Active goal
-            </p>
-            <p className="mt-0.5 line-clamp-2 text-[13px] font-medium leading-snug">
-              {model.selectedGoal?.title ?? "Missing goal"}
-            </p>
-            <div className="mt-2 flex flex-wrap gap-1.5">
-              <Badge tone="info">{model.goalTasks.length} tasks</Badge>
-              <Badge tone={model.warnings.length ? "warn" : "good"}>
-                {model.warnings.length} warnings
-              </Badge>
-            </div>
-          </div>
-
-          {model.roleGroups.map((group) => (
-            <div key={group.role}>
-              <p className="px-1 pb-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-                {group.role}
-              </p>
-              <div className="space-y-0.5">
-                {group.members.map((member) => {
-                  const active = activeMemberId === member.id;
-                  const isLead = member.id === model.leadMemberId;
-                  const queue =
-                    (member.inbox_count ?? 0) + (member.queued_count ?? 0);
-                  return (
-                    <button
-                      key={member.id}
-                      type="button"
-                      onClick={() =>
-                        onSelectionChange({
-                          memberId: member.id,
-                          taskId: member.current_task_id ?? selection.taskId,
-                          surface: "member",
-                        })
-                      }
-                      className={cn(
-                        "flex w-full items-center gap-2.5 rounded-md border border-transparent px-2 py-1.5 text-left transition-colors hover:bg-accent/50",
-                        active && "border-border bg-accent/60",
-                      )}
-                    >
-                      <Avatar
-                        name={member.name ?? member.id}
-                        tone={memberTone(member.runtime_status ?? member.status)}
-                      />
-                      <span className="min-w-0 flex-1">
-                        <span className="flex items-center gap-1.5">
-                          <span className="truncate text-[13px] font-medium">
-                            {member.name ?? member.id}
-                          </span>
-                          {isLead && (
-                            <Badge tone="decision" className="shrink-0 gap-0.5 px-1 py-0">
-                              <Crown className="size-2.5" />
-                              Lead / Owner
-                            </Badge>
-                          )}
-                        </span>
-                        <span className="block truncate text-[11px] text-muted-foreground">
-                          {member.runtime_status ?? member.status ?? "unknown"}
-                          <span className="mx-1 text-border">·</span>
-                          {taskTitle(model.tasks, member.current_task_id)}
-                        </span>
-                      </span>
-                      {queue > 0 && (
-                        <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
-                          {queue}
-                        </span>
-                      )}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          ))}
-        </div>
-      </ScrollArea>
-      <div className="border-t border-border p-3">
-        <p className="text-[10px] uppercase tracking-wider text-muted-foreground">
-          Decision pressure
-        </p>
-        <p className="text-lg font-semibold tabular-nums">
-          {model.decisionQueue.length}
-          <span className="ml-1.5 text-xs font-normal text-muted-foreground">
-            open items
-          </span>
-        </p>
-      </div>
-    </aside>
-  );
-}
-
 function SurfaceSwitch({
   model,
   selection,
@@ -613,17 +436,17 @@ function SurfaceSwitch({
           peekTaskId={selection.taskId}
         />
       );
-    case "member":
-      return <MemberWorkbench {...shared} />;
     case "docs":
       return <DocsContext {...shared} />;
     case "warnings":
       return <WarningsRepair {...shared} />;
     case "debug":
       return <DebugSurface model={model} sourceLabel={sourceLabel} />;
-    case "team":
+    case "agents":
     default:
-      return <TeamWorkspace {...shared} />;
+      // The Agents area is one surface: the list, or an agent's detail page when
+      // an agent is selected (?agent=<id>). Both own their layout.
+      return selection.memberId ? <AgentDetail {...shared} /> : <AgentsList {...shared} />;
   }
 }
 
@@ -692,11 +515,11 @@ function Inspector({
                   size="sm"
                   className="flex-1"
                   onClick={() =>
-                    onSelectionChange({ memberId: member.id, surface: "member" })
+                    onSelectionChange({ memberId: member.id, surface: "agents" })
                   }
                 >
                   <Send className="size-3.5" />
-                  Open chat
+                  Open agent
                 </Button>
                 <InspectorAction
                   enabled={actionsEnabled}
