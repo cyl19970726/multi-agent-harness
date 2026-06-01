@@ -46,6 +46,9 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import {
+  DocProperties,
+  DocSection,
+  DocumentSurface,
   EmptyState,
   MetaList,
   MonoId,
@@ -1678,146 +1681,131 @@ export function GoalDocument({ model, onSelectionChange }: SurfaceProps) {
   const closeoutBlockers = learning?.closeout_blockers ?? [];
   const blockedTasks = model.goalTasks.filter((t) => t.status === "blocked");
 
+  const learningChips = [
+    { label: "Goal design", n: model.goalDesignsForGoal.length + learningCount(learning?.goal_design) },
+    { label: "Evaluation", n: model.goalEvaluationsForGoal.length + learningCount(learning?.goal_evaluation) },
+    { label: "Goal cases", n: model.goalCasesForGoal.length + learningCount(learning?.goal_cases) },
+    { label: "Reports", n: learningCount(learning?.member_reports) },
+    { label: "Follow-ups", n: learningCount(learning?.follow_up_tasks) },
+    { label: "Blocked", n: blockedTasks.length },
+  ];
+
   return (
-    <div className="space-y-5">
-      <SurfaceHeader
-        kicker="Goal document"
-        title={goal.title ?? goal.id}
-        description={goal.objective}
-        actions={
-          <>
-            {goal.priority && <Badge tone="info">priority: {goal.priority}</Badge>}
-            <Badge tone={goalTone(goal.status)}>{goal.status ?? "active"}</Badge>
-          </>
-        }
-      />
-
-      <div className="grid gap-4 lg:grid-cols-[1fr_19rem]">
-        <div className="space-y-4">
-          <Section kicker="Durable outcome" title="Objective" className="rise">
-            <p className="p-4 text-[13px] leading-relaxed text-foreground/90">
-              {goal.objective ?? "No objective recorded."}
-            </p>
-          </Section>
-
-          <Section kicker="What done looks like" title="Success criteria" className="rise">
-            <CriteriaList items={goal.success_criteria} empty="No success criteria recorded" />
-          </Section>
-
-          <Section kicker="Task graph / Kanban" title="Tasks for this goal" className="rise">
-            <GoalTasksJump model={model} onSelectionChange={onSelectionChange} />
-          </Section>
-
-          <CollapsibleSection kicker="Executable thesis" title="Goal design">
-            <GoalDesignSection design={design} />
-          </CollapsibleSection>
-
-          <CollapsibleSection kicker="Retrospective" title="Goal evaluation">
-            <GoalEvaluationSection evaluation={evaluation} />
-          </CollapsibleSection>
-
-          <CollapsibleSection
-            kicker="Closeout invariant"
-            title="Closeout & decision"
-            badge={<Badge tone={mayClose ? "good" : "warn"}>{mayClose ? "may close" : "blocked"}</Badge>}
-          >
-            <div className="space-y-3 p-4">
-              <p className="text-xs text-muted-foreground">
-                A goal is complete only after a Leader decision and a GoalEvaluation —
-                never just because its tasks are done.
-              </p>
-              <ProofRow ok={hasDesign} label="GoalDesign" detail={hasDesign ? "recorded" : "missing"} />
-              <ProofRow ok={hasDecision} label="Leader decision" detail={goalDecision?.decision ?? "missing"} />
-              <ProofRow ok={hasEvaluation} label="GoalEvaluation" detail={hasEvaluation ? "recorded" : "missing"} />
-              <ProofRow
-                ok={hasCloseoutDecision}
-                label="Closeout decision"
-                detail={hasCloseoutDecision ? "recorded (kind=closeout, evidence)" : "missing"}
-              />
-              <ProofRow
-                ok={mayClose}
-                label="May close"
-                detail={
-                  mayClose
-                    ? hasCloseoutWaiver
-                      ? "yes (via waiver)"
-                      : "yes (decision + evaluation)"
-                    : closeoutBlockers.length
-                      ? closeoutBlockers.join("; ")
-                      : "blocked"
-                }
-              />
-            </div>
-          </CollapsibleSection>
+    <DocumentSurface>
+      <header className="space-y-3">
+        <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+          <Target className="size-3.5" /> Goal
         </div>
-
-        <div className="space-y-4">
-          <Section kicker="Ownership & governance" title="Governance" className="rise">
-            <div className="p-4">
-              <MetaList
-                items={[
-                  { label: "Owner", value: memberName(model.members, goal.owner_agent_id) },
-                  { label: "Team", value: model.selectedTeam?.name ?? "—" },
-                  { label: "Priority", value: goal.priority ?? "—" },
-                  { label: "Created", value: fmtTime(goal.created_at) },
-                  { label: "Updated", value: fmtTime(goal.updated_at) },
-                ]}
-              />
-            </div>
-          </Section>
-
-          <Section kicker="Goal learning" title="Design & evaluation" className="rise">
-            <div className="p-4">
-              <MetaList
-                items={[
-                  {
-                    label: "Goal design",
-                    value:
-                      model.goalDesignsForGoal.length +
-                      learningCount(learning?.goal_design),
-                  },
-                  {
-                    label: "Evaluation",
-                    value:
-                      model.goalEvaluationsForGoal.length +
-                      learningCount(learning?.goal_evaluation),
-                  },
-                  {
-                    label: "Goal cases",
-                    value:
-                      model.goalCasesForGoal.length +
-                      learningCount(learning?.goal_cases),
-                  },
-                  { label: "Member reports", value: learningCount(learning?.member_reports) },
-                  { label: "Follow-ups", value: learningCount(learning?.follow_up_tasks) },
-                  { label: "Blocked tasks", value: blockedTasks.length },
-                ]}
-              />
-            </div>
-          </Section>
-
-          <Section kicker="Distance-to-vision" title="Next-round proposals" className="rise">
-            <div className="space-y-2 p-3">
-              {goalProposals.length ? (
-                goalProposals.slice(0, 4).map((proposal) => (
-                  <div key={proposal.id} className="rounded-md border border-border bg-background/40 p-2.5">
-                    <div className="flex items-center gap-2">
-                      <Badge tone="decision">{proposal.disposition ?? "pending"}</Badge>
-                      <MonoId>{proposal.source_type ?? "observer"}</MonoId>
-                    </div>
-                    <p className="mt-1 line-clamp-2 text-xs text-foreground/90">
-                      {proposal.summary ?? "Proposed next step"}
-                    </p>
-                  </div>
-                ))
-              ) : (
-                <EmptyState icon={Target} title="No proposals for this goal" />
-              )}
-            </div>
-          </Section>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <h1 className="text-2xl font-semibold tracking-tight text-foreground">
+            {goal.title ?? goal.id}
+          </h1>
+          <div className="flex shrink-0 items-center gap-1.5 pt-1">
+            {goal.priority && <Badge tone="info">{goal.priority}</Badge>}
+            <Badge tone={goalTone(goal.status)}>{displayGoalStatus(goal)}</Badge>
+          </div>
         </div>
-      </div>
-    </div>
+        <DocProperties
+          items={[
+            { label: "Owner", value: memberName(model.members, goal.owner_agent_id) },
+            { label: "Team", value: model.selectedTeam?.name ?? "—" },
+            { label: "Vision", value: model.visionForGoal?.summary ?? "—" },
+            { label: "Created", value: fmtTime(goal.created_at) },
+            { label: "Updated", value: fmtTime(goal.updated_at) },
+          ]}
+        />
+      </header>
+
+      <DocSection label="Objective">
+        <p className="text-[15px] leading-relaxed text-foreground/90">
+          {goal.objective ?? "No objective recorded."}
+        </p>
+      </DocSection>
+
+      <DocSection label="Success criteria">
+        <CriteriaList items={goal.success_criteria} empty="No success criteria recorded" />
+      </DocSection>
+
+      <DocSection label="Tasks">
+        <div className="rounded-lg border border-border bg-card">
+          <GoalTasksJump model={model} onSelectionChange={onSelectionChange} />
+        </div>
+      </DocSection>
+
+      <CollapsibleSection kicker="Executable thesis" title="Goal design">
+        <GoalDesignSection design={design} />
+      </CollapsibleSection>
+
+      <CollapsibleSection kicker="Retrospective" title="Goal evaluation">
+        <GoalEvaluationSection evaluation={evaluation} />
+      </CollapsibleSection>
+
+      <CollapsibleSection
+        kicker="Closeout invariant"
+        title="Closeout & decision"
+        badge={<Badge tone={mayClose ? "good" : "warn"}>{mayClose ? "may close" : "blocked"}</Badge>}
+      >
+        <div className="space-y-3 p-4">
+          <p className="text-xs text-muted-foreground">
+            A goal is complete only after a Leader decision and a GoalEvaluation —
+            never just because its tasks are done.
+          </p>
+          <ProofRow ok={hasDesign} label="GoalDesign" detail={hasDesign ? "recorded" : "missing"} />
+          <ProofRow ok={hasDecision} label="Leader decision" detail={goalDecision?.decision ?? "missing"} />
+          <ProofRow ok={hasEvaluation} label="GoalEvaluation" detail={hasEvaluation ? "recorded" : "missing"} />
+          <ProofRow
+            ok={hasCloseoutDecision}
+            label="Closeout decision"
+            detail={hasCloseoutDecision ? "recorded (kind=closeout, evidence)" : "missing"}
+          />
+          <ProofRow
+            ok={mayClose}
+            label="May close"
+            detail={
+              mayClose
+                ? hasCloseoutWaiver
+                  ? "yes (via waiver)"
+                  : "yes (decision + evaluation)"
+                : closeoutBlockers.length
+                  ? closeoutBlockers.join("; ")
+                  : "blocked"
+            }
+          />
+        </div>
+      </CollapsibleSection>
+
+      <DocSection label="Learning">
+        <div className="flex flex-wrap gap-1.5">
+          {learningChips.map((chip) => (
+            <span
+              key={chip.label}
+              className="inline-flex items-center gap-1.5 rounded-md border border-border bg-card px-2 py-1 text-[11px]"
+            >
+              {chip.label}
+              <span className="font-mono text-muted-foreground">{chip.n}</span>
+            </span>
+          ))}
+        </div>
+      </DocSection>
+
+      {goalProposals.length > 0 && (
+        <DocSection label="Next-round proposals">
+          <div className="space-y-2">
+            {goalProposals.slice(0, 4).map((proposal) => (
+              <div key={proposal.id} className="rounded-lg border border-border bg-card p-3">
+                <div className="flex items-center gap-2">
+                  <Badge tone="decision">{proposal.disposition ?? "pending"}</Badge>
+                  <MonoId>{proposal.source_type ?? "observer"}</MonoId>
+                </div>
+                <p className="mt-1.5 text-[13px] text-foreground/90">
+                  {proposal.summary ?? "Proposed next step"}
+                </p>
+              </div>
+            ))}
+          </div>
+        </DocSection>
+      )}
+    </DocumentSurface>
   );
 }
 
@@ -1957,8 +1945,7 @@ export function TaskDocument({
   onSelectionChange,
   actionsEnabled,
   onAction,
-  singleColumn,
-}: SurfaceProps & { singleColumn?: boolean }) {
+}: SurfaceProps) {
   const task = model.selectedTask;
   if (!task) {
     return (
@@ -1987,43 +1974,42 @@ export function TaskDocument({
   const git = taskGitMetadata(task);
 
   return (
-    <div className="space-y-5">
-      {/* breadcrumb */}
-      <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
-        {goal && (
-          <>
-            <button
-              type="button"
-              className="inline-flex items-center gap-1 hover:text-foreground"
-              onClick={() => onSelectionChange({ goalId: goal.id, surface: "goal" })}
-            >
-              <Target className="size-3" />
-              {goal.title ?? goal.id}
-            </button>
-            <span className="text-border">/</span>
-          </>
-        )}
-        {parent && (
-          <>
-            <button
-              type="button"
-              className="inline-flex items-center gap-1 hover:text-foreground"
-              onClick={() => onSelectionChange({ taskId: parent.id, surface: "task" })}
-            >
-              <GitBranch className="size-3" />
-              {parent.title ?? parent.id}
-            </button>
-            <span className="text-border">/</span>
-          </>
-        )}
-        <span className="text-foreground/70">{task.title ?? task.id}</span>
-      </div>
-
-      <SurfaceHeader
-        kicker="Task document"
-        title={task.title ?? task.id}
-        actions={
-          <>
+    <DocumentSurface>
+      <header className="space-y-3">
+        <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
+          {goal && (
+            <>
+              <button
+                type="button"
+                className="inline-flex items-center gap-1 hover:text-foreground"
+                onClick={() => onSelectionChange({ goalId: goal.id, surface: "goal" })}
+              >
+                <Target className="size-3" />
+                {goal.title ?? goal.id}
+              </button>
+              <span className="text-border">/</span>
+            </>
+          )}
+          {parent && (
+            <>
+              <button
+                type="button"
+                className="inline-flex items-center gap-1 hover:text-foreground"
+                onClick={() => onSelectionChange({ taskId: parent.id, surface: "task" })}
+              >
+                <GitBranch className="size-3" />
+                {parent.title ?? parent.id}
+              </button>
+              <span className="text-border">/</span>
+            </>
+          )}
+          <MonoId>{task.id}</MonoId>
+        </div>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <h1 className="text-2xl font-semibold tracking-tight text-foreground">
+            {task.title ?? task.id}
+          </h1>
+          <div className="flex shrink-0 items-center gap-1.5 pt-1">
             <ReadinessChip readiness={readiness} />
             <Badge tone={taskTone(task.status)}>{task.status}</Badge>
             <ActionButton
@@ -2035,255 +2021,223 @@ export function TaskDocument({
               <ShieldCheck className="size-3.5" />
               Request review
             </ActionButton>
-          </>
-        }
-      />
-
-      <div className={cn("grid gap-4", !singleColumn && "lg:grid-cols-[1fr_19rem]")}>
-        <div className="space-y-4">
-          <Section kicker="What this delivers when done" title="Objective" className="rise">
-            <p className="p-4 text-[13px] leading-relaxed text-foreground/90">
-              {task.objective ?? "No objective recorded."}
-            </p>
-          </Section>
-
-          {task.description && (
-            <Section kicker="Full write-up" title="Description" className="rise">
-              <p className="whitespace-pre-wrap p-4 text-[13px] leading-relaxed text-foreground/90">
-                {task.description}
-              </p>
-            </Section>
-          )}
-
-          <Section
-            kicker="Verifiable at review"
-            title="Acceptance criteria"
-            action={
-              <Badge tone={task.acceptance_criteria?.length ? "info" : "warn"}>
-                {task.acceptance_criteria?.length ?? 0}
-              </Badge>
-            }
-            className="rise"
-          >
-            <CriteriaList
-              items={task.acceptance_criteria}
-              empty="No acceptance criteria — this task cannot be objectively reviewed yet."
-            />
-          </Section>
-
-          <Section kicker="Assignment → report → evidence → decision" title="Proof chain" className="rise">
-            <div className="space-y-3 p-4">
-              <ProofRow
-                ok={messages.some((m) => m.kind === "task")}
-                label="Assignment message"
-                detail={`${messages.filter((m) => m.kind === "task").length} task message(s)`}
-              />
-              <ProofRow
-                ok={messages.some((m) => m.kind === "report")}
-                label="Member report"
-                detail={`${messages.filter((m) => m.kind === "report").length} report(s)`}
-              />
-              <ProofRow ok={evidence.length > 0} label="Evidence" detail={`${evidence.length} item(s)`} />
-              <ProofRow
-                ok={reviews.length > 0}
-                label="Evaluator review"
-                detail={reviews.length ? `${reviews.length} review(s)` : "no structured review"}
-              />
-              <ProofRow ok={Boolean(decision)} label="Leader decision" detail={decision?.decision ?? "missing"} />
-            </div>
-          </Section>
-
-          <Section
-            kicker="Structured evaluator output · pass/fail/blocked/needs_changes"
-            title="Reviews"
-            action={
-              <Badge tone={reviews.some((r) => ["fail", "blocked"].includes((r.verdict ?? "").toLowerCase())) ? "bad" : reviews.length ? "good" : "muted"}>
-                {reviews.length}
-              </Badge>
-            }
-            className="rise"
-          >
-            <ReviewList reviews={reviews} />
-          </Section>
-
-          <Section kicker="Acceptance" title="Decision & rationale" className="rise">
-            {decision ? (
-              <div className="space-y-2 p-4">
-                <div className="flex items-center gap-2">
-                  <Scale className="size-4 text-status-good" />
-                  <Badge tone="good">{decision.decision ?? "decided"}</Badge>
-                </div>
-                <p className="text-[13px] text-foreground/90">
-                  {decision.rationale ?? "No rationale recorded."}
-                </p>
-                {Boolean(decision.evidence_ids?.length) && (
-                  <div className="flex flex-wrap gap-1.5">
-                    {decision.evidence_ids!.map((id) => (
-                      <Badge key={id} tone="muted">
-                        <MonoId>{id}</MonoId>
-                      </Badge>
-                    ))}
-                  </div>
-                )}
-              </div>
-            ) : (
-              <EmptyState icon={Gavel} title="No decision yet" description="Awaiting review and a Leader decision." />
-            )}
-          </Section>
-
-          <Section
-            kicker="Proof artifacts"
-            title="Evidence & proposals"
-            action={<Badge tone="muted">{evidence.length + proposals.length}</Badge>}
-            className="rise"
-          >
-            {evidence.length || proposals.length ? (
-              <div className="divide-y divide-border/60">
-                {evidence.map((item) => (
-                  <div key={item.id} className="flex items-start gap-2.5 px-4 py-2.5">
-                    <FileText className="mt-0.5 size-3.5 shrink-0 text-status-info" />
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-2">
-                        <Badge tone="info">{item.source_type ?? "evidence"}</Badge>
-                        {item.source_ref && <MonoId>{item.source_ref}</MonoId>}
-                      </div>
-                      <p className="mt-0.5 text-xs text-muted-foreground">{item.summary}</p>
-                    </div>
-                  </div>
-                ))}
-                {proposals.map((item) => (
-                  <div key={item.id} className="flex items-start gap-2.5 px-4 py-2.5">
-                    <ListChecks className="mt-0.5 size-3.5 shrink-0 text-status-decision" />
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-2">
-                        <span className="text-[13px] font-medium">{item.title ?? "Proposal"}</span>
-                        <Badge tone="decision">{item.status ?? "draft"}</Badge>
-                      </div>
-                      <p className="mt-0.5 text-xs text-muted-foreground">{item.summary}</p>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <EmptyState icon={FileText} title="No evidence or proposals yet" />
-            )}
-          </Section>
-
-          <Section kicker="Messages" title="Assignment & reports" className="rise">
-            {messages.length ? (
-              <div className="max-h-72 overflow-y-auto">
-                {messages.map((message) => (
-                  <TimelineRow
-                    key={message.id}
-                    kind={message.kind}
-                    title={
-                      message.kind === "task"
-                        ? "Task assignment"
-                        : message.kind === "report"
-                          ? "Member report"
-                          : "Message"
-                    }
-                    meta={message.delivery_status}
-                    body={message.content}
-                    tone={message.delivery_status === "failed" ? "bad" : "info"}
-                  />
-                ))}
-              </div>
-            ) : (
-              <EmptyState icon={MessageSquare} title="No messages for this task" />
-            )}
-          </Section>
+          </div>
         </div>
+        <DocProperties
+          items={[
+            { label: "Owner", value: ownerLine(model, task.owner_agent_id) },
+            {
+              label: "Assignee",
+              value: (
+                <span>
+                  {memberName(model.members, task.assignee_agent_id)}
+                  <span className="ml-1 text-[10px] text-muted-foreground">(projection)</span>
+                </span>
+              ),
+            },
+            { label: "Reviewer", value: memberName(model.members, task.reviewer_agent_id) },
+            { label: "Branch", value: git.branch ? <MonoId>{git.branch}</MonoId> : "—" },
+            { label: "PR", value: git.pr_ref ? <MonoId>{shortBranch(git.pr_ref)}</MonoId> : "—" },
+            { label: "Worktree", value: git.worktree_path ? <MonoId>{git.worktree_path}</MonoId> : "—" },
+            { label: "Owned paths", value: <PathList paths={git.owned_paths} /> },
+            { label: "Sessions", value: sessions.length },
+            { label: "Updated", value: fmtTime(task.updated_at) },
+          ]}
+        />
+      </header>
 
-        <div className="space-y-4">
-          <Section kicker="Accountability" title="Ownership" className="rise">
-            <div className="p-4">
-              <MetaList
-                items={[
-                  { label: "Owner", value: ownerLine(model, task.owner_agent_id) },
-                  {
-                    label: "Assignee",
-                    value: (
-                      <span>
-                        {memberName(model.members, task.assignee_agent_id)}
-                        <span className="ml-1 text-[10px] text-muted-foreground">(projection)</span>
-                      </span>
-                    ),
-                  },
-                  { label: "Reviewer", value: memberName(model.members, task.reviewer_agent_id) },
-                ]}
-              />
+      <DocSection label="Objective">
+        <p className="text-[15px] leading-relaxed text-foreground/90">
+          {task.objective ?? "No objective recorded."}
+        </p>
+      </DocSection>
+
+      {task.description && (
+        <DocSection label="Description">
+          <p className="whitespace-pre-wrap text-[15px] leading-relaxed text-foreground/90">
+            {task.description}
+          </p>
+        </DocSection>
+      )}
+
+      <DocSection
+        label="Acceptance criteria"
+        action={
+          <Badge tone={task.acceptance_criteria?.length ? "info" : "warn"}>
+            {task.acceptance_criteria?.length ?? 0}
+          </Badge>
+        }
+      >
+        <div className="rounded-lg border border-border bg-card">
+          <CriteriaList
+            items={task.acceptance_criteria}
+            empty="No acceptance criteria — this task cannot be objectively reviewed yet."
+          />
+        </div>
+      </DocSection>
+
+      <DocSection label="Dependencies">
+        <div className="grid gap-3 sm:grid-cols-2">
+          <div>
+            <p className="mb-1.5 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+              <Link2 className="size-3" /> Depends on
+            </p>
+            <DependencyChips
+              ids={dependsOn}
+              tasks={model.tasks}
+              empty="No upstream dependencies."
+              onSelect={(id) => onSelectionChange({ taskId: id, surface: "task" })}
+            />
+          </div>
+          <div>
+            <p className="mb-1.5 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+              <Link2 className="size-3 rotate-90" /> Blocks
+            </p>
+            <DependencyChips
+              ids={blocks}
+              tasks={model.tasks}
+              empty="Nothing depends on this task."
+              onSelect={(id) => onSelectionChange({ taskId: id, surface: "task" })}
+            />
+          </div>
+        </div>
+      </DocSection>
+
+      <DocSection label="Proof chain">
+        <div className="space-y-3 rounded-lg border border-border bg-card p-4">
+          <ProofRow
+            ok={messages.some((m) => m.kind === "task")}
+            label="Assignment message"
+            detail={`${messages.filter((m) => m.kind === "task").length} task message(s)`}
+          />
+          <ProofRow
+            ok={messages.some((m) => m.kind === "report")}
+            label="Member report"
+            detail={`${messages.filter((m) => m.kind === "report").length} report(s)`}
+          />
+          <ProofRow ok={evidence.length > 0} label="Evidence" detail={`${evidence.length} item(s)`} />
+          <ProofRow
+            ok={reviews.length > 0}
+            label="Evaluator review"
+            detail={reviews.length ? `${reviews.length} review(s)` : "no structured review"}
+          />
+          <ProofRow ok={Boolean(decision)} label="Leader decision" detail={decision?.decision ?? "missing"} />
+        </div>
+      </DocSection>
+
+      <DocSection
+        label="Reviews"
+        action={
+          <Badge tone={reviews.some((r) => ["fail", "blocked"].includes((r.verdict ?? "").toLowerCase())) ? "bad" : reviews.length ? "good" : "muted"}>
+            {reviews.length}
+          </Badge>
+        }
+      >
+        <div className="rounded-lg border border-border bg-card">
+          <ReviewList reviews={reviews} />
+        </div>
+      </DocSection>
+
+      <DocSection label="Decision & rationale">
+        {decision ? (
+          <div className="space-y-2 rounded-lg border border-border bg-card p-4">
+            <div className="flex items-center gap-2">
+              <Scale className="size-4 text-status-good" />
+              <Badge tone="good">{decision.decision ?? "decided"}</Badge>
             </div>
-          </Section>
-
-          <Section kicker="Where it runs" title="Workspace" className="rise">
-            <div className="p-4">
-              <MetaList
-                items={[
-                  { label: "Branch", value: git.branch ? <MonoId>{git.branch}</MonoId> : "—" },
-                  { label: "Base", value: git.base_branch ? <MonoId>{git.base_branch}</MonoId> : "—" },
-                  { label: "PR", value: git.pr_ref ? <MonoId>{shortBranch(git.pr_ref)}</MonoId> : "—" },
-                  { label: "Worktree", value: git.worktree_path ? <MonoId>{git.worktree_path}</MonoId> : "—" },
-                  { label: "Owned paths", value: <PathList paths={git.owned_paths} /> },
-                  { label: "Sessions", value: sessions.length },
-                ]}
-              />
-            </div>
-          </Section>
-
-          <Section kicker="Execution order" title="Dependencies" className="rise">
-            <div className="space-y-3 p-3.5">
-              <div>
-                <p className="mb-1.5 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-                  <Link2 className="size-3" /> Depends on
-                </p>
-                <DependencyChips
-                  ids={dependsOn}
-                  tasks={model.tasks}
-                  empty="No upstream dependencies."
-                  onSelect={(id) => onSelectionChange({ taskId: id, surface: "task" })}
-                />
+            <p className="text-[13px] text-foreground/90">
+              {decision.rationale ?? "No rationale recorded."}
+            </p>
+            {Boolean(decision.evidence_ids?.length) && (
+              <div className="flex flex-wrap gap-1.5">
+                {decision.evidence_ids!.map((id) => (
+                  <Badge key={id} tone="muted">
+                    <MonoId>{id}</MonoId>
+                  </Badge>
+                ))}
               </div>
-              <div>
-                <p className="mb-1.5 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-                  <Link2 className="size-3 rotate-90" /> Blocks
-                </p>
-                <DependencyChips
-                  ids={blocks}
-                  tasks={model.tasks}
-                  empty="Nothing depends on this task."
-                  onSelect={(id) => onSelectionChange({ taskId: id, surface: "task" })}
+            )}
+          </div>
+        ) : (
+          <div className="rounded-lg border border-border bg-card">
+            <EmptyState icon={Gavel} title="No decision yet" description="Awaiting review and a Leader decision." />
+          </div>
+        )}
+      </DocSection>
+
+      <DocSection label="Evidence & proposals" action={<Badge tone="muted">{evidence.length + proposals.length}</Badge>}>
+        <div className="rounded-lg border border-border bg-card">
+          {evidence.length || proposals.length ? (
+            <div className="divide-y divide-border/60">
+              {evidence.map((item) => (
+                <div key={item.id} className="flex items-start gap-2.5 px-4 py-2.5">
+                  <FileText className="mt-0.5 size-3.5 shrink-0 text-status-info" />
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <Badge tone="info">{item.source_type ?? "evidence"}</Badge>
+                      {item.source_ref && <MonoId>{item.source_ref}</MonoId>}
+                    </div>
+                    <p className="mt-0.5 text-xs text-muted-foreground">{item.summary}</p>
+                  </div>
+                </div>
+              ))}
+              {proposals.map((item) => (
+                <div key={item.id} className="flex items-start gap-2.5 px-4 py-2.5">
+                  <ListChecks className="mt-0.5 size-3.5 shrink-0 text-status-decision" />
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="text-[13px] font-medium">{item.title ?? "Proposal"}</span>
+                      <Badge tone="decision">{item.status ?? "draft"}</Badge>
+                    </div>
+                    <p className="mt-0.5 text-xs text-muted-foreground">{item.summary}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <EmptyState icon={FileText} title="No evidence or proposals yet" />
+          )}
+        </div>
+      </DocSection>
+
+      <DocSection label="Assignment & reports">
+        <div className="rounded-lg border border-border bg-card">
+          {messages.length ? (
+            <div className="max-h-72 overflow-y-auto">
+              {messages.map((message) => (
+                <TimelineRow
+                  key={message.id}
+                  kind={message.kind}
+                  title={
+                    message.kind === "task"
+                      ? "Task assignment"
+                      : message.kind === "report"
+                        ? "Member report"
+                        : "Message"
+                  }
+                  meta={message.delivery_status}
+                  body={message.content}
+                  tone={message.delivery_status === "failed" ? "bad" : "info"}
                 />
-              </div>
+              ))}
             </div>
-          </Section>
+          ) : (
+            <EmptyState icon={MessageSquare} title="No messages for this task" />
+          )}
+        </div>
+      </DocSection>
 
-          <Section kicker="History" title="Lifecycle" className="rise">
-            <div className="p-4">
-              <MetaList
-                items={[
-                  { label: "Status", value: <Badge tone={taskTone(task.status)}>{task.status}</Badge> },
-                  { label: "Created", value: fmtTime(task.created_at) },
-                  { label: "Updated", value: fmtTime(task.updated_at) },
-                ]}
-              />
-            </div>
-          </Section>
-
-          <Section
-            kicker="Risks"
-            title="Warnings"
-            action={<Badge tone={taskWarnings.length ? "bad" : "good"}>{taskWarnings.length}</Badge>}
-            className="rise"
-          >
+      {taskWarnings.length > 0 && (
+        <DocSection label="Warnings" action={<Badge tone="bad">{taskWarnings.length}</Badge>}>
+          <div className="rounded-lg border border-border bg-card">
             <WarningList
               warnings={taskWarnings}
               onSelect={() => onSelectionChange({ surface: "warnings" })}
             />
-          </Section>
-        </div>
-      </div>
-    </div>
+          </div>
+        </DocSection>
+      )}
+    </DocumentSurface>
   );
 }
 
@@ -2652,7 +2606,6 @@ function TaskSheet({
             onSelectionChange={onSelectionChange}
             actionsEnabled={actionsEnabled}
             onAction={onAction}
-            singleColumn
           />
         </div>
       </aside>

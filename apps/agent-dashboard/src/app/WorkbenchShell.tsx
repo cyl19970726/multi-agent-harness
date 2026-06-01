@@ -114,10 +114,11 @@ export function WorkbenchShell({
   const severity = countBySeverity(model.warnings);
   const showTeamRail = selection.surface === "team" || selection.surface === "member";
   // The Member surface owns its own right rail; the Work board needs full width
-  // for its columns (selection is carried by the card → detail flow, not a
-  // persistent inspector). Both suppress the global Inspector. Every other
-  // surface keeps it.
-  const showInspector = selection.surface !== "member" && selection.surface !== "tasks";
+  // for its columns; the Goal/Task detail pages are centered Notion documents
+  // that read better without a competing rail. All four suppress the global
+  // Inspector; Team and the rest keep it.
+  const noInspector: SurfaceId[] = ["member", "tasks", "goal", "task"];
+  const showInspector = !noInspector.includes(selection.surface);
 
   return (
     <div className="flex h-screen flex-col overflow-hidden text-foreground">
