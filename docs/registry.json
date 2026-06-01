@@ -1481,9 +1481,10 @@
       "lifecycle": "archival",
       "canonicalFor": [
         "Claude Code agent-teams task-type taxonomy",
-        "in-process async teammate substrate (no tmux/pty/daemon)",
-        "file-mailbox inter-agent communication and single-session persistence",
-        "Claude Code has no cross-session resume for in-process teammates"
+        "Claude Code agent-teams display modes (tmux/iTerm2 split-pane vs in-process) and what selects them",
+        "teammate process model per mode (separate claude process per pane vs in-process async loop)",
+        "file-mailbox inter-agent communication shared across both modes",
+        "Claude Code cross-session resume behavior per mode (no resume for in-process teammates)"
       ],
       "dependsOn": [
         "docs/research/runtime-persistence-decision.md"

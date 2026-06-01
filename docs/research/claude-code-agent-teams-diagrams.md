@@ -1,5 +1,16 @@
 # Claude Code Agent Teams — Architecture & Data-Flow Diagrams
 
+> **Correction note (2026-06-01).** These diagrams depict the **in-process
+> teammate mode only**. They state `tmuxPaneId:""` and "NO subprocess, NO pty,
+> NO tmux backend" (diagram (a) line ~38, legends ~68-75, ~220-232) — that is
+> true *only* for the in-process branch. Claude Code v2.1.88 also has a real
+> **tmux / iTerm2 split-pane mode** that spawns a **separate `claude` process per
+> pane** with a real `tmuxPaneId` (e.g. `%3`). For the definitive
+> mode/process-model answer and the selection logic, see the
+> [Correction / Modes](claude-code-agent-teams.md#correction--modes-definitive--supersedes-the-original-in-process-only-answer)
+> section of the prose doc. The diagrams below are accurate for the in-process
+> mode and are retained for that purpose.
+
 Diagram companion to [claude-code-agent-teams.md](claude-code-agent-teams.md).
 Prose lives there; this file is ASCII diagrams + legends + source citations
 only. All paths cite the read-only Claude Code source checkout

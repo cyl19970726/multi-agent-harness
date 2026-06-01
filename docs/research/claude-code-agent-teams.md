@@ -9,7 +9,123 @@ checkable against that tree.
 concurrency, and persistence diagrams are in the companion
 [claude-code-agent-teams-diagrams.md](claude-code-agent-teams-diagrams.md).
 
-## Answer first: tmux/long-lived process, session-resume, or in-process?
+## Correction / Modes (definitive — supersedes the original "in-process only" answer)
+
+> **Corrected 2026-06-01 against (a) the official docs and (b) a re-scan of the
+> local source at version `2.1.88`.** An earlier conclusion in this doc said
+> Claude Code teammates are *only* in-process and tmux is unused/vestigial. That
+> was an artifact of reading **one of three spawn branches** in a headless /
+> non-tmux session. It is corrected below, not silently deleted: the old
+> "Answer first" section is retained verbatim under
+> [Original (corrected) answer](#original-corrected-answer-in-process-was-only-one-of-three-branches)
+> and flagged.
+
+**Does Claude Code use tmux for agent teams? YES — optionally, as one of two
+display modes.** Tmux (or iTerm2) is **not required**, but it *is* a first-class,
+fully implemented mode, not a leftover field. Agent teams have **two display
+modes** (official docs term), backed by **three spawn code paths** in the source:
+
+| Mode (docs) | Spawn path (source) | Process model | `tmuxPaneId` | TUI? | Cross-session `/resume`? |
+| --- | --- | --- | --- | --- | --- |
+| **Split panes** (tmux) | `handleSpawnSplitPane` → `tmux split-window` | **Separate `claude` OS process per pane** | real pane id (e.g. `%3`) | Yes — one pane per teammate, click to interact | Docs silent (separate processes survive a leader `/resume` differently than in-process; not confirmed) |
+| **Split panes** (tmux new-window) | `handleSpawnSeparateWindow` → `tmux new-window` | **Separate `claude` OS process per window** | real pane id | Yes — separate window | as above |
+| **Split panes** (iTerm2) | `ITermBackend` (AppleScript / `it2` CLI) | **Separate `claude` OS process per pane** | real pane id | Yes | as above |
+| **In-process** | `handleSpawnInProcess` | Async loop in the leader's **one** Node.js process | literal `'in-process'` / `'leader'` | No — single terminal, cycle with Shift+Down | **No** — `/resume` & `/rewind` do not restore in-process teammates |
+
+**What selects the mode** (`isInProcessEnabled()`,
+`src/utils/swarm/backends/registry.ts:351-389`, in selection priority):
+
+1. **Headless / `-p` / SDK** → always in-process (`getIsNonInteractiveSession()`
+   returns true at `registry.ts:354`). *This is the gate that produced the
+   original wrong conclusion.*
+2. **Explicit mode** from `--teammate-mode <auto|tmux|in-process>`
+   (`src/main.tsx:3857`, applied via `setCliTeammateModeOverride` at
+   `main.tsx:1216`, frozen into a session snapshot by
+   `teammateModeSnapshot.ts`) or `settings.json` `teammateMode`:
+   `'in-process'` → in-process; `'tmux'` → pane backend (errors with install
+   instructions if no backend, `spawnMultiAgent.ts:1054-1056`).
+3. **`'auto'` (default)** → `enabled = !insideTmux && !inITerm2`
+   (`registry.ts:380-382`): if the leader is **inside tmux OR iTerm2**, use the
+   **pane backend** (separate `claude` processes); otherwise in-process.
+   `insideTmux` = `!!process.env.TMUX` captured at module load
+   (`detection.ts:36-40`). In `'auto'` only, if a pane backend turns out
+   unavailable (e.g. iTerm2 without `it2`), it silently falls back to in-process
+   (`spawnMultiAgent.ts:1059-1068`, `markInProcessFallback()`).
+
+Backend detection priority (`detectAndGetBackend`, `registry.ts:136-200`):
+(1) inside tmux → `TmuxBackend`; (2) iTerm2 + `it2` CLI → `ITermBackend`;
+(3) iTerm2 without `it2` → tmux fallback; (4) tmux installed (outside tmux) →
+external tmux swarm session (`tmux -L <swarm-socket> new-session`,
+`TmuxBackend.ts:475`); (5) else throw install instructions.
+
+**How a tmux teammate is actually spawned (separate process, not async loop):**
+`handleSpawnSplitPane` runs `tmux split-window … -P -F '#{pane_id}'`
+(`TmuxBackend.ts:571-617`) to get a real pane id, then sends
+`cd … && env … <binaryPath> --agent-id … --agent-name … --team-name … --parent-session-id …`
+to that pane via `tmux send-keys -t <paneId> <cmd> Enter`
+(`spawnMultiAgent.ts:440-444`; `TmuxBackend.ts:157`). `binaryPath =
+getTeammateCommand()` = `process.execPath` (native build) or `process.argv[1]`
+(`spawnMultiAgent.ts:193-198`) — i.e. the `claude` executable itself. The
+teammate CLI flags are registered at `main.tsx:3851-3857`. The leader and the
+separate-process teammate communicate over the **same file mailbox**
+(`writeToMailbox`, `spawnMultiAgent.ts:513`) used by in-process teammates — which
+is exactly why the original doc's "single uniform mailbox API that process-based
+teammates could share" turns out to be the real production path, not hypothetical.
+
+**Task-type subtlety that hid this:** the out-of-process tmux teammate is *also*
+registered under the `in_process_teammate` task type
+(`registerOutOfProcessTeammateTask`, `spawnMultiAgent.ts:760,798`); on abort it
+calls `getBackendByType(...).killPane(paneId, …)` (`spawnMultiAgent.ts:828-829`).
+So the task-type *name* is not a reliable signal of the process model — the real
+separate-process spawn lives in the tmux/iTerm2 code paths, not in a distinct task
+class. The `tmuxPaneId: ''` empty placeholder the original scan cited is only the
+team-lead / pre-spawn member record in `TeamCreateTool.ts:170,206`, **not** the
+teammate spawn path.
+
+**Sources.** Official:
+[Orchestrate teams of Claude Code sessions](https://code.claude.com/docs/en/agent-teams)
+(two display modes; split panes "requires tmux or iTerm2"; default mode "auto";
+override via `teammateMode` / `claude --teammate-mode in-process`; "no session
+resumption with in-process teammates"). Local source v2.1.88
+(`/Users/hhh0x/claude-code-source/package.json:3`):
+`src/tools/shared/spawnMultiAgent.ts:1040` (the three-branch selector),
+`:193-198`, `:388`, `:440-444`, `:466,504,533`, `:587-604`, `:647-656`,
+`:760,798`, `:828-829`, `:1059-1068`;
+`src/utils/swarm/backends/registry.ts:136-200,351-389`;
+`src/utils/swarm/backends/TmuxBackend.ts:157,475,529,551,571-617`;
+`src/utils/swarm/backends/detection.ts:36-40`;
+`src/utils/swarm/backends/teammateModeSnapshot.ts`;
+`src/main.tsx:1216,3851-3857`; `src/tools/TeamCreateTool/TeamCreateTool.ts:170,206`.
+
+**Persistence per mode (definitive):**
+- **In-process** — persistent only *within* one session (resident idle-poll
+  loop); **no** cross-session resume; official docs confirm `/resume` & `/rewind`
+  do **not** restore in-process teammates. Everything below in this doc about the
+  in-process runtime remains accurate.
+- **tmux / iTerm2 split-pane** — a separate `claude` process in its own pane/
+  window. The team config stores real pane ids per teammate, and the docs warn
+  not to hand-edit it because it "holds runtime state such as session IDs and
+  tmux pane IDs." Whether those processes are re-attached on a leader `/resume`
+  is **not stated** by the docs and not implemented as auto-restore in this
+  source; the only *explicit* resume limitation called out is for in-process.
+
+**What this changes for the rest of this doc:** the sections below describe the
+**in-process mode** correctly and in detail — treat them as scoped to that mode.
+The tmux/iTerm2 split-pane mode (separate `claude` processes, real pane ids) is
+**not** covered by them; this Correction section is canonical for the
+mode/process-model question. The companion
+[claude-code-agent-teams-diagrams.md](claude-code-agent-teams-diagrams.md)
+diagrams are likewise in-process-only and carry a matching correction note.
+
+### Original (corrected) answer — "in-process was only one of three branches"
+
+> **CORRECTED.** The paragraph below was the original "Answer first" and is wrong
+> as a *universal* claim about Claude Code agent teams. It is accurate **only for
+> the in-process spawn branch** (headless/`-p`, or `'auto'` mode outside tmux/
+> iTerm2). It missed `handleSpawnSplitPane` / `handleSpawnSeparateWindow` /
+> `ITermBackend`, which spawn a real separate `claude` process inside a real tmux
+> pane / iTerm2 pane. See the Correction / Modes section above. Kept verbatim for
+> the record:
 
 **In-process async, single-session persistent.** Claude Code teammates are not
 backed by tmux panes, child processes, a daemon, or cross-session
@@ -28,8 +144,13 @@ teammates themselves.
 
 ## Task-type taxonomy
 
-Claude Code models background work as typed tasks in app state. Six matter here;
-only one (`in_process_teammate`) is the team-member substrate.
+Claude Code models background work as typed tasks in app state. Six matter here.
+**Note (corrected):** the `in_process_teammate` task type is the substrate for
+in-process teammates **and is also reused to track tmux/iTerm2 split-pane
+teammates** whose actual `claude` process runs out-of-process
+(`registerOutOfProcessTeammateTask`, `src/tools/shared/spawnMultiAgent.ts:760,798`);
+see the Correction / Modes section. The table below describes the **in-process**
+substrate.
 
 | Task type | Substrate | Process model | Persistent vs one-shot | Cross-session resume | Source |
 | --- | --- | --- | --- | --- | --- |
@@ -57,7 +178,13 @@ Key reading of the table:
   consolidation) are additional in-process async tasks, single-instance, no
   resume.
 
-## How teammates are launched
+## How teammates are launched (in-process mode)
+
+This section is the **in-process** spawn path. The **tmux/iTerm2 split-pane**
+path is different — it spawns a separate `claude` OS process via
+`tmux split-window`/`new-window` + `tmux send-keys <claude-binary> --agent-id …`
+(`spawnMultiAgent.ts:440-444,587-604,647-656`; `TmuxBackend.ts:157,571-617`);
+see the Correction / Modes section.
 
 In-process spawn is a fire-and-forget async loop, not a process fork
 (`src/utils/swarm/spawnInProcess.ts:104-216`,
@@ -141,18 +268,25 @@ TeammateMessage = { from, text, timestamp, read, color?, summary? }
   permission request/response XML when the bridge is unavailable.
 
 The cost of this design is real: ~500ms poll latency and disk I/O per message.
-The benefit is a single uniform mailbox API that process-based teammates (if
-ever spawned) could share.
+The benefit is a single uniform mailbox API. **Corrected:** process-based
+teammates are not hypothetical — tmux/iTerm2 split-pane teammates are separate
+`claude` processes that use **this same file mailbox** to talk to the leader
+(`spawnMultiAgent.ts:513,727`), which is why one disk API serves both modes.
 
 ## Team creation and what persists
 
 Team identity is a file: `~/.claude/teams/{team}/team.json`
 (`TeamCreateTool.ts:156-175`), holding `name`, `leadAgentId`, `leadSessionId`,
 and `members[]` (each with `agentId`, `name`, `agentType`, `model`,
-`tmuxPaneId` — **empty for in-process** — `cwd`, `subscriptions`). Written on
-create (`:177`), read on spawn (`:66`), and registered for session cleanup
-(`:180`) — but **not deleted on session exit** (source references issue
-\#32730); files persist until an explicit `TeamDelete`.
+`tmuxPaneId`, `cwd`, `subscriptions`). **Corrected:** `tmuxPaneId` is `''` only
+for the team-lead / pre-spawn placeholder record (`TeamCreateTool.ts:170,206`)
+and the literal `'in-process'`/`'leader'` for in-process teammates
+(`spawnMultiAgent.ts:957-1026`); for a **tmux/iTerm2 split-pane teammate it holds
+a real pane id** (e.g. `%3`) from `tmux split-window … -P -F '#{pane_id}'`
+(`spawnMultiAgent.ts:466,504,533,679,718,747`; `TmuxBackend.ts:571-617`). It is
+not always empty. Written on create (`:177`), read on spawn (`:66`), and
+registered for session cleanup (`:180`) — but **not deleted on session exit**
+(source references issue \#32730); files persist until an explicit `TeamDelete`.
 
 ### Persisted across sessions vs not
 
@@ -175,10 +309,18 @@ to a server with upsert semantics (deltas by content hash; deletions do not
 propagate). This is an **org-wide shared knowledge base**, scoped per repo — it
 is explicitly **not** teammate persistence or session resumption.
 
-## Critical design decisions (as found in source)
+## Critical design decisions (as found in source — in-process mode)
 
-1. **Single-session model** — teammates share the leader's event loop, FD cache,
-   MCP connections, and API auth; they cannot span `claude code` invocations.
+> **Scope (corrected):** items 1, 4, 5 below characterize the **in-process** mode.
+> In **tmux/iTerm2 split-pane** mode teammates are *separate* `claude` processes
+> with their own event loops and heaps (so the single-heap memory ceiling in
+> item 5 does not apply), launched via `tmux send-keys <claude-binary>`; see the
+> Correction / Modes section.
+
+1. **Single-session model (in-process)** — in-process teammates share the
+   leader's event loop, FD cache, MCP connections, and API auth; they cannot span
+   `claude code` invocations. (tmux/iTerm2 teammates are separate processes and do
+   not share the heap, but are still not auto-resumed across a leader restart.)
 2. **File mailbox, not in-memory channels** — uniform disk API for correctness
    under concurrent access; cost is poll latency + disk I/O.
 3. **No resume for in-process teammates** — resume would need per-teammate
