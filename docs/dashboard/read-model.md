@@ -59,6 +59,23 @@ from named projections instead of ad hoc component filtering.
 Each selector should consume latest-row projections for append-only mutable
 objects before computing React keys, status counts, or warning state.
 
+### Vision→Goal→Task derived projections (ADR 0019)
+
+The unified Work board and the Notion document detail pages
+([work-board-design.md](work-board-design.md)) add these pure derivations to the
+read model. They are derived views, never stored fields:
+
+| Selector | Owns |
+| --- | --- |
+| `taskGraph(tasks)` | dependency-graph projection from `depends_on_task_ids` alone: `nodes`, dependency→dependent `edges`, `ready` (all dependencies `done` and self planned/assigned), `waiting` (taskId → unfinished dependency ids). The derived `waiting` is **distinct from** the stored `status==="blocked"`. |
+| `tasksBlockedBy(taskId, tasks)` | reverse edges — the tasks that depend on `taskId`. |
+| `taskGitMetadata(task)` | effective git context, preferring `git_metadata` and falling back to the flat `branch_ref`/`pr_ref`/`workspace_ref`/`owned_paths` fields retained for back-compat. |
+| `displayGoalStatus(goal)` | product status column, folding legacy `complete` into `done`; `archived` stays hidden from the board. |
+
+The board lays out `displayGoalStatus` (Goals: active/blocked/review/done) or
+`status` (Tasks: planned/assigned/running/blocked/review/done), overlaying the
+`taskGraph` ready/waiting chip on each task card.
+
 ## Detail Panels
 
 Task detail must show the evidence chain that proves work happened:
