@@ -1,12 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
-use std::fs::{self, File};
-use std::io::{BufRead, BufReader, ErrorKind, Read, Write};
+use std::fs;
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::os::unix::net::UnixStream;
-use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -14,9 +12,9 @@ use harness_core::{
     build_launch_spec, AgentEvent, AgentMember, AgentMemberStatus, AgentProviderConfig,
     AgentRuntime, AgentRuntimeHealth, AgentRuntimeStatus, AgentTeam, AgentTeamStatus, Decision,
     EvaluationOutcome, Evidence, Gap, GapSeverity, GapStatus, Goal, GoalCase, GoalDesign,
-    GoalEvaluation, GoalStatus, LaunchMcp, LaunchMcpServer, LaunchPermission, LaunchSpec, Message,
-    MessageDelivery, MessageDeliveryStatus, MessageKind, MessageTerminalSource, Proposal,
-    ProposalStatus, ProviderChildThread, ProviderChildThreadStatus, ProviderKind, ProviderSession,
+    GoalEvaluation, GoalStatus, LaunchMcp, LaunchPermission, Message, MessageDelivery,
+    MessageDeliveryStatus, MessageKind, MessageTerminalSource, Proposal, ProposalStatus,
+    ProviderChildThread, ProviderChildThreadStatus, ProviderKind, ProviderSession,
     ProviderSessionStatus, Review, ReviewVerdict, SenderKind, Task, TaskStatus, Vision,
     WorkflowRun, WorkflowRunStatus, WorkflowStep,
 };
@@ -2307,23 +2305,21 @@ fn handle_sse_stream(
                     }
                     sse::SseEventFrame::AgentEvent(event) => {
                         if let Ok(json) = serde_json::to_value(&event) {
-                            if let Err(_) = sse::write_sse_frame(&mut stream, "agent_event", &json)
-                            {
+                            if sse::write_sse_frame(&mut stream, "agent_event", &json).is_err() {
                                 break; // Client disconnected
                             }
                         }
                     }
                     sse::SseEventFrame::Message(msg) => {
                         if let Ok(json) = serde_json::to_value(&msg) {
-                            if let Err(_) = sse::write_sse_frame(&mut stream, "message", &json) {
+                            if sse::write_sse_frame(&mut stream, "message", &json).is_err() {
                                 break; // Client disconnected
                             }
                         }
                     }
                     sse::SseEventFrame::ProviderSession(session) => {
                         if let Ok(json) = serde_json::to_value(&session) {
-                            if let Err(_) =
-                                sse::write_sse_frame(&mut stream, "provider_session", &json)
+                            if sse::write_sse_frame(&mut stream, "provider_session", &json).is_err()
                             {
                                 break; // Client disconnected
                             }
@@ -2334,7 +2330,7 @@ fn handle_sse_stream(
             }
             Err(crossbeam::channel::RecvTimeoutError::Timeout) => {
                 // Send keepalive to keep connection alive
-                if let Err(_) = sse::write_sse_keepalive(&mut stream) {
+                if sse::write_sse_keepalive(&mut stream).is_err() {
                     break; // Client disconnected
                 }
                 last_keepalive = std::time::Instant::now();
@@ -2357,7 +2353,7 @@ fn serve_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     let sse_manager = sse::SseManager::new();
 
     // Start the SSE watcher thread
-    sse::start_sse_watcher(store, sse_manager.clone()).map_err(|e| CliError::Io(e))?;
+    sse::start_sse_watcher(store, sse_manager.clone()).map_err(CliError::Io)?;
 
     for stream in listener.incoming() {
         let stream = match stream {
@@ -4522,15 +4518,6 @@ fn record_claimed_delivery_terminal(
     Ok(vec![evidence_id])
 }
 
-fn delivery_provider_accepted(status: &ProviderSessionStatus) -> bool {
-    matches!(
-        status,
-        ProviderSessionStatus::Succeeded
-            | ProviderSessionStatus::Running
-            | ProviderSessionStatus::Stale
-    )
-}
-
 fn message_status_for_delivery(status: &ProviderSessionStatus) -> MessageDeliveryStatus {
     message_status_for_terminal(status, None)
 }
@@ -4579,24 +4566,6 @@ fn delivery_error_message(status: &ProviderSessionStatus, summary: &str) -> Opti
     .then(|| summary.to_string())
 }
 
-fn delivery_exit_code(status: &ProviderSessionStatus, exit_code: Option<i32>) -> Option<i32> {
-    match status {
-        ProviderSessionStatus::Succeeded => Some(0),
-        ProviderSessionStatus::Running | ProviderSessionStatus::Stale => None,
-        _ => exit_code,
-    }
-}
-
-fn jsonl_bytes(values: &[serde_json::Value]) -> CliResult<Vec<u8>> {
-    let mut bytes = Vec::new();
-    for value in values {
-        serde_json::to_writer(&mut bytes, value)
-            .map_err(|error| CliError::Usage(format!("serialize JSONL failed: {error}")))?;
-        bytes.push(b'\n');
-    }
-    Ok(bytes)
-}
-
 fn provider_developer_instructions(member: &AgentMember) -> String {
     let Some(prompt_ref) = member.prompt_ref.as_deref() else {
         return "Use harness messages as source of truth.".into();
@@ -4609,57 +4578,9 @@ fn provider_developer_instructions(member: &AgentMember) -> String {
     }
 }
 
-fn insert_optional_string(
-    params: &mut serde_json::Map<String, serde_json::Value>,
-    key: &str,
-    value: Option<String>,
-) {
-    if let Some(value) = value {
-        params.insert(key.into(), serde_json::Value::String(value));
-    }
-}
-
-fn codex_permissions_selection(member: &AgentMember) -> Option<serde_json::Value> {
-    member
-        .permission_profile
-        .as_ref()
-        .or(member.provider_config.permission_profile.as_ref())
-        .map(|profile| {
-            serde_json::json!({
-                "type": "profile",
-                "id": profile,
-                "modifications": serde_json::Value::Null
-            })
-        })
-}
-
-fn codex_sandbox_policy(member: &AgentMember) -> Option<serde_json::Value> {
-    let policy = member.provider_config.sandbox_policy.as_deref()?;
-    match policy {
-        "danger-full-access" | "dangerFullAccess" => {
-            Some(serde_json::json!({"type": "dangerFullAccess"}))
-        }
-        "read-only" | "readOnly" => Some(serde_json::json!({
-            "type": "readOnly",
-            "networkAccess": false
-        })),
-        "workspace-write" | "workspaceWrite" => {
-            let writable_roots = member
-                .runtime_workspace_roots
-                .iter()
-                .chain(member.provider_config.runtime_workspace_roots.iter())
-                .cloned()
-                .collect::<Vec<_>>();
-            Some(serde_json::json!({
-                "type": "workspaceWrite",
-                "networkAccess": false,
-                "writableRoots": writable_roots
-            }))
-        }
-        other => Some(serde_json::json!({"type": other})),
-    }
-}
-
+// Test-only helper: builds the codex app-server turn input envelope. Exercised by
+// unit tests; not yet wired into the live delivery path (kept for the WP that lands it).
+#[cfg(test)]
 fn build_turn_input(message: &Message, delivery_attempt_id: &str) -> serde_json::Value {
     serde_json::json!([{
         "type": "text",
@@ -4685,7 +4606,6 @@ fn build_turn_input(message: &Message, delivery_attempt_id: &str) -> serde_json:
 /// the endpoint verbatim so callers that only inspect existence/format keep
 /// working without assuming a unix socket. This keeps the seam provider-neutral
 /// per ADR 0011 — the endpoint format is the one place Codex assumed a socket.
-
 fn ingest_provider_output(
     store: &HarnessStore,
     agent_member_id: &str,
@@ -5128,6 +5048,8 @@ fn push_unique_json(
     }
 }
 
+// Test-only helper: extracts JSON-RPC error strings; covered by unit tests only.
+#[cfg(test)]
 fn jsonrpc_error_messages(values: &[serde_json::Value]) -> Vec<String> {
     values
         .iter()
@@ -5142,107 +5064,8 @@ fn jsonrpc_error_messages(values: &[serde_json::Value]) -> Vec<String> {
         .collect()
 }
 
-fn hooks_from_list_response(
-    values: &[serde_json::Value],
-    request_id: &str,
-) -> Vec<serde_json::Value> {
-    for value in values {
-        if value.get("id").and_then(|id| id.as_str()) != Some(request_id) {
-            continue;
-        }
-        let Some(data) = value
-            .get("result")
-            .and_then(|result| result.get("data"))
-            .and_then(|data| data.as_array())
-        else {
-            continue;
-        };
-        return data
-            .iter()
-            .flat_map(|entry| {
-                entry
-                    .get("hooks")
-                    .and_then(|hooks| hooks.as_array())
-                    .cloned()
-                    .unwrap_or_default()
-            })
-            .collect();
-    }
-    Vec::new()
-}
-
-fn build_hooks_list_request(request_id: &str, cwd: Option<&str>) -> serde_json::Value {
-    let cwds = cwd.map(|cwd| vec![cwd.to_string()]).unwrap_or_default();
-    serde_json::json!({
-        "id": request_id,
-        "method": "hooks/list",
-        "params": {
-            "cwds": cwds
-        }
-    })
-}
-
-fn build_hooks_trust_request(
-    request_id: &str,
-    hooks: &[serde_json::Value],
-) -> CliResult<serde_json::Value> {
-    let mut hook_state = serde_json::Map::new();
-    for hook in hooks {
-        let Some(key) = hook.get("key").and_then(|value| value.as_str()) else {
-            continue;
-        };
-        let Some(current_hash) = hook.get("currentHash").and_then(|value| value.as_str()) else {
-            continue;
-        };
-        hook_state.insert(
-            key.to_string(),
-            serde_json::json!({
-                "enabled": true,
-                "trusted_hash": current_hash
-            }),
-        );
-    }
-    if hook_state.is_empty() {
-        return Err(CliError::Usage(
-            "hooks/list returned hooks without key/currentHash trust metadata".into(),
-        ));
-    }
-    Ok(serde_json::json!({
-        "id": request_id,
-        "method": "config/batchWrite",
-        "params": {
-            "edits": [{
-                "keyPath": "hooks.state",
-                "value": serde_json::Value::Object(hook_state),
-                "mergeStrategy": "upsert"
-            }],
-            "reloadUserConfig": true
-        }
-    }))
-}
-
-fn hooks_trust_edit_count(request: &serde_json::Value) -> usize {
-    request
-        .get("params")
-        .and_then(|params| params.get("edits"))
-        .and_then(|edits| edits.as_array())
-        .map(|edits| edits.len())
-        .unwrap_or(0)
-}
-
-fn hook_is_managed(hook: &serde_json::Value) -> bool {
-    hook.get("isManaged").and_then(|value| value.as_bool()) == Some(true)
-        || hook.get("trustStatus").and_then(|value| value.as_str()) == Some("managed")
-        || hook_is_trusted(hook)
-}
-
-fn hook_is_trusted(hook: &serde_json::Value) -> bool {
-    matches!(
-        hook.get("trustStatus").and_then(|value| value.as_str()),
-        Some("trusted" | "managed")
-    )
-}
-
+// Test-only helper: validates a codex app-server turn-start exchange; unit-tested only.
+#[cfg(test)]
 fn turn_exchange_confirms_turn_start(values: &[serde_json::Value], request_id: &str) -> bool {
     values.iter().any(|value| {
         value.get("id").and_then(|id| id.as_str()) == Some(request_id)
@@ -5264,6 +5087,8 @@ fn turn_exchange_confirms_turn_start(values: &[serde_json::Value], request_id: &
     })
 }
 
+// Test-only helper: maps codex app-server values to a terminal source; unit-tested only.
+#[cfg(test)]
 fn terminal_source_from_values(values: &[serde_json::Value]) -> Option<MessageTerminalSource> {
     for value in values {
         let method = value.get("method").and_then(|method| method.as_str());
@@ -5282,27 +5107,6 @@ fn terminal_source_from_values(values: &[serde_json::Value]) -> Option<MessageTe
                 == Some("idle")
         {
             return Some(MessageTerminalSource::ThreadIdle);
-        }
-    }
-    None
-}
-
-fn extract_turn_id(values: &[serde_json::Value], request_id: &str) -> Option<String> {
-    for value in values {
-        if value.get("id").and_then(|id| id.as_str()) == Some(request_id) {
-            if let Some(result) = value.get("result") {
-                if let Some(turn_id) = turn_id_from_container(result) {
-                    return Some(turn_id);
-                }
-            }
-        }
-    }
-    for value in values {
-        let method = value.get("method").and_then(|method| method.as_str());
-        if method.is_some_and(|method| method.starts_with("turn/")) {
-            if let Some(turn_id) = turn_id_from_container(value) {
-                return Some(turn_id);
-            }
         }
     }
     None
@@ -5391,6 +5195,8 @@ fn provider_child_thread_from_event(
     })
 }
 
+// Test-only helper: extracts a thread id from codex app-server values; unit-tested only.
+#[cfg(test)]
 fn extract_thread_id(values: &[serde_json::Value], request_id: &str) -> Option<String> {
     for value in values {
         if value.get("id").and_then(|id| id.as_str()) == Some(request_id) {
@@ -7080,54 +6886,6 @@ fn build_bootstrap_prompt(member: &AgentMember) -> String {
     )
 }
 
-fn add_codex_hook_config(
-    args: &mut Vec<String>,
-    agent_id: &str,
-    runtime_id: &str,
-) -> CliResult<()> {
-    let harness_bin = env::current_exe()?;
-    let hook_command = format!(
-        "{} hook record --agent {} --runtime {}",
-        shell_quote(&harness_bin.display().to_string()),
-        shell_quote(agent_id),
-        shell_quote(runtime_id)
-    );
-    let command_value = serde_json::to_string(&hook_command).expect("serialize hook command");
-    let hook_specs = [
-        ("SessionStart", "startup|resume|clear|compact"),
-        ("UserPromptSubmit", "*"),
-        ("PermissionRequest", "*"),
-        ("PreToolUse", "*"),
-        ("PostToolUse", "*"),
-        ("Stop", "*"),
-    ];
-    for (event_name, matcher) in hook_specs {
-        args.push("--config".into());
-        args.push(format!(
-            "hooks.{event_name}=[{{matcher={matcher:?},hooks=[{{type=\"command\",command={command_value},timeout=30,statusMessage=\"Harness telemetry\"}}]}}]"
-        ));
-    }
-    Ok(())
-}
-
-fn shell_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\"'\"'"))
-}
-
-fn absolute_store_root(store: &HarnessStore) -> CliResult<PathBuf> {
-    match fs::canonicalize(store.root()) {
-        Ok(path) => Ok(path),
-        Err(error) if error.kind() == ErrorKind::NotFound => {
-            if store.root().is_absolute() {
-                Ok(store.root().to_path_buf())
-            } else {
-                Ok(env::current_dir()?.join(store.root()))
-            }
-        }
-        Err(error) => Err(error.into()),
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Provider dispatch seam (BE-WP6)
 //
@@ -7138,13 +6896,6 @@ fn absolute_store_root(store: &HarnessStore) -> CliResult<PathBuf> {
 // land the real claude-CLI runtime/delivery/ingest. Unknown providers fail
 // fast with an explicit, debuggable message rather than silently assuming Codex.
 // ---------------------------------------------------------------------------
-
-/// Build the standard "provider not yet supported" error for a given concern.
-fn claude_not_implemented(concern: &str) -> CliError {
-    CliError::Usage(format!(
-        "claude provider {concern} is not yet implemented (tracked by BE-WP7/WP8); use --provider codex"
-    ))
-}
 
 /// Build the standard error for a provider the harness does not recognise.
 fn unknown_provider_error(provider: &str, concern: &str) -> CliError {
@@ -7199,20 +6950,6 @@ impl ClaudeStreamEvent {
         }
     }
 
-    /// Extract terminal source if this is a result event.
-    fn terminal_source(&self) -> Option<MessageTerminalSource> {
-        match self.event_type.as_str() {
-            "result" => {
-                if self.payload.get("error").is_some() {
-                    Some(MessageTerminalSource::Failed)
-                } else {
-                    Some(MessageTerminalSource::TurnCompleted)
-                }
-            }
-            _ => None,
-        }
-    }
-
     /// Extract session_id from system init event.
     fn session_id(&self) -> Option<String> {
         if self.event_type == "system" {
@@ -7231,10 +6968,9 @@ impl ClaudeStreamEvent {
 fn parse_claude_stream_json(reader: impl BufRead) -> Vec<ClaudeStreamEvent> {
     let mut events = Vec::new();
     for line in reader.lines() {
-        if let Ok(line_str) = line {
-            if let Some(event) = ClaudeStreamEvent::parse_line(&line_str) {
-                events.push(event);
-            }
+        let Ok(line_str) = line else { continue };
+        if let Some(event) = ClaudeStreamEvent::parse_line(&line_str) {
+            events.push(event);
         }
     }
     events
@@ -7321,8 +7057,8 @@ fn ingest_claude_stream_json(
         };
 
         let summary = summarize_json_value(&event.payload);
-        let thread_id = extract_thread_id_from_claude_events(&[event.clone()]);
-        let turn_id = extract_turn_id_from_claude_events(&[event.clone()]);
+        let thread_id = extract_thread_id_from_claude_events(std::slice::from_ref(event));
+        let turn_id = extract_turn_id_from_claude_events(std::slice::from_ref(event));
 
         let agent_event = AgentEvent {
             id: generated_id("event"),
@@ -7448,10 +7184,9 @@ fn codex_event_is_terminal(event_type: &str) -> bool {
 fn parse_codex_ndjson(reader: impl BufRead) -> Vec<CodexExecEvent> {
     let mut events = Vec::new();
     for line in reader.lines() {
-        if let Ok(line_str) = line {
-            if let Some(event) = CodexExecEvent::parse_line(&line_str) {
-                events.push(event);
-            }
+        let Ok(line_str) = line else { continue };
+        if let Some(event) = CodexExecEvent::parse_line(&line_str) {
+            events.push(event);
         }
     }
     events
@@ -7717,8 +7452,7 @@ fn run_codex_exec_process(
     Ok((process_success, events, stderr_log))
 }
 
-/// Run a single Codex exec delivery, writing identical ProviderSession/Evidence rows.
-
+// Run a single Codex exec delivery, writing identical ProviderSession/Evidence rows.
 // WP-5: Minimal record of provider session for exec-stream delivery.
 // This records evidence and session metadata for audit/tracing.
 struct ExecDeliverySessionRecord<'a> {
@@ -7829,7 +7563,7 @@ fn record_exec_delivery_session(
 fn run_codex_exec_delivery(
     store: &HarnessStore,
     member: &AgentMember,
-    runtime: &AgentRuntime,
+    _runtime: &AgentRuntime,
     message: &Message,
     delivery_id: &str,
     timeout_ms: u64,
@@ -7947,16 +7681,6 @@ fn run_provider_delivery(
     }
 }
 
-/// Probe the live protocol layer of a runtime socket, routed by provider.
-// --- Claude protocol probe (BE-WP7) ---
-fn probe_claude_protocol(_socket_path: &Path, _timeout_ms: u64) -> CliResult<Option<String>> {
-    // For Claude CLI, protocol probing is handled differently than Codex's WebSocket.
-    // The claude binary is stateless and request-response; we'll mark it as unknown
-    // until the first delivery attempt.
-    Ok(Some(
-        "unknown: claude CLI protocol probed on first delivery".into(),
-    ))
-}
 // WP-5: Codex exec-stream runtime (no persistent process).
 // Each delivery spawns `codex exec --json`, so no app-server socket is needed.
 
@@ -8075,7 +7799,7 @@ fn run_claude_delivery(
     let mut ndjson_content = String::new();
     for event in &events {
         ndjson_content.push_str(&serde_json::to_string(&event.payload).unwrap_or_default());
-        ndjson_content.push_str("\n");
+        ndjson_content.push('\n');
     }
     fs::write(&ndjson_ref, &ndjson_content)?;
 
@@ -8185,7 +7909,7 @@ fn run_claude_delivery(
 /// Spawn `claude -p --output-format stream-json --verbose` and parse NDJSON output.
 /// WP-3: Real implementation replacing the stub; parses session_id and events.
 fn run_claude_exec_delivery_real(
-    session_dir: &Path,
+    _session_dir: &Path,
     member: &AgentMember,
     message: &Message,
     timeout_ms: u64,
@@ -8334,205 +8058,6 @@ fn run_claude_exec_delivery_real(
     ))
 }
 
-fn build_claude_delivery_prompt(member: &AgentMember, message: &Message) -> CliResult<String> {
-    // Build a system prompt that contextualizes the delivery for Claude
-    let mut prompt = String::new();
-
-    if let Some(prompt_ref) = &member.prompt_ref {
-        prompt.push_str("System context: ");
-        prompt.push_str(prompt_ref);
-        prompt.push_str("\n\n");
-    }
-
-    prompt.push_str("Deliver this message:\n");
-    prompt.push_str(&message.content);
-
-    if let Some(task_id) = &message.task_id {
-        prompt.push_str("\n\nTask ID: ");
-        prompt.push_str(task_id);
-    }
-
-    Ok(prompt)
-}
-
-#[derive(Debug, Clone)]
-struct ClaudeDeliveryOutcome {
-    status: ProviderSessionStatus,
-    stdout_ref: Option<String>,
-    stderr_ref: Option<String>,
-    exit_code: Option<i32>,
-    terminal_source: Option<MessageTerminalSource>,
-    summary: String,
-}
-
-fn run_claude_exchange(
-    session_dir: &Path,
-    prompt: &str,
-    timeout_ms: u64,
-) -> CliResult<ClaudeDeliveryOutcome> {
-    let stdout_ref = session_dir.join("claude.stdout.log");
-    let stderr_ref = session_dir.join("claude.stderr.log");
-    let _stdin_ref = session_dir.join("claude.stdin.txt");
-
-    // Write the prompt to stdin for reference
-    fs::write(&_stdin_ref, prompt)?;
-
-    // Run claude with the prompt
-    let timeout = Duration::from_millis(timeout_ms.max(1));
-    let mut child = Command::new("claude")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| CliError::Usage(format!("failed to spawn claude process: {error}")))?;
-
-    // Write prompt to stdin
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin
-            .write_all(prompt.as_bytes())
-            .map_err(|error| CliError::Usage(format!("failed to write claude stdin: {error}")))?;
-        drop(stdin); // Close stdin to signal EOF
-    }
-
-    // Wait for process with timeout
-    let start = std::time::Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(_status)) => {
-                // Process finished
-                break;
-            }
-            Ok(None) => {
-                // Still running, check timeout
-                if start.elapsed() > timeout {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    fs::write(&stderr_ref, "timeout waiting for claude process")?;
-                    return Ok(ClaudeDeliveryOutcome {
-                        status: ProviderSessionStatus::Failed,
-                        stdout_ref: None,
-                        stderr_ref: Some(stderr_ref.display().to_string()),
-                        exit_code: Some(124), // timeout exit code
-                        terminal_source: Some(MessageTerminalSource::Failed),
-                        summary: "Claude delivery timed out".into(),
-                    });
-                }
-                std::thread::sleep(Duration::from_millis(50));
-            }
-            Err(error) => {
-                fs::write(&stderr_ref, format!("wait failed: {error}"))?;
-                return Ok(ClaudeDeliveryOutcome {
-                    status: ProviderSessionStatus::Failed,
-                    stdout_ref: None,
-                    stderr_ref: Some(stderr_ref.display().to_string()),
-                    exit_code: None,
-                    terminal_source: Some(MessageTerminalSource::Failed),
-                    summary: format!("Claude process wait failed: {error}"),
-                });
-            }
-        }
-    }
-
-    // Collect output from the process
-    let full_output = child
-        .wait_with_output()
-        .map_err(|error| CliError::Usage(format!("failed to collect claude output: {error}")))?;
-
-    let exit_code = full_output.status.code();
-    let stdout_text = String::from_utf8_lossy(&full_output.stdout).to_string();
-    let stderr_text = String::from_utf8_lossy(&full_output.stderr).to_string();
-
-    fs::write(&stdout_ref, &stdout_text)?;
-    fs::write(&stderr_ref, &stderr_text)?;
-
-    // Determine delivery status based on exit code
-    let (status, summary) = if full_output.status.success() {
-        (
-            ProviderSessionStatus::Succeeded,
-            format!("Claude delivery succeeded: {} chars", stdout_text.len()),
-        )
-    } else {
-        (
-            ProviderSessionStatus::Failed,
-            format!(
-                "Claude delivery failed with exit code {:?}: {}",
-                exit_code, stderr_text
-            ),
-        )
-    };
-
-    Ok(ClaudeDeliveryOutcome {
-        status,
-        stdout_ref: Some(stdout_ref.display().to_string()),
-        stderr_ref: if stderr_text.is_empty() {
-            None
-        } else {
-            Some(stderr_ref.display().to_string())
-        },
-        exit_code,
-        terminal_source: if full_output.status.success() {
-            Some(MessageTerminalSource::TurnCompleted)
-        } else {
-            Some(MessageTerminalSource::Failed)
-        },
-        summary,
-    })
-}
-
-fn record_claude_delivery_session(
-    store: &HarnessStore,
-    record: ExecDeliverySessionRecord<'_>,
-) -> CliResult<String> {
-    let evidence_id = generated_id("evidence");
-    let evidence = Evidence {
-        id: evidence_id.clone(),
-        task_id: record.message.task_id.clone(),
-        source_type: "claude_delivery_session".into(),
-        source_ref: record.session_dir.display().to_string(),
-        summary: format!(
-            "Claude delivery {} for message {}",
-            record.delivery_id, record.message.id
-        ),
-        created_at: now_string(),
-        evidence_kind: None,
-        goal_id: None,
-    };
-    store.append_evidence(&evidence)?;
-
-    let ended_at = if record.status == ProviderSessionStatus::Running {
-        None
-    } else {
-        Some(now_string())
-    };
-
-    let provider_session = ProviderSession {
-        id: record.delivery_id.into(),
-        provider: "claude".into(),
-        agent_member_id: record.member.id.clone(),
-        task_id: record.message.task_id.clone(),
-        workspace_ref: None,
-        provider_thread_id: record.provider_thread_id,
-        provider_turn_id: record.provider_turn_id,
-        terminal_source: record.terminal_source,
-        status: record.status,
-        command: "claude".into(),
-        args: vec![],
-        prompt_ref: record.member.prompt_ref.clone(),
-        prompt_summary: Some(format!("deliver message {}", record.message.id)),
-        provider_session_ref: None,
-        stdout_ref: record.stdout_ref,
-        jsonl_ref: Some(record.session_dir.display().to_string()),
-        transcript_ref: record.stderr_ref,
-        last_message_ref: None,
-        exit_code: record.exit_code,
-        started_at: record.started_at,
-        ended_at,
-        evidence_ids: vec![evidence_id.clone()],
-    };
-    store.append_provider_session(&provider_session)?;
-    Ok(evidence_id)
-}
-
 fn parse_hook_payload(input: &str) -> serde_json::Value {
     if input.trim().is_empty() {
         serde_json::json!({})
@@ -8665,6 +8190,8 @@ fn parse_message_kind(value: &str) -> CliResult<MessageKind> {
     }
 }
 
+// Test-only helper: only referenced by build_turn_input (also #[cfg(test)]).
+#[cfg(test)]
 fn message_kind_label(kind: &MessageKind) -> &'static str {
     match kind {
         MessageKind::Message => "message",
@@ -9209,7 +8736,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
-    #[test]
     #[test]
     fn claude_member_ingest_dispatches_to_claude_stub() {
         // WP-3: Test claude stream-json ingest (replaces stub).

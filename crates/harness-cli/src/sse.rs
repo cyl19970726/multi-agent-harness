@@ -247,7 +247,7 @@ pub fn write_sse_frame(
     event_kind: &str,
     data: &serde_json::Value,
 ) -> std::io::Result<()> {
-    let frame = format!("event: {}\ndata: {}\n\n", event_kind, data.to_string());
+    let frame = format!("event: {}\ndata: {}\n\n", event_kind, data);
     stream.write_all(frame.as_bytes())?;
     stream.flush()?;
     Ok(())

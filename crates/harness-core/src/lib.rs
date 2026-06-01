@@ -545,18 +545,13 @@ pub enum ProviderSessionStatus {
 /// from external operators (humans / external agents acting on their own behalf)
 /// and system-emitted messages, so an operator-authored message is never
 /// rendered as if it came from the Lead agent. Provider-neutral.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum SenderKind {
+    #[default]
     Agent,
     Operator,
     System,
-}
-
-impl Default for SenderKind {
-    fn default() -> Self {
-        SenderKind::Agent
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

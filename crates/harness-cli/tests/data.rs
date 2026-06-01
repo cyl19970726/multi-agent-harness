@@ -1,7 +1,6 @@
 #[cfg(test)]
 mod claude_stream_tests {
     use std::fs;
-    use std::io::BufRead;
 
     // Mock ClaudeStreamEvent for testing
     #[derive(Debug, Clone)]
