@@ -327,7 +327,7 @@ fn team_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
 }
 
 fn goal_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    require_subcommand(args, "goal create|list|learning-status|close")?;
+    require_subcommand(args, "goal create|list|learning-status|evaluate|close")?;
     match args[0].as_str() {
         "create" => {
             let goal = Goal {
@@ -361,6 +361,7 @@ fn goal_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
                 )?;
             }
         }
+        "evaluate" => goal_evaluate(store, &args[1..])?,
         "close" => goal_close(store, &args[1..])?,
         "list" => print_json(&store.goals()?)?,
         other => return Err(CliError::Usage(format!("unknown goal command: {other}"))),
@@ -410,6 +411,75 @@ fn goal_close(store: &HarnessStore, args: &[String]) -> CliResult<()> {
         closing_decision_id.as_deref(),
     )?;
     print_json(&goal)?;
+    Ok(())
+}
+
+/// Build a TYPED [`GoalEvaluation`] (per schemas/goal-evaluation.schema.json) for a
+/// goal and persist it via `append_goal_evaluation`. This is the producer the
+/// closeout gate and `goal_learning_status.has_evaluation` read through the typed
+/// dual-read seam — it is NOT an untyped `Evidence(source_type=goal_evaluation)`
+/// note. The evaluation references the goal's task evidence: every Evidence row
+/// attached to a task in the goal's graph is surfaced under
+/// `referenced_evidence_ids` in the JSON output, and any evidence ids passed via
+/// `--missing-evidence` are kept as the evaluator's gaps. Existing
+/// `goal-evaluation create` remains the lower-level form; `goal evaluate` is the
+/// goal-scoped path that wires in the trace automatically.
+fn goal_evaluate(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    let goal_id = required(args, "--id").or_else(|_| required(args, "--goal"))?;
+    // Validate the goal exists and gather its trace (errors if the goal is unknown).
+    let status = goal_learning_status(store, &goal_id)?;
+
+    // Reference the goal's task evidence: collect every Evidence row attached to a
+    // task in this goal's graph so the evaluation points at the real trace.
+    let task_id_set: BTreeSet<String> = status.task_ids.iter().cloned().collect();
+    let mut referenced_evidence_ids: Vec<String> = latest_evidence(store)?
+        .into_values()
+        .filter(|item| {
+            item.task_id
+                .as_ref()
+                .is_some_and(|task_id| task_id_set.contains(task_id))
+        })
+        .map(|item| item.id)
+        .collect();
+    referenced_evidence_ids.sort();
+    referenced_evidence_ids.dedup();
+
+    let evaluation = GoalEvaluation {
+        id: value(args, "--id-out").unwrap_or_else(|| generated_id("goal-evaluation")),
+        goal_id: goal_id.clone(),
+        evaluator_agent_id: required(args, "--evaluator")?,
+        outcome: EvaluationOutcome::from(required(args, "--outcome")?),
+        what_worked: required(args, "--what-worked")?,
+        what_failed: required(args, "--what-failed")?,
+        missing_infra: many(args, "--missing-infra"),
+        missing_evidence: many(args, "--missing-evidence"),
+        team_design_feedback: value(args, "--team-feedback").unwrap_or_default(),
+        task_graph_feedback: value(args, "--task-graph-feedback").unwrap_or_default(),
+        dashboard_feedback: value(args, "--dashboard-feedback").unwrap_or_default(),
+        reusable_patterns: many(args, "--pattern"),
+        anti_patterns: many(args, "--anti-pattern"),
+        follow_up_task_ids: many(args, "--follow-up-task"),
+        proposed_goal_ids: many(args, "--proposed-goal"),
+        created_at: now_string(),
+    };
+    store.append_goal_evaluation(&evaluation)?;
+    append_agent_event(
+        store,
+        &evaluation.evaluator_agent_id,
+        None,
+        None,
+        "goal_evaluated",
+        &format!(
+            "GoalEvaluation {} recorded for goal {goal_id} ({})",
+            evaluation.id,
+            evaluation.outcome.as_str()
+        ),
+        None,
+    )?;
+    print_json(&serde_json::json!({
+        "evaluation": evaluation,
+        "referenced_evidence_ids": referenced_evidence_ids,
+    }))?;
     Ok(())
 }
 
@@ -1056,22 +1126,38 @@ fn autonomy_decide_value(store: &HarnessStore, args: &[String]) -> CliResult<ser
                 requires_human_approval: has_flag(args, "--task-requires-human-approval"),
                 verdict_decision_id: None,
             };
-            let design = autonomy_evidence(
-                store,
-                Some(task.id.clone()),
-                "goal_design",
-                &format!(
-                    "GoalDesign generated from accepted autonomous proposal {proposal_id}."
-                ),
-                &format!(
-                    "# Goal Design\n\nsource_goal: {}\nsource_task: {}\nproposal: {proposal_id}\ndecision: {}\n\nobjective: {}\n",
-                    source_task.goal_id.as_deref().unwrap_or("-"),
-                    source_task.id,
-                    decision.id,
+            // Write a TYPED GoalDesign (graduated object) rather than an untyped
+            // Evidence(source_type=goal_design): the next-round goal is designed
+            // through the same first-class object the design gate / dashboard read,
+            // scoped to the accepted goal so goal_learning_status.has_goal_design
+            // sees it via the typed dual-read seam. Falls back to the source goal id
+            // when the accept did not create a new goal.
+            let design_goal_id = next_goal_id
+                .clone()
+                .or_else(|| source_task.goal_id.clone())
+                .unwrap_or_else(|| task.id.clone());
+            let design = GoalDesign {
+                id: generated_id("goal-design"),
+                goal_id: design_goal_id,
+                scenario_summary: format!(
+                    "Next-round design generated from accepted autonomous proposal {proposal_id}: {}",
                     task.objective
                 ),
-            )?;
-            store.append_evidence(&design)?;
+                non_goals: Vec::new(),
+                risk_and_permission_boundaries: format!(
+                    "Inherits permission boundaries of source goal {} / task {}; gated behind closeout decision {}.",
+                    source_task.goal_id.as_deref().unwrap_or("-"),
+                    source_task.id,
+                    decision.id
+                ),
+                required_infra: Vec::new(),
+                agent_team: assignee.clone(),
+                task_graph: vec![task.id.clone()],
+                evidence_plan: vec![format!("proposal:{proposal_id}")],
+                acceptance_gates: task.acceptance_criteria.clone(),
+                created_at: now_string(),
+            };
+            store.append_goal_design(&design)?;
             store.append_task(&task)?;
             if let Some(assignee_id) = assignee {
                 let assignee_member = latest_member(store, &assignee_id)?;
@@ -1381,8 +1467,12 @@ fn autonomy_next_round_candidates(
         if !options.force && goal_has_next_round_plan(&status.task_ids, &evidence) {
             continue;
         }
+        // Dual-read: the goal is a next-round candidate if it carries EITHER a
+        // typed GoalEvaluation object OR a legacy Evidence(source_type=goal_evaluation)
+        // note. The typed producer is the primary path (item 3 of WP-7); the legacy
+        // note remains a valid back-compat source so old goals keep firing.
         let Some((evaluation_evidence_id, source_task_id)) =
-            latest_goal_evaluation_task(&status.goal_evaluation)
+            latest_goal_evaluation_source(&status, store)?
         else {
             continue;
         };
@@ -1420,8 +1510,20 @@ fn goal_has_next_round_plan(
     })
 }
 
-fn latest_goal_evaluation_task(evidence: &[Evidence]) -> Option<(String, String)> {
-    evidence
+/// Resolve the goal's evaluation into `(evaluation_id, source_task_id)` for the
+/// next-round runner, reading BOTH learning representations (WP-7 dual-read). The
+/// most-recent evaluation wins across the typed [`GoalEvaluation`] objects and the
+/// legacy `Evidence(source_type=goal_evaluation)` notes. A typed object has no
+/// `task_id`, so the source task is the latest task in the goal's graph — the task
+/// the closeout decision and next-round plan hang off. Returns `None` only when
+/// the goal has no evaluation at all (caller skips it as a candidate).
+fn latest_goal_evaluation_source(
+    status: &GoalLearningStatus,
+    store: &HarnessStore,
+) -> CliResult<Option<(String, String)>> {
+    // Best legacy candidate: (time, evidence_id, source_task_id).
+    let legacy = status
+        .goal_evaluation
         .iter()
         .filter_map(|item| {
             Some((
@@ -1430,8 +1532,67 @@ fn latest_goal_evaluation_task(evidence: &[Evidence]) -> Option<(String, String)
                 item.task_id.clone()?,
             ))
         })
-        .max_by_key(|(created_at, _, _)| *created_at)
-        .map(|(_, evidence_id, task_id)| (evidence_id, task_id))
+        .max_by_key(|(created_at, _, _)| *created_at);
+
+    // Best typed candidate: resolve a source task from the goal's graph (latest by
+    // task created_at, falling back to the last task id) so the typed evaluation
+    // can drive the same close/plan path.
+    let latest_typed = status
+        .goal_evaluation_objects
+        .iter()
+        .max_by_key(|evaluation| parse_unix_ms(&evaluation.created_at).unwrap_or_default());
+    let typed = match latest_typed {
+        // Anchor the typed evaluation on a task in the goal's graph; without one
+        // there is nothing for the closeout decision / next-round plan to hang off.
+        Some(evaluation) => goal_graph_source_task(status, store)?.map(|task_id| {
+            (
+                parse_unix_ms(&evaluation.created_at).unwrap_or_default(),
+                evaluation.id.clone(),
+                task_id,
+            )
+        }),
+        None => None,
+    };
+
+    let best = match (legacy, typed) {
+        (Some(legacy), Some(typed)) => {
+            if typed.0 >= legacy.0 {
+                Some(typed)
+            } else {
+                Some(legacy)
+            }
+        }
+        (Some(legacy), None) => Some(legacy),
+        (None, Some(typed)) => Some(typed),
+        (None, None) => None,
+    };
+    Ok(best.map(|(_, evaluation_id, source_task_id)| (evaluation_id, source_task_id)))
+}
+
+/// The task in the goal's graph that anchors a typed-evaluation next round: the
+/// most recently created task, falling back to the lexically-last task id when no
+/// timestamp is parseable. Returns `None` when the goal has no tasks.
+fn goal_graph_source_task(
+    status: &GoalLearningStatus,
+    store: &HarnessStore,
+) -> CliResult<Option<String>> {
+    if status.task_ids.is_empty() {
+        return Ok(None);
+    }
+    let tasks = latest_tasks(store)?;
+    let source = status
+        .task_ids
+        .iter()
+        .map(|task_id| {
+            let created_at = tasks
+                .get(task_id)
+                .and_then(|task| parse_unix_ms(&task.created_at))
+                .unwrap_or_default();
+            (created_at, task_id.clone())
+        })
+        .max_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)))
+        .map(|(_, task_id)| task_id);
+    Ok(source)
 }
 
 fn close_goal_for_next_round(
@@ -10121,6 +10282,266 @@ mod tests {
             .expect_err("waiver without follow-up must block close");
         assert!(error.to_string().contains("follow_up_task_id"));
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    // --- WP-7: typed GoalEvaluation/GoalDesign producers + dual-read candidate wiring ---
+
+    /// Build the full happy-path learning chain for a goal whose single task is Done,
+    /// using the TYPED GoalDesign + TYPED GoalEvaluation producers (no legacy Evidence
+    /// notes for design/evaluation). Returns the store so candidate/closeout queries
+    /// can be exercised against a goal that satisfies `warnings(true).is_empty()`.
+    fn seed_typed_learning_chain(label: &str) -> (HarnessStore, PathBuf) {
+        let (store, root) = temp_store(label);
+        store.append_goal(&make_goal("goal-1")).expect("goal");
+        let mut task = make_task("task-1", "goal-1");
+        task.status = TaskStatus::Done;
+        store.append_task(&task).expect("task");
+
+        // Typed GoalDesign (graduated object), created before assignment.
+        store
+            .append_goal_design(&GoalDesign {
+                id: "design-1".into(),
+                goal_id: "goal-1".into(),
+                scenario_summary: "design".into(),
+                non_goals: vec![],
+                risk_and_permission_boundaries: "bounded".into(),
+                required_infra: vec![],
+                agent_team: None,
+                task_graph: vec!["task-1".into()],
+                evidence_plan: vec![],
+                acceptance_gates: vec![],
+                created_at: "unix-ms:20".into(),
+            })
+            .expect("design");
+        store
+            .append_message(&make_timed_message(
+                "msg-assign",
+                MessageKind::Task,
+                "leader",
+                Some("worker"),
+                "task-1",
+                "unix-ms:30",
+            ))
+            .expect("assignment");
+        store
+            .append_message(&make_timed_message(
+                "msg-report",
+                MessageKind::Report,
+                "worker",
+                Some("leader"),
+                "task-1",
+                "unix-ms:40",
+            ))
+            .expect("report");
+        // Critic/evaluator evidence (a learning-status warning input distinct from the
+        // typed GoalEvaluation object).
+        store
+            .append_evidence(&make_timed_evidence(
+                "critic-1",
+                "critic_findings",
+                Some("task-1"),
+                "unix-ms:50",
+            ))
+            .expect("critic");
+        store
+            .append_decision(&make_timed_decision("decision-1", "task-1", "unix-ms:60"))
+            .expect("decision");
+        (store, root)
+    }
+
+    #[test]
+    fn goal_evaluate_persists_typed_object_and_flips_has_evaluation() {
+        let (store, root) = temp_store("wp7-goal-evaluate");
+        store.append_goal(&make_goal("goal-1")).expect("goal");
+        store
+            .append_task(&make_task("task-1", "goal-1"))
+            .expect("task");
+        // Evidence attached to the goal's task -> the typed evaluation references it.
+        store
+            .append_evidence(&make_timed_evidence(
+                "evi-1",
+                "check_result",
+                Some("task-1"),
+                "unix-ms:50",
+            ))
+            .expect("task evidence");
+
+        // Before evaluating, the typed dual-read seam reports no evaluation.
+        let before = goal_learning_status(&store, "goal-1").expect("status");
+        assert!(!before.has_goal_evaluation());
+        assert!(before.goal_evaluation_objects.is_empty());
+
+        let args: Vec<String> = vec![
+            "--goal".into(),
+            "goal-1".into(),
+            "--id-out".into(),
+            "eval-typed-1".into(),
+            "--evaluator".into(),
+            "critic".into(),
+            "--outcome".into(),
+            "success".into(),
+            "--what-worked".into(),
+            "the loop closed".into(),
+            "--what-failed".into(),
+            "nothing".into(),
+            "--pattern".into(),
+            "typed-producer".into(),
+        ];
+        goal_evaluate(&store, &args).expect("goal evaluate succeeds");
+
+        // Round-trips as a TYPED GoalEvaluation (not an Evidence note).
+        let stored = store.goal_evaluations().expect("read evaluations");
+        assert_eq!(stored.len(), 1);
+        let evaluation = &stored[0];
+        assert_eq!(evaluation.id, "eval-typed-1");
+        assert_eq!(evaluation.goal_id, "goal-1");
+        assert_eq!(evaluation.outcome, EvaluationOutcome::Success);
+        assert_eq!(evaluation.reusable_patterns, vec!["typed-producer"]);
+        // No legacy Evidence(source_type=goal_evaluation) row was written.
+        assert!(
+            store
+                .evidence()
+                .expect("evidence")
+                .iter()
+                .all(|item| item.source_type != "goal_evaluation"),
+            "goal evaluate must not write an untyped goal_evaluation Evidence note"
+        );
+
+        // The typed dual-read seam now reports the evaluation.
+        let after = goal_learning_status(&store, "goal-1").expect("status");
+        assert!(after.has_goal_evaluation());
+        assert_eq!(after.goal_evaluation_objects.len(), 1);
+        assert!(after.goal_evaluation.is_empty(), "no legacy evaluation note");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn closeout_gate_allows_close_with_typed_decision_and_typed_evaluation() {
+        let (store, root) = temp_store("wp7-closeout-typed");
+        store.append_goal(&make_goal("goal-1")).expect("goal");
+        store
+            .append_task(&make_task("task-1", "goal-1"))
+            .expect("task");
+        // Typed GoalEvaluation (via the producer) + typed closeout decision.
+        let args: Vec<String> = vec![
+            "--goal".into(),
+            "goal-1".into(),
+            "--evaluator".into(),
+            "critic".into(),
+            "--outcome".into(),
+            "success".into(),
+            "--what-worked".into(),
+            "ok".into(),
+            "--what-failed".into(),
+            "none".into(),
+        ];
+        goal_evaluate(&store, &args).expect("goal evaluate succeeds");
+        store
+            .append_decision(&make_closeout_decision("closeout-1", "goal-1"))
+            .expect("closeout decision");
+
+        let status = goal_learning_status(&store, "goal-1").expect("status");
+        assert!(status.has_closeout_decision());
+        assert!(status.has_goal_evaluation());
+        assert!(status.may_close(), "typed decision + typed evaluation allow close");
+        status
+            .require_closeout()
+            .expect("closeout gate passes with typed decision + typed evaluation");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn closeout_gate_blocks_close_when_typed_evaluation_missing() {
+        let (store, root) = temp_store("wp7-closeout-missing");
+        store.append_goal(&make_goal("goal-1")).expect("goal");
+        store
+            .append_task(&make_task("task-1", "goal-1"))
+            .expect("task");
+        // Closeout decision present, but NO GoalEvaluation (typed or legacy).
+        store
+            .append_decision(&make_closeout_decision("closeout-1", "goal-1"))
+            .expect("closeout decision");
+
+        let status = goal_learning_status(&store, "goal-1").expect("status");
+        assert!(status.has_closeout_decision());
+        assert!(!status.has_goal_evaluation());
+        assert!(!status.may_close());
+        let error = status
+            .require_closeout()
+            .expect_err("missing evaluation must block close");
+        assert!(error.to_string().contains("goal_evaluation"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn next_round_candidate_found_for_closed_typed_evaluated_goal() {
+        let (store, root) = seed_typed_learning_chain("wp7-candidate");
+        // The goal has a complete task graph + full learning chain, but NO evaluation
+        // yet: the runner must NOT see a candidate (item 3 regression: typed-only seam).
+        let options = make_tick_options();
+        let before =
+            autonomy_next_round_candidates(&store, &options).expect("candidate query");
+        assert!(
+            before.is_empty(),
+            "no candidate before a typed evaluation exists"
+        );
+
+        // Produce a TYPED GoalEvaluation through the producer; this is the only new
+        // input, and it must flip the goal into a candidate.
+        goal_evaluate(
+            &store,
+            &[
+                "--goal".into(),
+                "goal-1".into(),
+                "--id-out".into(),
+                "eval-typed-1".into(),
+                "--evaluator".into(),
+                "critic".into(),
+                "--outcome".into(),
+                "success".into(),
+                "--what-worked".into(),
+                "ok".into(),
+                "--what-failed".into(),
+                "none".into(),
+            ],
+        )
+        .expect("goal evaluate");
+
+        let after = autonomy_next_round_candidates(&store, &options).expect("candidate query");
+        assert_eq!(after.len(), 1, "typed evaluation makes the goal a candidate");
+        let candidate = &after[0];
+        assert_eq!(candidate.goal_id, "goal-1");
+        assert_eq!(candidate.source_task_id, "task-1");
+        assert_eq!(candidate.evaluation_evidence_id, "eval-typed-1");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// Minimal AutonomyTickOptions for candidate-query tests: only the fields the
+    /// query reads (goal_filter/force) matter; the rest carry inert defaults.
+    fn make_tick_options() -> AutonomyTickOptions {
+        AutonomyTickOptions {
+            observer: "observer".into(),
+            lead: "leader".into(),
+            assignee: None,
+            reviewer: None,
+            goal_filter: None,
+            vision_ref: None,
+            vision_summary: None,
+            auto_accept: false,
+            force: false,
+            max_new_goals: 1,
+            dry_run: true,
+            start_runtime: false,
+            timeout_ms: 3_000,
+            claim_ttl_ms: 300_000,
+            goal_prefix: "goal-autonomous-round".into(),
+            task_prefix: "task-autonomous-round".into(),
+            workspace: None,
+            branch: None,
+            owned_paths: Vec::new(),
+            acceptance: Vec::new(),
+            goal_success: Vec::new(),
+        }
     }
 
     #[test]
