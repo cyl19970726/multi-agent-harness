@@ -71,9 +71,11 @@ export function SurfaceHeader({
 }) {
   return (
     <header
-      className={cn("flex items-start justify-between gap-4", className)}
+      className={cn("flex flex-wrap items-start justify-between gap-x-4 gap-y-3", className)}
     >
-      <div className="min-w-0 space-y-1">
+      {/* min-w keeps the title readable; when the actions can't fit beside it the
+          flex-wrap drops them to their own row instead of collapsing the title. */}
+      <div className="min-w-[15rem] flex-1 space-y-1">
         {kicker && (
           <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
             {kicker}
@@ -86,7 +88,9 @@ export function SurfaceHeader({
           <p className="max-w-2xl text-sm text-muted-foreground">{description}</p>
         )}
       </div>
-      {actions && <div className="flex shrink-0 items-center gap-2">{actions}</div>}
+      {actions && (
+        <div className="flex shrink-0 flex-wrap items-center gap-2">{actions}</div>
+      )}
     </header>
   );
 }
