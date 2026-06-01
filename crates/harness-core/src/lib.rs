@@ -6,8 +6,32 @@ use thiserror::Error;
 pub enum GoalStatus {
     Active,
     Blocked,
+    Review,
+    Done,
+    /// Deprecated legacy terminal state (ADR 0019): retained for old rows; new
+    /// writers emit `Done`. Read models fold `Complete` into `Done`.
     Complete,
     Archived,
+}
+
+/// Shared git/worktree context for a Goal or Task (ADR 0019). All fields
+/// optional; additive — old rows that omit it deserialize as `None`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct GitMetadata {
+    #[serde(default)]
+    pub repo: Option<String>,
+    #[serde(default)]
+    pub worktree_path: Option<String>,
+    #[serde(default)]
+    pub branch: Option<String>,
+    #[serde(default)]
+    pub base_branch: Option<String>,
+    #[serde(default)]
+    pub pr_ref: Option<String>,
+    #[serde(default)]
+    pub commit: Option<String>,
+    #[serde(default)]
+    pub owned_paths: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -27,6 +51,8 @@ pub struct Goal {
     pub goal_design_id: Option<String>,
     #[serde(default)]
     pub closed_by_decision_id: Option<String>,
+    #[serde(default)]
+    pub git_metadata: Option<GitMetadata>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -480,6 +506,11 @@ pub struct Task {
     pub requires_human_approval: bool,
     #[serde(default)]
     pub verdict_decision_id: Option<String>,
+    /// Full task write-up (markdown). `objective` stays the one-line summary.
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub git_metadata: Option<GitMetadata>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1332,6 +1363,13 @@ mod tests {
             scope_refs: vec!["scope-1".to_string()],
             requires_human_approval: true,
             verdict_decision_id: Some("decision-1".to_string()),
+            description: Some("Trace the failing assertion to its root cause.".to_string()),
+            git_metadata: Some(GitMetadata {
+                branch: Some("agent/task-1".to_string()),
+                base_branch: Some("master".to_string()),
+                owned_paths: vec!["crates/harness-core".to_string()],
+                ..Default::default()
+            }),
         };
 
         let json = serde_json::to_string(&task).expect("serialize task");
@@ -1356,6 +1394,12 @@ mod tests {
             vision_id: Some("vision-1".to_string()),
             goal_design_id: Some("goal-design-1".to_string()),
             closed_by_decision_id: Some("decision-1".to_string()),
+            git_metadata: Some(GitMetadata {
+                repo: Some("multi-agent-harness".to_string()),
+                branch: Some("feature/self-host".to_string()),
+                base_branch: Some("master".to_string()),
+                ..Default::default()
+            }),
         };
 
         let json = serde_json::to_string(&goal).expect("serialize goal");

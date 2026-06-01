@@ -348,6 +348,7 @@ fn goal_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
                 vision_id: value(args, "--vision"),
                 goal_design_id: value(args, "--goal-design"),
                 closed_by_decision_id: value(args, "--closed-by-decision"),
+                git_metadata: None,
             };
             persist_new_goal(store, &goal)?;
             print_json(&goal)?;
@@ -398,8 +399,8 @@ fn goal_close(store: &HarnessStore, args: &[String]) -> CliResult<()> {
                 .map(|decision| decision.id.clone())
         });
 
-    if goal.status != GoalStatus::Complete {
-        goal.status = GoalStatus::Complete;
+    if goal.status != GoalStatus::Done {
+        goal.status = GoalStatus::Done;
     }
     if goal.closed_by_decision_id.is_none() {
         goal.closed_by_decision_id = closing_decision_id.clone();
@@ -412,7 +413,7 @@ fn goal_close(store: &HarnessStore, args: &[String]) -> CliResult<()> {
         None,
         None,
         "goal_closed",
-        &format!("Goal {goal_id} marked complete via closeout gate"),
+        &format!("Goal {goal_id} marked done via closeout gate"),
         closing_decision_id.as_deref(),
     )?;
     print_json(&goal)?;
@@ -514,6 +515,8 @@ fn task_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
                 scope_refs: many(args, "--scope-ref"),
                 requires_human_approval: has_flag(args, "--requires-human-approval"),
                 verdict_decision_id: value(args, "--verdict-decision"),
+                description: value(args, "--description"),
+                git_metadata: None,
             };
             persist_new_task(store, &task)?;
             print_json(&task)?;
@@ -1092,6 +1095,7 @@ fn autonomy_decide_value(store: &HarnessStore, args: &[String]) -> CliResult<ser
                 vision_id: value(args, "--goal-vision"),
                 goal_design_id: None,
                 closed_by_decision_id: None,
+                git_metadata: None,
             };
             store.append_goal(&goal)?;
             created_goal = Some(goal);
@@ -1130,6 +1134,8 @@ fn autonomy_decide_value(store: &HarnessStore, args: &[String]) -> CliResult<ser
                 scope_refs: many(args, "--task-scope-ref"),
                 requires_human_approval: has_flag(args, "--task-requires-human-approval"),
                 verdict_decision_id: None,
+                description: value(args, "--task-description"),
+                git_metadata: None,
             };
             // Write a TYPED GoalDesign (graduated object) rather than an untyped
             // Evidence(source_type=goal_design): the next-round goal is designed
@@ -1635,7 +1641,7 @@ fn close_goal_for_next_round(
         None,
         Some(candidate.source_task_id.as_str()),
         "autonomy_goal_closed",
-        &format!("Goal {} marked complete by runner", candidate.goal_id),
+        &format!("Goal {} marked done by runner", candidate.goal_id),
         None,
     )?;
     Ok(serde_json::json!({
@@ -2796,6 +2802,7 @@ fn create_goal_value(
         vision_id: json_string(body, "vision"),
         goal_design_id: json_string(body, "goal_design"),
         closed_by_decision_id: json_string(body, "closed_by_decision"),
+        git_metadata: None,
     };
     persist_new_goal(store, &goal)?;
     Ok(serde_json::to_value(goal)?)
@@ -2829,6 +2836,8 @@ fn create_task_value(
         scope_refs: json_string_array(body, "scope_ref"),
         requires_human_approval: json_bool(body, "requires_human_approval").unwrap_or(false),
         verdict_decision_id: json_string(body, "verdict_decision"),
+        description: json_string(body, "description"),
+        git_metadata: None,
     };
     persist_new_task(store, &task)?;
     Ok(serde_json::to_value(task)?)
@@ -11410,6 +11419,7 @@ mod tests {
             vision_id: None,
             goal_design_id: None,
             closed_by_decision_id: None,
+            git_metadata: None,
         }
     }
 
@@ -11436,6 +11446,8 @@ mod tests {
             scope_refs: Vec::new(),
             requires_human_approval: false,
             verdict_decision_id: None,
+            description: None,
+            git_metadata: None,
         }
     }
 

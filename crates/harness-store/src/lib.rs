@@ -416,6 +416,7 @@ mod tests {
             vision_id: None,
             goal_design_id: None,
             closed_by_decision_id: None,
+            git_metadata: None,
         };
 
         store.append_goal(&goal).expect("append goal");
@@ -458,6 +459,7 @@ mod tests {
                         vision_id: None,
                         goal_design_id: None,
                         closed_by_decision_id: None,
+                        git_metadata: None,
                     };
                     store.append_goal(&goal).expect("append goal");
                 }
@@ -505,6 +507,7 @@ mod tests {
             vision_id: None,
             goal_design_id: None,
             closed_by_decision_id: None,
+            git_metadata: None,
         };
 
         store
