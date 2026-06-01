@@ -1444,6 +1444,110 @@
         "npx pnpm@9.15.4 check"
       ],
       "reorgTrigger": "The primary substrate, the mid-turn-approval fallback policy, or the neutral launch-spec direction changes."
+    },
+    {
+      "path": "docs/research/README.md",
+      "ownerRole": "architect",
+      "status": "stable",
+      "lifecycle": "stable",
+      "canonicalFor": [
+        "research area index",
+        "how to add an external-system architecture study",
+        "research-cache is gitignored and never committed"
+      ],
+      "dependsOn": [
+        "docs/research/claude-code-agent-teams.md",
+        "docs/research/multica-architecture.md",
+        "docs/research/runtime-persistence-decision.md",
+        "docs/decisions/0018-exec-stream-primary-substrate.md",
+        "docs/agent-integration-model.md"
+      ],
+      "machineConsumers": [
+        "check-doc-links",
+        "check-doc-governance"
+      ],
+      "reviewAfter": "2026-09-30",
+      "lastVerifiedWith": [
+        "npx pnpm@9.15.4 check"
+      ],
+      "reorgTrigger": "A research study is added, removed, or the research-cache/scratch-file conventions change."
+    },
+    {
+      "path": "docs/research/claude-code-agent-teams.md",
+      "ownerRole": "architect",
+      "status": "stable",
+      "lifecycle": "archival",
+      "canonicalFor": [
+        "Claude Code agent-teams task-type taxonomy",
+        "in-process async teammate substrate (no tmux/pty/daemon)",
+        "file-mailbox inter-agent communication and single-session persistence",
+        "Claude Code has no cross-session resume for in-process teammates"
+      ],
+      "dependsOn": [
+        "docs/research/runtime-persistence-decision.md"
+      ],
+      "machineConsumers": [
+        "check-doc-links",
+        "check-doc-governance"
+      ],
+      "reviewAfter": "2026-09-30",
+      "lastVerifiedWith": [
+        "npx pnpm@9.15.4 check"
+      ],
+      "reorgTrigger": "The Claude Code source checkout is re-read and findings (task types, substrate, mailbox, resume model) change."
+    },
+    {
+      "path": "docs/research/multica-architecture.md",
+      "ownerRole": "architect",
+      "status": "stable",
+      "lifecycle": "archival",
+      "canonicalFor": [
+        "Multica DB-backed server plus edge-daemon architecture",
+        "per-task ephemeral CLI subprocess plus session-resume persistence",
+        "exec-stream provider integration across 12 backends",
+        "squad routing and DB-centric event-driven coordination"
+      ],
+      "dependsOn": [
+        "docs/research/runtime-persistence-decision.md"
+      ],
+      "machineConsumers": [
+        "check-doc-links",
+        "check-doc-governance"
+      ],
+      "reviewAfter": "2026-09-30",
+      "lastVerifiedWith": [
+        "npx pnpm@9.15.4 check"
+      ],
+      "reorgTrigger": "The Multica source checkout is re-read and findings (runtime model, persistence, providers, coordination) change."
+    },
+    {
+      "path": "docs/research/runtime-persistence-decision.md",
+      "ownerRole": "architect",
+      "status": "stable",
+      "lifecycle": "volatile",
+      "canonicalFor": [
+        "3-way runtime/persistence comparison (Claude Code teams, Multica, our harness)",
+        "judgement of the tmux-plus-claude proposal",
+        "recommended model: one-shot exec default plus optional session-resume persistence tier",
+        "sequenced runtime/persistence WP plan and per-provider resume support"
+      ],
+      "dependsOn": [
+        "docs/research/claude-code-agent-teams.md",
+        "docs/research/multica-architecture.md",
+        "docs/decisions/0018-exec-stream-primary-substrate.md",
+        "docs/decisions/0008-persistent-codex-agent-runtime.md",
+        "docs/decisions/0011-provider-neutral-runtime.md",
+        "docs/agent-integration-model.md"
+      ],
+      "machineConsumers": [
+        "check-doc-links",
+        "check-doc-governance"
+      ],
+      "reviewAfter": "2026-09-30",
+      "lastVerifiedWith": [
+        "npx pnpm@9.15.4 check"
+      ],
+      "reorgTrigger": "The recommended runtime/persistence model, the WP plan, or provider resume support changes; or a related ADR is accepted."
     }
   ]
 }
