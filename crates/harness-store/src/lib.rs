@@ -267,6 +267,15 @@ impl HarnessStore {
         let mut file = OpenOptions::new().create(true).append(true).open(path)?;
         file.write_all(&row)?;
         file.flush()?;
+        // Durability: fsync the row to stable storage before returning. Without
+        // this a crash immediately after a claim append (the Running session row
+        // + the Acknowledged message row in `claim_queued_message_delivery`) can
+        // lose those rows from the OS page cache; latest-wins projection would
+        // then revert the message to Queued and double-deliver it. `flush()`
+        // only drains the userspace buffer, not the kernel cache, so we must
+        // `sync_all`. Always called under the global flock, so write ordering
+        // across files is preserved.
+        file.sync_all()?;
         Ok(())
     }
 
@@ -546,6 +555,82 @@ mod tests {
         assert_eq!(
             second_claim,
             MessageDeliveryClaimResult::BlockedBySession("delivery-1".into())
+        );
+
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
+    /// Durability: a claim writes the Acknowledged message row and the Running
+    /// provider-session row, fsyncs them, and a *separate* store handle opened
+    /// against the same root (no shared in-memory state, mirroring a process
+    /// restart after a crash) reads them back. This guards the double-delivery
+    /// regression: if the Acknowledged row were lost, latest-wins would revert
+    /// the message to Queued and it would be claimable again.
+    #[test]
+    fn claim_appends_survive_reopen() {
+        let root = std::env::temp_dir().join(format!(
+            "harness-store-durability-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock")
+                .as_millis()
+        ));
+        let store = HarnessStore::new(&root);
+        store
+            .append_message(&test_message("message-d", "agent-d"))
+            .expect("append message");
+
+        let claim = store
+            .claim_queued_message_delivery(
+                "agent-d",
+                "message-d",
+                test_delivery("delivery-d"),
+                test_provider_session("delivery-d", "agent-d"),
+            )
+            .expect("claim message");
+        assert!(matches!(claim, MessageDeliveryClaimResult::Claimed(_)));
+
+        // Reopen with a fresh handle: only on-disk (fsynced) state is visible.
+        let reopened = HarnessStore::new(&root);
+
+        let message = reopened
+            .messages()
+            .expect("read messages")
+            .into_iter()
+            .rev()
+            .find(|message| message.id == "message-d")
+            .expect("acknowledged message row survives reopen");
+        assert_eq!(
+            message.delivery_status,
+            MessageDeliveryStatus::Acknowledged,
+            "acknowledged status must survive a restart so the message is not re-delivered"
+        );
+
+        let session = reopened
+            .provider_sessions()
+            .expect("read provider sessions")
+            .into_iter()
+            .rev()
+            .find(|session| session.id == "delivery-d")
+            .expect("running provider-session row survives reopen");
+        assert_eq!(session.status, ProviderSessionStatus::Running);
+
+        // The reopened store must refuse to re-claim: because both the
+        // Acknowledged message row and the Running provider-session row survived
+        // the fsync, the re-claim is rejected (the Running session for this
+        // agent blocks delivery; were both rows lost it would return Claimed and
+        // double-deliver). Either rejection variant proves no double-delivery.
+        let reclaim = reopened
+            .claim_queued_message_delivery(
+                "agent-d",
+                "message-d",
+                test_delivery("delivery-d2"),
+                test_provider_session("delivery-d2", "agent-d"),
+            )
+            .expect("reclaim attempt");
+        assert!(
+            !matches!(reclaim, MessageDeliveryClaimResult::Claimed(_)),
+            "fsynced claim state must prevent a second delivery, got {reclaim:?}"
         );
 
         std::fs::remove_dir_all(root).expect("remove temp store");

@@ -1,6 +1,6 @@
 //! Server-Sent Events (SSE) streaming for real-time harness events
 use std::fs;
-use std::io::{BufRead, BufReader, Seek, SeekFrom, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::net::TcpStream;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -81,26 +81,34 @@ pub fn start_sse_watcher(store: &HarnessStore, manager: SseManager) -> std::io::
     let store_root = store.root().to_path_buf();
     
     thread::spawn(move || {
-        // Track file sizes to detect new appends
-        let mut file_sizes: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
-        
-        // Initialize file sizes
+        // Track, per file, the byte offset through the last *complete*
+        // (newline-terminated) line we have already broadcast. A torn trailing
+        // fragment (a row still mid-write by the store) leaves the offset short
+        // of EOF so it is re-read and emitted exactly once on a later poll,
+        // rather than being parsed-as-garbage-and-dropped.
+        let mut consumed_offsets: std::collections::HashMap<String, u64> =
+            std::collections::HashMap::new();
+
+        // Seed offsets at current EOF so we only stream rows appended after the
+        // watcher starts (the initial snapshot covers pre-existing rows).
         for filename in &["agent_events.jsonl", "messages.jsonl", "provider_sessions.jsonl"] {
             let path = store_root.join(filename);
             if let Ok(metadata) = fs::metadata(&path) {
-                file_sizes.insert(filename.to_string(), metadata.len());
+                consumed_offsets.insert(filename.to_string(), metadata.len());
             }
         }
 
-        // Poll for new appends every ~500ms (simple, reliable approach)
+        // Poll for new appends at a low floor (~150ms) so the operator sees
+        // near-real-time updates. Each poll only opens files that grew, reads
+        // the new byte range, and sleeps otherwise — CPU stays negligible.
         loop {
-            thread::sleep(Duration::from_millis(500));
+            thread::sleep(POLL_INTERVAL);
 
             // Check agent_events.jsonl
             check_and_broadcast_appends(
                 &store_root,
                 "agent_events.jsonl",
-                &mut file_sizes,
+                &mut consumed_offsets,
                 |line| {
                     if let Ok(event) = serde_json::from_str::<AgentEvent>(line) {
                         Some(SseEventFrame::AgentEvent(event))
@@ -115,7 +123,7 @@ pub fn start_sse_watcher(store: &HarnessStore, manager: SseManager) -> std::io::
             check_and_broadcast_appends(
                 &store_root,
                 "messages.jsonl",
-                &mut file_sizes,
+                &mut consumed_offsets,
                 |line| {
                     if let Ok(msg) = serde_json::from_str::<Message>(line) {
                         Some(SseEventFrame::Message(msg))
@@ -130,7 +138,7 @@ pub fn start_sse_watcher(store: &HarnessStore, manager: SseManager) -> std::io::
             check_and_broadcast_appends(
                 &store_root,
                 "provider_sessions.jsonl",
-                &mut file_sizes,
+                &mut consumed_offsets,
                 |line| {
                     if let Ok(session) = serde_json::from_str::<ProviderSession>(line) {
                         Some(SseEventFrame::ProviderSession(session))
@@ -146,10 +154,16 @@ pub fn start_sse_watcher(store: &HarnessStore, manager: SseManager) -> std::io::
     Ok(())
 }
 
+/// SSE watcher poll interval. Lowered from the original 500ms floor so the
+/// operator (the first real consumer of live SSE) sees near-real-time updates.
+/// 150ms keeps perceived latency low while the grew-only read path keeps idle
+/// CPU negligible.
+const POLL_INTERVAL: Duration = Duration::from_millis(150);
+
 fn check_and_broadcast_appends<F>(
     store_root: &Path,
     filename: &str,
-    file_sizes: &mut std::collections::HashMap<String, u64>,
+    consumed_offsets: &mut std::collections::HashMap<String, u64>,
     parse_line: F,
     manager: &SseManager,
 ) where
@@ -161,26 +175,54 @@ fn check_and_broadcast_appends<F>(
     };
 
     let current_size = metadata.len();
-    let old_size = file_sizes.get(filename).copied().unwrap_or(0);
+    let consumed = consumed_offsets.get(filename).copied().unwrap_or(0);
 
-    if current_size > old_size {
-        // File grew; read new lines
-        if let Ok(mut file_handle) = fs::File::open(&path) {
-            let _ = file_handle.seek(SeekFrom::Start(old_size));
-            let mut reader = BufReader::new(file_handle);
-            let mut line = String::new();
-            while reader.read_line(&mut line).unwrap_or(0) > 0 {
-                let trimmed = line.trim();
-                if !trimmed.is_empty() {
-                    if let Some(frame) = parse_line(trimmed) {
-                        manager.broadcast(frame);
-                    }
-                }
-                line.clear();
-            }
-        }
-        file_sizes.insert(filename.to_string(), current_size);
+    if current_size <= consumed {
+        return;
     }
+
+    // Read the new byte range [consumed, current_size). We deliberately work in
+    // bytes (not read_line) so we can distinguish a complete, newline-terminated
+    // line from a torn trailing fragment that the store is still mid-append on.
+    let Ok(mut file_handle) = fs::File::open(&path) else {
+        return;
+    };
+    if file_handle.seek(SeekFrom::Start(consumed)).is_err() {
+        return;
+    }
+    let mut buf = Vec::new();
+    if file_handle.read_to_end(&mut buf).is_err() {
+        return;
+    }
+
+    // Only consume through the last newline. Any bytes after it are a torn
+    // partial line: leave the offset short of them so the now-complete line is
+    // re-read and broadcast exactly once on a later poll, never dropped.
+    let Some(last_newline) = buf.iter().rposition(|&b| b == b'\n') else {
+        // No complete line yet — the whole new range is a torn fragment. Do not
+        // advance the offset; retry next poll.
+        return;
+    };
+
+    let complete = &buf[..=last_newline];
+    for line in complete.split(|&b| b == b'\n') {
+        if line.is_empty() {
+            continue;
+        }
+        // Lossy is safe: JSONL rows are UTF-8; a partial multi-byte char can
+        // only occur in the trailing fragment we already excluded above.
+        let text = String::from_utf8_lossy(line);
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if let Some(frame) = parse_line(trimmed) {
+            manager.broadcast(frame);
+        }
+    }
+
+    // Advance only past the complete lines we just consumed.
+    consumed_offsets.insert(filename.to_string(), consumed + (last_newline as u64) + 1);
 }
 
 /// Write an SSE response header
@@ -213,4 +255,147 @@ pub fn write_sse_keepalive(stream: &mut TcpStream) -> std::io::Result<()> {
     stream.write_all(b": keepalive\n\n")?;
     stream.flush()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+    use std::fs::OpenOptions;
+    use std::io::Write as _;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use harness_core::{Message, MessageDeliveryStatus, MessageKind, SenderKind};
+
+    use super::*;
+
+    fn unique_dir(tag: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "harness-sse-test-{tag}-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ))
+    }
+
+    fn test_message(id: &str) -> Message {
+        Message {
+            id: id.into(),
+            task_id: Some("task-1".into()),
+            from_agent_id: "leader".into(),
+            to_agent_id: Some("agent-1".into()),
+            channel: Some("assignment".into()),
+            kind: MessageKind::Task,
+            delivery_status: MessageDeliveryStatus::Queued,
+            content: "Do the task".into(),
+            evidence_ids: Vec::new(),
+            created_at: "unix-ms:1".into(),
+            delivery: None,
+            sender_kind: SenderKind::Agent,
+        }
+    }
+
+    fn message_frame(line: &str) -> Option<SseEventFrame> {
+        serde_json::from_str::<Message>(line)
+            .ok()
+            .map(SseEventFrame::Message)
+    }
+
+    /// A JSONL row whose write is observed in two pieces (the watcher polls
+    /// after only the first half has hit the file) must be delivered exactly
+    /// once — never dropped as a torn line, never duplicated when it completes.
+    #[test]
+    fn torn_record_split_across_polls_delivered_exactly_once() {
+        let root = unique_dir("torn");
+        std::fs::create_dir_all(&root).expect("create root");
+        let path = root.join("messages.jsonl");
+
+        let manager = SseManager::new();
+        let rx = manager.subscribe();
+        let mut offsets: HashMap<String, u64> = HashMap::new();
+
+        // Two full rows as the store would write them: compact JSON + '\n'.
+        let row_a = serde_json::to_string(&test_message("message-a")).expect("ser a");
+        let row_b = serde_json::to_string(&test_message("message-b")).expect("ser b");
+        let full = format!("{row_a}\n{row_b}\n");
+        let bytes = full.as_bytes();
+
+        // Split point lands mid-way through row_b (after row_a's newline), so
+        // the first poll sees a complete row_a plus a torn fragment of row_b.
+        let split = row_a.len() + 1 + (row_b.len() / 2);
+
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .expect("open");
+        file.write_all(&bytes[..split]).expect("write first half");
+        file.flush().expect("flush first half");
+
+        // Poll 1: row_a delivered, row_b fragment buffered (offset not advanced
+        // past it).
+        check_and_broadcast_appends(&root, "messages.jsonl", &mut offsets, message_frame, &manager);
+
+        // Poll 1.5: nothing new on disk, the torn fragment must NOT be emitted.
+        check_and_broadcast_appends(&root, "messages.jsonl", &mut offsets, message_frame, &manager);
+
+        // Complete row_b.
+        file.write_all(&bytes[split..]).expect("write second half");
+        file.flush().expect("flush second half");
+
+        // Poll 2: row_b now complete and delivered exactly once.
+        check_and_broadcast_appends(&root, "messages.jsonl", &mut offsets, message_frame, &manager);
+
+        // Poll 3: idempotent — no re-delivery.
+        check_and_broadcast_appends(&root, "messages.jsonl", &mut offsets, message_frame, &manager);
+
+        let mut received = Vec::new();
+        while let Ok(frame) = rx.try_recv() {
+            match frame {
+                SseEventFrame::Message(m) => received.push(m.id),
+                other => panic!("unexpected frame {other:?}"),
+            }
+        }
+
+        assert_eq!(
+            received,
+            vec!["message-a".to_string(), "message-b".to_string()],
+            "each row delivered exactly once and in order, torn fragment never dropped"
+        );
+
+        std::fs::remove_dir_all(&root).expect("cleanup");
+    }
+
+    /// The complete-line path must broadcast each appended row once and advance
+    /// past them so a follow-up poll with no new bytes emits nothing.
+    #[test]
+    fn complete_rows_broadcast_once_and_offset_advances() {
+        let root = unique_dir("complete");
+        std::fs::create_dir_all(&root).expect("create root");
+        let path = root.join("messages.jsonl");
+
+        let manager = SseManager::new();
+        let rx = manager.subscribe();
+        let mut offsets: HashMap<String, u64> = HashMap::new();
+
+        let row = serde_json::to_string(&test_message("message-once")).expect("ser");
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .expect("open");
+        file.write_all(format!("{row}\n").as_bytes()).expect("write");
+        file.flush().expect("flush");
+
+        check_and_broadcast_appends(&root, "messages.jsonl", &mut offsets, message_frame, &manager);
+        check_and_broadcast_appends(&root, "messages.jsonl", &mut offsets, message_frame, &manager);
+
+        let mut count = 0;
+        while rx.try_recv().is_ok() {
+            count += 1;
+        }
+        assert_eq!(count, 1, "complete row broadcast exactly once across two polls");
+
+        std::fs::remove_dir_all(&root).expect("cleanup");
+    }
 }
