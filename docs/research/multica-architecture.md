@@ -5,6 +5,10 @@ read-only checkout (`.research-cache/multica`, HEAD `2bb2d13e`); paths are kept
 verbatim (`server/internal/daemon/daemon.go:1842`, etc.) so claims are
 checkable.
 
+**Diagrams.** Detailed ASCII deployment, lifecycle, end-to-end data-flow,
+concurrency/slot, and resume diagrams are in the companion
+[multica-architecture-diagrams.md](multica-architecture-diagrams.md).
+
 ## Answer first: how does Multica get persistence and concurrency?
 
 **Postgres is the single source of truth; agents are per-task ephemeral CLI

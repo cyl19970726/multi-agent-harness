@@ -13,7 +13,9 @@ than accidental, by seeing the design space others have explored.
 | Study | Topic | Doc |
 | --- | --- | --- |
 | Claude Code agent teams | Task-type taxonomy, in-process async substrate, file mailbox, session-resume model | [claude-code-agent-teams.md](claude-code-agent-teams.md) |
+| Claude Code teams — diagrams | ASCII component / lifecycle / message-sequence / concurrency / persistence companion | [claude-code-agent-teams-diagrams.md](claude-code-agent-teams-diagrams.md) |
 | Multica | DB-backed server + edge daemon, per-task subprocess + session-resume, squad routing | [multica-architecture.md](multica-architecture.md) |
+| Multica — diagrams | ASCII deployment / lifecycle / end-to-end data-flow / slot / resume companion | [multica-architecture-diagrams.md](multica-architecture-diagrams.md) |
 | Runtime/persistence decision | 3-way comparison (Claude Code / Multica / our harness) and the recommended model for us | [runtime-persistence-decision.md](runtime-persistence-decision.md) |
 
 The first two are descriptive (what an external system does). The third is
