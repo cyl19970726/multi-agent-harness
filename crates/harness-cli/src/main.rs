@@ -11486,6 +11486,126 @@ mod tests {
         );
         let _ = std::fs::remove_dir_all(root);
     }
+
+    #[test]
+    fn agents_can_be_created_and_used_without_team_required() {
+        // Stage 1: Create store with NO teams created.
+        let (store, root) = temp_store("agents-decenter-test");
+
+        // Stage 2: Create 2 agents with no team_ids.
+        let agent1_body = serde_json::json!({
+            "name": "Agent Codex",
+            "role": "worker",
+            "provider": "codex"
+        });
+        let agent1_created =
+            create_agent_value(&store, &agent1_body).expect("agent1 creates without team");
+        let agent1_id = agent1_created["id"]
+            .as_str()
+            .expect("agent1 has id")
+            .to_string();
+
+        let agent2_body = serde_json::json!({
+            "name": "Agent Claude",
+            "role": "reviewer",
+            "provider": "claude"
+        });
+        let agent2_created =
+            create_agent_value(&store, &agent2_body).expect("agent2 creates without team");
+        let agent2_id = agent2_created["id"]
+            .as_str()
+            .expect("agent2 has id")
+            .to_string();
+
+        // Assertion 1: Both agents have empty team_ids.
+        assert_eq!(
+            agent1_created["team_ids"].as_array().map(|a| a.is_empty()),
+            Some(true),
+            "agent1 team_ids must be empty"
+        );
+        assert_eq!(
+            agent2_created["team_ids"].as_array().map(|a| a.is_empty()),
+            Some(true),
+            "agent2 team_ids must be empty"
+        );
+
+        // Stage 3: Both agents appear in snapshot.members (top-level, not team-filtered).
+        let snapshot = dashboard_snapshot(&store).expect("snapshot builds");
+        let members = snapshot["members"]
+            .as_array()
+            .expect("members array in snapshot");
+
+        let member_ids: Vec<&str> = members.iter().filter_map(|m| m["id"].as_str()).collect();
+
+        assert!(
+            member_ids.contains(&agent1_id.as_str()),
+            "agent1 must appear in snapshot.members"
+        );
+        assert!(
+            member_ids.contains(&agent2_id.as_str()),
+            "agent2 must appear in snapshot.members"
+        );
+
+        // Stage 4: Create a task owned by agent1, then assign to agent2.
+        let task_body = serde_json::json!({
+            "title": "Test Task",
+            "objective": "Verify task assignment works for teamless agents",
+            "owner": agent1_id
+        });
+        let task_created = create_task_value(&store, &task_body).expect("task creates");
+        let task_id = task_created["id"]
+            .as_str()
+            .expect("task has id")
+            .to_string();
+
+        // Assertion 2: Task is initially unassigned.
+        assert!(
+            task_created["assignee_agent_id"].is_null(),
+            "task must start unassigned"
+        );
+
+        // Stage 5: Assign the task to agent2 (no team required).
+        let assign_body = serde_json::json!({
+            "assignee": agent2_id
+        });
+        let assigned = assign_task_value(&store, &task_id, &assign_body)
+            .expect("task assignment succeeds for teamless agent");
+
+        // Assertion 3: Task is now assigned to agent2.
+        assert_eq!(
+            assigned["assignee_agent_id"].as_str(),
+            Some(agent2_id.as_str()),
+            "task assignee_agent_id must be set"
+        );
+        assert_eq!(
+            assigned["status"].as_str(),
+            Some("assigned"),
+            "task status must be 'assigned'"
+        );
+
+        // Stage 6: Verify latest_member works for teamless agents.
+        let agent1_loaded = latest_member(&store, &agent1_id).expect("agent1 loads from store");
+        let agent2_loaded = latest_member(&store, &agent2_id).expect("agent2 loads from store");
+
+        // Assertion 4: Loaded members have empty team_ids.
+        assert!(agent1_loaded.team_ids.is_empty(), "agent1 team_ids empty");
+        assert!(agent2_loaded.team_ids.is_empty(), "agent2 team_ids empty");
+
+        // Assertion 5: No team exists in store.
+        let teams = latest_teams(&store).expect("teams readable");
+        assert!(teams.is_empty(), "no team should exist in store");
+
+        // Assertion 6: snapshot.teams is empty or filtered out.
+        let teams_in_snapshot = snapshot["teams"]
+            .as_array()
+            .expect("teams array in snapshot");
+        assert!(
+            teams_in_snapshot.is_empty(),
+            "snapshot.teams should be empty when no active teams exist"
+        );
+
+        let _ = std::fs::remove_dir_all(root);
+    }
 }
 
 #[cfg(test)]
