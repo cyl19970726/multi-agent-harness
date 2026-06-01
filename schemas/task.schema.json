@@ -109,6 +109,25 @@
     },
     "verdict_decision_id": {
       "type": ["string", "null"]
+    },
+    "description": {
+      "type": ["string", "null"]
+    },
+    "git_metadata": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "properties": {
+        "repo": { "type": ["string", "null"] },
+        "worktree_path": { "type": ["string", "null"] },
+        "branch": { "type": ["string", "null"] },
+        "base_branch": { "type": ["string", "null"] },
+        "pr_ref": { "type": ["string", "null"] },
+        "commit": { "type": ["string", "null"] },
+        "owned_paths": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
     }
   }
 }
