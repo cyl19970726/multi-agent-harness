@@ -10,6 +10,7 @@
 //   POST /v1/agents/{id}/reconcile-session     { session_id, status, ... }
 //   POST /v1/agents/{id}/close                 {}
 //   POST /v1/tasks/{id}/request-review         { from_agent_id?, to_agent_id?, content? }
+//   POST /v1/tasks/{id}/assign                  { assignee }
 //
 // The agent id / task id belong in the URL PATH, never the body. The earlier
 // UI posted /v1/actions/* with the id in the body, so every write 400'd. This
@@ -118,6 +119,7 @@ export function createAgent(params: {
   name: string;
   role: string;
   provider?: string;
+  model?: string;
   description?: string;
   skills?: string[];
   teamIds?: string[];
@@ -128,6 +130,9 @@ export function createAgent(params: {
   };
   if (params.provider) {
     body.provider = params.provider;
+  }
+  if (params.model) {
+    body.model = params.model;
   }
   if (params.description) {
     body.description = params.description;
@@ -239,6 +244,18 @@ export function reconcileSession(
  */
 export function closeMember(agentId: string): ActionDescriptor {
   return { method: "POST", path: `/v1/agents/${encodeId(agentId)}/close`, body: {} };
+}
+
+/**
+ * Assign a task to an agent. The backend keys assignment off the task id in the
+ * URL path; the body carries the `assignee` agent id (POST /v1/tasks/{id}/assign).
+ */
+export function assignTask(taskId: string, assignee: string): ActionDescriptor {
+  return {
+    method: "POST",
+    path: `/v1/tasks/${encodeId(taskId)}/assign`,
+    body: { assignee },
+  };
 }
 
 /**

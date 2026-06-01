@@ -1,10 +1,9 @@
 export type SurfaceId =
-  | "team"
+  | "agents"
   | "vision"
   | "goal"
   | "task"
   | "tasks"
-  | "member"
   | "docs"
   | "warnings"
   | "debug";
@@ -12,7 +11,13 @@ export type SurfaceId =
 export interface SelectionState {
   surface: SurfaceId;
   goalId?: string;
+  /**
+   * Retained so the read model can still resolve an AgentTeam for data
+   * continuity (fixtures + historical jsonl keep the AgentTeam object). There is
+   * no Team concept in the UI; nothing sets this from a user gesture.
+   */
   teamId?: string;
+  /** The selected agent id (the AgentMember opened on the agent detail page). */
   memberId?: string;
   taskId?: string;
   mode?: "kanban" | "graph" | "split";
@@ -23,37 +28,36 @@ export interface SelectionState {
 }
 
 export const defaultSelection: SelectionState = {
-  surface: "team",
+  surface: "agents",
   mode: "kanban",
   boardScope: "tasks",
 };
 
 const surfaceIds: SurfaceId[] = [
-  "team",
+  "agents",
   "vision",
   "goal",
   "task",
   "tasks",
-  "member",
   "docs",
   "warnings",
   "debug",
 ];
 
 /**
- * Derive the URL-addressable selection from the current location. The member
- * workbench is reachable as `/members/:memberId` (canonical path form) or via
- * the query form `?surface=member&member=:id`; both resolve to the same
- * surface/member selection without a router dependency.
+ * Derive the URL-addressable selection from the current location. A single agent
+ * is reachable as `?agent=<id>` (URL-addressable like the goal/task docs); the
+ * legacy `/members/:id` path form is still accepted and resolves to the Agents
+ * area with that agent selected.
  */
 export function selectionFromLocation(base: SelectionState): SelectionState {
   if (typeof window === "undefined") return base;
   const next: SelectionState = { ...base };
 
-  // Path form: /members/:memberId
+  // Legacy path form: /members/:memberId → Agents area, that agent open.
   const pathMatch = window.location.pathname.match(/\/members\/([^/?#]+)/);
   if (pathMatch) {
-    next.surface = "member";
+    next.surface = "agents";
     next.memberId = decodeURIComponent(pathMatch[1]);
   }
 
@@ -62,9 +66,11 @@ export function selectionFromLocation(base: SelectionState): SelectionState {
   if (surface && (surfaceIds as string[]).includes(surface)) {
     next.surface = surface as SurfaceId;
   }
-  const member = params.get("member");
-  if (member) {
-    next.memberId = member;
+  // Canonical agent address: ?agent=<id>. Accept the legacy ?member= alias too.
+  const agent = params.get("agent") ?? params.get("member");
+  if (agent) {
+    next.memberId = agent;
+    if (!surface) next.surface = "agents";
   }
   const team = params.get("team");
   if (team) next.teamId = team;
@@ -81,17 +87,17 @@ export function selectionFromLocation(base: SelectionState): SelectionState {
 
 /**
  * Reflect the selection into the address bar (without reloading) so the current
- * member/surface is shareable. We use the query form as the canonical writer to
- * keep the static `base: "./"` Vite build working from any path, while still
- * accepting the `/members/:id` path form on read.
+ * agent/surface is shareable. The selected agent is written as `?agent=<id>`,
+ * the same query-form approach the goal/task docs use, which keeps the static
+ * `base: "./"` Vite build working from any path.
  */
 export function syncSelectionToLocation(selection: SelectionState): void {
   if (typeof window === "undefined") return;
   const params = new URLSearchParams();
-  if (selection.surface && selection.surface !== "team") {
+  if (selection.surface && selection.surface !== "agents") {
     params.set("surface", selection.surface);
   }
-  if (selection.memberId) params.set("member", selection.memberId);
+  if (selection.memberId) params.set("agent", selection.memberId);
   if (selection.teamId) params.set("team", selection.teamId);
   if (selection.goalId) params.set("goal", selection.goalId);
   if (selection.taskId) params.set("task", selection.taskId);
