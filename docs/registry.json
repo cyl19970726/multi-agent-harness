@@ -1337,6 +1337,7 @@
         "docs/research/multica-architecture-diagrams.md",
         "docs/research/runtime-persistence-decision.md",
         "docs/research/dynamic-workflow-runtime-design.md",
+        "docs/research/agent-mention-and-doc-reference-design.md",
         "docs/decisions/0018-exec-stream-primary-substrate.md",
         "docs/agent-integration-model.md"
       ],
@@ -1503,6 +1504,36 @@
         "npx pnpm@9.15.4 check"
       ],
       "reorgTrigger": "The Rust-expression recommendation, the CC-primitive mapping, the Workflow object/run model, or the WP plan changes; or the runtime is implemented and a related ADR is accepted."
+    },
+    {
+      "path": "docs/research/agent-mention-and-doc-reference-design.md",
+      "ownerRole": "architect",
+      "status": "idea",
+      "lifecycle": "volatile",
+      "canonicalFor": [
+        "@-mention agent assignment as UI sugar over assignee_agent_id/reviewer_agent_id plus a delivered Message(kind=task) (no new Assignment/Mention object)",
+        "assignment-proof delivery-badge rendering on the Task/Goal document",
+        "Agent detail ASSIGNMENTS and DOING-NOW panels mapped to snapshot/SSE data",
+        "Task<->Doc reference model: reference_doc_paths (input), updates_doc_paths (output) + Evidence(source_type=doc), and the doc-sync trigger",
+        "the sequenced WP plan and open owner questions for @-mention plus doc-reference"
+      ],
+      "dependsOn": [
+        "docs/concept-model.md",
+        "docs/data-model.md",
+        "docs/goal-learning-loop.md",
+        "docs/schemas.md",
+        "docs/decisions/0017-generic-object-model.md",
+        "docs/research/dynamic-workflow-runtime-design.md"
+      ],
+      "machineConsumers": [
+        "check-doc-links",
+        "check-doc-governance"
+      ],
+      "reviewAfter": "2026-09-30",
+      "lastVerifiedWith": [
+        "npx pnpm@9.15.4 check"
+      ],
+      "reorgTrigger": "The @-mention reuse decision, the assignment-proof rendering, the reference_doc_paths/updates_doc_paths field model, the doc-sync trigger choice, or the WP plan changes; or any of the proposed fields lands as an accepted schema/ADR change."
     }
   ]
 }

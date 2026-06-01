@@ -18,6 +18,7 @@ than accidental, by seeing the design space others have explored.
 | Multica — diagrams | ASCII deployment / lifecycle / end-to-end data-flow / slot / resume companion | [multica-architecture-diagrams.md](multica-architecture-diagrams.md) |
 | Runtime/persistence decision | 3-way comparison (Claude Code / Multica / our harness) and the recommended model for us | [runtime-persistence-decision.md](runtime-persistence-decision.md) |
 | Dynamic Workflow runtime design | Rust-native runtime to orchestrate codex+claude agents: the Rust-expression decision, CC-primitive mapping, Workflow object/run model, multi-provider scenario, WP plan | [dynamic-workflow-runtime-design.md](dynamic-workflow-runtime-design.md) |
+| @-mention assignment + Task<->Doc reference | Agents as workspace members you @-mention (reuse of assignee/reviewer + delivered task Message, no new object), agent-detail presence panels, and the Task input/output doc-reference + doc-sync model | [agent-mention-and-doc-reference-design.md](agent-mention-and-doc-reference-design.md) |
 
 The first two are descriptive (what an external system does). The third is
 prescriptive (what we should do) and is the deliverable that ties the studies
