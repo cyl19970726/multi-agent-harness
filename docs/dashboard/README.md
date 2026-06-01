@@ -15,6 +15,7 @@ surface owns the claim, then place it there.
 | `design-principles.md` | Core frontend design principles, failure modes, graph/Kanban policy, AgentTeam and AgentMember UI doctrine | Route-level layout details or React module boundaries |
 | `layout-history.md` | Candidate Workbench layout directions, Designer/Questioner critique, scoring rubric, and the selected/killed/deprecated decision ledger including rejected-implementation outcomes | Code implementation or unscored future ideas |
 | `frontend-design.md` | Workbench frontend design index, reading order, page-spec map, and implementation readiness summary | Page-level details, React internals, or run commands |
+| `work-board-design.md` | Vision → Goal → Task structures (with examples), unified Work board, Goal/Task/Vision detail IA, and derived task-graph (ready/waiting). Paired with ADR 0019 | Schema field-of-record (see `../../schemas/`) or component implementation |
 | `pages/README.md` | Page-spec index and template | Hard dimensions, ASCII wireframes, or implementation internals |
 | `pages/*.md` | One page/workspace product, UX, and layout contract: purpose, object ownership, workflow proof, IA, actions, detailed desktop/tablet/mobile ASCII diagrams, dimensions, scroll ownership, failure modes, screenshot questions | Component implementation |
 | `frontend-architecture.md` | React/Vite + Tailwind v4 + shadcn/Radix architecture, component responsibilities, app-local boundaries | Product PRD, visual doctrine, or runbook commands |
