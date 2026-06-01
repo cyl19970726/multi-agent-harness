@@ -243,8 +243,8 @@ function ProofStat({
   caption?: string;
 }) {
   return (
-    <div className="rounded-md border border-border bg-background/50 px-3.5 py-2 text-center">
-      <div className={cn("text-xl font-semibold tabular-nums", toneText[tone])}>
+    <div className="px-3 py-1 text-center">
+      <div className={cn("text-lg font-semibold tabular-nums", toneText[tone])}>
         {value}
       </div>
       <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
@@ -2945,7 +2945,6 @@ function MemberHeaderBand({
           {member.name ?? member.id}
         </h1>
         <div className="mt-1 flex flex-wrap items-center gap-1.5">
-          <Badge tone={tone}>delivery {member.runtime_health?.delivery_probe ? "probed" : "unknown"}</Badge>
           <Badge tone={memberTone(member.runtime_status ?? member.status)}>
             {member.runtime_status ?? member.status ?? "unknown"}
           </Badge>
