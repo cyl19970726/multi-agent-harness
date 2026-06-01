@@ -24,6 +24,7 @@
 | Agent Workbench runbook | [dashboard/runbook.md](dashboard/runbook.md) |
 | Git, PR, worktree, review, and decision workflow | [workflow-git-pr.md](workflow-git-pr.md) |
 | Goal learning loop and reusable cases | [goal-learning-loop.md](goal-learning-loop.md) |
+| External-system architecture research | [research/README.md](research/README.md) |
 | Provider integration rules | [integration/README.md](integration/README.md) |
 | Codex provider integration | [integration/codex.md](integration/codex.md) |
 | Codex message delivery | [integration/codex-message-delivery.md](integration/codex-message-delivery.md) |
