@@ -2325,6 +2325,21 @@ fn handle_sse_stream(
                             }
                         }
                     }
+                    // WP2: workflow run and step frames
+                    sse::SseEventFrame::WorkflowRun(run) => {
+                        if let Ok(json) = serde_json::to_value(&run) {
+                            if sse::write_sse_frame(&mut stream, "workflow_run", &json).is_err() {
+                                break; // Client disconnected
+                            }
+                        }
+                    }
+                    sse::SseEventFrame::WorkflowStep(step) => {
+                        if let Ok(json) = serde_json::to_value(&step) {
+                            if sse::write_sse_frame(&mut stream, "workflow_step", &json).is_err() {
+                                break; // Client disconnected
+                            }
+                        }
+                    }
                 }
                 last_keepalive = std::time::Instant::now();
             }
