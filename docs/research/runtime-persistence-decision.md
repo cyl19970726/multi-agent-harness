@@ -15,7 +15,7 @@ inline.
 
 | Dimension | Claude Code teams | Multica | Our harness (post-0018) |
 | --- | --- | --- | --- |
-| **Substrate** | In-process async, one Node.js event loop; `AsyncLocalStorage` per teammate | Edge daemon goroutine spawns one vendor CLI subprocess per task | One cold subprocess per claimed delivery (`codex exec --json`, `claude -p stream-json`) |
+| **Substrate** | Interactive default: per-teammate **separate `claude` process** in a tmux/iTerm2 pane; headless/`-p`/SDK: in-process async, one Node.js event loop (`AsyncLocalStorage` per teammate). See corrected [Modes section](claude-code-agent-teams.md) | Edge daemon goroutine spawns one vendor CLI subprocess per task | One cold subprocess per claimed delivery (`codex exec --json`, `claude -p stream-json`) |
 | **Persistence mechanism** | In-memory app state; team file + task list + mailbox on disk | Postgres = source of truth; `(session_id, work_dir)` rows; isolated workdirs | Append-only JSONL + global `flock` + per-row `fsync`; latest-wins projection |
 | **One-shot vs persistent** | **Persistent** within a session (resident idle-poll loop) | **One-shot** subprocess per task | **One-shot** subprocess per delivery |
 | **Multi-turn / resume** | None for teammates (no session id); `LocalAgentTask` resumes via `--resume` | Yes — vendor CLI `--resume <session_id>`, workdir reuse, poisoned-session guard | **Declared but unused**: `session_id`/`provider_thread_id` persisted, never read back into a `--resume`/`--session` arg |
@@ -34,8 +34,13 @@ harness `main.rs:7226-7276` / `:7713-7798`, `harness-store/src/lib.rs:138-181` /
 
 The three systems sit at distinct points:
 
-- **Claude Code = maximum in-session statefulness, zero durability.** Great for a
-  live human-driven session; useless across restarts; memory-bound.
+- **Claude Code = maximum in-session statefulness, zero cross-session
+  durability.** Great for a live human-driven session; useless across restarts.
+  (Corrected: it offers *two* runtimes — separate `claude` processes in tmux/
+  iTerm2 panes for interactive use, and in-process async loops for headless/SDK —
+  but **neither** is auto-restored across a restart; the durable artifacts are
+  on-disk, not the pane/loop. The "memory-bound, one heap" caveat applies only to
+  the in-process mode.)
 - **Multica = ephemeral compute + durable DB + resume.** The subprocess is
   disposable; the *conversation* survives in `(session_id, work_dir)` and is
   replayed via the vendor CLI's `--resume`. No process is kept alive.
@@ -89,26 +94,51 @@ needs — which are what "real persistence" usually means in practice — are me
 
 ### (c) On "tmux + claude" specifically — do not adopt it as the persistence mechanism.
 
+> **Corrected 2026-06-01.** An earlier version of this bullet claimed "Claude Code
+> runs teammates in-process, *not* in tmux." That is wrong: Claude Code v2.1.88
+> has a real **tmux/iTerm2 split-pane mode** that spawns a separate `claude`
+> process per pane (`spawnMultiAgent.ts:440-444`; `TmuxBackend.ts:571-617`; see
+> the corrected [claude-code-agent-teams.md](claude-code-agent-teams.md) Modes
+> section). So "tmux is rejected because nobody — not even Claude Code — uses it"
+> is no longer a valid argument. The recommendation is unchanged, but it now
+> rests on the *correct* reason: even where Claude Code uses tmux, tmux is a
+> **display/TUI mechanism for a human-driven session, not a durability
+> mechanism** — which is exactly why it does not fit our headless file-store /
+> exec-stream harness.
+
 tmux/pty gives you a long-lived *interactive REPL* in a pane. But:
 
 - It does not give durable persistence — a tmux pane dies with the host/session,
   exactly like Claude Code's in-process teammates; it adds a process to babysit
-  without a restart story.
-- Claude Code itself, despite modeling a `tmuxPaneId` field, runs teammates
-  **in-process, not in tmux** (`team.json` members carry an empty `tmuxPaneId`;
-  see [claude-code-agent-teams.md](claude-code-agent-teams.md)).
+  without a restart story. **Claude Code's own tmux teammates confirm this:** the
+  docs explicitly say `/resume` and `/rewind` do *not* restore in-process
+  teammates, and they are *silent* on restoring split-pane teammates — i.e. even
+  Claude Code's tmux mode has no documented cross-session restart story; the
+  durable artifacts are the on-disk team file / task list / mailbox, not the
+  pane.
+- Claude Code uses tmux **as a human-facing display mode** (one visible pane per
+  teammate, click to interact), selected only in an *interactive* terminal that
+  is itself inside tmux/iTerm2, and forced **off** (in-process) for headless
+  `-p`/SDK runs (`isInProcessEnabled()` returns true when
+  `getIsNonInteractiveSession()`, `registry.ts:354`). Our harness is exactly that
+  headless case — so the tmux path is not even reachable for us, and would buy a
+  TUI we do not render, not durability.
 - It forces parsing the interactive TUI instead of the documented headless
   stream — the opposite of 0018's "use the documented exec/stream mode" and of
-  Multica's approach.
+  Multica's approach. (This is the same headless-vs-TUI split Claude Code itself
+  encodes: tmux teammates are the *interactive* product; `-p`/SDK is the headless
+  substrate we build on.)
 - The real multi-turn win the owner wants is **conversation continuity**, and
   Claude delivers that headlessly via `--resume <session_id>` + the `result`
   event's `session_id` — no pane required.
 
 Verdict: the *instinct* (we need real persistence for multi-turn) is right; the
-*mechanism* (tmux) is the wrong tool. Use **session-resume** for multi-turn, and
-reserve a **persistent bidirectional runtime** only for live mid-turn approval —
-and when that day comes, use the documented `app-server` / SDK streaming path
-(0018's fallback), not a tmux-driven REPL.
+*mechanism* (tmux) is the wrong tool — **not** because nobody uses it (Claude
+Code does, as a TUI mode), but because tmux is a human-facing display layer with
+no durability story, and our harness is headless by design. Use **session-resume**
+for multi-turn, and reserve a **persistent bidirectional runtime** only for live
+mid-turn approval — and when that day comes, use the documented `app-server` / SDK
+streaming path (0018's fallback), not a tmux-driven REPL.
 
 ## Recommendation for our harness
 
