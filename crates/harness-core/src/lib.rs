@@ -355,9 +355,13 @@ pub fn build_launch_spec(member: &AgentMember, message: &Message) -> LaunchSpec 
         // MCP from provider_config (Pillar 2); now available.
         mcp: member.provider_config.mcp.clone(),
         skill_refs: member.skill_refs.clone(),
-        // Resume is resolved by the delivery path from prior session state, not
-        // from the member record; a fresh spec carries no resume token.
-        resume: None,
+        // Resume an existing provider session when the member already carries a
+        // provider thread/session id from a prior delivery. This is what lets
+        // memory carry across deliveries: the next turn is dispatched as a
+        // resume of the same session (Codex `exec resume <id>`, Claude
+        // `--resume <id>`) instead of a fresh session. `None` (no prior id) = a
+        // fresh session.
+        resume: member.provider_thread_id.clone(),
         output: None,
     }
 }
@@ -1696,8 +1700,23 @@ mod tests {
         // Fields with no neutral source yet are empty/none, not invented.
         assert!(spec.tools.is_empty());
         assert!(spec.mcp.is_none());
+        // A fresh member (no prior provider thread/session) carries no resume token.
         assert!(spec.resume.is_none());
         assert!(spec.output.is_none());
+    }
+
+    #[test]
+    fn launch_spec_carries_resume_from_member_provider_thread_id() {
+        // A member that already has a provider thread/session id (from a prior
+        // delivery) must produce a spec that resumes that session, so memory
+        // carries across deliveries instead of starting fresh each turn.
+        let mut member = sample_member();
+        member.provider_thread_id = Some("thread-abc-123".to_string());
+        let message = sample_message();
+
+        let spec = build_launch_spec(&member, &message);
+
+        assert_eq!(spec.resume.as_deref(), Some("thread-abc-123"));
     }
 
     #[test]

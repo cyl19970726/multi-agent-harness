@@ -7301,26 +7301,42 @@ fn run_codex_exec_process(
     let spec = build_launch_spec(member, message);
 
     let mut cmd = Command::new("codex");
-    cmd.arg("exec")
-        .arg("--json")
-        .arg(&message_content)
-        .env("CODEX_DEVELOPER_INSTRUCTIONS", developer_instructions);
+    cmd.arg("exec");
+
+    // Resume an existing session when the member already carries a provider
+    // thread id (from a prior delivery). `codex exec resume <id>` continues the
+    // same conversation so memory carries across deliveries. The resume
+    // subcommand inherits the original session's sandbox / working roots and
+    // does not accept `--sandbox` / `-C` / `--add-dir`, so those are only mapped
+    // on the fresh-session path below.
+    let resuming = spec.resume.is_some();
+    if let Some(resume_id) = &spec.resume {
+        cmd.arg("resume")
+            .arg("--json")
+            .arg(resume_id)
+            .arg(&message_content);
+    } else {
+        cmd.arg("--json").arg(&message_content);
+    }
+    cmd.env("CODEX_DEVELOPER_INSTRUCTIONS", developer_instructions);
 
     // Map LaunchSpec to codex flags
     if let Some(model) = &spec.model {
         cmd.arg("-m").arg(model);
     }
 
-    // Map permission to sandbox
-    let sandbox = launch_permission_to_codex_sandbox(spec.permission);
-    cmd.arg("--sandbox").arg(sandbox);
+    if !resuming {
+        // Map permission to sandbox (fresh sessions only).
+        let sandbox = launch_permission_to_codex_sandbox(spec.permission);
+        cmd.arg("--sandbox").arg(sandbox);
 
-    // Map workspace and writable roots
-    if let Some(workspace) = &spec.workspace {
-        cmd.arg("-C").arg(workspace);
-    }
-    for root in &spec.writable_roots {
-        cmd.arg("--add-dir").arg(root);
+        // Map workspace and writable roots (fresh sessions only).
+        if let Some(workspace) = &spec.workspace {
+            cmd.arg("-C").arg(workspace);
+        }
+        for root in &spec.writable_roots {
+            cmd.arg("--add-dir").arg(root);
+        }
     }
 
     // Map MCP config if present
@@ -7392,6 +7408,43 @@ struct ExecDeliverySessionRecord<'a> {
     provider_thread_id: Option<String>,
     provider_turn_id: Option<String>,
     terminal_source: Option<MessageTerminalSource>,
+    /// Prior session id this delivery resumed (`codex exec resume <id>`), if any.
+    /// Recorded into the ProviderSession args so the snapshot is the evidence
+    /// that resume was actually used.
+    resume_id: Option<String>,
+}
+
+/// Build the recorded codex argv for a delivery, mirroring `run_codex_exec_process`.
+/// When `resume_id` is set the turn is dispatched as `codex exec resume --json <id>`;
+/// otherwise it is a fresh `codex exec --json`.
+fn codex_recorded_args(resume_id: Option<&str>) -> Vec<String> {
+    match resume_id {
+        Some(id) => vec![
+            "codex".into(),
+            "exec".into(),
+            "resume".into(),
+            "--json".into(),
+            id.into(),
+        ],
+        None => vec!["codex".into(), "exec".into(), "--json".into()],
+    }
+}
+
+/// Build the recorded claude argv for a delivery, mirroring the spawn in
+/// `run_claude_exec_delivery_real`. When `resume_id` is set the turn carries
+/// `--resume <id>`; otherwise it is a fresh `claude -p` session.
+fn claude_recorded_args(resume_id: Option<&str>) -> Vec<String> {
+    let mut args = vec![
+        "-p".into(),
+        "--output-format".into(),
+        "stream-json".into(),
+        "--verbose".into(),
+    ];
+    if let Some(id) = resume_id {
+        args.push("--resume".into());
+        args.push(id.into());
+    }
+    args
 }
 
 fn record_exec_delivery_session(
@@ -7429,11 +7482,7 @@ fn record_exec_delivery_session(
         terminal_source: record.terminal_source,
         status: record.status,
         command: "harness".into(),
-        args: vec![
-            "codex".into(),
-            "exec".into(),
-            "--json".into(),
-        ],
+        args: codex_recorded_args(record.resume_id.as_deref()),
         prompt_ref: record.member.prompt_ref.clone(),
         prompt_summary: Some(format!("deliver message {}", record.message.id)),
         provider_session_ref: None,
@@ -7463,6 +7512,10 @@ fn run_codex_exec_delivery(
     let session_dir = store.root().join("provider-sessions").join(delivery_id);
     fs::create_dir_all(&session_dir)?;
     let started_at = now_string();
+
+    // The resume id used for this delivery (same source as the spawned command:
+    // the member's prior provider thread id). Recorded into the session args.
+    let resume_id = build_launch_spec(member, message).resume;
 
     let (process_success, events, stderr_log) =
         run_codex_exec_process(&session_dir, member, message, delivery_id, timeout_ms)?;
@@ -7511,6 +7564,7 @@ fn run_codex_exec_delivery(
             provider_thread_id: provider_thread_id.clone(),
             provider_turn_id: provider_turn_id.clone(),
             terminal_source: terminal_source.clone(),
+            resume_id: resume_id.clone(),
         },
     )?;
 
@@ -7706,6 +7760,18 @@ fn run_claude_delivery(
     let terminal_source = status_to_terminal_source(&status);
     let resolved_session_id = session_id.clone().unwrap_or_else(|| generated_id("session"));
 
+    // The id we hand back as the member's provider thread for the NEXT delivery
+    // to resume. Only a real session id parsed from the provider output is
+    // resumable; the synthetic fallback id above is not, so it is not surfaced
+    // as a resume token.
+    let resumable_session_id = session_id.clone();
+
+    // The resume id this delivery actually used (from the member's prior thread,
+    // same source as `spec.resume`). Recorded into the session args so the
+    // snapshot is the evidence that `--resume` was passed.
+    let used_resume_id = build_launch_spec(member, message).resume;
+    let recorded_args = claude_recorded_args(used_resume_id.as_deref());
+
     // Record an Evidence row for the delivery session, mirroring the codex path
     // so every provider delivery is auditable from the snapshot.
     let evidence_id = generated_id("evidence");
@@ -7728,17 +7794,23 @@ fn run_claude_delivery(
 
     // Record session in ProviderSession (neutral object, not provider-specific).
     let provider_session = ProviderSession {
-        id: resolved_session_id.clone(),
+        // Key the terminal session row on the delivery id (same key as the
+        // "running" claim row) so it reconciles that claim to terminal in
+        // `has_unresolved_provider_session`. The provider's real session id is
+        // carried in `provider_thread_id`, not the row id. Keying on the session
+        // id instead would leave the running claim row dangling and wrongly
+        // block the next delivery.
+        id: delivery_id.to_string(),
         provider: "claude".into(),
         agent_member_id: member.id.clone(),
         task_id: message.task_id.clone(),
         workspace_ref: None,
-        provider_thread_id: None,
+        provider_thread_id: resumable_session_id.clone(),
         provider_turn_id: None,
         terminal_source: terminal_source.clone(),
         status: status.clone(),
         command: "claude".into(),
-        args: vec!["-p".into(), "--output-format".into(), "stream-json".into(), "--verbose".into()],
+        args: recorded_args,
         prompt_ref: member.prompt_ref.clone(),
         prompt_summary: Some(format!("deliver message {}", message.id)),
         provider_session_ref: None,
@@ -7754,7 +7826,9 @@ fn run_claude_delivery(
     store.append_provider_session(&provider_session)?;
 
     Ok(DeliveryOutcome {
-        provider_thread_id: None,
+        // Surface the real claude session id as the member's provider thread so
+        // the next delivery resumes this conversation (memory across deliveries).
+        provider_thread_id: resumable_session_id,
         provider_turn_id: None,
         terminal_source,
         status,
@@ -7818,6 +7892,13 @@ fn run_claude_exec_delivery_real(
         .arg("--output-format")
         .arg("stream-json")
         .arg("--verbose");
+
+    // Resume an existing session when the member already carries a provider
+    // session id (from a prior delivery). `claude -p --resume <session_id>`
+    // continues the same conversation so memory carries across deliveries.
+    if let Some(resume_id) = &spec.resume {
+        cmd.arg("--resume").arg(resume_id);
+    }
 
     // Append system prompt if present.
     if !system_prompt.is_empty() {
