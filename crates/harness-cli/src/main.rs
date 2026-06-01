@@ -18,12 +18,14 @@ use harness_core::{
     LaunchSpec, Message, MessageDelivery, MessageDeliveryStatus, MessageKind,
     MessageTerminalSource, Proposal, ProposalStatus, ProviderChildThread,
     ProviderChildThreadStatus, ProviderKind, ProviderSession, ProviderSessionStatus, Review,
-    ReviewVerdict, SenderKind, Task, TaskStatus, Vision,
+    ReviewVerdict, SenderKind, Task, TaskStatus, Vision, WorkflowRun, WorkflowRunStatus,
+    WorkflowStep,
 };
 use harness_store::{HarnessStore, MessageDeliveryClaimResult};
 use thiserror::Error;
 
 mod sse;
+mod workflow;
 
 #[derive(Debug, Error)]
 enum CliError {
@@ -80,6 +82,7 @@ fn run() -> CliResult<()> {
         "dashboard" => dashboard_command(&store, &args[1..])?,
         "board" => board_command(&store)?,
         "codex" => codex_command(&store, &args[1..])?,
+        "workflow" => workflow_command(&store, &args[1..])?,
         "hook" => hook_command(&store, &args[1..])?,
         "serve" => serve_command(&store, &args[1..])?,
         command => return Err(CliError::Usage(format!("unknown command: {command}"))),
@@ -3435,6 +3438,242 @@ struct DeliveryOptions {
     timeout_ms: u64,
 }
 
+// ---------------------------------------------------------------------------
+// Workflow runtime CLI (WP1)
+//
+// `harness workflow run --name <name> --codex <member> --claude <member>
+//  [--prompt <text>] [--timeout-ms N] [--dry-run]`
+//
+// Creates a WorkflowRun (status running), dispatches the named built-in Rust
+// workflow through the registry, journals each WorkflowStep, and sets the run
+// to completed/failed. Every agent step drives ONE provider delivery through the
+// EXISTING neutral seam (`workflow_real_agent_step` -> `deliver_agent_messages_value`
+// -> `claim_message_for_delivery` + `run_provider_delivery`); the workflow never
+// spawns a provider directly (ADR-0011 provider-neutral).
+// ---------------------------------------------------------------------------
+
+/// Options controlling how the real (non-mock) agent step delivers a message.
+#[derive(Debug, Clone)]
+struct WorkflowDeliveryOptions {
+    dry_run: bool,
+    start_runtime: bool,
+    timeout_ms: u64,
+}
+
+/// The REAL agent-step driver. Drives one provider delivery through the neutral
+/// seam: (1) queue a Message addressed to the member, (2) deliver exactly that
+/// message via `deliver_agent_messages_value` (which claims + runs
+/// `run_provider_delivery`), (3) read back the resulting provider session and
+/// report to build a [`workflow::StepResult`].
+///
+/// This fn is TOTAL: any error (store failure, no runtime, provider failure) is
+/// reported as `StepResult { ok: false, .. }` so the workflow's control flow —
+/// and the `parallel()` barrier — stays in charge rather than unwinding.
+fn workflow_real_agent_step(
+    store: &HarnessStore,
+    options: &WorkflowDeliveryOptions,
+    spec: &workflow::AgentStepSpec,
+) -> workflow::StepResult {
+    match try_workflow_real_agent_step(store, options, spec) {
+        Ok(result) => result,
+        Err(error) => workflow::StepResult {
+            phase: spec.phase.clone(),
+            label: spec.label.clone(),
+            member_id: spec.member_id.clone(),
+            ok: false,
+            provider_session_id: None,
+            output_summary: format!("agent step error: {error}"),
+        },
+    }
+}
+
+fn try_workflow_real_agent_step(
+    store: &HarnessStore,
+    options: &WorkflowDeliveryOptions,
+    spec: &workflow::AgentStepSpec,
+) -> CliResult<workflow::StepResult> {
+    // Queue a message to the member through the same path operators use.
+    let message_id = generated_id("msg");
+    let message = create_message_value(
+        store,
+        &serde_json::json!({
+            "id": message_id,
+            "from": "workflow",
+            "to": spec.member_id,
+            "kind": "task",
+            "content": spec.prompt,
+            "channel": "workflow",
+        }),
+    )?;
+    let message_id = json_string(&message, "id").unwrap_or(message_id);
+
+    // Deliver exactly that one message through the neutral seam.
+    let delivered = deliver_agent_messages_value(
+        store,
+        DeliveryOptions {
+            agent_id: spec.member_id.clone(),
+            message_filter: Some(message_id.clone()),
+            dry_run: options.dry_run,
+            start_runtime: options.start_runtime,
+            timeout_ms: options.timeout_ms,
+        },
+    )?;
+
+    // Inspect the per-message delivery result.
+    let entry = delivered
+        .get("delivered")
+        .and_then(|value| value.as_array())
+        .and_then(|entries| entries.first());
+    let provider_status = entry
+        .and_then(|entry| entry.get("provider_status"))
+        .and_then(|status| status.as_str())
+        .map(str::to_string);
+    let provider_session_id = entry
+        .and_then(|entry| entry.get("provider_session_id"))
+        .and_then(|value| value.as_str())
+        .map(str::to_string)
+        .or_else(|| {
+            // Fall back to the session id recorded on the delivered message.
+            latest_message(store, &message_id)
+                .ok()
+                .and_then(|message| message.delivery)
+                .and_then(|delivery| delivery.provider_session_id)
+        });
+    let ok = matches!(provider_status.as_deref(), Some("succeeded"));
+
+    // Prefer the provider report text (the synthesized delivery summary) for the
+    // step summary; fall back to the provider session's own summary.
+    let output_summary = provider_session_id
+        .as_deref()
+        .and_then(|session_id| latest_provider_session(store, session_id).ok().flatten())
+        .and_then(|session| session.prompt_summary)
+        .or(provider_status.clone())
+        .unwrap_or_else(|| "no provider output".to_string());
+
+    Ok(workflow::StepResult {
+        phase: spec.phase.clone(),
+        label: spec.label.clone(),
+        member_id: spec.member_id.clone(),
+        ok,
+        provider_session_id,
+        output_summary,
+    })
+}
+
+fn workflow_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    require_subcommand(args, "workflow run|list")?;
+    match args[0].as_str() {
+        "list" => {
+            let registry = workflow::WorkflowRegistry::builtin();
+            let defs: Vec<_> = registry
+                .names()
+                .into_iter()
+                .filter_map(|name| registry.get(name))
+                .map(|def| serde_json::json!({ "name": def.name, "summary": def.summary }))
+                .collect();
+            print_json(&serde_json::json!({ "workflows": defs }))?;
+        }
+        "run" => {
+            let result = workflow_run_value(store, &args[1..])?;
+            print_json(&result)?;
+        }
+        other => return Err(CliError::Usage(format!("unknown workflow command: {other}"))),
+    }
+    Ok(())
+}
+
+fn workflow_run_value(store: &HarnessStore, args: &[String]) -> CliResult<serde_json::Value> {
+    let name = value(args, "--name").unwrap_or_else(|| "investigate".to_string());
+    let registry = workflow::WorkflowRegistry::builtin();
+    let def = registry
+        .get(&name)
+        .ok_or_else(|| CliError::Usage(format!("unknown workflow: {name}")))?;
+
+    let codex_member_id = required(args, "--codex")?;
+    let claude_member_id = required(args, "--claude")?;
+    let prompt = value(args, "--prompt").unwrap_or_else(|| "failure X".to_string());
+    let options = WorkflowDeliveryOptions {
+        dry_run: has_flag(args, "--dry-run"),
+        start_runtime: has_flag(args, "--start-runtime"),
+        timeout_ms: value(args, "--timeout-ms")
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(3_000),
+    };
+
+    let members = workflow::WorkflowMembers {
+        codex_member_id,
+        claude_member_id,
+    };
+
+    // Build the injectable real driver. The store and options are captured by
+    // reference; the closure is Sync (HarnessStore serializes writes via flock)
+    // so it can be shared across the parallel barrier's scoped threads.
+    let driver = move |spec: &workflow::AgentStepSpec| {
+        workflow_real_agent_step(store, &options, spec)
+    };
+
+    run_workflow_with_driver(store, def, &members, &prompt, &driver)
+}
+
+/// Create the WorkflowRun (running), dispatch the workflow body with the given
+/// agent-step driver, journal a WorkflowStep per step, and finalize the run.
+/// The `driver` is injectable so tests pass a mock instead of the real provider
+/// path.
+fn run_workflow_with_driver(
+    store: &HarnessStore,
+    def: &workflow::WorkflowDef,
+    members: &workflow::WorkflowMembers,
+    prompt: &str,
+    driver: &workflow::AgentStepFn<'_>,
+) -> CliResult<serde_json::Value> {
+    let run_id = generated_id("wfrun");
+    let mut run = WorkflowRun {
+        id: run_id.clone(),
+        workflow_name: def.name.to_string(),
+        status: WorkflowRunStatus::Running,
+        step_ids: Vec::new(),
+        created_at: now_string(),
+        ended_at: None,
+        summary: None,
+    };
+    store.append_workflow_run(&run)?;
+
+    // Dispatch the compiled workflow body (option C registry dispatch).
+    let outcome = (def.run)(driver, members, prompt);
+
+    // Journal one WorkflowStep per StepResult, preserving order.
+    let mut steps_json = Vec::new();
+    for result in &outcome.steps {
+        let step_id = generated_id("wfstep");
+        let now = now_string();
+        let step = WorkflowStep {
+            id: step_id.clone(),
+            run_id: run_id.clone(),
+            phase: result.phase.clone(),
+            label: result.label.clone(),
+            provider_session_id: result.provider_session_id.clone(),
+            status: result.step_status(),
+            output_summary: Some(result.output_summary.clone()),
+            started_at: now.clone(),
+            ended_at: Some(now),
+        };
+        store.append_workflow_step(&step)?;
+        run.step_ids.push(step_id);
+        steps_json.push(serde_json::to_value(&step)?);
+    }
+
+    // Finalize the run with the workflow's own status verdict.
+    run.status = outcome.status;
+    run.ended_at = Some(now_string());
+    run.summary = Some(outcome.summary.clone());
+    store.append_workflow_run(&run)?;
+
+    Ok(serde_json::json!({
+        "run": serde_json::to_value(&run)?,
+        "steps": steps_json,
+    }))
+}
+
 fn deliver_agent_messages_value(
     store: &HarnessStore,
     options: DeliveryOptions,
@@ -6293,6 +6532,8 @@ fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::Value> {
     let visions = latest_visions_in_append_order(store)?;
     let sessions = latest_provider_sessions_in_append_order(store)?;
     let provider_child_threads = store.provider_child_threads()?;
+    let workflow_runs = latest_workflow_runs_in_append_order(store)?;
+    let workflow_steps = latest_workflow_steps_in_append_order(store)?;
     let autonomous_proposals =
         autonomous_proposals_snapshot(&tasks, &messages, &evidence, &decisions);
     let goal_learning_status: Vec<_> = goals
@@ -6386,7 +6627,9 @@ fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::Value> {
         "goal_cases": goal_cases,
         "visions": visions,
         "provider_sessions": sessions,
-        "provider_child_threads": provider_child_threads
+        "provider_child_threads": provider_child_threads,
+        "workflow_runs": workflow_runs,
+        "workflow_steps": workflow_steps
     }))
 }
 
@@ -6533,6 +6776,28 @@ fn latest_provider_sessions_in_append_order(
         .into_iter()
         .filter_map(|id| sessions_by_id.remove(&id))
         .collect())
+}
+
+fn latest_workflow_runs_in_append_order(store: &HarnessStore) -> CliResult<Vec<WorkflowRun>> {
+    let mut ids = Vec::new();
+    let mut by_id = BTreeMap::new();
+    for run in store.workflow_runs()? {
+        ids.retain(|id| id != &run.id);
+        ids.push(run.id.clone());
+        by_id.insert(run.id.clone(), run);
+    }
+    Ok(ids.into_iter().filter_map(|id| by_id.remove(&id)).collect())
+}
+
+fn latest_workflow_steps_in_append_order(store: &HarnessStore) -> CliResult<Vec<WorkflowStep>> {
+    let mut ids = Vec::new();
+    let mut by_id = BTreeMap::new();
+    for step in store.workflow_steps()? {
+        ids.retain(|id| id != &step.id);
+        ids.push(step.id.clone());
+        by_id.insert(step.id.clone(), step);
+    }
+    Ok(ids.into_iter().filter_map(|id| by_id.remove(&id)).collect())
 }
 
 fn latest_messages_in_append_order(store: &HarnessStore) -> CliResult<Vec<Message>> {
@@ -8561,8 +8826,148 @@ fn print_help() {
   hook record --agent <agent> [--runtime <runtime>] [--task <task>]
   codex run --task <task> --agent <agent> --worktree <path> --prompt <text>
   codex review --task <task> --agent <agent> --worktree <path> [--base <branch>] [--uncommitted] [--prompt <text>]
+  workflow list
+  workflow run --name <name> --codex <member> --claude <member> [--prompt <text>] [--start-runtime] [--dry-run] [--timeout-ms <ms>]
   serve [--addr 127.0.0.1:8787] [--once]"
     );
+}
+
+#[cfg(test)]
+mod workflow_runtime_tests {
+    use super::*;
+    use harness_core::WorkflowStepStatus;
+
+    fn temp_store(tag: &str) -> HarnessStore {
+        let root = std::env::temp_dir().join(format!("harness-wf-test-{}", generated_id(tag)));
+        let store = HarnessStore::new(&root);
+        store.init().expect("init store");
+        store
+    }
+
+    fn mock_members() -> workflow::WorkflowMembers {
+        workflow::WorkflowMembers {
+            codex_member_id: "member-codex".to_string(),
+            claude_member_id: "member-claude".to_string(),
+        }
+    }
+
+    fn ok_step(spec: &workflow::AgentStepSpec) -> workflow::StepResult {
+        workflow::StepResult {
+            phase: spec.phase.clone(),
+            label: spec.label.clone(),
+            member_id: spec.member_id.clone(),
+            ok: true,
+            provider_session_id: Some(format!("session-{}", spec.label)),
+            output_summary: format!("mock ok: {}", spec.label),
+        }
+    }
+
+    #[test]
+    fn workflow_run_journals_steps_and_completes_with_mock_driver() {
+        let store = temp_store("complete");
+        let registry = workflow::WorkflowRegistry::builtin();
+        let def = registry.get("investigate").expect("investigate registered");
+        // Mock driver: never spawns a provider; always succeeds.
+        let driver = |spec: &workflow::AgentStepSpec| ok_step(spec);
+
+        let result =
+            run_workflow_with_driver(&store, def, &mock_members(), "failure X", &driver)
+                .expect("run workflow");
+
+        // The returned run is completed and references 3 steps (serial + 2 parallel).
+        let run = result.get("run").expect("run key");
+        assert_eq!(run.get("status").and_then(|s| s.as_str()), Some("completed"));
+        let step_ids = run.get("step_ids").and_then(|s| s.as_array()).expect("step_ids");
+        assert_eq!(step_ids.len(), 3);
+
+        // The journal holds two WorkflowRun rows (running -> completed) for one id.
+        let runs = store.workflow_runs().expect("read runs");
+        assert_eq!(runs.len(), 2);
+        assert_eq!(runs[0].status, WorkflowRunStatus::Running);
+        assert_eq!(runs[1].status, WorkflowRunStatus::Completed);
+        assert_eq!(runs[0].id, runs[1].id);
+
+        // Three steps journaled, all completed, with provider_session_id links.
+        let steps = store.workflow_steps().expect("read steps");
+        assert_eq!(steps.len(), 3);
+        for step in &steps {
+            assert_eq!(step.status, WorkflowStepStatus::Completed);
+            assert_eq!(step.run_id, runs[0].id);
+            assert!(step.provider_session_id.is_some());
+            assert!(step.ended_at.is_some());
+        }
+        // The serial step is first, in the "scope" phase.
+        assert_eq!(steps[0].phase, "scope");
+        assert_eq!(steps[1].phase, "audit");
+        assert_eq!(steps[2].phase, "audit");
+    }
+
+    #[test]
+    fn workflow_run_transitions_running_to_failed_on_failed_required_step() {
+        let store = temp_store("failed");
+        let registry = workflow::WorkflowRegistry::builtin();
+        let def = registry.get("investigate").expect("investigate registered");
+        // Mock driver: the required serial "scope" step fails; audits succeed.
+        let driver = |spec: &workflow::AgentStepSpec| {
+            let ok = spec.phase != "scope";
+            workflow::StepResult {
+                phase: spec.phase.clone(),
+                label: spec.label.clone(),
+                member_id: spec.member_id.clone(),
+                ok,
+                provider_session_id: ok.then(|| "s".to_string()),
+                output_summary: "mock".to_string(),
+            }
+        };
+
+        let result =
+            run_workflow_with_driver(&store, def, &mock_members(), "failure Y", &driver)
+                .expect("run workflow");
+        let run = result.get("run").expect("run key");
+        assert_eq!(run.get("status").and_then(|s| s.as_str()), Some("failed"));
+
+        let runs = store.workflow_runs().expect("read runs");
+        assert_eq!(runs[0].status, WorkflowRunStatus::Running);
+        assert_eq!(runs.last().unwrap().status, WorkflowRunStatus::Failed);
+
+        // All three steps are still journaled (parallel barrier collected nulls).
+        let steps = store.workflow_steps().expect("read steps");
+        assert_eq!(steps.len(), 3);
+        assert_eq!(steps[0].status, WorkflowStepStatus::Failed);
+        assert_eq!(steps[1].status, WorkflowStepStatus::Completed);
+        assert_eq!(steps[2].status, WorkflowStepStatus::Completed);
+    }
+
+    #[test]
+    fn dashboard_snapshot_includes_workflow_keys() {
+        let store = temp_store("snapshot");
+        // Empty store: keys must still be present (additive, inspectable).
+        let snapshot = dashboard_snapshot(&store).expect("snapshot");
+        assert!(snapshot.get("workflow_runs").is_some());
+        assert!(snapshot.get("workflow_steps").is_some());
+
+        // After a run, the keys surface the journaled rows.
+        let registry = workflow::WorkflowRegistry::builtin();
+        let def = registry.get("investigate").expect("registered");
+        let driver = |spec: &workflow::AgentStepSpec| ok_step(spec);
+        run_workflow_with_driver(&store, def, &mock_members(), "x", &driver).expect("run");
+
+        let snapshot = dashboard_snapshot(&store).expect("snapshot");
+        let runs = snapshot
+            .get("workflow_runs")
+            .and_then(|v| v.as_array())
+            .expect("workflow_runs array");
+        assert_eq!(runs.len(), 1, "latest-wins projection collapses to one run");
+        assert_eq!(
+            runs[0].get("status").and_then(|s| s.as_str()),
+            Some("completed")
+        );
+        let steps = snapshot
+            .get("workflow_steps")
+            .and_then(|v| v.as_array())
+            .expect("workflow_steps array");
+        assert_eq!(steps.len(), 3);
+    }
 }
 
 #[cfg(test)]

@@ -1189,6 +1189,98 @@ impl Validate for Vision {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Dynamic workflow runtime objects (WP1)
+//
+// Additive, ADR-0017-style: a `WorkflowRun` is a standalone object with its own
+// id and lifecycle. It is NOT bound to a `Goal`/`Task` yet (design decision 2 in
+// docs/research/dynamic-workflow-runtime-design.md). Each `WorkflowStep` is the
+// workflow-layer wrapper around one `agent()` call; it references the
+// `ProviderSession` that the delivery produced rather than re-recording the
+// execution. Both journal to their own append-only JSONL with latest-wins
+// projection, exactly like every other harness object.
+// ---------------------------------------------------------------------------
+
+/// Lifecycle of a [`WorkflowRun`]. WP1 only exercises Running -> Completed and
+/// Running -> Failed; Pending/Paused are reserved for the scheduler/resume work
+/// packages (WP2/WP4) so existing rows remain forward-compatible.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowRunStatus {
+    Pending,
+    Running,
+    Paused,
+    Completed,
+    Failed,
+}
+
+/// Status of a single [`WorkflowStep`] (one `agent()` call). WP1 uses
+/// Running -> Completed / Failed. Queued/Cached are reserved for the
+/// scheduler/resume work packages.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowStepStatus {
+    Queued,
+    Running,
+    Completed,
+    Failed,
+    Cached,
+}
+
+/// One run of a built-in (registered) workflow. The `workflow_name` selects the
+/// registered Rust fn (option C in the design). `step_ids` orders the steps in
+/// the sequence they were started, so the journal alone reconstructs the run.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowRun {
+    pub id: String,
+    pub workflow_name: String,
+    pub status: WorkflowRunStatus,
+    #[serde(default)]
+    pub step_ids: Vec<String>,
+    pub created_at: String,
+    #[serde(default)]
+    pub ended_at: Option<String>,
+    /// Optional human-facing summary set when the run reaches a terminal state.
+    #[serde(default)]
+    pub summary: Option<String>,
+}
+
+/// One agent step inside a [`WorkflowRun`]. `phase` is the declarative grouping
+/// marker (e.g. "audit", "synthesize"); `label` names the step within the phase.
+/// `provider_session_id` links to the [`ProviderSession`] the delivery produced.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowStep {
+    pub id: String,
+    pub run_id: String,
+    pub phase: String,
+    pub label: String,
+    #[serde(default)]
+    pub provider_session_id: Option<String>,
+    pub status: WorkflowStepStatus,
+    #[serde(default)]
+    pub output_summary: Option<String>,
+    pub started_at: String,
+    #[serde(default)]
+    pub ended_at: Option<String>,
+}
+
+impl Validate for WorkflowRun {
+    fn validate(&self) -> Result<(), ValidationError> {
+        require_non_empty(&self.id, "WorkflowRun.id")?;
+        require_non_empty(&self.workflow_name, "WorkflowRun.workflow_name")?;
+        require_non_empty(&self.created_at, "WorkflowRun.created_at")
+    }
+}
+
+impl Validate for WorkflowStep {
+    fn validate(&self) -> Result<(), ValidationError> {
+        require_non_empty(&self.id, "WorkflowStep.id")?;
+        require_non_empty(&self.run_id, "WorkflowStep.run_id")?;
+        require_non_empty(&self.label, "WorkflowStep.label")?;
+        require_non_empty(&self.started_at, "WorkflowStep.started_at")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
