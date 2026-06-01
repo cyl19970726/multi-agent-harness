@@ -17,10 +17,15 @@ than accidental, by seeing the design space others have explored.
 | Multica | DB-backed server + edge daemon, per-task subprocess + session-resume, squad routing | [multica-architecture.md](multica-architecture.md) |
 | Multica — diagrams | ASCII deployment / lifecycle / end-to-end data-flow / slot / resume companion | [multica-architecture-diagrams.md](multica-architecture-diagrams.md) |
 | Runtime/persistence decision | 3-way comparison (Claude Code / Multica / our harness) and the recommended model for us | [runtime-persistence-decision.md](runtime-persistence-decision.md) |
+| Dynamic Workflow runtime design | Rust-native runtime to orchestrate codex+claude agents: the Rust-expression decision, CC-primitive mapping, Workflow object/run model, multi-provider scenario, WP plan | [dynamic-workflow-runtime-design.md](dynamic-workflow-runtime-design.md) |
 
 The first two are descriptive (what an external system does). The third is
 prescriptive (what we should do) and is the deliverable that ties the studies
-back to [0018](../decisions/0018-exec-stream-primary-substrate.md).
+back to [0018](../decisions/0018-exec-stream-primary-substrate.md). The fourth is
+prescriptive too: a design for a Rust-native Dynamic Workflow runtime, modeled on
+Claude Code Workflows, whose conceptual basis is the owner Dynamic Workflow
+research report (cached at the gitignored path
+`/.research-cache/dynamic-workflows/report.md`, never committed).
 
 ## How to add a study
 
