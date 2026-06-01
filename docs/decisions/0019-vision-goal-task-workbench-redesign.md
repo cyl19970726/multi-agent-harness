@@ -136,6 +136,19 @@ does not encode dependency-waiting as a status. No schema change.
 - **Vision detail** — `summary` plus the **rendered markdown of its
   `source_refs`** docs. The product operates one Vision → many Goals → many
   Tasks; no vision switcher is built yet.
+### 6. Visual direction — light Notion surface, reduced decoration
+
+The Workbench moves from the dark operator-console theme (ADR
+[0016](0016-tailwind-shadcn-adoption.md)) to a **light, Notion-like document
+surface**: warm near-white paper, white cards, hairline borders, one restrained
+blue accent, generous whitespace. Decoration is removed — the body gradients and
+grid background, the staggered `.rise` load animation, and color-for-its-own-sake
+are dropped; color maps to harness state only. The global Inspector is also
+suppressed on the Work board so columns get full width (selection rides the
+card → detail flow). This supersedes the theme tokens of ADR 0016 (the Tailwind
+v4 + shadcn/Radix stack decision itself stands). Tokens live in
+`apps/agent-dashboard/src/index.css`.
+
 - **Docs rendering is a real gap.** `model.docs` is a hard-coded catalog in
   [readModel.ts](../../apps/agent-dashboard/src/model/readModel.ts) and
   `DocsContext` only lists paths — no markdown is fetched or rendered, and no

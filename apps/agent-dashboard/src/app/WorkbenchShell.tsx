@@ -113,10 +113,11 @@ export function WorkbenchShell({
 
   const severity = countBySeverity(model.warnings);
   const showTeamRail = selection.surface === "team" || selection.surface === "member";
-  // The Member surface is a self-contained desktop-app view that OWNS its own
-  // right rail, so the global Inspector is suppressed there to avoid a duplicate
-  // rail. Every other surface keeps the global Inspector.
-  const showInspector = selection.surface !== "member";
+  // The Member surface owns its own right rail; the Work board needs full width
+  // for its columns (selection is carried by the card → detail flow, not a
+  // persistent inspector). Both suppress the global Inspector. Every other
+  // surface keeps it.
+  const showInspector = selection.surface !== "member" && selection.surface !== "tasks";
 
   return (
     <div className="flex h-screen flex-col overflow-hidden text-foreground">

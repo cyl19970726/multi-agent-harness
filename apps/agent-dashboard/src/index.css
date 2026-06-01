@@ -4,55 +4,55 @@
 
 /*
  * Agent Workbench design tokens.
- * Dark-first operator console. Monochrome slate base + semantic status colors.
- * Color always maps to harness state, never decoration.
+ * Light, Notion-like document surface (ADR 0019, supersedes the 0016 dark
+ * operator-console theme). Calm warm-neutral base, restrained single accent,
+ * hairline borders. Color maps to harness state, never decoration.
  */
 :root {
   --radius: 0.5rem;
 
-  /* Surfaces — near-black layered slate, not pure black */
-  --background: oklch(0.17 0.012 254);
-  --foreground: oklch(0.93 0.008 250);
+  /* Surfaces — warm near-white paper, white cards, hairline borders */
+  --background: oklch(0.985 0.002 90);
+  --foreground: oklch(0.27 0.006 60);
 
-  --card: oklch(0.205 0.013 254);
-  --card-foreground: oklch(0.93 0.008 250);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.27 0.006 60);
 
-  --popover: oklch(0.225 0.014 254);
-  --popover-foreground: oklch(0.93 0.008 250);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.27 0.006 60);
 
-  /* Primary — technical teal/cyan */
-  --primary: oklch(0.78 0.12 195);
-  --primary-foreground: oklch(0.18 0.03 220);
+  /* Primary — restrained Notion blue (links / active / primary action) */
+  --primary: oklch(0.58 0.14 250);
+  --primary-foreground: oklch(0.99 0 0);
 
-  --secondary: oklch(0.26 0.015 254);
-  --secondary-foreground: oklch(0.9 0.01 250);
+  --secondary: oklch(0.965 0.003 90);
+  --secondary-foreground: oklch(0.32 0.006 60);
 
-  --muted: oklch(0.24 0.014 254);
-  --muted-foreground: oklch(0.66 0.018 250);
+  --muted: oklch(0.965 0.003 90);
+  --muted-foreground: oklch(0.55 0.006 60);
 
-  --accent: oklch(0.28 0.018 254);
-  --accent-foreground: oklch(0.95 0.008 250);
+  --accent: oklch(0.955 0.004 90);
+  --accent-foreground: oklch(0.3 0.006 60);
 
-  --destructive: oklch(0.62 0.2 22);
-  --destructive-foreground: oklch(0.97 0.01 20);
+  --destructive: oklch(0.58 0.2 25);
+  --destructive-foreground: oklch(0.99 0.01 20);
 
-  --border: oklch(0.29 0.015 254);
-  --input: oklch(0.32 0.016 254);
-  --ring: oklch(0.78 0.12 195);
+  --border: oklch(0.92 0.003 90);
+  --input: oklch(0.9 0.004 90);
+  --ring: oklch(0.58 0.14 250);
 
-  /* Semantic status — running / good / warn / bad / info / decision */
-  --status-running: oklch(0.78 0.12 195);
-  --status-good: oklch(0.74 0.15 152);
-  --status-warn: oklch(0.8 0.13 85);
-  --status-bad: oklch(0.66 0.2 22);
-  --status-info: oklch(0.7 0.13 250);
-  --status-decision: oklch(0.74 0.14 300);
-  --status-idle: oklch(0.6 0.012 250);
+  /* Semantic status — mid-tone so chips read on white */
+  --status-running: oklch(0.6 0.13 240);
+  --status-good: oklch(0.6 0.14 150);
+  --status-warn: oklch(0.68 0.13 75);
+  --status-bad: oklch(0.58 0.2 25);
+  --status-info: oklch(0.6 0.13 250);
+  --status-decision: oklch(0.56 0.16 300);
+  --status-idle: oklch(0.62 0.008 250);
 
-  /* tinted soft backgrounds for status chips (low-alpha overlays applied in JS) */
-  --sidebar: oklch(0.19 0.012 254);
-  --sidebar-foreground: oklch(0.9 0.008 250);
-  --sidebar-border: oklch(0.27 0.015 254);
+  --sidebar: oklch(0.978 0.002 90);
+  --sidebar-foreground: oklch(0.3 0.006 60);
+  --sidebar-border: oklch(0.92 0.003 90);
 
   --font-sans: "Geist", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-mono: "Geist Mono", ui-monospace, "SFMono-Regular", "Menlo", monospace;
@@ -112,30 +112,8 @@
 
   body {
     margin: 0;
+    /* Flat paper surface — no gradients, no grid (ADR 0019: reduce decoration). */
     background-color: var(--background);
-    background-image:
-      radial-gradient(
-        120% 80% at 100% 0%,
-        color-mix(in oklch, var(--primary) 10%, transparent),
-        transparent 46%
-      ),
-      radial-gradient(
-        90% 65% at 0% 0%,
-        color-mix(in oklch, var(--status-decision) 7%, transparent),
-        transparent 42%
-      ),
-      linear-gradient(
-        to right,
-        color-mix(in oklch, var(--border) 38%, transparent) 1px,
-        transparent 1px
-      ),
-      linear-gradient(
-        to bottom,
-        color-mix(in oklch, var(--border) 38%, transparent) 1px,
-        transparent 1px
-      );
-    background-size: 100% 100%, 100% 100%, 46px 46px, 46px 46px;
-    background-attachment: fixed;
     color: var(--foreground);
     font-family: var(--font-sans);
     font-synthesis-weight: none;
@@ -144,26 +122,16 @@
     overflow: hidden;
   }
 
-  /* staggered panel reveal on load */
-  @keyframes workbench-rise {
-    from {
-      opacity: 0;
-      transform: translateY(6px);
-    }
-    to {
-      opacity: 1;
-      transform: translateY(0);
-    }
-  }
+  /* `.rise` is retained as a no-op so existing usages stay valid; the staggered
+     load animation was removed as decoration (ADR 0019). */
   .rise {
-    animation: workbench-rise 0.42s cubic-bezier(0.22, 1, 0.36, 1) both;
   }
 
   ::selection {
-    background: color-mix(in oklch, var(--primary) 30%, transparent);
+    background: color-mix(in oklch, var(--primary) 22%, transparent);
   }
 
-  /* slim, technical scrollbars */
+  /* slim neutral scrollbars */
   * {
     scrollbar-width: thin;
     scrollbar-color: var(--border) transparent;
@@ -185,7 +153,8 @@
 }
 
 @layer components {
-  /* live pulse for running members / active sessions */
+  /* Subtle live indicator for genuinely running members/sessions (semantic, not
+     decorative). Kept minimal. */
   .pulse-dot {
     position: relative;
   }
@@ -195,13 +164,13 @@
     inset: -3px;
     border-radius: 999px;
     border: 1px solid currentColor;
-    opacity: 0.6;
-    animation: workbench-pulse 1.8s ease-out infinite;
+    opacity: 0.5;
+    animation: workbench-pulse 2s ease-out infinite;
   }
   @keyframes workbench-pulse {
     0% {
       transform: scale(0.7);
-      opacity: 0.6;
+      opacity: 0.5;
     }
     100% {
       transform: scale(1.6);
