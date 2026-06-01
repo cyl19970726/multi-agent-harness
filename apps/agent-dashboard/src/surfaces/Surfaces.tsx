@@ -57,6 +57,8 @@ import {
   type StatusTone,
 } from "@/components/workbench/atoms";
 import { Avatar } from "@/components/workbench/Avatar";
+import { Markdown } from "@/components/workbench/Markdown";
+import { fetchDoc } from "../api";
 import {
   Dialog,
   DialogFooter,
@@ -126,6 +128,8 @@ interface SurfaceProps {
   actionsEnabled?: boolean;
   /** POST a harness action then refresh the snapshot. */
   onAction?: (path: string, body?: unknown) => void;
+  /** Live harness base URL; used to fetch doc bodies (GET /v1/docs). */
+  apiUrl?: string;
 }
 
 const ACTIONS_DISABLED_HINT = "Connect a live source to enable actions";
@@ -601,9 +605,8 @@ export function TeamWorkspace({ model, onSelectionChange, actionsEnabled, onActi
         }
       />
 
-      <div className="rise relative overflow-hidden rounded-lg border border-border bg-card">
-        <span className="absolute inset-y-0 left-0 w-1 bg-primary" />
-        <div className="flex flex-wrap items-center justify-between gap-4 p-4 pl-5">
+      <div className="rounded-lg border border-border bg-card">
+        <div className="flex flex-wrap items-center justify-between gap-4 p-4">
           <div className="min-w-0">
             <div className="flex items-center gap-1.5 text-[11px] uppercase tracking-wider text-muted-foreground">
               <Target className="size-3.5 text-primary" /> Active Vision / Goal
@@ -1260,7 +1263,93 @@ function BriefLeadForm({
 /* Vision overview                                                    */
 /* ------------------------------------------------------------------ */
 
-export function VisionOverview({ model, onSelectionChange }: SurfaceProps) {
+/**
+ * Right-side slide-over that renders a project doc (a Vision `source_ref` or a
+ * mounted doc). Fetches `GET /v1/docs?path=…` from the live source and renders
+ * markdown; offline (no live source) it shows an honest fallback with the path.
+ */
+function DocSheet({
+  apiUrl,
+  path,
+  onClose,
+}: {
+  apiUrl?: string;
+  path: string;
+  onClose: () => void;
+}) {
+  const [state, setState] = useState<
+    { status: "loading" } | { status: "ok"; content: string } | { status: "error"; detail: string }
+  >({ status: "loading" });
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!apiUrl) {
+      setState({ status: "error", detail: "No live source — connect the harness to render docs." });
+      return;
+    }
+    setState({ status: "loading" });
+    fetchDoc(apiUrl, path)
+      .then((doc) => {
+        if (!cancelled) setState({ status: "ok", content: doc.content });
+      })
+      .catch((error: unknown) => {
+        if (!cancelled)
+          setState({ status: "error", detail: error instanceof Error ? error.message : String(error) });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [apiUrl, path]);
+
+  return (
+    <div className="fixed inset-0 z-50 flex justify-end">
+      <button
+        type="button"
+        aria-label="Close document panel"
+        className="absolute inset-0 bg-foreground/20 backdrop-blur-[1px]"
+        onClick={onClose}
+      />
+      <aside
+        role="dialog"
+        aria-label="Document"
+        className="relative flex h-full w-full max-w-[680px] flex-col border-l border-border bg-background shadow-xl"
+      >
+        <div className="flex h-12 shrink-0 items-center gap-2 border-b border-border px-3">
+          <FileText className="size-4 text-muted-foreground" />
+          <MonoId>{path}</MonoId>
+          <button
+            type="button"
+            aria-label="Close"
+            onClick={onClose}
+            className="ml-auto grid size-8 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+          >
+            <X className="size-4" />
+          </button>
+        </div>
+        <div className="min-h-0 flex-1 overflow-y-auto p-5">
+          {state.status === "loading" && (
+            <p className="text-[13px] text-muted-foreground">Loading {path}…</p>
+          )}
+          {state.status === "error" && (
+            <EmptyState icon={FileText} title="Cannot render doc" description={state.detail} />
+          )}
+          {state.status === "ok" && <Markdown source={state.content} />}
+        </div>
+      </aside>
+    </div>
+  );
+}
+
+export function VisionOverview({ model, onSelectionChange, apiUrl }: SurfaceProps) {
+  const [docPath, setDocPath] = useState<string | null>(null);
   const groups: { id: string; title: string; goals: Goal[] }[] = [
     { id: "active", title: "Active", goals: model.activeGoals },
     { id: "complete", title: "Completed", goals: model.completeGoals },
@@ -1314,6 +1403,7 @@ export function VisionOverview({ model, onSelectionChange }: SurfaceProps) {
                 vision={vision}
                 goals={goalsByVision.get(vision.id) ?? []}
                 onSelectGoal={(goalId) => onSelectionChange({ goalId, surface: "goal" })}
+                onOpenDoc={setDocPath}
               />
             ))
           ) : (
@@ -1395,6 +1485,10 @@ export function VisionOverview({ model, onSelectionChange }: SurfaceProps) {
           </div>
         </Section>
       </div>
+
+      {docPath && (
+        <DocSheet apiUrl={apiUrl} path={docPath} onClose={() => setDocPath(null)} />
+      )}
     </div>
   );
 }
@@ -1404,10 +1498,12 @@ function VisionRow({
   vision,
   goals,
   onSelectGoal,
+  onOpenDoc,
 }: {
   vision: Vision;
   goals: Goal[];
   onSelectGoal: (goalId: string) => void;
+  onOpenDoc: (path: string) => void;
 }) {
   return (
     <div className="rounded-md border border-border bg-background/40 p-3">
@@ -1434,9 +1530,18 @@ function VisionRow({
         </div>
       )}
       {vision.source_refs && vision.source_refs.length > 0 && (
-        <div className="mt-2 flex flex-col gap-0.5">
+        <div className="mt-2 flex flex-col items-start gap-1">
+          <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Narrative</p>
           {vision.source_refs.map((ref) => (
-            <MonoId key={ref}>{ref}</MonoId>
+            <button
+              key={ref}
+              type="button"
+              onClick={() => onOpenDoc(ref)}
+              className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background/50 px-2 py-1 text-[11px] transition-colors hover:border-input hover:bg-accent/40"
+            >
+              <FileText className="size-3 text-muted-foreground" />
+              <MonoId>{ref}</MonoId>
+            </button>
           ))}
         </div>
       )}
@@ -1847,7 +1952,13 @@ function evaluationOutcomeTone(outcome?: string): StatusTone {
 /* Task document                                                      */
 /* ------------------------------------------------------------------ */
 
-export function TaskDocument({ model, onSelectionChange, actionsEnabled, onAction }: SurfaceProps) {
+export function TaskDocument({
+  model,
+  onSelectionChange,
+  actionsEnabled,
+  onAction,
+  singleColumn,
+}: SurfaceProps & { singleColumn?: boolean }) {
   const task = model.selectedTask;
   if (!task) {
     return (
@@ -1928,7 +2039,7 @@ export function TaskDocument({ model, onSelectionChange, actionsEnabled, onActio
         }
       />
 
-      <div className="grid gap-4 lg:grid-cols-[1fr_19rem]">
+      <div className={cn("grid gap-4", !singleColumn && "lg:grid-cols-[1fr_19rem]")}>
         <div className="space-y-4">
           <Section kicker="What this delivers when done" title="Objective" className="rise">
             <p className="p-4 text-[13px] leading-relaxed text-foreground/90">
@@ -2510,7 +2621,7 @@ function TaskSheet({
       <aside
         role="dialog"
         aria-label="Task detail"
-        className="relative flex h-full w-full max-w-[560px] flex-col border-l border-border bg-background shadow-xl"
+        className="relative flex h-full w-full max-w-[660px] flex-col border-l border-border bg-background shadow-xl"
       >
         <div className="flex h-12 shrink-0 items-center gap-2 border-b border-border px-3">
           <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
@@ -2535,12 +2646,13 @@ function TaskSheet({
             </button>
           </div>
         </div>
-        <div className="min-h-0 flex-1 overflow-y-auto p-4">
+        <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden p-4">
           <TaskDocument
             model={model}
             onSelectionChange={onSelectionChange}
             actionsEnabled={actionsEnabled}
             onAction={onAction}
+            singleColumn
           />
         </div>
       </aside>
@@ -3757,7 +3869,8 @@ function HealthRow({
 /* Docs context                                                       */
 /* ------------------------------------------------------------------ */
 
-export function DocsContext({ model }: SurfaceProps) {
+export function DocsContext({ model, apiUrl }: SurfaceProps) {
+  const [docPath, setDocPath] = useState<string | null>(null);
   return (
     <div className="space-y-5">
       <SurfaceHeader
@@ -3768,7 +3881,12 @@ export function DocsContext({ model }: SurfaceProps) {
       <Section title="Mounted documents" className="rise">
         <div className="divide-y divide-border">
           {model.docs.map((doc) => (
-            <div key={doc.path} className="flex items-start gap-3 px-4 py-3">
+            <button
+              key={doc.path}
+              type="button"
+              onClick={() => setDocPath(doc.path)}
+              className="flex w-full items-start gap-3 px-4 py-3 text-left transition-colors hover:bg-accent/40"
+            >
               <FileText className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2">
@@ -3779,10 +3897,14 @@ export function DocsContext({ model }: SurfaceProps) {
                 <MonoId>{doc.path}</MonoId>
               </div>
               <ExternalLink className="size-3.5 shrink-0 text-muted-foreground" />
-            </div>
+            </button>
           ))}
         </div>
       </Section>
+
+      {docPath && (
+        <DocSheet apiUrl={apiUrl} path={docPath} onClose={() => setDocPath(null)} />
+      )}
     </div>
   );
 }

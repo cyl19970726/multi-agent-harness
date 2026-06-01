@@ -161,6 +161,7 @@ export function WorkbenchShell({
               sourceLabel={sourceLabel}
               actionsEnabled={actionsEnabled}
               onAction={onAction}
+              apiUrl={apiUrl}
             />
           </div>
         </main>
@@ -584,6 +585,7 @@ function SurfaceSwitch({
   sourceLabel,
   actionsEnabled,
   onAction,
+  apiUrl,
 }: {
   model: WorkbenchModel;
   selection: SelectionState;
@@ -591,8 +593,9 @@ function SurfaceSwitch({
   sourceLabel: string;
   actionsEnabled: boolean;
   onAction: (path: string, body?: unknown) => void;
+  apiUrl: string;
 }) {
-  const shared = { model, onSelectionChange, actionsEnabled, onAction };
+  const shared = { model, onSelectionChange, actionsEnabled, onAction, apiUrl };
   switch (selection.surface) {
     case "vision":
       return <VisionOverview {...shared} />;

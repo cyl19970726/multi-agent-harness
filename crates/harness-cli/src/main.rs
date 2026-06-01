@@ -2450,6 +2450,18 @@ fn handle_http_connection(store: &HarnessStore, mut stream: TcpStream, sse_manag
                 // Handle SSE endpoint
                 handle_sse_stream(store, stream, sse_manager)?
             }
+            "/v1/docs" => match read_allowed_doc(&path) {
+                Ok((doc_path, content)) => write_http_json(
+                    &mut stream,
+                    "200 OK",
+                    &serde_json::json!({"path": doc_path, "content": content}),
+                )?,
+                Err(detail) => write_http_json(
+                    &mut stream,
+                    "404 Not Found",
+                    &serde_json::json!({"error": "doc_not_found", "detail": detail}),
+                )?,
+            },
             _ => write_http_json(
                 &mut stream,
                 "404 Not Found",
@@ -2989,6 +3001,40 @@ fn json_string_array(body: &serde_json::Value, key: &str) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// Resolve a `GET /v1/docs?path=docs/...` request to the markdown body, allow-listed
+/// to the repository's `docs/` tree. Returns `(canonical-relative-path, content)` or a
+/// human-readable error. Rejects anything outside `docs/` and any path traversal so the
+/// route can only serve committed docs (ADR 0019, Vision `source_refs` rendering).
+fn read_allowed_doc(request_target: &str) -> Result<(String, String), String> {
+    let query = request_target.split('?').nth(1).unwrap_or("");
+    let raw = query
+        .split('&')
+        .find_map(|pair| pair.strip_prefix("path="))
+        .ok_or_else(|| "missing ?path= parameter".to_string())?;
+    // Minimal percent-decoding (paths are simple: slashes + alnum + .-_).
+    let decoded = raw
+        .replace("%2F", "/")
+        .replace("%2f", "/")
+        .replace("%20", " ");
+    if !decoded.starts_with("docs/") || decoded.contains("..") {
+        return Err(format!("path must be under docs/ and contain no ..: {decoded}"));
+    }
+    let base = std::env::current_dir()
+        .and_then(|dir| dir.canonicalize())
+        .map_err(|error| format!("cannot resolve working dir: {error}"))?;
+    let docs_root = base.join("docs");
+    let full = base
+        .join(&decoded)
+        .canonicalize()
+        .map_err(|error| format!("doc not found: {decoded} ({error})"))?;
+    if !full.starts_with(&docs_root) {
+        return Err(format!("resolved path escapes docs/: {decoded}"));
+    }
+    let content =
+        std::fs::read_to_string(&full).map_err(|error| format!("read failed: {error}"))?;
+    Ok((decoded, content))
 }
 
 fn write_http_json<T: serde::Serialize>(
@@ -8983,6 +9029,16 @@ mod workflow_runtime_tests {
 mod tests {
     use super::*;
 
+    #[test]
+    fn read_allowed_doc_rejects_traversal_and_non_docs_paths() {
+        // Missing parameter.
+        assert!(read_allowed_doc("/v1/docs").is_err());
+        // Outside the docs/ allow-list.
+        assert!(read_allowed_doc("/v1/docs?path=etc/passwd").is_err());
+        assert!(read_allowed_doc("/v1/docs?path=Cargo.toml").is_err());
+        // Path traversal, even under docs/.
+        assert!(read_allowed_doc("/v1/docs?path=docs/../Cargo.toml").is_err());
+    }
 
     #[test]
     fn extracts_thread_id_from_thread_start_response_before_turn_start() {

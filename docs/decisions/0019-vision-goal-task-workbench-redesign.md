@@ -149,12 +149,12 @@ card → detail flow). This supersedes the theme tokens of ADR 0016 (the Tailwin
 v4 + shadcn/Radix stack decision itself stands). Tokens live in
 `apps/agent-dashboard/src/index.css`.
 
-- **Docs rendering is a real gap.** `model.docs` is a hard-coded catalog in
-  [readModel.ts](../../apps/agent-dashboard/src/model/readModel.ts) and
-  `DocsContext` only lists paths — no markdown is fetched or rendered, and no
-  backend route serves doc bodies. Rendering `source_refs` (and a Docs surface)
-  requires either a backend `GET /v1/docs/:path` returning markdown, or
-  build-time bundling of `docs/**`. This is its own work package.
+- **Docs rendering (shipped).** A backend `GET /v1/docs?path=docs/...` route
+  (`read_allowed_doc`) serves markdown bodies, allow-listed to the `docs/` tree
+  and rejecting path traversal. The frontend fetches via `fetchDoc`, renders
+  with a dependency-free `Markdown` component, and opens docs in a `DocSheet`
+  slide-over from Vision `source_refs` (a "Narrative" section) and the Docs
+  surface. Offline (no live source) shows an honest fallback.
 
 ## Consequences
 
