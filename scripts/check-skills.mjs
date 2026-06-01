@@ -4,6 +4,7 @@ import { basename, join } from "node:path";
 const skillsRoot = ".agents/skills";
 const failures = [];
 const checked = [];
+const resolvedSkills = new Set();
 
 function parseFrontmatter(file) {
   const text = readFileSync(file, "utf8");
@@ -58,8 +59,11 @@ function validateSkill(skillDir) {
   }
 
   checked.push(skillFile);
+  // Track that this skill id exists for later validation
+  resolvedSkills.add(skillName);
 }
 
+// Validate all skills exist and resolve their ids
 if (existsSync(skillsRoot)) {
   for (const entry of readdirSync(skillsRoot)) {
     const skillDir = join(skillsRoot, entry);
@@ -69,9 +73,52 @@ if (existsSync(skillsRoot)) {
   }
 }
 
+// Check for dangling skill_refs in member JSON files
+function checkMemberSkillRefs() {
+  const dataRoot = ".agents/data";
+  if (!existsSync(dataRoot)) {
+    return;
+  }
+
+  // Find all agent-member JSON files
+  function scanDir(dir) {
+    try {
+      for (const entry of readdirSync(dir)) {
+        const path = join(dir, entry);
+        const stat = statSync(path);
+        if (stat.isDirectory()) {
+          scanDir(path);
+        } else if (path.endsWith("-agent-member.json")) {
+          try {
+            const content = readFileSync(path, "utf8");
+            const data = JSON.parse(content);
+            if (data.skill_refs && Array.isArray(data.skill_refs)) {
+              for (const skillRef of data.skill_refs) {
+                if (!resolvedSkills.has(skillRef)) {
+                  failures.push(
+                    `${path}: skill_ref "${skillRef}" does not exist at .agents/skills/${skillRef}/SKILL.md`
+                  );
+                }
+              }
+            }
+          } catch (e) {
+            failures.push(`${path}: failed to parse JSON: ${e.message}`);
+          }
+        }
+      }
+    } catch (e) {
+      // Directory may not exist or be readable
+    }
+  }
+
+  scanDir(dataRoot);
+}
+
+checkMemberSkillRefs();
+
 if (failures.length) {
   console.error(failures.join("\n"));
   process.exit(1);
 }
 
-console.log(`checked ${checked.length} skills`);
+console.log(`checked ${checked.length} skills and validated all skill_refs in member records`);
