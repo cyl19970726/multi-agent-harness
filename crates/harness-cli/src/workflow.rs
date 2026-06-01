@@ -54,6 +54,15 @@ pub struct StepResult {
     pub provider_session_id: Option<String>,
     /// Human-facing summary / report text collected from the delivery.
     pub output_summary: String,
+    /// The `WorkflowStep` id the driver journaled at step START (live progress).
+    /// `None` for mock/test drivers that do not journal a start row; the runtime
+    /// then mints a fresh id when journaling the terminal row.
+    pub step_id: Option<String>,
+    /// Wall-clock start time the driver recorded when the step began. `None` for
+    /// drivers that do not journal a start row; the runtime falls back to the
+    /// journal time. Carrying the real start time keeps the journaled step's
+    /// `started_at`/`ended_at` reflecting true (overlapping) execution windows.
+    pub started_at: Option<String>,
 }
 
 impl StepResult {
@@ -173,6 +182,8 @@ pub fn parallel(driver: &AgentStepFn<'_>, specs: &[AgentStepSpec]) -> Vec<StepRe
                         ok: false,
                         provider_session_id: None,
                         output_summary: "workflow lifetime agent cap (1000) exceeded".to_string(),
+                        step_id: None,
+                        started_at: None,
                     };
                     let _ = tx.send((index, result));
                     return;
@@ -189,6 +200,8 @@ pub fn parallel(driver: &AgentStepFn<'_>, specs: &[AgentStepSpec]) -> Vec<StepRe
                     ok: false,
                     provider_session_id: None,
                     output_summary: "agent step panicked".to_string(),
+                    step_id: None,
+                    started_at: None,
                 });
 
                 let _ = tx.send((index, result));
@@ -372,6 +385,8 @@ mod tests {
                 ok: true,
                 provider_session_id: Some(format!("session-{}", spec.label)),
                 output_summary: format!("ok: {}", spec.prompt),
+                step_id: None,
+                started_at: None,
             }
         }
     }
@@ -404,6 +419,8 @@ mod tests {
                 ok: true,
                 provider_session_id: Some("s".to_string()),
                 output_summary: "ok".to_string(),
+                step_id: None,
+                started_at: None,
             }
         };
         let specs: Vec<AgentStepSpec> = (0..5)
@@ -434,6 +451,8 @@ mod tests {
                     ok: false,
                     provider_session_id: None,
                     output_summary: "delivery failed".to_string(),
+                    step_id: None,
+                    started_at: None,
                 };
             }
             if spec.label == "l2" {
@@ -446,6 +465,8 @@ mod tests {
                 ok: true,
                 provider_session_id: Some("s".to_string()),
                 output_summary: "ok".to_string(),
+                step_id: None,
+                started_at: None,
             }
         };
         let specs: Vec<AgentStepSpec> = (0..4)
@@ -480,6 +501,8 @@ mod tests {
                 } else {
                     "failed".to_string()
                 },
+                step_id: None,
+                started_at: None,
             }
         };
         let outcome = investigate(&driver, &members(), "failure Y");

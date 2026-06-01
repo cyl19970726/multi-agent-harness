@@ -16,7 +16,7 @@ use harness_core::{
     MessageDeliveryStatus, MessageKind, MessageTerminalSource, Proposal, ProposalStatus,
     ProviderChildThread, ProviderChildThreadStatus, ProviderKind, ProviderSession,
     ProviderSessionStatus, Review, ReviewVerdict, SenderKind, Task, TaskStatus, Vision,
-    WorkflowRun, WorkflowRunStatus, WorkflowStep,
+    WorkflowRun, WorkflowRunStatus, WorkflowStep, WorkflowStepStatus,
 };
 use harness_store::{HarnessStore, MessageDeliveryClaimResult};
 use thiserror::Error;
@@ -3540,11 +3540,38 @@ struct WorkflowDeliveryOptions {
 /// and the `parallel()` barrier — stays in charge rather than unwinding.
 fn workflow_real_agent_step(
     store: &HarnessStore,
+    run_id: &str,
     options: &WorkflowDeliveryOptions,
     spec: &workflow::AgentStepSpec,
 ) -> workflow::StepResult {
+    // Journal a `running` WorkflowStep row the instant this step starts, BEFORE
+    // the (slow) provider delivery. The SSE watcher tails workflow_steps.jsonl,
+    // so the dashboard sees each step go live as it starts — genuine per-step
+    // progress, not an end-of-run cluster. The terminal row reuses this id +
+    // start time (see `run_workflow_with_driver`).
+    let step_id = generated_id("wfstep");
+    let started_at = now_string();
+    let running = WorkflowStep {
+        id: step_id.clone(),
+        run_id: run_id.to_string(),
+        phase: spec.phase.clone(),
+        label: spec.label.clone(),
+        provider_session_id: None,
+        status: WorkflowStepStatus::Running,
+        output_summary: None,
+        started_at: started_at.clone(),
+        ended_at: None,
+    };
+    // A failure to journal the start row must not abort the step; the terminal
+    // row still records the outcome. Best-effort, like the rest of this seam.
+    let _ = store.append_workflow_step(&running);
+
     match try_workflow_real_agent_step(store, options, spec) {
-        Ok(result) => result,
+        Ok(mut result) => {
+            result.step_id = Some(step_id);
+            result.started_at = Some(started_at);
+            result
+        }
         Err(error) => workflow::StepResult {
             phase: spec.phase.clone(),
             label: spec.label.clone(),
@@ -3552,6 +3579,8 @@ fn workflow_real_agent_step(
             ok: false,
             provider_session_id: None,
             output_summary: format!("agent step error: {error}"),
+            step_id: Some(step_id),
+            started_at: Some(started_at),
         },
     }
 }
@@ -3626,6 +3655,10 @@ fn try_workflow_real_agent_step(
         ok,
         provider_session_id,
         output_summary,
+        // The journaling identity is assigned by the caller, which already
+        // journaled the `running` start row before this delivery began.
+        step_id: None,
+        started_at: None,
     })
 }
 
@@ -3678,13 +3711,22 @@ fn workflow_run_value(store: &HarnessStore, args: &[String]) -> CliResult<serde_
         claude_member_id,
     };
 
-    // Build the injectable real driver. The store and options are captured by
-    // reference; the closure is Sync (HarnessStore serializes writes via flock)
-    // so it can be shared across the parallel barrier's scoped threads.
-    let driver =
-        move |spec: &workflow::AgentStepSpec| workflow_real_agent_step(store, &options, spec);
+    // The run id is minted up front so the driver can journal each step's
+    // `running` row against it AS THE STEP STARTS (live progress over SSE),
+    // rather than only emitting a terminal row after the whole body returns.
+    let run_id = generated_id("wfrun");
 
-    run_workflow_with_driver(store, def, &members, &prompt, &driver)
+    // Build the injectable real driver. The store, run id, and options are
+    // captured by reference; the closure is Sync (HarnessStore serializes writes
+    // via flock) so it can be shared across the parallel barrier's scoped threads.
+    let driver = {
+        let run_id = run_id.clone();
+        move |spec: &workflow::AgentStepSpec| {
+            workflow_real_agent_step(store, &run_id, &options, spec)
+        }
+    };
+
+    run_workflow_with_driver(store, &run_id, def, &members, &prompt, &driver)
 }
 
 /// Create the WorkflowRun (running), dispatch the workflow body with the given
@@ -3693,14 +3735,14 @@ fn workflow_run_value(store: &HarnessStore, args: &[String]) -> CliResult<serde_
 /// path.
 fn run_workflow_with_driver(
     store: &HarnessStore,
+    run_id: &str,
     def: &workflow::WorkflowDef,
     members: &workflow::WorkflowMembers,
     prompt: &str,
     driver: &workflow::AgentStepFn<'_>,
 ) -> CliResult<serde_json::Value> {
-    let run_id = generated_id("wfrun");
     let mut run = WorkflowRun {
-        id: run_id.clone(),
+        id: run_id.to_string(),
         workflow_name: def.name.to_string(),
         status: WorkflowRunStatus::Running,
         step_ids: Vec::new(),
@@ -3713,20 +3755,29 @@ fn run_workflow_with_driver(
     // Dispatch the compiled workflow body (option C registry dispatch).
     let outcome = (def.run)(driver, members, prompt);
 
-    // Journal one WorkflowStep per StepResult, preserving order.
+    // Journal one TERMINAL WorkflowStep per StepResult, preserving order. When
+    // the driver already journaled a `running` row at step start (real path), we
+    // REUSE its `step_id` and real `started_at` so the latest-wins projection
+    // updates the same row in place and the journaled window reflects true
+    // (overlapping) execution. Mock drivers leave those `None`, so we mint a
+    // fresh id and stamp the journal time, preserving the pre-existing behavior.
     let mut steps_json = Vec::new();
     for result in &outcome.steps {
-        let step_id = generated_id("wfstep");
+        let step_id = result
+            .step_id
+            .clone()
+            .unwrap_or_else(|| generated_id("wfstep"));
         let now = now_string();
+        let started_at = result.started_at.clone().unwrap_or_else(|| now.clone());
         let step = WorkflowStep {
             id: step_id.clone(),
-            run_id: run_id.clone(),
+            run_id: run_id.to_string(),
             phase: result.phase.clone(),
             label: result.label.clone(),
             provider_session_id: result.provider_session_id.clone(),
             status: result.step_status(),
             output_summary: Some(result.output_summary.clone()),
-            started_at: now.clone(),
+            started_at,
             ended_at: Some(now),
         };
         store.append_workflow_step(&step)?;
@@ -8450,6 +8501,8 @@ mod workflow_runtime_tests {
             ok: true,
             provider_session_id: Some(format!("session-{}", spec.label)),
             output_summary: format!("mock ok: {}", spec.label),
+            step_id: None,
+            started_at: None,
         }
     }
 
@@ -8461,8 +8514,10 @@ mod workflow_runtime_tests {
         // Mock driver: never spawns a provider; always succeeds.
         let driver = |spec: &workflow::AgentStepSpec| ok_step(spec);
 
-        let result = run_workflow_with_driver(&store, def, &mock_members(), "failure X", &driver)
-            .expect("run workflow");
+        let run_id = generated_id("wfrun");
+        let result =
+            run_workflow_with_driver(&store, &run_id, def, &mock_members(), "failure X", &driver)
+                .expect("run workflow");
 
         // The returned run is completed and references 3 steps (serial + 2 parallel).
         let run = result.get("run").expect("run key");
@@ -8513,11 +8568,15 @@ mod workflow_runtime_tests {
                 ok,
                 provider_session_id: ok.then(|| "s".to_string()),
                 output_summary: "mock".to_string(),
+                step_id: None,
+                started_at: None,
             }
         };
 
-        let result = run_workflow_with_driver(&store, def, &mock_members(), "failure Y", &driver)
-            .expect("run workflow");
+        let run_id = generated_id("wfrun");
+        let result =
+            run_workflow_with_driver(&store, &run_id, def, &mock_members(), "failure Y", &driver)
+                .expect("run workflow");
         let run = result.get("run").expect("run key");
         assert_eq!(run.get("status").and_then(|s| s.as_str()), Some("failed"));
 
@@ -8545,7 +8604,8 @@ mod workflow_runtime_tests {
         let registry = workflow::WorkflowRegistry::builtin();
         let def = registry.get("investigate").expect("registered");
         let driver = |spec: &workflow::AgentStepSpec| ok_step(spec);
-        run_workflow_with_driver(&store, def, &mock_members(), "x", &driver).expect("run");
+        let run_id = generated_id("wfrun");
+        run_workflow_with_driver(&store, &run_id, def, &mock_members(), "x", &driver).expect("run");
 
         let snapshot = dashboard_snapshot(&store).expect("snapshot");
         let runs = snapshot
@@ -8562,6 +8622,98 @@ mod workflow_runtime_tests {
             .and_then(|v| v.as_array())
             .expect("workflow_steps array");
         assert_eq!(steps.len(), 3);
+    }
+
+    /// LIVE PROGRESS contract: when a driver journals a `running` step row at
+    /// step start (carrying its `step_id` + real `started_at`), the runtime
+    /// REUSES that identity for the terminal row. The append log then holds two
+    /// rows per step (running -> completed), but the latest-wins projection
+    /// collapses to one terminal row whose `started_at` is the driver's real
+    /// start time — never overwritten by the journal time. This is what lets the
+    /// SSE watcher stream a `running` frame as each step starts.
+    #[test]
+    fn driver_journaled_running_row_is_reused_for_terminal_row() {
+        let store = temp_store("live-progress");
+        let registry = workflow::WorkflowRegistry::builtin();
+        let def = registry.get("investigate").expect("investigate registered");
+        let run_id = generated_id("wfrun");
+
+        // A driver that mimics the real path: journal a `running` row up front,
+        // then return a StepResult carrying that same id + start time.
+        let driver = |spec: &workflow::AgentStepSpec| {
+            let step_id = generated_id("wfstep");
+            let started_at = format!("unix-ms:{}", 1_000 + spec.label.len());
+            let running = WorkflowStep {
+                id: step_id.clone(),
+                run_id: run_id.clone(),
+                phase: spec.phase.clone(),
+                label: spec.label.clone(),
+                provider_session_id: None,
+                status: WorkflowStepStatus::Running,
+                output_summary: None,
+                started_at: started_at.clone(),
+                ended_at: None,
+            };
+            store
+                .append_workflow_step(&running)
+                .expect("journal running");
+            workflow::StepResult {
+                phase: spec.phase.clone(),
+                label: spec.label.clone(),
+                member_id: spec.member_id.clone(),
+                ok: true,
+                provider_session_id: Some(format!("session-{}", spec.label)),
+                output_summary: format!("ok: {}", spec.label),
+                step_id: Some(step_id),
+                started_at: Some(started_at),
+            }
+        };
+
+        let result =
+            run_workflow_with_driver(&store, &run_id, def, &mock_members(), "topic", &driver)
+                .expect("run workflow");
+        assert_eq!(
+            result
+                .get("run")
+                .and_then(|r| r.get("status"))
+                .and_then(|s| s.as_str()),
+            Some("completed")
+        );
+
+        // Raw append log: a `running` row was journaled at step start, AND a
+        // terminal row was journaled per step (2 rows x 3 steps = 6 rows).
+        let appended = store.workflow_steps().expect("read step log");
+        assert_eq!(
+            appended.len(),
+            6,
+            "running + terminal rows journaled per step"
+        );
+        assert_eq!(
+            appended
+                .iter()
+                .filter(|s| s.status == WorkflowStepStatus::Running)
+                .count(),
+            3,
+            "a running row was journaled at the start of each step (live progress)"
+        );
+
+        // Latest-wins projection: exactly 3 terminal rows, each reusing the
+        // driver's start time rather than the journal-time stamp.
+        let steps = latest_workflow_steps_in_append_order(&store).expect("project steps");
+        assert_eq!(
+            steps.len(),
+            3,
+            "running+terminal collapse to one row per step"
+        );
+        for step in &steps {
+            assert_eq!(step.status, WorkflowStepStatus::Completed);
+            assert!(
+                step.started_at.starts_with("unix-ms:1"),
+                "terminal row kept the driver's real start time: {}",
+                step.started_at
+            );
+            assert!(step.ended_at.is_some());
+        }
     }
 }
 
