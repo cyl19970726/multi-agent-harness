@@ -8,10 +8,10 @@ use std::thread;
 use std::time::Duration;
 
 use crossbeam::channel::{bounded, Receiver, Sender};
-use harness_core::{AgentEvent, Message, ProviderSession};
+use harness_core::{AgentEvent, Message, ProviderSession, WorkflowRun, WorkflowStep};
 use harness_store::HarnessStore;
 
-/// An event frame sent to SSE clients
+/// An event frame sent to SSE clients (WP2: added WorkflowRun and WorkflowStep)
 #[derive(Clone, Debug)]
 #[allow(dead_code)]
 pub enum SseEventFrame {
@@ -28,6 +28,10 @@ pub enum SseEventFrame {
     Message(Message),
     /// A provider session status changed
     ProviderSession(ProviderSession),
+    /// A workflow run status changed (WP2)
+    WorkflowRun(WorkflowRun),
+    /// A workflow step started or completed (WP2)
+    WorkflowStep(WorkflowStep),
 }
 
 /// Manages SSE client subscriptions and broadcasts
@@ -75,7 +79,8 @@ impl Clone for SseManager {
 }
 
 /// Start a background watcher thread that monitors jsonl files for appends
-/// and broadcasts new records to all SSE clients
+/// and broadcasts new records to all SSE clients. WP2: added workflow_runs.jsonl
+/// and workflow_steps.jsonl.
 pub fn start_sse_watcher(store: &HarnessStore, manager: SseManager) -> std::io::Result<()> {
     let store_root = store.root().to_path_buf();
 
@@ -94,6 +99,8 @@ pub fn start_sse_watcher(store: &HarnessStore, manager: SseManager) -> std::io::
             "agent_events.jsonl",
             "messages.jsonl",
             "provider_sessions.jsonl",
+            "workflow_runs.jsonl",
+            "workflow_steps.jsonl",
         ] {
             let path = store_root.join(filename);
             if let Ok(metadata) = fs::metadata(&path) {
@@ -145,6 +152,36 @@ pub fn start_sse_watcher(store: &HarnessStore, manager: SseManager) -> std::io::
                 |line| {
                     if let Ok(session) = serde_json::from_str::<ProviderSession>(line) {
                         Some(SseEventFrame::ProviderSession(session))
+                    } else {
+                        None
+                    }
+                },
+                &manager,
+            );
+
+            // Check workflow_runs.jsonl (WP2)
+            check_and_broadcast_appends(
+                &store_root,
+                "workflow_runs.jsonl",
+                &mut consumed_offsets,
+                |line| {
+                    if let Ok(run) = serde_json::from_str::<WorkflowRun>(line) {
+                        Some(SseEventFrame::WorkflowRun(run))
+                    } else {
+                        None
+                    }
+                },
+                &manager,
+            );
+
+            // Check workflow_steps.jsonl (WP2)
+            check_and_broadcast_appends(
+                &store_root,
+                "workflow_steps.jsonl",
+                &mut consumed_offsets,
+                |line| {
+                    if let Ok(step) = serde_json::from_str::<WorkflowStep>(line) {
+                        Some(SseEventFrame::WorkflowStep(step))
                     } else {
                         None
                     }
@@ -267,7 +304,10 @@ mod tests {
     use std::io::Write as _;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use harness_core::{Message, MessageDeliveryStatus, MessageKind, SenderKind};
+    use harness_core::{
+        Message, MessageDeliveryStatus, MessageKind, SenderKind, WorkflowRunStatus,
+        WorkflowStepStatus,
+    };
 
     use super::*;
 
@@ -298,10 +338,48 @@ mod tests {
         }
     }
 
+    fn test_workflow_run(id: &str) -> WorkflowRun {
+        WorkflowRun {
+            id: id.into(),
+            workflow_name: "test".into(),
+            status: WorkflowRunStatus::Running,
+            step_ids: Vec::new(),
+            created_at: "unix-ms:1".into(),
+            ended_at: None,
+            summary: None,
+        }
+    }
+
+    fn test_workflow_step(id: &str, run_id: &str) -> WorkflowStep {
+        WorkflowStep {
+            id: id.into(),
+            run_id: run_id.into(),
+            phase: "test".into(),
+            label: "test-step".into(),
+            provider_session_id: None,
+            status: WorkflowStepStatus::Running,
+            output_summary: None,
+            started_at: "unix-ms:1".into(),
+            ended_at: None,
+        }
+    }
+
     fn message_frame(line: &str) -> Option<SseEventFrame> {
         serde_json::from_str::<Message>(line)
             .ok()
             .map(SseEventFrame::Message)
+    }
+
+    fn workflow_run_frame(line: &str) -> Option<SseEventFrame> {
+        serde_json::from_str::<WorkflowRun>(line)
+            .ok()
+            .map(SseEventFrame::WorkflowRun)
+    }
+
+    fn workflow_step_frame(line: &str) -> Option<SseEventFrame> {
+        serde_json::from_str::<WorkflowStep>(line)
+            .ok()
+            .map(SseEventFrame::WorkflowStep)
     }
 
     /// A JSONL row whose write is observed in two pieces (the watcher polls
@@ -438,6 +516,82 @@ mod tests {
             count, 1,
             "complete row broadcast exactly once across two polls"
         );
+
+        std::fs::remove_dir_all(&root).expect("cleanup");
+    }
+
+    /// Workflow runs and steps should be streamed via SSE like other events (WP2).
+    #[test]
+    fn workflow_run_and_step_broadcast_exactly_once() {
+        let root = unique_dir("workflow");
+        std::fs::create_dir_all(&root).expect("create root");
+        let run_path = root.join("workflow_runs.jsonl");
+        let step_path = root.join("workflow_steps.jsonl");
+
+        let manager = SseManager::new();
+        let rx = manager.subscribe();
+        let mut offsets: HashMap<String, u64> = HashMap::new();
+
+        // Write a workflow run and a step
+        let run = test_workflow_run("run-1");
+        let step = test_workflow_step("step-1", "run-1");
+        let run_row = serde_json::to_string(&run).expect("ser run");
+        let step_row = serde_json::to_string(&step).expect("ser step");
+
+        let mut run_file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&run_path)
+            .expect("open run");
+        run_file
+            .write_all(format!("{run_row}\n").as_bytes())
+            .expect("write run");
+        run_file.flush().expect("flush run");
+
+        let mut step_file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&step_path)
+            .expect("open step");
+        step_file
+            .write_all(format!("{step_row}\n").as_bytes())
+            .expect("write step");
+        step_file.flush().expect("flush step");
+
+        // Poll both files
+        check_and_broadcast_appends(
+            &root,
+            "workflow_runs.jsonl",
+            &mut offsets,
+            workflow_run_frame,
+            &manager,
+        );
+        check_and_broadcast_appends(
+            &root,
+            "workflow_steps.jsonl",
+            &mut offsets,
+            workflow_step_frame,
+            &manager,
+        );
+
+        let mut run_count = 0;
+        let mut step_count = 0;
+        while let Ok(frame) = rx.try_recv() {
+            match frame {
+                SseEventFrame::WorkflowRun(r) => {
+                    assert_eq!(r.id, "run-1");
+                    run_count += 1;
+                }
+                SseEventFrame::WorkflowStep(s) => {
+                    assert_eq!(s.id, "step-1");
+                    step_count += 1;
+                }
+                other => panic!("unexpected frame {other:?}"),
+            }
+        }
+
+        assert_eq!(run_count, 1, "workflow run broadcast exactly once");
+        assert_eq!(step_count, 1, "workflow step broadcast exactly once");
 
         std::fs::remove_dir_all(&root).expect("cleanup");
     }

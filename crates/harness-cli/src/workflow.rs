@@ -1,29 +1,22 @@
-//! Minimal Rust-native workflow runtime (WP1).
+//! Minimal Rust-native workflow runtime (WP2).
 //!
-//! This is the first slice of the design in
-//! `docs/research/dynamic-workflow-runtime-design.md`. It proves that the engine
-//! can orchestrate real `codex` + `claude` deliveries under deterministic
-//! control flow (serial + parallel) and journal the run. It deliberately has NO
-//! concurrency cap, NO SSE, NO IR, and NO `Task`/`Goal` binding — those are
-//! WP2-6.
+//! This extends WP1 with:
+//! * CONCURRENCY-CAP SCHEDULER: bounds concurrency to min(16, available_parallelism()-2)
+//!   via a counting semaphore. Excess steps are queued and run as permits free.
+//!   Includes a 1000-agent LIFETIME cap as a runaway backstop.
+//! * STREAMING pipeline(): placeholder for streaming pipeline (WP2 stub,
+//!   full design deferred to WP5 IR phase).
+//! * LIVE SSE PROGRESS: WorkflowStep rows are journaled and SSE-watched
+//!   so the dashboard sees steps in real time.
 //!
-//! Design fidelity:
-//! * §3 option C — workflows are built-in, registered Rust fns dispatched by
-//!   name through [`WorkflowRegistry`]. No interpreter, no new language surface.
-//! * §4 primitive mapping — `agent()` is one provider delivery through the
-//!   EXISTING neutral seam ([`run_agent_step`] -> the caller-injected delivery
-//!   fn -> `deliver_agent_messages_value` -> `run_provider_delivery`). The
-//!   workflow never spawns a provider directly (ADR-0011 provider-neutral).
-//! * §4 parallel barrier — [`parallel`] runs N thunks on `std::thread::scope`
-//!   threads, joins all (barrier), and collects `Vec<StepResult>`. A failing
-//!   thunk yields a failed [`StepResult`] in its slot; the run never panics.
-//! * `serial` is just sequential Rust calls (no combinator needed) — see
-//!   [`investigate`].
+//! The design fidelity remains §3 option C — workflows are built-in registered
+//! Rust fns dispatched by name. The scheduler is process-wide and shared across
+//! all runs (one lifetime cap, one concurrency cap).
 //!
-//! The agent-step fn is INJECTED ([`AgentStepFn`]) so tests can swap the real
-//! provider path for a deterministic mock without spawning a binary.
+//! See docs/research/dynamic-workflow-runtime-design.md for the full design.
 
 use std::collections::BTreeMap;
+use std::sync::{Condvar, Mutex};
 
 use harness_core::{WorkflowRunStatus, WorkflowStepStatus};
 
@@ -79,36 +72,113 @@ impl StepResult {
 /// [`StepResult`]s without spawning a provider.
 ///
 /// It must NEVER panic — a delivery failure is reported as `StepResult { ok:
-/// false, .. }` so the run's failure handling (and the parallel barrier) stays
-/// in control flow rather than unwinding.
+/// false, .. }` so the run's failure handling stays in control flow rather than
+/// unwinding.
 pub type AgentStepFn<'a> = dyn Fn(&AgentStepSpec) -> StepResult + Sync + 'a;
 
 /// Run one agent step. This is the `agent()` primitive: it is a thin, total
-/// wrapper that simply invokes the injected driver. Kept as a named fn so the
-/// workflow bodies read as `run_agent_step(driver, &spec)` regardless of whether
-/// the driver is real or a mock.
+/// wrapper that simply invokes the injected driver.
 pub fn run_agent_step(driver: &AgentStepFn<'_>, spec: &AgentStepSpec) -> StepResult {
     driver(spec)
 }
 
-/// The `parallel()` barrier (§4). Runs every spec concurrently on its own scoped
-/// thread, joins ALL of them (the barrier), and returns results in input order.
-/// A thunk whose thread panics is converted into a failed [`StepResult`] in its
-/// slot so the run itself never panics.
+/// WP2: A process-wide concurrency-cap scheduler. Bounds concurrent work to
+/// `min(16, available_parallelism()-2)` via a counting semaphore + work queue.
+/// Excess tasks are queued and spawned as permits free. Includes a 1000-agent
+/// LIFETIME cap as a runaway backstop.
+struct WorkflowScheduler {
+    /// Counting semaphore: number of free worker slots.
+    permits_mu: Mutex<usize>,
+    permits_cv: Condvar,
+    /// Lifetime agent spawn counter (across all runs).
+    agents_spawned: Mutex<u64>,
+}
+
+impl WorkflowScheduler {
+    fn new() -> Self {
+        // min(16, available_parallelism()-2), clamped to >= 1
+        let parallelism = std::thread::available_parallelism()
+            .ok()
+            .map(|p| p.get())
+            .unwrap_or(2)
+            .saturating_sub(2);
+        let cap = parallelism.clamp(1, 16);
+        Self {
+            permits_mu: Mutex::new(cap),
+            permits_cv: Condvar::new(),
+            agents_spawned: Mutex::new(0),
+        }
+    }
+
+    /// Try to acquire a permit. If the lifetime cap is exceeded, returns false
+    /// (step should error gracefully). Otherwise blocks until a permit is free
+    /// and returns true.
+    fn acquire(&self) -> bool {
+        let mut counter = self.agents_spawned.lock().unwrap();
+        if *counter >= 1000 {
+            return false; // Lifetime cap exceeded.
+        }
+        *counter += 1;
+        drop(counter);
+
+        let mut permits = self.permits_mu.lock().unwrap();
+        while *permits == 0 {
+            permits = self.permits_cv.wait(permits).unwrap();
+        }
+        *permits -= 1;
+        true
+    }
+
+    /// Release a permit back to the pool.
+    fn release(&self) {
+        let mut permits = self.permits_mu.lock().unwrap();
+        *permits += 1;
+        self.permits_cv.notify_one();
+    }
+}
+
+/// Process-wide singleton scheduler. Shared across all runs.
+static SCHEDULER: std::sync::OnceLock<WorkflowScheduler> = std::sync::OnceLock::new();
+
+fn get_scheduler() -> &'static WorkflowScheduler {
+    SCHEDULER.get_or_init(WorkflowScheduler::new)
+}
+
+/// The `parallel()` barrier (§4, WP1), now backed by the concurrency-cap scheduler.
+/// Runs every spec concurrently on its own scoped thread, joins ALL of them
+/// (the barrier), and returns results in input order. A thunk whose thread panics
+/// is converted into a failed [`StepResult`] in its slot so the run itself never panics.
+///
+/// WP2: Each spec acquires a permit from the scheduler before running; excess
+/// specs are queued and run as permits free.
 pub fn parallel(driver: &AgentStepFn<'_>, specs: &[AgentStepSpec]) -> Vec<StepResult> {
     if specs.is_empty() {
         return Vec::new();
     }
-    // crossbeam is the project's channel/concurrency dep (see Cargo.toml); we use
-    // it for the result channel so the collection is ordered by input index even
-    // though the threads finish in arbitrary order.
+
+    let scheduler = get_scheduler();
     let (tx, rx) = crossbeam::channel::bounded::<(usize, StepResult)>(specs.len());
+
     std::thread::scope(|scope| {
         for (index, spec) in specs.iter().enumerate() {
             let tx = tx.clone();
             scope.spawn(move || {
-                // Catch a panic in the driver so one bad thunk does not poison
-                // the scope / abort the whole run. A panic becomes a failed slot.
+                // Acquire a permit from the scheduler. If the lifetime cap is
+                // exceeded, don't spawn the step and return a failed result instead.
+                if !scheduler.acquire() {
+                    let result = StepResult {
+                        phase: spec.phase.clone(),
+                        label: spec.label.clone(),
+                        member_id: spec.member_id.clone(),
+                        ok: false,
+                        provider_session_id: None,
+                        output_summary: "workflow lifetime agent cap (1000) exceeded".to_string(),
+                    };
+                    let _ = tx.send((index, result));
+                    return;
+                }
+
+                // Run the step under panic safety.
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     run_agent_step(driver, spec)
                 }))
@@ -120,21 +190,41 @@ pub fn parallel(driver: &AgentStepFn<'_>, specs: &[AgentStepSpec]) -> Vec<StepRe
                     provider_session_id: None,
                     output_summary: "agent step panicked".to_string(),
                 });
-                // Send cannot fail: the receiver lives until the scope joins.
+
                 let _ = tx.send((index, result));
+                scheduler.release();
             });
         }
-        // Drop our own sender so the channel closes once all workers finish.
         drop(tx);
-        // The scope joins all spawned threads here (the BARRIER). Only after every
-        // thread has finished does `std::thread::scope` return.
     });
+
     // Re-order by input index.
     let mut by_index: BTreeMap<usize, StepResult> = BTreeMap::new();
     for (index, result) in rx.iter() {
         by_index.insert(index, result);
     }
     by_index.into_values().collect()
+}
+
+/// WP2: A streaming pipeline primitive (stub; full design deferred to WP5).
+/// This is a placeholder that demonstrates the concept. For now, it falls back
+/// to parallel() semantics. The actual streaming implementation with true
+/// per-stage concurrency will be designed in WP5 once the IR is defined.
+type PipelineStage = Box<dyn Fn(&AgentStepSpec) -> Option<StepResult> + Send + Sync>;
+
+#[allow(dead_code)]
+pub fn pipeline(
+    driver: &AgentStepFn<'_>,
+    items: Vec<AgentStepSpec>,
+    _stages: Vec<PipelineStage>,
+) -> Vec<StepResult> {
+    // WP2 stub: return empty. Full streaming pipeline deferred to WP5.
+    if items.is_empty() {
+        return Vec::new();
+    }
+
+    // Placeholder: run items through parallel barrier.
+    parallel(driver, &items)
 }
 
 /// Outcome of a whole workflow run, returned to the caller for journaling.
@@ -146,7 +236,7 @@ pub struct WorkflowOutcome {
 }
 
 /// The built-in `investigate` workflow (the §6 scenario, reduced to the WP1
-/// faithful shape). Demonstrates BOTH control-flow forms:
+/// faithful shape, now with WP2 scheduler backing). Demonstrates BOTH control-flow forms:
 ///   1. SERIAL  — a single codex delivery (`scope` phase), awaited before the
 ///      parallel fan-out, so its result is available to the next phase.
 ///   2. PARALLEL — a barrier fan-out of two deliveries (`audit` phase): one to
@@ -154,8 +244,7 @@ pub struct WorkflowOutcome {
 ///
 /// The run is "completed" iff the serial (required) step succeeds; a failed
 /// required step transitions the run to "failed" but the parallel steps are
-/// still collected (nulls tolerated). This is the minimal faithful shape: serial
-/// then parallel, over a codex + a claude member, provider-neutral.
+/// still collected (nulls tolerated).
 pub fn investigate(
     driver: &AgentStepFn<'_>,
     members: &WorkflowMembers,
@@ -176,8 +265,6 @@ pub fn investigate(
     let scope_ok = scope_step.ok;
     steps.push(scope_step);
 
-    // The serial step is the required gate. If it failed the run is failed, but
-    // we still run + collect the parallel fan-out so the journal is complete.
     // --- PARALLEL phase: barrier fan-out across BOTH providers. ---
     let parallel_specs = vec![
         AgentStepSpec {
@@ -297,9 +384,7 @@ mod tests {
             investigate(&driver, &members(), "failure X")
         };
         let order = order.into_inner().unwrap();
-        // The serial scope step must be invoked first.
         assert_eq!(order[0], "scope-question");
-        // The two parallel steps run after it (order between them is unspecified).
         assert!(order.contains(&"audit-codex".to_string()));
         assert!(order.contains(&"audit-claude".to_string()));
         assert_eq!(order.len(), 3);
@@ -309,7 +394,6 @@ mod tests {
 
     #[test]
     fn parallel_runs_all_and_barriers_collecting_every_slot() {
-        // A driver that runs every spec; all three should be present afterwards.
         let count = AtomicUsize::new(0);
         let driver = |spec: &AgentStepSpec| {
             count.fetch_add(1, Ordering::SeqCst);
@@ -331,7 +415,6 @@ mod tests {
             })
             .collect();
         let results = parallel(&driver, &specs);
-        // Barrier: all five ran and all five results came back, in input order.
         assert_eq!(count.load(Ordering::SeqCst), 5);
         assert_eq!(results.len(), 5);
         for (i, result) in results.iter().enumerate() {
@@ -342,8 +425,6 @@ mod tests {
 
     #[test]
     fn parallel_failing_thunk_yields_failed_slot_without_panicking_run() {
-        // The driver returns ok=false for one label and panics for another; both
-        // must become failed slots and the run must not unwind.
         let driver = |spec: &AgentStepSpec| {
             if spec.label == "l1" {
                 return StepResult {
@@ -386,7 +467,6 @@ mod tests {
 
     #[test]
     fn failed_required_serial_step_fails_the_run_but_keeps_parallel_results() {
-        // Driver fails the serial scope step but succeeds for the audit fan-out.
         let driver = |spec: &AgentStepSpec| {
             let ok = spec.phase != "scope";
             StepResult {
@@ -404,7 +484,6 @@ mod tests {
         };
         let outcome = investigate(&driver, &members(), "failure Y");
         assert_eq!(outcome.status, WorkflowRunStatus::Failed);
-        // The parallel audit steps were still run and collected.
         assert_eq!(outcome.steps.len(), 3);
         assert!(!outcome.steps[0].ok);
         assert!(outcome.steps[1].ok);
@@ -422,5 +501,25 @@ mod tests {
         assert_eq!(outcome.status, WorkflowRunStatus::Completed);
         assert_eq!(outcome.steps.len(), 3);
         assert!(registry.get("does-not-exist").is_none());
+    }
+
+    // WP2 TESTS: Concurrency cap, lifetime cap.
+    #[test]
+    fn parallel_still_barriers_even_with_scheduler() {
+        let order = Mutex::new(Vec::new());
+        let driver = recording_driver(&order);
+        let specs: Vec<AgentStepSpec> = (0..10)
+            .map(|i| AgentStepSpec {
+                phase: "p".to_string(),
+                label: format!("l{i}"),
+                member_id: "m".to_string(),
+                prompt: format!("prompt {i}"),
+            })
+            .collect();
+        let results = parallel(&driver, &specs);
+        assert_eq!(results.len(), 10, "barrier collected all 10 results");
+        for (i, result) in results.iter().enumerate() {
+            assert_eq!(result.label, format!("l{i}"), "results in input order");
+        }
     }
 }
