@@ -5,6 +5,10 @@ cite a local read-only checkout of the Claude Code source
 (`/Users/hhh0x/claude-code-source/…`); paths are kept verbatim so claims are
 checkable against that tree.
 
+**Diagrams.** Detailed ASCII architecture, lifecycle, message-sequence,
+concurrency, and persistence diagrams are in the companion
+[claude-code-agent-teams-diagrams.md](claude-code-agent-teams-diagrams.md).
+
 ## Answer first: tmux/long-lived process, session-resume, or in-process?
 
 **In-process async, single-session persistent.** Claude Code teammates are not

@@ -1457,7 +1457,9 @@
       ],
       "dependsOn": [
         "docs/research/claude-code-agent-teams.md",
+        "docs/research/claude-code-agent-teams-diagrams.md",
         "docs/research/multica-architecture.md",
+        "docs/research/multica-architecture-diagrams.md",
         "docs/research/runtime-persistence-decision.md",
         "docs/decisions/0018-exec-stream-primary-substrate.md",
         "docs/agent-integration-model.md"
@@ -1497,6 +1499,30 @@
       "reorgTrigger": "The Claude Code source checkout is re-read and findings (task types, substrate, mailbox, resume model) change."
     },
     {
+      "path": "docs/research/claude-code-agent-teams-diagrams.md",
+      "ownerRole": "architect",
+      "status": "stable",
+      "lifecycle": "archival",
+      "canonicalFor": [
+        "Claude Code agent-teams component diagram (task types, team registry, tools, file mailbox)",
+        "in-process teammate lifecycle state machine",
+        "inter-agent SendMessage-to-mailbox-to-poll sequence",
+        "single-process concurrency model and persistent-vs-ephemeral-across-restart diagrams"
+      ],
+      "dependsOn": [
+        "docs/research/claude-code-agent-teams.md"
+      ],
+      "machineConsumers": [
+        "check-doc-links",
+        "check-doc-governance"
+      ],
+      "reviewAfter": "2026-09-30",
+      "lastVerifiedWith": [
+        "npx pnpm@9.15.4 check"
+      ],
+      "reorgTrigger": "The Claude Code source checkout is re-read and the component, lifecycle, message-flow, concurrency, or persistence facts behind the diagrams change."
+    },
+    {
       "path": "docs/research/multica-architecture.md",
       "ownerRole": "architect",
       "status": "stable",
@@ -1519,6 +1545,30 @@
         "npx pnpm@9.15.4 check"
       ],
       "reorgTrigger": "The Multica source checkout is re-read and findings (runtime model, persistence, providers, coordination) change."
+    },
+    {
+      "path": "docs/research/multica-architecture-diagrams.md",
+      "ownerRole": "architect",
+      "status": "stable",
+      "lifecycle": "archival",
+      "canonicalFor": [
+        "Multica deployment/component diagram (CLI, web, server goroutines, Postgres, WS gateway, provider CLI subprocesses)",
+        "DB-backed agent task lifecycle state machine",
+        "end-to-end request-to-web data-flow sequence with the atomic claim and subprocess",
+        "slot-semaphore concurrency model and (session_id, work_dir) resume data-flow diagrams"
+      ],
+      "dependsOn": [
+        "docs/research/multica-architecture.md"
+      ],
+      "machineConsumers": [
+        "check-doc-links",
+        "check-doc-governance"
+      ],
+      "reviewAfter": "2026-09-30",
+      "lastVerifiedWith": [
+        "npx pnpm@9.15.4 check"
+      ],
+      "reorgTrigger": "The Multica source checkout is re-read and the deployment, lifecycle, data-flow, concurrency/slot, or resume facts behind the diagrams change."
     },
     {
       "path": "docs/research/runtime-persistence-decision.md",
