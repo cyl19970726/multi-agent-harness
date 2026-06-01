@@ -1,5 +1,25 @@
 export type TaskStatus = "planned" | "assigned" | "running" | "blocked" | "review" | "done" | "archived";
+/**
+ * Goal lifecycle. Product columns are active/blocked/review/done; `complete`
+ * (legacy alias folded into `done`) and `archived` stay valid for old rows but
+ * are not shown as columns. See ADR 0019.
+ */
+export type GoalStatus = "active" | "blocked" | "review" | "done" | "complete" | "archived";
 export type DeliveryStatus = "queued" | "delivered" | "acknowledged" | "failed";
+
+/**
+ * Shared git/worktree context (ADR 0019). Additive-optional; on Goal and Task.
+ * The read model prefers these over the Task flat git fields where both exist.
+ */
+export interface GitMetadata {
+  repo?: string | null;
+  worktree_path?: string | null;
+  branch?: string | null;
+  base_branch?: string | null;
+  pr_ref?: string | null;
+  commit?: string | null;
+  owned_paths?: string[];
+}
 export type MessageKind = "message" | "task" | "report";
 export type SenderKind = "agent" | "operator" | "system";
 export type ProviderSessionStatus = "queued" | "running" | "succeeded" | "failed" | "canceled" | "stale";
@@ -17,6 +37,7 @@ export interface Goal {
   vision_id?: string | null;
   goal_design_id?: string | null;
   closed_by_decision_id?: string | null;
+  git_metadata?: GitMetadata | null;
 }
 
 export interface Task {
@@ -29,6 +50,8 @@ export interface Task {
   assignee_agent_id?: string | null;
   reviewer_agent_id?: string | null;
   status: TaskStatus;
+  /** Full task write-up (markdown). `objective` stays the one-line summary. */
+  description?: string | null;
   depends_on_task_ids?: string[];
   workspace_ref?: string | null;
   branch_ref?: string | null;
@@ -41,6 +64,7 @@ export interface Task {
   scope_refs?: string[];
   requires_human_approval?: boolean;
   verdict_decision_id?: string | null;
+  git_metadata?: GitMetadata | null;
 }
 
 /**
