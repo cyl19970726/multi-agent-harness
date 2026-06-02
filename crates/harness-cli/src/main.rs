@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader, BufWriter, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -4426,7 +4426,25 @@ fn claim_message_for_delivery(
     message: &Message,
     delivery_id: &str,
 ) -> CliResult<Option<Message>> {
-    let provider_session = build_claimed_provider_session(delivery_id, member, runtime, message);
+    let mut provider_session =
+        build_claimed_provider_session(delivery_id, member, runtime, message);
+    // Live agent view: point the RUNNING claim row at the NDJSON file the claude
+    // exec delivery appends to MID-TURN, and pre-create it so the first poll of
+    // GET /v1/provider-sessions/{id}/events returns [] (not a not-found error)
+    // before the first event lands. Same delivery_id → same session row as the
+    // terminal row, so the poll resolves to the growing file throughout. claude
+    // only for now (codex parity is a follow-up).
+    if member.provider == "claude" {
+        let session_dir = store.root().join("provider-sessions").join(delivery_id);
+        let live_path = session_dir.join("claude.stream-json.ndjson");
+        if fs::create_dir_all(&session_dir).is_ok() {
+            let _ = fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&live_path);
+            provider_session.jsonl_ref = Some(live_path.display().to_string());
+        }
+    }
     let delivery = MessageDelivery {
         provider_session_id: Some(delivery_id.to_string()),
         provider_request_id: None,
@@ -7213,10 +7231,29 @@ impl ClaudeStreamEvent {
 /// Parse NDJSON from claude -p stream-json stdout into ClaudeStreamEvent stream.
 /// Resilient: silently skip invalid lines, partial final lines, unknown events.
 fn parse_claude_stream_json(reader: impl BufRead) -> Vec<ClaudeStreamEvent> {
+    parse_claude_stream_json_to(reader, None::<&mut std::io::Sink>)
+}
+
+/// Like `parse_claude_stream_json`, but ALSO appends each parsed event's payload
+/// (one compact JSON per line) to `sink` and flushes immediately, so a poller
+/// reading the session NDJSON sees events MID-TURN (the live agent TUI). The
+/// returned Vec is identical to the non-sink path, so status inference / reply
+/// extraction / the terminal row are unaffected.
+fn parse_claude_stream_json_to<W: std::io::Write>(
+    reader: impl BufRead,
+    mut sink: Option<&mut W>,
+) -> Vec<ClaudeStreamEvent> {
     let mut events = Vec::new();
     for line in reader.lines() {
         let Ok(line_str) = line else { continue };
         if let Some(event) = ClaudeStreamEvent::parse_line(&line_str) {
+            if let Some(writer) = sink.as_deref_mut() {
+                if let Ok(serialized) = serde_json::to_string(&event.payload) {
+                    // Best-effort: a failed live-tee must not break delivery.
+                    let _ = writeln!(writer, "{serialized}");
+                    let _ = writer.flush();
+                }
+            }
             events.push(event);
         }
     }
@@ -8250,7 +8287,7 @@ fn run_claude_delivery(
 /// Spawn `claude -p --output-format stream-json --verbose` and parse NDJSON output.
 /// WP-3: Real implementation replacing the stub; parses session_id and events.
 fn run_claude_exec_delivery_real(
-    _session_dir: &Path,
+    session_dir: &Path,
     member: &AgentMember,
     message: &Message,
     timeout_ms: u64,
@@ -8351,9 +8388,27 @@ fn run_claude_exec_delivery_real(
         .take()
         .ok_or_else(|| CliError::Usage("claude -p stderr not available".into()))?;
 
-    // Parse stdout as NDJSON in real time.
+    // Parse stdout as NDJSON in real time, teeing each parsed event to the
+    // session's NDJSON file (append + flush) so a poller sees the turn unfold
+    // MID-TURN (the live agent activity view). The claim row already points
+    // jsonl_ref at this same path. Best-effort: a tee failure must not break
+    // delivery, so a failed open just falls back to in-memory-only parsing.
     let reader = BufReader::new(stdout);
-    let events = parse_claude_stream_json(reader);
+    let _ = fs::create_dir_all(session_dir);
+    let live_path = session_dir.join("claude.stream-json.ndjson");
+    let events = match fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&live_path)
+    {
+        Ok(file) => {
+            let mut writer = BufWriter::new(file);
+            let parsed = parse_claude_stream_json_to(reader, Some(&mut writer));
+            let _ = writer.flush();
+            parsed
+        }
+        Err(_) => parse_claude_stream_json(reader),
+    };
 
     // Capture stderr.
     let mut stderr_log = String::new();
