@@ -538,33 +538,32 @@ function ProviderBadge({ provider }: { provider?: string | null }) {
 type AgentFilter = "all" | "online" | "working" | "idle" | "offline" | "unstable";
 type AgentSort = "recent" | "name" | "runs";
 
-/** Classify an agent into the Multica status buckets (online/working/idle/
- * offline/unstable) used by the list filter chips. */
-function agentIsWorking(agent: AgentMember): boolean {
-  const status = agent.runtime_status ?? agent.status;
-  return status === "running" || Boolean(agent.current_task_id && agent.runtime_alive);
-}
-function agentIsUnstable(agent: AgentMember): boolean {
-  if (!agent.runtime_alive) return false;
+/**
+ * Classify an agent into ONE Multica status bucket. Online (alive) splits into a
+ * clean partition — unstable XOR working XOR idle — so the filter chips never
+ * double-count: an alive agent with a failing/unknown delivery probe is
+ * "unstable" even while running (the health problem is what matters most), so it
+ * is excluded from "working". Offline (not alive) is separate. Buckets:
+ *   offline  = !runtime_alive
+ *   unstable = alive && delivery health warn/bad
+ *   working  = alive && healthy && (running || has current task)
+ *   idle     = alive && healthy && not working
+ * Online = alive = unstable + working + idle; All = online + offline.
+ */
+type AgentBucket = "offline" | "unstable" | "working" | "idle";
+function agentBucket(agent: AgentMember): AgentBucket {
+  if (!agent.runtime_alive) return "offline";
   const tone = deliveryHealthTone(agent);
-  return tone === "warn" || tone === "bad";
+  if (tone === "warn" || tone === "bad") return "unstable";
+  const status = agent.runtime_status ?? agent.status;
+  if (status === "running" || agent.current_task_id) return "working";
+  return "idle";
 }
 function agentMatchesFilter(agent: AgentMember, filter: AgentFilter): boolean {
-  const alive = Boolean(agent.runtime_alive);
-  switch (filter) {
-    case "all":
-      return true;
-    case "online":
-      return alive;
-    case "working":
-      return agentIsWorking(agent);
-    case "idle":
-      return alive && !agentIsWorking(agent) && !agentIsUnstable(agent);
-    case "offline":
-      return !alive;
-    case "unstable":
-      return agentIsUnstable(agent);
-  }
+  if (filter === "all") return true;
+  const bucket = agentBucket(agent);
+  if (filter === "online") return bucket !== "offline";
+  return bucket === filter;
 }
 
 export function AgentsList({ model, onSelectionChange, actionsEnabled, onAction }: SurfaceProps) {
@@ -2663,7 +2662,7 @@ export function AgentDetail({
   // and a chat-first right pane that fills the viewport so the composer pins to
   // the bottom. The Agents area already suppresses the global Inspector.
   return (
-    <div className="flex h-[calc(100vh-3.5rem-1px)] min-h-0">
+    <div className="flex h-full min-h-0">
       <ScrollArea className="hidden w-[300px] shrink-0 border-r border-border md:block">
         <AgentConfigRail
           member={member}
@@ -2676,6 +2675,22 @@ export function AgentDetail({
         />
       </ScrollArea>
       <div className="flex min-w-0 flex-1 flex-col">
+        {/* Identity + back, shown only when the left config rail is hidden (<md). */}
+        <div className="flex items-center gap-2 border-b border-border px-4 py-2 md:hidden">
+          <button
+            type="button"
+            onClick={() => onSelectionChange({ surface: "agents", memberId: undefined })}
+            className="inline-flex items-center gap-1 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground hover:text-foreground"
+          >
+            <Bot className="size-3.5" /> Agents
+          </button>
+          <Avatar name={member.name ?? member.id} tone={deliveryHealthTone(member)} />
+          <span className="min-w-0 flex-1 truncate text-[13px] font-semibold text-foreground">
+            {member.name ?? member.id}
+          </span>
+          <Badge tone={memberTone(status)}>{status}</Badge>
+          <ProviderBadge provider={member.provider} />
+        </div>
         <CurrentWorkBanner
           member={member}
           stats={stats}
@@ -2875,6 +2890,35 @@ function CurrentWorkBanner({
     .sort((a, b) => parseTs(b.started_at) - parseTs(a.started_at))[0];
   const queued = member.queued_count ?? 0;
   const live = Boolean(actionsEnabled);
+
+  // A running session row whose process is no longer alive is stale, not live —
+  // surface it as a warning (it likely crashed mid-turn) rather than a pulsing
+  // RUNNING that never resolves.
+  if (running && !member.runtime_alive) {
+    const task = running.task_id ? taskTitle(model.tasks, running.task_id) : "a turn";
+    return (
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-status-warn/30 bg-status-warn/8 px-4 py-2 text-[12px]">
+        <span className="inline-flex items-center gap-1.5 font-medium text-status-warn">
+          <StatusDot tone="warn" /> Stale
+        </span>
+        <span className="min-w-0 truncate text-muted-foreground">
+          {task} · session running but process not alive
+        </span>
+        <span className="ml-auto inline-flex items-center gap-2">
+          <TurnDrillIn session={running} apiUrl={apiUrl} />
+          <ActionButton
+            enabled={live}
+            size="sm"
+            variant="secondary"
+            onClick={() => dispatch(onAction, deliverQueued(member.id, { startRuntime: true }))}
+          >
+            <Send className="size-3.5" />
+            Restart
+          </ActionButton>
+        </span>
+      </div>
+    );
+  }
 
   if (running) {
     const task = running.task_id ? taskTitle(model.tasks, running.task_id) : "a turn";

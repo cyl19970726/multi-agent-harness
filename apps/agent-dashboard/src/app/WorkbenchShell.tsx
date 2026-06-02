@@ -145,18 +145,32 @@ export function WorkbenchShell({
           onSurfaceChange={(surface) => updateSelection({ surface })}
           warnings={severity.high}
         />
-        <main className="relative min-w-0 flex-1 overflow-y-auto">
-          <div className="mx-auto w-full max-w-[1480px] p-5 xl:p-6">
-            <SurfaceSwitch
-              model={model}
-              selection={selection}
-              onSelectionChange={updateSelection}
-              sourceLabel={sourceLabel}
-              actionsEnabled={actionsEnabled}
-              onAction={onAction}
-              apiUrl={apiUrl}
-            />
-          </div>
+        <main className="relative flex min-w-0 flex-1 flex-col overflow-hidden">
+          {(() => {
+            const surface = (
+              <SurfaceSwitch
+                model={model}
+                selection={selection}
+                onSelectionChange={updateSelection}
+                sourceLabel={sourceLabel}
+                actionsEnabled={actionsEnabled}
+                onAction={onAction}
+                apiUrl={apiUrl}
+              />
+            );
+            // The agent detail is a full-bleed two-pane shell that fills the
+            // remaining flex height (so it accounts for the TopBar AND the
+            // ActionErrorBanner via the column, with no fragile calc). Every
+            // other surface keeps the centered, padded, scrollable document.
+            const fullBleed = selection.surface === "agents" && Boolean(selection.memberId);
+            return fullBleed ? (
+              <div className="min-h-0 flex-1">{surface}</div>
+            ) : (
+              <div className="flex-1 overflow-y-auto">
+                <div className="mx-auto w-full max-w-[1480px] p-5 xl:p-6">{surface}</div>
+              </div>
+            );
+          })()}
         </main>
         {showInspector && (
           <Inspector
