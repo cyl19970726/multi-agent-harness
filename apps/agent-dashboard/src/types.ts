@@ -445,6 +445,65 @@ export interface DashboardSnapshot {
   provider_sessions?: ProviderSession[];
   provider_child_threads?: ProviderChildThread[];
   goal_learning_status?: GoalLearningStatus[];
+  workflow_runs?: WorkflowRun[];
+  workflow_steps?: WorkflowStep[];
+}
+
+/**
+ * A registered (built-in) workflow's run-independent metadata, from
+ * `GET /v1/workflows`. The catalog is fetched separately from the snapshot.
+ */
+export interface WorkflowDef {
+  name: string;
+  summary: string;
+}
+
+/** Lifecycle of a {@link WorkflowRun} (mirrors harness-core `WorkflowRunStatus`). */
+export type WorkflowRunStatus =
+  | "pending"
+  | "running"
+  | "paused"
+  | "completed"
+  | "failed";
+
+/** Status of a single {@link WorkflowStep} (mirrors harness-core `WorkflowStepStatus`). */
+export type WorkflowStepStatus =
+  | "queued"
+  | "running"
+  | "completed"
+  | "failed"
+  | "cached";
+
+/**
+ * One run of a built-in (registered) workflow. Mirrors harness-core
+ * `WorkflowRun` (lib.rs:1261-1273) verbatim, snake_case. `step_ids` orders the
+ * steps in the sequence they were started.
+ */
+export interface WorkflowRun {
+  id: string;
+  workflow_name: string;
+  status: WorkflowRunStatus | string;
+  step_ids: string[];
+  created_at: string;
+  ended_at?: string | null;
+  summary?: string | null;
+}
+
+/**
+ * One agent step inside a {@link WorkflowRun}. Mirrors harness-core
+ * `WorkflowStep` (lib.rs:1279-1292) verbatim, snake_case. There is NO
+ * `member_id`; "who ran it" resolves via `provider_session_id`.
+ */
+export interface WorkflowStep {
+  id: string;
+  run_id: string;
+  phase: string;
+  label: string;
+  provider_session_id?: string | null;
+  status: WorkflowStepStatus | string;
+  output_summary?: string | null;
+  started_at: string;
+  ended_at?: string | null;
 }
 
 export interface WorkflowWarning {

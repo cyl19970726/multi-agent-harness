@@ -1,0 +1,920 @@
+import { useState, type ReactNode } from "react";
+import {
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  ChevronUp,
+  Code,
+  Workflow,
+} from "lucide-react";
+
+import { cn } from "@/lib/utils";
+import { Badge } from "@/components/ui/badge";
+import {
+  DocProperties,
+  DocSection,
+  DocumentSurface,
+  EmptyState,
+  MonoId,
+  StatusDot,
+  type StatusTone,
+} from "@/components/workbench/atoms";
+import { Avatar } from "@/components/workbench/Avatar";
+import { Markdown } from "@/components/workbench/Markdown";
+import { workflowRunTone, workflowStepTone } from "@/components/workbench/tones";
+
+import { formatDuration, memberName, type WorkbenchModel } from "../model/readModel";
+import {
+  describeShape,
+  inferWorkflowShape,
+  phaseWindow,
+  stepGanttGeometry,
+  type WorkflowPhase,
+} from "../model/workflowShape";
+import { normalizeBaseUrl } from "../api";
+import type {
+  ProviderSession,
+  WorkflowRun,
+  WorkflowStep,
+} from "../types";
+import type { SelectionState } from "../app/selection";
+import { TurnDrillIn } from "./Surfaces";
+
+interface WorkflowSurfaceProps {
+  model: WorkbenchModel;
+  onSelectionChange: (selection: Partial<SelectionState>) => void;
+  actionsEnabled?: boolean;
+  onAction?: (path: string, body?: unknown) => void;
+  apiUrl?: string;
+}
+
+/* ================================================================== */
+/* INDEX — registered catalog + every run                              */
+/* ================================================================== */
+
+export function WorkflowsList({ model, onSelectionChange }: WorkflowSurfaceProps) {
+  const defs = model.workflowDefs;
+  const runs = model.workflowRuns;
+  return (
+    <DocumentSurface className="max-w-[940px]">
+      <header className="flex flex-wrap items-end justify-between gap-3">
+        <div className="space-y-1">
+          <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+            <Workflow className="size-3.5" /> Workflows
+          </div>
+          <h1 className="text-2xl font-semibold tracking-tight text-foreground">
+            Workflows
+          </h1>
+          <p className="text-sm text-muted-foreground">
+            Registered pipelines and every run. Open a run to see its timeline.
+          </p>
+        </div>
+      </header>
+
+      <DocSection label="Registered">
+        {defs.length ? (
+          <div className="space-y-2.5">
+            {defs.map((def) => (
+              <RegisteredCard key={def.name} name={def.name} summary={def.summary} />
+            ))}
+          </div>
+        ) : (
+          <EmptyState
+            icon={Workflow}
+            title="Workflow catalog unavailable"
+            description="Connect a running harness with Load live to see the registered pipelines."
+          />
+        )}
+      </DocSection>
+
+      <DocSection label={`${runs.length} ${runs.length === 1 ? "run" : "runs"}`}>
+        {runs.length ? (
+          <RunsTable
+            runs={runs}
+            stepsByRun={model.workflowStepsByRun}
+            onOpen={(id) => onSelectionChange({ surface: "workflows", workflowRunId: id })}
+          />
+        ) : (
+          <EmptyState
+            icon={Workflow}
+            title="No runs yet"
+            description="Run a registered workflow from the harness to see its serial→parallel timeline here."
+          />
+        )}
+      </DocSection>
+    </DocumentSurface>
+  );
+}
+
+/** One registered-def card with a collapsible schematic shape preview. */
+function RegisteredCard({ name, summary }: { name: string; summary: string }) {
+  return (
+    <div className="rounded-lg border border-border bg-card p-3">
+      <div className="flex min-w-0 items-start gap-2.5">
+        <Workflow className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+        <div className="min-w-0 flex-1 space-y-1">
+          <p className="truncate text-[13px] font-medium text-foreground">{name}</p>
+          <p className="line-clamp-1 text-xs text-muted-foreground">{summary}</p>
+          <MonoId>{name}</MonoId>
+          <SchematicPreview name={name} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * "Preview shape" collapsible. With no run there are no steps to infer from, so
+ * this renders the canonical declared shape of the built-in `investigate`
+ * workflow as the schematic restatement (the same ASCII renderer, schematic
+ * mode). Other defs fall back to a generic note until a run exists.
+ */
+function SchematicPreview({ name }: { name: string }) {
+  const [open, setOpen] = useState(false);
+  const schematic = schematicPhasesFor(name);
+  return (
+    <div className="pt-0.5">
+      <CollapsibleRow
+        open={open}
+        onToggle={() => setOpen((v) => !v)}
+        label="Preview shape"
+      />
+      {open && (
+        <div className="mt-1.5">
+          {schematic ? (
+            <AsciiGraph phases={schematic} />
+          ) : (
+            <p className="text-[11px] text-muted-foreground">
+              Shape is derived from a run; open a run to see its timeline.
+            </p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** The grid-of-buttons runs list (mirrors the AgentsList idiom). */
+function RunsTable({
+  runs,
+  stepsByRun,
+  onOpen,
+}: {
+  runs: WorkflowRun[];
+  stepsByRun: Map<string, WorkflowStep[]>;
+  onOpen: (id: string) => void;
+}) {
+  const cols =
+    "grid-cols-[minmax(0,1.9fr)_minmax(0,1fr)_minmax(0,1.3fr)_minmax(0,1fr)_minmax(0,1.5fr)]";
+  return (
+    <div className="overflow-hidden">
+      <div
+        className={cn(
+          "grid gap-3 border-b border-border px-2 pb-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground",
+          cols,
+        )}
+      >
+        <span>Run</span>
+        <span>Status</span>
+        <span>Steps</span>
+        <span className="hidden lg:block">Duration</span>
+        <span className="hidden lg:block">Summary</span>
+      </div>
+      <div>
+        {runs.map((run) => {
+          const tone = workflowRunTone(run.status);
+          const running = tone === "running";
+          const steps = stepsByRun.get(run.id) ?? [];
+          const duration = formatDuration(run.created_at, run.ended_at);
+          return (
+            <button
+              key={run.id}
+              type="button"
+              onClick={() => onOpen(run.id)}
+              className={cn(
+                "grid w-full items-center gap-3 border-b border-border/60 px-2 py-2.5 text-left transition-colors last:border-b-0 hover:bg-accent/40",
+                cols,
+              )}
+            >
+              <span className="flex min-w-0 items-center gap-2.5">
+                <StatusDot tone={tone} pulse={running} />
+                <span className="min-w-0">
+                  <span className="block truncate text-[13px] font-medium text-foreground">
+                    {run.workflow_name}
+                  </span>
+                  <span className="block truncate">
+                    <MonoId>{run.id}</MonoId>
+                  </span>
+                </span>
+              </span>
+              <span className="min-w-0">
+                <Badge tone={tone}>{run.status}</Badge>
+              </span>
+              <span className="min-w-0">
+                <ShapeGlyph steps={steps} />
+              </span>
+              <span className="hidden min-w-0 truncate text-[12px] tabular-nums text-muted-foreground lg:block">
+                {running ? "· running" : (duration ?? "—")}
+              </span>
+              <span className="hidden min-w-0 truncate text-[12px] text-muted-foreground lg:block">
+                {running ? "—" : (run.summary ?? "—")}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The grafted shape glyph: one small toned pill per step, laid out in phase
+ * order, so the serial→parallel shape + per-step health read at a glance.
+ */
+function ShapeGlyph({ steps }: { steps: WorkflowStep[] }) {
+  if (!steps.length) return <span className="text-[11px] text-muted-foreground">—</span>;
+  const phases = inferWorkflowShape(orderForGlyph(steps));
+  return (
+    <span className="flex flex-wrap items-center gap-1.5">
+      {phases.map((phase) => (
+        <span key={phase.phase} className="flex items-center gap-0.5">
+          {phase.steps.map((step) => (
+            <StatusDot key={step.id} tone={workflowStepTone(step.status)} className="size-1.5" />
+          ))}
+          <span className="text-[10px] text-muted-foreground">{phase.phase}</span>
+        </span>
+      ))}
+    </span>
+  );
+}
+
+/* ================================================================== */
+/* DETAIL — one run, top-to-bottom report                              */
+/* ================================================================== */
+
+export function WorkflowRunDetail({ model, onSelectionChange, apiUrl }: WorkflowSurfaceProps) {
+  const run = model.selectedWorkflowRun;
+  const back = () => onSelectionChange({ surface: "workflows", workflowRunId: undefined });
+
+  if (!run) {
+    return (
+      <DocumentSurface>
+        <BackRow onBack={back} />
+        <EmptyState
+          icon={Workflow}
+          title="Workflow run not found"
+          description="It may not have streamed yet, or the source is offline."
+        />
+      </DocumentSurface>
+    );
+  }
+
+  const steps = model.selectedWorkflowSteps;
+  const sessions = model.snapshot.provider_sessions ?? [];
+  const tone = workflowRunTone(run.status);
+  const running = tone === "running";
+  const phases = inferWorkflowShape(steps);
+  const duration = formatDuration(run.created_at, run.ended_at);
+
+  // Prev/next stepper over the (ordered) runs list, so cross-run scanning
+  // survives without a standing rail.
+  const runs = model.workflowRuns;
+  const index = runs.findIndex((r) => r.id === run.id);
+  const goto = (i: number) => {
+    const target = runs[i];
+    if (target) onSelectionChange({ surface: "workflows", workflowRunId: target.id });
+  };
+
+  // The required serial step is the first step of the first serial phase.
+  const requiredStep = phases.find((p) => p.kind === "serial")?.steps[0];
+
+  return (
+    <DocumentSurface>
+      <header className="space-y-3">
+        <div className="flex items-center justify-between gap-2">
+          <BackRow onBack={back} />
+          {runs.length > 1 && (
+            <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+              <button
+                type="button"
+                disabled={index <= 0}
+                onClick={() => goto(index - 1)}
+                className="rounded p-0.5 transition-colors hover:text-foreground disabled:opacity-40"
+                aria-label="Previous run"
+              >
+                <ChevronUp className="size-3.5" />
+              </button>
+              <button
+                type="button"
+                disabled={index < 0 || index >= runs.length - 1}
+                onClick={() => goto(index + 1)}
+                className="rounded p-0.5 transition-colors hover:text-foreground disabled:opacity-40"
+                aria-label="Next run"
+              >
+                <ChevronDown className="size-3.5" />
+              </button>
+              <span className="hidden tabular-nums sm:inline">
+                {index >= 0 ? index + 1 : "—"} of {runs.length}
+              </span>
+            </div>
+          )}
+        </div>
+
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="flex min-w-0 items-center gap-3">
+            <Avatar name={run.workflow_name} tone={tone} size="lg" />
+            <div className="min-w-0">
+              <h1 className="truncate text-2xl font-semibold tracking-tight text-foreground">
+                {run.workflow_name}
+              </h1>
+              <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                <Badge tone={tone}>{run.status}</Badge>
+                <MonoId>{run.id}</MonoId>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <DocProperties
+          items={[
+            {
+              label: "Status",
+              value: (
+                <span className="inline-flex items-center gap-1.5">
+                  <StatusDot tone={tone} pulse={running} /> {run.status}
+                </span>
+              ),
+            },
+            { label: "Verdict", value: running ? "—" : (run.summary ?? "—") },
+            { label: "Started", value: <Timestamp value={run.created_at} /> },
+            {
+              label: "Ended",
+              value: run.ended_at ? <Timestamp value={run.ended_at} /> : "running…",
+            },
+            { label: "Duration", value: running ? "· running" : (duration ?? "—") },
+            {
+              label: "Steps",
+              value: phases.length ? describeShape(phases) : "—",
+            },
+            {
+              label: "Required step",
+              value: requiredStep ? (
+                <span className="inline-flex items-center gap-1.5">
+                  <StatusDot tone={workflowStepTone(requiredStep.status)} />
+                  {requiredStep.label} ({statusGloss(requiredStep.status)})
+                </span>
+              ) : (
+                "—"
+              ),
+            },
+          ]}
+        />
+      </header>
+
+      {!running && (
+        <DocSection label="Verdict">
+          <VerdictCard run={run} steps={steps} tone={tone} />
+        </DocSection>
+      )}
+      {running && (
+        <DocSection label="Verdict">
+          <p className="text-[12px] text-muted-foreground">Verdict set at completion.</p>
+        </DocSection>
+      )}
+
+      <DocSection label="Timeline">
+        {phases.length ? (
+          <Timeline phases={phases} sessions={sessions} model={model} apiUrl={apiUrl} onSelectionChange={onSelectionChange} />
+        ) : (
+          <EmptyState
+            icon={Workflow}
+            title="No steps yet"
+            description="Steps animate in here as the run progresses."
+          />
+        )}
+      </DocSection>
+
+      <DocSection label="Definition">
+        <Definition phases={phases} workflowName={run.workflow_name} apiUrl={apiUrl} />
+      </DocSection>
+    </DocumentSurface>
+  );
+}
+
+function BackRow({ onBack }: { onBack: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onBack}
+      className="inline-flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground transition-colors hover:text-foreground"
+    >
+      <ChevronLeft className="size-3.5" /> Workflows
+    </button>
+  );
+}
+
+/** Terminal-run verdict card, tinted by run tone, with a plain-English gloss. */
+function VerdictCard({
+  run,
+  steps,
+  tone,
+}: {
+  run: WorkflowRun;
+  steps: WorkflowStep[];
+  tone: StatusTone;
+}) {
+  const tint =
+    tone === "bad"
+      ? "border-status-bad/30 bg-status-bad/12"
+      : tone === "good"
+        ? "border-status-good/30 bg-status-good/12"
+        : "border-border bg-muted/30";
+  return (
+    <div className={cn("space-y-1.5 rounded-lg border p-3", tint)}>
+      <p className="text-[13px] font-medium text-foreground">{run.summary ?? "—"}</p>
+      <p className="text-xs text-muted-foreground">{verdictGloss(run, steps)}</p>
+    </div>
+  );
+}
+
+/* ================================================================== */
+/* Timeline (the dominant block)                                       */
+/* ================================================================== */
+
+function Timeline({
+  phases,
+  sessions,
+  model,
+  apiUrl,
+  onSelectionChange,
+}: {
+  phases: WorkflowPhase[];
+  sessions: ProviderSession[];
+  model: WorkbenchModel;
+  apiUrl?: string;
+  onSelectionChange: (selection: Partial<SelectionState>) => void;
+}) {
+  return (
+    <div className="space-y-4 border-l border-border pl-4">
+      {phases.map((phase) => (
+        <div key={phase.phase} className="space-y-2.5">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+              Phase · {phase.phase}
+            </span>
+            <Badge tone="idle">
+              {phase.kind === "serial"
+                ? "serial"
+                : `parallel · ${phase.steps.length}`}
+            </Badge>
+          </div>
+
+          {phase.kind === "parallel" && <GanttStrip steps={phase.steps} />}
+
+          <div className="space-y-2.5">
+            {phase.steps.map((step) => (
+              <StepCard
+                key={step.id}
+                step={step}
+                phase={phase}
+                sessions={sessions}
+                model={model}
+                apiUrl={apiUrl}
+                onSelectionChange={onSelectionChange}
+              />
+            ))}
+          </div>
+
+          {phase.kind === "parallel" && <JoinBar steps={phase.steps} />}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** Inline gantt: one thin bar per step, positioned within the phase window. */
+function GanttStrip({ steps }: { steps: WorkflowStep[] }) {
+  const window = phaseWindow(steps);
+  return (
+    <div className="space-y-1">
+      <div className="hidden space-y-1 sm:block">
+        {steps.map((step) => {
+          const geo = stepGanttGeometry(step, window);
+          const tone = workflowStepTone(step.status);
+          return (
+            <div key={step.id} className="flex items-center gap-2">
+              <span className="w-20 shrink-0 truncate text-[10px] text-muted-foreground">
+                {step.label}
+              </span>
+              <div className="relative h-1 flex-1 rounded-full bg-muted">
+                <div
+                  className={cn("absolute h-1 rounded-full", toneBarClass(tone))}
+                  style={{ left: `${geo.left}%`, width: `${geo.width}%` }}
+                />
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      <p className="text-[10px] text-muted-foreground sm:hidden">ran concurrently</p>
+    </div>
+  );
+}
+
+function toneBarClass(tone: StatusTone): string {
+  switch (tone) {
+    case "running":
+      return "bg-status-running/60";
+    case "good":
+      return "bg-status-good/60";
+    case "bad":
+      return "bg-status-bad/60";
+    case "info":
+      return "bg-status-info/60";
+    default:
+      return "bg-status-idle/60";
+  }
+}
+
+/** The barrier join bar; settles when every step in the phase is terminal. */
+function JoinBar({ steps }: { steps: WorkflowStep[] }) {
+  const allTerminal = steps.every((step) => isTerminal(step.status));
+  const tone: StatusTone = allTerminal ? "good" : "running";
+  return (
+    <div
+      className={cn(
+        "flex items-center gap-2 rounded-md border px-2 py-1 text-[10px] uppercase tracking-wider",
+        allTerminal
+          ? "border-status-good/30 bg-status-good/8 text-status-good"
+          : "border-border bg-muted/30 text-muted-foreground",
+      )}
+    >
+      <StatusDot tone={tone} pulse={!allTerminal} />
+      {allTerminal
+        ? `join · barrier — all ${steps.length} steps resolved`
+        : `join · barrier — waiting on ${steps.filter((s) => !isTerminal(s.status)).length} of ${steps.length}`}
+    </div>
+  );
+}
+
+/** One step card: status + "ran by" (via session) + output + turn drill-in. */
+function StepCard({
+  step,
+  phase,
+  sessions,
+  model,
+  apiUrl,
+  onSelectionChange,
+}: {
+  step: WorkflowStep;
+  phase: WorkflowPhase;
+  sessions: ProviderSession[];
+  model: WorkbenchModel;
+  apiUrl?: string;
+  onSelectionChange: (selection: Partial<SelectionState>) => void;
+}) {
+  const tone = workflowStepTone(step.status);
+  const running = tone === "running";
+  const session = step.provider_session_id
+    ? sessions.find((s) => s.id === step.provider_session_id)
+    : undefined;
+  const memberId = session?.agent_member_id ?? undefined;
+  const roleHint = roleHintFromLabel(step.label);
+  const isRequired = phase.kind === "serial" && phase.steps[0]?.id === step.id;
+  const isToleratedFail = phase.kind === "parallel" && tone === "bad";
+
+  return (
+    <div className="rounded-lg border border-border bg-card p-3 transition-colors hover:border-input">
+      {/* Line 1 — label, role hint, status, required/tolerated */}
+      <div className="flex items-start justify-between gap-2">
+        <span className="flex min-w-0 items-center gap-2">
+          <StatusDot tone={tone} pulse={running} />
+          <span className="truncate text-[13px] font-medium text-foreground">{step.label}</span>
+          {roleHint && (
+            <span className="shrink-0 text-[11px] text-muted-foreground">{roleHint}</span>
+          )}
+        </span>
+        <span className="flex shrink-0 items-center gap-1.5">
+          <Badge tone={tone}>{step.status}</Badge>
+          {isRequired && <Badge tone="info">required</Badge>}
+          {isToleratedFail && <Badge tone="warn">tolerated</Badge>}
+        </span>
+      </div>
+
+      {/* Line 2 — ran by (member resolved THROUGH the session) + timing */}
+      <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
+        <span>ran by</span>
+        {memberId ? (
+          <button
+            type="button"
+            onClick={() => onSelectionChange({ surface: "agents", memberId })}
+            className="inline-flex items-center gap-1 text-foreground transition-colors hover:text-primary"
+          >
+            <Avatar name={memberName(model.members, memberId)} tone="idle" />
+            {memberName(model.members, memberId)}
+          </button>
+        ) : (
+          <span>—</span>
+        )}
+        <span className="tabular-nums">{stepTiming(step)}</span>
+      </div>
+
+      {/* Line 3 — output summary */}
+      <div className="mt-1.5 text-[12px] text-foreground">
+        {step.output_summary ? (
+          <div className="line-clamp-3">
+            <Markdown source={step.output_summary} />
+          </div>
+        ) : running ? (
+          <span className="text-muted-foreground">Running…</span>
+        ) : tone === "bad" ? (
+          <span className="text-muted-foreground">No output (step failed before delivery)</span>
+        ) : (
+          <span className="text-muted-foreground">No output</span>
+        )}
+      </div>
+
+      {/* Line 4 — drill-in (verbatim TurnDrillIn) or disabled stub */}
+      <div className="mt-1.5">
+        {session ? (
+          <TurnDrillIn session={session} apiUrl={apiUrl} />
+        ) : (
+          <span className="inline-flex cursor-not-allowed items-center gap-1 text-[10px] text-muted-foreground">
+            <ChevronRight className="size-3 opacity-40" />
+            no turn yet
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ================================================================== */
+/* Definition (ASCII graph + lazy Rust source)                         */
+/* ================================================================== */
+
+function Definition({
+  phases,
+  workflowName,
+  apiUrl,
+}: {
+  phases: WorkflowPhase[];
+  workflowName: string;
+  apiUrl?: string;
+}) {
+  return (
+    <div className="space-y-3">
+      {phases.length ? (
+        <AsciiGraph phases={phases} />
+      ) : (
+        <p className="text-[11px] text-muted-foreground">
+          The structural graph is derived from the run's steps.
+        </p>
+      )}
+      <RustSource workflowName={workflowName} apiUrl={apiUrl} />
+    </div>
+  );
+}
+
+/**
+ * The shared one-line ASCII structural restatement. Each node carries its
+ * step's tone via a leading StatusDot so the graph and timeline agree. Cheap —
+ * computed from the steps already in hand, no fetch.
+ */
+function AsciiGraph({ phases }: { phases: WorkflowPhase[] }) {
+  return (
+    <div className="overflow-x-auto rounded-md border border-border bg-muted/30 p-2 font-mono text-[11px]">
+      <div className="flex flex-wrap items-center gap-1.5 whitespace-nowrap">
+        {phases.map((phase, phaseIndex) => (
+          <span key={phase.phase} className="flex items-center gap-1.5">
+            {phaseIndex > 0 && <span className="text-muted-foreground">──▶</span>}
+            {phase.kind === "parallel" ? (
+              <span className="flex items-center gap-1">
+                <span className="text-muted-foreground">⟨</span>
+                {phase.steps.map((step, i) => (
+                  <span key={step.id} className="flex items-center gap-1">
+                    {i > 0 && <span className="text-muted-foreground">∥</span>}
+                    <NodeLabel step={step} />
+                  </span>
+                ))}
+                <span className="text-muted-foreground">⟩</span>
+              </span>
+            ) : (
+              phase.steps.map((step) => <NodeLabel key={step.id} step={step} />)
+            )}
+          </span>
+        ))}
+        {phases.some((p) => p.kind === "parallel") && (
+          <span className="flex items-center gap-1.5">
+            <span className="text-muted-foreground">──▶</span>
+            <span className="text-muted-foreground">⟂ join</span>
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function NodeLabel({ step }: { step: WorkflowStep }) {
+  return (
+    <span className="inline-flex items-center gap-1">
+      <StatusDot tone={workflowStepTone(step.status)} className="size-1.5" />
+      <span className="text-foreground">{step.label}</span>
+    </span>
+  );
+}
+
+/** Lazy Rust source, following the TurnDrillIn lazy-fetch contract exactly. */
+function RustSource({ workflowName, apiUrl }: { workflowName: string; apiUrl?: string }) {
+  const [open, setOpen] = useState(false);
+  const [source, setSource] = useState<{ path: string; source: string } | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function toggle() {
+    const next = !open;
+    setOpen(next);
+    if (!next || source !== null || !apiUrl) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const base = normalizeBaseUrl(apiUrl);
+      const res = await fetch(`${base}/v1/workflows/${encodeURIComponent(workflowName)}/source`);
+      if (res.status === 404) {
+        setError("source unavailable (endpoint not present in this build)");
+        return;
+      }
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setSource((await res.json()) as { path: string; source: string });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={toggle}
+        className="inline-flex items-center gap-1 text-[11px] text-muted-foreground transition-colors hover:text-foreground"
+      >
+        {open ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />}
+        <Code className="size-3" />
+        View Rust source · workflow.rs
+      </button>
+      {open && (
+        <div className="mt-1.5 space-y-1">
+          {loading && <span className="text-[11px] text-muted-foreground">loading…</span>}
+          {error && <span className="text-[11px] text-status-bad">{error}</span>}
+          {source && (
+            <>
+              <MonoId>{source.path}</MonoId>
+              <pre className="max-h-96 overflow-auto whitespace-pre rounded-md border border-border bg-muted/30 p-2 font-mono text-[11px] text-foreground">
+                {source.source}
+              </pre>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ================================================================== */
+/* Small shared bits                                                   */
+/* ================================================================== */
+
+/** A flip-chevron collapsible header row (the CollapsibleBlock idiom). */
+function CollapsibleRow({
+  open,
+  onToggle,
+  label,
+}: {
+  open: boolean;
+  onToggle: () => void;
+  label: ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      className="inline-flex items-center gap-1 text-[11px] text-muted-foreground transition-colors hover:text-foreground"
+    >
+      {open ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />}
+      {label}
+    </button>
+  );
+}
+
+function Timestamp({ value }: { value: string }) {
+  const ms = Date.parse(value);
+  if (Number.isNaN(ms)) return <>{value}</>;
+  return (
+    <span className="tabular-nums">
+      {new Date(ms).toLocaleString()}
+      <span className="text-muted-foreground"> · {relativeTime(ms)}</span>
+    </span>
+  );
+}
+
+function isTerminal(status: string): boolean {
+  const s = status.toLowerCase();
+  return s === "completed" || s === "failed" || s === "cached";
+}
+
+function statusGloss(status: string): string {
+  const s = status.toLowerCase();
+  if (s === "completed" || s === "cached") return "ok";
+  if (s === "failed") return "failed";
+  return s;
+}
+
+/** A plain-English gloss of the gate logic for the verdict card (§3). */
+function verdictGloss(run: WorkflowRun, steps: WorkflowStep[]): string {
+  const status = (run.status ?? "").toLowerCase();
+  const total = steps.length;
+  const failed = steps.filter((s) => (s.status ?? "").toLowerCase() === "failed").length;
+  if (status === "failed") {
+    return "Run failed: the required serial step (scope) did not succeed. The parallel audit steps were still collected (tolerated).";
+  }
+  if (status === "completed" && failed > 0) {
+    return `Completed (degraded): ${failed} of ${total} steps failed, but the required scope step succeeded, so the run completed.`;
+  }
+  if (status === "completed") {
+    return `Completed because the required serial step (scope) succeeded. ${total}/${total} ok.`;
+  }
+  return run.summary ?? "";
+}
+
+function stepTiming(step: WorkflowStep): string {
+  const start = fmtClock(step.started_at);
+  if (!step.ended_at) {
+    return `· started ${start} · running…`;
+  }
+  const end = fmtClock(step.ended_at);
+  const dur = formatDuration(step.started_at, step.ended_at);
+  return `· ${start} → ${end}${dur ? ` · ${dur}` : ""}`;
+}
+
+function fmtClock(value?: string | null): string {
+  if (!value) return "—";
+  const ms = Date.parse(value);
+  if (Number.isNaN(ms)) return value;
+  return new Date(ms).toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+}
+
+function relativeTime(ms: number): string {
+  const deltaS = Math.round((Date.now() - ms) / 1000);
+  if (deltaS < 60) return "just now";
+  const m = Math.floor(deltaS / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  return `${Math.floor(h / 24)}d ago`;
+}
+
+/** Parse a "codex"/"claude" role hint from a step label like "audit-codex". */
+function roleHintFromLabel(label: string): string | undefined {
+  const lower = label.toLowerCase();
+  if (lower.includes("codex")) return "codex";
+  if (lower.includes("claude")) return "claude";
+  return undefined;
+}
+
+/** The schematic (declared) shape for a registered def, when known. */
+function schematicPhasesFor(name: string): WorkflowPhase[] | undefined {
+  if (name === "investigate") {
+    return [
+      { phase: "scope", kind: "serial", steps: [schematicStep("scope", "scope-question")] },
+      {
+        phase: "audit",
+        kind: "parallel",
+        steps: [schematicStep("audit", "audit-codex"), schematicStep("audit", "audit-claude")],
+      },
+    ];
+  }
+  return undefined;
+}
+
+/** A status-less placeholder step for schematic (declared, no-run) rendering. */
+function schematicStep(phase: string, label: string): WorkflowStep {
+  return {
+    id: `schematic-${phase}-${label}`,
+    run_id: "schematic",
+    phase,
+    label,
+    status: "queued",
+    started_at: "",
+  };
+}
+
+/** Order steps for the index glyph by phase appearance (no run object here). */
+function orderForGlyph(steps: WorkflowStep[]): WorkflowStep[] {
+  return steps;
+}

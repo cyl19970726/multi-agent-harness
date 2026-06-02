@@ -4,6 +4,7 @@ export type SurfaceId =
   | "goal"
   | "task"
   | "tasks"
+  | "workflows"
   | "docs"
   | "warnings"
   | "debug";
@@ -27,6 +28,8 @@ export interface SelectionState {
   /** Which tab is open on the agent detail page; defaults to "conversation". */
   agentTab?: AgentTab;
   taskId?: string;
+  /** The selected workflow run id (opens WorkflowRunDetail on the workflows surface). */
+  workflowRunId?: string;
   mode?: "kanban" | "graph" | "split";
   /** Unified Work board: which object the board lays out. Defaults to "tasks". */
   boardScope?: "goals" | "tasks";
@@ -46,6 +49,7 @@ const surfaceIds: SurfaceId[] = [
   "goal",
   "task",
   "tasks",
+  "workflows",
   "docs",
   "warnings",
   "debug",
@@ -89,6 +93,13 @@ export function selectionFromLocation(base: SelectionState): SelectionState {
   if (goal) next.goalId = goal;
   const task = params.get("task");
   if (task) next.taskId = task;
+  // Canonical run address: ?workflowRun=<id>; setting it implies the workflows
+  // surface (mirror of the ?agent= rule above).
+  const workflowRun = params.get("workflowRun");
+  if (workflowRun) {
+    next.workflowRunId = workflowRun;
+    if (!surface) next.surface = "workflows";
+  }
   const boardScope = params.get("board");
   if (boardScope === "goals" || boardScope === "tasks") next.boardScope = boardScope;
   const boardGoal = params.get("boardGoal");
@@ -116,6 +127,7 @@ export function syncSelectionToLocation(selection: SelectionState): void {
   if (selection.teamId) params.set("team", selection.teamId);
   if (selection.goalId) params.set("goal", selection.goalId);
   if (selection.taskId) params.set("task", selection.taskId);
+  if (selection.workflowRunId) params.set("workflowRun", selection.workflowRunId);
   if (selection.boardScope === "goals") params.set("board", "goals");
   if (selection.boardGoal) params.set("boardGoal", selection.boardGoal);
 

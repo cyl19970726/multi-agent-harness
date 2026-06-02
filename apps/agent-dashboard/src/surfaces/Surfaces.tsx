@@ -3505,7 +3505,7 @@ interface RawTurnEvent {
  * the current-work banner). Backend tees each event to the session NDJSON
  * mid-turn, so the growing file is what we read.
  */
-function TurnDrillIn({
+export function TurnDrillIn({
   session,
   apiUrl,
   defaultOpen = false,
