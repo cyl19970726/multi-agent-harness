@@ -1,6 +1,7 @@
 import type { SelectionState } from "../app/selection";
 import type {
   AgentMember,
+  AgentStats,
   AgentTeam,
   DashboardSnapshot,
   Decision,
@@ -199,6 +200,9 @@ export interface WorkbenchModel {
   docs: RelatedDoc[];
   sessionsByMember: ProviderSession[];
   childThreadsByMember: ProviderChildThread[];
+  /** Per-agent activity stats keyed by member id (computeAgentStats over each
+   * member's provider sessions). Powers the list sparkline/runs + detail perf. */
+  statsByMember: Record<string, AgentStats>;
 }
 
 export interface RelatedDoc {
@@ -359,6 +363,21 @@ export function buildWorkbenchModel(snapshot: DashboardSnapshot, selection: Sele
 
   const leadDecisionQueue = buildLeadDecisionQueue(snapshot, warnings, leadMemberId);
 
+  // Per-agent stats: group sessions by member once, then computeAgentStats each.
+  const nowMs = Date.now();
+  const sessionsByMemberId = new Map<string, ProviderSession[]>();
+  for (const session of snapshot.provider_sessions ?? []) {
+    const owner = session.agent_member_id;
+    if (!owner) continue;
+    const list = sessionsByMemberId.get(owner) ?? [];
+    list.push(session);
+    sessionsByMemberId.set(owner, list);
+  }
+  const statsByMember: Record<string, AgentStats> = {};
+  for (const member of members) {
+    statsByMember[member.id] = computeAgentStats(sessionsByMemberId.get(member.id) ?? [], nowMs);
+  }
+
   return {
     snapshot,
     generatedAt: snapshot.generated_at,
@@ -416,6 +435,7 @@ export function buildWorkbenchModel(snapshot: DashboardSnapshot, selection: Sele
     childThreadsByMember: selectedMember
       ? (snapshot.provider_child_threads ?? []).filter((thread) => thread.agent_member_id === selectedMember.id)
       : [],
+    statsByMember,
   };
 }
 
@@ -962,15 +982,81 @@ export function groupMemberTimelineBySession(
   return result;
 }
 
-/** Human duration between two ISO timestamps: "1m54s", "2h3m", "45s". */
+/** Parse a harness timestamp ("unix-ms:<ms>" or ISO) to epoch ms, or NaN.
+ * Shared so list/detail/stats/duration all agree on the format. */
+export function parseTs(value?: string | null): number {
+  if (!value) return NaN;
+  return value.startsWith("unix-ms:") ? Number(value.slice("unix-ms:".length)) : Date.parse(value);
+}
+
+/**
+ * Per-agent activity stats derived from that member's provider sessions — no
+ * backend aggregate. Powers the Agents-list sparkline/run-count and the detail
+ * Tasks-tab performance summary. O(n) over the member's own sessions.
+ */
+export function computeAgentStats(sessions: ProviderSession[], nowMs: number): AgentStats {
+  const DAY = 86_400_000;
+  const activity7d = [0, 0, 0, 0, 0, 0, 0];
+  let runCount30d = 0;
+  let succeeded = 0;
+  let failed = 0;
+  let durSum = 0;
+  let durN = 0;
+  let lastActiveMs: number | null = null;
+  let runningCount = 0;
+  let liveSessionId: string | null = null;
+  let liveStart = -Infinity;
+  for (const s of sessions) {
+    const start = parseTs(s.started_at);
+    if (!Number.isNaN(start)) {
+      if (lastActiveMs === null || start > lastActiveMs) lastActiveMs = start;
+      const ageDays = Math.floor((nowMs - start) / DAY);
+      if (ageDays >= 0 && ageDays < 30) runCount30d += 1;
+      if (ageDays >= 0 && ageDays < 7) {
+        // bucket 6 = today, 0 = 6 days ago (oldest→newest)
+        activity7d[6 - ageDays] += 1;
+      }
+    }
+    const status = s.status ?? "";
+    if (status === "succeeded") succeeded += 1;
+    else if (status === "failed") failed += 1;
+    if (status === "running" || status === "queued") {
+      if (status === "running") runningCount += 1;
+      if (!Number.isNaN(start) && start > liveStart) {
+        liveStart = start;
+        liveSessionId = s.id;
+      }
+    }
+    const end = parseTs(s.ended_at);
+    if (!Number.isNaN(start) && !Number.isNaN(end) && end >= start) {
+      durSum += end - start;
+      durN += 1;
+    }
+  }
+  const terminal = succeeded + failed;
+  return {
+    runCount30d,
+    runsTotal: sessions.length,
+    succeeded,
+    failed,
+    successRate: terminal ? succeeded / terminal : null,
+    avgDurationMs: durN ? Math.round(durSum / durN) : null,
+    activity7d,
+    lastActiveMs,
+    runningCount,
+    liveSessionId,
+  };
+}
+
+/** Human duration between two timestamps ("unix-ms:<ms>" or ISO): "1m54s", "2h3m", "45s". */
 export function formatDuration(
   start?: string | null,
   end?: string | null,
 ): string | undefined {
   if (!start) return undefined;
-  const startMs = Date.parse(start);
+  const startMs = parseTs(start);
   if (Number.isNaN(startMs)) return undefined;
-  const endMs = end ? Date.parse(end) : Date.now();
+  const endMs = end ? parseTs(end) : Date.now();
   if (Number.isNaN(endMs)) return undefined;
   const totalS = Math.max(0, Math.round((endMs - startMs) / 1000));
   if (totalS < 60) return `${totalS}s`;

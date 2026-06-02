@@ -6658,6 +6658,15 @@ fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::Value> {
                 "current_proposal_id": member.current_proposal_id,
                 "prompt_ref": member.prompt_ref,
                 "skill_refs": member.skill_refs,
+                // Config-tab + identity-rail data (Multica layout): these live on
+                // the AgentMember but were not previously projected into the
+                // snapshot. Additive — no schema change.
+                "model": member.model,
+                "profile": member.profile,
+                "provider_config": member.provider_config,
+                "team_ids": member.team_ids,
+                "created_at": member.created_at,
+                "last_seen_at": member.last_seen_at,
                 "inbox_count": inbox_count,
                 "queued_count": queued_count,
                 "provider_child_thread_count": child_thread_count

@@ -44,6 +44,8 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import {
+  AgentSparkline,
+  CollapsibleBlock,
   DocProperties,
   DocSection,
   DocumentSurface,
@@ -56,6 +58,8 @@ import {
   toneText,
   type StatusTone,
 } from "@/components/workbench/atoms";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import { Avatar } from "@/components/workbench/Avatar";
 import { Markdown } from "@/components/workbench/Markdown";
 import { fetchDoc, normalizeBaseUrl } from "../api";
@@ -84,6 +88,7 @@ import {
   formatDuration,
   gapIsResolved,
   memberName,
+  parseTs,
   taskTitle,
   tasksBlockedBy,
   taskGitMetadata,
@@ -104,6 +109,8 @@ import {
 } from "../api/actions";
 import type {
   AgentMember,
+  AgentProviderConfig,
+  AgentStats,
   DeliveryStatus,
   Gap,
   Goal,
@@ -118,7 +125,7 @@ import type {
   Vision,
   WorkflowWarning,
 } from "../types";
-import type { SelectionState } from "../app/selection";
+import type { AgentTab, SelectionState } from "../app/selection";
 
 interface SurfaceProps {
   model: WorkbenchModel;
@@ -528,23 +535,84 @@ function ProviderBadge({ provider }: { provider?: string | null }) {
  * (POST /v1/agents). Selecting a row opens the agent detail page (`?agent=<id>`).
  * Whitespace-led, muted labels, no tile chrome.
  */
+type AgentFilter = "all" | "online" | "working" | "idle" | "offline" | "unstable";
+type AgentSort = "recent" | "name" | "runs";
+
+/**
+ * Classify an agent into ONE Multica status bucket. Online (alive) splits into a
+ * clean partition — unstable XOR working XOR idle — so the filter chips never
+ * double-count: an alive agent with a failing/unknown delivery probe is
+ * "unstable" even while running (the health problem is what matters most), so it
+ * is excluded from "working". Offline (not alive) is separate. Buckets:
+ *   offline  = !runtime_alive
+ *   unstable = alive && delivery health warn/bad
+ *   working  = alive && healthy && (running || has current task)
+ *   idle     = alive && healthy && not working
+ * Online = alive = unstable + working + idle; All = online + offline.
+ */
+type AgentBucket = "offline" | "unstable" | "working" | "idle";
+function agentBucket(agent: AgentMember): AgentBucket {
+  if (!agent.runtime_alive) return "offline";
+  const tone = deliveryHealthTone(agent);
+  if (tone === "warn" || tone === "bad") return "unstable";
+  const status = agent.runtime_status ?? agent.status;
+  if (status === "running" || agent.current_task_id) return "working";
+  return "idle";
+}
+function agentMatchesFilter(agent: AgentMember, filter: AgentFilter): boolean {
+  if (filter === "all") return true;
+  const bucket = agentBucket(agent);
+  if (filter === "online") return bucket !== "offline";
+  return bucket === filter;
+}
+
 export function AgentsList({ model, onSelectionChange, actionsEnabled, onAction }: SurfaceProps) {
   const [newAgentOpen, setNewAgentOpen] = useState(false);
+  const [filter, setFilter] = useState<AgentFilter>("all");
+  const [sort, setSort] = useState<AgentSort>("recent");
   const agents = model.members;
   const live = Boolean(actionsEnabled);
+
+  const counts: Record<AgentFilter, number> = {
+    all: agents.length,
+    online: agents.filter((a) => agentMatchesFilter(a, "online")).length,
+    working: agents.filter((a) => agentMatchesFilter(a, "working")).length,
+    idle: agents.filter((a) => agentMatchesFilter(a, "idle")).length,
+    offline: agents.filter((a) => agentMatchesFilter(a, "offline")).length,
+    unstable: agents.filter((a) => agentMatchesFilter(a, "unstable")).length,
+  };
+  const filtered = agents
+    .filter((a) => agentMatchesFilter(a, filter))
+    .slice()
+    .sort((a, b) => {
+      if (sort === "name") return (a.name ?? a.id).localeCompare(b.name ?? b.id);
+      const sa = model.statsByMember[a.id];
+      const sb = model.statsByMember[b.id];
+      if (sort === "runs") return (sb?.runCount30d ?? 0) - (sa?.runCount30d ?? 0);
+      return (sb?.lastActiveMs ?? 0) - (sa?.lastActiveMs ?? 0); // recent
+    });
+
+  const FILTERS: { key: AgentFilter; label: string }[] = [
+    { key: "all", label: "All" },
+    { key: "online", label: "Online" },
+    { key: "working", label: "Working" },
+    { key: "idle", label: "Idle" },
+    { key: "offline", label: "Offline" },
+    { key: "unstable", label: "Unstable" },
+  ];
+  const cols =
+    "grid-cols-[minmax(0,2fr)_minmax(0,0.8fr)_minmax(0,1fr)_minmax(0,1fr)_64px_minmax(0,0.6fr)_minmax(0,1.6fr)]";
+
   return (
-    <DocumentSurface className="max-w-[940px]">
+    <DocumentSurface className="max-w-[1180px]">
       <header className="flex flex-wrap items-end justify-between gap-3">
         <div className="space-y-1">
           <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
             <Bot className="size-3.5" /> Agents
           </div>
-          <h1 className="text-2xl font-semibold tracking-tight text-foreground">
-            Agents
-          </h1>
+          <h1 className="text-2xl font-semibold tracking-tight text-foreground">Agents</h1>
           <p className="text-sm text-muted-foreground">
-            Every agent in the workspace. Open one to message it, inspect its
-            runtime, and assign work.
+            Every agent in the workspace. Open one to message it, inspect its runtime, and assign work.
           </p>
         </div>
         <OperatorActionButton enabled={live} onClick={() => setNewAgentOpen(true)}>
@@ -553,30 +621,95 @@ export function AgentsList({ model, onSelectionChange, actionsEnabled, onAction 
         </OperatorActionButton>
       </header>
 
-      <DocSection label={`${agents.length} ${agents.length === 1 ? "agent" : "agents"}`}>
-        {agents.length ? (
+      {agents.length > 0 && (
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex flex-wrap items-center gap-1">
+            {FILTERS.map((entry) => (
+              <button
+                key={entry.key}
+                type="button"
+                onClick={() => setFilter(entry.key)}
+                className={cn(
+                  "inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-[11px] transition-colors",
+                  filter === entry.key
+                    ? "border-primary/40 bg-primary/12 text-primary"
+                    : "border-border bg-background/50 text-muted-foreground hover:text-foreground",
+                )}
+              >
+                {entry.label}
+                <span className="font-mono text-[10px] opacity-70">{counts[entry.key]}</span>
+              </button>
+            ))}
+          </div>
+          <label className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+            Sort
+            <Select
+              aria-label="Sort agents"
+              value={sort}
+              onChange={(event) => setSort(event.target.value as AgentSort)}
+              className="h-8 w-[7.5rem]"
+            >
+              <option value="recent">Recent</option>
+              <option value="name">Name</option>
+              <option value="runs">Runs</option>
+            </Select>
+          </label>
+        </div>
+      )}
+
+      <DocSection label={`${filtered.length} ${filtered.length === 1 ? "agent" : "agents"}`}>
+        {agents.length === 0 ? (
+          <EmptyState
+            icon={Bot}
+            title="No agents yet"
+            description={
+              live
+                ? "Create an agent with New agent to start delegating work."
+                : "Connect to a running harness with Load live, then create your first agent with New agent."
+            }
+          />
+        ) : filtered.length === 0 ? (
+          <EmptyState
+            icon={Bot}
+            title="No agents match this filter"
+            description="Clear the filter to see every agent."
+          />
+        ) : (
           <div className="overflow-hidden">
-            <div className="grid grid-cols-[minmax(0,2fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1.5fr)] gap-3 border-b border-border px-2 pb-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+            <div
+              className={cn(
+                "grid gap-3 border-b border-border px-2 pb-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground",
+                cols,
+              )}
+            >
               <span>Name</span>
               <span>Provider</span>
               <span>Status</span>
+              <span className="hidden lg:block">Workload</span>
+              <span className="hidden lg:block">7-day</span>
+              <span>Runs</span>
               <span>Current task</span>
             </div>
             <div>
-              {agents.map((agent) => {
+              {filtered.map((agent) => {
                 const status = agent.runtime_status ?? agent.status ?? "unknown";
+                const stats = model.statsByMember[agent.id];
+                const queued = agent.queued_count ?? 0;
+                const inbox = agent.inbox_count ?? 0;
                 return (
                   <button
                     key={agent.id}
                     type="button"
-                    onClick={() => onSelectionChange({ surface: "agents", memberId: agent.id })}
-                    className="grid w-full grid-cols-[minmax(0,2fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1.5fr)] items-center gap-3 border-b border-border/60 px-2 py-2.5 text-left transition-colors last:border-b-0 hover:bg-accent/40"
+                    onClick={() =>
+                      onSelectionChange({ surface: "agents", memberId: agent.id, agentTab: "conversation" })
+                    }
+                    className={cn(
+                      "grid w-full items-center gap-3 border-b border-border/60 px-2 py-2.5 text-left transition-colors last:border-b-0 hover:bg-accent/40",
+                      cols,
+                    )}
                   >
                     <span className="flex min-w-0 items-center gap-2.5">
-                      <Avatar
-                        name={agent.name ?? agent.id}
-                        tone={deliveryHealthTone(agent)}
-                      />
+                      <Avatar name={agent.name ?? agent.id} tone={deliveryHealthTone(agent)} />
                       <span className="min-w-0">
                         <span className="block truncate text-[13px] font-medium text-foreground">
                           {agent.name ?? agent.id}
@@ -590,29 +723,33 @@ export function AgentsList({ model, onSelectionChange, actionsEnabled, onAction 
                       <ProviderBadge provider={agent.provider} />
                     </span>
                     <span className="flex min-w-0 items-center gap-1.5 text-[12px] text-foreground">
-                      <StatusDot tone={memberTone(status)} />
+                      <StatusDot tone={memberTone(status)} pulse={status === "running"} />
                       <span className="truncate">{status}</span>
                     </span>
+                    <span className="hidden min-w-0 text-[12px] text-muted-foreground lg:block">
+                      {queued || inbox ? `${queued}q · ${inbox}in` : "—"}
+                    </span>
+                    <span className="hidden lg:block" title={stats ? `${stats.runCount30d} runs / 7d window` : undefined}>
+                      <AgentSparkline data={stats?.activity7d ?? [0, 0, 0, 0, 0, 0, 0]} />
+                    </span>
+                    <span
+                      className="min-w-0 text-[12px] tabular-nums text-muted-foreground"
+                      title={
+                        stats
+                          ? `${stats.succeeded} ok / ${stats.failed} failed${stats.successRate != null ? ` (${Math.round(stats.successRate * 100)}%)` : ""}`
+                          : undefined
+                      }
+                    >
+                      {stats?.runCount30d ?? 0}
+                    </span>
                     <span className="min-w-0 truncate text-[12px] text-muted-foreground">
-                      {agent.current_task_id
-                        ? taskTitle(model.tasks, agent.current_task_id)
-                        : "—"}
+                      {agent.current_task_id ? taskTitle(model.tasks, agent.current_task_id) : "—"}
                     </span>
                   </button>
                 );
               })}
             </div>
           </div>
-        ) : (
-          <EmptyState
-            icon={Bot}
-            title="No agents yet"
-            description={
-              live
-                ? "Create an agent with New agent to start delegating work."
-                : "Connect to a running harness with Load live, then create your first agent with New agent."
-            }
-          />
         )}
       </DocSection>
 
@@ -2496,7 +2633,14 @@ function runtimeHealthSummary(member: AgentMember): string {
  * URL-addressable via `?agent=<id>`. Owns its own layout, so the global
  * Inspector is suppressed for the Agents area in WorkbenchShell.
  */
-export function AgentDetail({ model, onSelectionChange, actionsEnabled, onAction, apiUrl }: SurfaceProps) {
+export function AgentDetail({
+  model,
+  onSelectionChange,
+  actionsEnabled,
+  onAction,
+  apiUrl,
+  agentTab,
+}: SurfaceProps & { agentTab?: AgentTab }) {
   const member = model.selectedMember;
   if (!member) {
     return (
@@ -2511,93 +2655,530 @@ export function AgentDetail({ model, onSelectionChange, actionsEnabled, onAction
   const currentTask = member.current_task_id
     ? model.tasks.find((task) => task.id === member.current_task_id)
     : undefined;
-  return (
-    <DocumentSurface>
-      <header className="space-y-3">
-        <button
-          type="button"
-          onClick={() => onSelectionChange({ surface: "agents", memberId: undefined })}
-          className="inline-flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground transition-colors hover:text-foreground"
-        >
-          <Bot className="size-3.5" /> Agents
-        </button>
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div className="flex min-w-0 items-center gap-3">
-            <Avatar name={member.name ?? member.id} tone={deliveryHealthTone(member)} size="lg" />
-            <div className="min-w-0">
-              <h1 className="truncate text-2xl font-semibold tracking-tight text-foreground">
-                {member.name ?? member.id}
-              </h1>
-              <div className="mt-1 flex flex-wrap items-center gap-1.5">
-                <Badge tone={memberTone(status)}>{status}</Badge>
-                <ProviderBadge provider={member.provider} />
-                <MonoId>{member.id}</MonoId>
-              </div>
-            </div>
-          </div>
-          <div className="flex shrink-0 flex-wrap items-center gap-2 pt-1">
-            <MemberOverflowActions
-              member={member}
-              sessions={model.sessionsByMember}
-              inbox={model.inboxMessages}
-              actionsEnabled={actionsEnabled}
-              onAction={onAction}
-            />
-          </div>
-        </div>
-        <DocProperties
-          items={[
-            { label: "Provider", value: <ProviderBadge provider={member.provider} /> },
-            { label: "Model", value: member.model ?? "—" },
-            { label: "Status", value: status },
-            { label: "Runtime health", value: runtimeHealthSummary(member) },
-            {
-              label: "Current task",
-              value: member.current_task_id ? (
-                <button
-                  type="button"
-                  onClick={() =>
-                    onSelectionChange({ surface: "task", taskId: member.current_task_id ?? undefined })
-                  }
-                  className="text-left text-foreground hover:text-primary"
-                >
-                  {taskTitle(model.tasks, member.current_task_id)}
-                </button>
-              ) : (
-                "—"
-              ),
-            },
-            { label: "Prompt", value: member.prompt_ref ? <MonoId>{member.prompt_ref}</MonoId> : "—" },
-            { label: "Skills", value: member.skill_refs?.join(", ") || "—" },
-          ]}
-        />
-      </header>
+  const stats = model.statsByMember[member.id];
+  const tab: AgentTab = agentTab ?? "conversation";
 
-      <DocSection label="Current task">
-        <AgentCurrentTask
-          model={model}
+  // Full-height two-pane shell (Multica layout): a scrollable left config rail
+  // and a chat-first right pane that fills the viewport so the composer pins to
+  // the bottom. The Agents area already suppresses the global Inspector.
+  return (
+    <div className="flex h-full min-h-0">
+      <ScrollArea className="hidden w-[300px] shrink-0 border-r border-border md:block">
+        <AgentConfigRail
           member={member}
-          currentTask={currentTask}
+          status={status}
+          stats={stats}
+          model={model}
           actionsEnabled={actionsEnabled}
           onAction={onAction}
           onSelectionChange={onSelectionChange}
         />
-      </DocSection>
-
-      <DocSection label="Conversation">
-        <ConversationStream
-          model={model}
+      </ScrollArea>
+      <div className="flex min-w-0 flex-1 flex-col">
+        {/* Identity + back, shown only when the left config rail is hidden (<md). */}
+        <div className="flex items-center gap-2 border-b border-border px-4 py-2 md:hidden">
+          <button
+            type="button"
+            onClick={() => onSelectionChange({ surface: "agents", memberId: undefined })}
+            className="inline-flex items-center gap-1 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground hover:text-foreground"
+          >
+            <Bot className="size-3.5" /> Agents
+          </button>
+          <Avatar name={member.name ?? member.id} tone={deliveryHealthTone(member)} />
+          <span className="min-w-0 flex-1 truncate text-[13px] font-semibold text-foreground">
+            {member.name ?? member.id}
+          </span>
+          <Badge tone={memberTone(status)}>{status}</Badge>
+          <ProviderBadge provider={member.provider} />
+        </div>
+        <CurrentWorkBanner
           member={member}
+          stats={stats}
+          model={model}
+          apiUrl={apiUrl}
           actionsEnabled={actionsEnabled}
           onAction={onAction}
-          apiUrl={apiUrl}
+          onSelectionChange={onSelectionChange}
         />
-      </DocSection>
+        <Tabs
+          value={tab}
+          onValueChange={(value) => onSelectionChange({ agentTab: value as AgentTab })}
+          className="flex min-h-0 flex-1 flex-col"
+        >
+          <div className="shrink-0 border-b border-border px-4 py-2">
+            <TabsList>
+              <TabsTrigger value="conversation">Conversation</TabsTrigger>
+              <TabsTrigger value="tasks">Tasks</TabsTrigger>
+              <TabsTrigger value="config">Config</TabsTrigger>
+            </TabsList>
+          </div>
+          <TabsContent value="conversation" className="min-h-0 flex-1 overflow-hidden p-3">
+            <ConversationStream
+              model={model}
+              member={member}
+              actionsEnabled={actionsEnabled}
+              onAction={onAction}
+              apiUrl={apiUrl}
+            />
+          </TabsContent>
+          <TabsContent value="tasks" className="min-h-0 flex-1 overflow-y-auto p-4">
+            <AgentTasksTab
+              model={model}
+              member={member}
+              currentTask={currentTask}
+              stats={stats}
+              actionsEnabled={actionsEnabled}
+              onAction={onAction}
+              onSelectionChange={onSelectionChange}
+            />
+          </TabsContent>
+          <TabsContent value="config" className="min-h-0 flex-1 overflow-y-auto p-4">
+            <AgentConfigTab model={model} member={member} />
+          </TabsContent>
+        </Tabs>
+      </div>
+    </div>
+  );
+}
 
-      <DocSection label="Runtime">
+/** Relative "just now / 3m ago / 2h ago / 4d ago" from epoch ms (NaN → "—"). */
+function relativeFromMs(ms: number | null): string {
+  if (ms == null || Number.isNaN(ms)) return "—";
+  const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
+  if (s < 45) return "just now";
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  return `${Math.floor(h / 24)}d ago`;
+}
+
+/**
+ * Left config rail: identity header + properties + Workload/Last active/Sessions
+ * stat rows + collapsible Runtime health and Skills. Lifts the old AgentDetail
+ * header/properties verbatim; adds the stat rows from computeAgentStats.
+ */
+function AgentConfigRail({
+  member,
+  status,
+  stats,
+  model,
+  actionsEnabled,
+  onAction,
+  onSelectionChange,
+}: {
+  member: AgentMember;
+  status: string;
+  stats?: AgentStats;
+  model: WorkbenchModel;
+  actionsEnabled?: boolean;
+  onAction?: (path: string, body?: unknown) => void;
+  onSelectionChange: (selection: Partial<SelectionState>) => void;
+}) {
+  const successPct =
+    stats && stats.successRate != null ? `${Math.round(stats.successRate * 100)}% ok` : "—";
+  return (
+    <div className="space-y-4 p-4">
+      <button
+        type="button"
+        onClick={() => onSelectionChange({ surface: "agents", memberId: undefined })}
+        className="inline-flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground transition-colors hover:text-foreground"
+      >
+        <Bot className="size-3.5" /> Agents
+      </button>
+      <div className="flex items-start gap-3">
+        <Avatar name={member.name ?? member.id} tone={deliveryHealthTone(member)} size="lg" />
+        <div className="min-w-0 flex-1">
+          <h1 className="truncate text-lg font-semibold tracking-tight text-foreground">
+            {member.name ?? member.id}
+          </h1>
+          <div className="mt-1 flex flex-wrap items-center gap-1.5">
+            <Badge tone={memberTone(status)}>{status}</Badge>
+            <ProviderBadge provider={member.provider} />
+          </div>
+          <MonoId>{member.id}</MonoId>
+        </div>
+        <MemberOverflowActions
+          member={member}
+          sessions={model.sessionsByMember}
+          inbox={model.inboxMessages}
+          actionsEnabled={actionsEnabled}
+          onAction={onAction}
+        />
+      </div>
+
+      <DocProperties
+        items={[
+          { label: "Provider", value: <ProviderBadge provider={member.provider} /> },
+          { label: "Model", value: member.model ?? "—" },
+          { label: "Status", value: status },
+          { label: "Runtime health", value: runtimeHealthSummary(member) },
+          {
+            label: "Current task",
+            value: member.current_task_id ? (
+              <button
+                type="button"
+                onClick={() =>
+                  onSelectionChange({ surface: "task", taskId: member.current_task_id ?? undefined })
+                }
+                className="text-left text-foreground hover:text-primary"
+              >
+                {taskTitle(model.tasks, member.current_task_id)}
+              </button>
+            ) : (
+              "—"
+            ),
+          },
+          {
+            label: "Workload",
+            value: `${member.queued_count ?? 0} queued · ${member.inbox_count ?? 0} in`,
+          },
+          { label: "Last active", value: relativeFromMs(stats?.lastActiveMs ?? null) },
+          {
+            label: "Sessions",
+            value: stats ? `${stats.runsTotal} · ${successPct}` : "—",
+          },
+          { label: "Created", value: fmtTime(member.created_at) },
+        ]}
+      />
+
+      <CollapsibleBlock label="Runtime health" defaultOpen>
+        <RuntimeHealthPanel member={member} />
+      </CollapsibleBlock>
+
+      <CollapsibleBlock label={`Skills (${member.skill_refs?.length ?? 0})`}>
+        {member.skill_refs?.length ? (
+          <div className="flex flex-wrap gap-1.5">
+            {member.skill_refs.map((skill) => (
+              <Badge key={skill} tone="muted">{skill}</Badge>
+            ))}
+          </div>
+        ) : (
+          <p className="text-[12px] text-muted-foreground">No skills attached.</p>
+        )}
+      </CollapsibleBlock>
+    </div>
+  );
+}
+
+/**
+ * Pane-chrome banner above the tabs: what the agent is doing RIGHT NOW, visible
+ * from every tab. Three states — running (live elapsed + ▸raw turn), idle with
+ * a queue (Deliver/wake), idle-empty (last active). All from existing data.
+ */
+function CurrentWorkBanner({
+  member,
+  stats,
+  model,
+  apiUrl,
+  actionsEnabled,
+  onAction,
+  onSelectionChange,
+}: {
+  member: AgentMember;
+  stats?: AgentStats;
+  model: WorkbenchModel;
+  apiUrl?: string;
+  actionsEnabled?: boolean;
+  onAction?: (path: string, body?: unknown) => void;
+  onSelectionChange: (selection: Partial<SelectionState>) => void;
+}) {
+  const sessions = model.sessionsByMember;
+  // Most-recent running session for this member = the live turn.
+  const running = sessions
+    .filter((s) => s.status === "running")
+    .sort((a, b) => parseTs(b.started_at) - parseTs(a.started_at))[0];
+  const queued = member.queued_count ?? 0;
+  const live = Boolean(actionsEnabled);
+
+  // A running session row whose process is no longer alive is stale, not live —
+  // surface it as a warning (it likely crashed mid-turn) rather than a pulsing
+  // RUNNING that never resolves.
+  if (running && !member.runtime_alive) {
+    const task = running.task_id ? taskTitle(model.tasks, running.task_id) : "a turn";
+    return (
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-status-warn/30 bg-status-warn/8 px-4 py-2 text-[12px]">
+        <span className="inline-flex items-center gap-1.5 font-medium text-status-warn">
+          <StatusDot tone="warn" /> Stale
+        </span>
+        <span className="min-w-0 truncate text-muted-foreground">
+          {task} · session running but process not alive
+        </span>
+        <span className="ml-auto inline-flex items-center gap-2">
+          <TurnDrillIn session={running} apiUrl={apiUrl} />
+          <ActionButton
+            enabled={live}
+            size="sm"
+            variant="secondary"
+            onClick={() => dispatch(onAction, deliverQueued(member.id, { startRuntime: true }))}
+          >
+            <Send className="size-3.5" />
+            Restart
+          </ActionButton>
+        </span>
+      </div>
+    );
+  }
+
+  if (running) {
+    const task = running.task_id ? taskTitle(model.tasks, running.task_id) : "a turn";
+    return (
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-status-running/30 bg-status-running/8 px-4 py-2 text-[12px]">
+        <span className="inline-flex items-center gap-1.5 font-medium text-status-running">
+          <StatusDot tone="running" pulse /> RUNNING
+        </span>
+        <button
+          type="button"
+          onClick={() => running.task_id && onSelectionChange({ surface: "task", taskId: running.task_id })}
+          className="min-w-0 truncate text-foreground hover:text-primary"
+        >
+          {task}
+        </button>
+        <span className="text-muted-foreground">
+          {running.provider ?? "provider"} · {formatDuration(running.started_at) ?? "0s"}
+        </span>
+        <span className="ml-auto">
+          <TurnDrillIn session={running} apiUrl={apiUrl} />
+        </span>
+      </div>
+    );
+  }
+
+  if (queued > 0) {
+    return (
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-status-warn/30 bg-status-warn/8 px-4 py-2 text-[12px]">
+        <span className="inline-flex items-center gap-1.5 font-medium text-status-warn">
+          <StatusDot tone="warn" /> Idle · {queued} queued
+        </span>
+        <span className="ml-auto">
+          <ActionButton
+            enabled={live}
+            size="sm"
+            variant="secondary"
+            onClick={() => dispatch(onAction, deliverQueued(member.id, { startRuntime: true }))}
+          >
+            <Send className="size-3.5" />
+            Deliver / wake
+          </ActionButton>
+        </span>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex items-center gap-2 border-b border-border bg-card/40 px-4 py-2 text-[12px] text-muted-foreground">
+      <StatusDot tone="idle" /> Idle
+      <span className="ml-auto">last active {relativeFromMs(stats?.lastActiveMs ?? null)}</span>
+    </div>
+  );
+}
+
+/**
+ * Tasks tab: the lightweight assign affordance (reused) + this agent's tasks
+ * grouped by role — Executing (assignee), Reviewing (reviewer), Completed (30d).
+ */
+function AgentTasksTab({
+  model,
+  member,
+  currentTask,
+  stats,
+  actionsEnabled,
+  onAction,
+  onSelectionChange,
+}: {
+  model: WorkbenchModel;
+  member: AgentMember;
+  currentTask?: Task;
+  stats?: AgentStats;
+  actionsEnabled?: boolean;
+  onAction?: (path: string, body?: unknown) => void;
+  onSelectionChange: (selection: Partial<SelectionState>) => void;
+}) {
+  const isDone = (task: Task) => task.status === "done" || task.status === "archived";
+  const executing = model.tasks.filter((t) => t.assignee_agent_id === member.id && !isDone(t));
+  const reviewing = model.tasks.filter((t) => t.reviewer_agent_id === member.id && !isDone(t));
+  const completed = model.tasks.filter(
+    (t) => (t.assignee_agent_id === member.id || t.reviewer_agent_id === member.id) && isDone(t),
+  );
+  return (
+    <div className="mx-auto max-w-[760px] space-y-5">
+      <AgentCurrentTask
+        model={model}
+        member={member}
+        currentTask={currentTask}
+        actionsEnabled={actionsEnabled}
+        onAction={onAction}
+        onSelectionChange={onSelectionChange}
+      />
+      {stats && (
+        <p className="text-[12px] text-muted-foreground">
+          {stats.runCount30d} runs · 30d ·{" "}
+          {stats.successRate != null ? `${Math.round(stats.successRate * 100)}% ok` : "no terminal runs"}
+          {stats.avgDurationMs != null && ` · avg ${Math.round(stats.avgDurationMs / 1000)}s`}
+        </p>
+      )}
+      <AgentTaskGroup
+        label="Executing"
+        tasks={executing}
+        empty="Not assigned to execute any task."
+        currentTaskId={member.current_task_id}
+        onSelect={(id) => onSelectionChange({ surface: "task", taskId: id })}
+      />
+      <AgentTaskGroup
+        label="Reviewing"
+        tasks={reviewing}
+        empty="Not assigned to review any task."
+        currentTaskId={member.current_task_id}
+        onSelect={(id) => onSelectionChange({ surface: "task", taskId: id })}
+      />
+      <AgentTaskGroup
+        label="Completed (30d)"
+        tasks={completed}
+        empty="No completed tasks."
+        currentTaskId={member.current_task_id}
+        onSelect={(id) => onSelectionChange({ surface: "task", taskId: id })}
+      />
+    </div>
+  );
+}
+
+function AgentTaskGroup({
+  label,
+  tasks,
+  empty,
+  currentTaskId,
+  onSelect,
+}: {
+  label: string;
+  tasks: Task[];
+  empty: string;
+  currentTaskId?: string | null;
+  onSelect: (id: string) => void;
+}) {
+  return (
+    <DocSection label={`${label} (${tasks.length})`}>
+      {tasks.length ? (
+        <div className="space-y-2">
+          {tasks.map((task) => (
+            <button
+              key={task.id}
+              type="button"
+              onClick={() => onSelect(task.id)}
+              className="flex w-full items-center gap-2 rounded-lg border border-border bg-card px-3 py-2 text-left transition-colors hover:border-input hover:bg-accent/40"
+            >
+              <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-foreground">
+                {task.title ?? task.id}
+              </span>
+              {task.id === currentTaskId && <Badge tone="running">current</Badge>}
+              <Badge tone={taskTone(task.status)}>{task.status}</Badge>
+              {task.branch_ref && (
+                <span className="hidden items-center gap-1 text-[11px] text-muted-foreground sm:inline-flex">
+                  <GitBranch className="size-3" />
+                  <MonoId>{shortBranch(task.branch_ref)}</MonoId>
+                </span>
+              )}
+            </button>
+          ))}
+        </div>
+      ) : (
+        <p className="text-[12px] text-muted-foreground">{empty}</p>
+      )}
+    </DocSection>
+  );
+}
+
+/**
+ * Config tab: Multica's panes folded into collapsible blocks. 指令 + Skills +
+ * Runtime are backed today; env / params / MCP read from provider_config (now in
+ * the snapshot projection) and show "Not configured" when a field is unset.
+ */
+function AgentConfigTab({
+  model,
+  member,
+}: {
+  model: WorkbenchModel;
+  member: AgentMember;
+}) {
+  const cfg: AgentProviderConfig = member.provider_config ?? {};
+  const roots = cfg.runtime_workspace_roots ?? [];
+  const mcpServers = cfg.mcp?.servers ?? [];
+  const params: { label: string; value: ReactNode }[] = [
+    { label: "Sandbox", value: cfg.sandbox_policy ?? "—" },
+    { label: "Permission", value: cfg.permission_profile ?? "—" },
+    { label: "Approval", value: cfg.approval_policy ?? "—" },
+    { label: "Service tier", value: cfg.service_tier ?? "—" },
+    { label: "Collaboration", value: cfg.collaboration_mode ?? "—" },
+  ];
+  const hasParams = params.some((p) => p.value !== "—");
+  return (
+    <div className="mx-auto max-w-[760px] space-y-3">
+      <CollapsibleBlock label="指令 (Prompt)" defaultOpen>
+        {member.prompt_ref ? (
+          <MonoId>{member.prompt_ref}</MonoId>
+        ) : (
+          <p className="text-[12px] text-muted-foreground">No prompt reference.</p>
+        )}
+      </CollapsibleBlock>
+
+      <CollapsibleBlock label={`Skills (${member.skill_refs?.length ?? 0})`}>
+        {member.skill_refs?.length ? (
+          <div className="flex flex-wrap gap-1.5">
+            {member.skill_refs.map((skill) => (
+              <Badge key={skill} tone="muted">{skill}</Badge>
+            ))}
+          </div>
+        ) : (
+          <p className="text-[12px] text-muted-foreground">No skills attached.</p>
+        )}
+      </CollapsibleBlock>
+
+      <CollapsibleBlock label="Runtime">
         <AgentRuntimeSection model={model} member={member} />
-      </DocSection>
-    </DocumentSurface>
+      </CollapsibleBlock>
+
+      <CollapsibleBlock label="环境变量 (Environment)">
+        {cfg.environment_id || roots.length ? (
+          <DocProperties
+            items={[
+              { label: "Environment", value: cfg.environment_id ?? "—" },
+              {
+                label: "Workspace roots",
+                value: roots.length ? <PathList paths={roots} /> : "—",
+              },
+            ]}
+          />
+        ) : (
+          <p className="text-[12px] text-muted-foreground">Not configured.</p>
+        )}
+      </CollapsibleBlock>
+
+      <CollapsibleBlock label="自定义参数 (Parameters)">
+        {hasParams ? (
+          <DocProperties items={params} />
+        ) : (
+          <p className="text-[12px] text-muted-foreground">Not configured.</p>
+        )}
+      </CollapsibleBlock>
+
+      <CollapsibleBlock label={`MCP (${mcpServers.length})`}>
+        {mcpServers.length ? (
+          <div className="space-y-2">
+            {mcpServers.map((server) => (
+              <div key={server.id} className="rounded-lg border border-border bg-card p-2.5 text-[12px]">
+                <div className="flex items-center gap-2">
+                  <span className="font-medium text-foreground">{server.id}</span>
+                  {server.transport && <Badge tone="muted">{server.transport}</Badge>}
+                </div>
+                {server.url && <MonoId>{server.url}</MonoId>}
+                {server.command?.length ? <MonoId>{server.command.join(" ")}</MonoId> : null}
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="text-[12px] text-muted-foreground">Not configured.</p>
+        )}
+      </CollapsibleBlock>
+    </div>
   );
 }
 
@@ -2790,7 +3371,7 @@ function ConversationStream({
     // would split the two formats into separate lexical ranges and misorder them.
     .sort((a, b) => parseTs(a.createdAt) - parseTs(b.createdAt));
   return (
-    <section className="flex min-h-[34rem] min-w-0 flex-col overflow-hidden rounded-lg border border-border bg-card">
+    <section className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden rounded-lg border border-border bg-card">
       <header className="flex items-center justify-between gap-2 border-b border-border px-3.5 py-2.5">
         <span className="text-[11px] text-muted-foreground">
           Conversation · oldest first
@@ -2905,12 +3486,6 @@ function ChatBubble({
       </div>
     </div>
   );
-}
-
-/** Parse a harness timestamp ("unix-ms:<ms>" or ISO) to epoch ms, or NaN. */
-function parseTs(value?: string | null): number {
-  if (!value) return NaN;
-  return value.startsWith("unix-ms:") ? Number(value.slice("unix-ms:".length)) : Date.parse(value);
 }
 
 /** One raw provider event, as returned 1:1 by GET /v1/provider-sessions/{id}/events. */

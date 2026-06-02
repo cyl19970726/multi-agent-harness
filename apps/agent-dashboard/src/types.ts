@@ -102,10 +102,53 @@ export interface AgentMember {
   current_proposal_id?: string | null;
   prompt_ref?: string | null;
   skill_refs?: string[];
+  profile?: string | null;
+  provider_config?: AgentProviderConfig | null;
+  created_at?: string | null;
+  last_seen_at?: string | null;
   queued_count?: number;
   inbox_count?: number;
   team_ids?: string[];
   provider_child_thread_count?: number;
+}
+
+/** Provider launch/runtime config carried on an AgentMember (mirrors the Rust
+ * AgentProviderConfig). All optional; the Config tab renders what is set and
+ * shows "Not configured" otherwise. */
+export interface AgentProviderConfig {
+  service_tier?: string | null;
+  collaboration_mode?: string | null;
+  approval_policy?: string | null;
+  approvals_reviewer?: string | null;
+  sandbox_policy?: string | null;
+  permission_profile?: string | null;
+  runtime_workspace_roots?: string[];
+  environment_id?: string | null;
+  mcp?: { servers?: AgentMcpServer[] } | null;
+}
+
+export interface AgentMcpServer {
+  id: string;
+  transport?: string | null;
+  command?: string[];
+  url?: string | null;
+  allowed_tools?: string[];
+}
+
+/** Per-agent activity stats derived client-side from provider_sessions
+ * (computeAgentStats). No backend aggregate; powers the list sparkline/run
+ * count and the detail Tasks-tab performance summary. */
+export interface AgentStats {
+  runCount30d: number;
+  runsTotal: number;
+  succeeded: number;
+  failed: number;
+  successRate: number | null;
+  avgDurationMs: number | null;
+  activity7d: number[];
+  lastActiveMs: number | null;
+  runningCount: number;
+  liveSessionId: string | null;
 }
 
 export interface AgentTeam {
