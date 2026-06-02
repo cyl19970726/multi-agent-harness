@@ -1,0 +1,37 @@
+{
+  "name": "scan-then-parallel-fix",
+  "args": { "area": "checkout flow" },
+  "nodes": [
+    {
+      "type": "phase",
+      "name": "scan",
+      "nodes": [
+        {
+          "type": "agent",
+          "member": "codex",
+          "prompt": "Scan {{area}} for defects. Return a numbered list of the distinct problems you find, each with the file path and a one-line description.",
+          "label": "scan"
+        }
+      ]
+    },
+    {
+      "type": "parallel",
+      "nodes": [
+        {
+          "type": "agent",
+          "member": "codex",
+          "prompt": "Fix the first defect reported by the scan in {{area}}. Make the minimal change and explain it.",
+          "phase": "fix",
+          "label": "fix-codex"
+        },
+        {
+          "type": "agent",
+          "member": "claude",
+          "prompt": "Fix the second defect reported by the scan in {{area}}. Make the minimal change and explain it.",
+          "phase": "fix",
+          "label": "fix-claude"
+        }
+      ]
+    }
+  ]
+}

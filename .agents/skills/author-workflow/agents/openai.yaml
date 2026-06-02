@@ -1,0 +1,4 @@
+interface:
+  display_name: "Author Workflow"
+  short_description: "Write a JSON WorkflowSpec and run it with harness workflow run-spec."
+  default_prompt: "Author a valid WorkflowSpec JSON-IR for the requested orchestration, validate it against schemas/workflow-spec.schema.json, run it with `harness workflow run-spec <spec.json> --codex <member> --claude <member>`, then read the run back from the dashboard snapshot or store."
