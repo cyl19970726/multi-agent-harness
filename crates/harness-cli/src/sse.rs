@@ -369,6 +369,9 @@ mod tests {
             args: None,
             agents_spawned: 0,
             final_output: None,
+            initiated_by: None,
+            spec: None,
+            trace_retention: "durable".into(),
         }
     }
 

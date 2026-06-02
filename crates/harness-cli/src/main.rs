@@ -3715,6 +3715,12 @@ struct WorkflowDeliveryOptions {
     #[allow(dead_code)]
     start_runtime: bool,
     timeout_ms: u64,
+    /// Retention policy for the heavy per-node turn-event trace: "durable"
+    /// (default) persists the per-session AgentEvents + retained NDJSON trace;
+    /// "live" streams the trace over SSE during execution but prunes it after the
+    /// run so a PAST run shows "trace not retained". Live streaming itself is
+    /// independent and always happens.
+    trace_retention: String,
 }
 
 /// The REAL agent-step driver. Drives one provider delivery through the neutral
@@ -3968,10 +3974,22 @@ fn spawn_ephemeral_worker(
         None
     };
 
-    // Persist the NDJSON-derived neutral events + one ProviderSession row so the
-    // dashboard drill-in streams the worker's tool calls. Best-effort: a journal
-    // failure must not flip an otherwise-successful step.
-    let _ = ingest_ephemeral_events(store, &session_id, spec, &spawn);
+    // Two-tier persistence (locked design). The live SSE frames were already
+    // streamed during the spawn loop (per-session NDJSON + shared
+    // provider_turn_events.jsonl), so a LIVE drill-in worked during execution no
+    // matter the retention. Now decide what SURVIVES the run:
+    //  - durable: persist the heavy trace (per-session AgentEvents + retained
+    //    NDJSON) so a completed run can be drilled into historically.
+    //  - live: do NOT retain the heavy trace — skip the durable AgentEvents and
+    //    prune the streamed NDJSON rows — so a past live-only run shows
+    //    "trace not retained". The ProviderSession row is still written either
+    //    way (with jsonl_ref only when durable), keeping the
+    //    WorkflowStep.provider_session_id linkage stable.
+    let retain_trace = options.trace_retention != "live";
+    let _ = ingest_ephemeral_events(store, &session_id, spec, &spawn, retain_trace);
+    if !retain_trace {
+        prune_live_only_trace(store, &session_id);
+    }
 
     let mut output_summary = if let Some(reply) = spawn.reply.clone() {
         let reply = reply.replace('\n', " ");
@@ -4280,15 +4298,20 @@ fn ingest_ephemeral_events(
     session_id: &str,
     spec: &workflow::AgentStepSpec,
     spawn: &EphemeralSpawn,
+    retain_trace: bool,
 ) -> CliResult<()> {
-    if spec.provider == "claude" {
+    // The DURABLE per-session AgentEvents are the heavy trace gated by retention.
+    // When `retain_trace` is false (a `--trace live` run) we skip them entirely:
+    // the live SSE frames already streamed during the spawn loop, so the only
+    // thing we omit is the historical (post-run) trace.
+    if retain_trace && spec.provider == "claude" {
         // Reuse the neutral claude reducer; it writes AgentEvents AND a
         // ProviderSession, but it mints its OWN session id from the stream. To
         // keep the WorkflowStep.provider_session_id linkage stable we still need
         // a ProviderSession under OUR session_id, so we additionally write that
         // row below (latest-wins; the reducer's row coexists harmlessly).
         let _ = ingest_claude_stream_json(store, session_id, None, None, &spawn.ndjson);
-    } else {
+    } else if retain_trace {
         // Codex: one neutral AgentEvent per NDJSON line, mirroring the
         // provider-output ingest path (event_type from the `type` discriminant).
         for line in spawn.ndjson.lines() {
@@ -4321,20 +4344,29 @@ fn ingest_ephemeral_events(
         }
     }
 
-    // A ProviderSession keyed by OUR session id — the stable drill-in key. The
-    // jsonl_ref points at the durable per-session NDJSON the spawn wrote.
+    // A ProviderSession keyed by OUR session id — the stable drill-in key, always
+    // written so WorkflowStep.provider_session_id resolves either way. The
+    // jsonl_ref/stdout_ref point at the retained per-session NDJSON ONLY when the
+    // trace is durable; a live-only run leaves them None so the drill-in renders
+    // "trace not retained" (the NDJSON is pruned after the run).
     let live_file = if spec.provider == "claude" {
         "claude.stream-json.ndjson"
     } else {
         "codex.stream-json.ndjson"
     };
-    let jsonl_ref = store
-        .root()
-        .join("provider-sessions")
-        .join(session_id)
-        .join(live_file)
-        .display()
-        .to_string();
+    let jsonl_ref = if retain_trace {
+        Some(
+            store
+                .root()
+                .join("provider-sessions")
+                .join(session_id)
+                .join(live_file)
+                .display()
+                .to_string(),
+        )
+    } else {
+        None
+    };
     let status = if spawn.ok {
         ProviderSessionStatus::Succeeded
     } else {
@@ -4355,8 +4387,8 @@ fn ingest_ephemeral_events(
         prompt_ref: None,
         prompt_summary: Some(format!("ephemeral {} worker: {}", spec.provider, spec.label)),
         provider_session_ref: None,
-        stdout_ref: Some(jsonl_ref.clone()),
-        jsonl_ref: Some(jsonl_ref),
+        stdout_ref: jsonl_ref.clone(),
+        jsonl_ref,
         transcript_ref: None,
         last_message_ref: None,
         exit_code: Some(if spawn.ok { 0 } else { 1 }),
@@ -4366,6 +4398,49 @@ fn ingest_ephemeral_events(
     };
     let _ = store.append_provider_session(&session);
     Ok(())
+}
+
+/// Prune the heavy turn-event trace a `--trace live` run streamed but does NOT
+/// retain (two-tier persistence). The live SSE frames already reached connected
+/// clients during execution; this removes what would otherwise SURVIVE so a past
+/// live-only run shows "trace not retained":
+///  - the per-session NDJSON directory (`provider-sessions/<session_id>/`), and
+///  - this session's rows in the shared `provider_turn_events.jsonl`.
+///
+/// Best-effort: a prune failure must not flip an otherwise-successful step.
+fn prune_live_only_trace(store: &HarnessStore, session_id: &str) {
+    // Drop the per-session NDJSON the spawn loop teed during streaming.
+    let session_dir = store.root().join("provider-sessions").join(session_id);
+    let _ = fs::remove_dir_all(&session_dir);
+
+    // Strip this session's lines from the shared turn-event log, keeping the rows
+    // of OTHER (possibly durable) sessions intact. Each line is a
+    // {"session_id": ..., "event": ...} envelope; we drop only matching ids.
+    let shared_path = store.root().join("provider_turn_events.jsonl");
+    let Ok(contents) = fs::read_to_string(&shared_path) else {
+        return;
+    };
+    let mut kept = String::new();
+    for line in contents.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let drop_line = serde_json::from_str::<serde_json::Value>(trimmed)
+            .ok()
+            .and_then(|value| {
+                value
+                    .get("session_id")
+                    .and_then(|s| s.as_str())
+                    .map(|s| s == session_id)
+            })
+            .unwrap_or(false);
+        if !drop_line {
+            kept.push_str(line);
+            kept.push('\n');
+        }
+    }
+    let _ = fs::write(&shared_path, kept);
 }
 
 /// Backstop GC (cleanup layer 3): `git worktree prune` + sweep
@@ -4478,6 +4553,8 @@ fn workflow_run_value(store: &HarnessStore, args: &[String]) -> CliResult<serde_
         timeout_ms: value(args, "--timeout-ms")
             .and_then(|value| value.parse::<u64>().ok())
             .unwrap_or(3_000),
+        // Registry runs always retain their trace durably.
+        trace_retention: "durable".to_string(),
     };
 
     // The run id is minted up front so the driver can journal each step's
@@ -4523,13 +4600,31 @@ fn workflow_run_spec_value(store: &HarnessStore, args: &[String]) -> CliResult<s
     let spec: workflow::WorkflowSpec = serde_json::from_str(&raw)
         .map_err(|error| CliError::Usage(format!("invalid workflow spec {path}: {error}")))?;
 
+    // Retention policy for the heavy per-node turn-event trace. `durable`
+    // (default) persists the trace; `live` streams it over SSE during execution
+    // but does not retain it. Validated up front so a typo fails fast.
+    let trace_retention = value(args, "--trace").unwrap_or_else(|| "durable".to_string());
+    if trace_retention != "durable" && trace_retention != "live" {
+        return Err(CliError::Usage(format!(
+            "--trace must be 'durable' or 'live', got '{trace_retention}'"
+        )));
+    }
+
     let options = WorkflowDeliveryOptions {
         dry_run: has_flag(args, "--dry-run"),
         start_runtime: has_flag(args, "--start-runtime"),
         timeout_ms: value(args, "--timeout-ms")
             .and_then(|value| value.parse::<u64>().ok())
             .unwrap_or(3_000),
+        trace_retention: trace_retention.clone(),
     };
+
+    // Who initiated the run: an explicit `--initiated-by <id>`, else the
+    // ambient agent member id (when an agent shells out), else "operator".
+    let initiated_by = value(args, "--initiated-by")
+        .or_else(|| std::env::var("HARNESS_AGENT_MEMBER_ID").ok())
+        .filter(|id| !id.is_empty())
+        .unwrap_or_else(|| "operator".to_string());
 
     // Mint the run id up front so the real driver can journal each step's
     // `running` row as it starts (live SSE progress), mirroring `workflow run`.
@@ -4547,6 +4642,11 @@ fn workflow_run_spec_value(store: &HarnessStore, args: &[String]) -> CliResult<s
         args: spec.args.clone(),
         agents_spawned: 0,
         final_output: None,
+        // Always-persisted durable audit record: who ran it + the raw validated
+        // spec shape, plus the retention policy governing the heavy trace.
+        initiated_by: Some(initiated_by),
+        spec: Some(serde_json::to_value(&spec)?),
+        trace_retention,
     };
     store.append_workflow_run(&run)?;
 
@@ -4586,6 +4686,11 @@ fn run_workflow_with_driver(
         args: None,
         agents_spawned: 0,
         final_output: None,
+        // Registry runs are operator-triggered and carry no dynamic spec; they
+        // default to durable trace retention.
+        initiated_by: Some("operator".to_string()),
+        spec: None,
+        trace_retention: "durable".to_string(),
     };
     store.append_workflow_run(&run)?;
 
