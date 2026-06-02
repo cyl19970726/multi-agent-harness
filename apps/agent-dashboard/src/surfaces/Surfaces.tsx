@@ -3590,10 +3590,19 @@ export function TurnDrillIn({
     };
     void fetchEvents();
     // Poll only while the turn is running; a terminal status stops the loop.
-    if (!running) return () => { cancelled = true; };
+    // Reset the in-flight guard on teardown: under React StrictMode the effect
+    // mounts → cleans up → remounts, and a ref left `true` from the first
+    // (cancelled) fetch would make the remount's fetch early-return forever,
+    // leaving a `defaultOpen` drawer stuck on "loading…".
+    if (!running)
+      return () => {
+        cancelled = true;
+        inFlight.current = false;
+      };
     const id = window.setInterval(() => void fetchEvents(), 1000);
     return () => {
       cancelled = true;
+      inFlight.current = false;
       window.clearInterval(id);
     };
   }, [open, apiUrl, session.id, running, useHistorical]);
