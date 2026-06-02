@@ -19,7 +19,8 @@
     "acceptance:mvp": "node scripts/acceptance-mvp.mjs",
     "acceptance:mvp:quick": "node scripts/acceptance-mvp.mjs --skip-static",
     "acceptance:mvp:live": "node scripts/acceptance-mvp.mjs --live-codex",
-    "acceptance:autonomous-team": "node scripts/acceptance-autonomous-team.mjs"
+    "acceptance:autonomous-team": "node scripts/acceptance-autonomous-team.mjs",
+    "acceptance:dynamic-workflow": "node scripts/acceptance-dynamic-workflow.mjs"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.0",

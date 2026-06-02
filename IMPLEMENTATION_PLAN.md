@@ -39,7 +39,7 @@ JSON-IR spec the CLI can interpret so an agent authors the workflow shape at run
 - IR parse + schema validation (valid + invalid fixtures via `check:schema-fixtures`).
 - `dispatch_spec` runs a serial→parallel spec; serial node completes before the barrier.
 - Failed required node fails the run but parallel siblings are still collected.
-**Status**: Not Started
+**Status**: Complete
 
 ## Stage 2: Real `pipeline()` + WP3 object fields
 **Goal**: Implement streaming `pipeline()` (per-item through stages, no barrier) and add the
@@ -53,7 +53,7 @@ run/step fields a dynamic run needs.
 - `pipeline` ordering/no-barrier test; an item failing one stage drops to null and skips its rest.
 - `args` parameterization flows into node prompts.
 - Schema fixtures updated for the new fields.
-**Status**: Not Started
+**Status**: Complete
 
 ## Stage 3: `author-workflow` skill
 **Goal**: A skill that teaches an agent to write a valid `WorkflowSpec`, invoke
@@ -68,7 +68,7 @@ shell-capable agent with no plugin.
 **Tests**:
 - `pnpm check:skills` + `check:doc-governance` green.
 - Acceptance step drives a member through authoring + running a spec end-to-end.
-**Status**: Not Started
+**Status**: Complete
 
 ## Stage 4: Dashboard per-node drill-in
 **Goal**: Click a workflow node to see that worker's streamed tool calls, live.
@@ -81,7 +81,7 @@ shell-capable agent with no plugin.
 - `pnpm check:dashboard` (tsc + vite build) green.
 - Preview verification: trigger a run, confirm nodes render live and a node drill-in shows
   ordered tool_use/tool_result.
-**Status**: Not Started
+**Status**: Complete
 
 ## Stage 5: End-to-end acceptance + docs + ADR
 **Goal**: A scripted acceptance proving the whole loop, plus design docs and a decision record.
@@ -93,4 +93,4 @@ shell-capable agent with no plugin.
 **Tests**:
 - Acceptance script passes in CI mode (mock providers) and live mode (`--live`).
 - `pnpm check` (all governance checks) green.
-**Status**: Not Started
+**Status**: Complete
