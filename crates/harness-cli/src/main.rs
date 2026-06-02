@@ -2345,6 +2345,12 @@ fn handle_sse_stream(
                             }
                         }
                     }
+                    sse::SseEventFrame::ProviderTurnEvent(value) => {
+                        if sse::write_sse_frame(&mut stream, "provider_turn_event", &value).is_err()
+                        {
+                            break; // Client disconnected
+                        }
+                    }
                 }
                 last_keepalive = std::time::Instant::now();
             }
@@ -2371,6 +2377,11 @@ fn serve_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     println!("serving harness API on http://{addr}");
 
     let sse_manager = sse::SseManager::new();
+
+    // Truncate the transient live turn-event tee (Stage B) on startup so it does
+    // not grow unbounded across serve runs; the watcher seeds at EOF and the
+    // per-session NDJSON remains the durable source for catch-up.
+    let _ = fs::write(store.root().join("provider_turn_events.jsonl"), b"");
 
     // Start the SSE watcher thread
     sse::start_sse_watcher(store, sse_manager.clone()).map_err(CliError::Io)?;
@@ -7228,31 +7239,23 @@ impl ClaudeStreamEvent {
     }
 }
 
-/// Parse NDJSON from claude -p stream-json stdout into ClaudeStreamEvent stream.
-/// Resilient: silently skip invalid lines, partial final lines, unknown events.
-fn parse_claude_stream_json(reader: impl BufRead) -> Vec<ClaudeStreamEvent> {
-    parse_claude_stream_json_to(reader, None::<&mut std::io::Sink>)
-}
-
-/// Like `parse_claude_stream_json`, but ALSO appends each parsed event's payload
-/// (one compact JSON per line) to `sink` and flushes immediately, so a poller
-/// reading the session NDJSON sees events MID-TURN (the live agent TUI). The
-/// returned Vec is identical to the non-sink path, so status inference / reply
-/// extraction / the terminal row are unaffected.
-fn parse_claude_stream_json_to<W: std::io::Write>(
+/// Parse NDJSON from `claude -p` stream-json stdout into a ClaudeStreamEvent
+/// stream, invoking `on_event` with each parsed event's payload AS IT IS READ —
+/// used to tee events MID-TURN to the session NDJSON (Stage A poll) and the
+/// shared turn-events file (Stage B live SSE) so the agent TUI streams in real
+/// time. Resilient: skips invalid/partial lines. Pass `None::<fn(&_)>` for a
+/// plain parse with no live tee; the returned Vec is identical either way, so
+/// status inference / reply extraction / the terminal row are unaffected.
+fn parse_claude_stream_json_to<F: FnMut(&serde_json::Value)>(
     reader: impl BufRead,
-    mut sink: Option<&mut W>,
+    mut on_event: Option<F>,
 ) -> Vec<ClaudeStreamEvent> {
     let mut events = Vec::new();
     for line in reader.lines() {
         let Ok(line_str) = line else { continue };
         if let Some(event) = ClaudeStreamEvent::parse_line(&line_str) {
-            if let Some(writer) = sink.as_deref_mut() {
-                if let Ok(serialized) = serde_json::to_string(&event.payload) {
-                    // Best-effort: a failed live-tee must not break delivery.
-                    let _ = writeln!(writer, "{serialized}");
-                    let _ = writer.flush();
-                }
+            if let Some(callback) = on_event.as_mut() {
+                callback(&event.payload);
             }
             events.push(event);
         }
@@ -8388,27 +8391,64 @@ fn run_claude_exec_delivery_real(
         .take()
         .ok_or_else(|| CliError::Usage("claude -p stderr not available".into()))?;
 
-    // Parse stdout as NDJSON in real time, teeing each parsed event to the
-    // session's NDJSON file (append + flush) so a poller sees the turn unfold
-    // MID-TURN (the live agent activity view). The claim row already points
-    // jsonl_ref at this same path. Best-effort: a tee failure must not break
-    // delivery, so a failed open just falls back to in-memory-only parsing.
+    // Parse stdout as NDJSON in real time, teeing each parsed event to TWO sinks
+    // so the agent TUI streams MID-TURN: (1) the durable per-session NDJSON the
+    // claim row's jsonl_ref points at (Stage A: poll + recorded turns), and (2) a
+    // shared <store_root>/provider_turn_events.jsonl of {session_id, event} lines
+    // the SSE watcher tails to push live frames (Stage B). Best-effort: a tee
+    // failure must not break delivery.
     let reader = BufReader::new(stdout);
     let _ = fs::create_dir_all(session_dir);
     let live_path = session_dir.join("claude.stream-json.ndjson");
-    let events = match fs::OpenOptions::new()
+    let delivery_id = session_dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default()
+        .to_string();
+    let shared_path = session_dir
+        .parent()
+        .and_then(|provider_sessions| provider_sessions.parent())
+        .map(|store_root| store_root.join("provider_turn_events.jsonl"));
+    let mut session_writer = fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(&live_path)
-    {
-        Ok(file) => {
-            let mut writer = BufWriter::new(file);
-            let parsed = parse_claude_stream_json_to(reader, Some(&mut writer));
-            let _ = writer.flush();
-            parsed
-        }
-        Err(_) => parse_claude_stream_json(reader),
-    };
+        .ok()
+        .map(BufWriter::new);
+    let mut shared_writer = shared_path
+        .as_ref()
+        .and_then(|path| {
+            fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .ok()
+        })
+        .map(BufWriter::new);
+    let events = parse_claude_stream_json_to(
+        reader,
+        Some(|payload: &serde_json::Value| {
+            if let Some(writer) = session_writer.as_mut() {
+                if let Ok(line) = serde_json::to_string(payload) {
+                    let _ = writeln!(writer, "{line}");
+                    let _ = writer.flush();
+                }
+            }
+            if let Some(writer) = shared_writer.as_mut() {
+                let envelope = serde_json::json!({ "session_id": delivery_id, "event": payload });
+                if let Ok(line) = serde_json::to_string(&envelope) {
+                    let _ = writeln!(writer, "{line}");
+                    let _ = writer.flush();
+                }
+            }
+        }),
+    );
+    if let Some(writer) = session_writer.as_mut() {
+        let _ = writer.flush();
+    }
+    if let Some(writer) = shared_writer.as_mut() {
+        let _ = writer.flush();
+    }
 
     // Capture stderr.
     let mut stderr_log = String::new();

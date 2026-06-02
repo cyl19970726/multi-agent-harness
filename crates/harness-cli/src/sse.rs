@@ -32,6 +32,9 @@ pub enum SseEventFrame {
     WorkflowRun(WorkflowRun),
     /// A workflow step started or completed (WP2)
     WorkflowStep(WorkflowStep),
+    /// A single raw provider turn event ({session_id, event}), teed live during
+    /// a delivery so the agent TUI streams sub-second instead of polling (Stage B).
+    ProviderTurnEvent(serde_json::Value),
 }
 
 /// Manages SSE client subscriptions and broadcasts
@@ -101,6 +104,7 @@ pub fn start_sse_watcher(store: &HarnessStore, manager: SseManager) -> std::io::
             "provider_sessions.jsonl",
             "workflow_runs.jsonl",
             "workflow_steps.jsonl",
+            "provider_turn_events.jsonl",
         ] {
             let path = store_root.join(filename);
             if let Ok(metadata) = fs::metadata(&path) {
@@ -185,6 +189,21 @@ pub fn start_sse_watcher(store: &HarnessStore, manager: SseManager) -> std::io::
                     } else {
                         None
                     }
+                },
+                &manager,
+            );
+
+            // Check provider_turn_events.jsonl (Stage B): each line is a raw
+            // {session_id, event} teed during a claude delivery; broadcast it so
+            // the agent TUI streams live without polling.
+            check_and_broadcast_appends(
+                &store_root,
+                "provider_turn_events.jsonl",
+                &mut consumed_offsets,
+                |line| {
+                    serde_json::from_str::<serde_json::Value>(line)
+                        .ok()
+                        .map(SseEventFrame::ProviderTurnEvent)
                 },
                 &manager,
             );
