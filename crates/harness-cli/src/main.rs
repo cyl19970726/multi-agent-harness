@@ -4479,15 +4479,20 @@ fn claim_message_for_delivery(
 ) -> CliResult<Option<Message>> {
     let mut provider_session =
         build_claimed_provider_session(delivery_id, member, runtime, message);
-    // Live agent view: point the RUNNING claim row at the NDJSON file the claude
-    // exec delivery appends to MID-TURN, and pre-create it so the first poll of
+    // Live agent view: point the RUNNING claim row at the NDJSON file the exec
+    // delivery appends to MID-TURN, and pre-create it so the first poll of
     // GET /v1/provider-sessions/{id}/events returns [] (not a not-found error)
     // before the first event lands. Same delivery_id → same session row as the
-    // terminal row, so the poll resolves to the growing file throughout. claude
-    // only for now (codex parity is a follow-up).
-    if member.provider == "claude" {
+    // terminal row, so the poll resolves to the growing file throughout. Both
+    // providers stream; the file name matches what each exec path writes.
+    let live_filename = match member.provider.as_str() {
+        "codex" => Some("codex.stream-json.ndjson"),
+        "claude" => Some("claude.stream-json.ndjson"),
+        _ => None,
+    };
+    if let Some(filename) = live_filename {
         let session_dir = store.root().join("provider-sessions").join(delivery_id);
-        let live_path = session_dir.join("claude.stream-json.ndjson");
+        let live_path = session_dir.join(filename);
         if fs::create_dir_all(&session_dir).is_ok() {
             let _ = fs::OpenOptions::new()
                 .create(true)
@@ -7555,11 +7560,28 @@ fn codex_event_is_terminal(event_type: &str) -> bool {
 
 /// Parse NDJSON from codex exec stdout into CodexExecEvent stream.
 /// Resilient: silently skip invalid lines, partial final lines, unknown events.
+// Thin no-tee wrapper; only the unit tests use it now (the delivery path uses
+// the callback form), so it is dead in the binary target.
+#[allow(dead_code)]
 fn parse_codex_ndjson(reader: impl BufRead) -> Vec<CodexExecEvent> {
+    parse_codex_ndjson_to(reader, None::<fn(&serde_json::Value)>)
+}
+
+/// Like `parse_codex_ndjson`, but invokes `on_event` with each parsed event's
+/// payload AS IT IS READ — used to tee codex events MID-TURN to the session
+/// NDJSON (poll) and the shared turn-events file (live SSE), mirroring the
+/// claude path. The returned Vec is identical to the no-callback path.
+fn parse_codex_ndjson_to<F: FnMut(&serde_json::Value)>(
+    reader: impl BufRead,
+    mut on_event: Option<F>,
+) -> Vec<CodexExecEvent> {
     let mut events = Vec::new();
     for line in reader.lines() {
         let Ok(line_str) = line else { continue };
         if let Some(event) = CodexExecEvent::parse_line(&line_str) {
+            if let Some(callback) = on_event.as_mut() {
+                callback(&event.payload);
+            }
             events.push(event);
         }
     }
@@ -7732,10 +7754,10 @@ fn write_temp_mcp_config(mcp: Option<&LaunchMcp>) -> CliResult<Option<String>> {
 }
 
 fn run_codex_exec_process(
-    _session_dir: &Path,
+    session_dir: &Path,
     member: &AgentMember,
     message: &Message,
-    _delivery_id: &str,
+    delivery_id: &str,
     timeout_ms: u64,
 ) -> CliResult<(bool, Vec<CodexExecEvent>, String)> {
     // Build the command: `codex exec --json <prompt>`
@@ -7822,9 +7844,57 @@ fn run_codex_exec_process(
         .take()
         .ok_or_else(|| CliError::Usage("codex exec stderr not available".into()))?;
 
-    // Parse stdout as NDJSON.
+    // Parse stdout as NDJSON in real time, teeing each parsed event to TWO sinks
+    // (mirroring the claude path) so the agent TUI streams MID-TURN: the durable
+    // per-session NDJSON the claim row's jsonl_ref points at, AND the shared
+    // <store_root>/provider_turn_events.jsonl the SSE watcher tails. Best-effort.
     let reader = BufReader::new(stdout);
-    let events = parse_codex_ndjson(reader);
+    let _ = fs::create_dir_all(session_dir);
+    let live_path = session_dir.join("codex.stream-json.ndjson");
+    let shared_path = session_dir
+        .parent()
+        .and_then(|provider_sessions| provider_sessions.parent())
+        .map(|store_root| store_root.join("provider_turn_events.jsonl"));
+    let mut session_writer = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&live_path)
+        .ok()
+        .map(BufWriter::new);
+    let mut shared_writer = shared_path
+        .as_ref()
+        .and_then(|path| {
+            fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .ok()
+        })
+        .map(BufWriter::new);
+    let events = parse_codex_ndjson_to(
+        reader,
+        Some(|payload: &serde_json::Value| {
+            if let Some(writer) = session_writer.as_mut() {
+                if let Ok(line) = serde_json::to_string(payload) {
+                    let _ = writeln!(writer, "{line}");
+                    let _ = writer.flush();
+                }
+            }
+            if let Some(writer) = shared_writer.as_mut() {
+                let envelope = serde_json::json!({ "session_id": delivery_id, "event": payload });
+                if let Ok(line) = serde_json::to_string(&envelope) {
+                    let _ = writeln!(writer, "{line}");
+                    let _ = writer.flush();
+                }
+            }
+        }),
+    );
+    if let Some(writer) = session_writer.as_mut() {
+        let _ = writer.flush();
+    }
+    if let Some(writer) = shared_writer.as_mut() {
+        let _ = writer.flush();
+    }
 
     // Capture stderr.
     let mut stderr_log = String::new();
@@ -7944,8 +8014,10 @@ fn record_exec_delivery_session(
         prompt_ref: record.member.prompt_ref.clone(),
         prompt_summary: Some(format!("deliver message {}", record.message.id)),
         provider_session_ref: None,
+        // jsonl_ref must be the events FILE (read by the events route), not the
+        // session dir; for codex that is the same NDJSON as stdout_ref.
+        jsonl_ref: record.stdout_ref.clone(),
         stdout_ref: record.stdout_ref,
-        jsonl_ref: Some(record.session_dir.display().to_string()),
         transcript_ref: record.stderr_ref,
         last_message_ref: None,
         exit_code: record.exit_code,
@@ -7977,18 +8049,11 @@ fn run_codex_exec_delivery(
     let (process_success, events, stderr_log) =
         run_codex_exec_process(&session_dir, member, message, delivery_id, timeout_ms)?;
 
-    // Write event log and stderr.
-    let stdout_ref = session_dir.join("exec.stdout.jsonl");
+    // The event NDJSON is the live file run_codex_exec_process already wrote
+    // incrementally (mid-turn streaming) — point the session row at it rather
+    // than re-serializing a redundant copy. Just persist stderr.
+    let stdout_ref = session_dir.join("codex.stream-json.ndjson");
     let stderr_ref = session_dir.join("exec.stderr.log");
-
-    // Serialize events as JSONL (parse back from the codec).
-    let mut stdout_json = Vec::new();
-    for event in &events {
-        serde_json::to_writer(&mut stdout_json, &event.payload)
-            .map_err(|error| CliError::Usage(format!("serialize NDJSON failed: {error}")))?;
-        stdout_json.push(b'\n');
-    }
-    fs::write(&stdout_ref, stdout_json)?;
     fs::write(&stderr_ref, &stderr_log)?;
 
     // Infer the delivery status from events and process exit.
