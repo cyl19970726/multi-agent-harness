@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { applyFrame, fetchSnapshot, postAction, type SseFrame } from "../api";
-import { demoSnapshot } from "../model/demoSnapshot";
 import { buildWorkbenchModel } from "../model/readModel";
 import type { DashboardSnapshot } from "../types";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -16,16 +15,25 @@ import { WorkbenchShell } from "./WorkbenchShell";
 const apiDefault = "http://127.0.0.1:8787";
 /** Canonical "snapshot came from the live harness" marker; gates write actions. */
 const liveSource = "live";
-const offlineLabel = "offline fixture";
+const offlineLabel = "not connected";
+/**
+ * Before a live `/v1/snapshot` loads (and after a failed Load live), the view
+ * holds an empty workspace — no baked-in demo agents/goals/learning artifacts.
+ * Every snapshot field is optional, so `{}` renders honest empty states across
+ * all surfaces ("No agents yet", "No visions recorded", empty Work board). The
+ * only way objects appear is creating them (live) or connecting to a harness
+ * that already has them.
+ */
+const emptySnapshot: DashboardSnapshot = {};
 /** Live-poll cadence: re-fetch /v1/snapshot roughly every 5s while polling. */
 const pollIntervalMs = 5000;
 
 export function App() {
   const [apiUrl, setApiUrl] = useState(apiDefault);
-  const [snapshot, setSnapshot] = useState<DashboardSnapshot>(demoSnapshot);
+  const [snapshot, setSnapshot] = useState<DashboardSnapshot>(emptySnapshot);
   // The snapshot's provenance, NOT its display label: `live` once a live
-  // /v1/snapshot has loaded (enabling SSE, polling and write actions), else the
-  // offline design fixture. The user-facing chip label is derived below.
+  // /v1/snapshot has loaded (enabling SSE, polling and write actions), else an
+  // empty (not-connected) workspace. The user-facing chip label is derived below.
   const [source, setSource] = useState<typeof liveSource | "offline">("offline");
   const [sourceError, setSourceError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -51,7 +59,7 @@ export function App() {
 
   const model = useMemo(() => buildWorkbenchModel(snapshot, selection), [snapshot, selection]);
 
-  // Actions are only honest against a live snapshot; the offline fixture is read-only.
+  // Actions are only honest against a live snapshot; an empty workspace is read-only.
   const isLive = source === liveSource;
 
   async function refreshLive() {
@@ -64,7 +72,7 @@ export function App() {
     } catch (error) {
       setSourceError(error instanceof Error ? error.message : String(error));
       setSource("offline");
-      setSnapshot(demoSnapshot);
+      setSnapshot(emptySnapshot);
     } finally {
       setIsLoading(false);
     }
@@ -106,7 +114,7 @@ export function App() {
   // opted in (FE-WP5) OR the SSE stream is not currently connected (automatic
   // fallback so the view keeps refreshing during an outage/reconnect). A failed
   // poll surfaces the error but keeps the last good snapshot — it does not tear
-  // the view down to the demo fixture the way a manual "Load live" failure
+  // the view down to the empty workspace the way a manual "Load live" failure
   // does. The interval is cleared on unmount, when it is no longer needed, and
   // whenever apiUrl changes so we never poll a stale endpoint.
   const shouldPoll = isLive && (pollEnabled || sseMode !== "sse");
@@ -151,7 +159,7 @@ export function App() {
 
   // Freshness chip label: which source mode is actually feeding the view.
   // "live (SSE)" while the stream is connected, "polling" once we fall back,
-  // "offline fixture" when no live source is loaded.
+  // "not connected" when no live source is loaded.
   const sourceLabel = !isLive
     ? offlineLabel
     : sseMode === "sse"

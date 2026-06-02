@@ -607,7 +607,11 @@ export function AgentsList({ model, onSelectionChange, actionsEnabled, onAction 
           <EmptyState
             icon={Bot}
             title="No agents yet"
-            description="Create an agent to start delegating work."
+            description={
+              live
+                ? "Create an agent with New agent to start delegating work."
+                : "Connect to a running harness with Load live, then create your first agent with New agent."
+            }
           />
         )}
       </DocSection>
