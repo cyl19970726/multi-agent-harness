@@ -8,6 +8,11 @@ export type SurfaceId =
   | "warnings"
   | "debug";
 
+/** Tabs on the agent detail page. "conversation" is the default. */
+export type AgentTab = "conversation" | "tasks" | "config";
+
+const agentTabs: AgentTab[] = ["conversation", "tasks", "config"];
+
 export interface SelectionState {
   surface: SurfaceId;
   goalId?: string;
@@ -19,6 +24,8 @@ export interface SelectionState {
   teamId?: string;
   /** The selected agent id (the AgentMember opened on the agent detail page). */
   memberId?: string;
+  /** Which tab is open on the agent detail page; defaults to "conversation". */
+  agentTab?: AgentTab;
   taskId?: string;
   mode?: "kanban" | "graph" | "split";
   /** Unified Work board: which object the board lays out. Defaults to "tasks". */
@@ -72,6 +79,10 @@ export function selectionFromLocation(base: SelectionState): SelectionState {
     next.memberId = agent;
     if (!surface) next.surface = "agents";
   }
+  const agentTab = params.get("agentTab");
+  if (agentTab && (agentTabs as string[]).includes(agentTab)) {
+    next.agentTab = agentTab as AgentTab;
+  }
   const team = params.get("team");
   if (team) next.teamId = team;
   const goal = params.get("goal");
@@ -98,6 +109,10 @@ export function syncSelectionToLocation(selection: SelectionState): void {
     params.set("surface", selection.surface);
   }
   if (selection.memberId) params.set("agent", selection.memberId);
+  // Only persist a non-default agent tab, and only when an agent is open.
+  if (selection.memberId && selection.agentTab && selection.agentTab !== "conversation") {
+    params.set("agentTab", selection.agentTab);
+  }
   if (selection.teamId) params.set("team", selection.teamId);
   if (selection.goalId) params.set("goal", selection.goalId);
   if (selection.taskId) params.set("task", selection.taskId);

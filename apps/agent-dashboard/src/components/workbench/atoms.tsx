@@ -1,5 +1,5 @@
 import * as React from "react";
-import type { LucideIcon } from "lucide-react";
+import { ChevronDown, ChevronRight, type LucideIcon } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 
@@ -184,6 +184,94 @@ export function DocSection({
         </div>
       )}
       {children}
+    </section>
+  );
+}
+
+/**
+ * Tiny inline-SVG bar sparkline for per-agent N-day activity. No chart deps;
+ * empty/all-zero data renders flat baseline bars so the column never looks broken.
+ */
+export function AgentSparkline({
+  data,
+  className,
+  width = 64,
+  height = 18,
+}: {
+  data: number[];
+  className?: string;
+  width?: number;
+  height?: number;
+}) {
+  const max = Math.max(1, ...data);
+  const n = Math.max(1, data.length);
+  const gap = 1.5;
+  const barW = (width - gap * (n - 1)) / n;
+  return (
+    <svg
+      width={width}
+      height={height}
+      viewBox={`0 0 ${width} ${height}`}
+      className={cn("text-status-info/70", className)}
+      aria-hidden
+    >
+      {data.map((value, index) => {
+        const h = Math.max(1, Math.round((value / max) * (height - 1)));
+        const x = index * (barW + gap);
+        return (
+          <rect
+            key={index}
+            x={x}
+            y={height - h}
+            width={barW}
+            height={h}
+            rx={0.75}
+            className={value > 0 ? "fill-current" : "fill-muted-foreground/25"}
+          />
+        );
+      })}
+    </svg>
+  );
+}
+
+/**
+ * A single-label block whose body collapses behind a chevron header. Used in
+ * the agent Config rail/tab so each named concept (Skills / Runtime / env /
+ * params / MCP) is one scannable row that opens on demand. `defaultOpen`
+ * controls the initial state; `action` rides in the header.
+ */
+export function CollapsibleBlock({
+  label,
+  defaultOpen = false,
+  action,
+  className,
+  children,
+}: {
+  label: string;
+  defaultOpen?: boolean;
+  action?: React.ReactNode;
+  className?: string;
+  children: React.ReactNode;
+}) {
+  const [open, setOpen] = React.useState(defaultOpen);
+  return (
+    <section className={cn("rounded-lg border border-border bg-card", className)}>
+      <button
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+        className="flex w-full items-center gap-2 px-3 py-2.5 text-left transition-colors hover:bg-accent/40"
+      >
+        {open ? (
+          <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" />
+        ) : (
+          <ChevronRight className="size-3.5 shrink-0 text-muted-foreground" />
+        )}
+        <span className="flex-1 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+          {label}
+        </span>
+        {action && <span className="shrink-0">{action}</span>}
+      </button>
+      {open && <div className="border-t border-border/60 px-3 py-3">{children}</div>}
     </section>
   );
 }

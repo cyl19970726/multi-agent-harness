@@ -473,7 +473,11 @@ function SurfaceSwitch({
     default:
       // The Agents area is one surface: the list, or an agent's detail page when
       // an agent is selected (?agent=<id>). Both own their layout.
-      return selection.memberId ? <AgentDetail {...shared} /> : <AgentsList {...shared} />;
+      return selection.memberId ? (
+        <AgentDetail {...shared} agentTab={selection.agentTab} />
+      ) : (
+        <AgentsList {...shared} />
+      );
   }
 }
 
