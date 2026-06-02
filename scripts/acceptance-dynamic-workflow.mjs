@@ -150,10 +150,11 @@ async function fetchWithRetry(url, attempts = 40) {
 }
 
 // Author the dynamic WorkflowSpec: a 2-provider serial -> parallel -> pipeline
-// shape. The leading codex `plan` step is serial; the two-member `audit`
-// barrier fans out across both providers; the `synthesize` pipeline streams a
-// codex stage into a claude stage. Each node carries an explicit `phase` so the
-// journaled steps assert the shape deterministically.
+// shape. The leading codex `plan` step is serial; the two-provider `audit`
+// barrier fans out across both providers (each opting into worktree isolation);
+// the `synthesize` pipeline streams a codex stage into a claude stage. Each node
+// carries an explicit `phase` so the journaled steps assert the shape
+// deterministically.
 function authorSpec() {
   const spec = {
     name: "dynamic-acceptance",
@@ -161,7 +162,7 @@ function authorSpec() {
     nodes: [
       {
         type: "agent",
-        member: "codex",
+        provider: "codex",
         phase: "plan",
         label: "planner",
         prompt: "Plan an investigation of {{topic}}.",
@@ -171,17 +172,19 @@ function authorSpec() {
         nodes: [
           {
             type: "agent",
-            member: "codex",
+            provider: "codex",
             phase: "audit",
             label: "code-audit",
             prompt: "Audit the code paths for {{topic}}.",
+            isolation: "worktree",
           },
           {
             type: "agent",
-            member: "claude",
+            provider: "claude",
             phase: "audit",
             label: "doc-audit",
             prompt: "Audit the docs and history for {{topic}}.",
+            isolation: "worktree",
           },
         ],
       },
@@ -190,14 +193,14 @@ function authorSpec() {
         stages: [
           {
             type: "agent",
-            member: "codex",
+            provider: "codex",
             phase: "synthesize",
             label: "collate",
             prompt: "Collate the audit findings for {{topic}}.",
           },
           {
             type: "agent",
-            member: "claude",
+            provider: "claude",
             phase: "synthesize",
             label: "report",
             prompt: "Write the final report for {{topic}}.",
@@ -213,54 +216,19 @@ function authorSpec() {
   return { specPath, spec };
 }
 
-function setupMembers() {
+// Initialize the store. Agent nodes reference a PROVIDER directly and spin up a
+// fresh ephemeral worker per node — there are NO pre-created members to bind, so
+// setup is just `harness init`.
+function setupStore() {
   run(harness, ["init"], { env: { HARNESS_ROOT: store } });
-  // The two providers the dynamic spec references by NAME (codex / claude),
-  // resolved to these harness member ids through the run-spec flags.
-  const codex = harnessJson([
-    "agent",
-    "create",
-    "--id",
-    "wf-codex",
-    "--name",
-    "Workflow Codex",
-    "--role",
-    "worker",
-    "--provider",
-    "codex",
-  ]);
-  const claude = harnessJson([
-    "agent",
-    "create",
-    "--id",
-    "wf-claude",
-    "--name",
-    "Workflow Claude",
-    "--role",
-    "worker",
-    "--provider",
-    "claude",
-  ]);
-  assert(codex.provider === "codex", "codex member must use the codex provider");
-  assert(
-    claude.provider === "claude",
-    "claude member must use the claude provider",
-  );
-  return { codex_id: codex.id, claude_id: claude.id };
+  return { store };
 }
 
-// Run the authored spec through the CLI contract. Mock/CI mode uses --dry-run
-// (mock delivery, no tokens); --live spends real provider tokens.
+// Run the authored spec through the CLI contract. The spec's `provider` values
+// drive delivery, so there is no member binding to pass. Mock/CI mode uses
+// --dry-run (mock delivery, no tokens); --live spends real provider tokens.
 function runSpec(specPath) {
-  const runArgs = [
-    "workflow",
-    "run-spec",
-    specPath,
-    "--codex",
-    "wf-codex",
-    "--claude",
-    "wf-claude",
-  ];
+  const runArgs = ["workflow", "run-spec", specPath];
   if (!live) runArgs.push("--dry-run");
   const result = harnessJson(runArgs);
   assert(result.run, "run-spec must return a run");
@@ -309,10 +277,18 @@ function assertShape(result) {
     `labels: ${labels.join(",")}`,
   );
 
-  // Both providers participated (members are journaled in each step's result).
-  const members = new Set(steps.map((step) => step.result?.member_id));
-  assert(members.has("wf-codex"), "codex member missing from steps");
-  assert(members.has("wf-claude"), "claude member missing from steps");
+  // Both providers participated (the provider is journaled in each step's result).
+  const providers = new Set(steps.map((step) => step.result?.provider));
+  assert(providers.has("codex"), "codex provider missing from steps");
+  assert(providers.has("claude"), "claude provider missing from steps");
+  // The worktree-isolation opt-in survives onto the audit steps' result.
+  const isolated = steps.filter(
+    (step) => step.result?.isolation === "worktree",
+  );
+  assert(
+    isolated.length === 2,
+    `expected 2 worktree-isolated steps, got ${isolated.length}`,
+  );
 
   assert(Array.isArray(run.final_output), "final_output must be present");
   assert(
@@ -376,7 +352,6 @@ if (!existsSync(harness)) {
   run("cargo", ["build", "-p", "harness-cli"]);
 }
 
-let members;
 let authored;
 let runResult;
 let shape;
@@ -386,9 +361,8 @@ stage("s0", "harness binary is built", () => {
   assert(existsSync(harness), `harness binary not found: ${harness}`);
   return { harness, mode: live ? "live" : "mock" };
 });
-stage("s1", "two-provider members exist", () => {
-  members = setupMembers();
-  return members;
+stage("s1", "store initialized (ephemeral providers, no members)", () => {
+  return setupStore();
 });
 stage("s2", "agent authors a dynamic WorkflowSpec (JSON-IR)", () => {
   authored = authorSpec();

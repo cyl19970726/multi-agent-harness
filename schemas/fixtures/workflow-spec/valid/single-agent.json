@@ -3,7 +3,7 @@
   "nodes": [
     {
       "type": "agent",
-      "member": "codex",
+      "provider": "codex",
       "prompt": "Summarize the open questions in this repo."
     }
   ]

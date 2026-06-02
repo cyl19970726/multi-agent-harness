@@ -23,24 +23,37 @@ use std::sync::{Condvar, Mutex};
 use harness_core::{WorkflowRunStatus, WorkflowStepStatus};
 use serde::{Deserialize, Serialize};
 
-/// One member's role in a workflow run. The workflow names MEMBERS, not
-/// providers (provider-neutrality is enforced by the delivery seam, not here).
-#[derive(Debug, Clone)]
-pub struct WorkflowMembers {
-    /// Member that plays the "codex" auditor role in the built-in scenario.
-    pub codex_member_id: String,
-    /// Member that plays the "claude" synthesist role in the built-in scenario.
-    pub claude_member_id: String,
-}
+/// The set of providers a workflow node may target. Each `agent()` node spins up
+/// a NEW one-shot ephemeral provider process (codex exec / claude -p); the node
+/// references a PROVIDER, not a pre-existing member. The runtime stays
+/// provider-agnostic — it only carries the validated provider string through to
+/// the injected delivery driver.
+pub const SUPPORTED_PROVIDERS: [&str; 2] = ["codex", "claude"];
 
-/// A single agent step to run: deliver `prompt` to `member_id`, grouped under
-/// `phase` and named by `label`. This is the workflow-layer description of one
-/// `agent()` call; the runtime turns it into a [`StepResult`].
+/// The only supported per-node isolation mode. An `agent()` node may opt in to
+/// `isolation: "worktree"` (exactly like Claude Code's Workflow `isolation:
+/// 'worktree'`): that node runs in its own throwaway git worktree whose diff is
+/// the node's evidence. The worktree is auto-removed if unchanged and is NOT
+/// auto-merged back. Absent isolation, the node edits the shared repo cwd.
+pub const ISOLATION_WORKTREE: &str = "worktree";
+
+/// A single agent step to run: spin up an ephemeral `provider` worker, deliver
+/// `prompt`, grouped under `phase` and named by `label`. This is the
+/// workflow-layer description of one `agent()` call; the runtime turns it into a
+/// [`StepResult`]. `model` overrides the provider's default model; `isolation`
+/// opts the node into a throwaway git worktree.
 #[derive(Debug, Clone)]
 pub struct AgentStepSpec {
     pub phase: String,
     pub label: String,
-    pub member_id: String,
+    /// The provider that runs this step ("codex" | "claude"). Each step spins up
+    /// a fresh ephemeral worker; the runtime passes this through to the driver.
+    pub provider: String,
+    /// Optional model override; `None` uses the provider default.
+    pub model: Option<String>,
+    /// Optional per-node isolation. `Some("worktree")` runs the step in its own
+    /// throwaway git worktree; `None` edits the shared repo cwd.
+    pub isolation: Option<String>,
     pub prompt: String,
 }
 
@@ -50,7 +63,11 @@ pub struct AgentStepSpec {
 pub struct StepResult {
     pub phase: String,
     pub label: String,
-    pub member_id: String,
+    /// The provider that ran this step ("codex" | "claude").
+    pub provider: String,
+    /// The per-node isolation mode this step ran under, if any
+    /// (`Some("worktree")`). Carried onto the journaled step as evidence.
+    pub isolation: Option<String>,
     /// Whether the underlying provider delivery succeeded.
     pub ok: bool,
     /// The `ProviderSession` id this step produced, if a delivery was attempted.
@@ -194,7 +211,8 @@ pub fn parallel(driver: &AgentStepFn<'_>, specs: &[AgentStepSpec]) -> Vec<StepRe
                     let result = StepResult {
                         phase: spec.phase.clone(),
                         label: spec.label.clone(),
-                        member_id: spec.member_id.clone(),
+                        provider: spec.provider.clone(),
+                        isolation: spec.isolation.clone(),
                         ok: false,
                         provider_session_id: None,
                         output_summary: "workflow lifetime agent cap (1000) exceeded".to_string(),
@@ -212,7 +230,8 @@ pub fn parallel(driver: &AgentStepFn<'_>, specs: &[AgentStepSpec]) -> Vec<StepRe
                 .unwrap_or_else(|_| StepResult {
                     phase: spec.phase.clone(),
                     label: spec.label.clone(),
-                    member_id: spec.member_id.clone(),
+                    provider: spec.provider.clone(),
+                    isolation: spec.isolation.clone(),
                     ok: false,
                     provider_session_id: None,
                     output_summary: "agent step panicked".to_string(),
@@ -339,7 +358,8 @@ fn dropped_result(item: &AgentStepSpec) -> StepResult {
     StepResult {
         phase: item.phase.clone(),
         label: item.label.clone(),
-        member_id: item.member_id.clone(),
+        provider: item.provider.clone(),
+        isolation: item.isolation.clone(),
         ok: false,
         provider_session_id: None,
         output_summary: "pipeline item dropped before producing a result".to_string(),
@@ -352,7 +372,8 @@ fn capped_result(item: &AgentStepSpec) -> StepResult {
     StepResult {
         phase: item.phase.clone(),
         label: item.label.clone(),
-        member_id: item.member_id.clone(),
+        provider: item.provider.clone(),
+        isolation: item.isolation.clone(),
         ok: false,
         provider_session_id: None,
         output_summary: "workflow lifetime agent cap (1000) exceeded".to_string(),
@@ -365,7 +386,8 @@ fn panicked_result(item: &AgentStepSpec) -> StepResult {
     StepResult {
         phase: item.phase.clone(),
         label: item.label.clone(),
-        member_id: item.member_id.clone(),
+        provider: item.provider.clone(),
+        isolation: item.isolation.clone(),
         ok: false,
         provider_session_id: None,
         output_summary: "pipeline stage panicked".to_string(),
@@ -395,26 +417,28 @@ pub struct WorkflowOutcome {
 /// control-flow forms:
 ///   1. SERIAL  — a single codex delivery (`scope` phase), awaited before the
 ///      parallel fan-out, so its result is available to the next phase.
-///   2. PARALLEL — a barrier fan-out of two deliveries (`audit` phase): one to
-///      the codex member and one to the claude member, joined before returning.
+///   2. PARALLEL — a barrier fan-out of two deliveries (`audit` phase): one
+///      ephemeral codex worker and one ephemeral claude worker, joined before
+///      returning.
+///
+/// Each step spins up a NEW one-shot ephemeral provider worker (codex exec /
+/// claude -p); the workflow references a PROVIDER, not a pre-existing member.
 ///
 /// The run is "completed" iff the serial (required) step succeeds; a failed
 /// required step transitions the run to "failed" but the parallel steps are
 /// still collected (nulls tolerated).
-pub fn investigate(
-    driver: &AgentStepFn<'_>,
-    members: &WorkflowMembers,
-    topic: &str,
-) -> WorkflowOutcome {
+pub fn investigate(driver: &AgentStepFn<'_>, topic: &str) -> WorkflowOutcome {
     let mut steps = Vec::new();
 
-    // --- SERIAL phase: scope the investigation with the codex member. ---
+    // --- SERIAL phase: scope the investigation with an ephemeral codex worker. ---
     let scope_step = run_agent_step(
         driver,
         &AgentStepSpec {
             phase: "scope".to_string(),
             label: "scope-question".to_string(),
-            member_id: members.codex_member_id.clone(),
+            provider: "codex".to_string(),
+            model: None,
+            isolation: None,
             prompt: format!("Scope the investigation of: {topic}. List the modules to audit."),
         },
     );
@@ -426,13 +450,17 @@ pub fn investigate(
         AgentStepSpec {
             phase: "audit".to_string(),
             label: "audit-codex".to_string(),
-            member_id: members.codex_member_id.clone(),
+            provider: "codex".to_string(),
+            model: None,
+            isolation: None,
             prompt: format!("Audit the code paths involved in: {topic}."),
         },
         AgentStepSpec {
             phase: "audit".to_string(),
             label: "audit-claude".to_string(),
-            member_id: members.claude_member_id.clone(),
+            provider: "claude".to_string(),
+            model: None,
+            isolation: None,
             prompt: format!("Audit the recent diffs related to: {topic}."),
         },
     ];
@@ -463,8 +491,10 @@ pub fn investigate(
     }
 }
 
-/// Signature of a registered built-in workflow body (§3 option C).
-pub type WorkflowFn = fn(&AgentStepFn<'_>, &WorkflowMembers, &str) -> WorkflowOutcome;
+/// Signature of a registered built-in workflow body (§3 option C). The body is
+/// provider-agnostic: it spins up ephemeral workers via the injected driver and
+/// references providers directly, so it no longer needs a member binding.
+pub type WorkflowFn = fn(&AgentStepFn<'_>, &str) -> WorkflowOutcome;
 
 /// A registered workflow's metadata + dispatch fn.
 #[derive(Clone)]
@@ -511,9 +541,11 @@ impl WorkflowRegistry {
 //
 // An agent (Codex / Claude / other) writes a `WorkflowSpec` JSON document and
 // the CLI feeds it through `dispatch_spec`, which walks the node tree applying
-// phase / barrier / stream semantics. Member references are NAMES; the caller
-// resolves them to harness member ids via a passed map so the runtime stays
-// provider-agnostic.
+// phase / barrier / stream semantics. Each `agent()` node references a PROVIDER
+// ("codex" | "claude") directly: the runtime spins up a NEW one-shot ephemeral
+// worker per node and passes the validated provider (+ optional model /
+// isolation) straight through to the injected delivery driver. There is no
+// member-name resolution step — the runtime stays provider-agnostic.
 // ===========================================================================
 
 /// A runtime-authored workflow specification (the JSON-IR root).
@@ -534,18 +566,29 @@ pub struct WorkflowSpec {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum WorkflowNode {
-    /// A single `agent()` delivery: send `prompt` to `member`.
+    /// A single `agent()` delivery: spin up a NEW one-shot ephemeral `provider`
+    /// worker and deliver `prompt`. The worker CAN EDIT files (full sandbox) and
+    /// by default shares the repo cwd with sibling nodes; opt into
+    /// `isolation: "worktree"` to run it in a throwaway git worktree instead.
     Agent {
-        /// Member NAME (resolved to a harness member id by the caller).
-        member: String,
-        /// The prompt delivered to the member.
+        /// The provider that runs this node ("codex" | "claude"). Validated
+        /// against [`SUPPORTED_PROVIDERS`] before any delivery.
+        provider: String,
+        /// The prompt delivered to the ephemeral worker.
         prompt: String,
-        /// Optional phase grouping (defaults to the label / "agent").
+        /// Optional phase grouping (defaults to the enclosing phase / spec name).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         phase: Option<String>,
-        /// Optional step label (defaults to the member name).
+        /// Optional step label (defaults to the provider name).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         label: Option<String>,
+        /// Optional model override; absent uses the provider default.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
+        /// Optional per-node isolation. `Some("worktree")` runs the node in its
+        /// own throwaway git worktree; absent edits the shared repo cwd.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        isolation: Option<String>,
     },
     /// A named phase whose children run SERIALLY, in order.
     Phase {
@@ -560,14 +603,13 @@ pub enum WorkflowNode {
     Pipeline { stages: Vec<WorkflowNode> },
 }
 
-/// Resolve a member NAME (as written in a spec) to a harness member id.
-pub type MemberResolver<'a> = dyn Fn(&str) -> Option<String> + 'a;
-
 /// Errors the IR interpreter can raise before any delivery runs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DispatchError {
-    /// A `member` name in the spec did not resolve to a harness member id.
-    UnknownMember(String),
+    /// A `provider` in the spec is not one of [`SUPPORTED_PROVIDERS`].
+    UnknownProvider(String),
+    /// An `isolation` value in the spec is not [`ISOLATION_WORKTREE`].
+    UnknownIsolation(String),
     /// A `Parallel` / `Pipeline` block nested a non-`Agent` child, which the
     /// Stage 1 interpreter does not support (barriers are flat fan-outs).
     NonAgentInBarrier(&'static str),
@@ -576,8 +618,18 @@ pub enum DispatchError {
 impl std::fmt::Display for DispatchError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            DispatchError::UnknownMember(name) => {
-                write!(f, "unknown member in workflow spec: {name}")
+            DispatchError::UnknownProvider(provider) => {
+                write!(
+                    f,
+                    "unknown provider in workflow spec: {provider} (expected one of {:?})",
+                    SUPPORTED_PROVIDERS
+                )
+            }
+            DispatchError::UnknownIsolation(isolation) => {
+                write!(
+                    f,
+                    "unknown isolation in workflow spec: {isolation} (expected \"{ISOLATION_WORKTREE}\")"
+                )
             }
             DispatchError::NonAgentInBarrier(kind) => {
                 write!(f, "{kind} blocks may only contain agent nodes (Stage 1)")
@@ -609,25 +661,48 @@ fn interpolate_args(prompt: &str, args: Option<&serde_json::Value>) -> String {
     out
 }
 
-/// Build an [`AgentStepSpec`] from an `Agent` node, resolving its member name and
-/// interpolating any `{{key}}` placeholders in the prompt from the spec `args`.
+/// Validate a provider string against [`SUPPORTED_PROVIDERS`].
+fn validate_provider(provider: &str) -> Result<(), DispatchError> {
+    if SUPPORTED_PROVIDERS.contains(&provider) {
+        Ok(())
+    } else {
+        Err(DispatchError::UnknownProvider(provider.to_string()))
+    }
+}
+
+/// Validate an optional isolation value against [`ISOLATION_WORKTREE`].
+fn validate_isolation(isolation: &Option<String>) -> Result<(), DispatchError> {
+    match isolation.as_deref() {
+        None | Some(ISOLATION_WORKTREE) => Ok(()),
+        Some(other) => Err(DispatchError::UnknownIsolation(other.to_string())),
+    }
+}
+
+/// Build an [`AgentStepSpec`] from an `Agent` node, validating its provider /
+/// isolation and interpolating any `{{key}}` placeholders in the prompt from the
+/// spec `args`. The node carries the provider directly — there is no member
+/// resolution step.
+#[allow(clippy::too_many_arguments)]
 fn agent_spec(
-    resolver: &MemberResolver<'_>,
     args: Option<&serde_json::Value>,
     default_phase: &str,
-    member: &str,
+    provider: &str,
     prompt: &str,
     phase: &Option<String>,
     label: &Option<String>,
+    model: &Option<String>,
+    isolation: &Option<String>,
 ) -> Result<AgentStepSpec, DispatchError> {
-    let member_id =
-        resolver(member).ok_or_else(|| DispatchError::UnknownMember(member.to_string()))?;
-    let label = label.clone().unwrap_or_else(|| member.to_string());
+    validate_provider(provider)?;
+    validate_isolation(isolation)?;
+    let label = label.clone().unwrap_or_else(|| provider.to_string());
     let phase = phase.clone().unwrap_or_else(|| default_phase.to_string());
     Ok(AgentStepSpec {
         phase,
         label,
-        member_id,
+        provider: provider.to_string(),
+        model: model.clone(),
+        isolation: isolation.clone(),
         prompt: interpolate_args(prompt, args),
     })
 }
@@ -635,7 +710,6 @@ fn agent_spec(
 /// Collect the flat list of `Agent` specs in a barrier block (`Parallel` /
 /// `Pipeline`). Non-`Agent` children are rejected — Stage 1 barriers are flat.
 fn barrier_specs(
-    resolver: &MemberResolver<'_>,
     args: Option<&serde_json::Value>,
     default_phase: &str,
     nodes: &[WorkflowNode],
@@ -645,19 +719,22 @@ fn barrier_specs(
     for node in nodes {
         match node {
             WorkflowNode::Agent {
-                member,
+                provider,
                 prompt,
                 phase,
                 label,
+                model,
+                isolation,
             } => {
                 specs.push(agent_spec(
-                    resolver,
                     args,
                     default_phase,
-                    member,
+                    provider,
                     prompt,
                     phase,
                     label,
+                    model,
+                    isolation,
                 )?);
             }
             _ => return Err(DispatchError::NonAgentInBarrier(kind)),
@@ -670,7 +747,6 @@ fn barrier_specs(
 /// is the spec's parameterization, flowed into every node prompt.
 fn walk_node(
     driver: &AgentStepFn<'_>,
-    resolver: &MemberResolver<'_>,
     args: Option<&serde_json::Value>,
     default_phase: &str,
     node: &WorkflowNode,
@@ -678,32 +754,43 @@ fn walk_node(
 ) -> Result<(), DispatchError> {
     match node {
         WorkflowNode::Agent {
-            member,
+            provider,
             prompt,
             phase,
             label,
+            model,
+            isolation,
         } => {
-            let spec = agent_spec(resolver, args, default_phase, member, prompt, phase, label)?;
+            let spec = agent_spec(
+                args,
+                default_phase,
+                provider,
+                prompt,
+                phase,
+                label,
+                model,
+                isolation,
+            )?;
             steps.push(run_agent_step(driver, &spec));
         }
         WorkflowNode::Phase { name, nodes } => {
             // Serial: each child fully completes before the next begins.
             for child in nodes {
-                walk_node(driver, resolver, args, name, child, steps)?;
+                walk_node(driver, args, name, child, steps)?;
             }
         }
         WorkflowNode::Parallel { nodes } => {
-            let specs = barrier_specs(resolver, args, default_phase, nodes, "parallel")?;
+            let specs = barrier_specs(args, default_phase, nodes, "parallel")?;
             steps.extend(parallel(driver, &specs));
         }
         WorkflowNode::Pipeline { stages } => {
             // A streaming chain: the item flows through each stage agent in order
             // with NO barrier; a stage that FAILS drops the item and skips its
-            // remaining stages (the CC-spec failure-drop). We resolve each stage's
-            // member up front (so an unknown member is a pre-flight error, like
-            // the barrier path), then deliver each stage in turn, halting at the
-            // first failure. Every stage that ran is journaled as a step.
-            let stage_specs = barrier_specs(resolver, args, default_phase, stages, "pipeline")?;
+            // remaining stages (the CC-spec failure-drop). We validate each
+            // stage's provider up front (so an unknown provider is a pre-flight
+            // error, like the barrier path), then deliver each stage in turn,
+            // halting at the first failure. Every stage that ran is journaled.
+            let stage_specs = barrier_specs(args, default_phase, stages, "pipeline")?;
             for spec in &stage_specs {
                 let result = run_agent_step(driver, spec);
                 let ok = result.ok;
@@ -725,7 +812,8 @@ pub fn step_result_json(result: &StepResult) -> serde_json::Value {
     serde_json::json!({
         "phase": result.phase,
         "label": result.label,
-        "member_id": result.member_id,
+        "provider": result.provider,
+        "isolation": result.isolation,
         "ok": result.ok,
         "provider_session_id": result.provider_session_id,
         "output_summary": result.output_summary,
@@ -746,7 +834,6 @@ pub fn step_result_json(result: &StepResult) -> serde_json::Value {
 /// vacuously.
 pub fn dispatch_spec(
     spec: &WorkflowSpec,
-    resolver: &MemberResolver<'_>,
     driver: &AgentStepFn<'_>,
 ) -> Result<WorkflowOutcome, DispatchError> {
     // Snapshot the scheduler's lifetime spawn counter so we can attribute the
@@ -756,7 +843,7 @@ pub fn dispatch_spec(
     let mut steps = Vec::new();
     let args = spec.args.as_ref();
     for node in &spec.nodes {
-        walk_node(driver, resolver, args, &spec.name, node, &mut steps)?;
+        walk_node(driver, args, &spec.name, node, &mut steps)?;
     }
 
     let agents_spawned = scheduler_agents_spawned().saturating_sub(spawned_before);
@@ -798,13 +885,6 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
 
-    fn members() -> WorkflowMembers {
-        WorkflowMembers {
-            codex_member_id: "member-codex".to_string(),
-            claude_member_id: "member-claude".to_string(),
-        }
-    }
-
     /// A mock driver that always succeeds and records the order of invocation.
     fn recording_driver<'a>(
         order: &'a Mutex<Vec<String>>,
@@ -814,7 +894,8 @@ mod tests {
             StepResult {
                 phase: spec.phase.clone(),
                 label: spec.label.clone(),
-                member_id: spec.member_id.clone(),
+                provider: spec.provider.clone(),
+                isolation: spec.isolation.clone(),
                 ok: true,
                 provider_session_id: Some(format!("session-{}", spec.label)),
                 output_summary: format!("ok: {}", spec.prompt),
@@ -829,7 +910,7 @@ mod tests {
         let order = Mutex::new(Vec::new());
         let outcome = {
             let driver = recording_driver(&order);
-            investigate(&driver, &members(), "failure X")
+            investigate(&driver, "failure X")
         };
         let order = order.into_inner().unwrap();
         assert_eq!(order[0], "scope-question");
@@ -848,7 +929,8 @@ mod tests {
             StepResult {
                 phase: spec.phase.clone(),
                 label: spec.label.clone(),
-                member_id: spec.member_id.clone(),
+                provider: spec.provider.clone(),
+                isolation: spec.isolation.clone(),
                 ok: true,
                 provider_session_id: Some("s".to_string()),
                 output_summary: "ok".to_string(),
@@ -860,7 +942,9 @@ mod tests {
             .map(|i| AgentStepSpec {
                 phase: "p".to_string(),
                 label: format!("l{i}"),
-                member_id: "m".to_string(),
+                provider: "codex".to_string(),
+                model: None,
+                isolation: None,
                 prompt: format!("prompt {i}"),
             })
             .collect();
@@ -880,7 +964,8 @@ mod tests {
                 return StepResult {
                     phase: spec.phase.clone(),
                     label: spec.label.clone(),
-                    member_id: spec.member_id.clone(),
+                    provider: spec.provider.clone(),
+                    isolation: spec.isolation.clone(),
                     ok: false,
                     provider_session_id: None,
                     output_summary: "delivery failed".to_string(),
@@ -894,7 +979,8 @@ mod tests {
             StepResult {
                 phase: spec.phase.clone(),
                 label: spec.label.clone(),
-                member_id: spec.member_id.clone(),
+                provider: spec.provider.clone(),
+                isolation: spec.isolation.clone(),
                 ok: true,
                 provider_session_id: Some("s".to_string()),
                 output_summary: "ok".to_string(),
@@ -906,7 +992,9 @@ mod tests {
             .map(|i| AgentStepSpec {
                 phase: "p".to_string(),
                 label: format!("l{i}"),
-                member_id: "m".to_string(),
+                provider: "codex".to_string(),
+                model: None,
+                isolation: None,
                 prompt: "x".to_string(),
             })
             .collect();
@@ -926,7 +1014,8 @@ mod tests {
             StepResult {
                 phase: spec.phase.clone(),
                 label: spec.label.clone(),
-                member_id: spec.member_id.clone(),
+                provider: spec.provider.clone(),
+                isolation: spec.isolation.clone(),
                 ok,
                 provider_session_id: if ok { Some("s".to_string()) } else { None },
                 output_summary: if ok {
@@ -938,7 +1027,7 @@ mod tests {
                 started_at: None,
             }
         };
-        let outcome = investigate(&driver, &members(), "failure Y");
+        let outcome = investigate(&driver, "failure Y");
         assert_eq!(outcome.status, WorkflowRunStatus::Failed);
         assert_eq!(outcome.steps.len(), 3);
         assert!(!outcome.steps[0].ok);
@@ -953,7 +1042,7 @@ mod tests {
         let def = registry.get("investigate").expect("investigate registered");
         let order = Mutex::new(Vec::new());
         let driver = recording_driver(&order);
-        let outcome = (def.run)(&driver, &members(), "failure Z");
+        let outcome = (def.run)(&driver, "failure Z");
         assert_eq!(outcome.status, WorkflowRunStatus::Completed);
         assert_eq!(outcome.steps.len(), 3);
         assert!(registry.get("does-not-exist").is_none());
@@ -968,7 +1057,9 @@ mod tests {
             .map(|i| AgentStepSpec {
                 phase: "p".to_string(),
                 label: format!("l{i}"),
-                member_id: "m".to_string(),
+                provider: "codex".to_string(),
+                model: None,
+                isolation: None,
                 prompt: format!("prompt {i}"),
             })
             .collect();
@@ -981,18 +1072,6 @@ mod tests {
 
     // ----- JSON-IR + dispatch_spec tests -----
 
-    /// Resolver that maps spec member NAMES to harness member ids.
-    fn name_resolver(map: &BTreeMap<String, String>) -> impl Fn(&str) -> Option<String> + '_ {
-        move |name: &str| map.get(name).cloned()
-    }
-
-    fn sample_map() -> BTreeMap<String, String> {
-        let mut map = BTreeMap::new();
-        map.insert("auditor".to_string(), "member-codex".to_string());
-        map.insert("synthesist".to_string(), "member-claude".to_string());
-        map
-    }
-
     #[test]
     fn workflow_spec_round_trips_json() {
         let json = r#"{
@@ -1000,11 +1079,11 @@ mod tests {
           "args": { "topic": "x" },
           "nodes": [
             { "type": "phase", "name": "scope", "nodes": [
-              { "type": "agent", "member": "auditor", "prompt": "scope it" }
+              { "type": "agent", "provider": "codex", "prompt": "scope it" }
             ]},
             { "type": "parallel", "nodes": [
-              { "type": "agent", "member": "auditor", "prompt": "audit code" },
-              { "type": "agent", "member": "synthesist", "prompt": "audit diffs" }
+              { "type": "agent", "provider": "codex", "prompt": "audit code", "isolation": "worktree" },
+              { "type": "agent", "provider": "claude", "prompt": "audit diffs", "model": "opus" }
             ]}
           ]
         }"#;
@@ -1019,7 +1098,6 @@ mod tests {
     #[test]
     fn dispatch_spec_runs_serial_then_parallel_with_barrier() {
         let order = Mutex::new(Vec::new());
-        let map = sample_map();
         let spec = WorkflowSpec {
             name: "demo".to_string(),
             args: None,
@@ -1027,25 +1105,31 @@ mod tests {
                 WorkflowNode::Phase {
                     name: "scope".to_string(),
                     nodes: vec![WorkflowNode::Agent {
-                        member: "auditor".to_string(),
+                        provider: "codex".to_string(),
                         prompt: "scope it".to_string(),
                         phase: None,
                         label: Some("scope-question".to_string()),
+                        model: None,
+                        isolation: None,
                     }],
                 },
                 WorkflowNode::Parallel {
                     nodes: vec![
                         WorkflowNode::Agent {
-                            member: "auditor".to_string(),
+                            provider: "codex".to_string(),
                             prompt: "audit code".to_string(),
                             phase: Some("audit".to_string()),
                             label: Some("audit-codex".to_string()),
+                            model: None,
+                            isolation: None,
                         },
                         WorkflowNode::Agent {
-                            member: "synthesist".to_string(),
+                            provider: "claude".to_string(),
                             prompt: "audit diffs".to_string(),
                             phase: Some("audit".to_string()),
                             label: Some("audit-claude".to_string()),
+                            model: None,
+                            isolation: None,
                         },
                     ],
                 },
@@ -1053,8 +1137,7 @@ mod tests {
         };
         let outcome = {
             let driver = recording_driver(&order);
-            let resolver = name_resolver(&map);
-            dispatch_spec(&spec, &resolver, &driver).expect("dispatch ok")
+            dispatch_spec(&spec, &driver).expect("dispatch ok")
         };
         let order = order.into_inner().unwrap();
         // Serial scope node completes BEFORE the barrier fans out.
@@ -1063,19 +1146,19 @@ mod tests {
         assert!(order.contains(&"audit-claude".to_string()));
         assert_eq!(outcome.steps.len(), 3);
         assert_eq!(outcome.status, WorkflowRunStatus::Completed);
-        // The barrier resolved both members to the right harness ids.
-        assert_eq!(outcome.steps[0].member_id, "member-codex");
+        // The node carries its provider straight onto the step result.
+        assert_eq!(outcome.steps[0].provider, "codex");
     }
 
     #[test]
     fn dispatch_spec_failed_node_keeps_parallel_siblings() {
-        let map = sample_map();
         let driver = |spec: &AgentStepSpec| {
             let ok = spec.label != "audit-codex";
             StepResult {
                 phase: spec.phase.clone(),
                 label: spec.label.clone(),
-                member_id: spec.member_id.clone(),
+                provider: spec.provider.clone(),
+                isolation: spec.isolation.clone(),
                 ok,
                 provider_session_id: if ok { Some("s".to_string()) } else { None },
                 output_summary: "x".to_string(),
@@ -1089,22 +1172,25 @@ mod tests {
             nodes: vec![WorkflowNode::Parallel {
                 nodes: vec![
                     WorkflowNode::Agent {
-                        member: "auditor".to_string(),
+                        provider: "codex".to_string(),
                         prompt: "audit code".to_string(),
                         phase: Some("audit".to_string()),
                         label: Some("audit-codex".to_string()),
+                        model: None,
+                        isolation: None,
                     },
                     WorkflowNode::Agent {
-                        member: "synthesist".to_string(),
+                        provider: "claude".to_string(),
                         prompt: "audit diffs".to_string(),
                         phase: Some("audit".to_string()),
                         label: Some("audit-claude".to_string()),
+                        model: None,
+                        isolation: None,
                     },
                 ],
             }],
         };
-        let resolver = name_resolver(&map);
-        let outcome = dispatch_spec(&spec, &resolver, &driver).expect("dispatch ok");
+        let outcome = dispatch_spec(&spec, &driver).expect("dispatch ok");
         // Both siblings collected even though one failed.
         assert_eq!(outcome.steps.len(), 2);
         assert!(!outcome.steps[0].ok);
@@ -1114,23 +1200,87 @@ mod tests {
     }
 
     #[test]
-    fn dispatch_spec_rejects_unknown_member() {
-        let map = sample_map();
+    fn dispatch_spec_rejects_unknown_provider() {
         let order = Mutex::new(Vec::new());
         let driver = recording_driver(&order);
         let spec = WorkflowSpec {
             name: "demo".to_string(),
             args: None,
             nodes: vec![WorkflowNode::Agent {
-                member: "ghost".to_string(),
+                provider: "ghost".to_string(),
                 prompt: "hi".to_string(),
                 phase: None,
                 label: None,
+                model: None,
+                isolation: None,
             }],
         };
-        let resolver = name_resolver(&map);
-        let err = dispatch_spec(&spec, &resolver, &driver).expect_err("unknown member rejected");
-        assert_eq!(err, DispatchError::UnknownMember("ghost".to_string()));
+        let err = dispatch_spec(&spec, &driver).expect_err("unknown provider rejected");
+        assert_eq!(err, DispatchError::UnknownProvider("ghost".to_string()));
+    }
+
+    #[test]
+    fn dispatch_spec_rejects_unknown_isolation() {
+        let order = Mutex::new(Vec::new());
+        let driver = recording_driver(&order);
+        let spec = WorkflowSpec {
+            name: "demo".to_string(),
+            args: None,
+            nodes: vec![WorkflowNode::Agent {
+                provider: "codex".to_string(),
+                prompt: "hi".to_string(),
+                phase: None,
+                label: None,
+                model: None,
+                isolation: Some("sandbox".to_string()),
+            }],
+        };
+        let err = dispatch_spec(&spec, &driver).expect_err("unknown isolation rejected");
+        assert_eq!(err, DispatchError::UnknownIsolation("sandbox".to_string()));
+    }
+
+    #[test]
+    fn dispatch_spec_accepts_worktree_isolation_and_model() {
+        let order = Mutex::new(Vec::new());
+        let seen = Mutex::new(Vec::<(Option<String>, Option<String>)>::new());
+        let spec = WorkflowSpec {
+            name: "demo".to_string(),
+            args: None,
+            nodes: vec![WorkflowNode::Agent {
+                provider: "claude".to_string(),
+                prompt: "fix it".to_string(),
+                phase: None,
+                label: Some("fixer".to_string()),
+                model: Some("opus".to_string()),
+                isolation: Some("worktree".to_string()),
+            }],
+        };
+        let outcome = {
+            let driver = |spec: &AgentStepSpec| {
+                seen.lock()
+                    .unwrap()
+                    .push((spec.model.clone(), spec.isolation.clone()));
+                order.lock().unwrap().push(spec.label.clone());
+                StepResult {
+                    phase: spec.phase.clone(),
+                    label: spec.label.clone(),
+                    provider: spec.provider.clone(),
+                    isolation: spec.isolation.clone(),
+                    ok: true,
+                    provider_session_id: Some("s".to_string()),
+                    output_summary: "ok".to_string(),
+                    step_id: None,
+                    started_at: None,
+                }
+            };
+            dispatch_spec(&spec, &driver).expect("dispatch ok")
+        };
+        let seen = seen.into_inner().unwrap();
+        assert_eq!(
+            seen,
+            vec![(Some("opus".to_string()), Some("worktree".to_string()))]
+        );
+        assert_eq!(outcome.steps[0].isolation.as_deref(), Some("worktree"));
     }
 
     // ----- Streaming pipeline() tests -----
@@ -1142,7 +1292,8 @@ mod tests {
             let result = StepResult {
                 phase: spec.phase.clone(),
                 label: spec.label.clone(),
-                member_id: spec.member_id.clone(),
+                provider: spec.provider.clone(),
+                isolation: spec.isolation.clone(),
                 ok: true,
                 provider_session_id: Some(format!("{}-{}", name, spec.label)),
                 output_summary: name.to_string(),
@@ -1157,7 +1308,9 @@ mod tests {
         AgentStepSpec {
             phase: "p".to_string(),
             label: label.to_string(),
-            member_id: "m".to_string(),
+            provider: "codex".to_string(),
+            model: None,
+            isolation: None,
             prompt: "x".to_string(),
         }
     }
@@ -1206,7 +1359,8 @@ mod tests {
                 StepResult {
                     phase: spec.phase.clone(),
                     label: spec.label.clone(),
-                    member_id: spec.member_id.clone(),
+                    provider: spec.provider.clone(),
+                    isolation: spec.isolation.clone(),
                     ok: true,
                     provider_session_id: None,
                     output_summary: "s1".to_string(),
@@ -1226,7 +1380,8 @@ mod tests {
                 StepResult {
                     phase: spec.phase.clone(),
                     label: spec.label.clone(),
-                    member_id: spec.member_id.clone(),
+                    provider: spec.provider.clone(),
+                    isolation: spec.isolation.clone(),
                     ok: true,
                     provider_session_id: None,
                     output_summary: "s2".to_string(),
@@ -1257,7 +1412,8 @@ mod tests {
                 StepResult {
                     phase: spec.phase.clone(),
                     label: spec.label.clone(),
-                    member_id: spec.member_id.clone(),
+                    provider: spec.provider.clone(),
+                    isolation: spec.isolation.clone(),
                     ok: true,
                     provider_session_id: None,
                     output_summary: "s2".to_string(),
@@ -1272,7 +1428,8 @@ mod tests {
                 StepResult {
                     phase: spec.phase.clone(),
                     label: spec.label.clone(),
-                    member_id: spec.member_id.clone(),
+                    provider: spec.provider.clone(),
+                    isolation: spec.isolation.clone(),
                     ok: true,
                     provider_session_id: None,
                     output_summary: "s3".to_string(),
@@ -1329,16 +1486,17 @@ mod tests {
 
     #[test]
     fn dispatch_spec_args_flow_into_node_prompts() {
-        let map = sample_map();
         let seen = Mutex::new(Vec::<String>::new());
         let spec = WorkflowSpec {
             name: "demo".to_string(),
             args: Some(serde_json::json!({ "topic": "auth bug", "n": 3 })),
             nodes: vec![WorkflowNode::Agent {
-                member: "auditor".to_string(),
+                provider: "codex".to_string(),
                 prompt: "Audit {{topic}} ({{n}} modules)".to_string(),
                 phase: None,
                 label: None,
+                model: None,
+                isolation: None,
             }],
         };
         {
@@ -1347,7 +1505,8 @@ mod tests {
                 StepResult {
                     phase: s.phase.clone(),
                     label: s.label.clone(),
-                    member_id: s.member_id.clone(),
+                    provider: s.provider.clone(),
+                    isolation: s.isolation.clone(),
                     ok: true,
                     provider_session_id: Some("s".to_string()),
                     output_summary: "ok".to_string(),
@@ -1355,8 +1514,7 @@ mod tests {
                     started_at: None,
                 }
             };
-            let resolver = name_resolver(&map);
-            dispatch_spec(&spec, &resolver, &driver).expect("dispatch ok");
+            dispatch_spec(&spec, &driver).expect("dispatch ok");
         }
         let seen = seen.into_inner().unwrap();
         assert_eq!(seen, vec!["Audit auth bug (3 modules)".to_string()]);
@@ -1364,8 +1522,6 @@ mod tests {
 
     #[test]
     fn dispatch_spec_pipeline_streams_stages_and_drops_on_failure() {
-        let mut map = sample_map();
-        map.insert("worker".to_string(), "member-worker".to_string());
         let order = Mutex::new(Vec::<String>::new());
         // The middle stage fails, so the third stage must be skipped.
         let driver = |s: &AgentStepSpec| {
@@ -1374,7 +1530,8 @@ mod tests {
             StepResult {
                 phase: s.phase.clone(),
                 label: s.label.clone(),
-                member_id: s.member_id.clone(),
+                provider: s.provider.clone(),
+                isolation: s.isolation.clone(),
                 ok,
                 provider_session_id: if ok { Some("s".to_string()) } else { None },
                 output_summary: "x".to_string(),
@@ -1388,28 +1545,33 @@ mod tests {
             nodes: vec![WorkflowNode::Pipeline {
                 stages: vec![
                     WorkflowNode::Agent {
-                        member: "worker".to_string(),
+                        provider: "codex".to_string(),
                         prompt: "1".to_string(),
                         phase: Some("pipe".to_string()),
                         label: Some("stage-1".to_string()),
+                        model: None,
+                        isolation: None,
                     },
                     WorkflowNode::Agent {
-                        member: "worker".to_string(),
+                        provider: "codex".to_string(),
                         prompt: "2".to_string(),
                         phase: Some("pipe".to_string()),
                         label: Some("stage-2".to_string()),
+                        model: None,
+                        isolation: None,
                     },
                     WorkflowNode::Agent {
-                        member: "worker".to_string(),
+                        provider: "codex".to_string(),
                         prompt: "3".to_string(),
                         phase: Some("pipe".to_string()),
                         label: Some("stage-3".to_string()),
+                        model: None,
+                        isolation: None,
                     },
                 ],
             }],
         };
-        let resolver = name_resolver(&map);
-        let outcome = dispatch_spec(&spec, &resolver, &driver).expect("dispatch ok");
+        let outcome = dispatch_spec(&spec, &driver).expect("dispatch ok");
         let order = order.into_inner().unwrap();
         // Stage 3 is skipped because stage 2 dropped the item.
         assert_eq!(order, vec!["stage-1", "stage-2"]);

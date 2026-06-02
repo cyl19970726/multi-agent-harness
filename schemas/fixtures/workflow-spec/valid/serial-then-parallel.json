@@ -8,7 +8,7 @@
       "nodes": [
         {
           "type": "agent",
-          "member": "codex",
+          "provider": "codex",
           "prompt": "Scope the investigation. List the modules to audit.",
           "label": "scope-question"
         }
@@ -19,14 +19,14 @@
       "nodes": [
         {
           "type": "agent",
-          "member": "codex",
+          "provider": "codex",
           "prompt": "Audit the code paths involved.",
           "phase": "audit",
           "label": "audit-codex"
         },
         {
           "type": "agent",
-          "member": "claude",
+          "provider": "claude",
           "prompt": "Audit the recent diffs.",
           "phase": "audit",
           "label": "audit-claude"

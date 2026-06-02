@@ -25,7 +25,7 @@ import { Avatar } from "@/components/workbench/Avatar";
 import { Markdown } from "@/components/workbench/Markdown";
 import { workflowRunTone, workflowStepTone } from "@/components/workbench/tones";
 
-import { formatDuration, memberName, type WorkbenchModel } from "../model/readModel";
+import { formatDuration, type WorkbenchModel } from "../model/readModel";
 import {
   describeShape,
   inferWorkflowShape,
@@ -581,7 +581,11 @@ function StepCard({
   const session = step.provider_session_id
     ? sessions.find((s) => s.id === step.provider_session_id)
     : undefined;
-  const memberId = session?.agent_member_id ?? undefined;
+  // The step actor is a PROVIDER that ran in a one-shot ephemeral worker
+  // (codex/claude), carried on the structured result — not a pre-existing
+  // member. `isolation` is set when the node opted into a throwaway worktree.
+  const provider = step.result?.provider ?? undefined;
+  const isolation = step.result?.isolation ?? undefined;
   const roleHint = roleHintFromLabel(step.label);
   const isRequired = phase.kind === "serial" && phase.steps[0]?.id === step.id;
   const isToleratedFail = phase.kind === "parallel" && tone === "bad";
@@ -620,16 +624,17 @@ function StepCard({
               <Badge tone={tone}>{step.status}</Badge>
               {isRequired && <Badge tone="info">required</Badge>}
               {isToleratedFail && <Badge tone="warn">tolerated</Badge>}
+              {isolation === "worktree" && <Badge tone="info">worktree</Badge>}
             </span>
           </div>
 
-          {/* Line 2 — ran by (member resolved THROUGH the session) + timing */}
+          {/* Line 2 — provider chip (ephemeral worker) + timing */}
           <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
             <span>ran by</span>
-            {memberId ? (
+            {provider ? (
               <span className="inline-flex items-center gap-1 text-foreground">
-                <Avatar name={memberName(model.members, memberId)} tone="idle" />
-                {memberName(model.members, memberId)}
+                <Avatar name={provider} tone="idle" />
+                {provider} (ephemeral)
               </span>
             ) : (
               <span>—</span>
@@ -683,18 +688,10 @@ function StepCard({
           step={step}
           session={session}
           tone={tone}
-          memberId={memberId}
-          memberName={memberId ? memberName(model.members, memberId) : undefined}
+          provider={provider}
+          isolation={isolation}
           liveEvents={liveEvents}
           apiUrl={apiUrl}
-          onSelectMember={
-            memberId
-              ? () => {
-                  setDrawerOpen(false);
-                  onSelectionChange({ surface: "agents", memberId });
-                }
-              : undefined
-          }
           onClose={() => setDrawerOpen(false)}
         />
       )}
@@ -713,21 +710,19 @@ function StepDrawer({
   step,
   session,
   tone,
-  memberId,
-  memberName: memberDisplayName,
+  provider,
+  isolation,
   liveEvents,
   apiUrl,
-  onSelectMember,
   onClose,
 }: {
   step: WorkflowStep;
   session: ProviderSession;
   tone: StatusTone;
-  memberId?: string;
-  memberName?: string;
+  provider?: string;
+  isolation?: string | null;
   liveEvents?: Record<string, unknown>[];
   apiUrl?: string;
-  onSelectMember?: () => void;
   onClose: () => void;
 }) {
   useEffect(() => {
@@ -775,19 +770,16 @@ function StepDrawer({
             <div className="flex flex-wrap items-center gap-1.5">
               <StatusDot tone={tone} pulse={running} />
               <Badge tone={tone}>{step.status}</Badge>
+              {isolation === "worktree" && <Badge tone="info">worktree</Badge>}
               <MonoId>{session.id}</MonoId>
             </div>
             <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
               <span>ran by</span>
-              {memberId && memberDisplayName ? (
-                <button
-                  type="button"
-                  onClick={onSelectMember}
-                  className="inline-flex items-center gap-1 text-foreground transition-colors hover:text-primary"
-                >
-                  <Avatar name={memberDisplayName} tone="idle" />
-                  {memberDisplayName}
-                </button>
+              {provider ? (
+                <span className="inline-flex items-center gap-1 text-foreground">
+                  <Avatar name={provider} tone="idle" />
+                  {provider} (ephemeral)
+                </span>
               ) : (
                 <span>—</span>
               )}

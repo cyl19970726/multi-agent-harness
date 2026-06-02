@@ -3,7 +3,7 @@
   "nodes": [
     {
       "type": "loop",
-      "member": "codex",
+      "provider": "codex",
       "prompt": "do it"
     }
   ]

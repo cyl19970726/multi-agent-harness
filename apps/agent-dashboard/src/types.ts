@@ -502,9 +502,28 @@ export interface WorkflowRun {
 }
 
 /**
+ * Structured result payload carried on a {@link WorkflowStep}. Mirrors the
+ * harness-workflow `step_result_json` shape. The step's actor is a PROVIDER that
+ * ran in a NEW one-shot ephemeral worker (codex/claude), not a pre-existing
+ * member; `isolation` is set when the node opted into a throwaway git worktree.
+ */
+export interface WorkflowStepResult {
+  phase?: string;
+  label?: string;
+  /** The provider that ran this step ("codex" | "claude"). */
+  provider?: string;
+  /** Per-node isolation mode this step ran under, if any ("worktree"). */
+  isolation?: string | null;
+  ok?: boolean;
+  provider_session_id?: string | null;
+  output_summary?: string;
+}
+
+/**
  * One agent step inside a {@link WorkflowRun}. Mirrors harness-core
  * `WorkflowStep` (lib.rs:1279-1292) verbatim, snake_case. There is NO
- * `member_id`; "who ran it" resolves via `provider_session_id`.
+ * `member_id`; the step actor is a PROVIDER carried in `result.provider`, and
+ * the live turn drill-in resolves via `provider_session_id`.
  */
 export interface WorkflowStep {
   id: string;
@@ -515,7 +534,7 @@ export interface WorkflowStep {
   status: WorkflowStepStatus | string;
   output_summary?: string | null;
   /** Structured result for this step, beyond the human-facing summary. */
-  result?: unknown;
+  result?: WorkflowStepResult | null;
   started_at: string;
   ended_at?: string | null;
 }

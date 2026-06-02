@@ -13,11 +13,18 @@ plugin. The capability is a JSON spec plus one CLI command:
 write WorkflowSpec JSON  ->  harness workflow run-spec <spec.json>  ->  read the run back
 ```
 
-The runtime is provider-agnostic (`crates/harness-workflow`). The CLI resolves the
-spec's member NAMES to real harness member ids and injects the real delivery
-driver, then journals a `WorkflowRun` plus one `WorkflowStep` per agent node —
-identical to the built-in `workflow run --name` path, so the run shows up live on
-the Agent Dashboard Workflows surface.
+The runtime is provider-agnostic (`crates/harness-workflow`). Each `agent` node
+names a PROVIDER (`"codex"` or `"claude"`); the CLI spins up a NEW one-shot
+ephemeral worker for that node (it does NOT deliver to a pre-existing member) and
+journals a `WorkflowRun` plus one `WorkflowStep` per agent node — identical to the
+built-in `workflow run --name` path, so the run shows up live on the Agent
+Dashboard Workflows surface.
+
+Each ephemeral worker CAN EDIT files (full sandbox + editing tools, not
+read-only) and, by default, shares the repo cwd with every sibling node — serial
+nodes' edits compose naturally on the same tree. When two nodes mutate the tree
+in parallel and you do not want them to collide, opt one or both into
+`isolation: "worktree"` (see below).
 
 ## When To Use
 
@@ -46,24 +53,42 @@ Each node is exactly one of four kinds (the IR `WorkflowNode { Agent | Phase | P
 
 | `type` | Required fields | Behavior |
 | --- | --- | --- |
-| `agent` | `member`, `prompt` | One delivery to a member. Optional `phase` and `label` group/name the step on the dashboard. |
+| `agent` | `provider`, `prompt` | Spins up one ephemeral `provider` worker. Optional `phase`/`label` group/name the step; optional `model` overrides the provider model; optional `isolation` runs it in a throwaway worktree. |
 | `phase` | `name`, `nodes` | A named serial group; its `nodes` run in order. |
 | `parallel` | `nodes` | Its `nodes` run concurrently and join at a barrier before the next top-level node. |
 | `pipeline` | `stages` | Items stream through `stages` with overlapping windows (no full barrier between stages). |
 
 Rules that keep a spec valid:
 
-- `member` is a NAME (e.g. `"codex"`, `"claude"`), not a harness member id. You
-  bind names to ids at run time with `--codex` / `--claude` / `--member name=id`.
+- `provider` is `"codex"` or `"claude"` — the provider whose ephemeral worker
+  runs the node. There is NO member binding; the spec's provider drives delivery.
 - Every node object has exactly the fields its `type` allows; unknown fields are
   rejected (`additionalProperties: false`).
-- `prompt`, `name`, `member`, and `label` must be non-empty strings.
+- `prompt`, `name`, and `label` must be non-empty strings.
+- Optional `model` (any non-empty string) overrides the provider's default model.
+- Optional `isolation` is `"worktree"` (the only supported value).
 - Reference `args` inside a prompt with `{{key}}` (e.g. `{{area}}`).
+
+### Workspace and `isolation: "worktree"`
+
+By default every node edits the SHARED repo cwd. That is what you want for serial
+work (a scan node, then a fix node that builds on it). It is NOT safe when several
+nodes mutate the tree at the same time — the runtime does not auto-prevent
+conflicts on the shared tree.
+
+Set `"isolation": "worktree"` on a node to run it in its own harness-owned
+throwaway git worktree under `.harness/worktrees/`. That node's `git diff` becomes
+its evidence; the worktree is NOT auto-merged back and is cleaned up after the
+node finishes (auto-removed if unchanged). Use it as the escape hatch whenever a
+`parallel` block has two or more nodes that EDIT files, so they cannot stomp each
+other.
 
 ## Worked Example: scan, then parallel fix
 
-A serial scan node whose result the two parallel fix nodes act on. The runnable
-copy is [`examples/scan-then-parallel-fix.json`](examples/scan-then-parallel-fix.json):
+A serial scan node (shared cwd) whose result the two parallel fix nodes act on.
+Because the two fix nodes EDIT files in parallel, each opts into
+`isolation: "worktree"` so they cannot collide. The runnable copy is
+[`examples/scan-then-parallel-fix.json`](examples/scan-then-parallel-fix.json):
 
 ```json
 {
@@ -76,7 +101,7 @@ copy is [`examples/scan-then-parallel-fix.json`](examples/scan-then-parallel-fix
       "nodes": [
         {
           "type": "agent",
-          "member": "codex",
+          "provider": "codex",
           "prompt": "Scan {{area}} for defects. Return a numbered list of the distinct problems you find, each with the file path and a one-line description.",
           "label": "scan"
         }
@@ -87,17 +112,19 @@ copy is [`examples/scan-then-parallel-fix.json`](examples/scan-then-parallel-fix
       "nodes": [
         {
           "type": "agent",
-          "member": "codex",
+          "provider": "codex",
           "prompt": "Fix the first defect reported by the scan in {{area}}. Make the minimal change and explain it.",
           "phase": "fix",
-          "label": "fix-codex"
+          "label": "fix-codex",
+          "isolation": "worktree"
         },
         {
           "type": "agent",
-          "member": "claude",
+          "provider": "claude",
           "prompt": "Fix the second defect reported by the scan in {{area}}. Make the minimal change and explain it.",
           "phase": "fix",
-          "label": "fix-claude"
+          "label": "fix-claude",
+          "isolation": "worktree"
         }
       ]
     }
@@ -105,8 +132,9 @@ copy is [`examples/scan-then-parallel-fix.json`](examples/scan-then-parallel-fix
 }
 ```
 
-The `scan` phase completes before the `parallel` barrier starts, and both `fix`
-nodes run concurrently and join before the run finalizes.
+The `scan` phase completes before the `parallel` barrier starts (its edits land
+on the shared cwd), and both `fix` nodes then run concurrently in their own
+worktrees and join before the run finalizes.
 
 ## Validate Before Running
 
@@ -131,27 +159,22 @@ extend the IR.
 
 ## Run It
 
-Write the spec to a file, then invoke the CLI. The member flags bind the spec's
-names to real harness member ids:
+Write the spec to a file, then invoke the CLI. The spec's `provider` values drive
+delivery, so there is no member binding to pass:
 
 ```bash
-harness workflow run-spec ./scan-then-parallel-fix.json \
-  --codex <codex-member-id> \
-  --claude <claude-member-id>
+harness workflow run-spec ./scan-then-parallel-fix.json
 ```
 
 Useful flags:
 
 | Flag | Effect |
 | --- | --- |
-| `--codex <id>` / `--claude <id>` | Bind the `codex` / `claude` names. |
-| `--member <name>=<id>` | Bind any other name a spec references (repeatable). |
 | `--dry-run` | Use a mock driver so the IR runs end-to-end without spawning agents. |
-| `--start-runtime` | Start the member runtime if it is not already running. |
+| `--start-runtime` | Start the provider runtime if it is not already running. |
 | `--timeout-ms <ms>` | Per-step delivery timeout (default 3000). |
 
-At least one member binding is required. The command prints the journaled run as
-JSON, including the new `run` id.
+The command prints the journaled run as JSON, including the new `run` id.
 
 ## Read The Run Back
 
@@ -171,29 +194,30 @@ harness dashboard snapshot | node -e '
 
 Confirm: a `WorkflowRun` with your `name`, status moving `running -> succeeded`
 (or `failed`), `args` echoed back, and one `WorkflowStep` per agent node with its
-`label`, `phase`, and result. The same run renders on the Agent Dashboard
-Workflows surface.
+`label`, `phase`, `provider`, and result. The same run renders on the Agent
+Dashboard Workflows surface.
 
 ## Permission Note
 
 The agent that runs the spec invokes the `harness` binary through its shell, so
-the member's permission profile must allow it:
+its permission profile must allow it:
 
-- The member's allowed-tool / command policy must permit running the `harness`
-  binary (for Claude members this is a `Bash(harness ...)` allowance; for Codex
-  members the sandbox/approval policy must let the shell call through).
-- Binding `--codex` / `--claude` only resolves NAMES to member ids; it does not
-  grant either member new permissions. Each spawned member still runs under its
-  own profile, so a `prompt` that writes files or runs money-moving or
-  destructive actions needs that member's profile to allow it.
+- The runner's allowed-tool / command policy must permit running the `harness`
+  binary (for Claude this is a `Bash(harness ...)` allowance; for Codex the
+  sandbox/approval policy must let the shell call through).
+- Each agent node spins up a fresh ephemeral worker that CAN EDIT files and runs
+  in the repo cwd (or its worktree). A `prompt` that writes files or runs
+  destructive/money-moving actions executes for real — scope prompts accordingly
+  and reach for `isolation: "worktree"` when parallel nodes mutate the tree.
 - If `harness` is not on the runner's `PATH`, invoke it by absolute path and
   ensure that path is the allowed command.
 
 ## Checklist
 
 - [ ] Spec has `name` + `nodes`; every node is a valid `agent`/`phase`/`parallel`/`pipeline`.
-- [ ] `member` values are names bound at run time, not member ids.
+- [ ] Every `agent` node has a `provider` of `"codex"` or `"claude"`.
+- [ ] Parallel nodes that EDIT files use `isolation: "worktree"`.
 - [ ] Spec validates against `schemas/workflow-spec.schema.json`.
-- [ ] `harness workflow run-spec <spec.json>` ran with at least one member binding.
+- [ ] `harness workflow run-spec <spec.json>` ran (no member binding needed).
 - [ ] The run is visible in `harness dashboard snapshot` (`workflow_runs` / `workflow_steps`).
-- [ ] The runner's profile allows the `harness` binary, and each member's profile allows what its prompt does.
+- [ ] The runner's profile allows the `harness` binary and what each node's prompt does.

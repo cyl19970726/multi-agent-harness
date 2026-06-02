@@ -8,7 +8,7 @@
       "nodes": [
         {
           "type": "agent",
-          "member": "codex",
+          "provider": "codex",
           "prompt": "Scan {{area}} for defects. Return a numbered list of the distinct problems you find, each with the file path and a one-line description.",
           "label": "scan"
         }
@@ -19,17 +19,19 @@
       "nodes": [
         {
           "type": "agent",
-          "member": "codex",
+          "provider": "codex",
           "prompt": "Fix the first defect reported by the scan in {{area}}. Make the minimal change and explain it.",
           "phase": "fix",
-          "label": "fix-codex"
+          "label": "fix-codex",
+          "isolation": "worktree"
         },
         {
           "type": "agent",
-          "member": "claude",
+          "provider": "claude",
           "prompt": "Fix the second defect reported by the scan in {{area}}. Make the minimal change and explain it.",
           "phase": "fix",
-          "label": "fix-claude"
+          "label": "fix-claude",
+          "isolation": "worktree"
         }
       ]
     }

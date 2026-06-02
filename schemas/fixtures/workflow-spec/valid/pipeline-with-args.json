@@ -7,21 +7,21 @@
       "stages": [
         {
           "type": "agent",
-          "member": "codex",
+          "provider": "codex",
           "prompt": "Collect signals about {{topic}}.",
           "phase": "pipe",
           "label": "collect"
         },
         {
           "type": "agent",
-          "member": "claude",
+          "provider": "claude",
           "prompt": "Triage the collected signals about {{topic}}.",
           "phase": "pipe",
           "label": "triage"
         },
         {
           "type": "agent",
-          "member": "codex",
+          "provider": "codex",
           "prompt": "Summarize the triage of {{topic}}.",
           "phase": "pipe",
           "label": "summarize"

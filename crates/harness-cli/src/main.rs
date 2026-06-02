@@ -3693,22 +3693,27 @@ struct DeliveryOptions {
 // ---------------------------------------------------------------------------
 // Workflow runtime CLI (WP1)
 //
-// `harness workflow run --name <name> --codex <member> --claude <member>
-//  [--prompt <text>] [--timeout-ms N] [--dry-run]`
+// `harness workflow run --name <name> [--prompt <text>] [--timeout-ms N] [--dry-run]`
 //
 // Creates a WorkflowRun (status running), dispatches the named built-in Rust
 // workflow through the registry, journals each WorkflowStep, and sets the run
-// to completed/failed. Every agent step drives ONE provider delivery through the
-// EXISTING neutral seam (`workflow_real_agent_step` -> `deliver_agent_messages_value`
-// -> `claim_message_for_delivery` + `run_provider_delivery`); the workflow never
-// spawns a provider directly (ADR-0011 provider-neutral).
+// to completed/failed. Each `agent()` node references a PROVIDER ("codex" |
+// "claude") and spins up a NEW one-shot ephemeral worker (Stage B: real spawn
+// of codex exec / claude -p; Stage A: a mock driver returns a provider-carrying
+// StepResult). The runtime stays provider-neutral — the injected driver carries
+// the provider + optional isolation through (ADR-0011 provider-neutral).
 // ---------------------------------------------------------------------------
 
-/// Options controlling how the real (non-mock) agent step delivers a message.
+/// Options controlling how the real (non-mock) agent step spins up its ephemeral
+/// worker. `start_runtime` / `timeout_ms` are threaded through for Stage B (real
+/// codex exec / claude -p spawn + worktree isolation); the Stage A mock only
+/// reads `dry_run`.
 #[derive(Debug, Clone)]
 struct WorkflowDeliveryOptions {
     dry_run: bool,
+    #[allow(dead_code)]
     start_runtime: bool,
+    #[allow(dead_code)]
     timeout_ms: u64,
 }
 
@@ -3759,7 +3764,8 @@ fn workflow_real_agent_step(
         Err(error) => workflow::StepResult {
             phase: spec.phase.clone(),
             label: spec.label.clone(),
-            member_id: spec.member_id.clone(),
+            provider: spec.provider.clone(),
+            isolation: spec.isolation.clone(),
             ok: false,
             provider_session_id: None,
             output_summary: format!("agent step error: {error}"),
@@ -3770,77 +3776,42 @@ fn workflow_real_agent_step(
 }
 
 fn try_workflow_real_agent_step(
-    store: &HarnessStore,
+    _store: &HarnessStore,
     options: &WorkflowDeliveryOptions,
     spec: &workflow::AgentStepSpec,
 ) -> CliResult<workflow::StepResult> {
-    // Queue a message to the member through the same path operators use.
-    let message_id = generated_id("msg");
-    let message = create_message_value(
-        store,
-        &serde_json::json!({
-            "id": message_id,
-            "from": "workflow",
-            "to": spec.member_id,
-            "kind": "task",
-            "content": spec.prompt,
-            "channel": "workflow",
-        }),
-    )?;
-    let message_id = json_string(&message, "id").unwrap_or(message_id);
-
-    // Deliver exactly that one message through the neutral seam.
-    let delivered = deliver_agent_messages_value(
-        store,
-        DeliveryOptions {
-            agent_id: spec.member_id.clone(),
-            message_filter: Some(message_id.clone()),
-            dry_run: options.dry_run,
-            start_runtime: options.start_runtime,
-            timeout_ms: options.timeout_ms,
-        },
-    )?;
-
-    // Inspect the per-message delivery result.
-    let entry = delivered
-        .get("delivered")
-        .and_then(|value| value.as_array())
-        .and_then(|entries| entries.first());
-    let provider_status = entry
-        .and_then(|entry| entry.get("provider_status"))
-        .and_then(|status| status.as_str())
-        .map(str::to_string);
-    let provider_session_id = entry
-        .and_then(|entry| entry.get("provider_session_id"))
-        .and_then(|value| value.as_str())
-        .map(str::to_string)
-        .or_else(|| {
-            // Fall back to the session id recorded on the delivered message.
-            latest_message(store, &message_id)
-                .ok()
-                .and_then(|message| message.delivery)
-                .and_then(|delivery| delivery.provider_session_id)
-        });
-    let ok = matches!(provider_status.as_deref(), Some("succeeded"));
-
-    // Prefer the provider report text (the synthesized delivery summary) for the
-    // step summary; fall back to the provider session's own summary.
-    let output_summary = provider_session_id
-        .as_deref()
-        .and_then(|session_id| latest_provider_session(store, session_id).ok().flatten())
-        .and_then(|session| session.prompt_summary)
-        .or(provider_status.clone())
-        .unwrap_or_else(|| "no provider output".to_string());
+    // STAGE A: the node references a PROVIDER (not a pre-existing member), so the
+    // old member-delivery seam no longer applies. Spinning up the real one-shot
+    // ephemeral worker (codex exec / claude -p) — plus harness-owned worktree
+    // isolation — lands in Stage B. For now this returns a MOCK StepResult that
+    // carries the node's provider + isolation through so the run/steps journal,
+    // the dashboard, the dry-run acceptance, and `cargo test` exercise the full
+    // contract end-to-end without spawning a provider. The summary records the
+    // provider, the model override, and whether worktree isolation was requested.
+    let isolation_note = match spec.isolation.as_deref() {
+        Some(mode) => format!(", isolation={mode}"),
+        None => String::new(),
+    };
+    let model_note = match spec.model.as_deref() {
+        Some(model) => format!(", model={model}"),
+        None => String::new(),
+    };
+    let dry_run_note = if options.dry_run { " (dry-run)" } else { "" };
+    let output_summary = format!(
+        "ephemeral {} worker{dry_run_note} for {}{model_note}{isolation_note} (Stage B: real spawn pending)",
+        spec.provider, spec.label,
+    );
 
     Ok(workflow::StepResult {
         phase: spec.phase.clone(),
         label: spec.label.clone(),
-        member_id: spec.member_id.clone(),
-        ok,
-        provider_session_id,
+        provider: spec.provider.clone(),
+        isolation: spec.isolation.clone(),
+        ok: true,
+        provider_session_id: Some(format!("mock-session-{}", spec.label)),
         output_summary,
         // The journaling identity is assigned by the caller, which already
-        // journaled the `running` start row before this delivery began.
+        // journaled the `running` start row before this step began.
         step_id: None,
         started_at: None,
     })
@@ -3883,8 +3854,6 @@ fn workflow_run_value(store: &HarnessStore, args: &[String]) -> CliResult<serde_
         .get(&name)
         .ok_or_else(|| CliError::Usage(format!("unknown workflow: {name}")))?;
 
-    let codex_member_id = required(args, "--codex")?;
-    let claude_member_id = required(args, "--claude")?;
     let prompt = value(args, "--prompt").unwrap_or_else(|| "failure X".to_string());
     let options = WorkflowDeliveryOptions {
         dry_run: has_flag(args, "--dry-run"),
@@ -3892,11 +3861,6 @@ fn workflow_run_value(store: &HarnessStore, args: &[String]) -> CliResult<serde_
         timeout_ms: value(args, "--timeout-ms")
             .and_then(|value| value.parse::<u64>().ok())
             .unwrap_or(3_000),
-    };
-
-    let members = workflow::WorkflowMembers {
-        codex_member_id,
-        claude_member_id,
     };
 
     // The run id is minted up front so the driver can journal each step's
@@ -3914,18 +3878,21 @@ fn workflow_run_value(store: &HarnessStore, args: &[String]) -> CliResult<serde_
         }
     };
 
-    run_workflow_with_driver(store, &run_id, def, &members, &prompt, &driver)
+    run_workflow_with_driver(store, &run_id, def, &prompt, &driver)
 }
 
-/// `harness workflow run-spec <spec.json> [--codex <member>] [--claude <member>]
-///  [--member <name>=<id>]... [--start-runtime] [--dry-run] [--timeout-ms <ms>]`
+/// `harness workflow run-spec <spec.json> [--start-runtime] [--dry-run]
+///  [--timeout-ms <ms>]`
 ///
 /// Reads a runtime-authored [`workflow::WorkflowSpec`] JSON-IR file, validates it
-/// by parsing, resolves its member NAMES to harness member ids, walks the IR via
-/// `dispatch_spec`, and journals the run/steps exactly like the registry `run`
-/// path (shared `journal_workflow_outcome`). With `--dry-run` a mock driver
-/// stands in for real provider delivery so the IR can be exercised end-to-end
-/// without spawning agents.
+/// by parsing, walks the IR via `dispatch_spec`, and journals the run/steps
+/// exactly like the registry `run` path (shared `journal_workflow_outcome`).
+///
+/// Each `agent()` node carries its PROVIDER ("codex" | "claude") directly — the
+/// spec drives delivery, so there is no `--codex`/`--claude` member binding. The
+/// node spins up a NEW one-shot ephemeral worker (Stage B: real spawn; Stage A:
+/// a mock driver returns a provider-carrying StepResult so the IR runs
+/// end-to-end without spawning agents).
 fn workflow_run_spec_value(store: &HarnessStore, args: &[String]) -> CliResult<serde_json::Value> {
     // The spec path is the first positional arg (not a --flag) or `--spec <path>`.
     let path = value(args, "--spec")
@@ -3939,30 +3906,6 @@ fn workflow_run_spec_value(store: &HarnessStore, args: &[String]) -> CliResult<s
     let spec: workflow::WorkflowSpec = serde_json::from_str(&raw)
         .map_err(|error| CliError::Usage(format!("invalid workflow spec {path}: {error}")))?;
 
-    // Build the member-name -> harness-member-id resolution map from the flags.
-    // `--codex`/`--claude` register the conventional role names; repeatable
-    // `--member <name>=<id>` registers arbitrary names a spec may reference.
-    let mut member_map: std::collections::BTreeMap<String, String> =
-        std::collections::BTreeMap::new();
-    if let Some(codex) = value(args, "--codex") {
-        member_map.insert("codex".to_string(), codex);
-    }
-    if let Some(claude) = value(args, "--claude") {
-        member_map.insert("claude".to_string(), claude);
-    }
-    for pair in many(args, "--member") {
-        let (name, id) = pair
-            .split_once('=')
-            .ok_or_else(|| CliError::Usage(format!("--member must be name=id, got: {pair}")))?;
-        member_map.insert(name.to_string(), id.to_string());
-    }
-    if member_map.is_empty() {
-        return Err(CliError::Usage(
-            "workflow run-spec needs at least one member (--codex/--claude/--member name=id)"
-                .to_string(),
-        ));
-    }
-
     let options = WorkflowDeliveryOptions {
         dry_run: has_flag(args, "--dry-run"),
         start_runtime: has_flag(args, "--start-runtime"),
@@ -3974,8 +3917,6 @@ fn workflow_run_spec_value(store: &HarnessStore, args: &[String]) -> CliResult<s
     // Mint the run id up front so the real driver can journal each step's
     // `running` row as it starts (live SSE progress), mirroring `workflow run`.
     let run_id = generated_id("wfrun");
-
-    let resolver = |name: &str| member_map.get(name).cloned();
 
     let run = WorkflowRun {
         id: run_id.clone(),
@@ -3997,7 +3938,7 @@ fn workflow_run_spec_value(store: &HarnessStore, args: &[String]) -> CliResult<s
         let driver = move |step: &workflow::AgentStepSpec| {
             workflow_real_agent_step(store, &run_id, &options, step)
         };
-        workflow::dispatch_spec(&spec, &resolver, &driver)
+        workflow::dispatch_spec(&spec, &driver)
             .map_err(|error| CliError::Usage(error.to_string()))?
     };
 
@@ -4012,7 +3953,6 @@ fn run_workflow_with_driver(
     store: &HarnessStore,
     run_id: &str,
     def: &workflow::WorkflowDef,
-    members: &workflow::WorkflowMembers,
     prompt: &str,
     driver: &workflow::AgentStepFn<'_>,
 ) -> CliResult<serde_json::Value> {
@@ -4033,7 +3973,7 @@ fn run_workflow_with_driver(
     store.append_workflow_run(&run)?;
 
     // Dispatch the compiled workflow body (option C registry dispatch).
-    let outcome = (def.run)(driver, members, prompt);
+    let outcome = (def.run)(driver, prompt);
 
     journal_workflow_outcome(store, run, &outcome)
 }
@@ -9226,8 +9166,8 @@ fn print_help() {
   codex run --task <task> --agent <agent> --worktree <path> --prompt <text>
   codex review --task <task> --agent <agent> --worktree <path> [--base <branch>] [--uncommitted] [--prompt <text>]
   workflow list
-  workflow run --name <name> --codex <member> --claude <member> [--prompt <text>] [--start-runtime] [--dry-run] [--timeout-ms <ms>]
-  workflow run-spec <spec.json> [--codex <member>] [--claude <member>] [--member <name>=<id>]... [--start-runtime] [--dry-run] [--timeout-ms <ms>]
+  workflow run --name <name> [--prompt <text>] [--start-runtime] [--dry-run] [--timeout-ms <ms>]
+  workflow run-spec <spec.json> [--start-runtime] [--dry-run] [--timeout-ms <ms>]
   serve [--addr 127.0.0.1:8787] [--once]
   daemon start [--socket <path>] [--idle-secs <n>]   (unix: resident warm-child host)
   daemon status
@@ -9247,18 +9187,12 @@ mod workflow_runtime_tests {
         store
     }
 
-    fn mock_members() -> workflow::WorkflowMembers {
-        workflow::WorkflowMembers {
-            codex_member_id: "member-codex".to_string(),
-            claude_member_id: "member-claude".to_string(),
-        }
-    }
-
     fn ok_step(spec: &workflow::AgentStepSpec) -> workflow::StepResult {
         workflow::StepResult {
             phase: spec.phase.clone(),
             label: spec.label.clone(),
-            member_id: spec.member_id.clone(),
+            provider: spec.provider.clone(),
+            isolation: spec.isolation.clone(),
             ok: true,
             provider_session_id: Some(format!("session-{}", spec.label)),
             output_summary: format!("mock ok: {}", spec.label),
@@ -9277,7 +9211,7 @@ mod workflow_runtime_tests {
 
         let run_id = generated_id("wfrun");
         let result =
-            run_workflow_with_driver(&store, &run_id, def, &mock_members(), "failure X", &driver)
+            run_workflow_with_driver(&store, &run_id, def, "failure X", &driver)
                 .expect("run workflow");
 
         // The returned run is completed and references 3 steps (serial + 2 parallel).
@@ -9325,7 +9259,8 @@ mod workflow_runtime_tests {
             workflow::StepResult {
                 phase: spec.phase.clone(),
                 label: spec.label.clone(),
-                member_id: spec.member_id.clone(),
+                provider: spec.provider.clone(),
+                isolation: spec.isolation.clone(),
                 ok,
                 provider_session_id: ok.then(|| "s".to_string()),
                 output_summary: "mock".to_string(),
@@ -9336,7 +9271,7 @@ mod workflow_runtime_tests {
 
         let run_id = generated_id("wfrun");
         let result =
-            run_workflow_with_driver(&store, &run_id, def, &mock_members(), "failure Y", &driver)
+            run_workflow_with_driver(&store, &run_id, def, "failure Y", &driver)
                 .expect("run workflow");
         let run = result.get("run").expect("run key");
         assert_eq!(run.get("status").and_then(|s| s.as_str()), Some("failed"));
@@ -9366,7 +9301,7 @@ mod workflow_runtime_tests {
         let def = registry.get("investigate").expect("registered");
         let driver = |spec: &workflow::AgentStepSpec| ok_step(spec);
         let run_id = generated_id("wfrun");
-        run_workflow_with_driver(&store, &run_id, def, &mock_members(), "x", &driver).expect("run");
+        run_workflow_with_driver(&store, &run_id, def, "x", &driver).expect("run");
 
         let snapshot = dashboard_snapshot(&store).expect("snapshot");
         let runs = snapshot
@@ -9422,7 +9357,8 @@ mod workflow_runtime_tests {
             workflow::StepResult {
                 phase: spec.phase.clone(),
                 label: spec.label.clone(),
-                member_id: spec.member_id.clone(),
+                provider: spec.provider.clone(),
+                isolation: spec.isolation.clone(),
                 ok: true,
                 provider_session_id: Some(format!("session-{}", spec.label)),
                 output_summary: format!("ok: {}", spec.label),
@@ -9432,7 +9368,7 @@ mod workflow_runtime_tests {
         };
 
         let result =
-            run_workflow_with_driver(&store, &run_id, def, &mock_members(), "topic", &driver)
+            run_workflow_with_driver(&store, &run_id, def, "topic", &driver)
                 .expect("run workflow");
         assert_eq!(
             result
