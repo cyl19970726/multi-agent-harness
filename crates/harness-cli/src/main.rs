@@ -2590,6 +2590,40 @@ fn handle_http_connection(
                     )?,
                 }
             }
+            // GET /v1/sessions/{id}/events — the PERSISTED per-session turn
+            // events for a completed durable run's historical drill-in (two-tier
+            // persistence read side). Reads the durable per-session NDJSON the
+            // ProviderSession's jsonl_ref/stdout_ref points at (survives a serve
+            // restart). A `--trace live` run whose trace was pruned after
+            // execution left those refs None, so we return `retained: false`
+            // ("trace not retained") and the UI can distinguish it.
+            sessions_path
+                if sessions_path.starts_with("/v1/sessions/")
+                    && sessions_path.ends_with("/events") =>
+            {
+                let session_id = sessions_path
+                    .strip_prefix("/v1/sessions/")
+                    .and_then(|rest| rest.strip_suffix("/events"))
+                    .unwrap_or_default()
+                    .to_string();
+                match read_session_turn_events(store, &session_id) {
+                    Ok(result) => write_http_json(
+                        &mut stream,
+                        "200 OK",
+                        &serde_json::json!({
+                            "session_id": session_id,
+                            "retained": result.retained,
+                            "events": result.events,
+                            "truncated": result.truncated,
+                        }),
+                    )?,
+                    Err(detail) => write_http_json(
+                        &mut stream,
+                        "404 Not Found",
+                        &serde_json::json!({"error": "session_events_not_found", "detail": detail.to_string()}),
+                    )?,
+                }
+            }
             // GET /v1/workflows — the registered (built-in) workflow catalog,
             // run-independent { name, summary } pairs from the compiled registry.
             "/v1/workflows" => {
@@ -7720,6 +7754,96 @@ fn read_provider_session_events(
     Ok((events, truncated))
 }
 
+/// Outcome of reading one provider session's PERSISTED turn-event trace for the
+/// historical drill-in (`GET /v1/sessions/<id>/events`). Distinguishes a durable
+/// run whose heavy trace survived from a `--trace live` run whose trace was
+/// pruned after execution (two-tier persistence): the latter streamed live over
+/// SSE but retains nothing, so a past drill-in shows "trace not retained".
+struct SessionTurnEvents {
+    /// Whether the heavy per-node trace was retained for this session.
+    retained: bool,
+    /// Ordered turn events parsed from the durable per-session NDJSON (one JSON
+    /// value per line). Empty when `retained` is false.
+    events: Vec<serde_json::Value>,
+    /// True when the cap was hit and trailing events were dropped.
+    truncated: bool,
+}
+
+/// Read the PERSISTED per-session turn events for a completed durable run's
+/// historical drill-in, keyed by provider session id. This is the read side of
+/// the two-tier persistence design: the small audit record (WorkflowRun/Step)
+/// always survives, while the heavy turn-event trace survives only for
+/// `trace_retention == "durable"` runs.
+///
+/// Source of truth is the DURABLE per-session NDJSON the ProviderSession's
+/// `jsonl_ref` (claude) / `stdout_ref` (codex) points at — the file the spawn
+/// loop writes under `provider-sessions/<id>/` and which survives a server
+/// restart (unlike the shared `provider_turn_events.jsonl` live tee, which
+/// `serve` truncates on startup). We parse it the same way `read_provider_session_events`
+/// and `sse.rs` do: one JSON value per line, skipping torn/non-JSON lines so a
+/// mid-append final fragment is safe.
+///
+/// A `--trace live` run prunes that NDJSON after execution and the Backend left
+/// the ProviderSession's `jsonl_ref`/`stdout_ref` as `None` precisely so the
+/// historical drill-in reports `retained: false` ("trace not retained") instead
+/// of an empty-but-durable trace. A session with no ProviderSession row at all is
+/// likewise reported as not retained.
+fn read_session_turn_events(
+    store: &HarnessStore,
+    session_id: &str,
+) -> CliResult<SessionTurnEvents> {
+    const MAX_EVENTS: usize = 1000;
+
+    // The retention marker IS the presence of a recorded event stream on the
+    // session row: durable runs point jsonl_ref/stdout_ref at the retained
+    // per-session NDJSON; live-only runs (and missing sessions) have neither.
+    let path = match latest_provider_session(store, session_id)? {
+        Some(session) => session.jsonl_ref.clone().or_else(|| session.stdout_ref.clone()),
+        None => None,
+    };
+    let Some(path) = path else {
+        return Ok(SessionTurnEvents {
+            retained: false,
+            events: Vec::new(),
+            truncated: false,
+        });
+    };
+
+    // The trace was retained but the file may have been swept; treat an
+    // unreadable durable ref as an empty (still-retained) trace rather than 404.
+    let content = match fs::read_to_string(&path) {
+        Ok(content) => content,
+        Err(_) => {
+            return Ok(SessionTurnEvents {
+                retained: true,
+                events: Vec::new(),
+                truncated: false,
+            })
+        }
+    };
+    let mut events = Vec::new();
+    let mut truncated = false;
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) else {
+            continue;
+        };
+        if events.len() >= MAX_EVENTS {
+            truncated = true;
+            break;
+        }
+        events.push(value);
+    }
+    Ok(SessionTurnEvents {
+        retained: true,
+        events,
+        truncated,
+    })
+}
+
 fn latest_provider_sessions_in_append_order(
     store: &HarnessStore,
 ) -> CliResult<Vec<ProviderSession>> {
@@ -9968,6 +10092,90 @@ mod workflow_runtime_tests {
         assert_eq!(steps[0].phase, "scope");
         assert_eq!(steps[1].phase, "audit");
         assert_eq!(steps[2].phase, "audit");
+    }
+
+    /// Build a ProviderSession keyed by `session_id`. `jsonl_ref` carries the
+    /// durable per-session NDJSON path when retained; `None` is the live-only
+    /// "trace not retained" marker the Backend leaves after pruning.
+    fn provider_session_with_ref(session_id: &str, jsonl_ref: Option<String>) -> ProviderSession {
+        ProviderSession {
+            id: session_id.into(),
+            provider: "claude".into(),
+            agent_member_id: session_id.into(),
+            task_id: None,
+            workspace_ref: None,
+            provider_thread_id: None,
+            provider_turn_id: None,
+            terminal_source: Some(MessageTerminalSource::TurnCompleted),
+            status: ProviderSessionStatus::Succeeded,
+            command: "harness".into(),
+            args: Vec::new(),
+            prompt_ref: None,
+            prompt_summary: None,
+            provider_session_ref: None,
+            stdout_ref: None,
+            jsonl_ref,
+            transcript_ref: None,
+            last_message_ref: None,
+            exit_code: Some(0),
+            started_at: "unix-ms:1".into(),
+            ended_at: Some("unix-ms:2".into()),
+            evidence_ids: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn durable_session_returns_persisted_turn_events_in_order() {
+        let store = temp_store("durable-events");
+        // Write the durable per-session NDJSON the jsonl_ref will point at.
+        let ndjson = store
+            .root()
+            .join("provider-sessions")
+            .join("session-A")
+            .join("claude.stream-json.ndjson");
+        fs::create_dir_all(ndjson.parent().unwrap()).expect("mkdir session dir");
+        fs::write(
+            &ndjson,
+            "{\"type\":\"assistant\"}\n{\"type\":\"result\"}\n",
+        )
+        .expect("write ndjson");
+        store
+            .append_provider_session(&provider_session_with_ref(
+                "session-A",
+                Some(ndjson.display().to_string()),
+            ))
+            .expect("append durable session");
+
+        let out = read_session_turn_events(&store, "session-A").expect("read events");
+        assert!(out.retained, "durable run must report retained");
+        assert!(!out.truncated);
+        assert_eq!(out.events.len(), 2);
+        assert_eq!(out.events[0].get("type").and_then(|t| t.as_str()), Some("assistant"));
+        assert_eq!(out.events[1].get("type").and_then(|t| t.as_str()), Some("result"));
+    }
+
+    #[test]
+    fn live_only_session_reports_not_retained() {
+        let store = temp_store("live-events");
+        // Live-only: the session row survives but its jsonl_ref/stdout_ref are None
+        // (the Backend pruned the NDJSON after the run).
+        store
+            .append_provider_session(&provider_session_with_ref("session-L", None))
+            .expect("append live-only session");
+
+        let out = read_session_turn_events(&store, "session-L").expect("read events");
+        assert!(!out.retained, "live run must report not retained");
+        assert!(out.events.is_empty(), "not-retained trace yields no events");
+        assert!(!out.truncated);
+    }
+
+    #[test]
+    fn unknown_session_reports_not_retained() {
+        let store = temp_store("missing-events");
+        // No ProviderSession row at all -> nothing to drill into.
+        let out = read_session_turn_events(&store, "session-Z").expect("read events");
+        assert!(!out.retained, "missing session has no retained trace");
+        assert!(out.events.is_empty());
     }
 
     #[test]
