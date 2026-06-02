@@ -3705,15 +3705,15 @@ struct DeliveryOptions {
 // ---------------------------------------------------------------------------
 
 /// Options controlling how the real (non-mock) agent step spins up its ephemeral
-/// worker. `start_runtime` / `timeout_ms` are threaded through for Stage B (real
-/// codex exec / claude -p spawn + worktree isolation); the Stage A mock only
-/// reads `dry_run`.
+/// worker. `dry_run` selects the mock driver (CI default, no spawning);
+/// otherwise the real `codex exec` / `claude -p` ephemeral spawn runs with a
+/// per-node `timeout_ms`. `start_runtime` is reserved (the ephemeral path does
+/// not need a resident runtime).
 #[derive(Debug, Clone)]
 struct WorkflowDeliveryOptions {
     dry_run: bool,
     #[allow(dead_code)]
     start_runtime: bool,
-    #[allow(dead_code)]
     timeout_ms: u64,
 }
 
@@ -3755,7 +3755,7 @@ fn workflow_real_agent_step(
     // row still records the outcome. Best-effort, like the rest of this seam.
     let _ = store.append_workflow_step(&running);
 
-    match try_workflow_real_agent_step(store, options, spec) {
+    match try_workflow_real_agent_step(store, options, spec, run_id) {
         Ok(mut result) => {
             result.step_id = Some(step_id);
             result.started_at = Some(started_at);
@@ -3776,50 +3776,658 @@ fn workflow_real_agent_step(
 }
 
 fn try_workflow_real_agent_step(
-    _store: &HarnessStore,
+    store: &HarnessStore,
     options: &WorkflowDeliveryOptions,
     spec: &workflow::AgentStepSpec,
+    run_id: &str,
 ) -> CliResult<workflow::StepResult> {
-    // STAGE A: the node references a PROVIDER (not a pre-existing member), so the
-    // old member-delivery seam no longer applies. Spinning up the real one-shot
-    // ephemeral worker (codex exec / claude -p) — plus harness-owned worktree
-    // isolation — lands in Stage B. For now this returns a MOCK StepResult that
-    // carries the node's provider + isolation through so the run/steps journal,
-    // the dashboard, the dry-run acceptance, and `cargo test` exercise the full
-    // contract end-to-end without spawning a provider. The summary records the
-    // provider, the model override, and whether worktree isolation was requested.
-    let isolation_note = match spec.isolation.as_deref() {
-        Some(mode) => format!(", isolation={mode}"),
-        None => String::new(),
+    // The node references a PROVIDER (not a pre-existing member). In --dry-run
+    // (CI default) we return a MOCK StepResult so the run/steps journal, the
+    // dashboard, the acceptance script, and `cargo test` exercise the full
+    // contract end-to-end without spawning a provider or spending tokens. The
+    // real (non-dry-run) path spins up a one-shot EDITABLE ephemeral worker.
+    if options.dry_run {
+        let isolation_note = match spec.isolation.as_deref() {
+            Some(mode) => format!(", isolation={mode}"),
+            None => String::new(),
+        };
+        let model_note = match spec.model.as_deref() {
+            Some(model) => format!(", model={model}"),
+            None => String::new(),
+        };
+        let output_summary = format!(
+            "ephemeral {} worker (dry-run) for {}{model_note}{isolation_note}",
+            spec.provider, spec.label,
+        );
+        return Ok(workflow::StepResult {
+            phase: spec.phase.clone(),
+            label: spec.label.clone(),
+            provider: spec.provider.clone(),
+            isolation: spec.isolation.clone(),
+            ok: true,
+            provider_session_id: Some(format!("mock-session-{}", spec.label)),
+            output_summary,
+            // The journaling identity is assigned by the caller, which already
+            // journaled the `running` start row before this step began.
+            step_id: None,
+            started_at: None,
+        });
+    }
+
+    spawn_ephemeral_worker(store, options, spec, run_id)
+}
+
+/// RAII guard owning a harness-created throwaway worktree. Its `Drop` removes the
+/// worktree (and any temp branch) no matter how the step exits — normal return,
+/// `?` early-return, timeout, or panic — so a failed/timed-out node never leaks
+/// an orphan (cleanup layer 2). The normal-path cleanup is the SAME code, just
+/// triggered by the guard going out of scope at the end of a successful step.
+struct WorktreeGuard {
+    /// Repo root the `git worktree` commands run against (`git -C <repo>`).
+    repo_root: PathBuf,
+    /// Absolute path of the worktree checkout.
+    path: PathBuf,
+    /// Temp branch created with the worktree, deleted alongside it.
+    branch: String,
+}
+
+impl WorktreeGuard {
+    /// `git -C <repo> worktree add -B <branch> <path> HEAD` — a detach-free
+    /// throwaway checkout of HEAD the worker mutates in isolation. Uniform for
+    /// both providers (the harness owns the worktree; we never use claude's -w).
+    fn create(repo_root: &Path, run_id: &str, node_label: &str) -> CliResult<WorktreeGuard> {
+        let slug = sanitize_worktree_slug(node_label);
+        let rel = format!(".harness/worktrees/{run_id}-{slug}");
+        let path = repo_root.join(&rel);
+        let branch = format!("harness/wt/{run_id}-{slug}");
+
+        // Defensive: a stale dir from a crashed prior run would make `add` fail.
+        if path.exists() {
+            let _ = Command::new("git")
+                .args(["-C", &repo_root.display().to_string(), "worktree", "remove", "--force"])
+                .arg(&path)
+                .output();
+            let _ = fs::remove_dir_all(&path);
+        }
+
+        let output = Command::new("git")
+            .args(["-C", &repo_root.display().to_string(), "worktree", "add", "-B", &branch])
+            .arg(&path)
+            .arg("HEAD")
+            .output()?;
+        if !output.status.success() {
+            return Err(CliError::Usage(format!(
+                "git worktree add failed for node {node_label}: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            )));
+        }
+        Ok(WorktreeGuard {
+            repo_root: repo_root.to_path_buf(),
+            path,
+            branch,
+        })
+    }
+}
+
+impl Drop for WorktreeGuard {
+    fn drop(&mut self) {
+        // Bulletproof cleanup: remove the worktree and its temp branch however
+        // the step exited. Best-effort — Drop must not panic — but `--force`
+        // plus a manual dir sweep makes a leak very unlikely.
+        let repo = self.repo_root.display().to_string();
+        let _ = Command::new("git")
+            .args(["-C", &repo, "worktree", "remove", "--force"])
+            .arg(&self.path)
+            .output();
+        let _ = fs::remove_dir_all(&self.path);
+        let _ = Command::new("git")
+            .args(["-C", &repo, "branch", "-D", &self.branch])
+            .output();
+        // Prune any now-dangling administrative entry.
+        let _ = Command::new("git")
+            .args(["-C", &repo, "worktree", "prune"])
+            .output();
+    }
+}
+
+/// Map a node label to a filesystem-safe worktree slug (no `/`, spaces, etc.).
+fn sanitize_worktree_slug(label: &str) -> String {
+    let slug: String = label
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    let trimmed = slug.trim_matches('-');
+    if trimmed.is_empty() {
+        "node".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+/// Resolve the repo root the worktrees are created under. The shared default
+/// workspace is the current working directory (the repo cwd); worktrees live in
+/// the gitignored `.harness/worktrees/` beneath it.
+fn workflow_repo_root() -> PathBuf {
+    env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+}
+
+/// Spin up a NEW one-shot EDITABLE ephemeral worker for one `agent()` node and
+/// reduce its result into a [`workflow::StepResult`].
+///
+/// Workspace: the shared repo cwd by default (serial nodes' edits compose on the
+/// same tree, exactly like Claude Code's Workflow). When the node opts into
+/// `isolation:"worktree"` the HARNESS creates a throwaway worktree (uniform for
+/// both providers) and runs the worker there; its `git diff` is collected as the
+/// node's evidence and the worktree is NOT auto-merged. Cleanup is the
+/// `WorktreeGuard`'s Drop (bulletproof across success/failure/timeout).
+fn spawn_ephemeral_worker(
+    store: &HarnessStore,
+    options: &WorkflowDeliveryOptions,
+    spec: &workflow::AgentStepSpec,
+    run_id: &str,
+) -> CliResult<workflow::StepResult> {
+    let repo_root = workflow_repo_root();
+
+    // Opt-in isolation: harness-owned throwaway worktree, else the shared cwd.
+    // The guard (when present) cleans up on every exit path via Drop.
+    let isolate = spec.isolation.as_deref() == Some("worktree");
+    let guard = if isolate {
+        Some(WorktreeGuard::create(&repo_root, run_id, &spec.label)?)
+    } else {
+        None
     };
-    let model_note = match spec.model.as_deref() {
-        Some(model) => format!(", model={model}"),
-        None => String::new(),
+    let cwd = guard
+        .as_ref()
+        .map(|g| g.path.clone())
+        .unwrap_or_else(|| repo_root.clone());
+
+    // One ephemeral worker == one ProviderSession. The session id keys the
+    // dashboard per-node drill-in (WorkflowStep.provider_session_id) and the
+    // durable NDJSON / live turn-events.
+    let session_id = generated_id("session");
+    let session_dir = store.root().join("provider-sessions").join(&session_id);
+    fs::create_dir_all(&session_dir)?;
+
+    let spawn = match spec.provider.as_str() {
+        "codex" => spawn_codex_ephemeral(&session_dir, &session_id, spec, &cwd, options.timeout_ms),
+        "claude" => {
+            spawn_claude_ephemeral(&session_dir, &session_id, spec, &cwd, options.timeout_ms)
+        }
+        other => {
+            return Err(CliError::Usage(format!(
+                "unknown workflow provider {other} (expected codex|claude)"
+            )))
+        }
+    }?;
+
+    // Collect the worktree diff as the node's evidence (isolation path only). We
+    // read it BEFORE the guard drops (which removes the worktree).
+    let diff = if isolate {
+        ephemeral_worktree_diff(&cwd)
+    } else {
+        None
     };
-    let dry_run_note = if options.dry_run { " (dry-run)" } else { "" };
-    let output_summary = format!(
-        "ephemeral {} worker{dry_run_note} for {}{model_note}{isolation_note} (Stage B: real spawn pending)",
-        spec.provider, spec.label,
-    );
+
+    // Persist the NDJSON-derived neutral events + one ProviderSession row so the
+    // dashboard drill-in streams the worker's tool calls. Best-effort: a journal
+    // failure must not flip an otherwise-successful step.
+    let _ = ingest_ephemeral_events(store, &session_id, spec, &spawn);
+
+    let mut output_summary = if let Some(reply) = spawn.reply.clone() {
+        let reply = reply.replace('\n', " ");
+        if reply.len() > 200 {
+            format!("{}...", &reply[..200])
+        } else {
+            reply
+        }
+    } else {
+        format!(
+            "{} ephemeral worker for {} ({})",
+            spec.provider,
+            spec.label,
+            if spawn.ok { "ok" } else { "failed" }
+        )
+    };
+    if let Some(diff) = &diff {
+        if diff.trim().is_empty() {
+            output_summary.push_str(" [worktree diff: empty]");
+        } else {
+            let lines = diff.lines().count();
+            output_summary.push_str(&format!(" [worktree diff: {lines} lines]"));
+        }
+    }
+    if !spawn.ok && !spawn.stderr.trim().is_empty() {
+        let err = spawn.stderr.replace('\n', " ");
+        let err = if err.len() > 160 { &err[..160] } else { &err };
+        output_summary.push_str(&format!(" [error: {err}]"));
+    }
+
+    // Drop the guard here (explicitly, for clarity) AFTER the diff is collected —
+    // cleanup layer 1 (normal) for the worktree path. For the shared-cwd path the
+    // guard is None and there is nothing to remove.
+    drop(guard);
 
     Ok(workflow::StepResult {
         phase: spec.phase.clone(),
         label: spec.label.clone(),
         provider: spec.provider.clone(),
         isolation: spec.isolation.clone(),
-        ok: true,
-        provider_session_id: Some(format!("mock-session-{}", spec.label)),
+        ok: spawn.ok,
+        provider_session_id: Some(session_id),
         output_summary,
-        // The journaling identity is assigned by the caller, which already
-        // journaled the `running` start row before this step began.
         step_id: None,
         started_at: None,
     })
 }
 
+/// The outcome of one ephemeral worker process: whether the turn succeeded, the
+/// parsed terminal reply text (if any), the raw NDJSON the worker emitted, and
+/// any stderr (for failure summaries).
+struct EphemeralSpawn {
+    ok: bool,
+    reply: Option<String>,
+    /// Raw NDJSON stdout (one JSON event per line) for neutral-event ingest.
+    ndjson: String,
+    stderr: String,
+}
+
+/// Spawn a one-shot `codex exec` with an EDITABLE (`--sandbox workspace-write`)
+/// sandbox, JSON event stream, running in `cwd`. Non-interactive (stdin closed)
+/// with a per-node timeout. Flags verified via `codex exec --help`:
+/// `--json`, `--sandbox workspace-write`, `--cd <dir>`, `-m <model>`,
+/// `--skip-git-repo-check`, `--output-last-message <file>`.
+fn spawn_codex_ephemeral(
+    session_dir: &Path,
+    session_id: &str,
+    spec: &workflow::AgentStepSpec,
+    cwd: &Path,
+    timeout_ms: u64,
+) -> CliResult<EphemeralSpawn> {
+    let last_message_ref = session_dir.join("last-message.md");
+    let mut cmd = Command::new("codex");
+    cmd.arg("exec")
+        .arg("--cd")
+        .arg(cwd)
+        .arg("--sandbox")
+        .arg("workspace-write")
+        .arg("--skip-git-repo-check")
+        .arg("--json")
+        .arg("--output-last-message")
+        .arg(&last_message_ref);
+    if let Some(model) = &spec.model {
+        cmd.arg("-m").arg(model);
+    }
+    cmd.arg(&spec.prompt);
+
+    let (process_success, events, stderr_log) =
+        run_ndjson_child(cmd, session_dir, session_id, "codex.stream-json.ndjson", timeout_ms)?;
+    let codex_events: Vec<CodexExecEvent> = events
+        .iter()
+        .filter_map(|v| serde_json::to_string(v).ok())
+        .filter_map(|line| CodexExecEvent::parse_line(&line))
+        .collect();
+    let ok = matches!(
+        infer_provider_session_status(&codex_events, process_success),
+        ProviderSessionStatus::Succeeded
+    );
+    // Prefer the parsed agent message; fall back to the last-message file codex
+    // wrote (the terminal assistant text).
+    let reply = extract_codex_reply_text(&codex_events)
+        .or_else(|| fs::read_to_string(&last_message_ref).ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    Ok(EphemeralSpawn {
+        ok,
+        reply,
+        ndjson: ndjson_lines(&events),
+        stderr: stderr_log,
+    })
+}
+
+/// Spawn a one-shot `claude -p` with EDITING allowed: `--output-format
+/// stream-json --verbose`, an allowedTools set incl. Read/Edit/Write/Bash, and a
+/// non-blocking `--permission-mode bypassPermissions` so it never blocks on an
+/// approval prompt. Runs with cwd = `cwd` (the harness owns isolation; we do NOT
+/// use claude's -w). Flags verified via `claude --help`.
+fn spawn_claude_ephemeral(
+    session_dir: &Path,
+    session_id: &str,
+    spec: &workflow::AgentStepSpec,
+    cwd: &Path,
+    timeout_ms: u64,
+) -> CliResult<EphemeralSpawn> {
+    let mut cmd = Command::new("claude");
+    cmd.arg("-p")
+        .arg(&spec.prompt)
+        .arg("--output-format")
+        .arg("stream-json")
+        .arg("--verbose")
+        .arg("--permission-mode")
+        .arg("bypassPermissions")
+        .arg("--allowedTools")
+        .arg("Read,Edit,Write,Bash")
+        .current_dir(cwd);
+    if let Some(model) = &spec.model {
+        cmd.arg("--model").arg(model);
+    }
+
+    let (process_success, events, stderr_log) =
+        run_ndjson_child(cmd, session_dir, session_id, "claude.stream-json.ndjson", timeout_ms)?;
+    let claude_events: Vec<ClaudeStreamEvent> = events
+        .iter()
+        .filter_map(|v| serde_json::to_string(v).ok())
+        .filter_map(|line| ClaudeStreamEvent::parse_line(&line))
+        .collect();
+    let ok = matches!(
+        infer_claude_session_status(&claude_events, process_success),
+        ProviderSessionStatus::Succeeded
+    );
+    let reply = extract_claude_reply_text(&claude_events);
+
+    Ok(EphemeralSpawn {
+        ok,
+        reply,
+        ndjson: ndjson_lines(&events),
+        stderr: stderr_log,
+    })
+}
+
+/// Spawn a child that emits NDJSON on stdout, non-interactively (stdin closed),
+/// teeing each parsed event to TWO sinks while it streams MID-TURN: (1) the
+/// durable per-session `<file>` the ProviderSession's jsonl_ref points at, and
+/// (2) the shared `<store_root>/provider_turn_events.jsonl` the SSE watcher tails
+/// to push live frames (keyed by session id). Enforces a per-node timeout: on
+/// timeout the child is killed and `process_success=false` (the run tolerates
+/// failed nodes). Returns `(process_success, parsed_event_payloads, stderr)`.
+fn run_ndjson_child(
+    mut cmd: Command,
+    session_dir: &Path,
+    session_id: &str,
+    live_file_name: &str,
+    timeout_ms: u64,
+) -> CliResult<(bool, Vec<serde_json::Value>, String)> {
+    let mut child = cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| CliError::Usage(format!("failed to spawn ephemeral worker: {error}")))?;
+
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| CliError::Usage("ephemeral worker stdout not available".into()))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| CliError::Usage("ephemeral worker stderr not available".into()))?;
+
+    let _ = fs::create_dir_all(session_dir);
+    let live_path = session_dir.join(live_file_name);
+    let shared_path = session_dir
+        .parent()
+        .and_then(|provider_sessions| provider_sessions.parent())
+        .map(|store_root| store_root.join("provider_turn_events.jsonl"));
+    let mut session_writer = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&live_path)
+        .ok()
+        .map(BufWriter::new);
+    let mut shared_writer = shared_path
+        .as_ref()
+        .and_then(|path| fs::OpenOptions::new().create(true).append(true).open(path).ok())
+        .map(BufWriter::new);
+
+    let mut events = Vec::new();
+    let reader = BufReader::new(stdout);
+    for line in reader.lines() {
+        let Ok(line_str) = line else { continue };
+        let trimmed = line_str.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let Ok(payload) = serde_json::from_str::<serde_json::Value>(trimmed) else {
+            continue;
+        };
+        if let Some(writer) = session_writer.as_mut() {
+            let _ = writeln!(writer, "{trimmed}");
+            let _ = writer.flush();
+        }
+        if let Some(writer) = shared_writer.as_mut() {
+            let envelope = serde_json::json!({ "session_id": session_id, "event": payload });
+            if let Ok(line) = serde_json::to_string(&envelope) {
+                let _ = writeln!(writer, "{line}");
+                let _ = writer.flush();
+            }
+        }
+        events.push(payload);
+    }
+    if let Some(writer) = session_writer.as_mut() {
+        let _ = writer.flush();
+    }
+    if let Some(writer) = shared_writer.as_mut() {
+        let _ = writer.flush();
+    }
+
+    // stdout has closed (the reader loop above ran to EOF). Wait for exit with a
+    // per-node timeout so an interactive/auth hang cannot block the run.
+    let mut stderr_log = String::new();
+    BufReader::new(stderr).read_to_string(&mut stderr_log).ok();
+
+    let start = Instant::now();
+    let timeout = Duration::from_millis(timeout_ms.max(1));
+    let process_success = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status.success(),
+            Ok(None) => {
+                if start.elapsed() > timeout {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    if stderr_log.is_empty() {
+                        stderr_log = "timeout waiting for ephemeral worker".into();
+                    }
+                    break false;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(_) => break false,
+        }
+    };
+
+    Ok((process_success, events, stderr_log))
+}
+
+/// Join parsed event payloads back into NDJSON text (one JSON object per line).
+fn ndjson_lines(events: &[serde_json::Value]) -> String {
+    let mut out = String::new();
+    for event in events {
+        if let Ok(line) = serde_json::to_string(event) {
+            out.push_str(&line);
+            out.push('\n');
+        }
+    }
+    out
+}
+
+/// `git -C <wt> diff` — the node's collected evidence for the isolation path.
+/// Returns None when git is unavailable; an empty string means a clean tree.
+fn ephemeral_worktree_diff(worktree: &Path) -> Option<String> {
+    let output = Command::new("git")
+        .args(["-C", &worktree.display().to_string(), "diff"])
+        .output()
+        .ok()?;
+    Some(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+/// Persist the ephemeral worker's NDJSON as neutral AgentEvents + one
+/// ProviderSession row keyed by `session_id`, so the dashboard per-node drill-in
+/// streams its tool calls. Reuses the existing claude stream-json reducer
+/// (`ingest_claude_stream_json`) for claude; emits a neutral event per codex
+/// NDJSON line for codex, mirroring the existing provider-output ingest.
+fn ingest_ephemeral_events(
+    store: &HarnessStore,
+    session_id: &str,
+    spec: &workflow::AgentStepSpec,
+    spawn: &EphemeralSpawn,
+) -> CliResult<()> {
+    if spec.provider == "claude" {
+        // Reuse the neutral claude reducer; it writes AgentEvents AND a
+        // ProviderSession, but it mints its OWN session id from the stream. To
+        // keep the WorkflowStep.provider_session_id linkage stable we still need
+        // a ProviderSession under OUR session_id, so we additionally write that
+        // row below (latest-wins; the reducer's row coexists harmlessly).
+        let _ = ingest_claude_stream_json(store, session_id, None, None, &spawn.ndjson);
+    } else {
+        // Codex: one neutral AgentEvent per NDJSON line, mirroring the
+        // provider-output ingest path (event_type from the `type` discriminant).
+        for line in spawn.ndjson.lines() {
+            let Ok(payload) = serde_json::from_str::<serde_json::Value>(line.trim()) else {
+                continue;
+            };
+            let event_type = payload
+                .get("type")
+                .and_then(|t| t.as_str())
+                .unwrap_or("provider_output")
+                .replace(['/', '.'], "_");
+            let event = AgentEvent {
+                id: generated_id("event"),
+                agent_member_id: session_id.into(),
+                provider_runtime_id: None,
+                task_id: None,
+                provider: "codex".into(),
+                provider_thread_id: payload
+                    .get("thread_id")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string),
+                provider_turn_id: None,
+                provider_child_thread_id: None,
+                event_type,
+                summary: summarize_json_value(&payload),
+                payload_ref: None,
+                created_at: now_string(),
+            };
+            let _ = store.append_event(&event);
+        }
+    }
+
+    // A ProviderSession keyed by OUR session id — the stable drill-in key. The
+    // jsonl_ref points at the durable per-session NDJSON the spawn wrote.
+    let live_file = if spec.provider == "claude" {
+        "claude.stream-json.ndjson"
+    } else {
+        "codex.stream-json.ndjson"
+    };
+    let jsonl_ref = store
+        .root()
+        .join("provider-sessions")
+        .join(session_id)
+        .join(live_file)
+        .display()
+        .to_string();
+    let status = if spawn.ok {
+        ProviderSessionStatus::Succeeded
+    } else {
+        ProviderSessionStatus::Failed
+    };
+    let session = ProviderSession {
+        id: session_id.into(),
+        provider: spec.provider.clone(),
+        agent_member_id: session_id.into(),
+        task_id: None,
+        workspace_ref: None,
+        provider_thread_id: None,
+        provider_turn_id: None,
+        terminal_source: status_to_terminal_source(&status),
+        status,
+        command: spec.provider.clone(),
+        args: Vec::new(),
+        prompt_ref: None,
+        prompt_summary: Some(format!("ephemeral {} worker: {}", spec.provider, spec.label)),
+        provider_session_ref: None,
+        stdout_ref: Some(jsonl_ref.clone()),
+        jsonl_ref: Some(jsonl_ref),
+        transcript_ref: None,
+        last_message_ref: None,
+        exit_code: Some(if spawn.ok { 0 } else { 1 }),
+        started_at: now_string(),
+        ended_at: Some(now_string()),
+        evidence_ids: Vec::new(),
+    };
+    let _ = store.append_provider_session(&session);
+    Ok(())
+}
+
+/// Backstop GC (cleanup layer 3): `git worktree prune` + sweep
+/// `.harness/worktrees/` for dirs not tied to an ACTIVE run. Active = a worktree
+/// still registered with git (a leftover from a crash is unregistered after
+/// prune). Conservative: only removes dirs git no longer tracks.
+fn workflow_gc_worktrees(store: &HarnessStore) -> CliResult<serde_json::Value> {
+    let repo_root = workflow_repo_root();
+    let repo = repo_root.display().to_string();
+
+    // Prune dangling administrative entries first.
+    let _ = Command::new("git")
+        .args(["-C", &repo, "worktree", "prune"])
+        .output();
+
+    // Registered worktree paths (so we never delete a live one).
+    let listed = Command::new("git")
+        .args(["-C", &repo, "worktree", "list", "--porcelain"])
+        .output()?;
+    let listed_text = String::from_utf8_lossy(&listed.stdout);
+    let registered: BTreeSet<PathBuf> = listed_text
+        .lines()
+        .filter_map(|line| line.strip_prefix("worktree "))
+        .map(|p| PathBuf::from(p.trim()))
+        .collect();
+
+    let worktrees_dir = repo_root.join(".harness").join("worktrees");
+    let mut removed = Vec::new();
+    if let Ok(entries) = fs::read_dir(&worktrees_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            // Compare against the canonicalized registered set when possible.
+            let is_registered = registered.iter().any(|reg| {
+                reg == &path
+                    || reg.canonicalize().ok() == path.canonicalize().ok()
+            });
+            if is_registered {
+                continue;
+            }
+            let _ = Command::new("git")
+                .args(["-C", &repo, "worktree", "remove", "--force"])
+                .arg(&path)
+                .output();
+            let _ = fs::remove_dir_all(&path);
+            removed.push(path.display().to_string());
+        }
+    }
+    let _ = Command::new("git")
+        .args(["-C", &repo, "worktree", "prune"])
+        .output();
+
+    // Touch the store so the GC arm has a uniform signature with the rest.
+    let _ = store.root();
+
+    Ok(serde_json::json!({
+        "ok": true,
+        "removed": removed,
+        "worktrees_dir": worktrees_dir.display().to_string(),
+    }))
+}
+
 fn workflow_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    require_subcommand(args, "workflow run|run-spec|list")?;
+    require_subcommand(args, "workflow run|run-spec|list|gc-worktrees")?;
     match args[0].as_str() {
+        "gc-worktrees" => {
+            let result = workflow_gc_worktrees(store)?;
+            print_json(&result)?;
+        }
         "list" => {
             let registry = workflow::WorkflowRegistry::builtin();
             let defs: Vec<_> = registry
