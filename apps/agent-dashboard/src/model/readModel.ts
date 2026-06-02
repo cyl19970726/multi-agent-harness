@@ -21,6 +21,9 @@ import type {
   Task,
   TaskStatus,
   Vision,
+  WorkflowDef,
+  WorkflowRun,
+  WorkflowStep,
   WorkflowWarning,
 } from "../types";
 import { deriveWarnings } from "./warnings";
@@ -203,6 +206,16 @@ export interface WorkbenchModel {
   /** Per-agent activity stats keyed by member id (computeAgentStats over each
    * member's provider sessions). Powers the list sparkline/runs + detail perf. */
   statsByMember: Record<string, AgentStats>;
+  /** Registered workflow catalog (from GET /v1/workflows, fetched in App). */
+  workflowDefs: WorkflowDef[];
+  /** Every workflow run, Running pinned first then terminal newest-first. */
+  workflowRuns: WorkflowRun[];
+  /** Steps grouped by run id (a run's `step_ids` order is applied by helpers). */
+  workflowStepsByRun: Map<string, WorkflowStep[]>;
+  /** The run addressed by `selection.workflowRunId`, if any. */
+  selectedWorkflowRun?: WorkflowRun;
+  /** The selected run's steps, ordered by `run.step_ids`. */
+  selectedWorkflowSteps: WorkflowStep[];
 }
 
 export interface RelatedDoc {
@@ -247,7 +260,11 @@ const docCatalog: RelatedDoc[] = [
   },
 ];
 
-export function buildWorkbenchModel(snapshot: DashboardSnapshot, selection: SelectionState): WorkbenchModel {
+export function buildWorkbenchModel(
+  snapshot: DashboardSnapshot,
+  selection: SelectionState,
+  workflowDefs: WorkflowDef[] = [],
+): WorkbenchModel {
   const goals = snapshot.goals ?? [];
   const teams = snapshot.teams ?? [];
   const members = snapshot.members ?? [];
@@ -377,6 +394,18 @@ export function buildWorkbenchModel(snapshot: DashboardSnapshot, selection: Sele
   for (const member of members) {
     statsByMember[member.id] = computeAgentStats(sessionsByMemberId.get(member.id) ?? [], nowMs);
   }
+  // Workflows: Running runs pinned on top (they pulse), then terminal runs
+  // newest-first by created_at (§2 ordering).
+  const allWorkflowRuns = snapshot.workflow_runs ?? [];
+  const allWorkflowSteps = snapshot.workflow_steps ?? [];
+  const workflowRuns = sortWorkflowRuns(allWorkflowRuns);
+  const workflowStepsByRun = groupBy(allWorkflowSteps, (step) => step.run_id);
+  const selectedWorkflowRun = selection.workflowRunId
+    ? allWorkflowRuns.find((run) => run.id === selection.workflowRunId)
+    : undefined;
+  const selectedWorkflowSteps = selectedWorkflowRun
+    ? orderStepsByRun(selectedWorkflowRun, workflowStepsByRun.get(selectedWorkflowRun.id) ?? [])
+    : [];
 
   return {
     snapshot,
@@ -436,7 +465,48 @@ export function buildWorkbenchModel(snapshot: DashboardSnapshot, selection: Sele
       ? (snapshot.provider_child_threads ?? []).filter((thread) => thread.agent_member_id === selectedMember.id)
       : [],
     statsByMember,
+    workflowDefs,
+    workflowRuns,
+    workflowStepsByRun,
+    selectedWorkflowRun,
+    selectedWorkflowSteps,
   };
+}
+
+/**
+ * Order a run's steps by its `step_ids` (the authoritative start order). Steps
+ * whose id is absent from `step_ids` (e.g. a freshly-streamed row not yet
+ * reflected in the run) are appended in their original order.
+ */
+export function orderStepsByRun(run: WorkflowRun, steps: WorkflowStep[]): WorkflowStep[] {
+  const byId = new Map(steps.map((step) => [step.id, step]));
+  const ordered: WorkflowStep[] = [];
+  for (const id of run.step_ids ?? []) {
+    const step = byId.get(id);
+    if (step) {
+      ordered.push(step);
+      byId.delete(id);
+    }
+  }
+  for (const step of steps) {
+    if (byId.has(step.id)) ordered.push(step);
+  }
+  return ordered;
+}
+
+/**
+ * Run ordering for the index list: Running runs first (they pulse and are the
+ * live focus), then terminal/other runs newest-first by `created_at`.
+ */
+function sortWorkflowRuns(runs: WorkflowRun[]): WorkflowRun[] {
+  return runs.slice().sort((a, b) => {
+    const aRunning = (a.status ?? "").toLowerCase() === "running";
+    const bRunning = (b.status ?? "").toLowerCase() === "running";
+    if (aRunning !== bRunning) return aRunning ? -1 : 1;
+    const aMs = Date.parse(a.created_at) || 0;
+    const bMs = Date.parse(b.created_at) || 0;
+    return bMs - aMs;
+  });
 }
 
 export function memberName(members: AgentMember[], id?: string | null): string {

@@ -1,7 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { applyFrame, fetchSnapshot, postAction, type SseFrame } from "../api";
+import {
+  applyFrame,
+  fetchSnapshot,
+  fetchWorkflowDefs,
+  postAction,
+  type SseFrame,
+} from "../api";
 import { buildWorkbenchModel } from "../model/readModel";
-import type { DashboardSnapshot } from "../types";
+import type { DashboardSnapshot, WorkflowDef } from "../types";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import {
   defaultSelection,
@@ -31,6 +37,9 @@ const pollIntervalMs = 5000;
 export function App() {
   const [apiUrl, setApiUrl] = useState(apiDefault);
   const [snapshot, setSnapshot] = useState<DashboardSnapshot>(emptySnapshot);
+  // The registered workflow catalog (GET /v1/workflows) is run-independent and
+  // lives outside the snapshot, so it is fetched alongside the snapshot.
+  const [workflowDefs, setWorkflowDefs] = useState<WorkflowDef[]>([]);
   // The snapshot's provenance, NOT its display label: `live` once a live
   // /v1/snapshot has loaded (enabling SSE, polling and write actions), else an
   // empty (not-connected) workspace. The user-facing chip label is derived below.
@@ -71,6 +80,12 @@ export function App() {
           setSnapshot(next);
           setSource(liveSource);
         }
+        try {
+          const defs = await fetchWorkflowDefs(apiDefault);
+          if (!cancelled) setWorkflowDefs(defs);
+        } catch {
+          // Catalog is best-effort; the surface shows an "unavailable" state.
+        }
       } catch {
         // Stay offline/empty; the auto-retry effect below keeps trying.
       }
@@ -99,7 +114,10 @@ export function App() {
     return () => window.clearInterval(id);
   }, [source, apiUrl]);
 
-  const model = useMemo(() => buildWorkbenchModel(snapshot, selection), [snapshot, selection]);
+  const model = useMemo(
+    () => buildWorkbenchModel(snapshot, selection, workflowDefs),
+    [snapshot, selection, workflowDefs],
+  );
 
   // Actions are only honest against a live snapshot; an empty workspace is read-only.
   const isLive = source === liveSource;
@@ -111,10 +129,16 @@ export function App() {
       const next = await fetchSnapshot(apiUrl);
       setSnapshot(next);
       setSource(liveSource);
+      try {
+        setWorkflowDefs(await fetchWorkflowDefs(apiUrl));
+      } catch {
+        setWorkflowDefs([]);
+      }
     } catch (error) {
       setSourceError(error instanceof Error ? error.message : String(error));
       setSource("offline");
       setSnapshot(emptySnapshot);
+      setWorkflowDefs([]);
     } finally {
       setIsLoading(false);
     }
