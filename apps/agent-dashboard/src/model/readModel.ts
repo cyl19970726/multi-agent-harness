@@ -49,6 +49,12 @@ export interface TimelineItem {
   fromAgentId?: string;
   /** Identity class of a message author ("operator" renders distinctly). */
   senderKind?: SenderKind;
+  /**
+   * Provider session that produced this message (from message.delivery), so an
+   * agent reply bubble can drill into the RAW provider turn (claude/codex
+   * stream events) on demand.
+   */
+  providerSessionId?: string;
   /** Provider-neutral provider label for a session row. */
   provider?: string;
   /** Raw provider-session status for a session block header/badge. */
@@ -685,6 +691,7 @@ function buildMemberTimeline(snapshot: DashboardSnapshot, member: AgentMember, w
         counterpartyId: (direction === "in" ? message.from_agent_id : message.to_agent_id) ?? undefined,
         fromAgentId: message.from_agent_id,
         senderKind: message.sender_kind,
+        providerSessionId: message.delivery?.provider_session_id ?? undefined,
       };
     });
 
