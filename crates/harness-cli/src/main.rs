@@ -4253,9 +4253,18 @@ fn ndjson_lines(events: &[serde_json::Value]) -> String {
 
 /// `git -C <wt> diff` — the node's collected evidence for the isolation path.
 /// Returns None when git is unavailable; an empty string means a clean tree.
+///
+/// We first `git add -A --intent-to-add` so brand-new UNTRACKED files a worker
+/// creates show up in the diff as additions (plain `git diff` omits untracked
+/// content). The worktree is throwaway, so touching its index is harmless.
 fn ephemeral_worktree_diff(worktree: &Path) -> Option<String> {
+    let wt = worktree.display().to_string();
+    // Best-effort intent-to-add so untracked files are included; ignore failure.
+    let _ = Command::new("git")
+        .args(["-C", &wt, "add", "-A", "--intent-to-add"])
+        .output();
     let output = Command::new("git")
-        .args(["-C", &worktree.display().to_string(), "diff"])
+        .args(["-C", &wt, "diff"])
         .output()
         .ok()?;
     Some(String::from_utf8_lossy(&output.stdout).to_string())
