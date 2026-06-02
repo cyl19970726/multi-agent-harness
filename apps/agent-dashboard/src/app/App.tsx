@@ -57,6 +57,29 @@ export function App() {
     return () => window.removeEventListener("popstate", onPopState);
   }, []);
 
+  // Auto-connect to the default harness on first load so the dashboard shows
+  // real data immediately — no manual "Load live" click. This is a silent
+  // attempt: on failure we stay in the empty "not connected" state WITHOUT
+  // raising the error banner (that is reserved for an explicit Load live / write
+  // the user triggered). Runs once on mount against the default API URL.
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const next = await fetchSnapshot(apiDefault);
+        if (!cancelled) {
+          setSnapshot(next);
+          setSource(liveSource);
+        }
+      } catch {
+        // Stay offline/empty; the user can click Load live to see the error.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const model = useMemo(() => buildWorkbenchModel(snapshot, selection), [snapshot, selection]);
 
   // Actions are only honest against a live snapshot; an empty workspace is read-only.
@@ -142,8 +165,11 @@ export function App() {
     };
   }, [shouldPoll, apiUrl]);
 
-  async function runAction(path: string, body?: unknown) {
-    if (!isLive) return;
+  // Returns whether the action succeeded so callers that chain actions (e.g. the
+  // composer's queue-then-deliver) can stop on failure instead of clobbering the
+  // first error with the next call's `setSourceError(null)`.
+  async function runAction(path: string, body?: unknown): Promise<boolean> {
+    if (!isLive) return false;
     setSourceError(null);
     try {
       const response = await postAction(apiUrl, path, body);
@@ -152,8 +178,10 @@ export function App() {
       } else {
         await refreshLive();
       }
+      return true;
     } catch (error) {
       setSourceError(error instanceof Error ? error.message : String(error));
+      return false;
     }
   }
 
@@ -179,7 +207,7 @@ export function App() {
         sourceError={sourceError}
         sourceLabel={sourceLabel}
         actionsEnabled={isLive}
-        onAction={(path, body) => void runAction(path, body)}
+        onAction={(path, body) => runAction(path, body)}
         pollEnabled={pollEnabled}
         canPoll={isLive}
         onTogglePoll={() => setPollEnabled((on) => !on)}

@@ -2476,6 +2476,39 @@ fn handle_http_connection(
                     &serde_json::json!({"error": "doc_not_found", "detail": detail}),
                 )?,
             },
+            // GET /v1/provider-sessions/{id}/events — the RAW provider turn,
+            // 1:1: every line of the persisted claude/codex stream as parsed
+            // JSON, so the dashboard can show the agent's actual events
+            // (assistant text, tool_use, tool_result, result) instead of a
+            // wrapped "succeeded: N events" summary.
+            session_path
+                if session_path.starts_with("/v1/provider-sessions/")
+                    && session_path.ends_with("/events") =>
+            {
+                // Session ids are generated tokens (delivery-<ts>-<n>): safe
+                // path chars, no URL-decoding needed.
+                let session_id = session_path
+                    .strip_prefix("/v1/provider-sessions/")
+                    .and_then(|rest| rest.strip_suffix("/events"))
+                    .unwrap_or_default()
+                    .to_string();
+                match read_provider_session_events(store, &session_id) {
+                    Ok((events, truncated)) => write_http_json(
+                        &mut stream,
+                        "200 OK",
+                        &serde_json::json!({
+                            "session_id": session_id,
+                            "events": events,
+                            "truncated": truncated,
+                        }),
+                    )?,
+                    Err(detail) => write_http_json(
+                        &mut stream,
+                        "404 Not Found",
+                        &serde_json::json!({"error": "session_events_not_found", "detail": detail.to_string()}),
+                    )?,
+                }
+            }
             _ => write_http_json(
                 &mut stream,
                 "404 Not Found",
@@ -6717,6 +6750,46 @@ fn latest_provider_session(
     Ok(sessions.remove(session_id))
 }
 
+/// Read the RAW provider turn for one session, 1:1: each line of the persisted
+/// claude (`jsonl_ref`) or codex (`stdout_ref`) NDJSON stream parsed back into
+/// JSON. This is what powers the dashboard's "▸ turn" drill-in — the agent's
+/// actual events (assistant text, tool_use, tool_result, result), not a wrapped
+/// summary. Returns `(events, truncated)`; capped so a long turn cannot flood
+/// the response. Non-JSON lines are skipped so a partial final line is safe.
+fn read_provider_session_events(
+    store: &HarnessStore,
+    session_id: &str,
+) -> CliResult<(Vec<serde_json::Value>, bool)> {
+    const MAX_EVENTS: usize = 1000;
+    let session = latest_provider_session(store, session_id)?
+        .ok_or_else(|| CliError::Usage(format!("provider session not found: {session_id}")))?;
+    let path = session
+        .jsonl_ref
+        .clone()
+        .or_else(|| session.stdout_ref.clone())
+        .ok_or_else(|| {
+            CliError::Usage(format!("session {session_id} has no recorded event stream"))
+        })?;
+    let content = fs::read_to_string(&path)
+        .map_err(|error| CliError::Usage(format!("cannot read session stream {path}: {error}")))?;
+    let mut events = Vec::new();
+    let mut truncated = false;
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) {
+            if events.len() >= MAX_EVENTS {
+                truncated = true;
+                break;
+            }
+            events.push(value);
+        }
+    }
+    Ok((events, truncated))
+}
+
 fn latest_provider_sessions_in_append_order(
     store: &HarnessStore,
 ) -> CliResult<Vec<ProviderSession>> {
@@ -7109,6 +7182,53 @@ fn extract_turn_id_from_claude_events(_events: &[ClaudeStreamEvent]) -> Option<S
     None
 }
 
+/// Extract the assistant's ACTUAL reply text from a `claude -p
+/// --output-format stream-json` stream, so the delivery report surfaces what
+/// the agent said rather than a meta event count. Prefers the terminal
+/// `result` event's `result` field; falls back to concatenating the text
+/// blocks of `assistant` messages. Returns None when the turn produced no
+/// assistant text (e.g. tool-only), letting the caller keep a status summary.
+fn extract_claude_reply_text(events: &[ClaudeStreamEvent]) -> Option<String> {
+    // The terminal result event carries the final assistant text.
+    for event in events.iter().rev() {
+        if event.event_type != "result" {
+            continue;
+        }
+        if let Some(text) = event.payload.get("result").and_then(|v| v.as_str()) {
+            let trimmed = text.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+    // Fallback: concatenate text blocks from assistant messages in order.
+    let mut parts = Vec::new();
+    for event in events {
+        if event.event_type != "assistant" {
+            continue;
+        }
+        let Some(content) = event
+            .payload
+            .get("message")
+            .and_then(|m| m.get("content"))
+            .and_then(|c| c.as_array())
+        else {
+            continue;
+        };
+        for block in content {
+            if block.get("type").and_then(|t| t.as_str()) != Some("text") {
+                continue;
+            }
+            if let Some(text) = block.get("text").and_then(|t| t.as_str()) {
+                if !text.trim().is_empty() {
+                    parts.push(text.trim().to_string());
+                }
+            }
+        }
+    }
+    (!parts.is_empty()).then(|| parts.join("\n"))
+}
+
 /// Parse Claude stream-json NDJSON and ingest as neutral AgentEvent / ProviderSession.
 /// Mirrors the Codex exec reducer: same neutral objects, provider-specific parsing.
 fn ingest_claude_stream_json(
@@ -7346,6 +7466,30 @@ fn extract_turn_id_from_exec_events(events: &[CodexExecEvent]) -> Option<String>
             })
             .map(|value| value.to_string())
     })
+}
+
+/// Extract the agent's ACTUAL reply text from a `codex exec --json` stream, so
+/// the delivery report surfaces what the agent said rather than a meta status
+/// line. Codex emits `item.completed` events whose `item.type` is
+/// `agent_message` and whose `item.text` is the assistant's prose; concatenate
+/// them in order. Returns None when the turn produced no agent message (e.g.
+/// command-only), letting the caller keep a status summary.
+fn extract_codex_reply_text(events: &[CodexExecEvent]) -> Option<String> {
+    let mut parts = Vec::new();
+    for event in events {
+        let Some(item) = event.payload.get("item") else {
+            continue;
+        };
+        if item.get("type").and_then(|t| t.as_str()) != Some("agent_message") {
+            continue;
+        }
+        if let Some(text) = item.get("text").and_then(|t| t.as_str()) {
+            if !text.trim().is_empty() {
+                parts.push(text.trim().to_string());
+            }
+        }
+    }
+    (!parts.is_empty()).then(|| parts.join("\n"))
 }
 
 /// Spawn `codex exec --json` with the delivery configuration and parse NDJSON output.
@@ -7723,7 +7867,8 @@ fn run_codex_exec_delivery(
     )?;
 
     let summary = match status {
-        ProviderSessionStatus::Succeeded => "Codex exec --json turn completed successfully".into(),
+        ProviderSessionStatus::Succeeded => extract_codex_reply_text(&events)
+            .unwrap_or_else(|| "Codex exec --json turn completed successfully".into()),
         ProviderSessionStatus::Failed => {
             if stderr_log.is_empty() {
                 "Codex exec --json failed: no output".into()
@@ -7990,11 +8135,18 @@ fn run_claude_delivery(
         },
         request_ref: Some(session_dir.display().to_string()),
         provider_request_id: None,
-        provider_session_id: Some(resolved_session_id),
+        // The session ROW id (delivery_id), so a message's delivery.provider_session_id
+        // maps 1:1 to its ProviderSession row (resume continuity lives in
+        // provider_thread_id). This matches codex + the dry-run/failure paths and
+        // lets the dashboard drill into the exact turn by id.
+        provider_session_id: Some(delivery_id.to_string()),
         evidence_ids: vec![evidence_id],
         exit_code: if process_success { Some(0) } else { Some(1) },
         summary: if process_success {
-            format!("Claude delivery succeeded: {} events", events.len())
+            // Surface the agent's actual reply as the report content; fall back
+            // to a status line only when the turn produced no assistant text.
+            extract_claude_reply_text(&events)
+                .unwrap_or_else(|| format!("Claude delivery succeeded: {} events", events.len()))
         } else {
             format!("Claude delivery failed: {}", stderr_log)
         },

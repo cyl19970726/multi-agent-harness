@@ -58,7 +58,7 @@ import {
 } from "@/components/workbench/atoms";
 import { Avatar } from "@/components/workbench/Avatar";
 import { Markdown } from "@/components/workbench/Markdown";
-import { fetchDoc } from "../api";
+import { fetchDoc, normalizeBaseUrl } from "../api";
 import {
   Dialog,
   DialogFooter,
@@ -83,12 +83,10 @@ import {
   displayGoalStatus,
   formatDuration,
   gapIsResolved,
-  groupMemberTimelineBySession,
   memberName,
   taskTitle,
   tasksBlockedBy,
   taskGitMetadata,
-  type MemberSessionGroup,
   type TimelineItem,
   type WorkbenchModel,
 } from "../model/readModel";
@@ -2498,7 +2496,7 @@ function runtimeHealthSummary(member: AgentMember): string {
  * URL-addressable via `?agent=<id>`. Owns its own layout, so the global
  * Inspector is suppressed for the Agents area in WorkbenchShell.
  */
-export function AgentDetail({ model, onSelectionChange, actionsEnabled, onAction }: SurfaceProps) {
+export function AgentDetail({ model, onSelectionChange, actionsEnabled, onAction, apiUrl }: SurfaceProps) {
   const member = model.selectedMember;
   if (!member) {
     return (
@@ -2592,7 +2590,7 @@ export function AgentDetail({ model, onSelectionChange, actionsEnabled, onAction
           member={member}
           actionsEnabled={actionsEnabled}
           onAction={onAction}
-          onSelectionChange={onSelectionChange}
+          apiUrl={apiUrl}
         />
       </DocSection>
 
@@ -2770,36 +2768,46 @@ function ConversationStream({
   member,
   actionsEnabled,
   onAction,
-  onSelectionChange,
+  apiUrl,
 }: {
   model: WorkbenchModel;
   member: AgentMember;
   actionsEnabled?: boolean;
   onAction?: (path: string, body?: unknown) => void;
-  onSelectionChange: (selection: Partial<SelectionState>) => void;
+  apiUrl?: string;
 }) {
-  const groups = groupMemberTimelineBySession(
-    model.selectedMemberTimeline,
-    model.sessionsByMember,
-  );
+  // A chat is ONLY the conversation — operator/agent message bubbles, oldest
+  // first. Delivery lifecycle, provider sessions, evidence and agent events are
+  // runtime plumbing (they render in the Runtime section), NOT chat turns; the
+  // old merged-everything stream made one exchange read as 6-9 redundant rows.
+  // The raw provider turn is reachable per agent reply via the bubble's
+  // drill-in, so nothing is lost — it is just no longer dumped inline.
+  const sessions = model.snapshot.provider_sessions ?? [];
+  const chat = model.selectedMemberTimeline
+    .filter((item) => item.kind === "message")
+    .slice()
+    // Numeric time order: createdAt is "unix-ms:<ms>" (or ISO); a string compare
+    // would split the two formats into separate lexical ranges and misorder them.
+    .sort((a, b) => parseTs(a.createdAt) - parseTs(b.createdAt));
   return (
     <section className="flex min-h-[34rem] min-w-0 flex-col overflow-hidden rounded-lg border border-border bg-card">
       <header className="flex items-center justify-between gap-2 border-b border-border px-3.5 py-2.5">
         <span className="text-[11px] text-muted-foreground">
-          Messages, sessions and actions, oldest first
+          Conversation · oldest first
         </span>
-        <Badge tone="muted">{model.selectedMemberTimeline.length} events</Badge>
+        <Badge tone="muted">{chat.length} messages</Badge>
       </header>
 
       <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3">
-        {model.selectedMemberTimeline.length ? (
-          groups.map((group) => (
-            <SessionBlock
-              key={group.id}
-              group={group}
+        {chat.length ? (
+          chat.map((item) => (
+            <ChatBubble
+              key={item.id}
+              item={item}
               members={model.members}
-              memberName={member.name ?? member.id}
-              onSelectionChange={onSelectionChange}
+              selfName={member.name ?? member.id}
+              sessions={sessions}
+              apiUrl={apiUrl}
             />
           ))
         ) : (
@@ -2817,124 +2825,6 @@ function ConversationStream({
 }
 
 /**
- * One collapsible session block: header (provider, status, start→end/duration,
- * thread/turn id) and the nested rows. The default (session-less) group renders
- * a plain "Standalone messages" header. Within a block, input order is preserved
- * so assignment renders before its report.
- */
-function SessionBlock({
-  group,
-  members,
-  memberName,
-  onSelectionChange,
-}: {
-  group: MemberSessionGroup;
-  members: AgentMember[];
-  memberName: string;
-  onSelectionChange: (selection: Partial<SelectionState>) => void;
-}) {
-  const [open, setOpen] = useState(true);
-  const session = group.session;
-  const duration = session
-    ? formatDuration(session.started_at, session.ended_at)
-    : undefined;
-  const tone = session ? timelineTone("session") : "idle";
-  return (
-    <div className="overflow-hidden rounded-lg border border-border bg-background/40">
-      <button
-        type="button"
-        onClick={() => setOpen((value) => !value)}
-        className="flex w-full items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-accent/40"
-      >
-        {open ? (
-          <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" />
-        ) : (
-          <ChevronRight className="size-3.5 shrink-0 text-muted-foreground" />
-        )}
-        {session ? (
-          <Terminal className="size-3.5 shrink-0 text-status-running" />
-        ) : (
-          <MessageSquare className="size-3.5 shrink-0 text-muted-foreground" />
-        )}
-        <span className="min-w-0 flex-1">
-          <span className="flex items-center gap-1.5">
-            <span className="truncate text-[12px] font-semibold text-foreground">
-              {session
-                ? `Provider session${session.provider ? ` · ${session.provider}` : ""}`
-                : "Standalone messages"}
-            </span>
-            {session && (
-              <Badge tone={tone}>{session.status ?? "unknown"}</Badge>
-            )}
-          </span>
-          {session && (
-            <span className="mt-0.5 flex flex-wrap items-center gap-x-2.5 gap-y-0.5 text-[10px] text-muted-foreground">
-              {session.started_at && <span>{fmtTime(session.started_at)}</span>}
-              {duration && (
-                <span className="inline-flex items-center gap-1">
-                  <Clock className="size-3" />
-                  {session.ended_at ? duration : `running ${duration}`}
-                </span>
-              )}
-              {session.provider_thread_id && (
-                <span>thread <MonoId>{session.provider_thread_id}</MonoId></span>
-              )}
-              {session.provider_turn_id && (
-                <span>turn <MonoId>{session.provider_turn_id}</MonoId></span>
-              )}
-            </span>
-          )}
-        </span>
-        <span className="shrink-0 font-mono text-[10px] text-muted-foreground/70">
-          {group.items.length}
-        </span>
-      </button>
-      {open && (
-        <div className="space-y-2 border-t border-border/60 px-3 py-2.5">
-          {group.items.length ? (
-            group.items.map((item) => (
-              <StreamRow
-                key={item.id}
-                item={item}
-                members={members}
-                memberName={memberName}
-                onSelectionChange={onSelectionChange}
-              />
-            ))
-          ) : (
-            <p className="px-1 py-2 text-[11px] text-muted-foreground">
-              No activity recorded in this session window.
-            </p>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
-/**
- * One row in the stream. Messages render as chat bubbles (operator/outbound
- * right-aligned, agent/inbound left); every other kind renders as an inline
- * action card.
- */
-function StreamRow({
-  item,
-  members,
-  memberName,
-  onSelectionChange,
-}: {
-  item: TimelineItem;
-  members: AgentMember[];
-  memberName: string;
-  onSelectionChange: (selection: Partial<SelectionState>) => void;
-}) {
-  if (item.kind === "message") {
-    return <ChatBubble item={item} members={members} selfName={memberName} />;
-  }
-  return <ActionCard item={item} onSelectionChange={onSelectionChange} />;
-}
-
-/**
  * A chat bubble for an operator↔agent message, attributed by AUTHOR identity
  * (Message.sender_kind), not raw inbox/outbox direction:
  *  - operator-authored messages (sender_kind="operator") sit on the RIGHT with
@@ -2948,10 +2838,14 @@ function ChatBubble({
   item,
   members,
   selfName,
+  sessions,
+  apiUrl,
 }: {
   item: TimelineItem;
   members: AgentMember[];
   selfName: string;
+  sessions?: ProviderSession[];
+  apiUrl?: string;
 }) {
   // Operator messages are authored by the human, never a member. They are
   // outbound TO the member (direction "in" in the member timeline) AND carry
@@ -2965,6 +2859,14 @@ function ChatBubble({
     : item.direction === "in"
       ? memberName(members, item.fromAgentId ?? item.counterpartyId)
       : selfName;
+  // An agent reply that was produced by a provider turn can drill into the RAW
+  // claude/codex events. The backend stamps the session ROW id 1:1 on the
+  // message's delivery (item.providerSessionId), so the lookup is exact — no
+  // time-window guessing. Operator messages have no turn.
+  const session =
+    !isOperator && item.providerSessionId
+      ? (sessions ?? []).find((candidate) => candidate.id === item.providerSessionId)
+      : undefined;
   return (
     <div className={cn("flex", isOperator ? "justify-end" : "justify-start")}>
       <div className={cn("max-w-[80%]", isOperator ? "items-end text-right" : "items-start")}>
@@ -2992,99 +2894,167 @@ function ChatBubble({
               : "rounded-bl-sm border-border bg-background text-foreground",
           )}
         >
-          {item.body ?? item.title}
+          {item.body ? <Markdown source={item.body} /> : item.title}
         </div>
-        {item.deliveryStatus && (
-          <div className={cn("mt-1 flex items-center gap-1", isOperator && "justify-end")}>
+        <div className={cn("mt-1 flex flex-wrap items-center gap-1.5", isOperator && "justify-end")}>
+          {item.deliveryStatus && (
             <Badge tone={deliveryStatusTone(item.deliveryStatus)}>{item.deliveryStatus}</Badge>
-          </div>
-        )}
+          )}
+          {session && <TurnDrillIn session={session} apiUrl={apiUrl} />}
+        </div>
       </div>
     </div>
   );
 }
 
-/** Lucide icon + tone for a non-message stream row, by kind/verdict. */
-function actionVisual(item: TimelineItem): { icon: typeof Activity; tone: StatusTone } {
-  switch (item.kind) {
-    case "session":
-      return { icon: Terminal, tone: timelineTone("session") };
-    case "evidence":
-      return { icon: FileCheck2, tone: "good" };
-    case "proposal":
-      return { icon: FileText, tone: "decision" };
-    case "review":
-      return { icon: Gavel, tone: reviewVerdictTone(item.verdict) };
-    case "warning":
-      return { icon: AlertTriangle, tone: severityTone(item.severity) };
-    case "event":
-    default:
-      return { icon: Zap, tone: "info" };
-  }
+/** Parse a harness timestamp ("unix-ms:<ms>" or ISO) to epoch ms, or NaN. */
+function parseTs(value?: string | null): number {
+  if (!value) return NaN;
+  return value.startsWith("unix-ms:") ? Number(value.slice("unix-ms:".length)) : Date.parse(value);
+}
+
+/** One raw provider event, as returned 1:1 by GET /v1/provider-sessions/{id}/events. */
+interface RawTurnEvent {
+  type?: string;
+  subtype?: string;
+  [key: string]: unknown;
 }
 
 /**
- * Inline action card for an agent action: session start/stop, AgentEvent,
- * Evidence, Proposal, Review, or Warning. Shows an icon, a label, a count/refs
- * line when present ("Ran N commands" / "Edited N files"), and links to the
- * referenced object when one exists.
+ * Per-reply drill-in to the RAW provider turn: lazily fetches the claude/codex
+ * stream events 1:1 (assistant text, tool_use, tool_result, result) so the
+ * operator sees what the agent actually did, not a "succeeded: N events" wrap.
  */
-function ActionCard({
-  item,
-  onSelectionChange,
-}: {
-  item: TimelineItem;
-  onSelectionChange: (selection: Partial<SelectionState>) => void;
-}) {
-  const { icon: Icon, tone } = actionVisual(item);
-  const countLabel =
-    item.count != null && item.countNoun
-      ? `${item.count} ${item.countNoun}${item.count === 1 ? "" : "s"}`
-      : undefined;
-  const sessionLine =
-    item.kind === "session"
-      ? sessionRunLine(item)
-      : undefined;
+function TurnDrillIn({ session, apiUrl }: { session: ProviderSession; apiUrl?: string }) {
+  const [open, setOpen] = useState(false);
+  const [events, setEvents] = useState<RawTurnEvent[] | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const duration = formatDuration(session.started_at, session.ended_at);
+
+  async function toggle() {
+    const next = !open;
+    setOpen(next);
+    if (!next || events !== null || !apiUrl) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const base = normalizeBaseUrl(apiUrl);
+      const res = await fetch(
+        `${base}/v1/provider-sessions/${encodeURIComponent(session.id)}/events`,
+      );
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = (await res.json()) as { events?: RawTurnEvent[] };
+      setEvents(data.events ?? []);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoading(false);
+    }
+  }
+
   return (
-    <button
-      type="button"
-      onClick={() => item.objectRef && onSelectionChange({ taskId: item.objectRef, surface: "task" })}
-      className="flex w-full items-start gap-2.5 rounded-lg border border-border bg-card px-3 py-2 text-left transition-colors hover:bg-accent/40"
-    >
-      <span className={cn("mt-0.5 grid size-6 shrink-0 place-items-center rounded-md bg-background", toneText[tone])}>
-        <Icon className="size-3.5" />
-      </span>
-      <span className="min-w-0 flex-1">
-        <span className="flex flex-wrap items-center gap-1.5">
-          <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-            {item.eventType ?? item.kind}
-          </span>
-          {item.verdict && <Badge tone={reviewVerdictTone(item.verdict)}>{item.verdict}</Badge>}
-          {countLabel && <span className="text-[11px] text-muted-foreground">{countLabel}</span>}
-          {item.createdAt && (
-            <span className="ml-auto text-[10px] text-muted-foreground">{fmtTime(item.createdAt)}</span>
+    <span className="inline-flex flex-col">
+      <button
+        type="button"
+        onClick={toggle}
+        className="inline-flex items-center gap-1 text-[10px] text-muted-foreground transition-colors hover:text-foreground"
+      >
+        {open ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />}
+        <Terminal className="size-3" />
+        {session.provider ?? "turn"}
+        {duration ? ` · ${duration}` : ""}
+        {events ? ` · ${events.length} events` : ""}
+        {" · turn"}
+      </button>
+      {open && (
+        <div className="mt-1 max-h-80 overflow-y-auto rounded-md border border-border bg-muted/30 p-2 text-left">
+          {loading && <span className="text-[11px] text-muted-foreground">loading…</span>}
+          {error && <span className="text-[11px] text-status-bad">{error}</span>}
+          {events?.map((event, index) => <RawEventRow key={index} event={event} />)}
+          {events && events.length === 0 && (
+            <span className="text-[11px] text-muted-foreground">no events recorded</span>
           )}
-        </span>
-        <span className="block truncate text-[13px] font-medium text-foreground">
-          {sessionLine ?? item.title}
-        </span>
-        {item.body && (
-          <span className="mt-0.5 block line-clamp-2 text-xs text-muted-foreground">{item.body}</span>
-        )}
-      </span>
-    </button>
+        </div>
+      )}
+    </span>
   );
 }
 
-/** "Provider session running 1m54s" / "Provider session succeeded · 2m" line. */
-function sessionRunLine(item: TimelineItem): string {
-  const status = item.sessionStatus ?? "session";
-  const duration = formatDuration(item.startedAt, item.endedAt);
-  if (!duration) return `Provider session ${status}`;
-  const running = status === "running" || !item.endedAt;
-  return running
-    ? `Provider session running ${duration}`
-    : `Provider session ${status} · ${duration}`;
+/** Render one raw provider event 1:1: its type + a compact, faithful detail. */
+function RawEventRow({ event }: { event: RawTurnEvent }) {
+  const { label, detail } = summarizeRawEvent(event);
+  return (
+    <div className="flex gap-2 border-b border-border/40 py-1 text-[11px] last:border-b-0">
+      <span className="shrink-0 font-mono text-muted-foreground">{label}</span>
+      {detail && <span className="min-w-0 whitespace-pre-wrap break-words text-foreground/80">{detail}</span>}
+    </div>
+  );
+}
+
+/**
+ * Map a raw claude/codex stream event to a (label, detail) pair that stays
+ * faithful to the event — assistant text, tool_use name+input, tool_result,
+ * result subtype, codex agent_message/command items — with a JSON fallback so
+ * unknown event kinds are still shown, not hidden.
+ */
+function summarizeRawEvent(event: RawTurnEvent): { label: string; detail: string } {
+  const type = typeof event.type === "string" ? event.type : "event";
+  // codex item events carry the real work under `item`.
+  const item = event.item as Record<string, unknown> | undefined;
+  if (item && typeof item.type === "string") {
+    const itemType = item.type;
+    const text = typeof item.text === "string" ? item.text : "";
+    const command = typeof item.command === "string" ? item.command : "";
+    return { label: itemType, detail: text || command || compactJson(item) };
+  }
+  switch (type) {
+    case "system":
+      return {
+        label: event.subtype ? `system/${event.subtype}` : "system",
+        detail: typeof event.model === "string" ? `model ${event.model}` : "",
+      };
+    case "assistant": {
+      const message = event.message as { content?: unknown } | undefined;
+      const blocks = Array.isArray(message?.content) ? (message?.content as Record<string, unknown>[]) : [];
+      const texts: string[] = [];
+      for (const block of blocks) {
+        if (block.type === "text" && typeof block.text === "string") {
+          texts.push(block.text);
+        } else if (block.type === "tool_use") {
+          const name = typeof block.name === "string" ? block.name : "tool";
+          texts.push(`tool_use: ${name}(${compactJson(block.input)})`);
+        }
+      }
+      return { label: "assistant", detail: texts.join("\n") || compactJson(message) };
+    }
+    case "user": {
+      const message = event.message as { content?: unknown } | undefined;
+      const blocks = Array.isArray(message?.content) ? (message?.content as Record<string, unknown>[]) : [];
+      const results = blocks
+        .filter((block) => block.type === "tool_result")
+        .map((block) => `tool_result: ${compactJson(block.content)}`);
+      return { label: "user", detail: results.join("\n") || compactJson(message) };
+    }
+    case "result":
+      return {
+        label: event.subtype ? `result/${event.subtype}` : "result",
+        detail: typeof event.result === "string" ? event.result : "",
+      };
+    default:
+      return { label: type, detail: compactJson(event) };
+  }
+}
+
+/** A short single-line JSON preview, capped so a big payload cannot flood. */
+function compactJson(value: unknown): string {
+  if (value == null) return "";
+  try {
+    const text = typeof value === "string" ? value : JSON.stringify(value);
+    return text.length > 240 ? `${text.slice(0, 240)}…` : text;
+  } catch {
+    return String(value);
+  }
 }
 
 /**
@@ -3101,19 +3071,41 @@ function Composer({
 }: {
   member: AgentMember;
   actionsEnabled?: boolean;
-  onAction?: (path: string, body?: unknown) => void;
+  // Returns whether the action succeeded (App.runAction): the chat turn below
+  // chains queue→deliver and must stop if the queue fails.
+  onAction?: (path: string, body?: unknown) => void | Promise<boolean>;
 }) {
   const [draft, setDraft] = useState("");
-  const canSend = Boolean(actionsEnabled && draft.trim());
+  const [busy, setBusy] = useState(false);
+  const canSend = Boolean(actionsEnabled && draft.trim() && !busy);
 
-  function send() {
+  // A single Send is a full chat turn: queue the operator message, THEN deliver
+  // it (start the runtime if idle) so the agent actually runs and replies. Just
+  // queuing left the operator staring at a message the agent never answered.
+  async function send() {
     const content = draft.trim();
-    if (!content || !actionsEnabled) return;
-    dispatch(
-      onAction,
-      operatorMessage({ to: member.id, content, task: member.current_task_id ?? undefined }),
-    );
+    if (!content || !actionsEnabled || !onAction || busy) return;
     setDraft("");
+    setBusy(true);
+    try {
+      const message = operatorMessage({
+        to: member.id,
+        content,
+        task: member.current_task_id ?? undefined,
+      });
+      // Stop on a failed queue so the follow-up deliver does not clobber the
+      // error (App.runAction resets the error banner at the start of each call).
+      // Restore the draft so the operator can retry without retyping.
+      const queued = await onAction(message.path, message.body);
+      if (queued === false) {
+        setDraft(content);
+        return;
+      }
+      const deliver = deliverQueued(member.id, { startRuntime: true });
+      await onAction(deliver.path, deliver.body);
+    } finally {
+      setBusy(false);
+    }
   }
 
   return (
@@ -3140,13 +3132,13 @@ function Composer({
           placeholder={
             actionsEnabled ? `Message ${member.name ?? member.id} as operator…` : ACTIONS_DISABLED_HINT
           }
-          disabled={!actionsEnabled}
+          disabled={!actionsEnabled || busy}
           className="min-h-9 max-h-32 flex-1 resize-y rounded-md border border-border bg-background px-3 py-2 text-[13px] text-foreground outline-none transition-colors focus:border-ring disabled:cursor-not-allowed disabled:opacity-60"
         />
         {actionsEnabled ? (
           <Button size="sm" onClick={send} disabled={!canSend} className="shrink-0">
             <Send className="size-3.5" />
-            Send
+            {busy ? "Sending…" : "Send"}
           </Button>
         ) : (
           <Tooltip>
