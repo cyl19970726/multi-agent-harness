@@ -27,6 +27,8 @@ consequences, affected modules, and validation path.
 | [0017](0017-generic-object-model.md) | Generic object model — additive-optional schema evolution |
 | [0018](0018-exec-stream-primary-substrate.md) | Headless exec-stream as primary provider substrate |
 | [0019](0019-vision-goal-task-workbench-redesign.md) | Vision → Goal → Task Workbench redesign (board + detail + derived graph) |
+| [0020](0020-codex-persistent-service-exploration.md) | Codex persistent-service exploration — keep the respawn model (Claude resident is separate) |
+| [0021](0021-resident-daemon.md) | Resident-daemon warm-child host (amends 0018) — internal Unix-socket host keeps exec-stream children warm across deliveries |
 
 ## Split Rule
 
