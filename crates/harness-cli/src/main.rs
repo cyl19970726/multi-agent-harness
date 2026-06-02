@@ -3846,7 +3846,7 @@ fn try_workflow_real_agent_step(
 }
 
 fn workflow_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    require_subcommand(args, "workflow run|list")?;
+    require_subcommand(args, "workflow run|run-spec|list")?;
     match args[0].as_str() {
         "list" => {
             let registry = workflow::WorkflowRegistry::builtin();
@@ -3860,6 +3860,10 @@ fn workflow_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
         }
         "run" => {
             let result = workflow_run_value(store, &args[1..])?;
+            print_json(&result)?;
+        }
+        "run-spec" => {
+            let result = workflow_run_spec_value(store, &args[1..])?;
             print_json(&result)?;
         }
         other => {
@@ -3912,6 +3916,89 @@ fn workflow_run_value(store: &HarnessStore, args: &[String]) -> CliResult<serde_
     run_workflow_with_driver(store, &run_id, def, &members, &prompt, &driver)
 }
 
+/// `harness workflow run-spec <spec.json> [--codex <member>] [--claude <member>]
+///  [--member <name>=<id>]... [--start-runtime] [--dry-run] [--timeout-ms <ms>]`
+///
+/// Reads a runtime-authored [`workflow::WorkflowSpec`] JSON-IR file, validates it
+/// by parsing, resolves its member NAMES to harness member ids, walks the IR via
+/// `dispatch_spec`, and journals the run/steps exactly like the registry `run`
+/// path (shared `journal_workflow_outcome`). With `--dry-run` a mock driver
+/// stands in for real provider delivery so the IR can be exercised end-to-end
+/// without spawning agents.
+fn workflow_run_spec_value(store: &HarnessStore, args: &[String]) -> CliResult<serde_json::Value> {
+    // The spec path is the first positional arg (not a --flag) or `--spec <path>`.
+    let path = value(args, "--spec")
+        .or_else(|| args.iter().find(|arg| !arg.starts_with("--")).cloned())
+        .ok_or_else(|| {
+            CliError::Usage("workflow run-spec requires a <spec.json> path".to_string())
+        })?;
+
+    let raw = std::fs::read_to_string(&path)
+        .map_err(|error| CliError::Usage(format!("cannot read spec {path}: {error}")))?;
+    let spec: workflow::WorkflowSpec = serde_json::from_str(&raw)
+        .map_err(|error| CliError::Usage(format!("invalid workflow spec {path}: {error}")))?;
+
+    // Build the member-name -> harness-member-id resolution map from the flags.
+    // `--codex`/`--claude` register the conventional role names; repeatable
+    // `--member <name>=<id>` registers arbitrary names a spec may reference.
+    let mut member_map: std::collections::BTreeMap<String, String> =
+        std::collections::BTreeMap::new();
+    if let Some(codex) = value(args, "--codex") {
+        member_map.insert("codex".to_string(), codex);
+    }
+    if let Some(claude) = value(args, "--claude") {
+        member_map.insert("claude".to_string(), claude);
+    }
+    for pair in many(args, "--member") {
+        let (name, id) = pair
+            .split_once('=')
+            .ok_or_else(|| CliError::Usage(format!("--member must be name=id, got: {pair}")))?;
+        member_map.insert(name.to_string(), id.to_string());
+    }
+    if member_map.is_empty() {
+        return Err(CliError::Usage(
+            "workflow run-spec needs at least one member (--codex/--claude/--member name=id)"
+                .to_string(),
+        ));
+    }
+
+    let options = WorkflowDeliveryOptions {
+        dry_run: has_flag(args, "--dry-run"),
+        start_runtime: has_flag(args, "--start-runtime"),
+        timeout_ms: value(args, "--timeout-ms")
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(3_000),
+    };
+
+    // Mint the run id up front so the real driver can journal each step's
+    // `running` row as it starts (live SSE progress), mirroring `workflow run`.
+    let run_id = generated_id("wfrun");
+
+    let resolver = |name: &str| member_map.get(name).cloned();
+
+    let run = WorkflowRun {
+        id: run_id.clone(),
+        workflow_name: spec.name.clone(),
+        status: WorkflowRunStatus::Running,
+        step_ids: Vec::new(),
+        created_at: now_string(),
+        ended_at: None,
+        summary: None,
+    };
+    store.append_workflow_run(&run)?;
+
+    let outcome = {
+        let run_id = run_id.clone();
+        let driver = move |step: &workflow::AgentStepSpec| {
+            workflow_real_agent_step(store, &run_id, &options, step)
+        };
+        workflow::dispatch_spec(&spec, &resolver, &driver)
+            .map_err(|error| CliError::Usage(error.to_string()))?
+    };
+
+    journal_workflow_outcome(store, run, &outcome)
+}
+
 /// Create the WorkflowRun (running), dispatch the workflow body with the given
 /// agent-step driver, journal a WorkflowStep per step, and finalize the run.
 /// The `driver` is injectable so tests pass a mock instead of the real provider
@@ -3924,7 +4011,7 @@ fn run_workflow_with_driver(
     prompt: &str,
     driver: &workflow::AgentStepFn<'_>,
 ) -> CliResult<serde_json::Value> {
-    let mut run = WorkflowRun {
+    let run = WorkflowRun {
         id: run_id.to_string(),
         workflow_name: def.name.to_string(),
         status: WorkflowRunStatus::Running,
@@ -3938,6 +4025,18 @@ fn run_workflow_with_driver(
     // Dispatch the compiled workflow body (option C registry dispatch).
     let outcome = (def.run)(driver, members, prompt);
 
+    journal_workflow_outcome(store, run, &outcome)
+}
+
+/// Journal the running `run`'s terminal steps + finalize it from a
+/// [`workflow::WorkflowOutcome`]. Shared by the registry `run` path and the
+/// dynamic `run-spec` (IR) path so both journal identically.
+fn journal_workflow_outcome(
+    store: &HarnessStore,
+    mut run: WorkflowRun,
+    outcome: &workflow::WorkflowOutcome,
+) -> CliResult<serde_json::Value> {
+    let run_id = run.id.clone();
     // Journal one TERMINAL WorkflowStep per StepResult, preserving order. When
     // the driver already journaled a `running` row at step start (real path), we
     // REUSE its `step_id` and real `started_at` so the latest-wins projection
@@ -9112,6 +9211,7 @@ fn print_help() {
   codex review --task <task> --agent <agent> --worktree <path> [--base <branch>] [--uncommitted] [--prompt <text>]
   workflow list
   workflow run --name <name> --codex <member> --claude <member> [--prompt <text>] [--start-runtime] [--dry-run] [--timeout-ms <ms>]
+  workflow run-spec <spec.json> [--codex <member>] [--claude <member>] [--member <name>=<id>]... [--start-runtime] [--dry-run] [--timeout-ms <ms>]
   serve [--addr 127.0.0.1:8787] [--once]
   daemon start [--socket <path>] [--idle-secs <n>]   (unix: resident warm-child host)
   daemon status

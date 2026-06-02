@@ -1,0 +1,37 @@
+{
+  "name": "investigate-dynamic",
+  "args": { "topic": "auth regression" },
+  "nodes": [
+    {
+      "type": "phase",
+      "name": "scope",
+      "nodes": [
+        {
+          "type": "agent",
+          "member": "codex",
+          "prompt": "Scope the investigation. List the modules to audit.",
+          "label": "scope-question"
+        }
+      ]
+    },
+    {
+      "type": "parallel",
+      "nodes": [
+        {
+          "type": "agent",
+          "member": "codex",
+          "prompt": "Audit the code paths involved.",
+          "phase": "audit",
+          "label": "audit-codex"
+        },
+        {
+          "type": "agent",
+          "member": "claude",
+          "prompt": "Audit the recent diffs.",
+          "phase": "audit",
+          "label": "audit-claude"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-harness.local/schemas/workflow-spec.schema.json",
+  "title": "WorkflowSpec",
+  "description": "A runtime-authored workflow shape (JSON-IR). An agent writes this and runs it via `harness workflow run-spec <spec.json>`.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["name", "nodes"],
+  "properties": {
+    "name": { "type": "string", "minLength": 1 },
+    "args": {},
+    "nodes": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/node" }
+    }
+  },
+  "$defs": {
+    "node": {
+      "oneOf": [
+        { "$ref": "#/$defs/agentNode" },
+        { "$ref": "#/$defs/phaseNode" },
+        { "$ref": "#/$defs/parallelNode" },
+        { "$ref": "#/$defs/pipelineNode" }
+      ]
+    },
+    "agentNode": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "member", "prompt"],
+      "properties": {
+        "type": { "const": "agent" },
+        "member": { "type": "string", "minLength": 1 },
+        "prompt": { "type": "string", "minLength": 1 },
+        "phase": { "type": "string", "minLength": 1 },
+        "label": { "type": "string", "minLength": 1 }
+      }
+    },
+    "phaseNode": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "name", "nodes"],
+      "properties": {
+        "type": { "const": "phase" },
+        "name": { "type": "string", "minLength": 1 },
+        "nodes": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/node" }
+        }
+      }
+    },
+    "parallelNode": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "nodes"],
+      "properties": {
+        "type": { "const": "parallel" },
+        "nodes": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/node" }
+        }
+      }
+    },
+    "pipelineNode": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "stages"],
+      "properties": {
+        "type": { "const": "pipeline" },
+        "stages": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/node" }
+        }
+      }
+    }
+  }
+}

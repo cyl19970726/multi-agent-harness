@@ -102,6 +102,7 @@ dependencies = [
  "crossbeam",
  "harness-core",
  "harness-store",
+ "harness-workflow",
  "notify",
  "serde",
  "serde_json",
@@ -125,6 +126,16 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror",
+]
+
+[[package]]
+name = "harness-workflow"
+version = "0.1.0"
+dependencies = [
+ "crossbeam",
+ "harness-core",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

@@ -1,20 +1,12 @@
 [package]
-name = "harness-cli"
+name = "harness-workflow"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
-[[bin]]
-name = "harness"
-path = "src/main.rs"
-
 [dependencies]
 harness-core = { path = "../harness-core" }
-harness-store = { path = "../harness-store" }
-harness-workflow = { path = "../harness-workflow" }
 serde.workspace = true
 serde_json.workspace = true
-thiserror.workspace = true
 crossbeam = "0.8"
-notify = "6.1"

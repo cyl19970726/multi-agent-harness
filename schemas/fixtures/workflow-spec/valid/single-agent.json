@@ -1,0 +1,10 @@
+{
+  "name": "ask-one",
+  "nodes": [
+    {
+      "type": "agent",
+      "member": "codex",
+      "prompt": "Summarize the open questions in this repo."
+    }
+  ]
+}
