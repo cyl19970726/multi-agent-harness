@@ -200,7 +200,6 @@ export interface WorkbenchModel {
    * their own proposal as a global decision) visible.
    */
   leadDecisionQueue: TimelineItem[];
-  docs: RelatedDoc[];
   sessionsByMember: ProviderSession[];
   childThreadsByMember: ProviderChildThread[];
   /** Per-agent activity stats keyed by member id (computeAgentStats over each
@@ -218,47 +217,7 @@ export interface WorkbenchModel {
   selectedWorkflowSteps: WorkflowStep[];
 }
 
-export interface RelatedDoc {
-  path: string;
-  title: string;
-  reason: string;
-  lifecycle: string;
-}
-
 const laneOrder: TaskStatus[] = ["planned", "assigned", "running", "blocked", "review", "done", "archived"];
-
-const docCatalog: RelatedDoc[] = [
-  {
-    path: "docs/dashboard/frontend-design.md",
-    title: "Frontend design index",
-    reason: "Reading order, page map, and implementation readiness.",
-    lifecycle: "volatile",
-  },
-  {
-    path: "docs/dashboard/frontend-architecture.md",
-    title: "Frontend architecture",
-    reason: "Accepted stack, component boundary, and no-shadcn decision.",
-    lifecycle: "volatile",
-  },
-  {
-    path: "docs/dashboard/pages/team-workspace.md",
-    title: "Team workspace page contract",
-    reason: "Default collaboration-space layout and first viewport.",
-    lifecycle: "volatile",
-  },
-  {
-    path: "docs/dashboard/pages/agent-member-workbench.md",
-    title: "AgentMember workbench page contract",
-    reason: "Durable member, inbox/outbox, timeline, and runtime layout.",
-    lifecycle: "volatile",
-  },
-  {
-    path: "docs/dashboard/acceptance.md",
-    title: "Screenshot acceptance",
-    reason: "PM/User subagent browser acceptance and screenshot matrix.",
-    lifecycle: "volatile",
-  },
-];
 
 export function buildWorkbenchModel(
   snapshot: DashboardSnapshot,
@@ -457,7 +416,6 @@ export function buildWorkbenchModel(
     activity: buildActivity(snapshot, warnings),
     decisionQueue: buildDecisionQueue(snapshot, warnings),
     leadDecisionQueue,
-    docs: docCatalog,
     sessionsByMember: selectedMember
       ? (snapshot.provider_sessions ?? []).filter((session) => session.agent_member_id === selectedMember.id)
       : [],

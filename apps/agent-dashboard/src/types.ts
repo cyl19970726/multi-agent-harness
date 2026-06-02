@@ -376,6 +376,21 @@ export interface Vision {
   created_at?: string;
 }
 
+/**
+ * One entry of `docs/registry.json` (schema agent_harness.docs_registry.v1) —
+ * the machine-readable manifest of every project doc. The Docs surface fetches
+ * the registry (via the allow-listed `GET /v1/docs?path=docs/registry.json`) and
+ * builds its tree from these entries; only `path` is guaranteed present.
+ */
+export interface DocRegistryEntry {
+  path: string;
+  ownerRole?: string;
+  status?: "idea" | "planned" | "stable" | "deprecated" | "archival";
+  lifecycle?: "volatile" | "stable" | "archival";
+  canonicalFor?: string[];
+  dependsOn?: string[];
+}
+
 export interface AutonomousProposal {
   id: string;
   kind?: string;

@@ -1,5 +1,6 @@
 import { useEffect, useState, type ComponentProps, type ReactNode } from "react";
 import {
+  BookOpen,
   Bot,
   Bug,
   Clock,
@@ -42,7 +43,7 @@ import {
   AgentDetail,
   AgentsList,
   DebugSurface,
-  DocsContext,
+  DocsBrowser,
   GoalDocument,
   GraphKanban,
   TaskDocument,
@@ -75,12 +76,13 @@ interface WorkbenchShellProps {
   onTogglePoll: () => void;
 }
 
-/** Primary navigation rail: Agents, Vision, Work, Warnings. */
+/** Primary navigation rail: Agents, Vision, Work, Workflows, Docs, Warnings. */
 const navItems: { id: SurfaceId; label: string; icon: typeof Users }[] = [
   { id: "agents", label: "Agents", icon: Bot },
   { id: "vision", label: "Vision", icon: Target },
   { id: "tasks", label: "Work", icon: GitBranch },
   { id: "workflows", label: "Workflows", icon: Workflow },
+  { id: "docs", label: "Docs", icon: BookOpen },
   { id: "warnings", label: "Warnings", icon: ShieldAlert },
 ];
 
@@ -88,7 +90,6 @@ const navItems: { id: SurfaceId; label: string; icon: typeof Users }[] = [
  * Surfaces reachable in code but intentionally off the primary rail:
  * - agent detail: the Agents surface with a selected agent (?agent=<id>)
  * - goal / task: drill-in detail views reached by selecting an object
- * - docs: kept reachable but not a rail slot
  * - debug: moved behind a TopBar button
  * - decisions: folded into the Warnings surface
  */
@@ -118,7 +119,7 @@ export function WorkbenchShell({
   // needs full width for its columns; the Goal/Task detail pages are centered
   // Notion documents that read better without a competing rail. All suppress the
   // global Inspector; the rest keep it.
-  const noInspector: SurfaceId[] = ["agents", "tasks", "goal", "task", "workflows"];
+  const noInspector: SurfaceId[] = ["agents", "tasks", "goal", "task", "workflows", "docs"];
   const showInspector = !noInspector.includes(selection.surface);
 
   return (
@@ -164,7 +165,9 @@ export function WorkbenchShell({
             // remaining flex height (so it accounts for the TopBar AND the
             // ActionErrorBanner via the column, with no fragile calc). Every
             // other surface keeps the centered, padded, scrollable document.
-            const fullBleed = selection.surface === "agents" && Boolean(selection.memberId);
+            const fullBleed =
+              (selection.surface === "agents" && Boolean(selection.memberId)) ||
+              selection.surface === "docs";
             return fullBleed ? (
               <div className="min-h-0 flex-1">{surface}</div>
             ) : (
@@ -495,7 +498,7 @@ function SurfaceSwitch({
         <WorkflowsList {...shared} />
       );
     case "docs":
-      return <DocsContext {...shared} />;
+      return <DocsBrowser {...shared} docPath={selection.docPath} />;
     case "warnings":
       return <WarningsRepair {...shared} />;
     case "debug":

@@ -1,6 +1,7 @@
 import {
   Activity,
   AlertTriangle,
+  BookOpen,
   Bot,
   Bug,
   CheckCircle2,
@@ -62,7 +63,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Avatar } from "@/components/workbench/Avatar";
 import { Markdown } from "@/components/workbench/Markdown";
-import { fetchDoc, normalizeBaseUrl } from "../api";
+import { fetchDoc, fetchDocRegistry, normalizeBaseUrl } from "../api";
 import {
   Dialog,
   DialogFooter,
@@ -112,6 +113,7 @@ import type {
   AgentProviderConfig,
   AgentStats,
   DeliveryStatus,
+  DocRegistryEntry,
   Gap,
   Goal,
   GoalDesign,
@@ -941,93 +943,7 @@ function NewAgentForm({
 /* Vision overview                                                    */
 /* ------------------------------------------------------------------ */
 
-/**
- * Right-side slide-over that renders a project doc (a Vision `source_ref` or a
- * mounted doc). Fetches `GET /v1/docs?path=…` from the live source and renders
- * markdown; offline (no live source) it shows an honest fallback with the path.
- */
-function DocSheet({
-  apiUrl,
-  path,
-  onClose,
-}: {
-  apiUrl?: string;
-  path: string;
-  onClose: () => void;
-}) {
-  const [state, setState] = useState<
-    { status: "loading" } | { status: "ok"; content: string } | { status: "error"; detail: string }
-  >({ status: "loading" });
-
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
-
-  useEffect(() => {
-    let cancelled = false;
-    if (!apiUrl) {
-      setState({ status: "error", detail: "No live source — connect the harness to render docs." });
-      return;
-    }
-    setState({ status: "loading" });
-    fetchDoc(apiUrl, path)
-      .then((doc) => {
-        if (!cancelled) setState({ status: "ok", content: doc.content });
-      })
-      .catch((error: unknown) => {
-        if (!cancelled)
-          setState({ status: "error", detail: error instanceof Error ? error.message : String(error) });
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [apiUrl, path]);
-
-  return (
-    <div className="fixed inset-0 z-50 flex justify-end">
-      <button
-        type="button"
-        aria-label="Close document panel"
-        className="absolute inset-0 bg-foreground/20 backdrop-blur-[1px]"
-        onClick={onClose}
-      />
-      <aside
-        role="dialog"
-        aria-label="Document"
-        className="relative flex h-full w-full max-w-[680px] flex-col border-l border-border bg-background shadow-xl"
-      >
-        <div className="flex h-12 shrink-0 items-center gap-2 border-b border-border px-3">
-          <FileText className="size-4 text-muted-foreground" />
-          <MonoId>{path}</MonoId>
-          <button
-            type="button"
-            aria-label="Close"
-            onClick={onClose}
-            className="ml-auto grid size-8 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-          >
-            <X className="size-4" />
-          </button>
-        </div>
-        <div className="min-h-0 flex-1 overflow-y-auto p-5">
-          {state.status === "loading" && (
-            <p className="text-[13px] text-muted-foreground">Loading {path}…</p>
-          )}
-          {state.status === "error" && (
-            <EmptyState icon={FileText} title="Cannot render doc" description={state.detail} />
-          )}
-          {state.status === "ok" && <Markdown source={state.content} />}
-        </div>
-      </aside>
-    </div>
-  );
-}
-
-export function VisionOverview({ model, onSelectionChange, apiUrl }: SurfaceProps) {
-  const [docPath, setDocPath] = useState<string | null>(null);
+export function VisionOverview({ model, onSelectionChange }: SurfaceProps) {
   const groups: { id: string; title: string; goals: Goal[] }[] = [
     { id: "active", title: "Active", goals: model.activeGoals },
     { id: "complete", title: "Completed", goals: model.completeGoals },
@@ -1081,7 +997,7 @@ export function VisionOverview({ model, onSelectionChange, apiUrl }: SurfaceProp
                 vision={vision}
                 goals={goalsByVision.get(vision.id) ?? []}
                 onSelectGoal={(goalId) => onSelectionChange({ goalId, surface: "goal" })}
-                onOpenDoc={setDocPath}
+                onOpenDoc={(ref) => onSelectionChange({ surface: "docs", docPath: ref })}
               />
             ))
           ) : (
@@ -1163,10 +1079,6 @@ export function VisionOverview({ model, onSelectionChange, apiUrl }: SurfaceProp
           </div>
         </Section>
       </div>
-
-      {docPath && (
-        <DocSheet apiUrl={apiUrl} path={docPath} onClose={() => setDocPath(null)} />
-      )}
     </div>
   );
 }
@@ -4165,47 +4077,238 @@ function HealthRow({
 }
 
 /* ------------------------------------------------------------------ */
-/* Docs context                                                       */
+/* Docs browser                                                       */
 /* ------------------------------------------------------------------ */
 
-export function DocsContext({ model, apiUrl }: SurfaceProps) {
-  const [docPath, setDocPath] = useState<string | null>(null);
-  return (
-    <div className="space-y-5">
-      <SurfaceHeader
-        kicker="Mounted context"
-        title="Docs context"
-        description="Project docs linked to the active Vision, Goal, Task, Evidence and Decision objects."
-      />
-      <Section title="Mounted documents" className="rise">
-        <div className="divide-y divide-border">
-          {model.docs.map((doc) => (
-            <button
-              key={doc.path}
-              type="button"
-              onClick={() => setDocPath(doc.path)}
-              className="flex w-full items-start gap-3 px-4 py-3 text-left transition-colors hover:bg-accent/40"
-            >
-              <FileText className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-2">
-                  <span className="text-[13px] font-medium">{doc.title}</span>
-                  <Badge tone="muted">{doc.lifecycle}</Badge>
-                </div>
-                <p className="text-xs text-muted-foreground">{doc.reason}</p>
-                <MonoId>{doc.path}</MonoId>
-              </div>
-              <ExternalLink className="size-3.5 shrink-0 text-muted-foreground" />
-            </button>
-          ))}
-        </div>
-      </Section>
+/**
+ * Top-level sidebar sections, mirroring the docs/ folder layout. A doc is
+ * matched to the first group whose test passes (Core = a markdown file directly
+ * under docs/, the rest = a named subfolder). Order here is the sidebar order.
+ */
+const DOC_GROUPS: { id: string; title: string; match: (path: string) => boolean }[] = [
+  { id: "core", title: "Core", match: (p) => /^docs\/[^/]+\.md$/.test(p) },
+  { id: "dashboard", title: "Dashboard", match: (p) => p.startsWith("docs/dashboard/") },
+  { id: "decisions", title: "Decisions", match: (p) => p.startsWith("docs/decisions/") },
+  { id: "integration", title: "Integration", match: (p) => p.startsWith("docs/integration/") },
+  { id: "research", title: "Research", match: (p) => p.startsWith("docs/research/") },
+  { id: "design", title: "Design", match: (p) => p.startsWith("docs/design/") },
+  { id: "other", title: "Other", match: () => true },
+];
 
-      {docPath && (
-        <DocSheet apiUrl={apiUrl} path={docPath} onClose={() => setDocPath(null)} />
-      )}
+function groupForDoc(path: string): string {
+  return DOC_GROUPS.find((group) => group.match(path))!.id;
+}
+
+/** Tokens upper-cased verbatim in doc titles (the rest are capitalised). */
+const DOC_ACRONYMS = new Set([
+  "prd", "mvp", "api", "pr", "ci", "git", "adr", "mcp", "sse", "cli", "tui",
+  "ui", "ux", "id", "db", "json", "ndjson", "http", "url", "io", "ai", "llm",
+]);
+
+/**
+ * Human title from a doc path (the registry has no title field). A README/index
+ * is a folder's landing page, so it is named after its folder. Otherwise the
+ * filename is split on - / _, known acronyms upper-cased and the rest
+ * capitalised. "docs/agent-runtime.md" → "Agent runtime"; "docs/prd.md" → "PRD";
+ * "docs/integration/README.md" → "Integration".
+ */
+function docTitle(path: string): string {
+  const parts = path.replace(/\.md$/, "").split("/");
+  let base = parts[parts.length - 1];
+  if (/^(readme|index)$/i.test(base)) {
+    const parent = parts[parts.length - 2];
+    base = parent === "docs" ? "overview" : (parent ?? base);
+  }
+  return base
+    .split(/[-_]/)
+    .filter(Boolean)
+    .map((token) =>
+      DOC_ACRONYMS.has(token.toLowerCase())
+        ? token.toUpperCase()
+        : token.charAt(0).toUpperCase() + token.slice(1),
+    )
+    .join(" ");
+}
+
+/** Registry status → status-dot tone. */
+function docStatusTone(status?: DocRegistryEntry["status"]): StatusTone {
+  switch (status) {
+    case "stable":
+      return "good";
+    case "planned":
+      return "info";
+    case "deprecated":
+      return "bad";
+    default:
+      return "idle";
+  }
+}
+
+/**
+ * The Docs surface: a two-pane browser that maps the repo's docs/ tree onto the
+ * frontend. The sidebar is built from docs/registry.json (fetched via the
+ * allow-listed /v1/docs route — no extra endpoint), grouped by folder; the main
+ * pane renders the selected doc as a Notion-style markdown document. The open
+ * doc is URL-addressable as ?doc=<path>, so Vision source_refs and shared links
+ * land directly on it.
+ */
+export function DocsBrowser({
+  apiUrl,
+  onSelectionChange,
+  docPath,
+}: SurfaceProps & { docPath?: string }) {
+  const [registry, setRegistry] = useState<
+    | { status: "loading" }
+    | { status: "ok"; docs: DocRegistryEntry[] }
+    | { status: "error"; detail: string }
+  >({ status: "loading" });
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!apiUrl) {
+      setRegistry({ status: "error", detail: "No live source — connect the harness to browse docs." });
+      return;
+    }
+    setRegistry({ status: "loading" });
+    fetchDocRegistry(apiUrl)
+      .then((docs) => {
+        if (!cancelled) setRegistry({ status: "ok", docs });
+      })
+      .catch((error: unknown) => {
+        if (!cancelled)
+          setRegistry({ status: "error", detail: error instanceof Error ? error.message : String(error) });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [apiUrl]);
+
+  const mdDocs =
+    registry.status === "ok"
+      ? registry.docs.filter((doc) => doc.path.startsWith("docs/") && doc.path.endsWith(".md"))
+      : [];
+  const groups = DOC_GROUPS.map((group) => ({
+    ...group,
+    docs: mdDocs.filter((doc) => groupForDoc(doc.path) === group.id),
+  })).filter((group) => group.docs.length > 0);
+  const selected = mdDocs.find((doc) => doc.path === docPath);
+
+  return (
+    <div className="flex h-full min-h-0">
+      <nav
+        aria-label="Docs"
+        className="flex w-72 shrink-0 flex-col overflow-y-auto border-r border-border bg-card/40"
+      >
+        <div className="flex h-12 shrink-0 items-center gap-2 border-b border-border px-4">
+          <BookOpen className="size-4 text-muted-foreground" />
+          <span className="text-[13px] font-semibold">Docs</span>
+          {registry.status === "ok" && (
+            <Badge tone="muted" className="ml-auto">
+              {mdDocs.length}
+            </Badge>
+          )}
+        </div>
+        <div className="min-h-0 flex-1 p-2">
+          {registry.status === "loading" && (
+            <p className="px-2 py-3 text-[12px] text-muted-foreground">Loading registry…</p>
+          )}
+          {registry.status === "error" && (
+            <p className="px-2 py-3 text-[12px] text-muted-foreground">{registry.detail}</p>
+          )}
+          {registry.status === "ok" &&
+            groups.map((group) => (
+              <div key={group.id} className="mb-3">
+                <p className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                  {group.title}
+                </p>
+                <div className="space-y-0.5">
+                  {group.docs.map((doc) => {
+                    const active = doc.path === docPath;
+                    return (
+                      <button
+                        key={doc.path}
+                        type="button"
+                        onClick={() => onSelectionChange({ surface: "docs", docPath: doc.path })}
+                        className={cn(
+                          "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[13px] transition-colors hover:bg-accent/50",
+                          active
+                            ? "bg-primary/12 text-primary hover:bg-primary/12"
+                            : "text-foreground/90",
+                        )}
+                      >
+                        <StatusDot tone={docStatusTone(doc.status)} className="shrink-0" />
+                        <span className="truncate">{docTitle(doc.path)}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
+        </div>
+      </nav>
+
+      <div className="min-w-0 flex-1 overflow-y-auto">
+        {docPath ? (
+          <div className="mx-auto w-full max-w-[820px] p-6 xl:p-8">
+            <div className="mb-5 flex flex-wrap items-center gap-2 border-b border-border pb-4">
+              <h1 className="mr-1 text-xl font-semibold tracking-tight">{docTitle(docPath)}</h1>
+              {selected?.status && <Badge tone={docStatusTone(selected.status)}>{selected.status}</Badge>}
+              {selected?.ownerRole && <Badge tone="info">{selected.ownerRole}</Badge>}
+              {selected?.lifecycle && <Badge tone="muted">{selected.lifecycle}</Badge>}
+              <MonoId>{docPath}</MonoId>
+            </div>
+            <DocContent apiUrl={apiUrl} path={docPath} />
+          </div>
+        ) : (
+          <div className="grid h-full place-items-center p-6">
+            <EmptyState
+              icon={BookOpen}
+              title="Select a document"
+              description="Pick a doc from the sidebar. The tree is built from docs/registry.json and grouped by folder."
+            />
+          </div>
+        )}
+      </div>
     </div>
   );
+}
+
+/**
+ * Fetches one doc body (`GET /v1/docs?path=…`) and renders it as markdown.
+ * Offline (no live source) it shows an honest fallback with the path.
+ */
+function DocContent({ apiUrl, path }: { apiUrl?: string; path: string }) {
+  const [state, setState] = useState<
+    { status: "loading" } | { status: "ok"; content: string } | { status: "error"; detail: string }
+  >({ status: "loading" });
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!apiUrl) {
+      setState({ status: "error", detail: "No live source — connect the harness to render docs." });
+      return;
+    }
+    setState({ status: "loading" });
+    fetchDoc(apiUrl, path)
+      .then((doc) => {
+        if (!cancelled) setState({ status: "ok", content: doc.content });
+      })
+      .catch((error: unknown) => {
+        if (!cancelled)
+          setState({ status: "error", detail: error instanceof Error ? error.message : String(error) });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [apiUrl, path]);
+
+  if (state.status === "loading") {
+    return <p className="text-[13px] text-muted-foreground">Loading {path}…</p>;
+  }
+  if (state.status === "error") {
+    return <EmptyState icon={FileText} title="Cannot render doc" description={state.detail} />;
+  }
+  return <Markdown source={state.content} />;
 }
 
 /* ------------------------------------------------------------------ */

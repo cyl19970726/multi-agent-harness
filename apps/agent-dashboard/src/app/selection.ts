@@ -28,6 +28,11 @@ export interface SelectionState {
   /** Which tab is open on the agent detail page; defaults to "conversation". */
   agentTab?: AgentTab;
   taskId?: string;
+  /**
+   * The doc opened on the Docs surface, addressed by its repo path
+   * (e.g. "docs/prd.md"); setting it implies the docs surface.
+   */
+  docPath?: string;
   /** The selected workflow run id (opens WorkflowRunDetail on the workflows surface). */
   workflowRunId?: string;
   mode?: "kanban" | "graph" | "split";
@@ -93,6 +98,13 @@ export function selectionFromLocation(base: SelectionState): SelectionState {
   if (goal) next.goalId = goal;
   const task = params.get("task");
   if (task) next.taskId = task;
+  // Canonical doc address: ?doc=<path>; setting it implies the docs surface
+  // (mirror of the ?agent= / ?workflowRun= rules).
+  const doc = params.get("doc");
+  if (doc) {
+    next.docPath = doc;
+    if (!surface) next.surface = "docs";
+  }
   // Canonical run address: ?workflowRun=<id>; setting it implies the workflows
   // surface (mirror of the ?agent= rule above).
   const workflowRun = params.get("workflowRun");
@@ -127,6 +139,7 @@ export function syncSelectionToLocation(selection: SelectionState): void {
   if (selection.teamId) params.set("team", selection.teamId);
   if (selection.goalId) params.set("goal", selection.goalId);
   if (selection.taskId) params.set("task", selection.taskId);
+  if (selection.docPath) params.set("doc", selection.docPath);
   if (selection.workflowRunId) params.set("workflowRun", selection.workflowRunId);
   if (selection.boardScope === "goals") params.set("board", "goals");
   if (selection.boardGoal) params.set("boardGoal", selection.boardGoal);
