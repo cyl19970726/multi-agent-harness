@@ -1,11 +1,13 @@
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
   ChevronUp,
   Code,
+  Terminal,
   Workflow,
+  X,
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
@@ -573,6 +575,7 @@ function StepCard({
   apiUrl?: string;
   onSelectionChange: (selection: Partial<SelectionState>) => void;
 }) {
+  const [drawerOpen, setDrawerOpen] = useState(false);
   const tone = workflowStepTone(step.status);
   const running = tone === "running";
   const session = step.provider_session_id
@@ -582,69 +585,230 @@ function StepCard({
   const roleHint = roleHintFromLabel(step.label);
   const isRequired = phase.kind === "serial" && phase.steps[0]?.id === step.id;
   const isToleratedFail = phase.kind === "parallel" && tone === "bad";
+  // The SSE-pushed live buffer for this node's session, keyed by session id —
+  // threaded into TurnDrillIn so the node detail streams sub-second.
+  const liveEvents = session
+    ? model.snapshot.live_turn_events?.[session.id]
+    : undefined;
 
   return (
-    <div className="rounded-lg border border-border bg-card p-3 transition-colors hover:border-input">
-      {/* Line 1 — label, role hint, status, required/tolerated */}
-      <div className="flex items-start justify-between gap-2">
-        <span className="flex min-w-0 items-center gap-2">
-          <StatusDot tone={tone} pulse={running} />
-          <span className="truncate text-[13px] font-medium text-foreground">{step.label}</span>
-          {roleHint && (
-            <span className="shrink-0 text-[11px] text-muted-foreground">{roleHint}</span>
+    <>
+      <div className="rounded-lg border border-border bg-card transition-colors hover:border-input">
+        {/* The whole card body (lines 1–3) is the click target that opens the
+            node drill-in drawer; line 4 keeps the inline TurnDrillIn so the
+            timeline still streams in place. */}
+        <button
+          type="button"
+          onClick={() => session && setDrawerOpen(true)}
+          disabled={!session}
+          className={cn(
+            "block w-full p-3 text-left",
+            session ? "cursor-pointer" : "cursor-default",
           )}
-        </span>
-        <span className="flex shrink-0 items-center gap-1.5">
-          <Badge tone={tone}>{step.status}</Badge>
-          {isRequired && <Badge tone="info">required</Badge>}
-          {isToleratedFail && <Badge tone="warn">tolerated</Badge>}
-        </span>
+          aria-label={session ? `Open drill-in for ${step.label}` : undefined}
+        >
+          {/* Line 1 — label, role hint, status, required/tolerated */}
+          <div className="flex items-start justify-between gap-2">
+            <span className="flex min-w-0 items-center gap-2">
+              <StatusDot tone={tone} pulse={running} />
+              <span className="truncate text-[13px] font-medium text-foreground">{step.label}</span>
+              {roleHint && (
+                <span className="shrink-0 text-[11px] text-muted-foreground">{roleHint}</span>
+              )}
+            </span>
+            <span className="flex shrink-0 items-center gap-1.5">
+              <Badge tone={tone}>{step.status}</Badge>
+              {isRequired && <Badge tone="info">required</Badge>}
+              {isToleratedFail && <Badge tone="warn">tolerated</Badge>}
+            </span>
+          </div>
+
+          {/* Line 2 — ran by (member resolved THROUGH the session) + timing */}
+          <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
+            <span>ran by</span>
+            {memberId ? (
+              <span className="inline-flex items-center gap-1 text-foreground">
+                <Avatar name={memberName(model.members, memberId)} tone="idle" />
+                {memberName(model.members, memberId)}
+              </span>
+            ) : (
+              <span>—</span>
+            )}
+            <span className="tabular-nums">{stepTiming(step)}</span>
+          </div>
+
+          {/* Line 3 — output summary */}
+          <div className="mt-1.5 text-[12px] text-foreground">
+            {step.output_summary ? (
+              <div className="line-clamp-3">
+                <Markdown source={step.output_summary} />
+              </div>
+            ) : running ? (
+              <span className="text-muted-foreground">Running…</span>
+            ) : tone === "bad" ? (
+              <span className="text-muted-foreground">No output (step failed before delivery)</span>
+            ) : (
+              <span className="text-muted-foreground">No output</span>
+            )}
+          </div>
+        </button>
+
+        {/* Line 4 — drill-in (verbatim TurnDrillIn) or disabled stub. Live events
+            threaded so it streams sub-second; a "drill in" affordance opens the
+            full drawer. */}
+        <div className="flex items-center justify-between gap-2 px-3 pb-3">
+          {session ? (
+            <>
+              <TurnDrillIn session={session} apiUrl={apiUrl} liveEvents={liveEvents} />
+              <button
+                type="button"
+                onClick={() => setDrawerOpen(true)}
+                className="inline-flex shrink-0 items-center gap-1 text-[10px] text-muted-foreground transition-colors hover:text-foreground"
+              >
+                drill in
+                <ChevronRight className="size-3" />
+              </button>
+            </>
+          ) : (
+            <span className="inline-flex cursor-not-allowed items-center gap-1 text-[10px] text-muted-foreground">
+              <ChevronRight className="size-3 opacity-40" />
+              no turn yet
+            </span>
+          )}
+        </div>
       </div>
 
-      {/* Line 2 — ran by (member resolved THROUGH the session) + timing */}
-      <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
-        <span>ran by</span>
-        {memberId ? (
+      {drawerOpen && session && (
+        <StepDrawer
+          step={step}
+          session={session}
+          tone={tone}
+          memberId={memberId}
+          memberName={memberId ? memberName(model.members, memberId) : undefined}
+          liveEvents={liveEvents}
+          apiUrl={apiUrl}
+          onSelectMember={
+            memberId
+              ? () => {
+                  setDrawerOpen(false);
+                  onSelectionChange({ surface: "agents", memberId });
+                }
+              : undefined
+          }
+          onClose={() => setDrawerOpen(false)}
+        />
+      )}
+    </>
+  );
+}
+
+/**
+ * Per-node drill-in drawer: a right-side slide-over (mirrors the TaskSheet
+ * idiom) that wraps the verbatim `TurnDrillIn` for this step's
+ * `provider_session_id`, opened auto-expanded and fed the SSE live buffer so the
+ * node's streamed tool_use/tool_result render sub-second. Esc and backdrop
+ * close it.
+ */
+function StepDrawer({
+  step,
+  session,
+  tone,
+  memberId,
+  memberName: memberDisplayName,
+  liveEvents,
+  apiUrl,
+  onSelectMember,
+  onClose,
+}: {
+  step: WorkflowStep;
+  session: ProviderSession;
+  tone: StatusTone;
+  memberId?: string;
+  memberName?: string;
+  liveEvents?: Record<string, unknown>[];
+  apiUrl?: string;
+  onSelectMember?: () => void;
+  onClose: () => void;
+}) {
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  const running = tone === "running";
+
+  return (
+    <div className="fixed inset-0 z-50 flex justify-end">
+      <button
+        type="button"
+        aria-label="Close node detail"
+        className="absolute inset-0 bg-foreground/20 backdrop-blur-[1px]"
+        onClick={onClose}
+      />
+      <aside
+        role="dialog"
+        aria-label="Workflow node detail"
+        className="relative flex h-full w-full max-w-[660px] flex-col border-l border-border bg-background shadow-xl"
+      >
+        <div className="flex h-12 shrink-0 items-center gap-2 border-b border-border px-3">
+          <Terminal className="size-3.5 text-muted-foreground" />
+          <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+            Node
+          </span>
+          <span className="min-w-0 truncate text-[13px] font-medium text-foreground">
+            {step.label}
+          </span>
           <button
             type="button"
-            onClick={() => onSelectionChange({ surface: "agents", memberId })}
-            className="inline-flex items-center gap-1 text-foreground transition-colors hover:text-primary"
+            aria-label="Close"
+            onClick={onClose}
+            className="ml-auto grid size-8 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
           >
-            <Avatar name={memberName(model.members, memberId)} tone="idle" />
-            {memberName(model.members, memberId)}
+            <X className="size-4" />
           </button>
-        ) : (
-          <span>—</span>
-        )}
-        <span className="tabular-nums">{stepTiming(step)}</span>
-      </div>
-
-      {/* Line 3 — output summary */}
-      <div className="mt-1.5 text-[12px] text-foreground">
-        {step.output_summary ? (
-          <div className="line-clamp-3">
-            <Markdown source={step.output_summary} />
+        </div>
+        <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden p-4">
+          <div className="space-y-3">
+            <div className="flex flex-wrap items-center gap-1.5">
+              <StatusDot tone={tone} pulse={running} />
+              <Badge tone={tone}>{step.status}</Badge>
+              <MonoId>{session.id}</MonoId>
+            </div>
+            <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
+              <span>ran by</span>
+              {memberId && memberDisplayName ? (
+                <button
+                  type="button"
+                  onClick={onSelectMember}
+                  className="inline-flex items-center gap-1 text-foreground transition-colors hover:text-primary"
+                >
+                  <Avatar name={memberDisplayName} tone="idle" />
+                  {memberDisplayName}
+                </button>
+              ) : (
+                <span>—</span>
+              )}
+              <span className="tabular-nums">{stepTiming(step)}</span>
+            </div>
+            {step.output_summary && (
+              <div className="rounded-md border border-border bg-muted/30 p-2 text-[12px] text-foreground">
+                <Markdown source={step.output_summary} />
+              </div>
+            )}
+            <DocSection label="Turn">
+              <TurnDrillIn
+                session={session}
+                apiUrl={apiUrl}
+                defaultOpen
+                liveEvents={liveEvents}
+              />
+            </DocSection>
           </div>
-        ) : running ? (
-          <span className="text-muted-foreground">Running…</span>
-        ) : tone === "bad" ? (
-          <span className="text-muted-foreground">No output (step failed before delivery)</span>
-        ) : (
-          <span className="text-muted-foreground">No output</span>
-        )}
-      </div>
-
-      {/* Line 4 — drill-in (verbatim TurnDrillIn) or disabled stub */}
-      <div className="mt-1.5">
-        {session ? (
-          <TurnDrillIn session={session} apiUrl={apiUrl} />
-        ) : (
-          <span className="inline-flex cursor-not-allowed items-center gap-1 text-[10px] text-muted-foreground">
-            <ChevronRight className="size-3 opacity-40" />
-            no turn yet
-          </span>
-        )}
-      </div>
+        </div>
+      </aside>
     </div>
   );
 }
