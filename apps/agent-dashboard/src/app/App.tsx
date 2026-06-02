@@ -72,13 +72,32 @@ export function App() {
           setSource(liveSource);
         }
       } catch {
-        // Stay offline/empty; the user can click Load live to see the error.
+        // Stay offline/empty; the auto-retry effect below keeps trying.
       }
     })();
     return () => {
       cancelled = true;
     };
   }, []);
+
+  // Auto-retry while offline: if the initial connect failed or the backend went
+  // away, silently re-attempt the default URL every few seconds so the dashboard
+  // reconnects on its own — no manual button needed. Stops once live.
+  useEffect(() => {
+    if (source === liveSource) return;
+    const id = window.setInterval(() => {
+      void (async () => {
+        try {
+          const next = await fetchSnapshot(apiUrl);
+          setSnapshot(next);
+          setSource(liveSource);
+        } catch {
+          // still offline; retry next tick
+        }
+      })();
+    }, 4000);
+    return () => window.clearInterval(id);
+  }, [source, apiUrl]);
 
   const model = useMemo(() => buildWorkbenchModel(snapshot, selection), [snapshot, selection]);
 

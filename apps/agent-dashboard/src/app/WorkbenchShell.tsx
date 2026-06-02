@@ -306,13 +306,6 @@ function TopBar({
                 : "Auto-refresh every ~5s"}
           </TooltipContent>
         </Tooltip>
-        <input
-          aria-label="Harness API URL"
-          value={apiUrl}
-          spellCheck={false}
-          onChange={(event) => onApiUrlChange(event.target.value)}
-          className="hidden h-8 w-44 rounded-md border border-border bg-background/50 px-2 font-mono text-[11px] text-foreground outline-none transition-colors focus:border-ring lg:block"
-        />
         <Tooltip>
           <TooltipTrigger asChild>
             <button
@@ -332,10 +325,25 @@ function TopBar({
             {debugActive ? "Close raw snapshot" : "Open raw snapshot"}
           </TooltipContent>
         </Tooltip>
-        <Button size="sm" onClick={onRefresh} disabled={isLoading}>
-          <RefreshCw className={cn("size-3.5", isLoading && "animate-spin")} />
-          {isLoading ? "Loading" : "Load live"}
-        </Button>
+        {/* The dashboard auto-connects to the default harness on load and
+            auto-retries while offline, so there is no "Load live" button. The
+            URL field + a manual Reconnect appear only when not connected (e.g.
+            to point at a non-default backend or recover from an outage). */}
+        {!isOnline && (
+          <>
+            <input
+              aria-label="Harness API URL"
+              value={apiUrl}
+              spellCheck={false}
+              onChange={(event) => onApiUrlChange(event.target.value)}
+              className="hidden h-8 w-44 rounded-md border border-border bg-background/50 px-2 font-mono text-[11px] text-foreground outline-none transition-colors focus:border-ring lg:block"
+            />
+            <Button size="sm" onClick={onRefresh} disabled={isLoading}>
+              <RefreshCw className={cn("size-3.5", isLoading && "animate-spin")} />
+              {isLoading ? "Connecting" : "Reconnect"}
+            </Button>
+          </>
+        )}
       </div>
     </header>
   );
