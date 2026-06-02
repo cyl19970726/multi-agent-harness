@@ -477,7 +477,7 @@ function SurfaceSwitch({
     case "goal":
       return <GoalDocument {...shared} />;
     case "task":
-      return <TaskDocument {...shared} />;
+      return <TaskDocument {...shared} taskTab={selection.taskTab} />;
     case "tasks":
       return (
         <GraphKanban
