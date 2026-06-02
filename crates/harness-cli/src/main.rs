@@ -3742,6 +3742,7 @@ fn workflow_real_agent_step(
         provider_session_id: None,
         status: WorkflowStepStatus::Running,
         output_summary: None,
+        result: None,
         started_at: started_at.clone(),
         ended_at: None,
     };
@@ -3984,6 +3985,10 @@ fn workflow_run_spec_value(store: &HarnessStore, args: &[String]) -> CliResult<s
         created_at: now_string(),
         ended_at: None,
         summary: None,
+        // The dynamic IR carries the spec's `args` opaquely onto the run.
+        args: spec.args.clone(),
+        agents_spawned: 0,
+        final_output: None,
     };
     store.append_workflow_run(&run)?;
 
@@ -4019,6 +4024,11 @@ fn run_workflow_with_driver(
         created_at: now_string(),
         ended_at: None,
         summary: None,
+        // Registry runs are not parameterized and do not snapshot the scheduler;
+        // `journal_workflow_outcome` fills `final_output`/`agents_spawned` (0 here).
+        args: None,
+        agents_spawned: 0,
+        final_output: None,
     };
     store.append_workflow_run(&run)?;
 
@@ -4059,6 +4069,9 @@ fn journal_workflow_outcome(
             provider_session_id: result.provider_session_id.clone(),
             status: result.step_status(),
             output_summary: Some(result.output_summary.clone()),
+            // The structured result mirrors the StepResult (status + linkage),
+            // beyond the human-facing summary.
+            result: Some(workflow::step_result_json(result)),
             started_at,
             ended_at: Some(now),
         };
@@ -4067,10 +4080,13 @@ fn journal_workflow_outcome(
         steps_json.push(serde_json::to_value(&step)?);
     }
 
-    // Finalize the run with the workflow's own status verdict.
+    // Finalize the run with the workflow's own status verdict + the collected
+    // structured output and the agent count the dispatch spawned.
     run.status = outcome.status;
     run.ended_at = Some(now_string());
     run.summary = Some(outcome.summary.clone());
+    run.agents_spawned = outcome.agents_spawned;
+    run.final_output = outcome.final_output.clone();
     store.append_workflow_run(&run)?;
 
     Ok(serde_json::json!({
@@ -9396,6 +9412,7 @@ mod workflow_runtime_tests {
                 provider_session_id: None,
                 status: WorkflowStepStatus::Running,
                 output_summary: None,
+                result: None,
                 started_at: started_at.clone(),
                 ended_at: None,
             };

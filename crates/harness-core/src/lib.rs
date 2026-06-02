@@ -1270,6 +1270,18 @@ pub struct WorkflowRun {
     /// Optional human-facing summary set when the run reaches a terminal state.
     #[serde(default)]
     pub summary: Option<String>,
+    /// Optional JSON parameterization the run was authored with (the dynamic
+    /// `run-spec` IR carries a `WorkflowSpec.args`). `None` for registry runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub args: Option<serde_json::Value>,
+    /// How many agent steps this run spawned (the per-run agent count). Defaults
+    /// to 0 for legacy rows that predate the field.
+    #[serde(default)]
+    pub agents_spawned: u64,
+    /// The collected structured output of the run (e.g. each step's result),
+    /// set when the run reaches a terminal state. `None` while running / legacy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub final_output: Option<serde_json::Value>,
 }
 
 /// One agent step inside a [`WorkflowRun`]. `phase` is the declarative grouping
@@ -1286,6 +1298,11 @@ pub struct WorkflowStep {
     pub status: WorkflowStepStatus,
     #[serde(default)]
     pub output_summary: Option<String>,
+    /// Optional structured result for this step (beyond the human-facing
+    /// `output_summary`). The dynamic IR path carries each `StepResult`'s
+    /// structured payload here. `None` for legacy / summary-only steps.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<serde_json::Value>,
     pub started_at: String,
     #[serde(default)]
     pub ended_at: Option<String>,

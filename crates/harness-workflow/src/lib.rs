@@ -8,8 +8,8 @@
 //! * CONCURRENCY-CAP SCHEDULER: bounds concurrency to min(16, available_parallelism()-2)
 //!   via a counting semaphore. Excess steps are queued and run as permits free.
 //!   Includes a 1000-agent LIFETIME cap as a runaway backstop.
-//! * The `parallel()` barrier primitive + a `pipeline()` stub (real streaming is
-//!   deferred to Stage 2).
+//! * The `parallel()` barrier primitive + a real streaming `pipeline()` (per-item
+//!   through all stages with NO barrier between stages).
 //! * The built-in `investigate` workflow + `WorkflowRegistry` (option C dispatch).
 //! * A runtime JSON-IR ([`WorkflowSpec`] / [`WorkflowNode`]) and a
 //!   [`dispatch_spec`] interpreter that walks the IR so an agent can author the
@@ -147,6 +147,19 @@ impl WorkflowScheduler {
         *permits += 1;
         self.permits_cv.notify_one();
     }
+
+    /// Snapshot the lifetime agent-spawn counter. Callers snapshot before and
+    /// after a run and diff the two to attribute spawns to that run.
+    fn spawned_count(&self) -> u64 {
+        *self.agents_spawned.lock().unwrap()
+    }
+}
+
+/// Snapshot the process-wide scheduler's lifetime agent-spawn counter. The
+/// dynamic run path snapshots this before and after a dispatch and diffs the two
+/// to populate `WorkflowRun.agents_spawned` (how many agents THIS run spawned).
+pub fn scheduler_agents_spawned() -> u64 {
+    get_scheduler().spawned_count()
 }
 
 /// Process-wide singleton scheduler. Shared across all runs.
@@ -222,23 +235,143 @@ pub fn parallel(driver: &AgentStepFn<'_>, specs: &[AgentStepSpec]) -> Vec<StepRe
     by_index.into_values().collect()
 }
 
-/// A streaming pipeline primitive (stub; real streaming is Stage 2).
-/// For now it falls back to `parallel()` semantics. The actual per-item streaming
-/// implementation with overlapping stage windows is implemented in Stage 2.
-type PipelineStage = Box<dyn Fn(&AgentStepSpec) -> Option<StepResult> + Send + Sync>;
+/// One stage of a [`pipeline`]. Given the item's CURRENT spec (the original spec
+/// for the first stage, then the spec the previous stage handed forward), it
+/// returns either:
+///   * `Some((next_spec, result))` — the stage succeeded; `result` is journaled
+///     for this stage and `next_spec` is what the NEXT stage receives, or
+///   * `None` — the stage failed/dropped the item; the item skips its remaining
+///     stages and lands in a failed/None slot.
+///
+/// A stage may itself call the injected driver (the real path delivers to a
+/// provider); tests pass pure closures. The stage MUST NOT panic — a drop is the
+/// `None` return, not an unwind.
+pub type PipelineStage<'a> =
+    Box<dyn Fn(&AgentStepSpec) -> Option<(AgentStepSpec, StepResult)> + Send + Sync + 'a>;
 
-#[allow(dead_code)]
-pub fn pipeline(
-    driver: &AgentStepFn<'_>,
-    items: Vec<AgentStepSpec>,
-    _stages: Vec<PipelineStage>,
-) -> Vec<StepResult> {
-    // Stage 1 stub: run items through the parallel barrier.
+/// A real STREAMING pipeline: every item flows through ALL `stages`
+/// independently, with NO barrier between stages. Item A may be in stage 3 while
+/// item B is still in stage 1 — items do not wait for one another at any stage
+/// boundary. Concurrency across items is bounded by the shared
+/// [`WorkflowScheduler`] (one permit per in-flight item).
+///
+/// A stage that returns `None` drops that item: it skips its remaining stages
+/// and its slot becomes the last successful [`StepResult`] marked `ok = false`
+/// (or, if the very first stage dropped it, a synthetic failed result). Results
+/// are returned in INPUT order regardless of completion order.
+///
+/// Returns one [`StepResult`] per input item (the item's FINAL stage result, or
+/// its failed/dropped slot), so `out.len() == items.len()`.
+pub fn pipeline(items: Vec<AgentStepSpec>, stages: Vec<PipelineStage<'_>>) -> Vec<StepResult> {
     if items.is_empty() {
         return Vec::new();
     }
 
-    parallel(driver, &items)
+    let scheduler = get_scheduler();
+    let stages = &stages;
+    let (tx, rx) = crossbeam::channel::bounded::<(usize, StepResult)>(items.len());
+
+    std::thread::scope(|scope| {
+        for (index, item) in items.into_iter().enumerate() {
+            let tx = tx.clone();
+            scope.spawn(move || {
+                // One permit per in-flight ITEM — no per-stage barrier, so a fast
+                // item races ahead through its stages while a slow item lags.
+                if !scheduler.acquire() {
+                    let _ = tx.send((index, capped_result(&item)));
+                    return;
+                }
+
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    run_item_through_stages(&item, stages)
+                }))
+                .unwrap_or_else(|_| panicked_result(&item));
+
+                scheduler.release();
+                let _ = tx.send((index, result));
+            });
+        }
+        drop(tx);
+    });
+
+    // Re-order by input index (completion order is non-deterministic by design).
+    let mut by_index: BTreeMap<usize, StepResult> = BTreeMap::new();
+    for (index, result) in rx.iter() {
+        by_index.insert(index, result);
+    }
+    by_index.into_values().collect()
+}
+
+/// Flow a single item through every stage in order. Stops at the first stage
+/// that returns `None` (a drop), marking the last successful result `ok = false`
+/// (or synthesizing a failed result if the first stage dropped the item).
+fn run_item_through_stages(item: &AgentStepSpec, stages: &[PipelineStage<'_>]) -> StepResult {
+    let mut current = item.clone();
+    let mut last: Option<StepResult> = None;
+    for stage in stages {
+        match stage(&current) {
+            Some((next, result)) => {
+                current = next;
+                last = Some(result);
+            }
+            None => {
+                // Drop: skip the remaining stages. The slot is the last
+                // successful result demoted to a failure, or a synthetic one.
+                return match last {
+                    Some(mut result) => {
+                        result.ok = false;
+                        result.provider_session_id = None;
+                        result.output_summary =
+                            format!("pipeline item dropped at a stage: {}", result.output_summary);
+                        result
+                    }
+                    None => dropped_result(item),
+                };
+            }
+        }
+    }
+    // No stage dropped the item: its slot is the FINAL stage's result. An empty
+    // stage list is a vacuous drop (nothing produced a result).
+    last.unwrap_or_else(|| dropped_result(item))
+}
+
+fn dropped_result(item: &AgentStepSpec) -> StepResult {
+    StepResult {
+        phase: item.phase.clone(),
+        label: item.label.clone(),
+        member_id: item.member_id.clone(),
+        ok: false,
+        provider_session_id: None,
+        output_summary: "pipeline item dropped before producing a result".to_string(),
+        step_id: None,
+        started_at: None,
+    }
+}
+
+fn capped_result(item: &AgentStepSpec) -> StepResult {
+    StepResult {
+        phase: item.phase.clone(),
+        label: item.label.clone(),
+        member_id: item.member_id.clone(),
+        ok: false,
+        provider_session_id: None,
+        output_summary: "workflow lifetime agent cap (1000) exceeded".to_string(),
+        step_id: None,
+        started_at: None,
+    }
+}
+
+fn panicked_result(item: &AgentStepSpec) -> StepResult {
+    StepResult {
+        phase: item.phase.clone(),
+        label: item.label.clone(),
+        member_id: item.member_id.clone(),
+        ok: false,
+        provider_session_id: None,
+        output_summary: "pipeline stage panicked".to_string(),
+        step_id: None,
+        started_at: None,
+    }
 }
 
 /// Outcome of a whole workflow run, returned to the caller for journaling.
@@ -247,6 +380,15 @@ pub struct WorkflowOutcome {
     pub steps: Vec<StepResult>,
     pub status: WorkflowRunStatus,
     pub summary: String,
+    /// How many agents this run spawned, measured as the scheduler's lifetime
+    /// counter delta across the dispatch. `0` for outcomes built without going
+    /// through the scheduler (e.g. the built-in `investigate` registry path,
+    /// which leaves it for the caller to fill).
+    pub agents_spawned: u64,
+    /// The collected structured output of the run: one JSON object per step
+    /// (`label` / `phase` / `ok` / `output_summary` / `provider_session_id`).
+    /// `None` when the run produced no steps.
+    pub final_output: Option<serde_json::Value>,
 }
 
 /// The built-in `investigate` workflow (the §6 scenario). Demonstrates BOTH
@@ -314,6 +456,10 @@ pub fn investigate(
         steps,
         status,
         summary,
+        // The registry path leaves the per-run agent count to the caller (it does
+        // not snapshot the scheduler around its own dispatch).
+        agents_spawned: 0,
+        final_output: None,
     }
 }
 
@@ -409,8 +555,8 @@ pub enum WorkflowNode {
     /// A barrier fan-out: all children run concurrently and are joined before
     /// the interpreter proceeds.
     Parallel { nodes: Vec<WorkflowNode> },
-    /// A streaming pipeline. Stage 1 falls back to `parallel()` semantics;
-    /// real per-item streaming arrives in Stage 2.
+    /// A streaming pipeline: the item flows through each stage agent in order
+    /// with NO barrier; a stage that fails drops the item and skips the rest.
     Pipeline { stages: Vec<WorkflowNode> },
 }
 
@@ -442,9 +588,32 @@ impl std::fmt::Display for DispatchError {
 
 impl std::error::Error for DispatchError {}
 
-/// Build an [`AgentStepSpec`] from an `Agent` node, resolving its member name.
+/// Substitute `{{key}}` placeholders in a prompt with the spec's `args`. Each
+/// top-level key of the `args` object is a placeholder; scalar values render
+/// without quotes (a string as-is, numbers/bools via their JSON text), nested
+/// values via compact JSON. Unknown placeholders are left untouched. With no
+/// `args`, the prompt is returned verbatim. This is how a spec parameterizes its
+/// node prompts (e.g. `"Audit {{topic}}"` + `args: { "topic": "auth" }`).
+fn interpolate_args(prompt: &str, args: Option<&serde_json::Value>) -> String {
+    let Some(serde_json::Value::Object(map)) = args else {
+        return prompt.to_string();
+    };
+    let mut out = prompt.to_string();
+    for (key, value) in map {
+        let rendered = match value {
+            serde_json::Value::String(s) => s.clone(),
+            other => other.to_string(),
+        };
+        out = out.replace(&format!("{{{{{key}}}}}"), &rendered);
+    }
+    out
+}
+
+/// Build an [`AgentStepSpec`] from an `Agent` node, resolving its member name and
+/// interpolating any `{{key}}` placeholders in the prompt from the spec `args`.
 fn agent_spec(
     resolver: &MemberResolver<'_>,
+    args: Option<&serde_json::Value>,
     default_phase: &str,
     member: &str,
     prompt: &str,
@@ -459,7 +628,7 @@ fn agent_spec(
         phase,
         label,
         member_id,
-        prompt: prompt.to_string(),
+        prompt: interpolate_args(prompt, args),
     })
 }
 
@@ -467,6 +636,7 @@ fn agent_spec(
 /// `Pipeline`). Non-`Agent` children are rejected — Stage 1 barriers are flat.
 fn barrier_specs(
     resolver: &MemberResolver<'_>,
+    args: Option<&serde_json::Value>,
     default_phase: &str,
     nodes: &[WorkflowNode],
     kind: &'static str,
@@ -482,6 +652,7 @@ fn barrier_specs(
             } => {
                 specs.push(agent_spec(
                     resolver,
+                    args,
                     default_phase,
                     member,
                     prompt,
@@ -495,10 +666,12 @@ fn barrier_specs(
     Ok(specs)
 }
 
-/// Recursively walk one node, appending its [`StepResult`]s to `steps`.
+/// Recursively walk one node, appending its [`StepResult`]s to `steps`. `args`
+/// is the spec's parameterization, flowed into every node prompt.
 fn walk_node(
     driver: &AgentStepFn<'_>,
     resolver: &MemberResolver<'_>,
+    args: Option<&serde_json::Value>,
     default_phase: &str,
     node: &WorkflowNode,
     steps: &mut Vec<StepResult>,
@@ -510,32 +683,63 @@ fn walk_node(
             phase,
             label,
         } => {
-            let spec = agent_spec(resolver, default_phase, member, prompt, phase, label)?;
+            let spec = agent_spec(resolver, args, default_phase, member, prompt, phase, label)?;
             steps.push(run_agent_step(driver, &spec));
         }
         WorkflowNode::Phase { name, nodes } => {
             // Serial: each child fully completes before the next begins.
             for child in nodes {
-                walk_node(driver, resolver, name, child, steps)?;
+                walk_node(driver, resolver, args, name, child, steps)?;
             }
         }
         WorkflowNode::Parallel { nodes } => {
-            let specs = barrier_specs(resolver, default_phase, nodes, "parallel")?;
+            let specs = barrier_specs(resolver, args, default_phase, nodes, "parallel")?;
             steps.extend(parallel(driver, &specs));
         }
         WorkflowNode::Pipeline { stages } => {
-            // Stage 1: fall back to the parallel barrier (real streaming = Stage 2).
-            let specs = barrier_specs(resolver, default_phase, stages, "pipeline")?;
-            steps.extend(parallel(driver, &specs));
+            // A streaming chain: the item flows through each stage agent in order
+            // with NO barrier; a stage that FAILS drops the item and skips its
+            // remaining stages (the CC-spec failure-drop). We resolve each stage's
+            // member up front (so an unknown member is a pre-flight error, like
+            // the barrier path), then deliver each stage in turn, halting at the
+            // first failure. Every stage that ran is journaled as a step.
+            let stage_specs = barrier_specs(resolver, args, default_phase, stages, "pipeline")?;
+            for spec in &stage_specs {
+                let result = run_agent_step(driver, spec);
+                let ok = result.ok;
+                steps.push(result);
+                if !ok {
+                    // Drop: this stage failed, so the remaining stages are skipped.
+                    break;
+                }
+            }
         }
     }
     Ok(())
 }
 
+/// One step's structured payload for `WorkflowRun.final_output` / the step's
+/// `result` field. Mirrors the human-facing summary with the machine-facing
+/// status + linkage the dashboard / callers want.
+pub fn step_result_json(result: &StepResult) -> serde_json::Value {
+    serde_json::json!({
+        "phase": result.phase,
+        "label": result.label,
+        "member_id": result.member_id,
+        "ok": result.ok,
+        "provider_session_id": result.provider_session_id,
+        "output_summary": result.output_summary,
+    })
+}
+
 /// Interpret a [`WorkflowSpec`] IR, running its nodes through the runtime
 /// primitives and collecting every [`StepResult`]. Top-level nodes run serially
-/// in order; `Phase` is serial, `Parallel` is a barrier, `Pipeline` falls back
-/// to a barrier in Stage 1.
+/// in order; `Phase` is serial, `Parallel` is a barrier, `Pipeline` is a
+/// streaming chain (item flows through stages; a failed stage drops the rest).
+///
+/// The spec's `args` are interpolated into every node prompt (`{{key}}`). The
+/// returned outcome carries `agents_spawned` (the scheduler counter delta across
+/// this dispatch) and `final_output` (one JSON object per collected step).
 ///
 /// The run is "completed" unless it has no successful step (and at least one
 /// step ran), in which case it is "failed". A spec with zero steps completes
@@ -545,10 +749,17 @@ pub fn dispatch_spec(
     resolver: &MemberResolver<'_>,
     driver: &AgentStepFn<'_>,
 ) -> Result<WorkflowOutcome, DispatchError> {
+    // Snapshot the scheduler's lifetime spawn counter so we can attribute the
+    // agents THIS run spawned (the delta) to `WorkflowRun.agents_spawned`.
+    let spawned_before = scheduler_agents_spawned();
+
     let mut steps = Vec::new();
+    let args = spec.args.as_ref();
     for node in &spec.nodes {
-        walk_node(driver, resolver, &spec.name, node, &mut steps)?;
+        walk_node(driver, resolver, args, &spec.name, node, &mut steps)?;
     }
+
+    let agents_spawned = scheduler_agents_spawned().saturating_sub(spawned_before);
 
     let total = steps.len();
     let kept = steps.iter().filter(|step| step.ok).count();
@@ -564,10 +775,20 @@ pub fn dispatch_spec(
         )
     };
 
+    let final_output = if steps.is_empty() {
+        None
+    } else {
+        Some(serde_json::Value::Array(
+            steps.iter().map(step_result_json).collect(),
+        ))
+    };
+
     Ok(WorkflowOutcome {
         steps,
         status,
         summary,
+        agents_spawned,
+        final_output,
     })
 }
 
@@ -910,5 +1131,293 @@ mod tests {
         let resolver = name_resolver(&map);
         let err = dispatch_spec(&spec, &resolver, &driver).expect_err("unknown member rejected");
         assert_eq!(err, DispatchError::UnknownMember("ghost".to_string()));
+    }
+
+    // ----- Streaming pipeline() tests -----
+
+    /// Build a trivial pass-through stage that tags the result's summary with the
+    /// stage name and carries the same spec forward.
+    fn pass_stage(name: &'static str) -> PipelineStage<'static> {
+        Box::new(move |spec: &AgentStepSpec| {
+            let result = StepResult {
+                phase: spec.phase.clone(),
+                label: spec.label.clone(),
+                member_id: spec.member_id.clone(),
+                ok: true,
+                provider_session_id: Some(format!("{}-{}", name, spec.label)),
+                output_summary: name.to_string(),
+                step_id: None,
+                started_at: None,
+            };
+            Some((spec.clone(), result))
+        })
+    }
+
+    fn item(label: &str) -> AgentStepSpec {
+        AgentStepSpec {
+            phase: "p".to_string(),
+            label: label.to_string(),
+            member_id: "m".to_string(),
+            prompt: "x".to_string(),
+        }
+    }
+
+    #[test]
+    fn pipeline_returns_final_stage_result_per_item_in_input_order() {
+        let items = vec![item("a"), item("b"), item("c")];
+        let stages: Vec<PipelineStage<'_>> = vec![pass_stage("s1"), pass_stage("s2")];
+        let results = pipeline(items, stages);
+        assert_eq!(results.len(), 3);
+        // Returned in INPUT order regardless of completion order.
+        assert_eq!(results[0].label, "a");
+        assert_eq!(results[1].label, "b");
+        assert_eq!(results[2].label, "c");
+        // Each item's slot is the LAST stage's result.
+        for r in &results {
+            assert!(r.ok);
+            assert_eq!(r.output_summary, "s2");
+        }
+    }
+
+    #[test]
+    fn pipeline_has_no_barrier_between_stages() {
+        // Prove items do NOT wait for one another at a stage boundary: the SLOW
+        // item blocks in stage 1 until the FAST item has reached stage 2. With a
+        // per-stage barrier this would deadlock (stage 2 could not start until
+        // every item finished stage 1). Without one, it completes.
+        use std::sync::atomic::AtomicBool;
+        use std::sync::Arc;
+
+        let fast_in_stage2 = Arc::new(AtomicBool::new(false));
+
+        let fast_flag = fast_in_stage2.clone();
+        let stage1: PipelineStage<'_> = Box::new(move |spec: &AgentStepSpec| {
+            if spec.label == "slow" {
+                // Block until the fast item is observed in stage 2.
+                let mut spins = 0;
+                while !fast_flag.load(Ordering::SeqCst) {
+                    std::thread::yield_now();
+                    spins += 1;
+                    assert!(spins < 50_000_000, "no-barrier deadlock: fast item never reached stage 2");
+                }
+            }
+            Some((
+                spec.clone(),
+                StepResult {
+                    phase: spec.phase.clone(),
+                    label: spec.label.clone(),
+                    member_id: spec.member_id.clone(),
+                    ok: true,
+                    provider_session_id: None,
+                    output_summary: "s1".to_string(),
+                    step_id: None,
+                    started_at: None,
+                },
+            ))
+        });
+
+        let fast_flag2 = fast_in_stage2.clone();
+        let stage2: PipelineStage<'_> = Box::new(move |spec: &AgentStepSpec| {
+            if spec.label == "fast" {
+                fast_flag2.store(true, Ordering::SeqCst);
+            }
+            Some((
+                spec.clone(),
+                StepResult {
+                    phase: spec.phase.clone(),
+                    label: spec.label.clone(),
+                    member_id: spec.member_id.clone(),
+                    ok: true,
+                    provider_session_id: None,
+                    output_summary: "s2".to_string(),
+                    step_id: None,
+                    started_at: None,
+                },
+            ))
+        });
+
+        let items = vec![item("slow"), item("fast")];
+        let results = pipeline(items, vec![stage1, stage2]);
+        assert_eq!(results.len(), 2);
+        assert!(results.iter().all(|r| r.ok && r.output_summary == "s2"));
+    }
+
+    #[test]
+    fn pipeline_failed_stage_drops_item_and_skips_its_rest() {
+        // Stage 2 drops the item labelled "bad"; that item must NOT reach stage 3.
+        let reached_stage3 = Mutex::new(Vec::<String>::new());
+
+        let stage1 = pass_stage("s1");
+        let stage2: PipelineStage<'_> = Box::new(|spec: &AgentStepSpec| {
+            if spec.label == "bad" {
+                return None; // drop
+            }
+            Some((
+                spec.clone(),
+                StepResult {
+                    phase: spec.phase.clone(),
+                    label: spec.label.clone(),
+                    member_id: spec.member_id.clone(),
+                    ok: true,
+                    provider_session_id: None,
+                    output_summary: "s2".to_string(),
+                    step_id: None,
+                    started_at: None,
+                },
+            ))
+        });
+        let stage3: PipelineStage<'_> = Box::new(|spec: &AgentStepSpec| {
+            Some((
+                spec.clone(),
+                StepResult {
+                    phase: spec.phase.clone(),
+                    label: spec.label.clone(),
+                    member_id: spec.member_id.clone(),
+                    ok: true,
+                    provider_session_id: None,
+                    output_summary: "s3".to_string(),
+                    step_id: None,
+                    started_at: None,
+                },
+            ))
+        });
+
+        // Wrap stage3 to record which items reached it.
+        let recorded = &reached_stage3;
+        let stage3_recorded: PipelineStage<'_> = Box::new(move |spec: &AgentStepSpec| {
+            recorded.lock().unwrap().push(spec.label.clone());
+            stage3(spec)
+        });
+
+        let items = vec![item("good"), item("bad")];
+        let results = pipeline(items, vec![stage1, stage2, stage3_recorded]);
+        assert_eq!(results.len(), 2);
+
+        // Input order preserved.
+        assert_eq!(results[0].label, "good");
+        assert_eq!(results[1].label, "bad");
+        // "good" flowed through all three stages.
+        assert!(results[0].ok);
+        assert_eq!(results[0].output_summary, "s3");
+        // "bad" dropped at stage 2: failed slot, never reached stage 3.
+        assert!(!results[1].ok, "dropped item lands in a failed slot");
+
+        let reached = reached_stage3.into_inner().unwrap();
+        assert!(reached.contains(&"good".to_string()));
+        assert!(
+            !reached.contains(&"bad".to_string()),
+            "dropped item skipped its remaining stages"
+        );
+    }
+
+    #[test]
+    fn pipeline_first_stage_drop_yields_failed_slot() {
+        let drop_all: PipelineStage<'_> = Box::new(|_spec: &AgentStepSpec| None);
+        let results = pipeline(vec![item("x")], vec![drop_all]);
+        assert_eq!(results.len(), 1);
+        assert!(!results[0].ok);
+        assert_eq!(results[0].label, "x");
+    }
+
+    #[test]
+    fn pipeline_empty_items_is_empty() {
+        let results = pipeline(Vec::new(), vec![pass_stage("s1")]);
+        assert!(results.is_empty());
+    }
+
+    // ----- args interpolation + IR pipeline tests -----
+
+    #[test]
+    fn dispatch_spec_args_flow_into_node_prompts() {
+        let map = sample_map();
+        let seen = Mutex::new(Vec::<String>::new());
+        let spec = WorkflowSpec {
+            name: "demo".to_string(),
+            args: Some(serde_json::json!({ "topic": "auth bug", "n": 3 })),
+            nodes: vec![WorkflowNode::Agent {
+                member: "auditor".to_string(),
+                prompt: "Audit {{topic}} ({{n}} modules)".to_string(),
+                phase: None,
+                label: None,
+            }],
+        };
+        {
+            let driver = |s: &AgentStepSpec| {
+                seen.lock().unwrap().push(s.prompt.clone());
+                StepResult {
+                    phase: s.phase.clone(),
+                    label: s.label.clone(),
+                    member_id: s.member_id.clone(),
+                    ok: true,
+                    provider_session_id: Some("s".to_string()),
+                    output_summary: "ok".to_string(),
+                    step_id: None,
+                    started_at: None,
+                }
+            };
+            let resolver = name_resolver(&map);
+            dispatch_spec(&spec, &resolver, &driver).expect("dispatch ok");
+        }
+        let seen = seen.into_inner().unwrap();
+        assert_eq!(seen, vec!["Audit auth bug (3 modules)".to_string()]);
+    }
+
+    #[test]
+    fn dispatch_spec_pipeline_streams_stages_and_drops_on_failure() {
+        let mut map = sample_map();
+        map.insert("worker".to_string(), "member-worker".to_string());
+        let order = Mutex::new(Vec::<String>::new());
+        // The middle stage fails, so the third stage must be skipped.
+        let driver = |s: &AgentStepSpec| {
+            order.lock().unwrap().push(s.label.clone());
+            let ok = s.label != "stage-2";
+            StepResult {
+                phase: s.phase.clone(),
+                label: s.label.clone(),
+                member_id: s.member_id.clone(),
+                ok,
+                provider_session_id: if ok { Some("s".to_string()) } else { None },
+                output_summary: "x".to_string(),
+                step_id: None,
+                started_at: None,
+            }
+        };
+        let spec = WorkflowSpec {
+            name: "demo".to_string(),
+            args: None,
+            nodes: vec![WorkflowNode::Pipeline {
+                stages: vec![
+                    WorkflowNode::Agent {
+                        member: "worker".to_string(),
+                        prompt: "1".to_string(),
+                        phase: Some("pipe".to_string()),
+                        label: Some("stage-1".to_string()),
+                    },
+                    WorkflowNode::Agent {
+                        member: "worker".to_string(),
+                        prompt: "2".to_string(),
+                        phase: Some("pipe".to_string()),
+                        label: Some("stage-2".to_string()),
+                    },
+                    WorkflowNode::Agent {
+                        member: "worker".to_string(),
+                        prompt: "3".to_string(),
+                        phase: Some("pipe".to_string()),
+                        label: Some("stage-3".to_string()),
+                    },
+                ],
+            }],
+        };
+        let resolver = name_resolver(&map);
+        let outcome = dispatch_spec(&spec, &resolver, &driver).expect("dispatch ok");
+        let order = order.into_inner().unwrap();
+        // Stage 3 is skipped because stage 2 dropped the item.
+        assert_eq!(order, vec!["stage-1", "stage-2"]);
+        assert_eq!(outcome.steps.len(), 2);
+        assert!(outcome.steps[0].ok);
+        assert!(!outcome.steps[1].ok);
+        // final_output carries one entry per collected step.
+        let out = outcome.final_output.expect("final_output present");
+        assert_eq!(out.as_array().expect("array").len(), 2);
     }
 }

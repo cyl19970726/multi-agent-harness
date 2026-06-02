@@ -493,6 +493,12 @@ export interface WorkflowRun {
   created_at: string;
   ended_at?: string | null;
   summary?: string | null;
+  /** JSON parameterization the dynamic `run-spec` IR was authored with. */
+  args?: unknown;
+  /** How many agent steps this run spawned (the per-run agent count). */
+  agents_spawned?: number;
+  /** Collected structured output of the run (one entry per step). */
+  final_output?: unknown;
 }
 
 /**
@@ -508,6 +514,8 @@ export interface WorkflowStep {
   provider_session_id?: string | null;
   status: WorkflowStepStatus | string;
   output_summary?: string | null;
+  /** Structured result for this step, beyond the human-facing summary. */
+  result?: unknown;
   started_at: string;
   ended_at?: string | null;
 }
