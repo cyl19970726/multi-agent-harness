@@ -2541,6 +2541,12 @@ fn handle_http_action(
     {
         return assign_task_value(store, task_id, body);
     }
+    if let Some(task_id) = path
+        .strip_prefix("/v1/tasks/")
+        .and_then(|rest| rest.strip_suffix("/reviewer"))
+    {
+        return set_task_reviewer_value(store, task_id, body);
+    }
     if path == "/v1/gateway/tick" {
         return provider_gateway_tick_value(
             store,
@@ -2887,6 +2893,29 @@ fn assign_task_value(
             waiver_decision_id: json_string(body, "waiver_decision"),
         },
     )?;
+    Ok(serde_json::to_value(task)?)
+}
+
+/// POST /v1/tasks/{id}/reviewer — set the task's reviewer agent from the JSON
+/// body (the `@reviewer` gesture on the dashboard). This only records the
+/// reviewer accountability on the existing nullable `Task.reviewer_agent_id`
+/// field (no schema change); it deliberately does NOT change status or queue a
+/// message. Review delivery is a separate hand-off (`/request-review`,
+/// `request_task_review_value`) so the assignment-proof chain stays explicit:
+/// naming a reviewer is not the same as handing the work off to them.
+fn set_task_reviewer_value(
+    store: &HarnessStore,
+    task_id: &str,
+    body: &serde_json::Value,
+) -> CliResult<serde_json::Value> {
+    let reviewer = required_json_string(body, "reviewer")
+        .or_else(|_| required_json_string(body, "reviewer_agent_id"))?;
+    // Fail fast if the named reviewer is not a real member, mirroring assign.
+    let _ = latest_member(store, &reviewer)?;
+    let mut task = latest_task(store, task_id)?;
+    task.reviewer_agent_id = Some(reviewer);
+    task.updated_at = now_string();
+    store.append_task(&task)?;
     Ok(serde_json::to_value(task)?)
 }
 
@@ -11602,6 +11631,39 @@ mod tests {
         assert!(
             teams_in_snapshot.is_empty(),
             "snapshot.teams should be empty when no active teams exist"
+        );
+
+        // Stage 7: the @reviewer gesture (POST /v1/tasks/{id}/reviewer) records
+        // the reviewer on the existing field WITHOUT handing off (status stays
+        // `assigned`, no review-request message).
+        let messages_before = latest_messages(&store).expect("messages readable").len();
+        let reviewer_body = serde_json::json!({ "reviewer": agent1_id });
+        let reviewed = set_task_reviewer_value(&store, &task_id, &reviewer_body)
+            .expect("setting reviewer succeeds for teamless agent");
+        assert_eq!(
+            reviewed["reviewer_agent_id"].as_str(),
+            Some(agent1_id.as_str()),
+            "task reviewer_agent_id must be set by the @reviewer gesture"
+        );
+        assert_eq!(
+            reviewed["status"].as_str(),
+            Some("assigned"),
+            "naming a reviewer must NOT change task status (no hand-off)"
+        );
+        assert_eq!(
+            latest_messages(&store).expect("messages readable").len(),
+            messages_before,
+            "naming a reviewer must NOT queue a message (hand-off is separate)"
+        );
+        // A non-existent reviewer is rejected (fail-fast, mirrors assign).
+        assert!(
+            set_task_reviewer_value(
+                &store,
+                &task_id,
+                &serde_json::json!({ "reviewer": "agent-does-not-exist" }),
+            )
+            .is_err(),
+            "naming an unknown reviewer must error"
         );
 
         let _ = std::fs::remove_dir_all(root);
