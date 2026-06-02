@@ -2939,8 +2939,15 @@ function CurrentWorkBanner({
             {running.provider ?? "provider"} · {formatDuration(running.started_at) ?? "0s"}
           </span>
         </div>
-        {/* Auto-opened live TUI: watch the turn unfold (tool calls, results, output). */}
-        <TurnDrillIn session={running} apiUrl={apiUrl} defaultOpen />
+        {/* Auto-opened live TUI: watch the turn unfold (tool calls, results,
+            output). Prefers the SSE live buffer (Stage B, sub-second) and falls
+            back to the 1s poll. */}
+        <TurnDrillIn
+          session={running}
+          apiUrl={apiUrl}
+          defaultOpen
+          liveEvents={model.snapshot.live_turn_events?.[running.id]}
+        />
       </div>
     );
   }
@@ -3509,10 +3516,14 @@ export function TurnDrillIn({
   session,
   apiUrl,
   defaultOpen = false,
+  liveEvents,
 }: {
   session: ProviderSession;
   apiUrl?: string;
   defaultOpen?: boolean;
+  /** SSE-pushed events for this session (Stage B); preferred over the poll when
+   * it is further ahead, giving sub-second streaming. */
+  liveEvents?: RawTurnEvent[];
 }) {
   const [open, setOpen] = useState(defaultOpen);
   const [events, setEvents] = useState<RawTurnEvent[] | null>(null);
@@ -3521,6 +3532,11 @@ export function TurnDrillIn({
   const inFlight = useRef(false);
   const running = session.status === "running";
   const duration = formatDuration(session.started_at, session.ended_at);
+  // Show whichever source is further along: the SSE live buffer (sub-second) or
+  // the polled/fetched events (durable catch-up). On terminal the final fetch
+  // reconciles, so `events` wins once complete.
+  const display =
+    liveEvents && liveEvents.length > (events?.length ?? 0) ? liveEvents : events;
 
   useEffect(() => {
     if (!open || !apiUrl) return;
@@ -3574,21 +3590,21 @@ export function TurnDrillIn({
         )}
         <span>{session.provider ?? "turn"}</span>
         {duration ? <span>· {duration}</span> : null}
-        {events ? <span>· {events.length} events</span> : null}
+        {display ? <span>· {display.length} events</span> : null}
         {!running && <span>· turn</span>}
       </button>
       {open && (
         <div className="mt-1 max-h-96 w-full overflow-y-auto rounded-md border border-border bg-muted/30 p-2 text-left">
-          {error && <span className="text-[11px] text-status-bad">{error}</span>}
-          {events === null ? (
+          {error && !display?.length && <span className="text-[11px] text-status-bad">{error}</span>}
+          {display === null ? (
             <span className="text-[11px] text-muted-foreground">loading…</span>
-          ) : events.length === 0 ? (
+          ) : display.length === 0 ? (
             <span className="text-[11px] text-muted-foreground">
               {running ? "waiting for the agent…" : "no events recorded"}
             </span>
           ) : (
             <>
-              <TurnTui events={events} />
+              <TurnTui events={display} />
               {truncated && (
                 <p className="pt-1 text-[10px] text-muted-foreground">…older events truncated</p>
               )}

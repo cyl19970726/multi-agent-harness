@@ -445,6 +445,12 @@ export interface DashboardSnapshot {
   provider_sessions?: ProviderSession[];
   provider_child_threads?: ProviderChildThread[];
   goal_learning_status?: GoalLearningStatus[];
+  /**
+   * Transient, client-only: raw provider turn events pushed live via SSE
+   * (provider_turn_event), keyed by session id. Never sent by the backend
+   * snapshot; accumulated by applyFrame so the agent TUI streams sub-second.
+   */
+  live_turn_events?: Record<string, Record<string, unknown>[]>;
   workflow_runs?: WorkflowRun[];
   workflow_steps?: WorkflowStep[];
 }

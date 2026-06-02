@@ -81,6 +81,9 @@ export type SseFrame =
   | { kind: "agent_event"; event: AgentEvent }
   | { kind: "message"; message: Message }
   | { kind: "provider_session"; session: ProviderSession }
+  // A single raw provider turn event teed live during a delivery (Stage B): the
+  // agent TUI consumes these for sub-second streaming, falling back to polling.
+  | { kind: "provider_turn_event"; sessionId: string; event: Record<string, unknown> }
   | { kind: "workflow_run"; run: WorkflowRun }
   | { kind: "workflow_step"; step: WorkflowStep };
 
@@ -132,6 +135,12 @@ export function openEventStream(baseUrl: string, handlers: EventStreamHandlers):
     const data = parse<ProviderSession>(event as MessageEvent);
     if (data) handlers.onFrame({ kind: "provider_session", session: data });
   });
+  source.addEventListener("provider_turn_event", (event) => {
+    const data = parse<{ session_id?: string; event?: Record<string, unknown> }>(event as MessageEvent);
+    if (data?.session_id && data.event) {
+      handlers.onFrame({ kind: "provider_turn_event", sessionId: data.session_id, event: data.event });
+    }
+  });
   source.addEventListener("workflow_run", (event) => {
     const data = parse<WorkflowRun>(event as MessageEvent);
     if (data) handlers.onFrame({ kind: "workflow_run", run: data });
@@ -177,6 +186,21 @@ export function applyFrame(snapshot: DashboardSnapshot, frame: SseFrame): Dashbo
         provider_sessions: upsertById(snapshot.provider_sessions, frame.session),
         generated_at: new Date().toISOString(),
       };
+    case "provider_turn_event": {
+      // Append the raw event to this session's live buffer (transient; capped so
+      // a long turn cannot grow memory unbounded). The agent TUI prefers this
+      // sub-second stream over its 1s poll; the per-session NDJSON stays the
+      // durable catch-up source.
+      const LIVE_CAP = 2000;
+      const current = snapshot.live_turn_events ?? {};
+      const existing = current[frame.sessionId] ?? [];
+      const next = existing.length >= LIVE_CAP ? existing : [...existing, frame.event];
+      return {
+        ...snapshot,
+        live_turn_events: { ...current, [frame.sessionId]: next },
+        generated_at: new Date().toISOString(),
+      };
+    }
     case "workflow_run":
       return {
         ...snapshot,
