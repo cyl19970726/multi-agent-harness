@@ -49,6 +49,7 @@ import {
   VisionOverview,
   WarningsRepair,
 } from "../surfaces/Surfaces";
+import { WorkflowRunDetail, WorkflowsList } from "../surfaces/Workflows";
 import { deliverQueued } from "../api/actions";
 import type { SelectionState, SurfaceId } from "./selection";
 
@@ -78,7 +79,8 @@ interface WorkbenchShellProps {
 const navItems: { id: SurfaceId; label: string; icon: typeof Users }[] = [
   { id: "agents", label: "Agents", icon: Bot },
   { id: "vision", label: "Vision", icon: Target },
-  { id: "tasks", label: "Work", icon: Workflow },
+  { id: "tasks", label: "Work", icon: GitBranch },
+  { id: "workflows", label: "Workflows", icon: Workflow },
   { id: "warnings", label: "Warnings", icon: ShieldAlert },
 ];
 
@@ -116,7 +118,7 @@ export function WorkbenchShell({
   // needs full width for its columns; the Goal/Task detail pages are centered
   // Notion documents that read better without a competing rail. All suppress the
   // global Inspector; the rest keep it.
-  const noInspector: SurfaceId[] = ["agents", "tasks", "goal", "task"];
+  const noInspector: SurfaceId[] = ["agents", "tasks", "goal", "task", "workflows"];
   const showInspector = !noInspector.includes(selection.surface);
 
   return (
@@ -484,6 +486,13 @@ function SurfaceSwitch({
           boardGoal={selection.boardGoal}
           peekTaskId={selection.taskId}
         />
+      );
+    case "workflows":
+      // One surface, self-splitting on the selected run (mirror of agents/memberId).
+      return selection.workflowRunId ? (
+        <WorkflowRunDetail {...shared} />
+      ) : (
+        <WorkflowsList {...shared} />
       );
     case "docs":
       return <DocsContext {...shared} />;

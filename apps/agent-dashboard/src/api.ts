@@ -1,4 +1,12 @@
-import type { AgentEvent, DashboardSnapshot, Message, ProviderSession } from "./types";
+import type {
+  AgentEvent,
+  DashboardSnapshot,
+  Message,
+  ProviderSession,
+  WorkflowDef,
+  WorkflowRun,
+  WorkflowStep,
+} from "./types";
 
 export interface ActionResponse {
   ok: boolean;
@@ -45,6 +53,24 @@ export async function fetchDoc(
 }
 
 /**
+ * Fetch the registered workflow catalog via `GET /v1/workflows` — the
+ * run-independent `{ name, summary }` defs from the compiled registry. Only the
+ * live source serves this; offline returns an empty list (caller shows an
+ * "unavailable" empty state). Network/HTTP errors propagate to the caller.
+ */
+export async function fetchWorkflowDefs(baseUrl: string): Promise<WorkflowDef[]> {
+  const normalized = normalizeBaseUrl(baseUrl);
+  if (!normalized) {
+    throw new Error("Harness API URL is required");
+  }
+  const response = await fetch(`${normalized}/v1/workflows`);
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}`);
+  }
+  return (await response.json()) as WorkflowDef[];
+}
+
+/**
  * A single frame off the backend `/v1/events` SSE stream. The backend emits
  * provider-neutral objects (ADR 0011): an `AgentEvent`, `Message`, or
  * `ProviderSession` payload identical for Codex and Claude, plus a `snapshot`
@@ -57,7 +83,9 @@ export type SseFrame =
   | { kind: "provider_session"; session: ProviderSession }
   // A single raw provider turn event teed live during a delivery (Stage B): the
   // agent TUI consumes these for sub-second streaming, falling back to polling.
-  | { kind: "provider_turn_event"; sessionId: string; event: Record<string, unknown> };
+  | { kind: "provider_turn_event"; sessionId: string; event: Record<string, unknown> }
+  | { kind: "workflow_run"; run: WorkflowRun }
+  | { kind: "workflow_step"; step: WorkflowStep };
 
 export interface EventStreamHandlers {
   /** Connection established (the initial `snapshot` frame arrived). */
@@ -113,6 +141,14 @@ export function openEventStream(baseUrl: string, handlers: EventStreamHandlers):
       handlers.onFrame({ kind: "provider_turn_event", sessionId: data.session_id, event: data.event });
     }
   });
+  source.addEventListener("workflow_run", (event) => {
+    const data = parse<WorkflowRun>(event as MessageEvent);
+    if (data) handlers.onFrame({ kind: "workflow_run", run: data });
+  });
+  source.addEventListener("workflow_step", (event) => {
+    const data = parse<WorkflowStep>(event as MessageEvent);
+    if (data) handlers.onFrame({ kind: "workflow_step", step: data });
+  });
   source.addEventListener("error", handlers.onError);
 
   return () => source.close();
@@ -165,6 +201,18 @@ export function applyFrame(snapshot: DashboardSnapshot, frame: SseFrame): Dashbo
         generated_at: new Date().toISOString(),
       };
     }
+    case "workflow_run":
+      return {
+        ...snapshot,
+        workflow_runs: upsertById(snapshot.workflow_runs, frame.run),
+        generated_at: new Date().toISOString(),
+      };
+    case "workflow_step":
+      return {
+        ...snapshot,
+        workflow_steps: upsertById(snapshot.workflow_steps, frame.step),
+        generated_at: new Date().toISOString(),
+      };
   }
 }
 

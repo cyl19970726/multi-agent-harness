@@ -107,6 +107,41 @@ export function gapStatusTone(status?: string | null): StatusTone {
   }
 }
 
+/** Map a WorkflowRun.status to a status tone. */
+export function workflowRunTone(status?: string | null): StatusTone {
+  switch ((status ?? "").toLowerCase()) {
+    case "running":
+      return "running";
+    case "completed":
+      return "good";
+    case "failed":
+      return "bad";
+    case "pending":
+    case "paused":
+      return "idle";
+    default:
+      return "idle";
+  }
+}
+
+/** Map a WorkflowStep.status to a status tone. */
+export function workflowStepTone(status?: string | null): StatusTone {
+  switch ((status ?? "").toLowerCase()) {
+    case "running":
+      return "running";
+    case "completed":
+      return "good";
+    case "failed":
+      return "bad";
+    case "queued":
+      return "idle";
+    case "cached":
+      return "info";
+    default:
+      return "idle";
+  }
+}
+
 /** Map a timeline item kind (+ severity for warnings) to a status tone. */
 export function timelineTone(
   kind: string,
