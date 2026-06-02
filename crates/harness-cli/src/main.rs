@@ -4426,7 +4426,8 @@ fn claim_message_for_delivery(
     message: &Message,
     delivery_id: &str,
 ) -> CliResult<Option<Message>> {
-    let mut provider_session = build_claimed_provider_session(delivery_id, member, runtime, message);
+    let mut provider_session =
+        build_claimed_provider_session(delivery_id, member, runtime, message);
     // Live agent view: point the RUNNING claim row at the NDJSON file the claude
     // exec delivery appends to MID-TURN, and pre-create it so the first poll of
     // GET /v1/provider-sessions/{id}/events returns [] (not a not-found error)
@@ -4437,7 +4438,10 @@ fn claim_message_for_delivery(
         let session_dir = store.root().join("provider-sessions").join(delivery_id);
         let live_path = session_dir.join("claude.stream-json.ndjson");
         if fs::create_dir_all(&session_dir).is_ok() {
-            let _ = fs::OpenOptions::new().create(true).append(true).open(&live_path);
+            let _ = fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&live_path);
             provider_session.jsonl_ref = Some(live_path.display().to_string());
         }
     }
@@ -8392,7 +8396,11 @@ fn run_claude_exec_delivery_real(
     let reader = BufReader::new(stdout);
     let _ = fs::create_dir_all(session_dir);
     let live_path = session_dir.join("claude.stream-json.ndjson");
-    let events = match fs::OpenOptions::new().create(true).append(true).open(&live_path) {
+    let events = match fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&live_path)
+    {
         Ok(file) => {
             let mut writer = BufWriter::new(file);
             let parsed = parse_claude_stream_json_to(reader, Some(&mut writer));
