@@ -499,6 +499,25 @@ export interface WorkflowRun {
   agents_spawned?: number;
   /** Collected structured output of the run (one entry per step). */
   final_output?: unknown;
+  /**
+   * Who initiated this run — an agent member id (a Codex / Claude member) or
+   * "operator" for a human-triggered CLI run. `undefined` for legacy rows that
+   * predate the field.
+   */
+  initiated_by?: string | null;
+  /**
+   * The raw validated `WorkflowSpec` JSON-IR the dynamic `run-spec` path was
+   * authored with — the small durable audit record of the run shape.
+   * `undefined` for registry runs / legacy rows.
+   */
+  spec?: unknown;
+  /**
+   * Retention policy for the heavy per-node provider turn-event trace:
+   * "durable" (default) persists the trace so a completed run can be drilled
+   * into; "live" streams it over SSE during execution but does not retain it.
+   * Live streaming is independent of this and always happens.
+   */
+  trace_retention?: "durable" | "live" | string;
 }
 
 /**

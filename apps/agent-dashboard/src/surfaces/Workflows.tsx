@@ -348,6 +348,18 @@ export function WorkflowRunDetail({ model, onSelectionChange, apiUrl }: Workflow
               ),
             },
             { label: "Verdict", value: running ? "—" : (run.summary ?? "—") },
+            {
+              label: "Initiated by",
+              value: run.initiated_by ? (
+                <span className="inline-flex items-center gap-1.5">
+                  <Avatar name={run.initiated_by} tone="idle" />
+                  {run.initiated_by}
+                </span>
+              ) : (
+                "—"
+              ),
+            },
+            { label: "Trace", value: <TraceIndicator retention={run.trace_retention} /> },
             { label: "Started", value: <Timestamp value={run.created_at} /> },
             {
               label: "Ended",
@@ -386,7 +398,7 @@ export function WorkflowRunDetail({ model, onSelectionChange, apiUrl }: Workflow
 
       <DocSection label="Timeline">
         {phases.length ? (
-          <Timeline phases={phases} sessions={sessions} model={model} apiUrl={apiUrl} onSelectionChange={onSelectionChange} />
+          <Timeline phases={phases} sessions={sessions} model={model} apiUrl={apiUrl} run={run} onSelectionChange={onSelectionChange} />
         ) : (
           <EmptyState
             icon={Workflow}
@@ -396,10 +408,68 @@ export function WorkflowRunDetail({ model, onSelectionChange, apiUrl }: Workflow
         )}
       </DocSection>
 
+      {run.spec != null && (
+        <DocSection label="Spec">
+          <SpecDisclosure spec={run.spec} />
+        </DocSection>
+      )}
+
       <DocSection label="Definition">
         <Definition phases={phases} workflowName={run.workflow_name} apiUrl={apiUrl} />
       </DocSection>
     </DocumentSurface>
+  );
+}
+
+/**
+ * The "trace: durable|live" indicator for a run. "durable" keeps the heavy
+ * per-node turn-event trace so a completed run can be drilled into; "live"
+ * streams it over SSE during execution but retains nothing afterwards.
+ */
+function TraceIndicator({ retention }: { retention?: string }) {
+  const value = retention ?? "durable";
+  const durable = value === "durable";
+  return (
+    <span className="inline-flex items-center gap-1.5">
+      <Badge tone={durable ? "info" : "idle"}>trace: {value}</Badge>
+      <span className="text-[11px] text-muted-foreground">
+        {durable ? "per-node trace retained" : "streamed live, not retained"}
+      </span>
+    </span>
+  );
+}
+
+/**
+ * Collapsible pretty-printed view of the run's authored `WorkflowSpec` JSON-IR.
+ * Reuses the same fenced-code styling as the Rust source / Markdown code blocks
+ * so the dynamic spec reads as the run's durable audit record.
+ */
+function SpecDisclosure({ spec }: { spec: unknown }) {
+  const [open, setOpen] = useState(false);
+  const pretty = (() => {
+    try {
+      return JSON.stringify(spec, null, 2);
+    } catch {
+      return String(spec);
+    }
+  })();
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+        className="inline-flex items-center gap-1 text-[11px] text-muted-foreground transition-colors hover:text-foreground"
+      >
+        {open ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />}
+        <Code className="size-3" />
+        View spec · WorkflowSpec JSON-IR
+      </button>
+      {open && (
+        <pre className="mt-1.5 max-h-96 overflow-auto whitespace-pre rounded-md border border-border bg-muted/30 p-2 font-mono text-[11px] text-foreground">
+          {pretty}
+        </pre>
+      )}
+    </div>
   );
 }
 
@@ -448,12 +518,14 @@ function Timeline({
   sessions,
   model,
   apiUrl,
+  run,
   onSelectionChange,
 }: {
   phases: WorkflowPhase[];
   sessions: ProviderSession[];
   model: WorkbenchModel;
   apiUrl?: string;
+  run: WorkflowRun;
   onSelectionChange: (selection: Partial<SelectionState>) => void;
 }) {
   return (
@@ -482,6 +554,7 @@ function Timeline({
                 sessions={sessions}
                 model={model}
                 apiUrl={apiUrl}
+                run={run}
                 onSelectionChange={onSelectionChange}
               />
             ))}
@@ -566,6 +639,7 @@ function StepCard({
   sessions,
   model,
   apiUrl,
+  run,
   onSelectionChange,
 }: {
   step: WorkflowStep;
@@ -573,6 +647,7 @@ function StepCard({
   sessions: ProviderSession[];
   model: WorkbenchModel;
   apiUrl?: string;
+  run: WorkflowRun;
   onSelectionChange: (selection: Partial<SelectionState>) => void;
 }) {
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -581,6 +656,11 @@ function StepCard({
   const session = step.provider_session_id
     ? sessions.find((s) => s.id === step.provider_session_id)
     : undefined;
+  // Once the run is terminal, drill-ins backfill from the durable per-session
+  // NDJSON (GET /v1/sessions/{id}/events). A `--trace live` run reports
+  // retained:false there, so TurnDrillIn renders "trace not retained" instead of
+  // an endless "loading…". In-flight runs keep the live tee + SSE path.
+  const historical = isTerminal(run.status);
   // The step actor is a PROVIDER that ran in a one-shot ephemeral worker
   // (codex/claude), carried on the structured result — not a pre-existing
   // member. `isolation` is set when the node opted into a throwaway worktree.
@@ -664,7 +744,7 @@ function StepCard({
         <div className="flex items-center justify-between gap-2 px-3 pb-3">
           {session ? (
             <>
-              <TurnDrillIn session={session} apiUrl={apiUrl} liveEvents={liveEvents} />
+              <TurnDrillIn session={session} apiUrl={apiUrl} liveEvents={liveEvents} historical={historical} />
               <button
                 type="button"
                 onClick={() => setDrawerOpen(true)}
@@ -692,6 +772,7 @@ function StepCard({
           isolation={isolation}
           liveEvents={liveEvents}
           apiUrl={apiUrl}
+          historical={historical}
           onClose={() => setDrawerOpen(false)}
         />
       )}
@@ -714,6 +795,7 @@ function StepDrawer({
   isolation,
   liveEvents,
   apiUrl,
+  historical,
   onClose,
 }: {
   step: WorkflowStep;
@@ -723,6 +805,7 @@ function StepDrawer({
   isolation?: string | null;
   liveEvents?: Record<string, unknown>[];
   apiUrl?: string;
+  historical?: boolean;
   onClose: () => void;
 }) {
   useEffect(() => {
@@ -796,6 +879,7 @@ function StepDrawer({
                 apiUrl={apiUrl}
                 defaultOpen
                 liveEvents={liveEvents}
+                historical={historical}
               />
             </DocSection>
           </div>

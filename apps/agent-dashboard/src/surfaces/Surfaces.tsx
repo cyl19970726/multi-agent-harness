@@ -3517,6 +3517,7 @@ export function TurnDrillIn({
   apiUrl,
   defaultOpen = false,
   liveEvents,
+  historical = false,
 }: {
   session: ProviderSession;
   apiUrl?: string;
@@ -3524,19 +3525,36 @@ export function TurnDrillIn({
   /** SSE-pushed events for this session (Stage B); preferred over the poll when
    * it is further ahead, giving sub-second streaming. */
   liveEvents?: RawTurnEvent[];
+  /**
+   * Backfill a COMPLETED run's trace from the durable per-session NDJSON via
+   * `GET /v1/sessions/{id}/events` (two-tier persistence read side) instead of
+   * the live `provider-sessions/{id}/events` tee. When the run was `--trace
+   * live`, that endpoint reports `retained: false`, and we render an explicit
+   * "trace not retained" state rather than an empty/loading turn. The live path
+   * (running session + `liveEvents`) is unaffected.
+   */
+  historical?: boolean;
 }) {
   const [open, setOpen] = useState(defaultOpen);
   const [events, setEvents] = useState<RawTurnEvent[] | null>(null);
   const [truncated, setTruncated] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // `null` until the historical endpoint answers; `false` marks a `--trace
+  // live` run whose trace was pruned ("trace not retained"). Always `true` on
+  // the live path, which never consults the historical endpoint.
+  const [retained, setRetained] = useState<boolean | null>(null);
   const inFlight = useRef(false);
   const running = session.status === "running";
+  // Backfill the persisted trace only for a completed run; a running turn still
+  // streams over the live tee + SSE buffer.
+  const useHistorical = historical && !running;
   const duration = formatDuration(session.started_at, session.ended_at);
   // Show whichever source is further along: the SSE live buffer (sub-second) or
   // the polled/fetched events (durable catch-up). On terminal the final fetch
   // reconciles, so `events` wins once complete.
   const display =
     liveEvents && liveEvents.length > (events?.length ?? 0) ? liveEvents : events;
+  const notRetained = useHistorical && retained === false;
 
   useEffect(() => {
     if (!open || !apiUrl) return;
@@ -3546,12 +3564,20 @@ export function TurnDrillIn({
       if (inFlight.current) return;
       inFlight.current = true;
       try {
-        const res = await fetch(
-          `${base}/v1/provider-sessions/${encodeURIComponent(session.id)}/events`,
-        );
+        const url = useHistorical
+          ? `${base}/v1/sessions/${encodeURIComponent(session.id)}/events`
+          : `${base}/v1/provider-sessions/${encodeURIComponent(session.id)}/events`;
+        const res = await fetch(url);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data = (await res.json()) as { events?: RawTurnEvent[]; truncated?: boolean };
+        const data = (await res.json()) as {
+          events?: RawTurnEvent[];
+          truncated?: boolean;
+          retained?: boolean;
+        };
         if (!cancelled) {
+          // The historical endpoint reports retention; the live tee always has
+          // its (possibly empty) events, so treat it as retained.
+          setRetained(useHistorical ? data.retained ?? false : true);
           setEvents(data.events ?? []);
           setTruncated(Boolean(data.truncated));
           setError(null);
@@ -3570,7 +3596,7 @@ export function TurnDrillIn({
       cancelled = true;
       window.clearInterval(id);
     };
-  }, [open, apiUrl, session.id, running]);
+  }, [open, apiUrl, session.id, running, useHistorical]);
 
   return (
     <span className="inline-flex w-full min-w-0 flex-col">
@@ -3590,13 +3616,26 @@ export function TurnDrillIn({
         )}
         <span>{session.provider ?? "turn"}</span>
         {duration ? <span>· {duration}</span> : null}
-        {display ? <span>· {display.length} events</span> : null}
-        {!running && <span>· turn</span>}
+        {notRetained ? (
+          <span>· trace not retained</span>
+        ) : display ? (
+          <span>· {display.length} events</span>
+        ) : null}
+        {!running && !notRetained && <span>· turn</span>}
       </button>
       {open && (
         <div className="mt-1 max-h-96 w-full overflow-y-auto rounded-md border border-border bg-muted/30 p-2 text-left">
           {error && !display?.length && <span className="text-[11px] text-status-bad">{error}</span>}
-          {display === null ? (
+          {notRetained ? (
+            // A `--trace live` run streamed this turn over SSE during execution
+            // but retained nothing, so there is no historical trace to backfill.
+            <span className="text-[11px] text-muted-foreground">
+              trace not retained{" "}
+              <span className="text-muted-foreground/70">
+                (run with --trace durable to keep it)
+              </span>
+            </span>
+          ) : display === null ? (
             <span className="text-[11px] text-muted-foreground">loading…</span>
           ) : display.length === 0 ? (
             <span className="text-[11px] text-muted-foreground">
