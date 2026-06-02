@@ -14,6 +14,7 @@ import {
   Target,
   Users,
   Workflow,
+  X,
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
@@ -137,6 +138,7 @@ export function WorkbenchShell({
         canPoll={canPoll}
         onTogglePoll={onTogglePoll}
       />
+      <ActionErrorBanner error={sourceError} />
       <div className="flex min-h-0 flex-1">
         <AppRail
           selection={selection}
@@ -166,6 +168,31 @@ export function WorkbenchShell({
           />
         )}
       </div>
+    </div>
+  );
+}
+
+/**
+ * A dismissible banner that surfaces the last failed action / fetch. Without it
+ * a rejected write (e.g. the goal-design assignment gate returning 400, or a
+ * delivery failure) only nudged a status dot amber — the operator would @-assign
+ * and see nothing happen. Re-shows whenever a new, different error arrives.
+ */
+function ActionErrorBanner({ error }: { error: string | null }) {
+  const [dismissed, setDismissed] = useState<string | null>(null);
+  if (!error || error === dismissed) return null;
+  return (
+    <div className="flex items-start gap-2 border-b border-status-warn/30 bg-status-warn/10 px-4 py-2 text-[12px] text-status-warn">
+      <ShieldAlert className="mt-0.5 size-3.5 shrink-0" />
+      <span className="min-w-0 flex-1 break-words">{error}</span>
+      <button
+        type="button"
+        onClick={() => setDismissed(error)}
+        aria-label="Dismiss error"
+        className="shrink-0 rounded p-0.5 transition-colors hover:bg-status-warn/20"
+      >
+        <X className="size-3.5" />
+      </button>
     </div>
   );
 }

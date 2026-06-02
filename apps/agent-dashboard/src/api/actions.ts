@@ -259,6 +259,20 @@ export function assignTask(taskId: string, assignee: string): ActionDescriptor {
 }
 
 /**
+ * Set a task's reviewer (the `@reviewer` gesture). POST /v1/tasks/{id}/reviewer
+ * records `reviewer_agent_id` on the existing field WITHOUT a status change or a
+ * queued message — naming a reviewer is not the same as handing the work off.
+ * Review delivery is the separate `requestReview` hand-off.
+ */
+export function setReviewer(taskId: string, reviewer: string): ActionDescriptor {
+  return {
+    method: "POST",
+    path: `/v1/tasks/${encodeId(taskId)}/reviewer`,
+    body: { reviewer },
+  };
+}
+
+/**
  * Request review of a task. `from` and `reviewer` default server-side to the
  * task's owner / reviewer when omitted, so an empty descriptor body is valid.
  */

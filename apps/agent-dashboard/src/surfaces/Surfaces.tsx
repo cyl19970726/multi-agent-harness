@@ -101,10 +101,12 @@ import {
   reconcileSession,
   requestReview,
   retryDelivery,
+  setReviewer,
   type ActionDescriptor,
 } from "../api/actions";
 import type {
   AgentMember,
+  DeliveryStatus,
   Gap,
   Goal,
   GoalDesign,
@@ -1478,6 +1480,128 @@ function evaluationOutcomeTone(outcome?: string): StatusTone {
 /* Task document                                                      */
 /* ------------------------------------------------------------------ */
 
+/**
+ * Delivery-proof badge for an @-mention slot. It reflects the delivery_status of
+ * the instruction message behind the assignment (NOT the bare field write), so a
+ * reviewer/assignee that was named but never actually instructed reads honestly
+ * as "queued" / "not handed off" rather than masquerading as done — keeping the
+ * assignment-proof invariant visible (concept-model Anti-Drift #2).
+ */
+function DeliveryBadge({
+  status,
+  note,
+}: {
+  status?: DeliveryStatus | null;
+  note?: string;
+}) {
+  if (note) return <Badge tone="muted">{note}</Badge>;
+  switch (status) {
+    case "delivered":
+      return <Badge tone="good">delivered</Badge>;
+    case "acknowledged":
+      return <Badge tone="good">acknowledged</Badge>;
+    case "queued":
+      return <Badge tone="warn">queued · not delivered</Badge>;
+    case "failed":
+      return <Badge tone="bad">delivery failed</Badge>;
+    default:
+      return null;
+  }
+}
+
+/**
+ * The @-mention assignment chip + picker for a Task property slot (executor /
+ * reviewer). It is UI sugar over existing objects — picking an agent dispatches
+ * the reuse action (assign / set-reviewer) and the chip carries a DeliveryBadge.
+ * Read-only (offline) it collapses to a plain label so it never looks editable
+ * when it isn't.
+ */
+function MentionSlot({
+  members,
+  currentId,
+  live,
+  onPick,
+  placeholder,
+  delivery,
+}: {
+  members: AgentMember[];
+  currentId?: string | null;
+  live: boolean;
+  onPick: (agentId: string) => void;
+  placeholder: string;
+  delivery?: { status?: DeliveryStatus | null; note?: string };
+}) {
+  const [editing, setEditing] = useState(false);
+  const current = currentId ? members.find((m) => m.id === currentId) : undefined;
+
+  if (!current || editing) {
+    if (!live) {
+      return (
+        <span className="text-muted-foreground">
+          {current ? `@${current.name ?? current.id}` : "—"}
+        </span>
+      );
+    }
+    return (
+      <span className="inline-flex items-center gap-2">
+        <Select
+          aria-label={placeholder}
+          defaultValue=""
+          onChange={(event) => {
+            const id = event.target.value;
+            // Reset to the placeholder so the same agent can be re-picked and the
+            // slot reads as a gesture, not a sticky selection. Uncontrolled
+            // (defaultValue) so React never fights the change event.
+            event.target.value = "";
+            if (!id) return;
+            onPick(id);
+            setEditing(false);
+          }}
+          className="h-8 max-w-[15rem]"
+        >
+          <option value="">{placeholder}</option>
+          {members.map((member) => (
+            <option key={member.id} value={member.id}>
+              @{member.name ?? member.id}
+            </option>
+          ))}
+        </Select>
+        {editing && current && (
+          <button
+            type="button"
+            className="text-[11px] text-muted-foreground hover:text-foreground"
+            onClick={() => setEditing(false)}
+          >
+            cancel
+          </button>
+        )}
+      </span>
+    );
+  }
+
+  const status = current.runtime_status ?? current.status ?? "unknown";
+  return (
+    <span className="inline-flex flex-wrap items-center gap-2">
+      <span className="inline-flex items-center gap-1.5 rounded-full border border-border bg-muted/40 py-0.5 pl-1 pr-2.5">
+        <Avatar name={current.name ?? current.id} size="sm" tone={memberTone(status)} />
+        <span className="text-[12px] font-medium text-foreground">
+          @{current.name ?? current.id}
+        </span>
+      </span>
+      <DeliveryBadge status={delivery?.status} note={delivery?.note} />
+      {live && (
+        <button
+          type="button"
+          className="text-[11px] text-muted-foreground hover:text-foreground"
+          onClick={() => setEditing(true)}
+        >
+          change
+        </button>
+      )}
+    </span>
+  );
+}
+
 export function TaskDocument({
   model,
   onSelectionChange,
@@ -1510,6 +1634,25 @@ export function TaskDocument({
   const blocks = tasksBlockedBy(task.id, model.tasks).map((t) => t.id);
   const readiness = readinessFor(task, model.taskGraph);
   const git = taskGitMetadata(task);
+  const live = Boolean(actionsEnabled);
+
+  // Assignment-proof for the @-mention chips: the delivery_status of the
+  // instruction behind each slot, not the bare field. Assignee → latest
+  // Message(kind=task) (assign queues, never delivers, so "queued" is the honest
+  // default once a field is set). Reviewer → latest review-request message; a
+  // named-but-not-handed-off reviewer reads "not handed off".
+  const taskMsgs = messages.filter((m) => m.kind === "task");
+  const assignmentMsg = taskMsgs[taskMsgs.length - 1];
+  const assignmentDelivery = task.assignee_agent_id
+    ? { status: assignmentMsg?.delivery_status ?? "queued" }
+    : undefined;
+  const reviewMsgs = messages.filter((m) => m.channel === "review-request");
+  const reviewMsg = reviewMsgs[reviewMsgs.length - 1];
+  const reviewDelivery = task.reviewer_agent_id
+    ? reviewMsg
+      ? { status: reviewMsg.delivery_status }
+      : { note: "not handed off" }
+    : undefined;
 
   return (
     <DocumentSurface>
@@ -1567,13 +1710,29 @@ export function TaskDocument({
             {
               label: "Assignee",
               value: (
-                <span>
-                  {memberName(model.members, task.assignee_agent_id)}
-                  <span className="ml-1 text-[10px] text-muted-foreground">(projection)</span>
-                </span>
+                <MentionSlot
+                  members={model.members}
+                  currentId={task.assignee_agent_id}
+                  live={live}
+                  onPick={(agentId) => dispatch(onAction, assignTask(task.id, agentId))}
+                  placeholder="@ assign executor…"
+                  delivery={assignmentDelivery}
+                />
               ),
             },
-            { label: "Reviewer", value: memberName(model.members, task.reviewer_agent_id) },
+            {
+              label: "Reviewer",
+              value: (
+                <MentionSlot
+                  members={model.members}
+                  currentId={task.reviewer_agent_id}
+                  live={live}
+                  onPick={(agentId) => dispatch(onAction, setReviewer(task.id, agentId))}
+                  placeholder="@ add reviewer…"
+                  delivery={reviewDelivery}
+                />
+              ),
+            },
             { label: "Branch", value: git.branch ? <MonoId>{git.branch}</MonoId> : "—" },
             { label: "PR", value: git.pr_ref ? <MonoId>{shortBranch(git.pr_ref)}</MonoId> : "—" },
             { label: "Worktree", value: git.worktree_path ? <MonoId>{git.worktree_path}</MonoId> : "—" },
