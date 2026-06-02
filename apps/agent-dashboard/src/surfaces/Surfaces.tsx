@@ -3768,19 +3768,36 @@ function TurnResultFooter({ event }: { event: RawTurnEvent }) {
 function TurnTui({ events }: { events: RawTurnEvent[] }) {
   const toolNames = new Map<string, string>();
   const rows: ReactNode[] = [];
+  // Codex emits `item.started` then `item.completed` for the SAME `item.id`
+  // (in_progress → completed), and wraps tool work in `item` envelopes rather
+  // than claude's assistant/user blocks. Collapse codex items by id (final
+  // state wins) and preserve first-seen order, so a command/file_change renders
+  // ONCE in its terminal state — then map each to the same row vocabulary the
+  // claude path uses (⏺ tool_use, ⎿ tool_result, ✻ thinking, assistant text).
+  const codexItems = new Map<string, Record<string, unknown>>();
+  type Unit =
+    | { kind: "codexItem"; id: string }
+    | { kind: "event"; event: RawTurnEvent; i: number };
+  const order: Unit[] = [];
   events.forEach((event, i) => {
     const type = typeof event.type === "string" ? event.type : "";
     const item = event.item as Record<string, unknown> | undefined;
-    if (item && typeof item.type === "string") {
-      const body =
-        typeof item.text === "string"
-          ? item.text
-          : typeof item.command === "string"
-            ? item.command
-            : compactJson(item);
-      rows.push(<TuiRow key={i} glyph="•" label={item.type as string} body={body} mono />);
+    if (item && typeof item.type === "string" && typeof item.id === "string") {
+      if (!codexItems.has(item.id)) order.push({ kind: "codexItem", id: item.id });
+      codexItems.set(item.id, item); // a later (completed) state overwrites in_progress
       return;
     }
+    // Codex turn lifecycle markers carry no operator-facing content.
+    if (type === "thread.started" || type === "turn.started") return;
+    order.push({ kind: "event", event, i });
+  });
+  for (const unit of order) {
+    if (unit.kind === "codexItem") {
+      renderCodexItem(codexItems.get(unit.id)!, unit.id, rows);
+      continue;
+    }
+    const { event, i } = unit;
+    const type = typeof event.type === "string" ? event.type : "";
     switch (type) {
       case "system": {
         const bits = [
@@ -3844,11 +3861,111 @@ function TurnTui({ events }: { events: RawTurnEvent[] }) {
       case "rate_limit_event":
         rows.push(<TuiRow key={i} muted label="rate_limit" body={compactJson(event.rate_limit_info)} />);
         break;
+      case "turn.completed": {
+        const usage = event.usage as Record<string, unknown> | undefined;
+        const out = usage && typeof usage.output_tokens === "number" ? usage.output_tokens : undefined;
+        rows.push(
+          <TuiRow
+            key={i}
+            dim
+            label="turn complete"
+            body={out !== undefined ? `${out} output · ${String(usage?.input_tokens ?? "?")} input tokens` : ""}
+          />,
+        );
+        break;
+      }
       default:
         rows.push(<TuiRow key={i} dim label={type || "event"} body={compactJson(event)} />);
     }
-  });
+  }
   return <div className="space-y-0.5">{rows}</div>;
+}
+
+/**
+ * Render a collapsed codex `item` (final state) into the same TUI row vocabulary
+ * the claude path uses, so the drill-in reads identically across providers:
+ * agent_message → assistant text, reasoning → ✻ thinking, command_execution →
+ * ⏺ Bash + ⎿ output, file_change → ⏺ Write/Edit/Delete <path>.
+ */
+function renderCodexItem(
+  item: Record<string, unknown>,
+  id: string,
+  rows: ReactNode[],
+): void {
+  const type = typeof item.type === "string" ? item.type : "item";
+  if (type === "agent_message") {
+    const text = typeof item.text === "string" ? item.text : "";
+    if (text.trim()) {
+      rows.push(
+        <div key={id} className="py-1 text-[12px] text-foreground/90">
+          <Markdown source={text} />
+        </div>,
+      );
+    }
+    return;
+  }
+  if (type === "reasoning") {
+    const text = typeof item.text === "string" ? item.text : "";
+    rows.push(
+      <TuiRow
+        key={id}
+        glyph="✻"
+        muted
+        label="thinking"
+        body={text ? (text.length > 200 ? `${text.slice(0, 200)}…` : text) : "(reasoning)"}
+      />,
+    );
+    return;
+  }
+  if (type === "command_execution") {
+    const cmd = typeof item.command === "string" ? item.command : "";
+    rows.push(<TuiRow key={`${id}-c`} glyph="⏺" tone="info" label="Bash" body={cmd} mono />);
+    const out = typeof item.aggregated_output === "string" ? item.aggregated_output : "";
+    const exit = item.exit_code;
+    const failed = typeof exit === "number" && exit !== 0;
+    if (out.trim() || failed) {
+      rows.push(
+        <TuiRow
+          key={`${id}-r`}
+          glyph="⎿"
+          indent
+          tone={failed ? "bad" : undefined}
+          body={out.trim() ? (out.length > 600 ? `${out.slice(0, 600)}…` : out) : `exit ${String(exit)}`}
+          mono
+        />,
+      );
+    }
+    return;
+  }
+  if (type === "file_change") {
+    const changes = Array.isArray(item.changes) ? (item.changes as Record<string, unknown>[]) : [];
+    const verb = (k: unknown) => (k === "add" ? "Write" : k === "delete" ? "Delete" : "Edit");
+    if (changes.length === 0) {
+      rows.push(<TuiRow key={id} glyph="⏺" tone="info" label="file_change" body={compactJson(item)} mono />);
+      return;
+    }
+    changes.forEach((c, ci) =>
+      rows.push(
+        <TuiRow
+          key={`${id}-${ci}`}
+          glyph="⏺"
+          tone="info"
+          label={verb(c?.kind)}
+          body={typeof c?.path === "string" ? (c.path as string) : compactJson(c)}
+          mono
+        />,
+      ),
+    );
+    return;
+  }
+  // mcp_tool_call / web_search / anything else — compact one-liner.
+  const body =
+    typeof item.text === "string"
+      ? item.text
+      : typeof item.command === "string"
+        ? item.command
+        : compactJson(item);
+  rows.push(<TuiRow key={id} glyph="•" label={type} body={body} mono />);
 }
 
 /** A short single-line JSON preview, capped so a big payload cannot flood. */
