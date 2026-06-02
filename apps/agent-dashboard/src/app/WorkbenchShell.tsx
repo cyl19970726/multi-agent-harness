@@ -36,7 +36,6 @@ import {
 import { Avatar } from "@/components/workbench/Avatar";
 import { memberTone, taskTone, timelineTone } from "@/components/workbench/tones";
 
-import { countBySeverity } from "../model/readModel";
 import type { WorkbenchModel } from "../model/readModel";
 import {
   AgentDetail,
@@ -47,7 +46,6 @@ import {
   GraphKanban,
   TaskDocument,
   VisionOverview,
-  WarningsRepair,
 } from "../surfaces/Surfaces";
 import { WorkflowRunDetail, WorkflowsList } from "../surfaces/Workflows";
 import { deliverQueued } from "../api/actions";
@@ -75,13 +73,12 @@ interface WorkbenchShellProps {
   onTogglePoll: () => void;
 }
 
-/** Primary navigation rail: Agents, Vision, Work, Warnings. */
+/** Primary navigation rail: Agents, Vision, Work, Workflows. */
 const navItems: { id: SurfaceId; label: string; icon: typeof Users }[] = [
   { id: "agents", label: "Agents", icon: Bot },
   { id: "vision", label: "Vision", icon: Target },
   { id: "tasks", label: "Work", icon: GitBranch },
   { id: "workflows", label: "Workflows", icon: Workflow },
-  { id: "warnings", label: "Warnings", icon: ShieldAlert },
 ];
 
 /**
@@ -90,7 +87,6 @@ const navItems: { id: SurfaceId; label: string; icon: typeof Users }[] = [
  * - goal / task: drill-in detail views reached by selecting an object
  * - docs: kept reachable but not a rail slot
  * - debug: moved behind a TopBar button
- * - decisions: folded into the Warnings surface
  */
 
 export function WorkbenchShell({
@@ -113,7 +109,6 @@ export function WorkbenchShell({
     onSelectionChange({ ...selection, ...next });
   }
 
-  const severity = countBySeverity(model.warnings);
   // The Agents area (list + agent detail) owns its own layout; the Work board
   // needs full width for its columns; the Goal/Task detail pages are centered
   // Notion documents that read better without a competing rail. All suppress the
@@ -145,7 +140,6 @@ export function WorkbenchShell({
         <AppRail
           selection={selection}
           onSurfaceChange={(surface) => updateSelection({ surface })}
-          warnings={severity.high}
         />
         <main className="relative flex min-w-0 flex-1 flex-col overflow-hidden">
           {(() => {
@@ -408,11 +402,9 @@ function formatAge(ageS: number): string {
 function AppRail({
   selection,
   onSurfaceChange,
-  warnings,
 }: {
   selection: SelectionState;
   onSurfaceChange: (surface: SurfaceId) => void;
-  warnings: number;
 }) {
   return (
     <nav
@@ -438,11 +430,6 @@ function AppRail({
                   <span className="absolute -left-3 top-1/2 h-5 w-0.5 -translate-y-1/2 rounded-r bg-primary" />
                 )}
                 <Icon className="size-[18px]" />
-                {item.id === "warnings" && warnings > 0 && (
-                  <span className="absolute -right-0.5 -top-0.5 grid h-4 min-w-4 place-items-center rounded-full bg-status-bad px-1 text-[9px] font-bold text-background">
-                    {warnings}
-                  </span>
-                )}
               </button>
             </TooltipTrigger>
             <TooltipContent side="right">{item.label}</TooltipContent>
@@ -496,8 +483,6 @@ function SurfaceSwitch({
       );
     case "docs":
       return <DocsContext {...shared} />;
-    case "warnings":
-      return <WarningsRepair {...shared} />;
     case "debug":
       return <DebugSurface model={model} sourceLabel={sourceLabel} />;
     case "agents":
