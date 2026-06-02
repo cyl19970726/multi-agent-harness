@@ -21,6 +21,9 @@ use harness_core::{
 use harness_store::{HarnessStore, MessageDeliveryClaimResult};
 use thiserror::Error;
 
+mod resident;
+#[cfg(unix)]
+mod resident_daemon;
 mod sse;
 mod workflow;
 
@@ -82,6 +85,8 @@ fn run() -> CliResult<()> {
         "workflow" => workflow_command(&store, &args[1..])?,
         "hook" => hook_command(&store, &args[1..])?,
         "serve" => serve_command(&store, &args[1..])?,
+        #[cfg(unix)]
+        "daemon" => daemon_command(&store, &args[1..])?,
         command => return Err(CliError::Usage(format!("unknown command: {command}"))),
     }
     Ok(())
@@ -2402,6 +2407,71 @@ fn serve_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
                 eprintln!("serve: connection error: {error}");
             }
         });
+    }
+    Ok(())
+}
+
+/// `harness daemon start|status|stop`: the resident warm-child host (unix-only).
+///
+/// The daemon keeps `claude` children warm across short-lived `harness deliver`
+/// invocations behind a per-workspace Unix socket under the store root. The
+/// resident delivery path (`HARNESS_CLAUDE_RESIDENT=1`) routes through it when a
+/// socket is present, and falls back to an inline single turn when it is not.
+#[cfg(unix)]
+fn daemon_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    require_subcommand(args, "daemon start|status|stop")?;
+    let harness_root = store.root().to_path_buf();
+    match args[0].as_str() {
+        "start" => {
+            let idle_secs = value(args, "--idle-secs")
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(resident::DEFAULT_MAX_IDLE.as_secs());
+            // `--socket <path>` may only restate the default per-workspace
+            // socket. Discovery is HARNESS_ROOT-only: the delivery client and
+            // `daemon status`/`stop` all derive the socket from HARNESS_ROOT via
+            // `daemon_socket_path`, with no way to learn an overridden directory.
+            // So a socket whose parent != the store root would start a live but
+            // UNDISCOVERABLE daemon (deliveries silently degrade to inline,
+            // `status` reports absent, `stop` finds no pidfile). We therefore
+            // accept the flag only when it names exactly `<HARNESS_ROOT>/resident.sock`
+            // and reject any other path with a clear error rather than spawning
+            // an orphan daemon.
+            if let Some(path) = value(args, "--socket") {
+                let path = PathBuf::from(path);
+                let expected = resident_daemon::daemon_socket_path(&harness_root);
+                if path != expected {
+                    return Err(CliError::Usage(format!(
+                        "--socket must be {} (discovery is HARNESS_ROOT-only); got {}",
+                        expected.display(),
+                        path.display()
+                    )));
+                }
+            }
+            resident_daemon::run_daemon(&harness_root, idle_secs)?;
+        }
+        "status" => match resident_daemon::daemon_status(&harness_root) {
+            resident_daemon::DaemonStatus::Running => {
+                let pid = resident_daemon::daemon_pid(&harness_root);
+                println!(
+                    "running (socket {}{})",
+                    resident_daemon::daemon_socket_path(&harness_root).display(),
+                    pid.map(|p| format!(", pid {p}")).unwrap_or_default()
+                );
+            }
+            resident_daemon::DaemonStatus::Stale => println!(
+                "stale (socket {} exists but no daemon answers)",
+                resident_daemon::daemon_socket_path(&harness_root).display()
+            ),
+            resident_daemon::DaemonStatus::Absent => println!("absent (no daemon socket)"),
+        },
+        "stop" => match resident_daemon::daemon_pid(&harness_root) {
+            Some(pid) => {
+                stop_pid(pid)?;
+                println!("stopped resident daemon pid {pid}");
+            }
+            None => return Err(CliError::Usage("no resident daemon pidfile found".into())),
+        },
+        other => return Err(CliError::Usage(format!("unknown daemon command: {other}"))),
     }
     Ok(())
 }
@@ -8030,9 +8100,20 @@ fn run_claude_delivery(
     fs::create_dir_all(&session_dir)?;
     let started_at = now_string();
 
-    // WP-3: Spawn real `claude -p --output-format stream-json --verbose`
-    let (process_success, events, session_id, stderr_log) =
-        run_claude_exec_delivery_real(&session_dir, member, message, timeout_ms)?;
+    // WP-3: Spawn real `claude -p --output-format stream-json --verbose`.
+    //
+    // Opt-in resident path (HARNESS_CLAUDE_RESIDENT=1): instead of spawning a
+    // fresh `claude -p <prompt>` that exits per turn, hold a `claude
+    // --input-format stream-json` process open and feed the turn as a stdin
+    // frame (see `resident.rs`). The returned tuple shape is identical, so
+    // everything below (NDJSON write, status infer, evidence, ProviderSession)
+    // is reused verbatim. When unset/false the default path runs unchanged.
+    let resident = env::var("HARNESS_CLAUDE_RESIDENT").as_deref() == Ok("1");
+    let (process_success, events, session_id, stderr_log) = if resident {
+        run_claude_resident_delivery_real(&session_dir, member, message, timeout_ms)?
+    } else {
+        run_claude_exec_delivery_real(&session_dir, member, message, timeout_ms)?
+    };
 
     // Save NDJSON events to jsonl_ref for ingest.
     let ndjson_ref = session_dir.join("claude.stream-json.ndjson");
@@ -8059,7 +8140,11 @@ fn run_claude_delivery(
     // same source as `spec.resume`). Recorded into the session args so the
     // snapshot is the evidence that `--resume` was passed.
     let used_resume_id = build_launch_spec(member, message).resume;
-    let recorded_args = claude_recorded_args(used_resume_id.as_deref());
+    let recorded_args = if resident {
+        resident::resident_recorded_args(used_resume_id.as_deref())
+    } else {
+        claude_recorded_args(used_resume_id.as_deref())
+    };
 
     // Record an Evidence row for the delivery session, mirroring the codex path
     // so every provider delivery is auditable from the snapshot.
@@ -8303,6 +8388,173 @@ fn run_claude_exec_delivery_real(
         session_id,
         stderr_log,
     ))
+}
+
+/// Build a [`resident::ResidentConfig`] from the same launch inputs the default
+/// path uses, so the resident invocation surface matches `claude -p` flag for
+/// flag (only `-p <prompt>` becomes `--input-format stream-json`).
+fn build_resident_config(member: &AgentMember, message: &Message) -> resident::ResidentConfig {
+    let spec = build_launch_spec(member, message);
+    let system_prompt = provider_developer_instructions(member);
+    let cwd = member
+        .worktree_ref
+        .clone()
+        .or_else(|| {
+            env::current_dir()
+                .ok()
+                .map(|path| path.display().to_string())
+        })
+        .unwrap_or_else(|| ".".to_string());
+
+    let mcp_config_path = write_temp_mcp_config(spec.mcp.as_ref()).ok().flatten();
+
+    let mut add_dirs = Vec::new();
+    if let Some(workspace) = &spec.workspace {
+        add_dirs.push(workspace.clone());
+    }
+    for root in &spec.writable_roots {
+        add_dirs.push(root.clone());
+    }
+
+    resident::ResidentConfig {
+        binary: "claude".into(),
+        model: spec.model.clone(),
+        permission_mode: launch_permission_to_claude_mode(spec.permission).to_string(),
+        tools: spec.tools.clone(),
+        system_prompt,
+        mcp_config_path,
+        add_dirs,
+        cwd,
+        resume: spec.resume.clone(),
+    }
+}
+
+/// Opt-in resident sibling of [`run_claude_exec_delivery_real`]. Holds a
+/// `claude --input-format stream-json` process open and feeds the turn as a
+/// stdin frame, returning the SAME `(success, events, session_id, stderr)`
+/// tuple so `run_claude_delivery` is untouched.
+///
+/// Two modes (both opt-in via `HARNESS_CLAUDE_RESIDENT=1`):
+///   * Daemon-first (unix): if a resident daemon owns the per-workspace socket,
+///     the turn is delivered over it so successive short-lived `harness deliver`
+///     invocations share ONE warm child across CLI runs (the daemon owns the
+///     long-lived `ResidentPool`; see `resident_daemon`).
+///   * Inline fallback: with no daemon present, spawn a single resident for this
+///     one turn and shut it down on return (its `Drop` closes stdin and reaps
+///     the child — no leaked PID). This still exercises the stream-json contract
+///     but does not keep the child warm across deliveries.
+fn run_claude_resident_delivery_real(
+    session_dir: &Path,
+    member: &AgentMember,
+    message: &Message,
+    timeout_ms: u64,
+) -> CliResult<(bool, Vec<ClaudeStreamEvent>, Option<String>, String)> {
+    let message_content = format!(
+        "Harness message envelope:\nmessage_id: {}\nkind: task\ntask_id: {}\nfrom_agent_id: {}\nto_agent_id: {}\nchannel: -\ncontent:\n{}",
+        message.id,
+        message.task_id.as_deref().unwrap_or("-"),
+        message.from_agent_id,
+        message.to_agent_id.as_deref().unwrap_or("-"),
+        message.content
+    );
+
+    let config = build_resident_config(member, message);
+    let stderr_path = session_dir.join("claude.stderr");
+    let timeout = Duration::from_millis(timeout_ms.max(1));
+
+    // Daemon-first (unix): if a resident daemon owns the per-workspace socket,
+    // deliver this turn over it so successive short-lived `harness deliver`
+    // invocations share ONE warm child. When no daemon is present we fall
+    // through to the inline single-turn path below (graceful degrade).
+    #[cfg(unix)]
+    {
+        let harness_root =
+            PathBuf::from(env::var("HARNESS_ROOT").unwrap_or_else(|_| ".harness".into()));
+        if resident_daemon::daemon_is_available(&harness_root) {
+            let request = resident_daemon::DaemonRequest {
+                member_id: member.id.clone(),
+                config: config.clone(),
+                stderr_path: stderr_path.display().to_string(),
+                user_text: message_content.clone(),
+                timeout_ms,
+            };
+            match resident_daemon::daemon_deliver(&harness_root, &request) {
+                Ok(response) => {
+                    let events: Vec<ClaudeStreamEvent> = response
+                        .events
+                        .into_iter()
+                        .map(|event| ClaudeStreamEvent {
+                            event_type: event.event_type,
+                            payload: event.payload,
+                        })
+                        .collect();
+                    let mut stderr_log =
+                        fs::read_to_string(&response.stderr_path).unwrap_or_default();
+                    if let Some(error) = response.error {
+                        if !stderr_log.is_empty() {
+                            stderr_log.push('\n');
+                        }
+                        stderr_log.push_str(&error);
+                    }
+                    return Ok((response.success, events, response.session_id, stderr_log));
+                }
+                Err(error) => {
+                    // The connect succeeded but the round-trip failed (daemon
+                    // died mid-turn). The turn may have partially run against the
+                    // warm child, so we report a failed delivery rather than
+                    // silently retrying inline (avoids double-delivery).
+                    let stderr_log = fs::read_to_string(&stderr_path).unwrap_or_default();
+                    return Ok((
+                        false,
+                        Vec::new(),
+                        None,
+                        format!("resident daemon delivery failed: {error}\n{stderr_log}"),
+                    ));
+                }
+            }
+        }
+    }
+
+    let mut resident = resident::ResidentClaude::spawn(config, &stderr_path).map_err(|error| {
+        CliError::Usage(format!("failed to spawn resident claude process: {error}"))
+    })?;
+
+    // Drive exactly one turn. On error (timeout / dead child) the resident is
+    // dropped (stdin closed, child reaped) and we surface a failed tuple,
+    // mirroring the default path's timeout behavior.
+    let turn = match resident.send_turn(&message_content, timeout) {
+        Ok(turn) => turn,
+        Err(error) => {
+            let stderr_log = fs::read_to_string(&stderr_path).unwrap_or_default();
+            let session_id = resident.session_id();
+            drop(resident);
+            return Ok((
+                false,
+                Vec::new(),
+                session_id,
+                format!("{error}\n{stderr_log}"),
+            ));
+        }
+    };
+
+    // Map ResidentEvent -> ClaudeStreamEvent (same shape, local type bridge).
+    let events: Vec<ClaudeStreamEvent> = turn
+        .events
+        .into_iter()
+        .map(|event| ClaudeStreamEvent {
+            event_type: event.event_type,
+            payload: event.payload,
+        })
+        .collect();
+    let session_id = turn.session_id;
+    let stderr_log = fs::read_to_string(&stderr_path).unwrap_or_default();
+
+    // Clean shutdown: closes stdin (EOF) and reaps the child. v1 is one turn
+    // per delivery so we do not keep the resident across `run_claude_delivery`
+    // calls; the in-process pool (resident.rs) is the seam for that later.
+    resident.shutdown();
+
+    Ok((turn.success, events, session_id, stderr_log))
 }
 
 fn parse_hook_payload(input: &str) -> serde_json::Value {
@@ -8651,7 +8903,10 @@ fn print_help() {
   codex review --task <task> --agent <agent> --worktree <path> [--base <branch>] [--uncommitted] [--prompt <text>]
   workflow list
   workflow run --name <name> --codex <member> --claude <member> [--prompt <text>] [--start-runtime] [--dry-run] [--timeout-ms <ms>]
-  serve [--addr 127.0.0.1:8787] [--once]"
+  serve [--addr 127.0.0.1:8787] [--once]
+  daemon start [--socket <path>] [--idle-secs <n>]   (unix: resident warm-child host)
+  daemon status
+  daemon stop"
     );
 }
 

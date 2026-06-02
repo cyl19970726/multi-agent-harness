@@ -4,6 +4,11 @@
 
 Accepted.
 
+Amended by [0021 (resident-daemon warm-child host)](0021-resident-daemon.md):
+clarifies that keeping documented exec-stream children warm behind an internal
+Unix-socket host is the "small warm pool" this ADR allows, not a return to a
+bespoke provider protocol. 0018 stays Accepted.
+
 Supersedes [0008 (Persistent Codex Agent Runtime)](0008-persistent-codex-agent-runtime.md)
 **in part**: it inverts which substrate is primary versus fallback. It
 **reinforces** [0011 (Provider-Neutral Runtime)](0011-provider-neutral-runtime.md):
