@@ -33,7 +33,7 @@ import {
   Zap,
 } from "lucide-react";
 
-import { useEffect, useState, type ComponentProps, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ComponentProps, type ReactNode } from "react";
 
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
@@ -2923,23 +2923,24 @@ function CurrentWorkBanner({
   if (running) {
     const task = running.task_id ? taskTitle(model.tasks, running.task_id) : "a turn";
     return (
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-status-running/30 bg-status-running/8 px-4 py-2 text-[12px]">
-        <span className="inline-flex items-center gap-1.5 font-medium text-status-running">
-          <StatusDot tone="running" pulse /> RUNNING
-        </span>
-        <button
-          type="button"
-          onClick={() => running.task_id && onSelectionChange({ surface: "task", taskId: running.task_id })}
-          className="min-w-0 truncate text-foreground hover:text-primary"
-        >
-          {task}
-        </button>
-        <span className="text-muted-foreground">
-          {running.provider ?? "provider"} · {formatDuration(running.started_at) ?? "0s"}
-        </span>
-        <span className="ml-auto">
-          <TurnDrillIn session={running} apiUrl={apiUrl} />
-        </span>
+      <div className="flex max-h-[55vh] flex-col gap-1 overflow-y-auto border-b border-status-running/30 bg-status-running/8 px-4 py-2 text-[12px]">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+          <span className="inline-flex items-center gap-1.5 font-medium text-status-running">
+            <StatusDot tone="running" pulse /> RUNNING
+          </span>
+          <button
+            type="button"
+            onClick={() => running.task_id && onSelectionChange({ surface: "task", taskId: running.task_id })}
+            className="min-w-0 truncate text-foreground hover:text-primary"
+          >
+            {task}
+          </button>
+          <span className="text-muted-foreground">
+            {running.provider ?? "provider"} · {formatDuration(running.started_at) ?? "0s"}
+          </span>
+        </div>
+        {/* Auto-opened live TUI: watch the turn unfold (tool calls, results, output). */}
+        <TurnDrillIn session={running} apiUrl={apiUrl} defaultOpen />
       </div>
     );
   }
@@ -3496,59 +3497,102 @@ interface RawTurnEvent {
 }
 
 /**
- * Per-reply drill-in to the RAW provider turn: lazily fetches the claude/codex
- * stream events 1:1 (assistant text, tool_use, tool_result, result) so the
- * operator sees what the agent actually did, not a "succeeded: N events" wrap.
+ * Per-reply drill-in to the RAW provider turn, rendered like the Claude Code TUI:
+ * thinking → tool_use → tool_result → assistant text → result. For a RUNNING
+ * session it LIVE-polls the events route every 1s so the operator watches the
+ * turn unfold; the loop stops when the session reaches a terminal status (the
+ * provider_session SSE status frame). `defaultOpen` auto-opens it (used live in
+ * the current-work banner). Backend tees each event to the session NDJSON
+ * mid-turn, so the growing file is what we read.
  */
-function TurnDrillIn({ session, apiUrl }: { session: ProviderSession; apiUrl?: string }) {
-  const [open, setOpen] = useState(false);
+function TurnDrillIn({
+  session,
+  apiUrl,
+  defaultOpen = false,
+}: {
+  session: ProviderSession;
+  apiUrl?: string;
+  defaultOpen?: boolean;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
   const [events, setEvents] = useState<RawTurnEvent[] | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [truncated, setTruncated] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const inFlight = useRef(false);
+  const running = session.status === "running";
   const duration = formatDuration(session.started_at, session.ended_at);
 
-  async function toggle() {
-    const next = !open;
-    setOpen(next);
-    if (!next || events !== null || !apiUrl) return;
-    setLoading(true);
-    setError(null);
-    try {
-      const base = normalizeBaseUrl(apiUrl);
-      const res = await fetch(
-        `${base}/v1/provider-sessions/${encodeURIComponent(session.id)}/events`,
-      );
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = (await res.json()) as { events?: RawTurnEvent[] };
-      setEvents(data.events ?? []);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setLoading(false);
-    }
-  }
+  useEffect(() => {
+    if (!open || !apiUrl) return;
+    let cancelled = false;
+    const base = normalizeBaseUrl(apiUrl);
+    const fetchEvents = async () => {
+      if (inFlight.current) return;
+      inFlight.current = true;
+      try {
+        const res = await fetch(
+          `${base}/v1/provider-sessions/${encodeURIComponent(session.id)}/events`,
+        );
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = (await res.json()) as { events?: RawTurnEvent[]; truncated?: boolean };
+        if (!cancelled) {
+          setEvents(data.events ?? []);
+          setTruncated(Boolean(data.truncated));
+          setError(null);
+        }
+      } catch (err) {
+        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
+      } finally {
+        inFlight.current = false;
+      }
+    };
+    void fetchEvents();
+    // Poll only while the turn is running; a terminal status stops the loop.
+    if (!running) return () => { cancelled = true; };
+    const id = window.setInterval(() => void fetchEvents(), 1000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [open, apiUrl, session.id, running]);
 
   return (
-    <span className="inline-flex flex-col">
+    <span className="inline-flex w-full min-w-0 flex-col">
       <button
         type="button"
-        onClick={toggle}
-        className="inline-flex items-center gap-1 text-[10px] text-muted-foreground transition-colors hover:text-foreground"
+        onClick={() => setOpen((value) => !value)}
+        className="inline-flex items-center gap-1 self-start text-[10px] text-muted-foreground transition-colors hover:text-foreground"
       >
         {open ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />}
-        <Terminal className="size-3" />
-        {session.provider ?? "turn"}
-        {duration ? ` · ${duration}` : ""}
-        {events ? ` · ${events.length} events` : ""}
-        {" · turn"}
+        {running ? (
+          <>
+            <StatusDot tone="running" pulse />
+            <span className="font-medium text-status-running">LIVE</span>
+          </>
+        ) : (
+          <Terminal className="size-3" />
+        )}
+        <span>{session.provider ?? "turn"}</span>
+        {duration ? <span>· {duration}</span> : null}
+        {events ? <span>· {events.length} events</span> : null}
+        {!running && <span>· turn</span>}
       </button>
       {open && (
-        <div className="mt-1 max-h-80 overflow-y-auto rounded-md border border-border bg-muted/30 p-2 text-left">
-          {loading && <span className="text-[11px] text-muted-foreground">loading…</span>}
+        <div className="mt-1 max-h-96 w-full overflow-y-auto rounded-md border border-border bg-muted/30 p-2 text-left">
           {error && <span className="text-[11px] text-status-bad">{error}</span>}
-          {events?.map((event, index) => <RawEventRow key={index} event={event} />)}
-          {events && events.length === 0 && (
-            <span className="text-[11px] text-muted-foreground">no events recorded</span>
+          {events === null ? (
+            <span className="text-[11px] text-muted-foreground">loading…</span>
+          ) : events.length === 0 ? (
+            <span className="text-[11px] text-muted-foreground">
+              {running ? "waiting for the agent…" : "no events recorded"}
+            </span>
+          ) : (
+            <>
+              <TurnTui events={events} />
+              {truncated && (
+                <p className="pt-1 text-[10px] text-muted-foreground">…older events truncated</p>
+              )}
+            </>
           )}
         </div>
       )}
@@ -3556,69 +3600,191 @@ function TurnDrillIn({ session, apiUrl }: { session: ProviderSession; apiUrl?: s
   );
 }
 
-/** Render one raw provider event 1:1: its type + a compact, faithful detail. */
-function RawEventRow({ event }: { event: RawTurnEvent }) {
-  const { label, detail } = summarizeRawEvent(event);
+/** message.content[] of a claude assistant/user event, as a block array. */
+function turnBlocks(event: RawTurnEvent): Record<string, unknown>[] {
+  const message = event.message as { content?: unknown } | undefined;
+  return Array.isArray(message?.content) ? (message?.content as Record<string, unknown>[]) : [];
+}
+
+/** A tool_use input → a one-line arg (Bash command / file path / compact json). */
+function toolUseArg(input: unknown): string {
+  if (input && typeof input === "object") {
+    const obj = input as Record<string, unknown>;
+    if (typeof obj.command === "string") return obj.command;
+    if (typeof obj.file_path === "string") return obj.file_path;
+    if (typeof obj.path === "string") return obj.path;
+    if (typeof obj.pattern === "string") return obj.pattern;
+  }
+  return compactJson(input);
+}
+
+/** A tool_result content (string, or array of {type:"text",text}) → text. */
+function toolResultText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((part) => (part && typeof part === "object" && typeof (part as Record<string, unknown>).text === "string"
+        ? ((part as Record<string, unknown>).text as string)
+        : compactJson(part)))
+      .join("\n");
+  }
+  return compactJson(content);
+}
+
+/** One TUI line: optional glyph + label + body, with tone/indent variants. */
+function TuiRow({
+  glyph,
+  label,
+  body,
+  tone,
+  dim,
+  muted,
+  indent,
+  mono,
+}: {
+  glyph?: string;
+  label?: string;
+  body?: string;
+  tone?: StatusTone;
+  dim?: boolean;
+  muted?: boolean;
+  indent?: boolean;
+  mono?: boolean;
+}) {
   return (
-    <div className="flex gap-2 border-b border-border/40 py-1 text-[11px] last:border-b-0">
-      <span className="shrink-0 font-mono text-muted-foreground">{label}</span>
-      {detail && <span className="min-w-0 whitespace-pre-wrap break-words text-foreground/80">{detail}</span>}
+    <div className={cn("flex gap-1.5 py-0.5 text-[11px] leading-relaxed", indent && "pl-4")}>
+      {glyph && <span className={cn("shrink-0", tone ? toneText[tone] : "text-muted-foreground")}>{glyph}</span>}
+      {label && (
+        <span className={cn("shrink-0 font-mono font-medium", tone ? toneText[tone] : dim ? "text-muted-foreground/70" : "text-foreground")}>
+          {label}
+        </span>
+      )}
+      {body && (
+        <span
+          className={cn(
+            "min-w-0 whitespace-pre-wrap break-words",
+            mono && "font-mono",
+            muted || dim ? "text-muted-foreground" : "text-foreground/80",
+          )}
+        >
+          {body}
+        </span>
+      )}
+    </div>
+  );
+}
+
+/** Result footer chip: subtype · duration · cost · tokens. */
+function TurnResultFooter({ event }: { event: RawTurnEvent }) {
+  const subtype = typeof event.subtype === "string" ? event.subtype : "done";
+  const ms = typeof event.duration_ms === "number" ? event.duration_ms : undefined;
+  const cost = typeof event.total_cost_usd === "number" ? event.total_cost_usd : undefined;
+  const usage = event.usage as Record<string, unknown> | undefined;
+  const inTok = usage && typeof usage.input_tokens === "number" ? usage.input_tokens : undefined;
+  const outTok = usage && typeof usage.output_tokens === "number" ? usage.output_tokens : undefined;
+  const parts = [
+    ms != null ? `${(ms / 1000).toFixed(1)}s` : null,
+    cost != null ? `$${cost.toFixed(4)}` : null,
+    inTok != null || outTok != null ? `${inTok ?? "?"}→${outTok ?? "?"} tok` : null,
+  ].filter(Boolean);
+  return (
+    <div className="mt-1 flex flex-wrap items-center gap-1.5 border-t border-border/40 pt-1 text-[10px] text-muted-foreground">
+      <Badge tone={subtype === "success" ? "good" : "warn"}>result · {subtype}</Badge>
+      {parts.length > 0 && <span>{parts.join(" · ")}</span>}
     </div>
   );
 }
 
 /**
- * Map a raw claude/codex stream event to a (label, detail) pair that stays
- * faithful to the event — assistant text, tool_use name+input, tool_result,
- * result subtype, codex agent_message/command items — with a JSON fallback so
- * unknown event kinds are still shown, not hidden.
+ * Render a provider turn as a TUI: walk events in order, rendering thinking
+ * badges, tool_use call cards (⏺), tool_result output (⎿, matched to its call),
+ * assistant prose (markdown), and a result footer. Codex `item` events fall back
+ * to a simple labelled row. Faithful to the real claude stream-json shapes.
  */
-function summarizeRawEvent(event: RawTurnEvent): { label: string; detail: string } {
-  const type = typeof event.type === "string" ? event.type : "event";
-  // codex item events carry the real work under `item`.
-  const item = event.item as Record<string, unknown> | undefined;
-  if (item && typeof item.type === "string") {
-    const itemType = item.type;
-    const text = typeof item.text === "string" ? item.text : "";
-    const command = typeof item.command === "string" ? item.command : "";
-    return { label: itemType, detail: text || command || compactJson(item) };
-  }
-  switch (type) {
-    case "system":
-      return {
-        label: event.subtype ? `system/${event.subtype}` : "system",
-        detail: typeof event.model === "string" ? `model ${event.model}` : "",
-      };
-    case "assistant": {
-      const message = event.message as { content?: unknown } | undefined;
-      const blocks = Array.isArray(message?.content) ? (message?.content as Record<string, unknown>[]) : [];
-      const texts: string[] = [];
-      for (const block of blocks) {
-        if (block.type === "text" && typeof block.text === "string") {
-          texts.push(block.text);
-        } else if (block.type === "tool_use") {
-          const name = typeof block.name === "string" ? block.name : "tool";
-          texts.push(`tool_use: ${name}(${compactJson(block.input)})`);
-        }
+function TurnTui({ events }: { events: RawTurnEvent[] }) {
+  const toolNames = new Map<string, string>();
+  const rows: ReactNode[] = [];
+  events.forEach((event, i) => {
+    const type = typeof event.type === "string" ? event.type : "";
+    const item = event.item as Record<string, unknown> | undefined;
+    if (item && typeof item.type === "string") {
+      const body =
+        typeof item.text === "string"
+          ? item.text
+          : typeof item.command === "string"
+            ? item.command
+            : compactJson(item);
+      rows.push(<TuiRow key={i} glyph="•" label={item.type as string} body={body} mono />);
+      return;
+    }
+    switch (type) {
+      case "system": {
+        const bits = [
+          typeof event.model === "string" ? `model ${event.model}` : "",
+          typeof event.cwd === "string" ? `cwd ${event.cwd}` : "",
+        ].filter(Boolean);
+        rows.push(
+          <TuiRow
+            key={i}
+            dim
+            label={typeof event.subtype === "string" ? `system/${event.subtype}` : "system"}
+            body={bits.join(" · ")}
+          />,
+        );
+        break;
       }
-      return { label: "assistant", detail: texts.join("\n") || compactJson(message) };
+      case "assistant": {
+        turnBlocks(event).forEach((b, bi) => {
+          const key = `${i}-${bi}`;
+          if (b.type === "text" && typeof b.text === "string" && b.text.trim()) {
+            rows.push(
+              <div key={key} className="py-1 text-[12px] text-foreground/90">
+                <Markdown source={b.text} />
+              </div>,
+            );
+          } else if (b.type === "thinking") {
+            const sig = typeof b.signature === "string" ? b.signature.length : 0;
+            rows.push(
+              <TuiRow key={key} glyph="✻" muted label="thinking" body={sig ? `(${sig}b · encrypted)` : "(encrypted)"} />,
+            );
+          } else if (b.type === "tool_use") {
+            const name = typeof b.name === "string" ? b.name : "tool";
+            if (typeof b.id === "string") toolNames.set(b.id, name);
+            rows.push(<TuiRow key={key} glyph="⏺" tone="info" label={name} body={toolUseArg(b.input)} mono />);
+          }
+        });
+        break;
+      }
+      case "user": {
+        turnBlocks(event).forEach((b, bi) => {
+          if (b.type !== "tool_result") return;
+          const name = typeof b.tool_use_id === "string" ? toolNames.get(b.tool_use_id) : undefined;
+          const text = toolResultText(b.content);
+          rows.push(
+            <TuiRow
+              key={`${i}-${bi}`}
+              glyph="⎿"
+              indent
+              tone={b.is_error === true ? "bad" : undefined}
+              label={name}
+              body={text.length > 600 ? `${text.slice(0, 600)}…` : text}
+              mono
+            />,
+          );
+        });
+        break;
+      }
+      case "result":
+        rows.push(<TurnResultFooter key={i} event={event} />);
+        break;
+      case "rate_limit_event":
+        rows.push(<TuiRow key={i} muted label="rate_limit" body={compactJson(event.rate_limit_info)} />);
+        break;
+      default:
+        rows.push(<TuiRow key={i} dim label={type || "event"} body={compactJson(event)} />);
     }
-    case "user": {
-      const message = event.message as { content?: unknown } | undefined;
-      const blocks = Array.isArray(message?.content) ? (message?.content as Record<string, unknown>[]) : [];
-      const results = blocks
-        .filter((block) => block.type === "tool_result")
-        .map((block) => `tool_result: ${compactJson(block.content)}`);
-      return { label: "user", detail: results.join("\n") || compactJson(message) };
-    }
-    case "result":
-      return {
-        label: event.subtype ? `result/${event.subtype}` : "result",
-        detail: typeof event.result === "string" ? event.result : "",
-      };
-    default:
-      return { label: type, detail: compactJson(event) };
-  }
+  });
+  return <div className="space-y-0.5">{rows}</div>;
 }
 
 /** A short single-line JSON preview, capped so a big payload cannot flood. */
