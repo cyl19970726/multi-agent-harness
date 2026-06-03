@@ -4656,10 +4656,7 @@ fn workflow_gc_trace(
 }
 
 fn workflow_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    require_subcommand(
-        args,
-        "workflow run|run-spec|run-script|list|gc-worktrees|gc-trace",
-    )?;
+    require_subcommand(args, "workflow run|run-script|list|gc-worktrees|gc-trace")?;
     match args[0].as_str() {
         "gc-worktrees" => {
             let result = workflow_gc_worktrees(store)?;
@@ -4686,10 +4683,6 @@ fn workflow_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
         }
         "run" => {
             let result = workflow_run_value(store, &args[1..])?;
-            print_json(&result)?;
-        }
-        "run-spec" => {
-            let result = workflow_run_spec_value(store, &args[1..])?;
             print_json(&result)?;
         }
         "run-script" => {
@@ -4741,105 +4734,20 @@ fn workflow_run_value(store: &HarnessStore, args: &[String]) -> CliResult<serde_
     run_workflow_with_driver(store, &run_id, def, &prompt, &driver)
 }
 
-/// `harness workflow run-spec <spec.json> [--start-runtime] [--dry-run]
-///  [--timeout-ms <ms>]`
-///
-/// Reads a runtime-authored [`workflow::WorkflowSpec`] JSON-IR file, validates it
-/// by parsing, walks the IR via `dispatch_spec`, and journals the run/steps
-/// exactly like the registry `run` path (shared `journal_workflow_outcome`).
-///
-/// Each `agent()` node carries its PROVIDER ("codex" | "claude") directly — the
-/// spec drives delivery, so there is no `--codex`/`--claude` member binding. The
-/// node spins up a NEW one-shot ephemeral worker (Stage B: real spawn; Stage A:
-/// a mock driver returns a provider-carrying StepResult so the IR runs
-/// end-to-end without spawning agents).
-fn workflow_run_spec_value(store: &HarnessStore, args: &[String]) -> CliResult<serde_json::Value> {
-    // The spec path is the first positional arg (not a --flag) or `--spec <path>`.
-    let path = value(args, "--spec")
-        .or_else(|| args.iter().find(|arg| !arg.starts_with("--")).cloned())
-        .ok_or_else(|| {
-            CliError::Usage("workflow run-spec requires a <spec.json> path".to_string())
-        })?;
-
-    let raw = std::fs::read_to_string(&path)
-        .map_err(|error| CliError::Usage(format!("cannot read spec {path}: {error}")))?;
-    let spec: workflow::WorkflowSpec = serde_json::from_str(&raw)
-        .map_err(|error| CliError::Usage(format!("invalid workflow spec {path}: {error}")))?;
-
-    // Retention policy for the heavy per-node turn-event trace. `durable`
-    // (default) persists the trace; `live` streams it over SSE during execution
-    // but does not retain it. Validated up front so a typo fails fast.
-    let trace_retention = value(args, "--trace").unwrap_or_else(|| "durable".to_string());
-    if trace_retention != "durable" && trace_retention != "live" {
-        return Err(CliError::Usage(format!(
-            "--trace must be 'durable' or 'live', got '{trace_retention}'"
-        )));
-    }
-
-    let options = WorkflowDeliveryOptions {
-        dry_run: has_flag(args, "--dry-run"),
-        start_runtime: has_flag(args, "--start-runtime"),
-        timeout_ms: value(args, "--timeout-ms")
-            .and_then(|value| value.parse::<u64>().ok())
-            .unwrap_or(3_000),
-        trace_retention: trace_retention.clone(),
-    };
-
-    // Who initiated the run: an explicit `--initiated-by <id>`, else the
-    // ambient agent member id (when an agent shells out), else "operator".
-    let initiated_by = value(args, "--initiated-by")
-        .or_else(|| std::env::var("HARNESS_AGENT_MEMBER_ID").ok())
-        .filter(|id| !id.is_empty())
-        .unwrap_or_else(|| "operator".to_string());
-
-    // Mint the run id up front so the real driver can journal each step's
-    // `running` row as it starts (live SSE progress), mirroring `workflow run`.
-    let run_id = generated_id("wfrun");
-
-    let run = WorkflowRun {
-        id: run_id.clone(),
-        workflow_name: spec.name.clone(),
-        status: WorkflowRunStatus::Running,
-        step_ids: Vec::new(),
-        created_at: now_string(),
-        ended_at: None,
-        summary: None,
-        // The dynamic IR carries the spec's `args` opaquely onto the run.
-        args: spec.args.clone(),
-        agents_spawned: 0,
-        final_output: None,
-        // Always-persisted durable audit record: who ran it + the raw validated
-        // spec shape, plus the retention policy governing the heavy trace.
-        initiated_by: Some(initiated_by),
-        spec: Some(serde_json::to_value(&spec)?),
-        trace_retention,
-    };
-    store.append_workflow_run(&run)?;
-
-    let outcome = {
-        let run_id = run_id.clone();
-        let driver = move |step: &workflow::AgentStepSpec| {
-            workflow_real_agent_step(store, &run_id, &options, step)
-        };
-        workflow::dispatch_spec(&spec, &driver)
-            .map_err(|error| CliError::Usage(error.to_string()))?
-    };
-
-    journal_workflow_outcome(store, run, &outcome)
-}
-
 /// `harness workflow run-script <prog.star> [--name <n>] [--args <json>]
 ///  [--trace durable|live] [--dry-run] [--start-runtime] [--timeout-ms <ms>]
 ///  [--initiated-by <id>]`
 ///
-/// Reads a runtime-authored Starlark program, evaluates it via
-/// `starlark_front::run_starlark` (the imperative front-end over the same
-/// `agent()`/`parallel()` primitives the JSON IR exposes), and journals the
-/// run/steps exactly like `run-spec` (shared `journal_workflow_outcome`).
+/// Reads a runtime-authored Starlark program — the SOLE dynamic authoring
+/// surface — evaluates it via `starlark_front::run_starlark`, and journals the
+/// run/steps through the shared `journal_workflow_outcome`.
 ///
-/// Unlike the JSON IR, the script body is not a serializable spec; the durable
-/// audit record snapshots the raw script text under
-/// `spec = {"lang":"starlark","script": <text>}` so the run is reproducible.
+/// The program MUST declare a `workflow(name, design_intent)` header (the WHY
+/// behind its shape); `run_starlark` rejects it otherwise. The captured
+/// `design_intent` is persisted on the run, and the raw script text is
+/// snapshotted under `spec = {"lang":"starlark","script": <text>}` for
+/// reproducibility. `--name` defaults to the declared meta name (else the file
+/// stem).
 fn workflow_run_script_value(
     store: &HarnessStore,
     args: &[String],
@@ -4854,7 +4762,8 @@ fn workflow_run_script_value(
     let script = std::fs::read_to_string(&path)
         .map_err(|error| CliError::Usage(format!("cannot read script {path}: {error}")))?;
 
-    // Workflow name: explicit `--name`, else the file stem.
+    // Default workflow name: explicit `--name`, else the file stem. The Starlark
+    // `workflow(...)` header's name can override this default once captured.
     let name = value(args, "--name").unwrap_or_else(|| {
         Path::new(&path)
             .file_stem()
@@ -4900,10 +4809,10 @@ fn workflow_run_script_value(
         .unwrap_or_else(|| "operator".to_string());
 
     // Mint the run id up front so the real driver can journal each step's
-    // `running` row as it starts (live SSE progress), mirroring `run-spec`.
+    // `running` row as it starts (live SSE progress).
     let run_id = generated_id("wfrun");
 
-    let run = WorkflowRun {
+    let mut run = WorkflowRun {
         id: run_id.clone(),
         workflow_name: name.clone(),
         status: WorkflowRunStatus::Running,
@@ -4917,14 +4826,16 @@ fn workflow_run_script_value(
         final_output: None,
         // Always-persisted durable audit record: who ran it + the raw script
         // text (the script is not a serializable spec), plus the retention
-        // policy governing the heavy trace.
+        // policy governing the heavy trace. `design_intent` is filled in from the
+        // captured `workflow(...)` header once evaluation succeeds.
         initiated_by: Some(initiated_by),
+        design_intent: None,
         spec: Some(serde_json::json!({ "lang": "starlark", "script": script })),
         trace_retention,
     };
     store.append_workflow_run(&run)?;
 
-    let outcome = {
+    let started = {
         let run_id = run_id.clone();
         let driver = move |step: &workflow::AgentStepSpec| {
             workflow_real_agent_step(store, &run_id, &options, step)
@@ -4938,7 +4849,12 @@ fn workflow_run_script_value(
         .map_err(|error| CliError::Usage(error.to_string()))?
     };
 
-    journal_workflow_outcome(store, run, &outcome)
+    // Persist the captured mandatory meta: the declared `design_intent` and the
+    // workflow name (the header's name overrides the CLI default).
+    run.design_intent = Some(started.meta.design_intent.clone());
+    run.workflow_name = started.meta.name.clone();
+
+    journal_workflow_outcome(store, run, &started.outcome)
 }
 
 /// Create the WorkflowRun (running), dispatch the workflow body with the given
@@ -4968,6 +4884,7 @@ fn run_workflow_with_driver(
         // Registry runs are operator-triggered and carry no dynamic spec; they
         // default to durable trace retention.
         initiated_by: Some("operator".to_string()),
+        design_intent: None,
         spec: None,
         trace_retention: "durable".to_string(),
     };
@@ -4981,7 +4898,7 @@ fn run_workflow_with_driver(
 
 /// Journal the running `run`'s terminal steps + finalize it from a
 /// [`workflow::WorkflowOutcome`]. Shared by the registry `run` path and the
-/// dynamic `run-spec` (IR) path so both journal identically.
+/// dynamic `run-script` (Starlark) path so both journal identically.
 fn journal_workflow_outcome(
     store: &HarnessStore,
     mut run: WorkflowRun,
@@ -10261,7 +10178,6 @@ fn print_help() {
   codex review --task <task> --agent <agent> --worktree <path> [--base <branch>] [--uncommitted] [--prompt <text>]
   workflow list
   workflow run --name <name> [--prompt <text>] [--start-runtime] [--dry-run] [--timeout-ms <ms>]
-  workflow run-spec <spec.json> [--start-runtime] [--dry-run] [--timeout-ms <ms>]
   workflow run-script <prog.star> [--name <n>] [--args <json>] [--trace durable|live] [--dry-run]
   workflow gc-worktrees
   workflow gc-trace [--keep-runs <n>] [--keep-days <d>] [--dry-run]
@@ -10405,6 +10321,7 @@ mod workflow_runtime_tests {
                 agents_spawned: 1,
                 final_output: None,
                 initiated_by: Some("op".into()),
+                design_intent: None,
                 spec: None,
                 trace_retention: "durable".into(),
             })
@@ -10589,6 +10506,7 @@ mod workflow_runtime_tests {
         // A two-agent Starlark program that chains output. `--dry-run` returns a
         // mock StepResult per node, so no provider is spawned (CI-safe).
         let script = r#"
+workflow("triage", "scan first, then fix what the scan reported so the fix builds on it")
 phase("scan")
 a = agent("scan " + args["area"])
 phase("fix")
@@ -10630,6 +10548,11 @@ agent("fix: " + a, provider = "claude", label = "fixer")
         let spec = final_run.spec.as_ref().expect("spec snapshot");
         assert_eq!(spec.get("lang").and_then(|v| v.as_str()), Some("starlark"));
         assert_eq!(spec.get("script").and_then(|v| v.as_str()), Some(script));
+        // The mandatory design_intent from the `workflow(...)` header is persisted.
+        assert_eq!(
+            final_run.design_intent.as_deref(),
+            Some("scan first, then fix what the scan reported so the fix builds on it")
+        );
         // The parsed --args are carried opaquely onto the run.
         assert_eq!(
             final_run
@@ -10683,6 +10606,27 @@ agent("fix: " + a, provider = "claude", label = "fixer")
         ];
         let err = workflow_run_script_value(&store, &args).expect_err("bad json");
         assert!(matches!(err, CliError::Usage(_)));
+    }
+
+    #[test]
+    fn workflow_run_script_rejects_missing_design_intent() {
+        // A program with no `workflow(...)` header is rejected fail-fast, and the
+        // error mentions design_intent so the author knows what to add.
+        let store = temp_store("run-script-no-intent");
+        let dir = std::env::temp_dir().join(format!("harness-wf-script-{}", generated_id("noi")));
+        fs::create_dir_all(&dir).expect("mkdir script dir");
+        let path = dir.join("noheader.star");
+        fs::write(&path, r#"agent("x")"#).expect("write script");
+
+        let args = vec![path.display().to_string(), "--dry-run".to_string()];
+        let err = workflow_run_script_value(&store, &args).expect_err("rejected");
+        match err {
+            CliError::Usage(message) => assert!(
+                message.contains("design_intent"),
+                "error should mention design_intent: {message}"
+            ),
+            other => panic!("expected Usage error, got {other:?}"),
+        }
     }
 
     #[test]

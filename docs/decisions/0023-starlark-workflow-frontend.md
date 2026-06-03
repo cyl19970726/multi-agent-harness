@@ -2,13 +2,48 @@
 
 ## Status
 
-Accepted. Adds a **third** authoring front-end to the workflow runtime shipped in
+Accepted, then **superseded in part** by the convergence note below. Originally
+added a **third** authoring front-end to the workflow runtime shipped in
 [0022 (Dynamic Workflow Runtime — JSON-IR)](0022-dynamic-workflow-runtime-json-ir.md),
 and inherits its provider-neutral boundary from
 [0011 (Provider-neutral runtime)](0011-provider-neutral-runtime.md) and its
 additive-only object contract from [0017 (Generic object model)](0017-generic-object-model.md).
 
 (0022 is the latest prior ADR; 0023 is the next free number.)
+
+## Convergence: Starlark is the SOLE dynamic authoring surface
+
+After shipping all three front-ends, the JSON-IR (0022) and Starlark surfaces
+proved redundant: Starlark is a strict superset — every static `agent`/`phase`/
+`parallel`/`pipeline` tree the IR could express is a trivially-equivalent
+Starlark program, and Starlark additionally expresses the loops / conditionals /
+data-driven fan-out the IR cannot. Maintaining two runtime-authoring surfaces (a
+schema + fixtures + interpreter for the IR, plus the Starlark evaluator) doubled
+the authoring docs and the untrusted-input surface for no added capability.
+
+We therefore **delete the JSON-IR path** and keep Starlark as the only dynamic
+authoring surface (alongside the compiled Rust built-in registry):
+
+- `WorkflowSpec` / `WorkflowNode` / `dispatch_spec` and the
+  `harness workflow run-spec` CLI arm are removed, along with
+  `schemas/workflow-spec.schema.json` (+ fixtures), the JSON examples, and the
+  `acceptance-dynamic-workflow` proof.
+- The runtime primitives the IR walked (`parallel()` / `pipeline()` /
+  `outcome_from_steps` / scheduler / registry / `investigate`) are unchanged —
+  Starlark drives them directly.
+
+### `design_intent` is mandatory
+
+Because a Starlark program is now the single authored artifact of record, every
+program MUST declare a `workflow(name, design_intent)` header. The
+`design_intent` is a free-text explanation of WHY the workflow is shaped the way
+it is; the run is **rejected fail-fast** if the header is missing or the intent
+is blank / under ~20 characters. The captured intent is persisted on
+`WorkflowRun.design_intent` and the raw program text is snapshotted on
+`WorkflowRun.spec`, so every dynamic run carries both its rationale and its
+reproducible source as a durable audit record. This makes the authoring surface
+self-documenting: a run's shape can always be read back together with the reason
+it was chosen.
 
 ## Context
 

@@ -1,189 +1,166 @@
 ---
 name: author-workflow
-description: "Use when an agent needs to author a dynamic multi-agent workflow at runtime: write a JSON WorkflowSpec (Agent/Phase/Parallel/Pipeline IR), validate it against the schema, run it with `harness workflow run-spec`, and read the resulting WorkflowRun/WorkflowStep records back from the dashboard snapshot or store."
+description: "Use when an agent needs to author a dynamic multi-agent workflow at runtime: write a Starlark program (loops, conditionals, data-driven fan-out) that calls agent()/parallel()/phase()/log() over the harness runtime, declare a mandatory workflow(name, design_intent) header, run it with `harness workflow run-script`, and read the resulting WorkflowRun/WorkflowStep records back from the dashboard snapshot or store."
 ---
 
 # Author Workflow
 
 Use this skill to make a shell-capable agent (Codex, Claude Code, or any other)
-author a workflow shape at runtime and run it through the harness, with no MCP or
-plugin. There are two authoring front-ends over the SAME runtime; both journal an
-identical `WorkflowRun` + one `WorkflowStep` per agent leaf:
+author a workflow at runtime and run it through the harness, with no MCP or
+plugin. Starlark is the SOLE dynamic authoring surface: write a `.star` program
+and run it through `harness workflow run-script`, which journals a `WorkflowRun`
+plus one `WorkflowStep` per agent leaf.
 
 ```text
-write WorkflowSpec JSON  ->  harness workflow run-spec   <spec.json>  ->  read the run back
-write a .star program    ->  harness workflow run-script <prog.star>  ->  read the run back
+write a .star program  ->  harness workflow run-script <prog.star>  ->  read the run back
 ```
 
-Pick the front-end by how much CONTROL FLOW the orchestration needs:
-
-- **JSON IR (`run-spec`)** — a declarative spec: a fixed tree of
-  `agent`/`phase`/`parallel`/`pipeline` nodes. Use it when the shape is known up
-  front. Documented below.
-- **Starlark program (`run-script`)** — a real PROGRAM with loops, conditionals,
-  and data-driven fan-out, where one step's output decides the next. Use it when
-  the shape depends on runtime values. See [Starlark Program Front-End](#starlark-program-front-end).
-
-The runtime is provider-agnostic (`crates/harness-workflow`). Each `agent` node
+The runtime is provider-agnostic (`crates/harness-workflow`). Each `agent()` call
 names a PROVIDER (`"codex"` or `"claude"`); the CLI spins up a NEW one-shot
-ephemeral worker for that node (it does NOT deliver to a pre-existing member) and
-journals a `WorkflowRun` plus one `WorkflowStep` per agent node — identical to the
+ephemeral worker for that call (it does NOT deliver to a pre-existing member) and
+journals a `WorkflowRun` plus one `WorkflowStep` per agent call — identical to the
 built-in `workflow run --name` path, so the run shows up live on the Agent
 Dashboard Workflows surface.
 
 Each ephemeral worker CAN EDIT files (full sandbox + editing tools, not
-read-only) and, by default, shares the repo cwd with every sibling node — serial
-nodes' edits compose naturally on the same tree. When two nodes mutate the tree
+read-only) and, by default, shares the repo cwd with every sibling call — serial
+calls' edits compose naturally on the same tree. When two calls mutate the tree
 in parallel and you do not want them to collide, opt one or both into
-`isolation: "worktree"` (see below).
+`isolation="worktree"` (see below).
 
 ## When To Use
 
 - The shape of the orchestration is decided at runtime, not baked into a built-in
   registry workflow.
-- You want to fan work out across members (scan, then parallel fix; map/reduce;
-  a streaming pipeline) and have the run recorded as evidence.
+- You want to fan work out (scan, then parallel fix; map/reduce; a data-driven
+  fan-out whose width depends on a prior step) and have the run recorded as
+  evidence.
 - A Lead Agent wants a worker to both design and execute a small multi-agent plan.
 
-Do not use this skill to do the domain work yourself. Use it to author the spec,
-run it, and then read the recorded run.
+Do not use this skill to do the domain work yourself. Use it to author the
+program, run it, and then read the recorded run.
 
-## Spec Shape
+## The Mandatory `workflow(name, design_intent)` Header
 
-A `WorkflowSpec` is a JSON object validated by
-[`schemas/workflow-spec.schema.json`](../../../schemas/workflow-spec.schema.json).
-Top level:
+Every program MUST call `workflow(name, design_intent)` exactly once, before the
+rest of the body. It declares:
 
-| Field | Required | Meaning |
+- `name` — the workflow name (becomes `WorkflowRun.workflow_name`; overrides the
+  CLI `--name` / file-stem default).
+- `design_intent` — a free-text explanation of WHY the workflow is structured the
+  way it is. This is the run's durable rationale.
+
+The run is REJECTED fail-fast if `workflow(...)` is never called, or the
+`design_intent` is blank or shorter than ~20 characters:
+
+```text
+every workflow must declare a design_intent explaining WHY it is structured this way
+```
+
+The captured `design_intent` is persisted on `WorkflowRun.design_intent`, and the
+raw program text is snapshotted under `WorkflowRun.spec = {"lang":"starlark","script": <text>}`
+for reproducibility.
+
+## Host API
+
+The interpreter is [Starlark](https://github.com/facebook/starlark-rust)
+([`crates/harness-workflow/src/starlark_front.rs`](../../../crates/harness-workflow/src/starlark_front.rs)),
+the same dialect Bazel uses. It is HERMETIC by design: the script has no clock, no
+randomness, and no IO. The orchestration (which agents run, in what order, with what
+prompts) is therefore deterministic — the ONLY nondeterminism lives in the journaled
+`agent()` leaves.
+
+A program calls these globals (no `import`; they are pre-bound):
+
+| Call | Returns | Meaning |
 | --- | --- | --- |
-| `name` | yes | Non-empty workflow name; becomes `WorkflowRun.workflow_name`. |
-| `nodes` | yes (for the top level) | Ordered array of nodes run in sequence. |
-| `args` | no | Opaque JSON parameterization; carried onto `WorkflowRun.args` and substituted into node prompts as `{{key}}`. |
+| `workflow(name, design_intent)` | — | REQUIRED header. Declares the run name + the WHY behind its shape. Must run once before the body. |
+| `agent(prompt, provider="codex", label=, phase=, model=, isolation=)` | output text | Run ONE ephemeral worker synchronously. `prompt` is positional; the rest are keyword args. `isolation="worktree"` runs it in a throwaway worktree. Capture the return to chain: `scan = agent("...")`. |
+| `parallel([dict, ...])` | list of output strings (input order) | Barrier fan-out: run every spec concurrently, block until ALL finish. Each dict needs a `prompt` and may set `provider` (default `"codex"`), `label`, `phase`, `model`, `isolation`. |
+| `phase(name)` | — | Set the default phase for the steps that follow. |
+| `log(message)` | — | Emit a progress line. |
+| `args` | value | The `--args` JSON, injected as a module global (e.g. `args["items"]`). |
 
-Each node is exactly one of four kinds (the IR `WorkflowNode { Agent | Phase | Parallel | Pipeline }`):
-
-| `type` | Required fields | Behavior |
-| --- | --- | --- |
-| `agent` | `provider`, `prompt` | Spins up one ephemeral `provider` worker. Optional `phase`/`label` group/name the step; optional `model` overrides the provider model; optional `isolation` runs it in a throwaway worktree. |
-| `phase` | `name`, `nodes` | A named serial group; its `nodes` run in order. |
-| `parallel` | `nodes` | Its `nodes` run concurrently and join at a barrier before the next top-level node. |
-| `pipeline` | `stages` | Items stream through `stages` with overlapping windows (no full barrier between stages). |
-
-Rules that keep a spec valid:
+Rules every call obeys:
 
 - `provider` is `"codex"` or `"claude"` — the provider whose ephemeral worker
-  runs the node. There is NO member binding; the spec's provider drives delivery.
-- Every node object has exactly the fields its `type` allows; unknown fields are
-  rejected (`additionalProperties: false`).
-- `prompt`, `name`, and `label` must be non-empty strings.
-- Optional `model` (any non-empty string) overrides the provider's default model.
-- Optional `isolation` is `"worktree"` (the only supported value).
-- Reference `args` inside a prompt with `{{key}}` (e.g. `{{area}}`).
+  runs the leaf. There is NO member binding; the provider drives delivery.
+- `prompt`, `label`, and `phase` are non-empty strings; optional `model` (any
+  non-empty string) overrides the provider's default model.
+- The only supported `isolation` value is `"worktree"`.
+- Reference `args` inside a prompt with normal Starlark string concatenation
+  (e.g. `"audit " + args["area"]`).
 
-### Workspace and `isolation: "worktree"`
+### Workspace and `isolation="worktree"`
 
-By default every node edits the SHARED repo cwd. That is what you want for serial
-work (a scan node, then a fix node that builds on it). It is NOT safe when several
-nodes mutate the tree at the same time — the runtime does not auto-prevent
+By default every call edits the SHARED repo cwd. That is what you want for serial
+work (a scan call, then a fix call that builds on it). It is NOT safe when several
+calls mutate the tree at the same time — the runtime does not auto-prevent
 conflicts on the shared tree.
 
-Set `"isolation": "worktree"` on a node to run it in its own harness-owned
-throwaway git worktree under `.harness/worktrees/`. That node's `git diff` becomes
-its evidence; the worktree is NOT auto-merged back and is cleaned up after the
-node finishes (auto-removed if unchanged). Use it as the escape hatch whenever a
-`parallel` block has two or more nodes that EDIT files, so they cannot stomp each
-other.
+Set `"isolation": "worktree"` on a `parallel()` spec (or `isolation="worktree"` on
+an `agent()` call) to run it in its own harness-owned throwaway git worktree under
+`.harness/worktrees/`. That call's `git diff` becomes its evidence; the worktree is
+NOT auto-merged back and is cleaned up after the call finishes (auto-removed if
+unchanged). Use it as the escape hatch whenever a `parallel` block has two or more
+slots that EDIT files, so they cannot stomp each other.
 
-## Worked Example: scan, then parallel fix
+## Worked Example: data-driven scan, then parallel fix
 
-A serial scan node (shared cwd) whose result the two parallel fix nodes act on.
-Because the two fix nodes EDIT files in parallel, each opts into
-`isolation: "worktree"` so they cannot collide. The runnable copy is
-[`examples/scan-then-parallel-fix.json`](examples/scan-then-parallel-fix.json):
+A serial scan call (shared cwd) whose output decides the fan-out width: one fix
+slot per defect line. Because the fix slots EDIT files in parallel, each opts into
+`isolation="worktree"` so they cannot collide. The runnable copy is
+[`examples/scan-then-parallel-fix.star`](examples/scan-then-parallel-fix.star):
 
-```json
-{
-  "name": "scan-then-parallel-fix",
-  "args": { "area": "checkout flow" },
-  "nodes": [
+```python
+workflow(
+    "scan-then-parallel-fix",
+    "Scan once on the shared tree to enumerate defects, then fan out one isolated " +
+    "worktree fix per defect so the parallel fixes cannot collide on the same files.",
+)
+
+phase("scan")
+scan = agent(
+    "Scan " + args["area"] + " for defects. Return a numbered list, one per line.",
+    provider="codex",
+)
+
+phase("fix")
+parallel([
     {
-      "type": "phase",
-      "name": "scan",
-      "nodes": [
-        {
-          "type": "agent",
-          "provider": "codex",
-          "prompt": "Scan {{area}} for defects. Return a numbered list of the distinct problems you find, each with the file path and a one-line description.",
-          "label": "scan"
-        }
-      ]
-    },
-    {
-      "type": "parallel",
-      "nodes": [
-        {
-          "type": "agent",
-          "provider": "codex",
-          "prompt": "Fix the first defect reported by the scan in {{area}}. Make the minimal change and explain it.",
-          "phase": "fix",
-          "label": "fix-codex",
-          "isolation": "worktree"
-        },
-        {
-          "type": "agent",
-          "provider": "claude",
-          "prompt": "Fix the second defect reported by the scan in {{area}}. Make the minimal change and explain it.",
-          "phase": "fix",
-          "label": "fix-claude",
-          "isolation": "worktree"
-        }
-      ]
+        "prompt": "Fix this defect in " + args["area"] + ": " + line + ". Make the minimal change and explain it.",
+        "provider": "codex",
+        "isolation": "worktree",
     }
-  ]
-}
+    for line in scan.splitlines() if line
+])
 ```
 
-The `scan` phase completes before the `parallel` barrier starts (its edits land
-on the shared cwd), and both `fix` nodes then run concurrently in their own
-worktrees and join before the run finalizes.
-
-## Validate Before Running
-
-`run-spec` parses and rejects an invalid spec, but validate against the schema
-first to get a precise error. From the repo root:
-
-```bash
-node -e '
-  const Ajv = require("ajv/dist/2020").default;
-  const fs = require("node:fs");
-  const schema = JSON.parse(fs.readFileSync("schemas/workflow-spec.schema.json", "utf8"));
-  const spec = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
-  const validate = new Ajv({ allErrors: true }).compile(schema);
-  if (validate(spec)) { console.log("spec valid"); }
-  else { console.error(validate.errors); process.exit(1); }
-' .agents/skills/author-workflow/examples/scan-then-parallel-fix.json
-```
-
-`schemas/workflow-spec.schema.json` is also gated in CI via the valid/invalid
-fixtures under `schemas/fixtures/workflow-spec/`; add a fixture there when you
-extend the IR.
+The `scan` phase completes (its edits land on the shared cwd) before the
+`parallel` barrier fans out, and each fix slot then runs concurrently in its own
+worktree and joins before the run finalizes. The fan-out WIDTH is decided at
+runtime from the scan's output — a comprehension over its lines — which no static
+shape could express.
 
 ## Run It
 
-Write the spec to a file, then invoke the CLI. The spec's `provider` values drive
-delivery, so there is no member binding to pass:
+Write the program to a file, then invoke the CLI. The program's `provider` values
+drive delivery, so there is no member binding to pass:
 
 ```bash
-harness workflow run-spec ./scan-then-parallel-fix.json
+harness workflow run-script ./scan-then-parallel-fix.star --args '{"area":"checkout flow"}'
 ```
 
 Useful flags:
 
 | Flag | Effect |
 | --- | --- |
-| `--dry-run` | Use a mock driver so the IR runs end-to-end without spawning agents. |
+| `--name <n>` | Default workflow name; the `workflow(...)` header overrides it. |
+| `--args <json>` | Injected as the `args` global. |
+| `--dry-run` | Use a mock driver so the program runs end-to-end without spawning agents. |
 | `--start-runtime` | Start the provider runtime if it is not already running. |
 | `--timeout-ms <ms>` | Per-step delivery timeout (default 3000). |
+| `--trace durable\|live` | Retain the heavy per-step turn-event trace (`durable`, default) or stream-only (`live`). |
 
 The command prints the journaled run as JSON, including the new `run` id.
 
@@ -203,101 +180,33 @@ harness dashboard snapshot | node -e '
 '
 ```
 
-Confirm: a `WorkflowRun` with your `name`, status moving `running -> succeeded`
-(or `failed`), `args` echoed back, and one `WorkflowStep` per agent node with its
-`label`, `phase`, `provider`, and result. The same run renders on the Agent
-Dashboard Workflows surface.
-
-## Starlark Program Front-End
-
-When the orchestration is not a fixed tree — you need to iterate over a list, branch
-on a step's output, or fan out one slot per data item — author a Starlark PROGRAM
-instead of the JSON IR and run it with:
-
-```bash
-harness workflow run-script ./prog.star [--name <n>] [--args <json>]
-```
-
-The interpreter is [Starlark](https://github.com/facebook/starlark-rust)
-([`crates/harness-workflow/src/starlark_front.rs`](../../../crates/harness-workflow/src/starlark_front.rs)),
-the same dialect Bazel uses. It is HERMETIC by design: the script has no clock, no
-randomness, and no IO. The orchestration (which agents run, in what order, with what
-prompts) is therefore deterministic — the ONLY nondeterminism lives in the journaled
-`agent()` leaves, exactly like the JSON IR. The run records the same
-`WorkflowRun` + one `WorkflowStep` per agent call as `run-spec`, and the raw script
-text is snapshotted onto the run for reproducibility.
-
-### Host API
-
-A program calls these globals (no `import`; they are pre-bound):
-
-| Call | Returns | Meaning |
-| --- | --- | --- |
-| `agent(prompt, provider="codex", label=, phase=, model=, isolation=)` | output text | Run ONE ephemeral worker synchronously. `prompt` is positional; the rest are keyword args. `isolation="worktree"` runs it in a throwaway worktree. Capture the return to chain: `scan = agent("...")`. |
-| `parallel([dict, ...])` | list of output strings (input order) | Barrier fan-out: run every spec concurrently, block until ALL finish. Each dict needs a `prompt` and may set `provider` (default `"codex"`), `label`, `phase`, `model`, `isolation`. |
-| `phase(name)` | — | Set the default phase for the steps that follow. |
-| `log(message)` | — | Emit a progress line. |
-| `args` | value | The `--args` JSON, injected as a module global (e.g. `args["items"]`). |
-
-`agent()` and `parallel()` accept the same fields as a JSON `agent` node and obey the
-same rules: `provider` is `"codex"` or `"claude"`, the only `isolation` value is
-`"worktree"`, and parallel slots that EDIT files should set `isolation="worktree"`
-so they cannot collide (same guidance as the JSON IR above).
-
-### Worked Example: data-driven parallel fan-out
-
-The same scan-then-parallel-fix shape, but the fix slots are derived from the scan's
-output at runtime — impossible to express as a static JSON tree:
-
-```python
-phase("scan")
-defects = agent(
-    "Scan " + args["area"] + " for defects. Return one defect per line.",
-    label="scan",
-)
-
-phase("fix")
-specs = []
-for line in defects.splitlines():
-    if line.strip():
-        specs.append({
-            "prompt": "Fix this defect in " + args["area"] + ": " + line,
-            "isolation": "worktree",
-        })
-parallel(specs)
-```
-
-Run it with `harness workflow run-script ./fix.star --args '{"area":"checkout flow"}'`.
-The serial `agent()` lands on the shared cwd; each `parallel` slot fans out into its
-own worktree and the call blocks at the barrier until every fix finishes.
-
-The same flags as `run-spec` apply (`--dry-run`, `--start-runtime`, `--timeout-ms`),
-plus `--name` (defaults to the file stem) and `--args <json>` (injected as the `args`
-global). Read the run back exactly as below — the snapshot does not distinguish which
-front-end produced it.
+Confirm: a `WorkflowRun` with your `name`, status moving `running -> completed`
+(or `failed`), the declared `design_intent`, the snapshotted `spec` script,
+`args` echoed back, and one `WorkflowStep` per agent call with its `label`,
+`phase`, `provider`, and result. The same run renders on the Agent Dashboard
+Workflows surface.
 
 ## Permission Note
 
-The agent that runs the spec invokes the `harness` binary through its shell, so
+The agent that runs the program invokes the `harness` binary through its shell, so
 its permission profile must allow it:
 
 - The runner's allowed-tool / command policy must permit running the `harness`
   binary (for Claude this is a `Bash(harness ...)` allowance; for Codex the
   sandbox/approval policy must let the shell call through).
-- Each agent node spins up a fresh ephemeral worker that CAN EDIT files and runs
+- Each agent call spins up a fresh ephemeral worker that CAN EDIT files and runs
   in the repo cwd (or its worktree). A `prompt` that writes files or runs
   destructive/money-moving actions executes for real — scope prompts accordingly
-  and reach for `isolation: "worktree"` when parallel nodes mutate the tree.
+  and reach for `isolation="worktree"` when parallel calls mutate the tree.
 - If `harness` is not on the runner's `PATH`, invoke it by absolute path and
   ensure that path is the allowed command.
 
 ## Checklist
 
-- [ ] Picked the front-end by control-flow need: static tree -> JSON IR; loops / branching / data-driven fan-out -> Starlark.
-- [ ] JSON: spec has `name` + `nodes`; every node is a valid `agent`/`phase`/`parallel`/`pipeline`; it validates against `schemas/workflow-spec.schema.json`.
-- [ ] Starlark: program calls only `agent`/`parallel`/`phase`/`log`/`args`; no clock/random/IO assumed.
-- [ ] Every agent leaf (node or `agent()`/`parallel` spec) has a `provider` of `"codex"` or `"claude"`.
+- [ ] Program declares `workflow(name, design_intent)` once, before the body, with a real (>= ~20 char) design_intent.
+- [ ] Program calls only `workflow`/`agent`/`parallel`/`phase`/`log`/`args`; no clock/random/IO assumed.
+- [ ] Every agent leaf (`agent()` call / `parallel` spec) has a `provider` of `"codex"` or `"claude"`.
 - [ ] Parallel slots that EDIT files use `isolation` `"worktree"`.
-- [ ] Ran it: `harness workflow run-spec <spec.json>` or `harness workflow run-script <prog.star>` (no member binding needed).
-- [ ] The run is visible in `harness dashboard snapshot` (`workflow_runs` / `workflow_steps`).
+- [ ] Ran it: `harness workflow run-script <prog.star>` (no member binding needed).
+- [ ] The run is visible in `harness dashboard snapshot` (`workflow_runs` / `workflow_steps`) with its `design_intent`.
 - [ ] The runner's profile allows the `harness` binary and what each leaf's prompt does.

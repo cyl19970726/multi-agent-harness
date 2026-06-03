@@ -1,7 +1,7 @@
 //! Starlark workflow front-end.
 //!
-//! A THIRD authoring front-end (alongside the Rust built-ins like [`super::investigate`]
-//! and the JSON-IR [`super::dispatch_spec`]) that lets an agent author a real *program*
+//! The SOLE dynamic authoring front-end (alongside the Rust built-ins like
+//! [`super::investigate`]) that lets an agent author a real *program*
 //! at runtime — loops, conditionals, data-driven fan-out — and have the harness
 //! *evaluate* it. The program's `agent()` / `parallel()` host functions drive the SAME
 //! ephemeral-worker backend through the injected [`AgentStepFn`] seam, and the run is
@@ -13,6 +13,11 @@
 //! lives in the journaled `agent()` leaves.
 //!
 //! ## Host API (the globals a script may call)
+//! * `workflow(name, design_intent)` — REQUIRED meta header. Declares the run's
+//!   name and the `design_intent`: a free-text explanation of WHY the workflow is
+//!   structured the way it is. The run is REJECTED if `workflow(...)` is never
+//!   called or `design_intent` is blank / shorter than [`MIN_DESIGN_INTENT_LEN`]
+//!   characters — every workflow must justify its shape.
 //! * `agent(prompt, provider="codex", label=None, phase=None, model=None, isolation=None)`
 //!   — run ONE ephemeral worker synchronously; returns its output text (so the script can
 //!   chain, e.g. `scan = agent(...)` then `scan.splitlines()`).
@@ -40,6 +45,11 @@ use starlark::values::{Heap, Value};
 use crate::{outcome_from_steps, run_agent_step, AgentStepFn, AgentStepSpec, StepResult};
 use crate::{scheduler_agents_spawned, WorkflowOutcome};
 
+/// Minimum length (in characters) a `design_intent` must reach to be accepted.
+/// Shorter (or blank) intents do not explain WHY the workflow is shaped as it is,
+/// so the run is rejected fail-fast.
+pub const MIN_DESIGN_INTENT_LEN: usize = 20;
+
 /// An error from authoring or evaluating a Starlark workflow program. Carries the
 /// human-facing message Starlark produced (parse diagnostics or a runtime error).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -48,6 +58,9 @@ pub enum StarlarkRunError {
     Parse(String),
     /// The script raised an error during evaluation.
     Eval(String),
+    /// The mandatory `workflow(name, design_intent)` meta header was missing or
+    /// its `design_intent` was blank / too short. Carries the human-facing reason.
+    MissingDesignIntent(String),
 }
 
 impl std::fmt::Display for StarlarkRunError {
@@ -55,11 +68,35 @@ impl std::fmt::Display for StarlarkRunError {
         match self {
             StarlarkRunError::Parse(msg) => write!(f, "workflow script parse error: {msg}"),
             StarlarkRunError::Eval(msg) => write!(f, "workflow script evaluation error: {msg}"),
+            StarlarkRunError::MissingDesignIntent(msg) => write!(f, "{msg}"),
         }
     }
 }
 
 impl std::error::Error for StarlarkRunError {}
+
+/// The mandatory meta a Starlark workflow program declares via its
+/// `workflow(name, design_intent)` header, returned to the caller alongside the
+/// [`WorkflowOutcome`] so the CLI can journal the run's name + design_intent and
+/// snapshot the authored `source`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkflowMeta {
+    /// The workflow name declared in the header.
+    pub name: String,
+    /// The free-text justification for the workflow's shape (validated non-blank
+    /// and at least [`MIN_DESIGN_INTENT_LEN`] characters).
+    pub design_intent: String,
+    /// The raw Starlark program text that was evaluated.
+    pub source: String,
+}
+
+/// The result of evaluating a Starlark workflow program: the run [`WorkflowOutcome`]
+/// plus the captured [`WorkflowMeta`] (name / design_intent / source).
+#[derive(Debug, Clone)]
+pub struct StarlarkRun {
+    pub outcome: WorkflowOutcome,
+    pub meta: WorkflowMeta,
+}
 
 /// The shared evaluation context handed to every host function via `eval.extra`.
 /// Holds the injected delivery driver plus the run's accumulating state. Interior
@@ -78,6 +115,9 @@ struct StarlarkCtx<'a> {
     steps: RefCell<Vec<StepResult>>,
     /// Progress lines emitted via `log()`.
     logs: RefCell<Vec<String>>,
+    /// The `(name, design_intent)` captured by the mandatory `workflow()` header,
+    /// or `None` until it is called. `run_starlark` enforces that it is set.
+    meta: RefCell<Option<(String, String)>>,
 }
 
 impl StarlarkCtx<'_> {
@@ -184,6 +224,19 @@ fn read_parallel_specs(
 /// The workflow host functions exposed to the script.
 #[starlark_module]
 fn workflow_globals(builder: &mut GlobalsBuilder) {
+    /// Declare the workflow's mandatory meta: its `name` and a `design_intent`
+    /// explaining WHY it is structured this way. Records both for the caller;
+    /// `run_starlark` rejects the run if this is never called or the
+    /// `design_intent` is blank / too short.
+    fn workflow<'v>(
+        #[starlark(require = pos)] name: String,
+        #[starlark(require = pos)] design_intent: String,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<NoneType> {
+        *ctx_of(eval).meta.borrow_mut() = Some((name, design_intent));
+        Ok(NoneType)
+    }
+
     /// Run one ephemeral provider worker synchronously and return its output text.
     fn agent<'v>(
         #[starlark(require = pos)] prompt: String,
@@ -274,14 +327,20 @@ fn json_to_value<'v>(heap: Heap<'v>, value: &serde_json::Value) -> Value<'v> {
 /// `args` is injected as the `args` global. The interpreter is hermetic: the script
 /// has no access to the clock, randomness, or IO, so the orchestration is
 /// deterministic — only the journaled `agent()` leaves are nondeterministic.
+///
+/// The program MUST call `workflow(name, design_intent)` exactly once: the run is
+/// rejected with [`StarlarkRunError::MissingDesignIntent`] if it does not, or if
+/// the declared `design_intent` is blank / under [`MIN_DESIGN_INTENT_LEN`]
+/// characters. On success the returned [`StarlarkRun`] carries the captured meta
+/// (name / design_intent / source) alongside the outcome.
 pub fn run_starlark(
     script: &str,
     name: &str,
     args: Option<&serde_json::Value>,
     driver: &AgentStepFn<'_>,
-) -> Result<WorkflowOutcome, StarlarkRunError> {
+) -> Result<StarlarkRun, StarlarkRunError> {
     // Snapshot the scheduler's lifetime spawn counter so the delta attributes this
-    // run's agents (matches `dispatch_spec`).
+    // run's agents.
     let spawned_before = scheduler_agents_spawned();
 
     let ctx = StarlarkCtx {
@@ -290,6 +349,7 @@ pub fn run_starlark(
         current_phase: RefCell::new(None),
         steps: RefCell::new(Vec::new()),
         logs: RefCell::new(Vec::new()),
+        meta: RefCell::new(None),
     };
 
     // `Extended` enables top-level statements (so an agent can write top-level
@@ -313,8 +373,36 @@ pub fn run_starlark(
             .map_err(|error| StarlarkRunError::Eval(error.to_string()))
     })?;
 
+    // ENFORCE the mandatory meta header: `workflow(name, design_intent)` must
+    // have run, and the design_intent must be a real (>= MIN_DESIGN_INTENT_LEN
+    // chars) justification — every workflow must explain WHY it is shaped so.
+    let (meta_name, design_intent) = ctx.meta.into_inner().ok_or_else(|| {
+        StarlarkRunError::MissingDesignIntent(
+            "every workflow must declare a design_intent explaining WHY it is structured \
+             this way: call workflow(name, design_intent) at the top of the program"
+                .to_string(),
+        )
+    })?;
+    let trimmed = design_intent.trim();
+    if trimmed.chars().count() < MIN_DESIGN_INTENT_LEN {
+        return Err(StarlarkRunError::MissingDesignIntent(format!(
+            "every workflow must declare a design_intent explaining WHY it is structured \
+             this way: design_intent must be at least {MIN_DESIGN_INTENT_LEN} characters \
+             (got {})",
+            trimmed.chars().count()
+        )));
+    }
+
     let steps = ctx.steps.into_inner();
-    Ok(outcome_from_steps(name, steps, spawned_before))
+    let outcome = outcome_from_steps(name, steps, spawned_before);
+    Ok(StarlarkRun {
+        outcome,
+        meta: WorkflowMeta {
+            name: meta_name,
+            design_intent: trimmed.to_string(),
+            source: script.to_string(),
+        },
+    })
 }
 
 #[cfg(test)]
@@ -322,6 +410,11 @@ mod tests {
     use super::*;
     use harness_core::WorkflowRunStatus;
     use std::sync::Mutex;
+
+    /// The mandatory meta header every test program must declare. Prepended to the
+    /// per-test body so the run is not rejected for a missing `design_intent`.
+    const HEADER: &str =
+        "workflow(\"demo\", \"scan then fix: serialize so the fix builds on the scan output\")\n";
 
     /// A mock driver that always succeeds and records invocation order + prompts.
     fn recording_driver<'a>(
@@ -356,7 +449,9 @@ b = agent("fix what scan found: " + a, provider = "claude", label = "fixer")
 "#;
         let outcome = {
             let driver = recording_driver(&seen);
-            run_starlark(script, "demo", None, &driver).expect("run ok")
+            run_starlark(&format!("{HEADER}{script}"), "demo", None, &driver)
+                .expect("run ok")
+                .outcome
         };
         let seen = seen.into_inner().unwrap();
         assert_eq!(seen.len(), 2);
@@ -378,7 +473,9 @@ b = agent("fix what scan found: " + a, provider = "claude", label = "fixer")
         let args = serde_json::json!({ "area": "checkout flow" });
         let outcome = {
             let driver = recording_driver(&seen);
-            run_starlark(script, "demo", Some(&args), &driver).expect("run ok")
+            run_starlark(&format!("{HEADER}{script}"), "demo", Some(&args), &driver)
+                .expect("run ok")
+                .outcome
         };
         let seen = seen.into_inner().unwrap();
         assert_eq!(seen.len(), 1);
@@ -388,7 +485,7 @@ b = agent("fix what scan found: " + a, provider = "claude", label = "fixer")
 
     #[test]
     fn a_failed_step_makes_the_run_failed() {
-        // A driver that fails every step → 0 ok → Failed (mirrors dispatch_spec).
+        // A driver that fails every step → 0 ok → Failed (outcome_from_steps rule).
         let driver = |spec: &AgentStepSpec| StepResult {
             phase: spec.phase.clone(),
             label: spec.label.clone(),
@@ -400,7 +497,9 @@ b = agent("fix what scan found: " + a, provider = "claude", label = "fixer")
             step_id: None,
             started_at: None,
         };
-        let outcome = run_starlark(r#"agent("x")"#, "demo", None, &driver).expect("run ok");
+        let outcome = run_starlark(&format!("{HEADER}agent(\"x\")"), "demo", None, &driver)
+            .expect("run ok")
+            .outcome;
         assert_eq!(outcome.status, WorkflowRunStatus::Failed);
         assert_eq!(outcome.steps.len(), 1);
     }
@@ -415,7 +514,9 @@ b = agent("fix what scan found: " + a, provider = "claude", label = "fixer")
         let args = serde_json::json!({ "items": ["a", "b", "c", "d"] });
         let outcome = {
             let driver = recording_driver(&seen);
-            run_starlark(script, "demo", Some(&args), &driver).expect("run ok")
+            run_starlark(&format!("{HEADER}{script}"), "demo", Some(&args), &driver)
+                .expect("run ok")
+                .outcome
         };
         let seen = seen.into_inner().unwrap();
         assert_eq!(seen.len(), 4, "one step per comprehension item");
@@ -448,7 +549,9 @@ b = agent("fix what scan found: " + a, provider = "claude", label = "fixer")
                     started_at: None,
                 }
             };
-            run_starlark(script, "demo", None, &driver).expect("run ok")
+            run_starlark(&format!("{HEADER}{script}"), "demo", None, &driver)
+                .expect("run ok")
+                .outcome
         };
         let isolations = isolations.into_inner().unwrap();
         assert_eq!(isolations, vec![Some("worktree".to_string())]);
@@ -462,5 +565,49 @@ b = agent("fix what scan found: " + a, provider = "claude", label = "fixer")
         let driver = recording_driver(&seen);
         let err = run_starlark("agent(", "demo", None, &driver).expect_err("should fail");
         assert!(matches!(err, StarlarkRunError::Parse(_)));
+    }
+
+    #[test]
+    fn missing_workflow_header_is_rejected() {
+        // A program that never calls `workflow(...)` is rejected fail-fast.
+        let seen = Mutex::new(Vec::new());
+        let driver = recording_driver(&seen);
+        let err = run_starlark(r#"agent("x")"#, "demo", None, &driver).expect_err("rejected");
+        assert!(matches!(err, StarlarkRunError::MissingDesignIntent(_)));
+        assert!(err.to_string().contains("design_intent"));
+    }
+
+    #[test]
+    fn blank_or_short_design_intent_is_rejected() {
+        let seen = Mutex::new(Vec::new());
+        let driver = recording_driver(&seen);
+        // Too short (< MIN_DESIGN_INTENT_LEN) and blank both fail.
+        for intent in ["too short", "   "] {
+            let script = format!("workflow(\"demo\", \"{intent}\")\nagent(\"x\")");
+            let err = run_starlark(&script, "demo", None, &driver).expect_err("rejected");
+            assert!(
+                matches!(err, StarlarkRunError::MissingDesignIntent(_)),
+                "intent {intent:?} should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn captured_meta_is_returned_to_the_caller() {
+        // A valid header is captured and returned alongside the outcome.
+        let seen = Mutex::new(Vec::new());
+        let script =
+            "workflow(\"triage\", \"fan out one fix per defect the scan found\")\nagent(\"x\")";
+        let run = {
+            let driver = recording_driver(&seen);
+            run_starlark(script, "demo", None, &driver).expect("run ok")
+        };
+        assert_eq!(run.meta.name, "triage");
+        assert_eq!(
+            run.meta.design_intent,
+            "fan out one fix per defect the scan found"
+        );
+        assert_eq!(run.meta.source, script);
+        assert_eq!(run.outcome.steps.len(), 1);
     }
 }

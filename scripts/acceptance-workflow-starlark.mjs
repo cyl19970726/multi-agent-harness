@@ -11,16 +11,17 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-// Acceptance for the Starlark workflow front-end (skill + CLI). Modeled on
-// scripts/acceptance-dynamic-workflow.mjs. In the default (mock/CI) mode it
-// builds the harness, authors a small imperative `.star` program (a serial
-// `phase`/`agent` chain plus a data-driven `parallel()` barrier), runs it
-// through `harness workflow run-script --dry-run` (mock delivery, no provider
-// tokens), and asserts a WorkflowRun + ordered WorkflowSteps were journaled
-// with the expected serial -> parallel shape, that the run snapshots the raw
-// script text as a starlark spec, and that the run/steps read back from the
-// durable store. `--live` swaps the dry-run for real provider delivery
-// (spends tokens).
+// Acceptance for the Starlark workflow front-end (skill + CLI) — the SOLE
+// dynamic authoring surface. In the default (mock/CI) mode it builds the
+// harness, authors a small imperative `.star` program (a mandatory
+// `workflow(name, design_intent)` header, then a serial `phase`/`agent` chain
+// plus a data-driven `parallel()` barrier), runs it through `harness workflow
+// run-script --dry-run` (mock delivery, no provider tokens), and asserts a
+// WorkflowRun + ordered WorkflowSteps were journaled with the expected serial ->
+// parallel shape, that the run snapshots the raw script text as a starlark spec
+// AND persists the declared design_intent, that a program WITHOUT a design_intent
+// is rejected fail-fast, and that the run/steps read back from the durable store.
+// `--live` swaps the dry-run for real provider delivery (spends tokens).
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const argv = process.argv.slice(2);
@@ -159,8 +160,14 @@ async function fetchWithRetry(url, attempts = 40) {
 // fans the audit out across BOTH providers via a list comprehension. Each
 // step carries an explicit `phase`/`label` so the journaled steps assert the
 // shape deterministically.
+const DESIGN_INTENT =
+  "Plan once, then fan the audit out across both providers in isolated worktrees, " +
+  "and finally synthesize — so independent audits cannot collide and the report sees all of them.";
+
 function authorScript() {
-  const script = `phase("plan")
+  const script = `workflow("starlark-acceptance", "${DESIGN_INTENT}")
+
+phase("plan")
 plan = agent("Plan an investigation of " + args["topic"], label = "planner")
 
 phase("audit")
@@ -193,6 +200,44 @@ agent(
     ],
   };
   return { scriptPath, script, runArgs };
+}
+
+// Author a program that OMITS the mandatory `workflow(name, design_intent)`
+// header — it must be rejected fail-fast before any run completes.
+function authorScriptWithoutDesignIntent() {
+  const script = `phase("plan")
+agent("Plan an investigation of the failing login path", label = "planner")
+`;
+  const scriptDir = join(store, "acceptance");
+  mkdirSync(scriptDir, { recursive: true });
+  const scriptPath = join(scriptDir, "no-intent.star");
+  writeFileSync(scriptPath, script);
+  return { scriptPath };
+}
+
+// Run a program that lacks a design_intent and assert the CLI rejects it with a
+// non-zero exit and an error mentioning design_intent.
+function assertRejectedWithoutDesignIntent(scriptPath) {
+  const result = spawnSync(
+    harness,
+    ["workflow", "run-script", scriptPath, "--dry-run"],
+    {
+      cwd: repoRoot,
+      env: { ...process.env, HARNESS_ROOT: store },
+      encoding: "utf8",
+      maxBuffer: 32 * 1024 * 1024,
+    },
+  );
+  assert(
+    result.status !== 0,
+    "run-script must reject a program without a design_intent",
+  );
+  const combined = `${result.stdout}${result.stderr}`;
+  assert(
+    /design_intent/.test(combined),
+    `rejection must mention design_intent, got: ${combined.trim()}`,
+  );
+  return { rejected: true };
 }
 
 // Initialize the store. Agent steps reference a PROVIDER directly and spin up a
@@ -234,6 +279,10 @@ function assertShape(result) {
     `wrong workflow name: ${run.workflow_name}`,
   );
   assert(run.status === "completed", `run not completed: ${run.status}`);
+  assert(
+    run.design_intent === DESIGN_INTENT,
+    `run.design_intent not carried through: ${run.design_intent}`,
+  );
   assert(
     run.args && run.args.topic === "the failing login path",
     "run.args parameterization not journaled",
@@ -309,6 +358,10 @@ function assertJournaled(runId, scriptText) {
     run.spec.script === scriptText,
     "journaled run must snapshot the raw script text",
   );
+  assert(
+    run.design_intent === DESIGN_INTENT,
+    "journaled run must persist the declared design_intent",
+  );
   const steps = snapshot.workflow_steps.filter(
     (item) => item.run_id === runId,
   );
@@ -374,10 +427,14 @@ stage("s4", "run has serial -> parallel -> serial shape + final_output", () => {
   shape = assertShape(runResult);
   return shape;
 });
-stage("s5", "WorkflowRun + steps journaled; script text snapshotted", () =>
+stage("s5", "WorkflowRun + steps journaled; script text + design_intent snapshotted", () =>
   assertJournaled(runResult.run.id, authored.script),
 );
-await stageAsync("s6", "starlark run visible over the live dashboard API", () =>
+stage("s6", "program WITHOUT a design_intent is rejected fail-fast", () => {
+  const { scriptPath } = authorScriptWithoutDesignIntent();
+  return assertRejectedWithoutDesignIntent(scriptPath);
+});
+await stageAsync("s7", "starlark run visible over the live dashboard API", () =>
   assertLiveApi(runResult.run.id),
 );
 

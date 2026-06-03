@@ -508,7 +508,7 @@ export interface WorkflowRun {
   created_at: string;
   ended_at?: string | null;
   summary?: string | null;
-  /** JSON parameterization the dynamic `run-spec` IR was authored with. */
+  /** JSON parameterization the dynamic `run-script` program was authored with. */
   args?: unknown;
   /** How many agent steps this run spawned (the per-run agent count). */
   agents_spawned?: number;
@@ -521,9 +521,16 @@ export interface WorkflowRun {
    */
   initiated_by?: string | null;
   /**
-   * The raw validated `WorkflowSpec` JSON-IR the dynamic `run-spec` path was
-   * authored with — the small durable audit record of the run shape.
+   * The mandatory `design_intent` a Starlark program declares via its
+   * `workflow(name, design_intent)` header — the WHY behind the run's shape.
    * `undefined` for registry runs / legacy rows.
+   */
+  design_intent?: string | null;
+  /**
+   * The authored source the dynamic `run-script` path was run with — the raw
+   * Starlark program text snapshotted as `{ lang: "starlark", script }`, the
+   * small durable audit record of the run shape. `undefined` for registry runs /
+   * legacy rows.
    */
   spec?: unknown;
   /**

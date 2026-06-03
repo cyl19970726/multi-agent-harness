@@ -359,6 +359,14 @@ export function WorkflowRunDetail({ model, onSelectionChange, apiUrl }: Workflow
                 "—"
               ),
             },
+            {
+              label: "Design intent",
+              value: run.design_intent ? (
+                <span className="text-[12px] text-foreground">{run.design_intent}</span>
+              ) : (
+                "—"
+              ),
+            },
             { label: "Trace", value: <TraceIndicator retention={run.trace_retention} /> },
             { label: "Started", value: <Timestamp value={run.created_at} /> },
             {
@@ -447,9 +455,10 @@ function TraceIndicator({ retention }: { retention?: string }) {
 }
 
 /**
- * Collapsible pretty-printed view of the run's authored `WorkflowSpec` JSON-IR.
- * Reuses the same fenced-code styling as the Rust source / Markdown code blocks
- * so the dynamic spec reads as the run's durable audit record.
+ * Collapsible pretty-printed view of the run's authored source — the Starlark
+ * program snapshotted as `{ lang: "starlark", script }`. Reuses the same
+ * fenced-code styling as the Rust source / Markdown code blocks so the dynamic
+ * spec reads as the run's durable audit record.
  */
 function SpecDisclosure({ spec }: { spec: unknown }) {
   const [open, setOpen] = useState(false);
@@ -469,7 +478,7 @@ function SpecDisclosure({ spec }: { spec: unknown }) {
       >
         {open ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />}
         <Code className="size-3" />
-        View spec · WorkflowSpec JSON-IR
+        View spec · Starlark source
       </button>
       {open && (
         <pre className="mt-1.5 max-h-96 overflow-auto whitespace-pre rounded-md border border-border bg-muted/30 p-2 font-mono text-[11px] text-foreground">

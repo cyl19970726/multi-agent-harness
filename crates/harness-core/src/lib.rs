@@ -1271,7 +1271,8 @@ pub struct WorkflowRun {
     #[serde(default)]
     pub summary: Option<String>,
     /// Optional JSON parameterization the run was authored with (the dynamic
-    /// `run-spec` IR carries a `WorkflowSpec.args`). `None` for registry runs.
+    /// `run-script` path carries the Starlark `args` global). `None` for registry
+    /// runs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub args: Option<serde_json::Value>,
     /// How many agent steps this run spawned (the per-run agent count). Defaults
@@ -1287,9 +1288,15 @@ pub struct WorkflowRun {
     /// predate the field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub initiated_by: Option<String>,
-    /// The raw validated `WorkflowSpec` JSON the dynamic `run-spec` path was
-    /// authored with — the small durable audit record of the run shape. `None`
-    /// for registry runs / legacy rows.
+    /// The mandatory `design_intent` a Starlark program declares via its
+    /// `workflow(name, design_intent)` header — the WHY behind the run's shape.
+    /// Every dynamic (`run-script`) run carries it; `None` for registry runs and
+    /// legacy rows that predate the field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub design_intent: Option<String>,
+    /// The authored source the dynamic path was run with — for `run-script` the
+    /// raw Starlark program text, snapshotted as the small durable audit record
+    /// of the run shape. `None` for registry runs / legacy rows.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spec: Option<serde_json::Value>,
     /// Retention policy for the heavy per-node provider turn-event trace:

@@ -1,4 +1,4 @@
 interface:
   display_name: "Author Workflow"
-  short_description: "Write a JSON WorkflowSpec and run it with harness workflow run-spec."
-  default_prompt: "Author a valid WorkflowSpec JSON-IR for the requested orchestration (each agent node names a provider: codex or claude, and parallel file-editing nodes use isolation: worktree), validate it against schemas/workflow-spec.schema.json, run it with `harness workflow run-spec <spec.json>`, then read the run back from the dashboard snapshot or store."
+  short_description: "Write a Starlark workflow program and run it with harness workflow run-script."
+  default_prompt: "Author a Starlark workflow program for the requested orchestration: declare a mandatory workflow(name, design_intent) header explaining WHY the shape is chosen, then call agent()/parallel()/phase()/log() (each leaf names a provider: codex or claude, and parallel file-editing slots use isolation=\"worktree\"). Run it with `harness workflow run-script <prog.star>`, then read the run back from the dashboard snapshot or store."
