@@ -4608,7 +4608,9 @@ fn workflow_gc_trace(
     for (index, run) in durable.iter().enumerate() {
         let too_many = index >= keep_runs;
         let too_old = keep_days
-            .map(|days| now_ms.saturating_sub(created_ms(&run.created_at)) > u128::from(days) * 86_400_000)
+            .map(|days| {
+                now_ms.saturating_sub(created_ms(&run.created_at)) > u128::from(days) * 86_400_000
+            })
             .unwrap_or(false);
         if !(too_many || too_old) {
             continue;
@@ -10438,12 +10440,24 @@ mod workflow_runtime_tests {
 
         // Recent run's heavy trace survives intact.
         assert!(recent.exists(), "recent NDJSON must remain");
-        assert!(read_session_turn_events(&store, "sess-wfrun-new").unwrap().retained);
+        assert!(
+            read_session_turn_events(&store, "sess-wfrun-new")
+                .unwrap()
+                .retained
+        );
 
         // Old runs: NDJSON deleted, endpoint reports not-retained, run flips to expired.
         assert!(!old1.exists() && !old2.exists(), "old NDJSON removed");
-        assert!(!read_session_turn_events(&store, "sess-wfrun-old1").unwrap().retained);
-        assert!(!read_session_turn_events(&store, "sess-wfrun-old2").unwrap().retained);
+        assert!(
+            !read_session_turn_events(&store, "sess-wfrun-old1")
+                .unwrap()
+                .retained
+        );
+        assert!(
+            !read_session_turn_events(&store, "sess-wfrun-old2")
+                .unwrap()
+                .retained
+        );
         let latest = latest_workflow_runs_in_append_order(&store).unwrap();
         let retention = |id: &str| {
             latest
@@ -10466,7 +10480,11 @@ mod workflow_runtime_tests {
         let out = workflow_gc_trace(&store, 1, None, true).expect("gc dry");
         assert_eq!(out.get("pruned_runs").and_then(|v| v.as_u64()), Some(1));
         assert!(old.exists(), "dry-run must not delete the NDJSON");
-        assert!(read_session_turn_events(&store, "sess-wfrun-old").unwrap().retained);
+        assert!(
+            read_session_turn_events(&store, "sess-wfrun-old")
+                .unwrap()
+                .retained
+        );
     }
 
     #[test]
