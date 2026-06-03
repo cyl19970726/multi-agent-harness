@@ -2,8 +2,59 @@
 
 A design study for a **Rust-native Dynamic Workflow runtime** in our harness,
 modeled on Claude Code (CC) Workflows, whose purpose is to **orchestrate
-multiple `codex` + `claude-code` agents** under deterministic control flow. This
-is a **design doc only** — no implementation beyond illustrative Rust snippets.
+multiple `codex` + `claude-code` agents** under deterministic control flow.
+Sections 1–8 are the **original design study** (illustrative Rust only); the
+**As-built** block immediately below records what actually shipped and is the
+source of truth where the two differ. The locked decisions live in
+[ADR 0022](../decisions/0022-dynamic-workflow-runtime-json-ir.md).
+
+## 0. As-built (shipped) — skill + CLI + JSON-IR
+
+The study recommended Hybrid **Option C** (§3): ship named compiled Rust
+workflows behind a registry first, defer the runtime-authored IR (Option B) to
+WP5. WP1–WP4 landed that registry runtime. Stages 1–5 of the implementation then
+**promoted the deferred Option-B IR into a shipped, runtime-authored path** so
+any agent can author a workflow shape at runtime. The as-built decisions
+(per [ADR 0022](../decisions/0022-dynamic-workflow-runtime-json-ir.md)):
+
+- **Trigger = skill + CLI, not MCP/plugin.** `harness workflow run-spec
+  <spec.json>` is the contract, alongside the registry `workflow run --name`. An
+  `author-workflow` skill (`.agents/skills/author-workflow/SKILL.md`) teaches an
+  agent to write a spec, invoke the CLI, and read the run back. No plugin, no new
+  transport; an MCP shim over the same CLI is an optional, unbuilt future.
+- **Dynamic spec = JSON-IR, not embedded JS.** A spec is a schema-validated JSON
+  document (`schemas/workflow-spec.schema.json`) →
+  `WorkflowSpec { name, args, nodes }` with
+  `WorkflowNode = Agent | Phase | Parallel | Pipeline`. `dispatch_spec()` walks
+  the IR; `{{key}}` placeholders interpolate from `args`. This is Option B (§3.B)
+  realized as **data, not foreign code** — the study's "no JS VM" decision (§1.1)
+  holds.
+- **Runtime extracted into `crates/harness-workflow`.** The scheduler,
+  `agent()`/`parallel()`/`pipeline()`, the IR, and `dispatch_spec()` moved out of
+  `harness-cli/src/workflow.rs` into a provider-agnostic lib crate behind the
+  injected `AgentStepFn` seam. `harness-cli` injects the real driver
+  (`workflow_real_agent_step` → `run_provider_delivery`), and the registry `run`
+  and dynamic `run-spec` paths share one `journal_workflow_outcome`.
+- **Additive object fields only** (per [0017](../decisions/0017-generic-object-model.md)):
+  `WorkflowRun.args` / `.agents_spawned` / `.final_output` and
+  `WorkflowStep.result`. `pipeline()` is **real streaming** (no barrier; a failed
+  stage drops the item and skips its rest), not a `parallel()` fallback.
+- **One surface for both paths.** The Dashboard Workflows surface + per-node
+  `TurnDrillIn` drill-in render a `run-spec` run identically to a registry run.
+- **Proof:** `scripts/acceptance-dynamic-workflow.mjs` authors a two-provider
+  serial → parallel → pipeline spec, runs it via `run-spec --dry-run`, and
+  asserts the journaled run/steps shape + `final_output` (also over the live
+  `/v1/snapshot`).
+
+What changed vs. the study below: owner-decision 3 ("design only", §1) is
+superseded — code shipped. Owner-decision 1 (no JS VM) and 2 (Workflow is an
+independent object, not yet `Task`/`Goal`-bound) **still hold**. WP5's "promote
+to an IR later" (§3 C, §7) is the path that was taken. The §3 Option A/B/C
+analysis is retained as the rationale for why the shipped IR is data-only.
+
+---
+
+The remaining sections are the original design study.
 
 Conceptual basis: the owner research report (settled mechanism, taxonomy,
 three-plane architecture, two-phase intent→workflow→execution model, evidence

@@ -1484,7 +1484,7 @@
       "lifecycle": "volatile",
       "canonicalFor": [
         "Rust-native Dynamic Workflow runtime design (no embedded JS interpreter)",
-        "the Rust-expression decision (compiled fn vs orchestration IR vs hybrid registry) and the hybrid recommendation",
+        "the Rust-expression decision (compiled fn vs orchestration IR vs hybrid registry) and the as-built JSON-IR promotion (section 0)",
         "CC-primitive-to-harness mapping (agent/parallel/pipeline/phase, journal/resume, concurrency cap) and the tokio-vs-std choice",
         "independent WorkflowDef/WorkflowRun/WorkflowStep object + run model not bound to Task/Goal",
         "multi-provider codex+claude fan-out-then-synthesize scenario and the sequenced WP plan"
@@ -1493,7 +1493,8 @@
         "docs/research/multica-architecture.md",
         "docs/decisions/0018-exec-stream-primary-substrate.md",
         "docs/decisions/0011-provider-neutral-runtime.md",
-        "docs/decisions/0017-generic-object-model.md"
+        "docs/decisions/0017-generic-object-model.md",
+        "docs/decisions/0022-dynamic-workflow-runtime-json-ir.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -1503,7 +1504,7 @@
       "lastVerifiedWith": [
         "npx pnpm@9.15.4 check"
       ],
-      "reorgTrigger": "The Rust-expression recommendation, the CC-primitive mapping, the Workflow object/run model, or the WP plan changes; or the runtime is implemented and a related ADR is accepted."
+      "reorgTrigger": "The Rust-expression recommendation, the CC-primitive mapping, the Workflow object/run model, or the WP plan changes; or the shipped skill+CLI / JSON-IR path diverges from ADR 0022."
     },
     {
       "path": "docs/research/agent-mention-and-doc-reference-design.md",

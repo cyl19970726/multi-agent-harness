@@ -9,7 +9,6 @@ import {
   ChevronRight,
   ClipboardList,
   Clock,
-  Crown,
   ExternalLink,
   FileCheck2,
   FileText,
@@ -74,8 +73,6 @@ import {
   TextInput,
 } from "@/components/workbench/OperatorForms";
 import {
-  gapSeverityTone,
-  gapStatusTone,
   goalTone,
   memberTone,
   reviewVerdictTone,
@@ -87,7 +84,6 @@ import {
 import {
   displayGoalStatus,
   formatDuration,
-  gapIsResolved,
   memberName,
   parseTs,
   taskTitle,
@@ -114,7 +110,6 @@ import type {
   AgentStats,
   DeliveryStatus,
   DocRegistryEntry,
-  Gap,
   Goal,
   GoalDesign,
   GoalEvaluation,
@@ -127,7 +122,7 @@ import type {
   Vision,
   WorkflowWarning,
 } from "../types";
-import type { AgentTab, SelectionState } from "../app/selection";
+import type { AgentTab, SelectionState, TaskTab } from "../app/selection";
 
 interface SurfaceProps {
   model: WorkbenchModel;
@@ -1654,7 +1649,9 @@ export function TaskDocument({
   onSelectionChange,
   actionsEnabled,
   onAction,
-}: SurfaceProps) {
+  taskTab,
+}: SurfaceProps & { taskTab?: TaskTab }) {
+  const tab: TaskTab = taskTab ?? "overview";
   const task = model.selectedTask;
   if (!task) {
     return (
@@ -1790,6 +1787,28 @@ export function TaskDocument({
         />
       </header>
 
+      <Tabs
+        value={tab}
+        onValueChange={(value) => onSelectionChange({ taskTab: value as TaskTab })}
+      >
+        <TabsList>
+          <TabsTrigger value="overview">Overview</TabsTrigger>
+          <TabsTrigger value="deps">
+            Dependencies
+            <TabCount value={dependsOn.length + blocks.length} />
+          </TabsTrigger>
+          <TabsTrigger value="proof">
+            Proof &amp; Decision
+            <TabCount value={reviews.length + evidence.length + proposals.length} />
+          </TabsTrigger>
+          <TabsTrigger value="activity">
+            Activity
+            <TabCount value={taskWarnings.length} tone="bad" />
+          </TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="overview" className="space-y-7">
+
       <DocSection label="Objective">
         <p className="text-[15px] leading-relaxed text-foreground/90">
           {task.objective ?? "No objective recorded."}
@@ -1820,6 +1839,10 @@ export function TaskDocument({
         </div>
       </DocSection>
 
+        </TabsContent>
+
+        <TabsContent value="deps" className="space-y-7">
+
       <DocSection label="Dependencies">
         <div className="grid gap-3 sm:grid-cols-2">
           <div>
@@ -1846,6 +1869,10 @@ export function TaskDocument({
           </div>
         </div>
       </DocSection>
+
+        </TabsContent>
+
+        <TabsContent value="proof" className="space-y-7">
 
       <DocSection label="Proof chain">
         <div className="space-y-3 rounded-lg border border-border bg-card p-4">
@@ -1944,6 +1971,10 @@ export function TaskDocument({
         </div>
       </DocSection>
 
+        </TabsContent>
+
+        <TabsContent value="activity" className="space-y-7">
+
       <DocSection label="Assignment & reports">
         <div className="rounded-lg border border-border bg-card">
           {messages.length ? (
@@ -1974,14 +2005,34 @@ export function TaskDocument({
       {taskWarnings.length > 0 && (
         <DocSection label="Warnings" action={<Badge tone="bad">{taskWarnings.length}</Badge>}>
           <div className="rounded-lg border border-border bg-card">
-            <WarningList
-              warnings={taskWarnings}
-              onSelect={() => onSelectionChange({ surface: "warnings" })}
-            />
+            <WarningList warnings={taskWarnings} onSelect={() => {}} />
           </div>
         </DocSection>
       )}
+
+        </TabsContent>
+      </Tabs>
     </DocumentSurface>
+  );
+}
+
+/**
+ * Subtle count chip riding inside a task tab trigger, so the operator can see
+ * which tab holds items (or warnings) without opening it. Renders nothing at 0.
+ */
+function TabCount({ value, tone }: { value: number; tone?: "bad" }) {
+  if (!value) return null;
+  return (
+    <span
+      className={cn(
+        "rounded px-1 text-[10px] font-semibold tabular-nums",
+        tone === "bad"
+          ? "bg-status-bad/15 text-status-bad"
+          : "bg-muted-foreground/15 text-muted-foreground",
+      )}
+    >
+      {value}
+    </span>
   );
 }
 
@@ -2112,148 +2163,6 @@ function ReviewList({ reviews }: { reviews: Review[] }) {
 function memberShort(id?: string | null): string {
   if (!id) return "unknown reviewer";
   return id.replace(/^agent-/, "");
-}
-
-/* ------------------------------------------------------------------ */
-/* Gap ledger                                                         */
-/* ------------------------------------------------------------------ */
-
-const gapSeverityGroups: { id: string; title: string }[] = [
-  { id: "p0", title: "P0 · critical" },
-  { id: "p1", title: "P1 · high" },
-  { id: "p2", title: "P2 · normal" },
-];
-
-/**
- * The Gap ledger (absorbs the bug ledger). Grouped by severity (p0→p2); within a
- * group, unresolved gaps sort above fixed/wontfix ones (readModel pre-sorts). A
- * Bug is rendered as a Gap with category="bug", with its repro/closing-test refs.
- */
-function GapLedger({
-  gapsBySeverity,
-  onSelect,
-}: {
-  gapsBySeverity: Map<string, Gap[]>;
-  onSelect: (gap: Gap) => void;
-}) {
-  const otherGroups = [...gapsBySeverity.keys()].filter(
-    (key) => !gapSeverityGroups.some((group) => group.id === key),
-  );
-  const groups = [
-    ...gapSeverityGroups,
-    ...otherGroups.map((id) => ({ id, title: id || "uncategorized" })),
-  ];
-  const total = [...gapsBySeverity.values()].reduce((sum, rows) => sum + rows.length, 0);
-
-  if (!total) {
-    return (
-      <EmptyState
-        icon={Wrench}
-        title="No gaps in the ledger"
-        description="Gaps and bugs (category=bug) recorded against this team's goals appear here, grouped by severity."
-      />
-    );
-  }
-
-  return (
-    <div className="grid gap-4 lg:grid-cols-3">
-      {groups.map((group) => {
-        const rows = gapsBySeverity.get(group.id) ?? [];
-        const openCount = rows.filter((gap) => !gapIsResolved(gap)).length;
-        return (
-          <Section
-            key={group.id}
-            title={group.title}
-            action={
-              <>
-                {openCount > 0 && (
-                  <Badge tone={gapSeverityTone(group.id)}>{openCount} open</Badge>
-                )}
-                <Badge tone="muted">{rows.length}</Badge>
-              </>
-            }
-            className="rise"
-          >
-            {rows.length ? (
-              <div className="divide-y divide-border/60">
-                {rows.map((gap) => (
-                  <GapRow key={gap.id} gap={gap} onSelect={() => onSelect(gap)} />
-                ))}
-              </div>
-            ) : (
-              <EmptyState title="None at this severity" />
-            )}
-          </Section>
-        );
-      })}
-    </div>
-  );
-}
-
-function GapRow({ gap, onSelect }: { gap: Gap; onSelect: () => void }) {
-  const isBug = (gap.category ?? "").toLowerCase() === "bug";
-  const resolved = gapIsResolved(gap);
-  const Icon = isBug ? Bug : Wrench;
-  return (
-    <button
-      type="button"
-      onClick={onSelect}
-      className={cn(
-        "flex w-full flex-col items-stretch gap-2 px-4 py-3 text-left transition-colors hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
-        resolved && "opacity-60",
-      )}
-    >
-      <div className="flex flex-wrap items-center gap-2">
-        <Icon
-          className={cn(
-            "size-4 shrink-0",
-            toneText[gapSeverityTone(gap.severity)],
-          )}
-          aria-hidden
-        />
-        <Badge tone={gapSeverityTone(gap.severity)}>{gap.severity ?? "?"}</Badge>
-        <Badge tone={gapStatusTone(gap.status)}>{gap.status ?? "open"}</Badge>
-        {gap.category && <Badge tone="muted">{gap.category}</Badge>}
-        {gap.owner_agent_id && (
-          <span className="ml-auto text-[11px] text-muted-foreground">
-            {memberShort(gap.owner_agent_id)}
-          </span>
-        )}
-      </div>
-      <p className="text-[13px] leading-relaxed text-foreground/90">
-        {gap.summary ?? gap.id}
-      </p>
-      {gap.next_step && (
-        <p className="text-xs text-muted-foreground">
-          <span className="font-semibold uppercase tracking-wide text-[10px]">Next</span>{" "}
-          {gap.next_step}
-        </p>
-      )}
-      {(gap.repro_ref || gap.closing_test_ref) && (
-        <div className="flex flex-wrap gap-1.5">
-          {gap.repro_ref && (
-            <Badge tone="muted">
-              repro <MonoId>{gap.repro_ref}</MonoId>
-            </Badge>
-          )}
-          {gap.closing_test_ref && (
-            <Badge tone="muted">
-              test <MonoId>{gap.closing_test_ref}</MonoId>
-            </Badge>
-          )}
-        </div>
-      )}
-      {Boolean(gap.evidence_ids?.length) && (
-        <div className="flex flex-wrap gap-1.5">
-          {gap.evidence_ids!.map((id) => (
-            <Badge key={id} tone="muted">
-              <MonoId>{id}</MonoId>
-            </Badge>
-          ))}
-        </div>
-      )}
-    </button>
-  );
 }
 
 /* ------------------------------------------------------------------ */
@@ -3429,6 +3338,7 @@ export function TurnDrillIn({
   apiUrl,
   defaultOpen = false,
   liveEvents,
+  historical = false,
 }: {
   session: ProviderSession;
   apiUrl?: string;
@@ -3436,19 +3346,36 @@ export function TurnDrillIn({
   /** SSE-pushed events for this session (Stage B); preferred over the poll when
    * it is further ahead, giving sub-second streaming. */
   liveEvents?: RawTurnEvent[];
+  /**
+   * Backfill a COMPLETED run's trace from the durable per-session NDJSON via
+   * `GET /v1/sessions/{id}/events` (two-tier persistence read side) instead of
+   * the live `provider-sessions/{id}/events` tee. When the run was `--trace
+   * live`, that endpoint reports `retained: false`, and we render an explicit
+   * "trace not retained" state rather than an empty/loading turn. The live path
+   * (running session + `liveEvents`) is unaffected.
+   */
+  historical?: boolean;
 }) {
   const [open, setOpen] = useState(defaultOpen);
   const [events, setEvents] = useState<RawTurnEvent[] | null>(null);
   const [truncated, setTruncated] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // `null` until the historical endpoint answers; `false` marks a `--trace
+  // live` run whose trace was pruned ("trace not retained"). Always `true` on
+  // the live path, which never consults the historical endpoint.
+  const [retained, setRetained] = useState<boolean | null>(null);
   const inFlight = useRef(false);
   const running = session.status === "running";
+  // Backfill the persisted trace only for a completed run; a running turn still
+  // streams over the live tee + SSE buffer.
+  const useHistorical = historical && !running;
   const duration = formatDuration(session.started_at, session.ended_at);
   // Show whichever source is further along: the SSE live buffer (sub-second) or
   // the polled/fetched events (durable catch-up). On terminal the final fetch
   // reconciles, so `events` wins once complete.
   const display =
     liveEvents && liveEvents.length > (events?.length ?? 0) ? liveEvents : events;
+  const notRetained = useHistorical && retained === false;
 
   useEffect(() => {
     if (!open || !apiUrl) return;
@@ -3458,12 +3385,20 @@ export function TurnDrillIn({
       if (inFlight.current) return;
       inFlight.current = true;
       try {
-        const res = await fetch(
-          `${base}/v1/provider-sessions/${encodeURIComponent(session.id)}/events`,
-        );
+        const url = useHistorical
+          ? `${base}/v1/sessions/${encodeURIComponent(session.id)}/events`
+          : `${base}/v1/provider-sessions/${encodeURIComponent(session.id)}/events`;
+        const res = await fetch(url);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data = (await res.json()) as { events?: RawTurnEvent[]; truncated?: boolean };
+        const data = (await res.json()) as {
+          events?: RawTurnEvent[];
+          truncated?: boolean;
+          retained?: boolean;
+        };
         if (!cancelled) {
+          // The historical endpoint reports retention; the live tee always has
+          // its (possibly empty) events, so treat it as retained.
+          setRetained(useHistorical ? data.retained ?? false : true);
           setEvents(data.events ?? []);
           setTruncated(Boolean(data.truncated));
           setError(null);
@@ -3476,13 +3411,22 @@ export function TurnDrillIn({
     };
     void fetchEvents();
     // Poll only while the turn is running; a terminal status stops the loop.
-    if (!running) return () => { cancelled = true; };
+    // Reset the in-flight guard on teardown: under React StrictMode the effect
+    // mounts → cleans up → remounts, and a ref left `true` from the first
+    // (cancelled) fetch would make the remount's fetch early-return forever,
+    // leaving a `defaultOpen` drawer stuck on "loading…".
+    if (!running)
+      return () => {
+        cancelled = true;
+        inFlight.current = false;
+      };
     const id = window.setInterval(() => void fetchEvents(), 1000);
     return () => {
       cancelled = true;
+      inFlight.current = false;
       window.clearInterval(id);
     };
-  }, [open, apiUrl, session.id, running]);
+  }, [open, apiUrl, session.id, running, useHistorical]);
 
   return (
     <span className="inline-flex w-full min-w-0 flex-col">
@@ -3502,13 +3446,26 @@ export function TurnDrillIn({
         )}
         <span>{session.provider ?? "turn"}</span>
         {duration ? <span>· {duration}</span> : null}
-        {display ? <span>· {display.length} events</span> : null}
-        {!running && <span>· turn</span>}
+        {notRetained ? (
+          <span>· trace not retained</span>
+        ) : display ? (
+          <span>· {display.length} events</span>
+        ) : null}
+        {!running && !notRetained && <span>· turn</span>}
       </button>
       {open && (
         <div className="mt-1 max-h-96 w-full overflow-y-auto rounded-md border border-border bg-muted/30 p-2 text-left">
           {error && !display?.length && <span className="text-[11px] text-status-bad">{error}</span>}
-          {display === null ? (
+          {notRetained ? (
+            // A `--trace live` run streamed this turn over SSE during execution
+            // but retained nothing, so there is no historical trace to backfill.
+            <span className="text-[11px] text-muted-foreground">
+              trace not retained{" "}
+              <span className="text-muted-foreground/70">
+                (run with --trace durable to keep it)
+              </span>
+            </span>
+          ) : display === null ? (
             <span className="text-[11px] text-muted-foreground">loading…</span>
           ) : display.length === 0 ? (
             <span className="text-[11px] text-muted-foreground">
@@ -3632,19 +3589,36 @@ function TurnResultFooter({ event }: { event: RawTurnEvent }) {
 function TurnTui({ events }: { events: RawTurnEvent[] }) {
   const toolNames = new Map<string, string>();
   const rows: ReactNode[] = [];
+  // Codex emits `item.started` then `item.completed` for the SAME `item.id`
+  // (in_progress → completed), and wraps tool work in `item` envelopes rather
+  // than claude's assistant/user blocks. Collapse codex items by id (final
+  // state wins) and preserve first-seen order, so a command/file_change renders
+  // ONCE in its terminal state — then map each to the same row vocabulary the
+  // claude path uses (⏺ tool_use, ⎿ tool_result, ✻ thinking, assistant text).
+  const codexItems = new Map<string, Record<string, unknown>>();
+  type Unit =
+    | { kind: "codexItem"; id: string }
+    | { kind: "event"; event: RawTurnEvent; i: number };
+  const order: Unit[] = [];
   events.forEach((event, i) => {
     const type = typeof event.type === "string" ? event.type : "";
     const item = event.item as Record<string, unknown> | undefined;
-    if (item && typeof item.type === "string") {
-      const body =
-        typeof item.text === "string"
-          ? item.text
-          : typeof item.command === "string"
-            ? item.command
-            : compactJson(item);
-      rows.push(<TuiRow key={i} glyph="•" label={item.type as string} body={body} mono />);
+    if (item && typeof item.type === "string" && typeof item.id === "string") {
+      if (!codexItems.has(item.id)) order.push({ kind: "codexItem", id: item.id });
+      codexItems.set(item.id, item); // a later (completed) state overwrites in_progress
       return;
     }
+    // Codex turn lifecycle markers carry no operator-facing content.
+    if (type === "thread.started" || type === "turn.started") return;
+    order.push({ kind: "event", event, i });
+  });
+  for (const unit of order) {
+    if (unit.kind === "codexItem") {
+      renderCodexItem(codexItems.get(unit.id)!, unit.id, rows);
+      continue;
+    }
+    const { event, i } = unit;
+    const type = typeof event.type === "string" ? event.type : "";
     switch (type) {
       case "system": {
         const bits = [
@@ -3708,11 +3682,111 @@ function TurnTui({ events }: { events: RawTurnEvent[] }) {
       case "rate_limit_event":
         rows.push(<TuiRow key={i} muted label="rate_limit" body={compactJson(event.rate_limit_info)} />);
         break;
+      case "turn.completed": {
+        const usage = event.usage as Record<string, unknown> | undefined;
+        const out = usage && typeof usage.output_tokens === "number" ? usage.output_tokens : undefined;
+        rows.push(
+          <TuiRow
+            key={i}
+            dim
+            label="turn complete"
+            body={out !== undefined ? `${out} output · ${String(usage?.input_tokens ?? "?")} input tokens` : ""}
+          />,
+        );
+        break;
+      }
       default:
         rows.push(<TuiRow key={i} dim label={type || "event"} body={compactJson(event)} />);
     }
-  });
+  }
   return <div className="space-y-0.5">{rows}</div>;
+}
+
+/**
+ * Render a collapsed codex `item` (final state) into the same TUI row vocabulary
+ * the claude path uses, so the drill-in reads identically across providers:
+ * agent_message → assistant text, reasoning → ✻ thinking, command_execution →
+ * ⏺ Bash + ⎿ output, file_change → ⏺ Write/Edit/Delete <path>.
+ */
+function renderCodexItem(
+  item: Record<string, unknown>,
+  id: string,
+  rows: ReactNode[],
+): void {
+  const type = typeof item.type === "string" ? item.type : "item";
+  if (type === "agent_message") {
+    const text = typeof item.text === "string" ? item.text : "";
+    if (text.trim()) {
+      rows.push(
+        <div key={id} className="py-1 text-[12px] text-foreground/90">
+          <Markdown source={text} />
+        </div>,
+      );
+    }
+    return;
+  }
+  if (type === "reasoning") {
+    const text = typeof item.text === "string" ? item.text : "";
+    rows.push(
+      <TuiRow
+        key={id}
+        glyph="✻"
+        muted
+        label="thinking"
+        body={text ? (text.length > 200 ? `${text.slice(0, 200)}…` : text) : "(reasoning)"}
+      />,
+    );
+    return;
+  }
+  if (type === "command_execution") {
+    const cmd = typeof item.command === "string" ? item.command : "";
+    rows.push(<TuiRow key={`${id}-c`} glyph="⏺" tone="info" label="Bash" body={cmd} mono />);
+    const out = typeof item.aggregated_output === "string" ? item.aggregated_output : "";
+    const exit = item.exit_code;
+    const failed = typeof exit === "number" && exit !== 0;
+    if (out.trim() || failed) {
+      rows.push(
+        <TuiRow
+          key={`${id}-r`}
+          glyph="⎿"
+          indent
+          tone={failed ? "bad" : undefined}
+          body={out.trim() ? (out.length > 600 ? `${out.slice(0, 600)}…` : out) : `exit ${String(exit)}`}
+          mono
+        />,
+      );
+    }
+    return;
+  }
+  if (type === "file_change") {
+    const changes = Array.isArray(item.changes) ? (item.changes as Record<string, unknown>[]) : [];
+    const verb = (k: unknown) => (k === "add" ? "Write" : k === "delete" ? "Delete" : "Edit");
+    if (changes.length === 0) {
+      rows.push(<TuiRow key={id} glyph="⏺" tone="info" label="file_change" body={compactJson(item)} mono />);
+      return;
+    }
+    changes.forEach((c, ci) =>
+      rows.push(
+        <TuiRow
+          key={`${id}-${ci}`}
+          glyph="⏺"
+          tone="info"
+          label={verb(c?.kind)}
+          body={typeof c?.path === "string" ? (c.path as string) : compactJson(c)}
+          mono
+        />,
+      ),
+    );
+    return;
+  }
+  // mcp_tool_call / web_search / anything else — compact one-liner.
+  const body =
+    typeof item.text === "string"
+      ? item.text
+      : typeof item.command === "string"
+        ? item.command
+        : compactJson(item);
+  rows.push(<TuiRow key={id} glyph="•" label={type} body={body} mono />);
 }
 
 /** A short single-line JSON preview, capped so a big payload cannot flood. */
@@ -4328,119 +4402,6 @@ export function DecisionCenter({ model, onSelectionChange }: SurfaceProps) {
         action={<Badge tone={model.decisionQueue.length ? "decision" : "good"}>{model.decisionQueue.length}</Badge>}
         className="rise"
       >
-        <QueueList
-          items={model.decisionQueue}
-          empty="No pending decisions"
-          onSelect={(ref) => ref && onSelectionChange({ taskId: ref, surface: "task" })}
-        />
-      </Section>
-    </div>
-  );
-}
-
-/* ------------------------------------------------------------------ */
-/* Warnings & repair                                                  */
-/* ------------------------------------------------------------------ */
-
-export function WarningsRepair({ model, onSelectionChange }: SurfaceProps) {
-  const groups: { id: WorkflowWarning["severity"]; title: string }[] = [
-    { id: "high", title: "High" },
-    { id: "medium", title: "Medium" },
-    { id: "low", title: "Low" },
-  ];
-  const openGapCount = model.gaps.filter((gap) => !gapIsResolved(gap)).length;
-  return (
-    <div className="space-y-5">
-      <SurfaceHeader
-        kicker="Repair"
-        title="Warnings"
-        description="Broken workflow invariants grouped by severity, the Gap/bug ledger, and the decision queue waiting on operator action. Each row links to the object it affects."
-        actions={
-          <>
-            <Badge tone={model.warnings.length ? "bad" : "good"}>
-              {model.warnings.length} warnings
-            </Badge>
-            <Badge tone={openGapCount ? "warn" : "good"}>{openGapCount} open gaps</Badge>
-            <Badge tone={model.decisionQueue.length ? "decision" : "good"}>
-              {model.decisionQueue.length} decisions
-            </Badge>
-          </>
-        }
-      />
-      <div className="grid gap-4 lg:grid-cols-3">
-        {groups.map((group) => {
-          const items = model.warnings.filter((warning) => warning.severity === group.id);
-          return (
-            <Section
-              key={group.id}
-              title={group.title}
-              action={<Badge tone={severityTone(group.id)}>{items.length}</Badge>}
-              className="rise"
-            >
-              <WarningList
-                warnings={items}
-                onSelect={(warning) =>
-                  onSelectionChange(
-                    warning.taskId
-                      ? { taskId: warning.taskId, surface: "task" }
-                      : { surface: "warnings" },
-                  )
-                }
-              />
-            </Section>
-          );
-        })}
-      </div>
-
-      <div className="space-y-2">
-        <div className="flex items-center justify-between gap-2 px-0.5">
-          <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-            Gap · bug ledger
-          </p>
-          <Badge tone={openGapCount ? "warn" : "good"}>
-            {openGapCount} open / {model.gaps.length} total
-          </Badge>
-        </div>
-        <GapLedger
-          gapsBySeverity={model.gapsBySeverity}
-          onSelect={(gap) =>
-            onSelectionChange(
-              gap.task_id
-                ? { taskId: gap.task_id, surface: "task" }
-                : gap.goal_id
-                  ? { goalId: gap.goal_id, surface: "goal" }
-                  : { surface: "warnings" },
-            )
-          }
-        />
-      </div>
-
-      <Section
-        kicker="Reviews · waivers · missing proof"
-        title="Decision queue"
-        action={
-          <Badge tone={model.decisionQueue.length ? "decision" : "good"}>
-            {model.decisionQueue.length}
-          </Badge>
-        }
-        className="rise"
-      >
-        {model.leadMemberId && model.leadDecisionQueue.length > 0 && (
-          <div className="border-b border-border bg-card/40">
-            <div className="flex items-center gap-1.5 px-3.5 pt-2.5 pb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-              <Crown className="size-3 text-primary" />
-              Awaiting Lead decision
-              <span className="ml-auto font-mono normal-case text-muted-foreground/70">
-                {memberName(model.members, model.leadMemberId)}
-              </span>
-            </div>
-            <QueueList
-              items={model.leadDecisionQueue}
-              empty="Nothing awaiting the Lead"
-              onSelect={(ref) => ref && onSelectionChange({ taskId: ref, surface: "task" })}
-            />
-          </div>
-        )}
         <QueueList
           items={model.decisionQueue}
           empty="No pending decisions"

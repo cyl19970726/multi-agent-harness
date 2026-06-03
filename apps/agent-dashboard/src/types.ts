@@ -508,12 +508,56 @@ export interface WorkflowRun {
   created_at: string;
   ended_at?: string | null;
   summary?: string | null;
+  /** JSON parameterization the dynamic `run-spec` IR was authored with. */
+  args?: unknown;
+  /** How many agent steps this run spawned (the per-run agent count). */
+  agents_spawned?: number;
+  /** Collected structured output of the run (one entry per step). */
+  final_output?: unknown;
+  /**
+   * Who initiated this run — an agent member id (a Codex / Claude member) or
+   * "operator" for a human-triggered CLI run. `undefined` for legacy rows that
+   * predate the field.
+   */
+  initiated_by?: string | null;
+  /**
+   * The raw validated `WorkflowSpec` JSON-IR the dynamic `run-spec` path was
+   * authored with — the small durable audit record of the run shape.
+   * `undefined` for registry runs / legacy rows.
+   */
+  spec?: unknown;
+  /**
+   * Retention policy for the heavy per-node provider turn-event trace:
+   * "durable" (default) persists the trace so a completed run can be drilled
+   * into; "live" streams it over SSE during execution but does not retain it.
+   * Live streaming is independent of this and always happens.
+   */
+  trace_retention?: "durable" | "live" | string;
+}
+
+/**
+ * Structured result payload carried on a {@link WorkflowStep}. Mirrors the
+ * harness-workflow `step_result_json` shape. The step's actor is a PROVIDER that
+ * ran in a NEW one-shot ephemeral worker (codex/claude), not a pre-existing
+ * member; `isolation` is set when the node opted into a throwaway git worktree.
+ */
+export interface WorkflowStepResult {
+  phase?: string;
+  label?: string;
+  /** The provider that ran this step ("codex" | "claude"). */
+  provider?: string;
+  /** Per-node isolation mode this step ran under, if any ("worktree"). */
+  isolation?: string | null;
+  ok?: boolean;
+  provider_session_id?: string | null;
+  output_summary?: string;
 }
 
 /**
  * One agent step inside a {@link WorkflowRun}. Mirrors harness-core
  * `WorkflowStep` (lib.rs:1279-1292) verbatim, snake_case. There is NO
- * `member_id`; "who ran it" resolves via `provider_session_id`.
+ * `member_id`; the step actor is a PROVIDER carried in `result.provider`, and
+ * the live turn drill-in resolves via `provider_session_id`.
  */
 export interface WorkflowStep {
   id: string;
@@ -523,6 +567,8 @@ export interface WorkflowStep {
   provider_session_id?: string | null;
   status: WorkflowStepStatus | string;
   output_summary?: string | null;
+  /** Structured result for this step, beyond the human-facing summary. */
+  result?: WorkflowStepResult | null;
   started_at: string;
   ended_at?: string | null;
 }

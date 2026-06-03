@@ -6,13 +6,17 @@ export type SurfaceId =
   | "tasks"
   | "workflows"
   | "docs"
-  | "warnings"
   | "debug";
 
 /** Tabs on the agent detail page. "conversation" is the default. */
 export type AgentTab = "conversation" | "tasks" | "config";
 
 const agentTabs: AgentTab[] = ["conversation", "tasks", "config"];
+
+/** Tabs on the task document. "overview" is the default. */
+export type TaskTab = "overview" | "deps" | "proof" | "activity";
+
+const taskTabs: TaskTab[] = ["overview", "deps", "proof", "activity"];
 
 export interface SelectionState {
   surface: SurfaceId;
@@ -33,6 +37,8 @@ export interface SelectionState {
    * (e.g. "docs/prd.md"); setting it implies the docs surface.
    */
   docPath?: string;
+  /** Which tab is open on the task document; defaults to "overview". */
+  taskTab?: TaskTab;
   /** The selected workflow run id (opens WorkflowRunDetail on the workflows surface). */
   workflowRunId?: string;
   mode?: "kanban" | "graph" | "split";
@@ -56,7 +62,6 @@ const surfaceIds: SurfaceId[] = [
   "tasks",
   "workflows",
   "docs",
-  "warnings",
   "debug",
 ];
 
@@ -105,6 +110,10 @@ export function selectionFromLocation(base: SelectionState): SelectionState {
     next.docPath = doc;
     if (!surface) next.surface = "docs";
   }
+  const taskTab = params.get("taskTab");
+  if (taskTab && (taskTabs as string[]).includes(taskTab)) {
+    next.taskTab = taskTab as TaskTab;
+  }
   // Canonical run address: ?workflowRun=<id>; setting it implies the workflows
   // surface (mirror of the ?agent= rule above).
   const workflowRun = params.get("workflowRun");
@@ -140,6 +149,10 @@ export function syncSelectionToLocation(selection: SelectionState): void {
   if (selection.goalId) params.set("goal", selection.goalId);
   if (selection.taskId) params.set("task", selection.taskId);
   if (selection.docPath) params.set("doc", selection.docPath);
+  // Only persist a non-default task tab, and only when a task is open.
+  if (selection.taskId && selection.taskTab && selection.taskTab !== "overview") {
+    params.set("taskTab", selection.taskTab);
+  }
   if (selection.workflowRunId) params.set("workflowRun", selection.workflowRunId);
   if (selection.boardScope === "goals") params.set("board", "goals");
   if (selection.boardGoal) params.set("boardGoal", selection.boardGoal);

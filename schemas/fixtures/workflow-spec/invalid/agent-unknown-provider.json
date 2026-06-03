@@ -1,0 +1,10 @@
+{
+  "name": "bad-provider",
+  "nodes": [
+    {
+      "type": "agent",
+      "provider": "gemini",
+      "prompt": "Audit the code."
+    }
+  ]
+}
