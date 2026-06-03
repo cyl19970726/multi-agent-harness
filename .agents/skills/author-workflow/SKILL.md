@@ -7,11 +7,22 @@ description: "Use when an agent needs to author a dynamic multi-agent workflow a
 
 Use this skill to make a shell-capable agent (Codex, Claude Code, or any other)
 author a workflow shape at runtime and run it through the harness, with no MCP or
-plugin. The capability is a JSON spec plus one CLI command:
+plugin. There are two authoring front-ends over the SAME runtime; both journal an
+identical `WorkflowRun` + one `WorkflowStep` per agent leaf:
 
 ```text
-write WorkflowSpec JSON  ->  harness workflow run-spec <spec.json>  ->  read the run back
+write WorkflowSpec JSON  ->  harness workflow run-spec   <spec.json>  ->  read the run back
+write a .star program    ->  harness workflow run-script <prog.star>  ->  read the run back
 ```
+
+Pick the front-end by how much CONTROL FLOW the orchestration needs:
+
+- **JSON IR (`run-spec`)** — a declarative spec: a fixed tree of
+  `agent`/`phase`/`parallel`/`pipeline` nodes. Use it when the shape is known up
+  front. Documented below.
+- **Starlark program (`run-script`)** — a real PROGRAM with loops, conditionals,
+  and data-driven fan-out, where one step's output decides the next. Use it when
+  the shape depends on runtime values. See [Starlark Program Front-End](#starlark-program-front-end).
 
 The runtime is provider-agnostic (`crates/harness-workflow`). Each `agent` node
 names a PROVIDER (`"codex"` or `"claude"`); the CLI spins up a NEW one-shot
@@ -197,6 +208,74 @@ Confirm: a `WorkflowRun` with your `name`, status moving `running -> succeeded`
 `label`, `phase`, `provider`, and result. The same run renders on the Agent
 Dashboard Workflows surface.
 
+## Starlark Program Front-End
+
+When the orchestration is not a fixed tree — you need to iterate over a list, branch
+on a step's output, or fan out one slot per data item — author a Starlark PROGRAM
+instead of the JSON IR and run it with:
+
+```bash
+harness workflow run-script ./prog.star [--name <n>] [--args <json>]
+```
+
+The interpreter is [Starlark](https://github.com/facebook/starlark-rust)
+([`crates/harness-workflow/src/starlark_front.rs`](../../../crates/harness-workflow/src/starlark_front.rs)),
+the same dialect Bazel uses. It is HERMETIC by design: the script has no clock, no
+randomness, and no IO. The orchestration (which agents run, in what order, with what
+prompts) is therefore deterministic — the ONLY nondeterminism lives in the journaled
+`agent()` leaves, exactly like the JSON IR. The run records the same
+`WorkflowRun` + one `WorkflowStep` per agent call as `run-spec`, and the raw script
+text is snapshotted onto the run for reproducibility.
+
+### Host API
+
+A program calls these globals (no `import`; they are pre-bound):
+
+| Call | Returns | Meaning |
+| --- | --- | --- |
+| `agent(prompt, provider="codex", label=, phase=, model=, isolation=)` | output text | Run ONE ephemeral worker synchronously. `prompt` is positional; the rest are keyword args. `isolation="worktree"` runs it in a throwaway worktree. Capture the return to chain: `scan = agent("...")`. |
+| `parallel([dict, ...])` | list of output strings (input order) | Barrier fan-out: run every spec concurrently, block until ALL finish. Each dict needs a `prompt` and may set `provider` (default `"codex"`), `label`, `phase`, `model`, `isolation`. |
+| `phase(name)` | — | Set the default phase for the steps that follow. |
+| `log(message)` | — | Emit a progress line. |
+| `args` | value | The `--args` JSON, injected as a module global (e.g. `args["items"]`). |
+
+`agent()` and `parallel()` accept the same fields as a JSON `agent` node and obey the
+same rules: `provider` is `"codex"` or `"claude"`, the only `isolation` value is
+`"worktree"`, and parallel slots that EDIT files should set `isolation="worktree"`
+so they cannot collide (same guidance as the JSON IR above).
+
+### Worked Example: data-driven parallel fan-out
+
+The same scan-then-parallel-fix shape, but the fix slots are derived from the scan's
+output at runtime — impossible to express as a static JSON tree:
+
+```python
+phase("scan")
+defects = agent(
+    "Scan " + args["area"] + " for defects. Return one defect per line.",
+    label="scan",
+)
+
+phase("fix")
+specs = []
+for line in defects.splitlines():
+    if line.strip():
+        specs.append({
+            "prompt": "Fix this defect in " + args["area"] + ": " + line,
+            "isolation": "worktree",
+        })
+parallel(specs)
+```
+
+Run it with `harness workflow run-script ./fix.star --args '{"area":"checkout flow"}'`.
+The serial `agent()` lands on the shared cwd; each `parallel` slot fans out into its
+own worktree and the call blocks at the barrier until every fix finishes.
+
+The same flags as `run-spec` apply (`--dry-run`, `--start-runtime`, `--timeout-ms`),
+plus `--name` (defaults to the file stem) and `--args <json>` (injected as the `args`
+global). Read the run back exactly as below — the snapshot does not distinguish which
+front-end produced it.
+
 ## Permission Note
 
 The agent that runs the spec invokes the `harness` binary through its shell, so
@@ -214,10 +293,11 @@ its permission profile must allow it:
 
 ## Checklist
 
-- [ ] Spec has `name` + `nodes`; every node is a valid `agent`/`phase`/`parallel`/`pipeline`.
-- [ ] Every `agent` node has a `provider` of `"codex"` or `"claude"`.
-- [ ] Parallel nodes that EDIT files use `isolation: "worktree"`.
-- [ ] Spec validates against `schemas/workflow-spec.schema.json`.
-- [ ] `harness workflow run-spec <spec.json>` ran (no member binding needed).
+- [ ] Picked the front-end by control-flow need: static tree -> JSON IR; loops / branching / data-driven fan-out -> Starlark.
+- [ ] JSON: spec has `name` + `nodes`; every node is a valid `agent`/`phase`/`parallel`/`pipeline`; it validates against `schemas/workflow-spec.schema.json`.
+- [ ] Starlark: program calls only `agent`/`parallel`/`phase`/`log`/`args`; no clock/random/IO assumed.
+- [ ] Every agent leaf (node or `agent()`/`parallel` spec) has a `provider` of `"codex"` or `"claude"`.
+- [ ] Parallel slots that EDIT files use `isolation` `"worktree"`.
+- [ ] Ran it: `harness workflow run-spec <spec.json>` or `harness workflow run-script <prog.star>` (no member binding needed).
 - [ ] The run is visible in `harness dashboard snapshot` (`workflow_runs` / `workflow_steps`).
-- [ ] The runner's profile allows the `harness` binary and what each node's prompt does.
+- [ ] The runner's profile allows the `harness` binary and what each leaf's prompt does.

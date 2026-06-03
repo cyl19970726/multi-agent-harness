@@ -3884,14 +3884,27 @@ impl WorktreeGuard {
         // Defensive: a stale dir from a crashed prior run would make `add` fail.
         if path.exists() {
             let _ = Command::new("git")
-                .args(["-C", &repo_root.display().to_string(), "worktree", "remove", "--force"])
+                .args([
+                    "-C",
+                    &repo_root.display().to_string(),
+                    "worktree",
+                    "remove",
+                    "--force",
+                ])
                 .arg(&path)
                 .output();
             let _ = fs::remove_dir_all(&path);
         }
 
         let output = Command::new("git")
-            .args(["-C", &repo_root.display().to_string(), "worktree", "add", "-B", &branch])
+            .args([
+                "-C",
+                &repo_root.display().to_string(),
+                "worktree",
+                "add",
+                "-B",
+                &branch,
+            ])
             .arg(&path)
             .arg("HEAD")
             .output()?;
@@ -4111,8 +4124,13 @@ fn spawn_codex_ephemeral(
     }
     cmd.arg(&spec.prompt);
 
-    let (process_success, events, stderr_log) =
-        run_ndjson_child(cmd, session_dir, session_id, "codex.stream-json.ndjson", timeout_ms)?;
+    let (process_success, events, stderr_log) = run_ndjson_child(
+        cmd,
+        session_dir,
+        session_id,
+        "codex.stream-json.ndjson",
+        timeout_ms,
+    )?;
     let codex_events: Vec<CodexExecEvent> = events
         .iter()
         .filter_map(|v| serde_json::to_string(v).ok())
@@ -4164,8 +4182,13 @@ fn spawn_claude_ephemeral(
         cmd.arg("--model").arg(model);
     }
 
-    let (process_success, events, stderr_log) =
-        run_ndjson_child(cmd, session_dir, session_id, "claude.stream-json.ndjson", timeout_ms)?;
+    let (process_success, events, stderr_log) = run_ndjson_child(
+        cmd,
+        session_dir,
+        session_id,
+        "claude.stream-json.ndjson",
+        timeout_ms,
+    )?;
     let claude_events: Vec<ClaudeStreamEvent> = events
         .iter()
         .filter_map(|v| serde_json::to_string(v).ok())
@@ -4229,7 +4252,13 @@ fn run_ndjson_child(
         .map(BufWriter::new);
     let mut shared_writer = shared_path
         .as_ref()
-        .and_then(|path| fs::OpenOptions::new().create(true).append(true).open(path).ok())
+        .and_then(|path| {
+            fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .ok()
+        })
         .map(BufWriter::new);
 
     let mut events = Vec::new();
@@ -4419,7 +4448,10 @@ fn ingest_ephemeral_events(
         command: spec.provider.clone(),
         args: Vec::new(),
         prompt_ref: None,
-        prompt_summary: Some(format!("ephemeral {} worker: {}", spec.provider, spec.label)),
+        prompt_summary: Some(format!(
+            "ephemeral {} worker: {}",
+            spec.provider, spec.label
+        )),
         provider_session_ref: None,
         stdout_ref: jsonl_ref.clone(),
         jsonl_ref,
@@ -4510,10 +4542,9 @@ fn workflow_gc_worktrees(store: &HarnessStore) -> CliResult<serde_json::Value> {
                 continue;
             }
             // Compare against the canonicalized registered set when possible.
-            let is_registered = registered.iter().any(|reg| {
-                reg == &path
-                    || reg.canonicalize().ok() == path.canonicalize().ok()
-            });
+            let is_registered = registered
+                .iter()
+                .any(|reg| reg == &path || reg.canonicalize().ok() == path.canonicalize().ok());
             if is_registered {
                 continue;
             }
@@ -4540,7 +4571,7 @@ fn workflow_gc_worktrees(store: &HarnessStore) -> CliResult<serde_json::Value> {
 }
 
 fn workflow_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    require_subcommand(args, "workflow run|run-spec|list|gc-worktrees")?;
+    require_subcommand(args, "workflow run|run-spec|run-script|list|gc-worktrees")?;
     match args[0].as_str() {
         "gc-worktrees" => {
             let result = workflow_gc_worktrees(store)?;
@@ -4562,6 +4593,10 @@ fn workflow_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
         }
         "run-spec" => {
             let result = workflow_run_spec_value(store, &args[1..])?;
+            print_json(&result)?;
+        }
+        "run-script" => {
+            let result = workflow_run_script_value(store, &args[1..])?;
             print_json(&result)?;
         }
         other => {
@@ -4691,6 +4726,119 @@ fn workflow_run_spec_value(store: &HarnessStore, args: &[String]) -> CliResult<s
         };
         workflow::dispatch_spec(&spec, &driver)
             .map_err(|error| CliError::Usage(error.to_string()))?
+    };
+
+    journal_workflow_outcome(store, run, &outcome)
+}
+
+/// `harness workflow run-script <prog.star> [--name <n>] [--args <json>]
+///  [--trace durable|live] [--dry-run] [--start-runtime] [--timeout-ms <ms>]
+///  [--initiated-by <id>]`
+///
+/// Reads a runtime-authored Starlark program, evaluates it via
+/// `starlark_front::run_starlark` (the imperative front-end over the same
+/// `agent()`/`parallel()` primitives the JSON IR exposes), and journals the
+/// run/steps exactly like `run-spec` (shared `journal_workflow_outcome`).
+///
+/// Unlike the JSON IR, the script body is not a serializable spec; the durable
+/// audit record snapshots the raw script text under
+/// `spec = {"lang":"starlark","script": <text>}` so the run is reproducible.
+fn workflow_run_script_value(
+    store: &HarnessStore,
+    args: &[String],
+) -> CliResult<serde_json::Value> {
+    // The script path is the first positional arg (not a --flag) or `--script <path>`.
+    let path = value(args, "--script")
+        .or_else(|| args.iter().find(|arg| !arg.starts_with("--")).cloned())
+        .ok_or_else(|| {
+            CliError::Usage("workflow run-script requires a <prog.star> path".to_string())
+        })?;
+
+    let script = std::fs::read_to_string(&path)
+        .map_err(|error| CliError::Usage(format!("cannot read script {path}: {error}")))?;
+
+    // Workflow name: explicit `--name`, else the file stem.
+    let name = value(args, "--name").unwrap_or_else(|| {
+        Path::new(&path)
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or("workflow")
+            .to_string()
+    });
+
+    // Optional `--args <json>`: parsed into the opaque value injected as the
+    // script's `args` global. A typo fails fast.
+    let parsed_args = match value(args, "--args") {
+        Some(raw) => Some(
+            serde_json::from_str::<serde_json::Value>(&raw)
+                .map_err(|error| CliError::Usage(format!("invalid --args json: {error}")))?,
+        ),
+        None => None,
+    };
+
+    // Retention policy for the heavy per-node turn-event trace. `durable`
+    // (default) persists the trace; `live` streams it over SSE during execution
+    // but does not retain it. Validated up front so a typo fails fast.
+    let trace_retention = value(args, "--trace").unwrap_or_else(|| "durable".to_string());
+    if trace_retention != "durable" && trace_retention != "live" {
+        return Err(CliError::Usage(format!(
+            "--trace must be 'durable' or 'live', got '{trace_retention}'"
+        )));
+    }
+
+    let options = WorkflowDeliveryOptions {
+        dry_run: has_flag(args, "--dry-run"),
+        start_runtime: has_flag(args, "--start-runtime"),
+        timeout_ms: value(args, "--timeout-ms")
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(3_000),
+        trace_retention: trace_retention.clone(),
+    };
+
+    // Who initiated the run: an explicit `--initiated-by <id>`, else the
+    // ambient agent member id (when an agent shells out), else "operator".
+    let initiated_by = value(args, "--initiated-by")
+        .or_else(|| std::env::var("HARNESS_AGENT_MEMBER_ID").ok())
+        .filter(|id| !id.is_empty())
+        .unwrap_or_else(|| "operator".to_string());
+
+    // Mint the run id up front so the real driver can journal each step's
+    // `running` row as it starts (live SSE progress), mirroring `run-spec`.
+    let run_id = generated_id("wfrun");
+
+    let run = WorkflowRun {
+        id: run_id.clone(),
+        workflow_name: name.clone(),
+        status: WorkflowRunStatus::Running,
+        step_ids: Vec::new(),
+        created_at: now_string(),
+        ended_at: None,
+        summary: None,
+        // The script's `args` global is carried opaquely onto the run.
+        args: parsed_args.clone(),
+        agents_spawned: 0,
+        final_output: None,
+        // Always-persisted durable audit record: who ran it + the raw script
+        // text (the script is not a serializable spec), plus the retention
+        // policy governing the heavy trace.
+        initiated_by: Some(initiated_by),
+        spec: Some(serde_json::json!({ "lang": "starlark", "script": script })),
+        trace_retention,
+    };
+    store.append_workflow_run(&run)?;
+
+    let outcome = {
+        let run_id = run_id.clone();
+        let driver = move |step: &workflow::AgentStepSpec| {
+            workflow_real_agent_step(store, &run_id, &options, step)
+        };
+        harness_workflow::starlark_front::run_starlark(
+            &script,
+            &name,
+            parsed_args.as_ref(),
+            &driver,
+        )
+        .map_err(|error| CliError::Usage(error.to_string()))?
     };
 
     journal_workflow_outcome(store, run, &outcome)
@@ -7798,7 +7946,10 @@ fn read_session_turn_events(
     // session row: durable runs point jsonl_ref/stdout_ref at the retained
     // per-session NDJSON; live-only runs (and missing sessions) have neither.
     let path = match latest_provider_session(store, session_id)? {
-        Some(session) => session.jsonl_ref.clone().or_else(|| session.stdout_ref.clone()),
+        Some(session) => session
+            .jsonl_ref
+            .clone()
+            .or_else(|| session.stdout_ref.clone()),
         None => None,
     };
     let Some(path) = path else {
@@ -10014,6 +10165,7 @@ fn print_help() {
   workflow list
   workflow run --name <name> [--prompt <text>] [--start-runtime] [--dry-run] [--timeout-ms <ms>]
   workflow run-spec <spec.json> [--start-runtime] [--dry-run] [--timeout-ms <ms>]
+  workflow run-script <prog.star> [--name <n>] [--args <json>] [--trace durable|live] [--dry-run]
   serve [--addr 127.0.0.1:8787] [--once]
   daemon start [--socket <path>] [--idle-secs <n>]   (unix: resident warm-child host)
   daemon status
@@ -10056,9 +10208,8 @@ mod workflow_runtime_tests {
         let driver = |spec: &workflow::AgentStepSpec| ok_step(spec);
 
         let run_id = generated_id("wfrun");
-        let result =
-            run_workflow_with_driver(&store, &run_id, def, "failure X", &driver)
-                .expect("run workflow");
+        let result = run_workflow_with_driver(&store, &run_id, def, "failure X", &driver)
+            .expect("run workflow");
 
         // The returned run is completed and references 3 steps (serial + 2 parallel).
         let run = result.get("run").expect("run key");
@@ -10134,11 +10285,8 @@ mod workflow_runtime_tests {
             .join("session-A")
             .join("claude.stream-json.ndjson");
         fs::create_dir_all(ndjson.parent().unwrap()).expect("mkdir session dir");
-        fs::write(
-            &ndjson,
-            "{\"type\":\"assistant\"}\n{\"type\":\"result\"}\n",
-        )
-        .expect("write ndjson");
+        fs::write(&ndjson, "{\"type\":\"assistant\"}\n{\"type\":\"result\"}\n")
+            .expect("write ndjson");
         store
             .append_provider_session(&provider_session_with_ref(
                 "session-A",
@@ -10150,8 +10298,14 @@ mod workflow_runtime_tests {
         assert!(out.retained, "durable run must report retained");
         assert!(!out.truncated);
         assert_eq!(out.events.len(), 2);
-        assert_eq!(out.events[0].get("type").and_then(|t| t.as_str()), Some("assistant"));
-        assert_eq!(out.events[1].get("type").and_then(|t| t.as_str()), Some("result"));
+        assert_eq!(
+            out.events[0].get("type").and_then(|t| t.as_str()),
+            Some("assistant")
+        );
+        assert_eq!(
+            out.events[1].get("type").and_then(|t| t.as_str()),
+            Some("result")
+        );
     }
 
     #[test]
@@ -10200,9 +10354,8 @@ mod workflow_runtime_tests {
         };
 
         let run_id = generated_id("wfrun");
-        let result =
-            run_workflow_with_driver(&store, &run_id, def, "failure Y", &driver)
-                .expect("run workflow");
+        let result = run_workflow_with_driver(&store, &run_id, def, "failure Y", &driver)
+            .expect("run workflow");
         let run = result.get("run").expect("run key");
         assert_eq!(run.get("status").and_then(|s| s.as_str()), Some("failed"));
 
@@ -10216,6 +10369,108 @@ mod workflow_runtime_tests {
         assert_eq!(steps[0].status, WorkflowStepStatus::Failed);
         assert_eq!(steps[1].status, WorkflowStepStatus::Completed);
         assert_eq!(steps[2].status, WorkflowStepStatus::Completed);
+    }
+
+    #[test]
+    fn workflow_run_script_journals_steps_and_snapshots_source() {
+        let store = temp_store("run-script");
+        // A two-agent Starlark program that chains output. `--dry-run` returns a
+        // mock StepResult per node, so no provider is spawned (CI-safe).
+        let script = r#"
+phase("scan")
+a = agent("scan " + args["area"])
+phase("fix")
+agent("fix: " + a, provider = "claude", label = "fixer")
+"#;
+        let dir = std::env::temp_dir().join(format!("harness-wf-script-{}", generated_id("src")));
+        fs::create_dir_all(&dir).expect("mkdir script dir");
+        let path = dir.join("triage.star");
+        fs::write(&path, script).expect("write script");
+
+        let args = vec![
+            path.display().to_string(),
+            "--args".to_string(),
+            r#"{"area":"checkout"}"#.to_string(),
+            "--dry-run".to_string(),
+        ];
+        let result = workflow_run_script_value(&store, &args).expect("run script");
+
+        // The run completed and references two steps.
+        let run = result.get("run").expect("run key");
+        assert_eq!(
+            run.get("status").and_then(|s| s.as_str()),
+            Some("completed")
+        );
+        // Workflow name defaults to the file stem.
+        assert_eq!(
+            run.get("workflow_name").and_then(|s| s.as_str()),
+            Some("triage")
+        );
+        let step_ids = run
+            .get("step_ids")
+            .and_then(|s| s.as_array())
+            .expect("step_ids");
+        assert_eq!(step_ids.len(), 2);
+
+        // The durable audit record snapshots the raw script text as a starlark spec.
+        let runs = store.workflow_runs().expect("read runs");
+        let final_run = runs.last().expect("a run row");
+        let spec = final_run.spec.as_ref().expect("spec snapshot");
+        assert_eq!(spec.get("lang").and_then(|v| v.as_str()), Some("starlark"));
+        assert_eq!(spec.get("script").and_then(|v| v.as_str()), Some(script));
+        // The parsed --args are carried opaquely onto the run.
+        assert_eq!(
+            final_run
+                .args
+                .as_ref()
+                .and_then(|a| a.get("area"))
+                .and_then(|v| v.as_str()),
+            Some("checkout")
+        );
+
+        // The real driver journals a `running` row at step start and reuses its
+        // id for the terminal row, so the append-only log holds running+terminal
+        // rows per step. Project latest-wins by id: the two referenced steps must
+        // each resolve to a completed terminal row across the distinct phases.
+        let all_steps = store.workflow_steps().expect("read steps");
+        let referenced: Vec<&str> = step_ids
+            .iter()
+            .map(|id| id.as_str().expect("step id string"))
+            .collect();
+        let mut terminal: BTreeMap<&str, &WorkflowStep> = BTreeMap::new();
+        for step in &all_steps {
+            if referenced.contains(&step.id.as_str()) {
+                terminal.insert(step.id.as_str(), step);
+            }
+        }
+        assert_eq!(terminal.len(), 2);
+        let phases: BTreeSet<&str> = terminal.values().map(|s| s.phase.as_str()).collect();
+        assert_eq!(
+            phases,
+            BTreeSet::from(["scan", "fix"]),
+            "both phases journaled"
+        );
+        for step in terminal.values() {
+            assert_eq!(step.status, WorkflowStepStatus::Completed);
+        }
+    }
+
+    #[test]
+    fn workflow_run_script_rejects_bad_args_json() {
+        let store = temp_store("run-script-badargs");
+        let dir = std::env::temp_dir().join(format!("harness-wf-script-{}", generated_id("bad")));
+        fs::create_dir_all(&dir).expect("mkdir script dir");
+        let path = dir.join("noop.star");
+        fs::write(&path, r#"agent("x")"#).expect("write script");
+
+        let args = vec![
+            path.display().to_string(),
+            "--args".to_string(),
+            "{not json".to_string(),
+            "--dry-run".to_string(),
+        ];
+        let err = workflow_run_script_value(&store, &args).expect_err("bad json");
+        assert!(matches!(err, CliError::Usage(_)));
     }
 
     #[test]
@@ -10298,8 +10553,7 @@ mod workflow_runtime_tests {
         };
 
         let result =
-            run_workflow_with_driver(&store, &run_id, def, "topic", &driver)
-                .expect("run workflow");
+            run_workflow_with_driver(&store, &run_id, def, "topic", &driver).expect("run workflow");
         assert_eq!(
             result
                 .get("run")

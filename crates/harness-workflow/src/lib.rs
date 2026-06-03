@@ -23,6 +23,8 @@ use std::sync::{Condvar, Mutex};
 use harness_core::{WorkflowRunStatus, WorkflowStepStatus};
 use serde::{Deserialize, Serialize};
 
+pub mod starlark_front;
+
 /// The set of providers a workflow node may target. Each `agent()` node spins up
 /// a NEW one-shot ephemeral provider process (codex exec / claude -p); the node
 /// references a PROVIDER, not a pre-existing member. The runtime stays
@@ -340,8 +342,10 @@ fn run_item_through_stages(item: &AgentStepSpec, stages: &[PipelineStage<'_>]) -
                     Some(mut result) => {
                         result.ok = false;
                         result.provider_session_id = None;
-                        result.output_summary =
-                            format!("pipeline item dropped at a stage: {}", result.output_summary);
+                        result.output_summary = format!(
+                            "pipeline item dropped at a stage: {}",
+                            result.output_summary
+                        );
                         result
                     }
                     None => dropped_result(item),
@@ -846,6 +850,24 @@ pub fn dispatch_spec(
         walk_node(driver, args, &spec.name, node, &mut steps)?;
     }
 
+    Ok(outcome_from_steps(&spec.name, steps, spawned_before))
+}
+
+/// Build a [`WorkflowOutcome`] from a run's accumulated steps. Shared by every
+/// front-end that produces an ordered `Vec<StepResult>` — the JSON-IR
+/// [`dispatch_spec`] walker and the Starlark [`starlark_front::run_starlark`]
+/// evaluator — so all front-ends derive status / summary / final_output
+/// identically. `spawned_before` is the scheduler's lifetime spawn-counter
+/// snapshot taken before the run, so the delta attributes this run's agents.
+///
+/// Status rule: a run with steps but zero successful ones is `Failed`; otherwise
+/// `Completed` (partial success is still completed, mirroring the CC-spec
+/// null-tolerant fan-out).
+pub fn outcome_from_steps(
+    name: &str,
+    steps: Vec<StepResult>,
+    spawned_before: u64,
+) -> WorkflowOutcome {
     let agents_spawned = scheduler_agents_spawned().saturating_sub(spawned_before);
 
     let total = steps.len();
@@ -853,12 +875,12 @@ pub fn dispatch_spec(
     let (status, summary) = if total > 0 && kept == 0 {
         (
             WorkflowRunStatus::Failed,
-            format!("{} failed: 0/{total} steps ok", spec.name),
+            format!("{name} failed: 0/{total} steps ok"),
         )
     } else {
         (
             WorkflowRunStatus::Completed,
-            format!("{} completed: {kept}/{total} steps ok", spec.name),
+            format!("{name} completed: {kept}/{total} steps ok"),
         )
     };
 
@@ -870,13 +892,13 @@ pub fn dispatch_spec(
         ))
     };
 
-    Ok(WorkflowOutcome {
+    WorkflowOutcome {
         steps,
         status,
         summary,
         agents_spawned,
         final_output,
-    })
+    }
 }
 
 #[cfg(test)]
@@ -1351,7 +1373,10 @@ mod tests {
                 while !fast_flag.load(Ordering::SeqCst) {
                     std::thread::yield_now();
                     spins += 1;
-                    assert!(spins < 50_000_000, "no-barrier deadlock: fast item never reached stage 2");
+                    assert!(
+                        spins < 50_000_000,
+                        "no-barrier deadlock: fast item never reached stage 2"
+                    );
                 }
             }
             Some((

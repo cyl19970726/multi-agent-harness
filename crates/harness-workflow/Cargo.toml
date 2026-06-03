@@ -10,3 +10,5 @@ harness-core = { path = "../harness-core" }
 serde.workspace = true
 serde_json.workspace = true
 crossbeam = "0.8"
+starlark = "0.14"
+anyhow = "1"
