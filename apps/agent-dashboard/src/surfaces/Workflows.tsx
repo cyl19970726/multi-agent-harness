@@ -736,6 +736,14 @@ function StepCard({
               <span>—</span>
             )}
             <span className="tabular-nums">{stepTiming(step)}</span>
+            {step.result?.model && (
+              <span className="text-foreground/70">· {step.result.model}</span>
+            )}
+            {step.result?.tokens && (
+              <span className="tabular-nums">
+                · {formatCount(step.result.tokens.total)} tok
+              </span>
+            )}
           </div>
 
           {/* Line 3 — output summary */}
@@ -889,6 +897,7 @@ function StepDrawer({
                 <Markdown source={step.output_summary} />
               </div>
             )}
+            <StepObservability step={step} />
             <DocSection label="Turn">
               <TurnDrillIn
                 session={session}
@@ -903,6 +912,118 @@ function StepDrawer({
       </aside>
     </div>
   );
+}
+
+/**
+ * Per-step observability panel: the model/exit/duration/token metadata the
+ * runtime captures onto `step.result` (see `build_step_details` in harness-cli),
+ * plus a structured failure callout and a collapsible worktree diff for
+ * isolated steps. Renders nothing when no observability fields are present (e.g.
+ * a still-queued step or an older run with a bare result).
+ */
+function StepObservability({ step }: { step: WorkflowStep }) {
+  const result = step.result;
+  if (!result) return null;
+
+  const { model, exit_code, duration_ms, tokens, failure } = result;
+  const meta: { label: string; value: ReactNode }[] = [];
+  if (model) meta.push({ label: "Model", value: <MonoId>{model}</MonoId> });
+  if (duration_ms != null) {
+    meta.push({ label: "Duration", value: formatMillis(duration_ms) });
+  }
+  if (exit_code != null) {
+    meta.push({
+      label: "Exit code",
+      value: (
+        <Badge tone={exit_code === 0 ? "good" : "bad"}>
+          <span className="tabular-nums">{exit_code}</span>
+        </Badge>
+      ),
+    });
+  }
+  if (tokens) {
+    meta.push({
+      label: "Tokens",
+      value: (
+        <span className="tabular-nums">
+          {formatCount(tokens.total)} total
+          <span className="text-muted-foreground">
+            {" "}
+            · {formatCount(tokens.input)} in · {formatCount(tokens.output)} out
+          </span>
+        </span>
+      ),
+    });
+  }
+
+  const hasDiff = Boolean(result.worktree_diff);
+  if (meta.length === 0 && !failure && !hasDiff) return null;
+
+  return (
+    <DocSection label="Observability">
+      {meta.length > 0 && <DocProperties items={meta} />}
+      {failure?.failed && (
+        <div className="space-y-1.5 rounded-md border border-status-bad/30 bg-status-bad/10 p-2.5">
+          <div className="flex items-center gap-1.5">
+            <Badge tone="bad">{failure.reason}</Badge>
+            <span className="text-[11px] font-medium uppercase tracking-wide text-status-bad">
+              failed
+            </span>
+          </div>
+          {failure.detail && (
+            <pre className="overflow-x-auto whitespace-pre-wrap break-words font-mono text-[11px] text-foreground">
+              {failure.detail}
+            </pre>
+          )}
+        </div>
+      )}
+      {hasDiff && (
+        <WorktreeDiff
+          diff={result.worktree_diff ?? ""}
+          truncated={Boolean(result.worktree_diff_truncated)}
+        />
+      )}
+    </DocSection>
+  );
+}
+
+/** Collapsible monospace worktree diff for an `isolation: "worktree"` step. */
+function WorktreeDiff({ diff, truncated }: { diff: string; truncated: boolean }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="rounded-md border border-border">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-center gap-1.5 px-2.5 py-2 text-left text-[11px] font-medium text-muted-foreground transition-colors hover:text-foreground"
+      >
+        {open ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
+        worktree diff
+        {truncated && <Badge tone="warn">truncated</Badge>}
+      </button>
+      {open && (
+        <pre className="max-h-96 overflow-auto border-t border-border bg-muted/30 p-2.5 font-mono text-[11px] leading-relaxed text-foreground">
+          {diff}
+        </pre>
+      )}
+    </div>
+  );
+}
+
+/** "1.2s" / "850ms" / "2m 05s" from a raw millisecond count. */
+function formatMillis(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  const totalSeconds = ms / 1000;
+  if (totalSeconds < 60) return `${totalSeconds.toFixed(1)}s`;
+  const mins = Math.floor(totalSeconds / 60);
+  const secs = Math.round(totalSeconds % 60);
+  return `${mins}m ${String(secs).padStart(2, "0")}s`;
+}
+
+/** Compact token count: "1,234" up to 9999, then "12.3k". */
+function formatCount(n: number): string {
+  if (n < 10000) return n.toLocaleString();
+  return `${(n / 1000).toFixed(1)}k`;
 }
 
 /* ================================================================== */
