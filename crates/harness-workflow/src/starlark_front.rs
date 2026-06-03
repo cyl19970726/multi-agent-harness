@@ -434,6 +434,7 @@ mod tests {
                 output_summary: format!("ok: {}", spec.prompt),
                 step_id: None,
                 started_at: None,
+                details: None,
             }
         }
     }
@@ -496,6 +497,7 @@ b = agent("fix what scan found: " + a, provider = "claude", label = "fixer")
             output_summary: "boom".to_string(),
             step_id: None,
             started_at: None,
+            details: None,
         };
         let outcome = run_starlark(&format!("{HEADER}agent(\"x\")"), "demo", None, &driver)
             .expect("run ok")
@@ -547,6 +549,7 @@ b = agent("fix what scan found: " + a, provider = "claude", label = "fixer")
                     output_summary: "ok".to_string(),
                     step_id: None,
                     started_at: None,
+                    details: None,
                 }
             };
             run_starlark(&format!("{HEADER}{script}"), "demo", None, &driver)

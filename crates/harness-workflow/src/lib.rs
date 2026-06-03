@@ -60,7 +60,7 @@ pub struct AgentStepSpec {
 
 /// The outcome of one agent step. `ok == false` is the CC-spec `null` slot: a
 /// failed step never aborts the run; it is collected like any other result.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct StepResult {
     pub phase: String,
     pub label: String,
@@ -84,6 +84,13 @@ pub struct StepResult {
     /// journal time. Carrying the real start time keeps the journaled step's
     /// `started_at`/`ended_at` reflecting true (overlapping) execution windows.
     pub started_at: Option<String>,
+    /// Extra observability fields the runtime captured about the worker
+    /// (`model`, `exit_code`, `duration_ms`, `tokens`, `failure`,
+    /// `worktree_diff`, ...). Merged onto the step's `result` JSON object by
+    /// [`step_result_json`] so the frontend reads it WITHOUT re-parsing raw
+    /// NDJSON. `None` for mock/test drivers that capture no telemetry. When
+    /// present it MUST be a JSON object; non-object values are ignored.
+    pub details: Option<serde_json::Value>,
 }
 
 impl StepResult {
@@ -219,6 +226,7 @@ pub fn parallel(driver: &AgentStepFn<'_>, specs: &[AgentStepSpec]) -> Vec<StepRe
                         output_summary: "workflow lifetime agent cap (1000) exceeded".to_string(),
                         step_id: None,
                         started_at: None,
+                        details: None,
                     };
                     let _ = tx.send((index, result));
                     return;
@@ -238,6 +246,7 @@ pub fn parallel(driver: &AgentStepFn<'_>, specs: &[AgentStepSpec]) -> Vec<StepRe
                     output_summary: "agent step panicked".to_string(),
                     step_id: None,
                     started_at: None,
+                    details: None,
                 });
 
                 let _ = tx.send((index, result));
@@ -368,6 +377,7 @@ fn dropped_result(item: &AgentStepSpec) -> StepResult {
         output_summary: "pipeline item dropped before producing a result".to_string(),
         step_id: None,
         started_at: None,
+        details: None,
     }
 }
 
@@ -382,6 +392,7 @@ fn capped_result(item: &AgentStepSpec) -> StepResult {
         output_summary: "workflow lifetime agent cap (1000) exceeded".to_string(),
         step_id: None,
         started_at: None,
+        details: None,
     }
 }
 
@@ -396,6 +407,7 @@ fn panicked_result(item: &AgentStepSpec) -> StepResult {
         output_summary: "pipeline stage panicked".to_string(),
         step_id: None,
         started_at: None,
+        details: None,
     }
 }
 
@@ -543,7 +555,7 @@ impl WorkflowRegistry {
 /// `result` field. Mirrors the human-facing summary with the machine-facing
 /// status + linkage the dashboard / callers want.
 pub fn step_result_json(result: &StepResult) -> serde_json::Value {
-    serde_json::json!({
+    let mut value = serde_json::json!({
         "phase": result.phase,
         "label": result.label,
         "provider": result.provider,
@@ -551,7 +563,19 @@ pub fn step_result_json(result: &StepResult) -> serde_json::Value {
         "ok": result.ok,
         "provider_session_id": result.provider_session_id,
         "output_summary": result.output_summary,
-    })
+    });
+    // Merge the runtime-captured observability fields (model, exit_code,
+    // duration_ms, tokens, failure, worktree_diff, ...) onto the same object so
+    // the dashboard reads them off `step.result` without re-parsing NDJSON. We
+    // only spread JSON OBJECTS; the base keys above always win on collision.
+    if let (Some(base), Some(serde_json::Value::Object(extra))) =
+        (value.as_object_mut(), &result.details)
+    {
+        for (k, v) in extra {
+            base.entry(k.clone()).or_insert_with(|| v.clone());
+        }
+    }
+    value
 }
 
 /// Build a [`WorkflowOutcome`] from a run's accumulated steps. Shared by every
@@ -625,6 +649,7 @@ mod tests {
                 output_summary: format!("ok: {}", spec.prompt),
                 step_id: None,
                 started_at: None,
+                details: None,
             }
         }
     }
@@ -660,6 +685,7 @@ mod tests {
                 output_summary: "ok".to_string(),
                 step_id: None,
                 started_at: None,
+                details: None,
             }
         };
         let specs: Vec<AgentStepSpec> = (0..5)
@@ -695,6 +721,7 @@ mod tests {
                     output_summary: "delivery failed".to_string(),
                     step_id: None,
                     started_at: None,
+                    details: None,
                 };
             }
             if spec.label == "l2" {
@@ -710,6 +737,7 @@ mod tests {
                 output_summary: "ok".to_string(),
                 step_id: None,
                 started_at: None,
+                details: None,
             }
         };
         let specs: Vec<AgentStepSpec> = (0..4)
@@ -749,6 +777,7 @@ mod tests {
                 },
                 step_id: None,
                 started_at: None,
+                details: None,
             }
         };
         let outcome = investigate(&driver, "failure Y");
@@ -810,6 +839,7 @@ mod tests {
                 output_summary: name.to_string(),
                 step_id: None,
                 started_at: None,
+                details: None,
             };
             Some((spec.clone(), result))
         })
@@ -886,6 +916,7 @@ mod tests {
                     output_summary: "s1".to_string(),
                     step_id: None,
                     started_at: None,
+                    details: None,
                 },
             ))
         });
@@ -907,6 +938,7 @@ mod tests {
                     output_summary: "s2".to_string(),
                     step_id: None,
                     started_at: None,
+                    details: None,
                 },
             ))
         });
@@ -939,6 +971,7 @@ mod tests {
                     output_summary: "s2".to_string(),
                     step_id: None,
                     started_at: None,
+                    details: None,
                 },
             ))
         });
@@ -955,6 +988,7 @@ mod tests {
                     output_summary: "s3".to_string(),
                     step_id: None,
                     started_at: None,
+                    details: None,
                 },
             ))
         });
