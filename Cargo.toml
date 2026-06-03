@@ -2,6 +2,7 @@
 members = [
   "crates/harness-core",
   "crates/harness-store",
+  "crates/harness-workflow",
   "crates/harness-cli"
 ]
 resolver = "2"

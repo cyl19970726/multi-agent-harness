@@ -2590,6 +2590,40 @@ fn handle_http_connection(
                     )?,
                 }
             }
+            // GET /v1/sessions/{id}/events — the PERSISTED per-session turn
+            // events for a completed durable run's historical drill-in (two-tier
+            // persistence read side). Reads the durable per-session NDJSON the
+            // ProviderSession's jsonl_ref/stdout_ref points at (survives a serve
+            // restart). A `--trace live` run whose trace was pruned after
+            // execution left those refs None, so we return `retained: false`
+            // ("trace not retained") and the UI can distinguish it.
+            sessions_path
+                if sessions_path.starts_with("/v1/sessions/")
+                    && sessions_path.ends_with("/events") =>
+            {
+                let session_id = sessions_path
+                    .strip_prefix("/v1/sessions/")
+                    .and_then(|rest| rest.strip_suffix("/events"))
+                    .unwrap_or_default()
+                    .to_string();
+                match read_session_turn_events(store, &session_id) {
+                    Ok(result) => write_http_json(
+                        &mut stream,
+                        "200 OK",
+                        &serde_json::json!({
+                            "session_id": session_id,
+                            "retained": result.retained,
+                            "events": result.events,
+                            "truncated": result.truncated,
+                        }),
+                    )?,
+                    Err(detail) => write_http_json(
+                        &mut stream,
+                        "404 Not Found",
+                        &serde_json::json!({"error": "session_events_not_found", "detail": detail.to_string()}),
+                    )?,
+                }
+            }
             // GET /v1/workflows — the registered (built-in) workflow catalog,
             // run-independent { name, summary } pairs from the compiled registry.
             "/v1/workflows" => {
@@ -3693,23 +3727,34 @@ struct DeliveryOptions {
 // ---------------------------------------------------------------------------
 // Workflow runtime CLI (WP1)
 //
-// `harness workflow run --name <name> --codex <member> --claude <member>
-//  [--prompt <text>] [--timeout-ms N] [--dry-run]`
+// `harness workflow run --name <name> [--prompt <text>] [--timeout-ms N] [--dry-run]`
 //
 // Creates a WorkflowRun (status running), dispatches the named built-in Rust
 // workflow through the registry, journals each WorkflowStep, and sets the run
-// to completed/failed. Every agent step drives ONE provider delivery through the
-// EXISTING neutral seam (`workflow_real_agent_step` -> `deliver_agent_messages_value`
-// -> `claim_message_for_delivery` + `run_provider_delivery`); the workflow never
-// spawns a provider directly (ADR-0011 provider-neutral).
+// to completed/failed. Each `agent()` node references a PROVIDER ("codex" |
+// "claude") and spins up a NEW one-shot ephemeral worker (Stage B: real spawn
+// of codex exec / claude -p; Stage A: a mock driver returns a provider-carrying
+// StepResult). The runtime stays provider-neutral — the injected driver carries
+// the provider + optional isolation through (ADR-0011 provider-neutral).
 // ---------------------------------------------------------------------------
 
-/// Options controlling how the real (non-mock) agent step delivers a message.
+/// Options controlling how the real (non-mock) agent step spins up its ephemeral
+/// worker. `dry_run` selects the mock driver (CI default, no spawning);
+/// otherwise the real `codex exec` / `claude -p` ephemeral spawn runs with a
+/// per-node `timeout_ms`. `start_runtime` is reserved (the ephemeral path does
+/// not need a resident runtime).
 #[derive(Debug, Clone)]
 struct WorkflowDeliveryOptions {
     dry_run: bool,
+    #[allow(dead_code)]
     start_runtime: bool,
     timeout_ms: u64,
+    /// Retention policy for the heavy per-node turn-event trace: "durable"
+    /// (default) persists the per-session AgentEvents + retained NDJSON trace;
+    /// "live" streams the trace over SSE during execution but prunes it after the
+    /// run so a PAST run shows "trace not retained". Live streaming itself is
+    /// independent and always happens.
+    trace_retention: String,
 }
 
 /// The REAL agent-step driver. Drives one provider delivery through the neutral
@@ -3742,6 +3787,7 @@ fn workflow_real_agent_step(
         provider_session_id: None,
         status: WorkflowStepStatus::Running,
         output_summary: None,
+        result: None,
         started_at: started_at.clone(),
         ended_at: None,
     };
@@ -3749,7 +3795,7 @@ fn workflow_real_agent_step(
     // row still records the outcome. Best-effort, like the rest of this seam.
     let _ = store.append_workflow_step(&running);
 
-    match try_workflow_real_agent_step(store, options, spec) {
+    match try_workflow_real_agent_step(store, options, spec, run_id) {
         Ok(mut result) => {
             result.step_id = Some(step_id);
             result.started_at = Some(started_at);
@@ -3758,7 +3804,8 @@ fn workflow_real_agent_step(
         Err(error) => workflow::StepResult {
             phase: spec.phase.clone(),
             label: spec.label.clone(),
-            member_id: spec.member_id.clone(),
+            provider: spec.provider.clone(),
+            isolation: spec.isolation.clone(),
             ok: false,
             provider_session_id: None,
             output_summary: format!("agent step error: {error}"),
@@ -3772,82 +3819,861 @@ fn try_workflow_real_agent_step(
     store: &HarnessStore,
     options: &WorkflowDeliveryOptions,
     spec: &workflow::AgentStepSpec,
+    run_id: &str,
 ) -> CliResult<workflow::StepResult> {
-    // Queue a message to the member through the same path operators use.
-    let message_id = generated_id("msg");
-    let message = create_message_value(
-        store,
-        &serde_json::json!({
-            "id": message_id,
-            "from": "workflow",
-            "to": spec.member_id,
-            "kind": "task",
-            "content": spec.prompt,
-            "channel": "workflow",
-        }),
-    )?;
-    let message_id = json_string(&message, "id").unwrap_or(message_id);
-
-    // Deliver exactly that one message through the neutral seam.
-    let delivered = deliver_agent_messages_value(
-        store,
-        DeliveryOptions {
-            agent_id: spec.member_id.clone(),
-            message_filter: Some(message_id.clone()),
-            dry_run: options.dry_run,
-            start_runtime: options.start_runtime,
-            timeout_ms: options.timeout_ms,
-        },
-    )?;
-
-    // Inspect the per-message delivery result.
-    let entry = delivered
-        .get("delivered")
-        .and_then(|value| value.as_array())
-        .and_then(|entries| entries.first());
-    let provider_status = entry
-        .and_then(|entry| entry.get("provider_status"))
-        .and_then(|status| status.as_str())
-        .map(str::to_string);
-    let provider_session_id = entry
-        .and_then(|entry| entry.get("provider_session_id"))
-        .and_then(|value| value.as_str())
-        .map(str::to_string)
-        .or_else(|| {
-            // Fall back to the session id recorded on the delivered message.
-            latest_message(store, &message_id)
-                .ok()
-                .and_then(|message| message.delivery)
-                .and_then(|delivery| delivery.provider_session_id)
+    // The node references a PROVIDER (not a pre-existing member). In --dry-run
+    // (CI default) we return a MOCK StepResult so the run/steps journal, the
+    // dashboard, the acceptance script, and `cargo test` exercise the full
+    // contract end-to-end without spawning a provider or spending tokens. The
+    // real (non-dry-run) path spins up a one-shot EDITABLE ephemeral worker.
+    if options.dry_run {
+        let isolation_note = match spec.isolation.as_deref() {
+            Some(mode) => format!(", isolation={mode}"),
+            None => String::new(),
+        };
+        let model_note = match spec.model.as_deref() {
+            Some(model) => format!(", model={model}"),
+            None => String::new(),
+        };
+        let output_summary = format!(
+            "ephemeral {} worker (dry-run) for {}{model_note}{isolation_note}",
+            spec.provider, spec.label,
+        );
+        return Ok(workflow::StepResult {
+            phase: spec.phase.clone(),
+            label: spec.label.clone(),
+            provider: spec.provider.clone(),
+            isolation: spec.isolation.clone(),
+            ok: true,
+            provider_session_id: Some(format!("mock-session-{}", spec.label)),
+            output_summary,
+            // The journaling identity is assigned by the caller, which already
+            // journaled the `running` start row before this step began.
+            step_id: None,
+            started_at: None,
         });
-    let ok = matches!(provider_status.as_deref(), Some("succeeded"));
+    }
 
-    // Prefer the provider report text (the synthesized delivery summary) for the
-    // step summary; fall back to the provider session's own summary.
-    let output_summary = provider_session_id
-        .as_deref()
-        .and_then(|session_id| latest_provider_session(store, session_id).ok().flatten())
-        .and_then(|session| session.prompt_summary)
-        .or(provider_status.clone())
-        .unwrap_or_else(|| "no provider output".to_string());
+    spawn_ephemeral_worker(store, options, spec, run_id)
+}
+
+/// RAII guard owning a harness-created throwaway worktree. Its `Drop` removes the
+/// worktree (and any temp branch) no matter how the step exits — normal return,
+/// `?` early-return, timeout, or panic — so a failed/timed-out node never leaks
+/// an orphan (cleanup layer 2). The normal-path cleanup is the SAME code, just
+/// triggered by the guard going out of scope at the end of a successful step.
+struct WorktreeGuard {
+    /// Repo root the `git worktree` commands run against (`git -C <repo>`).
+    repo_root: PathBuf,
+    /// Absolute path of the worktree checkout.
+    path: PathBuf,
+    /// Temp branch created with the worktree, deleted alongside it.
+    branch: String,
+}
+
+impl WorktreeGuard {
+    /// `git -C <repo> worktree add -B <branch> <path> HEAD` — a detach-free
+    /// throwaway checkout of HEAD the worker mutates in isolation. Uniform for
+    /// both providers (the harness owns the worktree; we never use claude's -w).
+    fn create(repo_root: &Path, run_id: &str, node_label: &str) -> CliResult<WorktreeGuard> {
+        let slug = sanitize_worktree_slug(node_label);
+        let rel = format!(".harness/worktrees/{run_id}-{slug}");
+        let path = repo_root.join(&rel);
+        let branch = format!("harness/wt/{run_id}-{slug}");
+
+        // Defensive: a stale dir from a crashed prior run would make `add` fail.
+        if path.exists() {
+            let _ = Command::new("git")
+                .args([
+                    "-C",
+                    &repo_root.display().to_string(),
+                    "worktree",
+                    "remove",
+                    "--force",
+                ])
+                .arg(&path)
+                .output();
+            let _ = fs::remove_dir_all(&path);
+        }
+
+        let output = Command::new("git")
+            .args([
+                "-C",
+                &repo_root.display().to_string(),
+                "worktree",
+                "add",
+                "-B",
+                &branch,
+            ])
+            .arg(&path)
+            .arg("HEAD")
+            .output()?;
+        if !output.status.success() {
+            return Err(CliError::Usage(format!(
+                "git worktree add failed for node {node_label}: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            )));
+        }
+        Ok(WorktreeGuard {
+            repo_root: repo_root.to_path_buf(),
+            path,
+            branch,
+        })
+    }
+}
+
+impl Drop for WorktreeGuard {
+    fn drop(&mut self) {
+        // Bulletproof cleanup: remove the worktree and its temp branch however
+        // the step exited. Best-effort — Drop must not panic — but `--force`
+        // plus a manual dir sweep makes a leak very unlikely.
+        let repo = self.repo_root.display().to_string();
+        let _ = Command::new("git")
+            .args(["-C", &repo, "worktree", "remove", "--force"])
+            .arg(&self.path)
+            .output();
+        let _ = fs::remove_dir_all(&self.path);
+        let _ = Command::new("git")
+            .args(["-C", &repo, "branch", "-D", &self.branch])
+            .output();
+        // Prune any now-dangling administrative entry.
+        let _ = Command::new("git")
+            .args(["-C", &repo, "worktree", "prune"])
+            .output();
+    }
+}
+
+/// Map a node label to a filesystem-safe worktree slug (no `/`, spaces, etc.).
+fn sanitize_worktree_slug(label: &str) -> String {
+    let slug: String = label
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    let trimmed = slug.trim_matches('-');
+    if trimmed.is_empty() {
+        "node".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+/// Resolve the repo root the worktrees are created under. The shared default
+/// workspace is the current working directory (the repo cwd); worktrees live in
+/// the gitignored `.harness/worktrees/` beneath it.
+fn workflow_repo_root() -> PathBuf {
+    env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+}
+
+/// Spin up a NEW one-shot EDITABLE ephemeral worker for one `agent()` node and
+/// reduce its result into a [`workflow::StepResult`].
+///
+/// Workspace: the shared repo cwd by default (serial nodes' edits compose on the
+/// same tree, exactly like Claude Code's Workflow). When the node opts into
+/// `isolation:"worktree"` the HARNESS creates a throwaway worktree (uniform for
+/// both providers) and runs the worker there; its `git diff` is collected as the
+/// node's evidence and the worktree is NOT auto-merged. Cleanup is the
+/// `WorktreeGuard`'s Drop (bulletproof across success/failure/timeout).
+fn spawn_ephemeral_worker(
+    store: &HarnessStore,
+    options: &WorkflowDeliveryOptions,
+    spec: &workflow::AgentStepSpec,
+    run_id: &str,
+) -> CliResult<workflow::StepResult> {
+    let repo_root = workflow_repo_root();
+
+    // Opt-in isolation: harness-owned throwaway worktree, else the shared cwd.
+    // The guard (when present) cleans up on every exit path via Drop.
+    let isolate = spec.isolation.as_deref() == Some("worktree");
+    let guard = if isolate {
+        Some(WorktreeGuard::create(&repo_root, run_id, &spec.label)?)
+    } else {
+        None
+    };
+    let cwd = guard
+        .as_ref()
+        .map(|g| g.path.clone())
+        .unwrap_or_else(|| repo_root.clone());
+
+    // One ephemeral worker == one ProviderSession. The session id keys the
+    // dashboard per-node drill-in (WorkflowStep.provider_session_id) and the
+    // durable NDJSON / live turn-events.
+    let session_id = generated_id("session");
+    let session_dir = store.root().join("provider-sessions").join(&session_id);
+    fs::create_dir_all(&session_dir)?;
+
+    let spawn = match spec.provider.as_str() {
+        "codex" => spawn_codex_ephemeral(&session_dir, &session_id, spec, &cwd, options.timeout_ms),
+        "claude" => {
+            spawn_claude_ephemeral(&session_dir, &session_id, spec, &cwd, options.timeout_ms)
+        }
+        other => {
+            return Err(CliError::Usage(format!(
+                "unknown workflow provider {other} (expected codex|claude)"
+            )))
+        }
+    }?;
+
+    // Collect the worktree diff as the node's evidence (isolation path only). We
+    // read it BEFORE the guard drops (which removes the worktree).
+    let diff = if isolate {
+        ephemeral_worktree_diff(&cwd)
+    } else {
+        None
+    };
+
+    // Two-tier persistence (locked design). The live SSE frames were already
+    // streamed during the spawn loop (per-session NDJSON + shared
+    // provider_turn_events.jsonl), so a LIVE drill-in worked during execution no
+    // matter the retention. Now decide what SURVIVES the run:
+    //  - durable: persist the heavy trace (per-session AgentEvents + retained
+    //    NDJSON) so a completed run can be drilled into historically.
+    //  - live: do NOT retain the heavy trace — skip the durable AgentEvents and
+    //    prune the streamed NDJSON rows — so a past live-only run shows
+    //    "trace not retained". The ProviderSession row is still written either
+    //    way (with jsonl_ref only when durable), keeping the
+    //    WorkflowStep.provider_session_id linkage stable.
+    let retain_trace = options.trace_retention != "live";
+    let _ = ingest_ephemeral_events(store, &session_id, spec, &spawn, retain_trace);
+    if !retain_trace {
+        prune_live_only_trace(store, &session_id);
+    }
+
+    let mut output_summary = if let Some(reply) = spawn.reply.clone() {
+        let reply = reply.replace('\n', " ");
+        if reply.len() > 200 {
+            format!("{}...", &reply[..200])
+        } else {
+            reply
+        }
+    } else {
+        format!(
+            "{} ephemeral worker for {} ({})",
+            spec.provider,
+            spec.label,
+            if spawn.ok { "ok" } else { "failed" }
+        )
+    };
+    if let Some(diff) = &diff {
+        if diff.trim().is_empty() {
+            output_summary.push_str(" [worktree diff: empty]");
+        } else {
+            let lines = diff.lines().count();
+            output_summary.push_str(&format!(" [worktree diff: {lines} lines]"));
+        }
+    }
+    if !spawn.ok && !spawn.stderr.trim().is_empty() {
+        let err = spawn.stderr.replace('\n', " ");
+        let err = if err.len() > 160 { &err[..160] } else { &err };
+        output_summary.push_str(&format!(" [error: {err}]"));
+    }
+
+    // Drop the guard here (explicitly, for clarity) AFTER the diff is collected —
+    // cleanup layer 1 (normal) for the worktree path. For the shared-cwd path the
+    // guard is None and there is nothing to remove.
+    drop(guard);
 
     Ok(workflow::StepResult {
         phase: spec.phase.clone(),
         label: spec.label.clone(),
-        member_id: spec.member_id.clone(),
-        ok,
-        provider_session_id,
+        provider: spec.provider.clone(),
+        isolation: spec.isolation.clone(),
+        ok: spawn.ok,
+        provider_session_id: Some(session_id),
         output_summary,
-        // The journaling identity is assigned by the caller, which already
-        // journaled the `running` start row before this delivery began.
         step_id: None,
         started_at: None,
     })
 }
 
+/// The outcome of one ephemeral worker process: whether the turn succeeded, the
+/// parsed terminal reply text (if any), the raw NDJSON the worker emitted, and
+/// any stderr (for failure summaries).
+struct EphemeralSpawn {
+    ok: bool,
+    reply: Option<String>,
+    /// Raw NDJSON stdout (one JSON event per line) for neutral-event ingest.
+    ndjson: String,
+    stderr: String,
+}
+
+/// Spawn a one-shot `codex exec` with an EDITABLE (`--sandbox workspace-write`)
+/// sandbox, JSON event stream, running in `cwd`. Non-interactive (stdin closed)
+/// with a per-node timeout. Flags verified via `codex exec --help`:
+/// `--json`, `--sandbox workspace-write`, `--cd <dir>`, `-m <model>`,
+/// `--skip-git-repo-check`, `--output-last-message <file>`.
+fn spawn_codex_ephemeral(
+    session_dir: &Path,
+    session_id: &str,
+    spec: &workflow::AgentStepSpec,
+    cwd: &Path,
+    timeout_ms: u64,
+) -> CliResult<EphemeralSpawn> {
+    let last_message_ref = session_dir.join("last-message.md");
+    let mut cmd = Command::new("codex");
+    cmd.arg("exec")
+        .arg("--cd")
+        .arg(cwd)
+        .arg("--sandbox")
+        .arg("workspace-write")
+        .arg("--skip-git-repo-check")
+        .arg("--json")
+        .arg("--output-last-message")
+        .arg(&last_message_ref);
+    if let Some(model) = &spec.model {
+        cmd.arg("-m").arg(model);
+    }
+    cmd.arg(&spec.prompt);
+
+    let (process_success, events, stderr_log) = run_ndjson_child(
+        cmd,
+        session_dir,
+        session_id,
+        "codex.stream-json.ndjson",
+        timeout_ms,
+    )?;
+    let codex_events: Vec<CodexExecEvent> = events
+        .iter()
+        .filter_map(|v| serde_json::to_string(v).ok())
+        .filter_map(|line| CodexExecEvent::parse_line(&line))
+        .collect();
+    let ok = matches!(
+        infer_provider_session_status(&codex_events, process_success),
+        ProviderSessionStatus::Succeeded
+    );
+    // Prefer the parsed agent message; fall back to the last-message file codex
+    // wrote (the terminal assistant text).
+    let reply = extract_codex_reply_text(&codex_events)
+        .or_else(|| fs::read_to_string(&last_message_ref).ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    Ok(EphemeralSpawn {
+        ok,
+        reply,
+        ndjson: ndjson_lines(&events),
+        stderr: stderr_log,
+    })
+}
+
+/// Spawn a one-shot `claude -p` with EDITING allowed: `--output-format
+/// stream-json --verbose`, an allowedTools set incl. Read/Edit/Write/Bash, and a
+/// non-blocking `--permission-mode bypassPermissions` so it never blocks on an
+/// approval prompt. Runs with cwd = `cwd` (the harness owns isolation; we do NOT
+/// use claude's -w). Flags verified via `claude --help`.
+fn spawn_claude_ephemeral(
+    session_dir: &Path,
+    session_id: &str,
+    spec: &workflow::AgentStepSpec,
+    cwd: &Path,
+    timeout_ms: u64,
+) -> CliResult<EphemeralSpawn> {
+    let mut cmd = Command::new("claude");
+    cmd.arg("-p")
+        .arg(&spec.prompt)
+        .arg("--output-format")
+        .arg("stream-json")
+        .arg("--verbose")
+        .arg("--permission-mode")
+        .arg("bypassPermissions")
+        .arg("--allowedTools")
+        .arg("Read,Edit,Write,Bash")
+        .current_dir(cwd);
+    if let Some(model) = &spec.model {
+        cmd.arg("--model").arg(model);
+    }
+
+    let (process_success, events, stderr_log) = run_ndjson_child(
+        cmd,
+        session_dir,
+        session_id,
+        "claude.stream-json.ndjson",
+        timeout_ms,
+    )?;
+    let claude_events: Vec<ClaudeStreamEvent> = events
+        .iter()
+        .filter_map(|v| serde_json::to_string(v).ok())
+        .filter_map(|line| ClaudeStreamEvent::parse_line(&line))
+        .collect();
+    let ok = matches!(
+        infer_claude_session_status(&claude_events, process_success),
+        ProviderSessionStatus::Succeeded
+    );
+    let reply = extract_claude_reply_text(&claude_events);
+
+    Ok(EphemeralSpawn {
+        ok,
+        reply,
+        ndjson: ndjson_lines(&events),
+        stderr: stderr_log,
+    })
+}
+
+/// Spawn a child that emits NDJSON on stdout, non-interactively (stdin closed),
+/// teeing each parsed event to TWO sinks while it streams MID-TURN: (1) the
+/// durable per-session `<file>` the ProviderSession's jsonl_ref points at, and
+/// (2) the shared `<store_root>/provider_turn_events.jsonl` the SSE watcher tails
+/// to push live frames (keyed by session id). Enforces a per-node timeout: on
+/// timeout the child is killed and `process_success=false` (the run tolerates
+/// failed nodes). Returns `(process_success, parsed_event_payloads, stderr)`.
+fn run_ndjson_child(
+    mut cmd: Command,
+    session_dir: &Path,
+    session_id: &str,
+    live_file_name: &str,
+    timeout_ms: u64,
+) -> CliResult<(bool, Vec<serde_json::Value>, String)> {
+    let mut child = cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| CliError::Usage(format!("failed to spawn ephemeral worker: {error}")))?;
+
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| CliError::Usage("ephemeral worker stdout not available".into()))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| CliError::Usage("ephemeral worker stderr not available".into()))?;
+
+    let _ = fs::create_dir_all(session_dir);
+    let live_path = session_dir.join(live_file_name);
+    let shared_path = session_dir
+        .parent()
+        .and_then(|provider_sessions| provider_sessions.parent())
+        .map(|store_root| store_root.join("provider_turn_events.jsonl"));
+    let mut session_writer = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&live_path)
+        .ok()
+        .map(BufWriter::new);
+    let mut shared_writer = shared_path
+        .as_ref()
+        .and_then(|path| {
+            fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .ok()
+        })
+        .map(BufWriter::new);
+
+    let mut events = Vec::new();
+    let reader = BufReader::new(stdout);
+    for line in reader.lines() {
+        let Ok(line_str) = line else { continue };
+        let trimmed = line_str.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let Ok(payload) = serde_json::from_str::<serde_json::Value>(trimmed) else {
+            continue;
+        };
+        if let Some(writer) = session_writer.as_mut() {
+            let _ = writeln!(writer, "{trimmed}");
+            let _ = writer.flush();
+        }
+        if let Some(writer) = shared_writer.as_mut() {
+            let envelope = serde_json::json!({ "session_id": session_id, "event": payload });
+            if let Ok(line) = serde_json::to_string(&envelope) {
+                let _ = writeln!(writer, "{line}");
+                let _ = writer.flush();
+            }
+        }
+        events.push(payload);
+    }
+    if let Some(writer) = session_writer.as_mut() {
+        let _ = writer.flush();
+    }
+    if let Some(writer) = shared_writer.as_mut() {
+        let _ = writer.flush();
+    }
+
+    // stdout has closed (the reader loop above ran to EOF). Wait for exit with a
+    // per-node timeout so an interactive/auth hang cannot block the run.
+    let mut stderr_log = String::new();
+    BufReader::new(stderr).read_to_string(&mut stderr_log).ok();
+
+    let start = Instant::now();
+    let timeout = Duration::from_millis(timeout_ms.max(1));
+    let process_success = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status.success(),
+            Ok(None) => {
+                if start.elapsed() > timeout {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    if stderr_log.is_empty() {
+                        stderr_log = "timeout waiting for ephemeral worker".into();
+                    }
+                    break false;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(_) => break false,
+        }
+    };
+
+    Ok((process_success, events, stderr_log))
+}
+
+/// Join parsed event payloads back into NDJSON text (one JSON object per line).
+fn ndjson_lines(events: &[serde_json::Value]) -> String {
+    let mut out = String::new();
+    for event in events {
+        if let Ok(line) = serde_json::to_string(event) {
+            out.push_str(&line);
+            out.push('\n');
+        }
+    }
+    out
+}
+
+/// `git -C <wt> diff` — the node's collected evidence for the isolation path.
+/// Returns None when git is unavailable; an empty string means a clean tree.
+///
+/// We first `git add -A --intent-to-add` so brand-new UNTRACKED files a worker
+/// creates show up in the diff as additions (plain `git diff` omits untracked
+/// content). The worktree is throwaway, so touching its index is harmless.
+fn ephemeral_worktree_diff(worktree: &Path) -> Option<String> {
+    let wt = worktree.display().to_string();
+    // Best-effort intent-to-add so untracked files are included; ignore failure.
+    let _ = Command::new("git")
+        .args(["-C", &wt, "add", "-A", "--intent-to-add"])
+        .output();
+    let output = Command::new("git")
+        .args(["-C", &wt, "diff"])
+        .output()
+        .ok()?;
+    Some(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+/// Persist the ephemeral worker's NDJSON as neutral AgentEvents + one
+/// ProviderSession row keyed by `session_id`, so the dashboard per-node drill-in
+/// streams its tool calls. Reuses the existing claude stream-json reducer
+/// (`ingest_claude_stream_json`) for claude; emits a neutral event per codex
+/// NDJSON line for codex, mirroring the existing provider-output ingest.
+fn ingest_ephemeral_events(
+    store: &HarnessStore,
+    session_id: &str,
+    spec: &workflow::AgentStepSpec,
+    spawn: &EphemeralSpawn,
+    retain_trace: bool,
+) -> CliResult<()> {
+    // The DURABLE per-session AgentEvents are the heavy trace gated by retention.
+    // When `retain_trace` is false (a `--trace live` run) we skip them entirely:
+    // the live SSE frames already streamed during the spawn loop, so the only
+    // thing we omit is the historical (post-run) trace.
+    if retain_trace && spec.provider == "claude" {
+        // Reuse the neutral claude reducer; it writes AgentEvents AND a
+        // ProviderSession, but it mints its OWN session id from the stream. To
+        // keep the WorkflowStep.provider_session_id linkage stable we still need
+        // a ProviderSession under OUR session_id, so we additionally write that
+        // row below (latest-wins; the reducer's row coexists harmlessly).
+        let _ = ingest_claude_stream_json(store, session_id, None, None, &spawn.ndjson);
+    } else if retain_trace {
+        // Codex: one neutral AgentEvent per NDJSON line, mirroring the
+        // provider-output ingest path (event_type from the `type` discriminant).
+        for line in spawn.ndjson.lines() {
+            let Ok(payload) = serde_json::from_str::<serde_json::Value>(line.trim()) else {
+                continue;
+            };
+            let event_type = payload
+                .get("type")
+                .and_then(|t| t.as_str())
+                .unwrap_or("provider_output")
+                .replace(['/', '.'], "_");
+            let event = AgentEvent {
+                id: generated_id("event"),
+                agent_member_id: session_id.into(),
+                provider_runtime_id: None,
+                task_id: None,
+                provider: "codex".into(),
+                provider_thread_id: payload
+                    .get("thread_id")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string),
+                provider_turn_id: None,
+                provider_child_thread_id: None,
+                event_type,
+                summary: summarize_json_value(&payload),
+                payload_ref: None,
+                created_at: now_string(),
+            };
+            let _ = store.append_event(&event);
+        }
+    }
+
+    // A ProviderSession keyed by OUR session id — the stable drill-in key, always
+    // written so WorkflowStep.provider_session_id resolves either way. The
+    // jsonl_ref/stdout_ref point at the retained per-session NDJSON ONLY when the
+    // trace is durable; a live-only run leaves them None so the drill-in renders
+    // "trace not retained" (the NDJSON is pruned after the run).
+    let live_file = if spec.provider == "claude" {
+        "claude.stream-json.ndjson"
+    } else {
+        "codex.stream-json.ndjson"
+    };
+    let jsonl_ref = if retain_trace {
+        Some(
+            store
+                .root()
+                .join("provider-sessions")
+                .join(session_id)
+                .join(live_file)
+                .display()
+                .to_string(),
+        )
+    } else {
+        None
+    };
+    let status = if spawn.ok {
+        ProviderSessionStatus::Succeeded
+    } else {
+        ProviderSessionStatus::Failed
+    };
+    let session = ProviderSession {
+        id: session_id.into(),
+        provider: spec.provider.clone(),
+        agent_member_id: session_id.into(),
+        task_id: None,
+        workspace_ref: None,
+        provider_thread_id: None,
+        provider_turn_id: None,
+        terminal_source: status_to_terminal_source(&status),
+        status,
+        command: spec.provider.clone(),
+        args: Vec::new(),
+        prompt_ref: None,
+        prompt_summary: Some(format!(
+            "ephemeral {} worker: {}",
+            spec.provider, spec.label
+        )),
+        provider_session_ref: None,
+        stdout_ref: jsonl_ref.clone(),
+        jsonl_ref,
+        transcript_ref: None,
+        last_message_ref: None,
+        exit_code: Some(if spawn.ok { 0 } else { 1 }),
+        started_at: now_string(),
+        ended_at: Some(now_string()),
+        evidence_ids: Vec::new(),
+    };
+    let _ = store.append_provider_session(&session);
+    Ok(())
+}
+
+/// Prune the heavy turn-event trace a `--trace live` run streamed but does NOT
+/// retain (two-tier persistence). The live SSE frames already reached connected
+/// clients during execution; this removes what would otherwise SURVIVE so a past
+/// live-only run shows "trace not retained":
+///  - the per-session NDJSON directory (`provider-sessions/<session_id>/`), and
+///  - this session's rows in the shared `provider_turn_events.jsonl`.
+///
+/// Best-effort: a prune failure must not flip an otherwise-successful step.
+fn prune_live_only_trace(store: &HarnessStore, session_id: &str) {
+    // Drop the per-session NDJSON the spawn loop teed during streaming.
+    let session_dir = store.root().join("provider-sessions").join(session_id);
+    let _ = fs::remove_dir_all(&session_dir);
+
+    // Strip this session's lines from the shared turn-event log, keeping the rows
+    // of OTHER (possibly durable) sessions intact. Each line is a
+    // {"session_id": ..., "event": ...} envelope; we drop only matching ids.
+    let shared_path = store.root().join("provider_turn_events.jsonl");
+    let Ok(contents) = fs::read_to_string(&shared_path) else {
+        return;
+    };
+    let mut kept = String::new();
+    for line in contents.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let drop_line = serde_json::from_str::<serde_json::Value>(trimmed)
+            .ok()
+            .and_then(|value| {
+                value
+                    .get("session_id")
+                    .and_then(|s| s.as_str())
+                    .map(|s| s == session_id)
+            })
+            .unwrap_or(false);
+        if !drop_line {
+            kept.push_str(line);
+            kept.push('\n');
+        }
+    }
+    let _ = fs::write(&shared_path, kept);
+}
+
+/// Backstop GC (cleanup layer 3): `git worktree prune` + sweep
+/// `.harness/worktrees/` for dirs not tied to an ACTIVE run. Active = a worktree
+/// still registered with git (a leftover from a crash is unregistered after
+/// prune). Conservative: only removes dirs git no longer tracks.
+fn workflow_gc_worktrees(store: &HarnessStore) -> CliResult<serde_json::Value> {
+    let repo_root = workflow_repo_root();
+    let repo = repo_root.display().to_string();
+
+    // Prune dangling administrative entries first.
+    let _ = Command::new("git")
+        .args(["-C", &repo, "worktree", "prune"])
+        .output();
+
+    // Registered worktree paths (so we never delete a live one).
+    let listed = Command::new("git")
+        .args(["-C", &repo, "worktree", "list", "--porcelain"])
+        .output()?;
+    let listed_text = String::from_utf8_lossy(&listed.stdout);
+    let registered: BTreeSet<PathBuf> = listed_text
+        .lines()
+        .filter_map(|line| line.strip_prefix("worktree "))
+        .map(|p| PathBuf::from(p.trim()))
+        .collect();
+
+    let worktrees_dir = repo_root.join(".harness").join("worktrees");
+    let mut removed = Vec::new();
+    if let Ok(entries) = fs::read_dir(&worktrees_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            // Compare against the canonicalized registered set when possible.
+            let is_registered = registered
+                .iter()
+                .any(|reg| reg == &path || reg.canonicalize().ok() == path.canonicalize().ok());
+            if is_registered {
+                continue;
+            }
+            let _ = Command::new("git")
+                .args(["-C", &repo, "worktree", "remove", "--force"])
+                .arg(&path)
+                .output();
+            let _ = fs::remove_dir_all(&path);
+            removed.push(path.display().to_string());
+        }
+    }
+    let _ = Command::new("git")
+        .args(["-C", &repo, "worktree", "prune"])
+        .output();
+
+    // Touch the store so the GC arm has a uniform signature with the rest.
+    let _ = store.root();
+
+    Ok(serde_json::json!({
+        "ok": true,
+        "removed": removed,
+        "worktrees_dir": worktrees_dir.display().to_string(),
+    }))
+}
+
+/// Parse a `unix-ms:<millis>` timestamp string into millis; 0 if unparseable.
+fn created_ms(created_at: &str) -> u128 {
+    created_at
+        .strip_prefix("unix-ms:")
+        .and_then(|n| n.parse::<u128>().ok())
+        .unwrap_or(0)
+}
+
+/// Retention-window GC for the heavy per-node turn-event trace. The small audit
+/// record (WorkflowRun / WorkflowStep / result / initiated_by / spec) is ALWAYS
+/// kept; only the durable per-session NDJSON of OLDER runs is pruned. We keep the
+/// `keep_runs` most-recent durable runs and any newer than `keep_days` (when
+/// set), and prune the rest: delete each session's on-disk NDJSON dir, null its
+/// `jsonl_ref`/`stdout_ref` (so `/v1/sessions/<id>/events` reports
+/// `retained:false`), and flip the run's `trace_retention` to `"expired"`
+/// (distinct from `"live"`, which was never retained). `--dry-run` reports the
+/// plan without touching anything. Run it on a schedule (cron / `/loop`).
+fn workflow_gc_trace(
+    store: &HarnessStore,
+    keep_runs: usize,
+    keep_days: Option<u64>,
+    dry_run: bool,
+) -> CliResult<serde_json::Value> {
+    let now_ms = current_unix_ms();
+    let mut durable: Vec<WorkflowRun> = latest_workflow_runs_in_append_order(store)?
+        .into_iter()
+        .filter(|run| run.trace_retention == "durable")
+        .collect();
+    // Most-recent first, so the first `keep_runs` survive.
+    durable.sort_by_key(|run| std::cmp::Reverse(created_ms(&run.created_at)));
+
+    let steps = latest_workflow_steps_in_append_order(store)?;
+    let mut pruned = Vec::new();
+    let mut freed_sessions = 0usize;
+
+    for (index, run) in durable.iter().enumerate() {
+        let too_many = index >= keep_runs;
+        let too_old = keep_days
+            .map(|days| {
+                now_ms.saturating_sub(created_ms(&run.created_at)) > u128::from(days) * 86_400_000
+            })
+            .unwrap_or(false);
+        if !(too_many || too_old) {
+            continue;
+        }
+        let session_ids: Vec<String> = steps
+            .iter()
+            .filter(|step| step.run_id == run.id)
+            .filter_map(|step| step.provider_session_id.clone())
+            .collect();
+        pruned.push(serde_json::json!({
+            "run_id": run.id,
+            "created_at": run.created_at,
+            "sessions": session_ids.len(),
+            "reason": if too_old { "age" } else { "count" },
+        }));
+        if dry_run {
+            freed_sessions += session_ids.len();
+            continue;
+        }
+        for session_id in &session_ids {
+            let dir = store.root().join("provider-sessions").join(session_id);
+            let _ = fs::remove_dir_all(&dir);
+            if let Some(mut session) = latest_provider_session(store, session_id)? {
+                session.jsonl_ref = None;
+                session.stdout_ref = None;
+                store.append_provider_session(&session)?;
+            }
+            freed_sessions += 1;
+        }
+        let mut expired = run.clone();
+        expired.trace_retention = "expired".to_string();
+        store.append_workflow_run(&expired)?;
+    }
+
+    Ok(serde_json::json!({
+        "ok": true,
+        "kept_runs": durable.len().min(keep_runs),
+        "pruned_runs": pruned.len(),
+        "freed_sessions": freed_sessions,
+        "dry_run": dry_run,
+        "pruned": pruned,
+    }))
+}
+
 fn workflow_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    require_subcommand(args, "workflow run|list")?;
+    require_subcommand(
+        args,
+        "workflow run|run-spec|run-script|list|gc-worktrees|gc-trace",
+    )?;
     match args[0].as_str() {
+        "gc-worktrees" => {
+            let result = workflow_gc_worktrees(store)?;
+            print_json(&result)?;
+        }
+        "gc-trace" => {
+            let keep_runs = value(&args[1..], "--keep-runs")
+                .and_then(|v| v.parse::<usize>().ok())
+                .unwrap_or(100);
+            let keep_days = value(&args[1..], "--keep-days").and_then(|v| v.parse::<u64>().ok());
+            let dry_run = args[1..].iter().any(|a| a == "--dry-run");
+            let result = workflow_gc_trace(store, keep_runs, keep_days, dry_run)?;
+            print_json(&result)?;
+        }
         "list" => {
             let registry = workflow::WorkflowRegistry::builtin();
             let defs: Vec<_> = registry
@@ -3860,6 +4686,14 @@ fn workflow_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
         }
         "run" => {
             let result = workflow_run_value(store, &args[1..])?;
+            print_json(&result)?;
+        }
+        "run-spec" => {
+            let result = workflow_run_spec_value(store, &args[1..])?;
+            print_json(&result)?;
+        }
+        "run-script" => {
+            let result = workflow_run_script_value(store, &args[1..])?;
             print_json(&result)?;
         }
         other => {
@@ -3878,8 +4712,6 @@ fn workflow_run_value(store: &HarnessStore, args: &[String]) -> CliResult<serde_
         .get(&name)
         .ok_or_else(|| CliError::Usage(format!("unknown workflow: {name}")))?;
 
-    let codex_member_id = required(args, "--codex")?;
-    let claude_member_id = required(args, "--claude")?;
     let prompt = value(args, "--prompt").unwrap_or_else(|| "failure X".to_string());
     let options = WorkflowDeliveryOptions {
         dry_run: has_flag(args, "--dry-run"),
@@ -3887,11 +4719,8 @@ fn workflow_run_value(store: &HarnessStore, args: &[String]) -> CliResult<serde_
         timeout_ms: value(args, "--timeout-ms")
             .and_then(|value| value.parse::<u64>().ok())
             .unwrap_or(3_000),
-    };
-
-    let members = workflow::WorkflowMembers {
-        codex_member_id,
-        claude_member_id,
+        // Registry runs always retain their trace durably.
+        trace_retention: "durable".to_string(),
     };
 
     // The run id is minted up front so the driver can journal each step's
@@ -3909,7 +4738,207 @@ fn workflow_run_value(store: &HarnessStore, args: &[String]) -> CliResult<serde_
         }
     };
 
-    run_workflow_with_driver(store, &run_id, def, &members, &prompt, &driver)
+    run_workflow_with_driver(store, &run_id, def, &prompt, &driver)
+}
+
+/// `harness workflow run-spec <spec.json> [--start-runtime] [--dry-run]
+///  [--timeout-ms <ms>]`
+///
+/// Reads a runtime-authored [`workflow::WorkflowSpec`] JSON-IR file, validates it
+/// by parsing, walks the IR via `dispatch_spec`, and journals the run/steps
+/// exactly like the registry `run` path (shared `journal_workflow_outcome`).
+///
+/// Each `agent()` node carries its PROVIDER ("codex" | "claude") directly — the
+/// spec drives delivery, so there is no `--codex`/`--claude` member binding. The
+/// node spins up a NEW one-shot ephemeral worker (Stage B: real spawn; Stage A:
+/// a mock driver returns a provider-carrying StepResult so the IR runs
+/// end-to-end without spawning agents).
+fn workflow_run_spec_value(store: &HarnessStore, args: &[String]) -> CliResult<serde_json::Value> {
+    // The spec path is the first positional arg (not a --flag) or `--spec <path>`.
+    let path = value(args, "--spec")
+        .or_else(|| args.iter().find(|arg| !arg.starts_with("--")).cloned())
+        .ok_or_else(|| {
+            CliError::Usage("workflow run-spec requires a <spec.json> path".to_string())
+        })?;
+
+    let raw = std::fs::read_to_string(&path)
+        .map_err(|error| CliError::Usage(format!("cannot read spec {path}: {error}")))?;
+    let spec: workflow::WorkflowSpec = serde_json::from_str(&raw)
+        .map_err(|error| CliError::Usage(format!("invalid workflow spec {path}: {error}")))?;
+
+    // Retention policy for the heavy per-node turn-event trace. `durable`
+    // (default) persists the trace; `live` streams it over SSE during execution
+    // but does not retain it. Validated up front so a typo fails fast.
+    let trace_retention = value(args, "--trace").unwrap_or_else(|| "durable".to_string());
+    if trace_retention != "durable" && trace_retention != "live" {
+        return Err(CliError::Usage(format!(
+            "--trace must be 'durable' or 'live', got '{trace_retention}'"
+        )));
+    }
+
+    let options = WorkflowDeliveryOptions {
+        dry_run: has_flag(args, "--dry-run"),
+        start_runtime: has_flag(args, "--start-runtime"),
+        timeout_ms: value(args, "--timeout-ms")
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(3_000),
+        trace_retention: trace_retention.clone(),
+    };
+
+    // Who initiated the run: an explicit `--initiated-by <id>`, else the
+    // ambient agent member id (when an agent shells out), else "operator".
+    let initiated_by = value(args, "--initiated-by")
+        .or_else(|| std::env::var("HARNESS_AGENT_MEMBER_ID").ok())
+        .filter(|id| !id.is_empty())
+        .unwrap_or_else(|| "operator".to_string());
+
+    // Mint the run id up front so the real driver can journal each step's
+    // `running` row as it starts (live SSE progress), mirroring `workflow run`.
+    let run_id = generated_id("wfrun");
+
+    let run = WorkflowRun {
+        id: run_id.clone(),
+        workflow_name: spec.name.clone(),
+        status: WorkflowRunStatus::Running,
+        step_ids: Vec::new(),
+        created_at: now_string(),
+        ended_at: None,
+        summary: None,
+        // The dynamic IR carries the spec's `args` opaquely onto the run.
+        args: spec.args.clone(),
+        agents_spawned: 0,
+        final_output: None,
+        // Always-persisted durable audit record: who ran it + the raw validated
+        // spec shape, plus the retention policy governing the heavy trace.
+        initiated_by: Some(initiated_by),
+        spec: Some(serde_json::to_value(&spec)?),
+        trace_retention,
+    };
+    store.append_workflow_run(&run)?;
+
+    let outcome = {
+        let run_id = run_id.clone();
+        let driver = move |step: &workflow::AgentStepSpec| {
+            workflow_real_agent_step(store, &run_id, &options, step)
+        };
+        workflow::dispatch_spec(&spec, &driver)
+            .map_err(|error| CliError::Usage(error.to_string()))?
+    };
+
+    journal_workflow_outcome(store, run, &outcome)
+}
+
+/// `harness workflow run-script <prog.star> [--name <n>] [--args <json>]
+///  [--trace durable|live] [--dry-run] [--start-runtime] [--timeout-ms <ms>]
+///  [--initiated-by <id>]`
+///
+/// Reads a runtime-authored Starlark program, evaluates it via
+/// `starlark_front::run_starlark` (the imperative front-end over the same
+/// `agent()`/`parallel()` primitives the JSON IR exposes), and journals the
+/// run/steps exactly like `run-spec` (shared `journal_workflow_outcome`).
+///
+/// Unlike the JSON IR, the script body is not a serializable spec; the durable
+/// audit record snapshots the raw script text under
+/// `spec = {"lang":"starlark","script": <text>}` so the run is reproducible.
+fn workflow_run_script_value(
+    store: &HarnessStore,
+    args: &[String],
+) -> CliResult<serde_json::Value> {
+    // The script path is the first positional arg (not a --flag) or `--script <path>`.
+    let path = value(args, "--script")
+        .or_else(|| args.iter().find(|arg| !arg.starts_with("--")).cloned())
+        .ok_or_else(|| {
+            CliError::Usage("workflow run-script requires a <prog.star> path".to_string())
+        })?;
+
+    let script = std::fs::read_to_string(&path)
+        .map_err(|error| CliError::Usage(format!("cannot read script {path}: {error}")))?;
+
+    // Workflow name: explicit `--name`, else the file stem.
+    let name = value(args, "--name").unwrap_or_else(|| {
+        Path::new(&path)
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or("workflow")
+            .to_string()
+    });
+
+    // Optional `--args <json>`: parsed into the opaque value injected as the
+    // script's `args` global. A typo fails fast.
+    let parsed_args = match value(args, "--args") {
+        Some(raw) => Some(
+            serde_json::from_str::<serde_json::Value>(&raw)
+                .map_err(|error| CliError::Usage(format!("invalid --args json: {error}")))?,
+        ),
+        None => None,
+    };
+
+    // Retention policy for the heavy per-node turn-event trace. `durable`
+    // (default) persists the trace; `live` streams it over SSE during execution
+    // but does not retain it. Validated up front so a typo fails fast.
+    let trace_retention = value(args, "--trace").unwrap_or_else(|| "durable".to_string());
+    if trace_retention != "durable" && trace_retention != "live" {
+        return Err(CliError::Usage(format!(
+            "--trace must be 'durable' or 'live', got '{trace_retention}'"
+        )));
+    }
+
+    let options = WorkflowDeliveryOptions {
+        dry_run: has_flag(args, "--dry-run"),
+        start_runtime: has_flag(args, "--start-runtime"),
+        timeout_ms: value(args, "--timeout-ms")
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(3_000),
+        trace_retention: trace_retention.clone(),
+    };
+
+    // Who initiated the run: an explicit `--initiated-by <id>`, else the
+    // ambient agent member id (when an agent shells out), else "operator".
+    let initiated_by = value(args, "--initiated-by")
+        .or_else(|| std::env::var("HARNESS_AGENT_MEMBER_ID").ok())
+        .filter(|id| !id.is_empty())
+        .unwrap_or_else(|| "operator".to_string());
+
+    // Mint the run id up front so the real driver can journal each step's
+    // `running` row as it starts (live SSE progress), mirroring `run-spec`.
+    let run_id = generated_id("wfrun");
+
+    let run = WorkflowRun {
+        id: run_id.clone(),
+        workflow_name: name.clone(),
+        status: WorkflowRunStatus::Running,
+        step_ids: Vec::new(),
+        created_at: now_string(),
+        ended_at: None,
+        summary: None,
+        // The script's `args` global is carried opaquely onto the run.
+        args: parsed_args.clone(),
+        agents_spawned: 0,
+        final_output: None,
+        // Always-persisted durable audit record: who ran it + the raw script
+        // text (the script is not a serializable spec), plus the retention
+        // policy governing the heavy trace.
+        initiated_by: Some(initiated_by),
+        spec: Some(serde_json::json!({ "lang": "starlark", "script": script })),
+        trace_retention,
+    };
+    store.append_workflow_run(&run)?;
+
+    let outcome = {
+        let run_id = run_id.clone();
+        let driver = move |step: &workflow::AgentStepSpec| {
+            workflow_real_agent_step(store, &run_id, &options, step)
+        };
+        harness_workflow::starlark_front::run_starlark(
+            &script,
+            &name,
+            parsed_args.as_ref(),
+            &driver,
+        )
+        .map_err(|error| CliError::Usage(error.to_string()))?
+    };
+
+    journal_workflow_outcome(store, run, &outcome)
 }
 
 /// Create the WorkflowRun (running), dispatch the workflow body with the given
@@ -3920,11 +4949,10 @@ fn run_workflow_with_driver(
     store: &HarnessStore,
     run_id: &str,
     def: &workflow::WorkflowDef,
-    members: &workflow::WorkflowMembers,
     prompt: &str,
     driver: &workflow::AgentStepFn<'_>,
 ) -> CliResult<serde_json::Value> {
-    let mut run = WorkflowRun {
+    let run = WorkflowRun {
         id: run_id.to_string(),
         workflow_name: def.name.to_string(),
         status: WorkflowRunStatus::Running,
@@ -3932,12 +4960,34 @@ fn run_workflow_with_driver(
         created_at: now_string(),
         ended_at: None,
         summary: None,
+        // Registry runs are not parameterized and do not snapshot the scheduler;
+        // `journal_workflow_outcome` fills `final_output`/`agents_spawned` (0 here).
+        args: None,
+        agents_spawned: 0,
+        final_output: None,
+        // Registry runs are operator-triggered and carry no dynamic spec; they
+        // default to durable trace retention.
+        initiated_by: Some("operator".to_string()),
+        spec: None,
+        trace_retention: "durable".to_string(),
     };
     store.append_workflow_run(&run)?;
 
     // Dispatch the compiled workflow body (option C registry dispatch).
-    let outcome = (def.run)(driver, members, prompt);
+    let outcome = (def.run)(driver, prompt);
 
+    journal_workflow_outcome(store, run, &outcome)
+}
+
+/// Journal the running `run`'s terminal steps + finalize it from a
+/// [`workflow::WorkflowOutcome`]. Shared by the registry `run` path and the
+/// dynamic `run-spec` (IR) path so both journal identically.
+fn journal_workflow_outcome(
+    store: &HarnessStore,
+    mut run: WorkflowRun,
+    outcome: &workflow::WorkflowOutcome,
+) -> CliResult<serde_json::Value> {
+    let run_id = run.id.clone();
     // Journal one TERMINAL WorkflowStep per StepResult, preserving order. When
     // the driver already journaled a `running` row at step start (real path), we
     // REUSE its `step_id` and real `started_at` so the latest-wins projection
@@ -3960,6 +5010,9 @@ fn run_workflow_with_driver(
             provider_session_id: result.provider_session_id.clone(),
             status: result.step_status(),
             output_summary: Some(result.output_summary.clone()),
+            // The structured result mirrors the StepResult (status + linkage),
+            // beyond the human-facing summary.
+            result: Some(workflow::step_result_json(result)),
             started_at,
             ended_at: Some(now),
         };
@@ -3968,10 +5021,13 @@ fn run_workflow_with_driver(
         steps_json.push(serde_json::to_value(&step)?);
     }
 
-    // Finalize the run with the workflow's own status verdict.
+    // Finalize the run with the workflow's own status verdict + the collected
+    // structured output and the agent count the dispatch spawned.
     run.status = outcome.status;
     run.ended_at = Some(now_string());
     run.summary = Some(outcome.summary.clone());
+    run.agents_spawned = outcome.agents_spawned;
+    run.final_output = outcome.final_output.clone();
     store.append_workflow_run(&run)?;
 
     Ok(serde_json::json!({
@@ -6943,6 +7999,99 @@ fn read_provider_session_events(
     Ok((events, truncated))
 }
 
+/// Outcome of reading one provider session's PERSISTED turn-event trace for the
+/// historical drill-in (`GET /v1/sessions/<id>/events`). Distinguishes a durable
+/// run whose heavy trace survived from a `--trace live` run whose trace was
+/// pruned after execution (two-tier persistence): the latter streamed live over
+/// SSE but retains nothing, so a past drill-in shows "trace not retained".
+struct SessionTurnEvents {
+    /// Whether the heavy per-node trace was retained for this session.
+    retained: bool,
+    /// Ordered turn events parsed from the durable per-session NDJSON (one JSON
+    /// value per line). Empty when `retained` is false.
+    events: Vec<serde_json::Value>,
+    /// True when the cap was hit and trailing events were dropped.
+    truncated: bool,
+}
+
+/// Read the PERSISTED per-session turn events for a completed durable run's
+/// historical drill-in, keyed by provider session id. This is the read side of
+/// the two-tier persistence design: the small audit record (WorkflowRun/Step)
+/// always survives, while the heavy turn-event trace survives only for
+/// `trace_retention == "durable"` runs.
+///
+/// Source of truth is the DURABLE per-session NDJSON the ProviderSession's
+/// `jsonl_ref` (claude) / `stdout_ref` (codex) points at — the file the spawn
+/// loop writes under `provider-sessions/<id>/` and which survives a server
+/// restart (unlike the shared `provider_turn_events.jsonl` live tee, which
+/// `serve` truncates on startup). We parse it the same way `read_provider_session_events`
+/// and `sse.rs` do: one JSON value per line, skipping torn/non-JSON lines so a
+/// mid-append final fragment is safe.
+///
+/// A `--trace live` run prunes that NDJSON after execution and the Backend left
+/// the ProviderSession's `jsonl_ref`/`stdout_ref` as `None` precisely so the
+/// historical drill-in reports `retained: false` ("trace not retained") instead
+/// of an empty-but-durable trace. A session with no ProviderSession row at all is
+/// likewise reported as not retained.
+fn read_session_turn_events(
+    store: &HarnessStore,
+    session_id: &str,
+) -> CliResult<SessionTurnEvents> {
+    const MAX_EVENTS: usize = 1000;
+
+    // The retention marker IS the presence of a recorded event stream on the
+    // session row: durable runs point jsonl_ref/stdout_ref at the retained
+    // per-session NDJSON; live-only runs (and missing sessions) have neither.
+    let path = match latest_provider_session(store, session_id)? {
+        Some(session) => session
+            .jsonl_ref
+            .clone()
+            .or_else(|| session.stdout_ref.clone()),
+        None => None,
+    };
+    let Some(path) = path else {
+        return Ok(SessionTurnEvents {
+            retained: false,
+            events: Vec::new(),
+            truncated: false,
+        });
+    };
+
+    // The trace was retained but the file may have been swept; treat an
+    // unreadable durable ref as an empty (still-retained) trace rather than 404.
+    let content = match fs::read_to_string(&path) {
+        Ok(content) => content,
+        Err(_) => {
+            return Ok(SessionTurnEvents {
+                retained: true,
+                events: Vec::new(),
+                truncated: false,
+            })
+        }
+    };
+    let mut events = Vec::new();
+    let mut truncated = false;
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) else {
+            continue;
+        };
+        if events.len() >= MAX_EVENTS {
+            truncated = true;
+            break;
+        }
+        events.push(value);
+    }
+    Ok(SessionTurnEvents {
+        retained: true,
+        events,
+        truncated,
+    })
+}
+
 fn latest_provider_sessions_in_append_order(
     store: &HarnessStore,
 ) -> CliResult<Vec<ProviderSession>> {
@@ -9111,7 +10260,11 @@ fn print_help() {
   codex run --task <task> --agent <agent> --worktree <path> --prompt <text>
   codex review --task <task> --agent <agent> --worktree <path> [--base <branch>] [--uncommitted] [--prompt <text>]
   workflow list
-  workflow run --name <name> --codex <member> --claude <member> [--prompt <text>] [--start-runtime] [--dry-run] [--timeout-ms <ms>]
+  workflow run --name <name> [--prompt <text>] [--start-runtime] [--dry-run] [--timeout-ms <ms>]
+  workflow run-spec <spec.json> [--start-runtime] [--dry-run] [--timeout-ms <ms>]
+  workflow run-script <prog.star> [--name <n>] [--args <json>] [--trace durable|live] [--dry-run]
+  workflow gc-worktrees
+  workflow gc-trace [--keep-runs <n>] [--keep-days <d>] [--dry-run]
   serve [--addr 127.0.0.1:8787] [--once]
   daemon start [--socket <path>] [--idle-secs <n>]   (unix: resident warm-child host)
   daemon status
@@ -9131,18 +10284,12 @@ mod workflow_runtime_tests {
         store
     }
 
-    fn mock_members() -> workflow::WorkflowMembers {
-        workflow::WorkflowMembers {
-            codex_member_id: "member-codex".to_string(),
-            claude_member_id: "member-claude".to_string(),
-        }
-    }
-
     fn ok_step(spec: &workflow::AgentStepSpec) -> workflow::StepResult {
         workflow::StepResult {
             phase: spec.phase.clone(),
             label: spec.label.clone(),
-            member_id: spec.member_id.clone(),
+            provider: spec.provider.clone(),
+            isolation: spec.isolation.clone(),
             ok: true,
             provider_session_id: Some(format!("session-{}", spec.label)),
             output_summary: format!("mock ok: {}", spec.label),
@@ -9160,9 +10307,8 @@ mod workflow_runtime_tests {
         let driver = |spec: &workflow::AgentStepSpec| ok_step(spec);
 
         let run_id = generated_id("wfrun");
-        let result =
-            run_workflow_with_driver(&store, &run_id, def, &mock_members(), "failure X", &driver)
-                .expect("run workflow");
+        let result = run_workflow_with_driver(&store, &run_id, def, "failure X", &driver)
+            .expect("run workflow");
 
         // The returned run is completed and references 3 steps (serial + 2 parallel).
         let run = result.get("run").expect("run key");
@@ -9198,6 +10344,206 @@ mod workflow_runtime_tests {
         assert_eq!(steps[2].phase, "audit");
     }
 
+    /// Build a ProviderSession keyed by `session_id`. `jsonl_ref` carries the
+    /// durable per-session NDJSON path when retained; `None` is the live-only
+    /// "trace not retained" marker the Backend leaves after pruning.
+    fn provider_session_with_ref(session_id: &str, jsonl_ref: Option<String>) -> ProviderSession {
+        ProviderSession {
+            id: session_id.into(),
+            provider: "claude".into(),
+            agent_member_id: session_id.into(),
+            task_id: None,
+            workspace_ref: None,
+            provider_thread_id: None,
+            provider_turn_id: None,
+            terminal_source: Some(MessageTerminalSource::TurnCompleted),
+            status: ProviderSessionStatus::Succeeded,
+            command: "harness".into(),
+            args: Vec::new(),
+            prompt_ref: None,
+            prompt_summary: None,
+            provider_session_ref: None,
+            stdout_ref: None,
+            jsonl_ref,
+            transcript_ref: None,
+            last_message_ref: None,
+            exit_code: Some(0),
+            started_at: "unix-ms:1".into(),
+            ended_at: Some("unix-ms:2".into()),
+            evidence_ids: Vec::new(),
+        }
+    }
+
+    /// Seed one durable run: a real per-session NDJSON + ProviderSession(jsonl_ref),
+    /// a completed WorkflowRun(trace_retention="durable") at `created`, and a step
+    /// linking them. Returns the NDJSON path so a test can assert its survival.
+    fn seed_durable_run(store: &HarnessStore, id: &str, created: u128) -> std::path::PathBuf {
+        let session = format!("sess-{id}");
+        let ndjson = store
+            .root()
+            .join("provider-sessions")
+            .join(&session)
+            .join("events.jsonl");
+        fs::create_dir_all(ndjson.parent().unwrap()).expect("mkdir session dir");
+        fs::write(&ndjson, "{\"type\":\"assistant\"}\n").expect("write ndjson");
+        store
+            .append_provider_session(&provider_session_with_ref(
+                &session,
+                Some(ndjson.display().to_string()),
+            ))
+            .expect("append session");
+        store
+            .append_workflow_run(&WorkflowRun {
+                id: id.into(),
+                workflow_name: "demo".into(),
+                status: WorkflowRunStatus::Completed,
+                step_ids: vec![format!("{id}-s")],
+                created_at: format!("unix-ms:{created}"),
+                ended_at: Some(format!("unix-ms:{}", created + 1)),
+                summary: None,
+                args: None,
+                agents_spawned: 1,
+                final_output: None,
+                initiated_by: Some("op".into()),
+                spec: None,
+                trace_retention: "durable".into(),
+            })
+            .expect("append run");
+        store
+            .append_workflow_step(&WorkflowStep {
+                id: format!("{id}-s"),
+                run_id: id.into(),
+                phase: "work".into(),
+                label: "node".into(),
+                provider_session_id: Some(session),
+                status: WorkflowStepStatus::Completed,
+                output_summary: None,
+                result: None,
+                started_at: format!("unix-ms:{created}"),
+                ended_at: Some(format!("unix-ms:{}", created + 1)),
+            })
+            .expect("append step");
+        ndjson
+    }
+
+    #[test]
+    fn gc_trace_prunes_old_durable_runs_and_keeps_recent() {
+        let store = temp_store("gc-trace");
+        let old1 = seed_durable_run(&store, "wfrun-old1", 1_000);
+        let old2 = seed_durable_run(&store, "wfrun-old2", 2_000);
+        let recent = seed_durable_run(&store, "wfrun-new", 9_000);
+
+        // Keep only the single most-recent durable run; prune the rest.
+        let out = workflow_gc_trace(&store, 1, None, false).expect("gc-trace");
+        assert_eq!(out.get("pruned_runs").and_then(|v| v.as_u64()), Some(2));
+        assert_eq!(out.get("kept_runs").and_then(|v| v.as_u64()), Some(1));
+
+        // Recent run's heavy trace survives intact.
+        assert!(recent.exists(), "recent NDJSON must remain");
+        assert!(
+            read_session_turn_events(&store, "sess-wfrun-new")
+                .unwrap()
+                .retained
+        );
+
+        // Old runs: NDJSON deleted, endpoint reports not-retained, run flips to expired.
+        assert!(!old1.exists() && !old2.exists(), "old NDJSON removed");
+        assert!(
+            !read_session_turn_events(&store, "sess-wfrun-old1")
+                .unwrap()
+                .retained
+        );
+        assert!(
+            !read_session_turn_events(&store, "sess-wfrun-old2")
+                .unwrap()
+                .retained
+        );
+        let latest = latest_workflow_runs_in_append_order(&store).unwrap();
+        let retention = |id: &str| {
+            latest
+                .iter()
+                .find(|r| r.id == id)
+                .unwrap()
+                .trace_retention
+                .clone()
+        };
+        assert_eq!(retention("wfrun-old1"), "expired");
+        assert_eq!(retention("wfrun-old2"), "expired");
+        assert_eq!(retention("wfrun-new"), "durable");
+    }
+
+    #[test]
+    fn gc_trace_dry_run_changes_nothing() {
+        let store = temp_store("gc-trace-dry");
+        let old = seed_durable_run(&store, "wfrun-old", 1_000);
+        seed_durable_run(&store, "wfrun-new", 9_000);
+        let out = workflow_gc_trace(&store, 1, None, true).expect("gc dry");
+        assert_eq!(out.get("pruned_runs").and_then(|v| v.as_u64()), Some(1));
+        assert!(old.exists(), "dry-run must not delete the NDJSON");
+        assert!(
+            read_session_turn_events(&store, "sess-wfrun-old")
+                .unwrap()
+                .retained
+        );
+    }
+
+    #[test]
+    fn durable_session_returns_persisted_turn_events_in_order() {
+        let store = temp_store("durable-events");
+        // Write the durable per-session NDJSON the jsonl_ref will point at.
+        let ndjson = store
+            .root()
+            .join("provider-sessions")
+            .join("session-A")
+            .join("claude.stream-json.ndjson");
+        fs::create_dir_all(ndjson.parent().unwrap()).expect("mkdir session dir");
+        fs::write(&ndjson, "{\"type\":\"assistant\"}\n{\"type\":\"result\"}\n")
+            .expect("write ndjson");
+        store
+            .append_provider_session(&provider_session_with_ref(
+                "session-A",
+                Some(ndjson.display().to_string()),
+            ))
+            .expect("append durable session");
+
+        let out = read_session_turn_events(&store, "session-A").expect("read events");
+        assert!(out.retained, "durable run must report retained");
+        assert!(!out.truncated);
+        assert_eq!(out.events.len(), 2);
+        assert_eq!(
+            out.events[0].get("type").and_then(|t| t.as_str()),
+            Some("assistant")
+        );
+        assert_eq!(
+            out.events[1].get("type").and_then(|t| t.as_str()),
+            Some("result")
+        );
+    }
+
+    #[test]
+    fn live_only_session_reports_not_retained() {
+        let store = temp_store("live-events");
+        // Live-only: the session row survives but its jsonl_ref/stdout_ref are None
+        // (the Backend pruned the NDJSON after the run).
+        store
+            .append_provider_session(&provider_session_with_ref("session-L", None))
+            .expect("append live-only session");
+
+        let out = read_session_turn_events(&store, "session-L").expect("read events");
+        assert!(!out.retained, "live run must report not retained");
+        assert!(out.events.is_empty(), "not-retained trace yields no events");
+        assert!(!out.truncated);
+    }
+
+    #[test]
+    fn unknown_session_reports_not_retained() {
+        let store = temp_store("missing-events");
+        // No ProviderSession row at all -> nothing to drill into.
+        let out = read_session_turn_events(&store, "session-Z").expect("read events");
+        assert!(!out.retained, "missing session has no retained trace");
+        assert!(out.events.is_empty());
+    }
+
     #[test]
     fn workflow_run_transitions_running_to_failed_on_failed_required_step() {
         let store = temp_store("failed");
@@ -9209,7 +10555,8 @@ mod workflow_runtime_tests {
             workflow::StepResult {
                 phase: spec.phase.clone(),
                 label: spec.label.clone(),
-                member_id: spec.member_id.clone(),
+                provider: spec.provider.clone(),
+                isolation: spec.isolation.clone(),
                 ok,
                 provider_session_id: ok.then(|| "s".to_string()),
                 output_summary: "mock".to_string(),
@@ -9219,9 +10566,8 @@ mod workflow_runtime_tests {
         };
 
         let run_id = generated_id("wfrun");
-        let result =
-            run_workflow_with_driver(&store, &run_id, def, &mock_members(), "failure Y", &driver)
-                .expect("run workflow");
+        let result = run_workflow_with_driver(&store, &run_id, def, "failure Y", &driver)
+            .expect("run workflow");
         let run = result.get("run").expect("run key");
         assert_eq!(run.get("status").and_then(|s| s.as_str()), Some("failed"));
 
@@ -9238,6 +10584,108 @@ mod workflow_runtime_tests {
     }
 
     #[test]
+    fn workflow_run_script_journals_steps_and_snapshots_source() {
+        let store = temp_store("run-script");
+        // A two-agent Starlark program that chains output. `--dry-run` returns a
+        // mock StepResult per node, so no provider is spawned (CI-safe).
+        let script = r#"
+phase("scan")
+a = agent("scan " + args["area"])
+phase("fix")
+agent("fix: " + a, provider = "claude", label = "fixer")
+"#;
+        let dir = std::env::temp_dir().join(format!("harness-wf-script-{}", generated_id("src")));
+        fs::create_dir_all(&dir).expect("mkdir script dir");
+        let path = dir.join("triage.star");
+        fs::write(&path, script).expect("write script");
+
+        let args = vec![
+            path.display().to_string(),
+            "--args".to_string(),
+            r#"{"area":"checkout"}"#.to_string(),
+            "--dry-run".to_string(),
+        ];
+        let result = workflow_run_script_value(&store, &args).expect("run script");
+
+        // The run completed and references two steps.
+        let run = result.get("run").expect("run key");
+        assert_eq!(
+            run.get("status").and_then(|s| s.as_str()),
+            Some("completed")
+        );
+        // Workflow name defaults to the file stem.
+        assert_eq!(
+            run.get("workflow_name").and_then(|s| s.as_str()),
+            Some("triage")
+        );
+        let step_ids = run
+            .get("step_ids")
+            .and_then(|s| s.as_array())
+            .expect("step_ids");
+        assert_eq!(step_ids.len(), 2);
+
+        // The durable audit record snapshots the raw script text as a starlark spec.
+        let runs = store.workflow_runs().expect("read runs");
+        let final_run = runs.last().expect("a run row");
+        let spec = final_run.spec.as_ref().expect("spec snapshot");
+        assert_eq!(spec.get("lang").and_then(|v| v.as_str()), Some("starlark"));
+        assert_eq!(spec.get("script").and_then(|v| v.as_str()), Some(script));
+        // The parsed --args are carried opaquely onto the run.
+        assert_eq!(
+            final_run
+                .args
+                .as_ref()
+                .and_then(|a| a.get("area"))
+                .and_then(|v| v.as_str()),
+            Some("checkout")
+        );
+
+        // The real driver journals a `running` row at step start and reuses its
+        // id for the terminal row, so the append-only log holds running+terminal
+        // rows per step. Project latest-wins by id: the two referenced steps must
+        // each resolve to a completed terminal row across the distinct phases.
+        let all_steps = store.workflow_steps().expect("read steps");
+        let referenced: Vec<&str> = step_ids
+            .iter()
+            .map(|id| id.as_str().expect("step id string"))
+            .collect();
+        let mut terminal: BTreeMap<&str, &WorkflowStep> = BTreeMap::new();
+        for step in &all_steps {
+            if referenced.contains(&step.id.as_str()) {
+                terminal.insert(step.id.as_str(), step);
+            }
+        }
+        assert_eq!(terminal.len(), 2);
+        let phases: BTreeSet<&str> = terminal.values().map(|s| s.phase.as_str()).collect();
+        assert_eq!(
+            phases,
+            BTreeSet::from(["scan", "fix"]),
+            "both phases journaled"
+        );
+        for step in terminal.values() {
+            assert_eq!(step.status, WorkflowStepStatus::Completed);
+        }
+    }
+
+    #[test]
+    fn workflow_run_script_rejects_bad_args_json() {
+        let store = temp_store("run-script-badargs");
+        let dir = std::env::temp_dir().join(format!("harness-wf-script-{}", generated_id("bad")));
+        fs::create_dir_all(&dir).expect("mkdir script dir");
+        let path = dir.join("noop.star");
+        fs::write(&path, r#"agent("x")"#).expect("write script");
+
+        let args = vec![
+            path.display().to_string(),
+            "--args".to_string(),
+            "{not json".to_string(),
+            "--dry-run".to_string(),
+        ];
+        let err = workflow_run_script_value(&store, &args).expect_err("bad json");
+        assert!(matches!(err, CliError::Usage(_)));
+    }
+
+    #[test]
     fn dashboard_snapshot_includes_workflow_keys() {
         let store = temp_store("snapshot");
         // Empty store: keys must still be present (additive, inspectable).
@@ -9250,7 +10698,7 @@ mod workflow_runtime_tests {
         let def = registry.get("investigate").expect("registered");
         let driver = |spec: &workflow::AgentStepSpec| ok_step(spec);
         let run_id = generated_id("wfrun");
-        run_workflow_with_driver(&store, &run_id, def, &mock_members(), "x", &driver).expect("run");
+        run_workflow_with_driver(&store, &run_id, def, "x", &driver).expect("run");
 
         let snapshot = dashboard_snapshot(&store).expect("snapshot");
         let runs = snapshot
@@ -9296,6 +10744,7 @@ mod workflow_runtime_tests {
                 provider_session_id: None,
                 status: WorkflowStepStatus::Running,
                 output_summary: None,
+                result: None,
                 started_at: started_at.clone(),
                 ended_at: None,
             };
@@ -9305,7 +10754,8 @@ mod workflow_runtime_tests {
             workflow::StepResult {
                 phase: spec.phase.clone(),
                 label: spec.label.clone(),
-                member_id: spec.member_id.clone(),
+                provider: spec.provider.clone(),
+                isolation: spec.isolation.clone(),
                 ok: true,
                 provider_session_id: Some(format!("session-{}", spec.label)),
                 output_summary: format!("ok: {}", spec.label),
@@ -9315,8 +10765,7 @@ mod workflow_runtime_tests {
         };
 
         let result =
-            run_workflow_with_driver(&store, &run_id, def, &mock_members(), "topic", &driver)
-                .expect("run workflow");
+            run_workflow_with_driver(&store, &run_id, def, "topic", &driver).expect("run workflow");
         assert_eq!(
             result
                 .get("run")

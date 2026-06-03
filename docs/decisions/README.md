@@ -29,6 +29,8 @@ consequences, affected modules, and validation path.
 | [0019](0019-vision-goal-task-workbench-redesign.md) | Vision → Goal → Task Workbench redesign (board + detail + derived graph) |
 | [0020](0020-codex-persistent-service-exploration.md) | Codex persistent-service exploration — keep the respawn model (Claude resident is separate) |
 | [0021](0021-resident-daemon.md) | Resident-daemon warm-child host (amends 0018) — internal Unix-socket host keeps exec-stream children warm across deliveries |
+| [0022](0022-dynamic-workflow-runtime-json-ir.md) | Dynamic Workflow Runtime — skill + CLI entry, JSON-IR spec (not embedded JS), new `harness-workflow` crate |
+| [0023](0023-starlark-workflow-frontend.md) | Starlark program front-end — third authoring surface (loops/conditionals/data-driven fan-out) via a hermetic interpreter; reuses the 0022 backend |
 
 ## Split Rule
 
