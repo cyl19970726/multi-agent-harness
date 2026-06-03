@@ -422,19 +422,26 @@ export function WorkflowRunDetail({ model, onSelectionChange, apiUrl }: Workflow
 }
 
 /**
- * The "trace: durable|live" indicator for a run. "durable" keeps the heavy
- * per-node turn-event trace so a completed run can be drilled into; "live"
- * streams it over SSE during execution but retains nothing afterwards.
+ * The "trace: durable|live|expired" indicator for a run. "durable" keeps the
+ * heavy per-node turn-event trace so a completed run can be drilled into; "live"
+ * streams it over SSE during execution but retains nothing afterwards;
+ * "expired" was durable but its trace was later swept by the retention-window
+ * GC (`harness workflow gc-trace`) — the audit record stays, the heavy trace is
+ * gone.
  */
 function TraceIndicator({ retention }: { retention?: string }) {
   const value = retention ?? "durable";
   const durable = value === "durable";
+  const caption =
+    value === "durable"
+      ? "per-node trace retained"
+      : value === "expired"
+        ? "trace swept by retention GC"
+        : "streamed live, not retained";
   return (
     <span className="inline-flex items-center gap-1.5">
       <Badge tone={durable ? "info" : "idle"}>trace: {value}</Badge>
-      <span className="text-[11px] text-muted-foreground">
-        {durable ? "per-node trace retained" : "streamed live, not retained"}
-      </span>
+      <span className="text-[11px] text-muted-foreground">{caption}</span>
     </span>
   );
 }

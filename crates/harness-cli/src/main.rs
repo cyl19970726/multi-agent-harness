@@ -4570,11 +4570,106 @@ fn workflow_gc_worktrees(store: &HarnessStore) -> CliResult<serde_json::Value> {
     }))
 }
 
+/// Parse a `unix-ms:<millis>` timestamp string into millis; 0 if unparseable.
+fn created_ms(created_at: &str) -> u128 {
+    created_at
+        .strip_prefix("unix-ms:")
+        .and_then(|n| n.parse::<u128>().ok())
+        .unwrap_or(0)
+}
+
+/// Retention-window GC for the heavy per-node turn-event trace. The small audit
+/// record (WorkflowRun / WorkflowStep / result / initiated_by / spec) is ALWAYS
+/// kept; only the durable per-session NDJSON of OLDER runs is pruned. We keep the
+/// `keep_runs` most-recent durable runs and any newer than `keep_days` (when
+/// set), and prune the rest: delete each session's on-disk NDJSON dir, null its
+/// `jsonl_ref`/`stdout_ref` (so `/v1/sessions/<id>/events` reports
+/// `retained:false`), and flip the run's `trace_retention` to `"expired"`
+/// (distinct from `"live"`, which was never retained). `--dry-run` reports the
+/// plan without touching anything. Run it on a schedule (cron / `/loop`).
+fn workflow_gc_trace(
+    store: &HarnessStore,
+    keep_runs: usize,
+    keep_days: Option<u64>,
+    dry_run: bool,
+) -> CliResult<serde_json::Value> {
+    let now_ms = current_unix_ms();
+    let mut durable: Vec<WorkflowRun> = latest_workflow_runs_in_append_order(store)?
+        .into_iter()
+        .filter(|run| run.trace_retention == "durable")
+        .collect();
+    // Most-recent first, so the first `keep_runs` survive.
+    durable.sort_by(|a, b| created_ms(&b.created_at).cmp(&created_ms(&a.created_at)));
+
+    let steps = latest_workflow_steps_in_append_order(store)?;
+    let mut pruned = Vec::new();
+    let mut freed_sessions = 0usize;
+
+    for (index, run) in durable.iter().enumerate() {
+        let too_many = index >= keep_runs;
+        let too_old = keep_days
+            .map(|days| now_ms.saturating_sub(created_ms(&run.created_at)) > u128::from(days) * 86_400_000)
+            .unwrap_or(false);
+        if !(too_many || too_old) {
+            continue;
+        }
+        let session_ids: Vec<String> = steps
+            .iter()
+            .filter(|step| step.run_id == run.id)
+            .filter_map(|step| step.provider_session_id.clone())
+            .collect();
+        pruned.push(serde_json::json!({
+            "run_id": run.id,
+            "created_at": run.created_at,
+            "sessions": session_ids.len(),
+            "reason": if too_old { "age" } else { "count" },
+        }));
+        if dry_run {
+            freed_sessions += session_ids.len();
+            continue;
+        }
+        for session_id in &session_ids {
+            let dir = store.root().join("provider-sessions").join(session_id);
+            let _ = fs::remove_dir_all(&dir);
+            if let Some(mut session) = latest_provider_session(store, session_id)? {
+                session.jsonl_ref = None;
+                session.stdout_ref = None;
+                store.append_provider_session(&session)?;
+            }
+            freed_sessions += 1;
+        }
+        let mut expired = run.clone();
+        expired.trace_retention = "expired".to_string();
+        store.append_workflow_run(&expired)?;
+    }
+
+    Ok(serde_json::json!({
+        "ok": true,
+        "kept_runs": durable.len().min(keep_runs),
+        "pruned_runs": pruned.len(),
+        "freed_sessions": freed_sessions,
+        "dry_run": dry_run,
+        "pruned": pruned,
+    }))
+}
+
 fn workflow_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    require_subcommand(args, "workflow run|run-spec|run-script|list|gc-worktrees")?;
+    require_subcommand(
+        args,
+        "workflow run|run-spec|run-script|list|gc-worktrees|gc-trace",
+    )?;
     match args[0].as_str() {
         "gc-worktrees" => {
             let result = workflow_gc_worktrees(store)?;
+            print_json(&result)?;
+        }
+        "gc-trace" => {
+            let keep_runs = value(&args[1..], "--keep-runs")
+                .and_then(|v| v.parse::<usize>().ok())
+                .unwrap_or(100);
+            let keep_days = value(&args[1..], "--keep-days").and_then(|v| v.parse::<u64>().ok());
+            let dry_run = args[1..].iter().any(|a| a == "--dry-run");
+            let result = workflow_gc_trace(store, keep_runs, keep_days, dry_run)?;
             print_json(&result)?;
         }
         "list" => {
@@ -10166,6 +10261,8 @@ fn print_help() {
   workflow run --name <name> [--prompt <text>] [--start-runtime] [--dry-run] [--timeout-ms <ms>]
   workflow run-spec <spec.json> [--start-runtime] [--dry-run] [--timeout-ms <ms>]
   workflow run-script <prog.star> [--name <n>] [--args <json>] [--trace durable|live] [--dry-run]
+  workflow gc-worktrees
+  workflow gc-trace [--keep-runs <n>] [--keep-days <d>] [--dry-run]
   serve [--addr 127.0.0.1:8787] [--once]
   daemon start [--socket <path>] [--idle-secs <n>]   (unix: resident warm-child host)
   daemon status
@@ -10273,6 +10370,103 @@ mod workflow_runtime_tests {
             ended_at: Some("unix-ms:2".into()),
             evidence_ids: Vec::new(),
         }
+    }
+
+    /// Seed one durable run: a real per-session NDJSON + ProviderSession(jsonl_ref),
+    /// a completed WorkflowRun(trace_retention="durable") at `created`, and a step
+    /// linking them. Returns the NDJSON path so a test can assert its survival.
+    fn seed_durable_run(store: &HarnessStore, id: &str, created: u128) -> std::path::PathBuf {
+        let session = format!("sess-{id}");
+        let ndjson = store
+            .root()
+            .join("provider-sessions")
+            .join(&session)
+            .join("events.jsonl");
+        fs::create_dir_all(ndjson.parent().unwrap()).expect("mkdir session dir");
+        fs::write(&ndjson, "{\"type\":\"assistant\"}\n").expect("write ndjson");
+        store
+            .append_provider_session(&provider_session_with_ref(
+                &session,
+                Some(ndjson.display().to_string()),
+            ))
+            .expect("append session");
+        store
+            .append_workflow_run(&WorkflowRun {
+                id: id.into(),
+                workflow_name: "demo".into(),
+                status: WorkflowRunStatus::Completed,
+                step_ids: vec![format!("{id}-s")],
+                created_at: format!("unix-ms:{created}"),
+                ended_at: Some(format!("unix-ms:{}", created + 1)),
+                summary: None,
+                args: None,
+                agents_spawned: 1,
+                final_output: None,
+                initiated_by: Some("op".into()),
+                spec: None,
+                trace_retention: "durable".into(),
+            })
+            .expect("append run");
+        store
+            .append_workflow_step(&WorkflowStep {
+                id: format!("{id}-s"),
+                run_id: id.into(),
+                phase: "work".into(),
+                label: "node".into(),
+                provider_session_id: Some(session),
+                status: WorkflowStepStatus::Completed,
+                output_summary: None,
+                result: None,
+                started_at: format!("unix-ms:{created}"),
+                ended_at: Some(format!("unix-ms:{}", created + 1)),
+            })
+            .expect("append step");
+        ndjson
+    }
+
+    #[test]
+    fn gc_trace_prunes_old_durable_runs_and_keeps_recent() {
+        let store = temp_store("gc-trace");
+        let old1 = seed_durable_run(&store, "wfrun-old1", 1_000);
+        let old2 = seed_durable_run(&store, "wfrun-old2", 2_000);
+        let recent = seed_durable_run(&store, "wfrun-new", 9_000);
+
+        // Keep only the single most-recent durable run; prune the rest.
+        let out = workflow_gc_trace(&store, 1, None, false).expect("gc-trace");
+        assert_eq!(out.get("pruned_runs").and_then(|v| v.as_u64()), Some(2));
+        assert_eq!(out.get("kept_runs").and_then(|v| v.as_u64()), Some(1));
+
+        // Recent run's heavy trace survives intact.
+        assert!(recent.exists(), "recent NDJSON must remain");
+        assert!(read_session_turn_events(&store, "sess-wfrun-new").unwrap().retained);
+
+        // Old runs: NDJSON deleted, endpoint reports not-retained, run flips to expired.
+        assert!(!old1.exists() && !old2.exists(), "old NDJSON removed");
+        assert!(!read_session_turn_events(&store, "sess-wfrun-old1").unwrap().retained);
+        assert!(!read_session_turn_events(&store, "sess-wfrun-old2").unwrap().retained);
+        let latest = latest_workflow_runs_in_append_order(&store).unwrap();
+        let retention = |id: &str| {
+            latest
+                .iter()
+                .find(|r| r.id == id)
+                .unwrap()
+                .trace_retention
+                .clone()
+        };
+        assert_eq!(retention("wfrun-old1"), "expired");
+        assert_eq!(retention("wfrun-old2"), "expired");
+        assert_eq!(retention("wfrun-new"), "durable");
+    }
+
+    #[test]
+    fn gc_trace_dry_run_changes_nothing() {
+        let store = temp_store("gc-trace-dry");
+        let old = seed_durable_run(&store, "wfrun-old", 1_000);
+        seed_durable_run(&store, "wfrun-new", 9_000);
+        let out = workflow_gc_trace(&store, 1, None, true).expect("gc dry");
+        assert_eq!(out.get("pruned_runs").and_then(|v| v.as_u64()), Some(1));
+        assert!(old.exists(), "dry-run must not delete the NDJSON");
+        assert!(read_session_turn_events(&store, "sess-wfrun-old").unwrap().retained);
     }
 
     #[test]
