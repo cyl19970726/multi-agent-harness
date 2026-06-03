@@ -3766,6 +3766,47 @@ struct WorkflowDeliveryOptions {
 /// This fn is TOTAL: any error (store failure, no runtime, provider failure) is
 /// reported as `StepResult { ok: false, .. }` so the workflow's control flow —
 /// and the `parallel()` barrier — stays in charge rather than unwinding.
+///
+/// Build the TERMINAL `WorkflowStep` row for a finished step. The real
+/// completion time is `started_at + duration_ms` (the worker's measured
+/// duration), not the journal `now`: at finalize every step is journaled with
+/// the same `now`, which would make a serial step falsely overlap the later
+/// parallel ones. Shared by the live per-step journal (in the driver) and the
+/// finalize journal (for mock/test drivers).
+fn build_terminal_step(
+    run_id: &str,
+    step_id: String,
+    started_at: String,
+    result: &workflow::StepResult,
+) -> WorkflowStep {
+    let now = now_string();
+    let ended_at = match (
+        Some(created_ms(&started_at)).filter(|&ms| ms > 0),
+        result
+            .details
+            .as_ref()
+            .and_then(|d| d.get("duration_ms"))
+            .and_then(|v| v.as_u64()),
+    ) {
+        (Some(start_ms), Some(dur)) => {
+            format!("unix-ms:{}", start_ms.saturating_add(u128::from(dur)))
+        }
+        _ => now,
+    };
+    WorkflowStep {
+        id: step_id,
+        run_id: run_id.to_string(),
+        phase: result.phase.clone(),
+        label: result.label.clone(),
+        provider_session_id: result.provider_session_id.clone(),
+        status: result.step_status(),
+        output_summary: Some(result.output_summary.clone()),
+        result: Some(workflow::step_result_json(result)),
+        started_at,
+        ended_at: Some(ended_at),
+    }
+}
+
 fn workflow_real_agent_step(
     store: &HarnessStore,
     run_id: &str,
@@ -3795,10 +3836,10 @@ fn workflow_real_agent_step(
     // row still records the outcome. Best-effort, like the rest of this seam.
     let _ = store.append_workflow_step(&running);
 
-    match try_workflow_real_agent_step(store, options, spec, run_id) {
+    let result = match try_workflow_real_agent_step(store, options, spec, run_id) {
         Ok(mut result) => {
-            result.step_id = Some(step_id);
-            result.started_at = Some(started_at);
+            result.step_id = Some(step_id.clone());
+            result.started_at = Some(started_at.clone());
             result
         }
         Err(error) => {
@@ -3823,13 +3864,20 @@ fn workflow_real_agent_step(
                 ok: false,
                 provider_session_id: None,
                 output_summary: format!("agent step error: {error}"),
-                step_id: Some(step_id),
-                started_at: Some(started_at),
+                step_id: Some(step_id.clone()),
+                started_at: Some(started_at.clone()),
                 details: Some(details),
                 structured: None,
             }
         }
-    }
+    };
+    // Journal the TERMINAL row the instant this step finishes. The WorkflowStep
+    // SSE watcher tails workflow_steps.jsonl, so the dashboard's per-step status +
+    // tokens now light up live as each worker completes — not batched at run
+    // finalize. `run_workflow_with_driver` recognises this (step_id is Some) and
+    // does not re-journal.
+    let _ = store.append_workflow_step(&build_terminal_step(run_id, step_id, started_at, &result));
+    result
 }
 
 fn try_workflow_real_agent_step(
@@ -5399,45 +5447,20 @@ fn journal_workflow_outcome(
     // fresh id and stamp the journal time, preserving the pre-existing behavior.
     let mut steps_json = Vec::new();
     for result in &outcome.steps {
+        // The real driver (`workflow_real_agent_step`) already journaled this
+        // step's terminal row the instant it completed — for live per-step SSE.
+        // It is recognisable by a present `step_id`. Mock/test drivers leave it
+        // `None`, so we mint an id and journal the terminal row here.
+        let already_journaled = result.step_id.is_some();
         let step_id = result
             .step_id
             .clone()
             .unwrap_or_else(|| generated_id("wfstep"));
-        let now = now_string();
-        let started_at = result.started_at.clone().unwrap_or_else(|| now.clone());
-        // Real completion time = start + the worker's measured duration. The
-        // journal time (`now`) is identical for EVERY step in a run (they are all
-        // journaled together at finalize), which would make a serial step look
-        // like it overlapped the later parallel ones in the gantt — so prefer
-        // started_at + duration_ms whenever both are known.
-        let ended_at = match (
-            Some(created_ms(&started_at)).filter(|&ms| ms > 0),
-            result
-                .details
-                .as_ref()
-                .and_then(|d| d.get("duration_ms"))
-                .and_then(|v| v.as_u64()),
-        ) {
-            (Some(start_ms), Some(dur)) => {
-                format!("unix-ms:{}", start_ms.saturating_add(u128::from(dur)))
-            }
-            _ => now.clone(),
-        };
-        let step = WorkflowStep {
-            id: step_id.clone(),
-            run_id: run_id.to_string(),
-            phase: result.phase.clone(),
-            label: result.label.clone(),
-            provider_session_id: result.provider_session_id.clone(),
-            status: result.step_status(),
-            output_summary: Some(result.output_summary.clone()),
-            // The structured result mirrors the StepResult (status + linkage),
-            // beyond the human-facing summary.
-            result: Some(workflow::step_result_json(result)),
-            started_at,
-            ended_at: Some(ended_at),
-        };
-        store.append_workflow_step(&step)?;
+        let started_at = result.started_at.clone().unwrap_or_else(now_string);
+        let step = build_terminal_step(&run_id, step_id.clone(), started_at, result);
+        if !already_journaled {
+            store.append_workflow_step(&step)?;
+        }
         run.step_ids.push(step_id);
         steps_json.push(serde_json::to_value(&step)?);
     }
@@ -11508,7 +11531,7 @@ agent("fix: " + a, provider = "claude", label = "fixer")
             store
                 .append_workflow_step(&running)
                 .expect("journal running");
-            workflow::StepResult {
+            let result = workflow::StepResult {
                 phase: spec.phase.clone(),
                 label: spec.label.clone(),
                 provider: spec.provider.clone(),
@@ -11516,11 +11539,18 @@ agent("fix: " + a, provider = "claude", label = "fixer")
                 ok: true,
                 provider_session_id: Some(format!("session-{}", spec.label)),
                 output_summary: format!("ok: {}", spec.label),
-                step_id: Some(step_id),
-                started_at: Some(started_at),
+                step_id: Some(step_id.clone()),
+                started_at: Some(started_at.clone()),
                 details: None,
                 structured: None,
-            }
+            };
+            // Mirror the real driver under the live-per-step contract: also
+            // journal the TERMINAL row at completion, reusing the same step_id +
+            // start time. `run_workflow_with_driver` must then NOT re-journal it.
+            store
+                .append_workflow_step(&build_terminal_step(&run_id, step_id, started_at, &result))
+                .expect("journal terminal");
+            result
         };
 
         let result =
@@ -11533,13 +11563,15 @@ agent("fix: " + a, provider = "claude", label = "fixer")
             Some("completed")
         );
 
-        // Raw append log: a `running` row was journaled at step start, AND a
-        // terminal row was journaled per step (2 rows x 3 steps = 6 rows).
+        // Raw append log: the driver journaled a `running` row at start AND the
+        // terminal row at completion (2 rows x 3 steps = 6). run_workflow_with_driver
+        // recognises the driver-journaled terminal (step_id is Some) and does NOT
+        // re-journal — so the count stays 6, not 9.
         let appended = store.workflow_steps().expect("read step log");
         assert_eq!(
             appended.len(),
             6,
-            "running + terminal rows journaled per step"
+            "driver journals running + terminal per step; finalize does not re-journal"
         );
         assert_eq!(
             appended
