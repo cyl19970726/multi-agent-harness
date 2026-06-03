@@ -4126,8 +4126,11 @@ fn build_step_details(
     duration_ms: u64,
     diff: Option<&str>,
 ) -> serde_json::Value {
+    // The node's requested model wins; otherwise fall back to the model the
+    // worker reported in its own output (claude's init frame).
+    let model = spec.model.clone().or_else(|| spawn.model.clone());
     let mut details = serde_json::json!({
-        "model": spec.model,
+        "model": model,
         "exit_code": spawn.exit_code,
         "duration_ms": duration_ms,
     });
@@ -4195,6 +4198,11 @@ struct EphemeralSpawn {
     /// Normalized token usage parsed from the terminal event, when present:
     /// `{ input, output, total }`. `None` when the stream carried no usage.
     tokens: Option<TokenUsage>,
+    /// The model the worker actually ran, parsed from its output when the
+    /// provider reports it (claude's `system`/`init` event). `None` for codex,
+    /// whose `exec --json` stream carries no model — the node's requested
+    /// `spec.model` is the only signal there.
+    model: Option<String>,
 }
 
 /// Normalized token usage for one worker turn, provider-agnostic. Parsed from the
@@ -4274,6 +4282,22 @@ fn parse_claude_usage(events: &[serde_json::Value]) -> Option<TokenUsage> {
             output,
             total: input.saturating_add(output),
         })
+    })
+}
+
+/// The model a worker actually ran, when the provider reports it. Claude
+/// `--output-format stream-json` emits a `{"type":"system","subtype":"init",
+/// "model":"claude-…"}` frame; codex `exec --json` carries none (returns `None`).
+fn parse_worker_model(events: &[serde_json::Value]) -> Option<String> {
+    events.iter().find_map(|payload| {
+        if payload.get("type").and_then(|t| t.as_str()) != Some("system") {
+            return None;
+        }
+        payload
+            .get("model")
+            .and_then(|m| m.as_str())
+            .filter(|m| !m.is_empty())
+            .map(|m| m.to_string())
     })
 }
 
@@ -4366,6 +4390,8 @@ fn spawn_codex_ephemeral(
         exit_code: run.exit_code,
         timed_out: run.timed_out,
         tokens,
+        // codex exec --json carries no model; only spec.model is known.
+        model: None,
     })
 }
 
@@ -4415,6 +4441,7 @@ fn spawn_claude_ephemeral(
     );
     let reply = extract_claude_reply_text(&claude_events);
     let tokens = parse_claude_usage(&run.events);
+    let model = parse_worker_model(&run.events);
 
     Ok(EphemeralSpawn {
         ok,
@@ -4424,6 +4451,7 @@ fn spawn_claude_ephemeral(
         exit_code: run.exit_code,
         timed_out: run.timed_out,
         tokens,
+        model,
     })
 }
 
@@ -5164,6 +5192,24 @@ fn journal_workflow_outcome(
             .unwrap_or_else(|| generated_id("wfstep"));
         let now = now_string();
         let started_at = result.started_at.clone().unwrap_or_else(|| now.clone());
+        // Real completion time = start + the worker's measured duration. The
+        // journal time (`now`) is identical for EVERY step in a run (they are all
+        // journaled together at finalize), which would make a serial step look
+        // like it overlapped the later parallel ones in the gantt — so prefer
+        // started_at + duration_ms whenever both are known.
+        let ended_at = match (
+            Some(created_ms(&started_at)).filter(|&ms| ms > 0),
+            result
+                .details
+                .as_ref()
+                .and_then(|d| d.get("duration_ms"))
+                .and_then(|v| v.as_u64()),
+        ) {
+            (Some(start_ms), Some(dur)) => {
+                format!("unix-ms:{}", start_ms.saturating_add(u128::from(dur)))
+            }
+            _ => now.clone(),
+        };
         let step = WorkflowStep {
             id: step_id.clone(),
             run_id: run_id.to_string(),
@@ -5176,7 +5222,7 @@ fn journal_workflow_outcome(
             // beyond the human-facing summary.
             result: Some(workflow::step_result_json(result)),
             started_at,
-            ended_at: Some(now),
+            ended_at: Some(ended_at),
         };
         store.append_workflow_step(&step)?;
         run.step_ids.push(step_id);
@@ -10571,8 +10617,10 @@ mod workflow_runtime_tests {
                 output: 4,
                 total: 14,
             }),
+            model: None,
         };
         let details = build_step_details(&spec, &spawn, 1234, None);
+        // spec.model wins over the (absent) worker-reported model.
         assert_eq!(details["model"], serde_json::json!("gpt-5-codex"));
         assert_eq!(details["exit_code"], serde_json::json!(0));
         assert_eq!(details["duration_ms"], serde_json::json!(1234));
@@ -10599,8 +10647,11 @@ mod workflow_runtime_tests {
             exit_code: Some(3),
             timed_out: false,
             tokens: None,
+            // The node requested no model, so the worker-reported one is used.
+            model: Some("claude-opus-4-8".into()),
         };
         let details = build_step_details(&spec, &spawn, 50, None);
+        assert_eq!(details["model"], serde_json::json!("claude-opus-4-8"));
         assert_eq!(details["failure"]["failed"], serde_json::json!(true));
         assert_eq!(details["failure"]["reason"], serde_json::json!("exit"));
         assert_eq!(
@@ -10627,6 +10678,7 @@ mod workflow_runtime_tests {
             exit_code: Some(0),
             timed_out: false,
             tokens: None,
+            model: None,
         };
         let big = "x".repeat(WORKTREE_DIFF_CAP + 5_000);
         let details = build_step_details(&spec, &spawn, 1, Some(&big));
@@ -10639,6 +10691,25 @@ mod workflow_runtime_tests {
         let details = build_step_details(&spec, &spawn, 1, Some(small));
         assert_eq!(details["worktree_diff"], serde_json::json!(small));
         assert_eq!(details["worktree_diff_truncated"], serde_json::json!(false));
+    }
+
+    #[test]
+    fn parse_worker_model_reads_claude_init_and_ignores_codex() {
+        let claude = vec![
+            serde_json::json!({"type": "system", "subtype": "init", "model": "claude-opus-4-8"}),
+            serde_json::json!({"type": "result", "usage": {"input_tokens": 1, "output_tokens": 1}}),
+        ];
+        assert_eq!(
+            parse_worker_model(&claude).as_deref(),
+            Some("claude-opus-4-8")
+        );
+        // codex exec --json carries no system/model frame.
+        let codex = vec![
+            serde_json::json!({"type": "thread.started"}),
+            serde_json::json!({"type": "turn.completed", "usage": {"input_tokens": 1}}),
+        ];
+        assert_eq!(parse_worker_model(&codex), None);
+        assert_eq!(parse_worker_model(&[]), None);
     }
 
     #[test]
