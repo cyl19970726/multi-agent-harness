@@ -1,0 +1,9 @@
+{
+  "name": "bad-agent",
+  "nodes": [
+    {
+      "type": "agent",
+      "provider": "codex"
+    }
+  ]
+}

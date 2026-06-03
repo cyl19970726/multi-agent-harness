@@ -1270,6 +1270,40 @@ pub struct WorkflowRun {
     /// Optional human-facing summary set when the run reaches a terminal state.
     #[serde(default)]
     pub summary: Option<String>,
+    /// Optional JSON parameterization the run was authored with (the dynamic
+    /// `run-spec` IR carries a `WorkflowSpec.args`). `None` for registry runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub args: Option<serde_json::Value>,
+    /// How many agent steps this run spawned (the per-run agent count). Defaults
+    /// to 0 for legacy rows that predate the field.
+    #[serde(default)]
+    pub agents_spawned: u64,
+    /// The collected structured output of the run (e.g. each step's result),
+    /// set when the run reaches a terminal state. `None` while running / legacy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub final_output: Option<serde_json::Value>,
+    /// Who initiated this run — an agent member id (e.g. a Codex / Claude member)
+    /// or "operator" for a human-triggered CLI run. `None` for legacy rows that
+    /// predate the field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initiated_by: Option<String>,
+    /// The raw validated `WorkflowSpec` JSON the dynamic `run-spec` path was
+    /// authored with — the small durable audit record of the run shape. `None`
+    /// for registry runs / legacy rows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spec: Option<serde_json::Value>,
+    /// Retention policy for the heavy per-node provider turn-event trace:
+    /// "durable" (default) persists the trace so any completed run can be drilled
+    /// into; "live" streams the trace over SSE during execution but does not
+    /// retain it. Live streaming is independent of this and always happens.
+    #[serde(default = "default_trace_retention")]
+    pub trace_retention: String,
+}
+
+/// Default retention policy for a [`WorkflowRun`]'s turn-event trace. Legacy rows
+/// and registry runs that predate the field deserialize as "durable".
+fn default_trace_retention() -> String {
+    "durable".to_string()
 }
 
 /// One agent step inside a [`WorkflowRun`]. `phase` is the declarative grouping
@@ -1286,6 +1320,11 @@ pub struct WorkflowStep {
     pub status: WorkflowStepStatus,
     #[serde(default)]
     pub output_summary: Option<String>,
+    /// Optional structured result for this step (beyond the human-facing
+    /// `output_summary`). The dynamic IR path carries each `StepResult`'s
+    /// structured payload here. `None` for legacy / summary-only steps.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<serde_json::Value>,
     pub started_at: String,
     #[serde(default)]
     pub ended_at: Option<String>,

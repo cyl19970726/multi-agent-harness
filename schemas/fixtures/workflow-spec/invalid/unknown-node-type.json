@@ -1,0 +1,10 @@
+{
+  "name": "bad-type",
+  "nodes": [
+    {
+      "type": "loop",
+      "provider": "codex",
+      "prompt": "do it"
+    }
+  ]
+}

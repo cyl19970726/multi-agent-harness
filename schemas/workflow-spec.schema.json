@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-harness.local/schemas/workflow-spec.schema.json",
+  "title": "WorkflowSpec",
+  "description": "A runtime-authored workflow shape (JSON-IR). An agent writes this and runs it via `harness workflow run-spec <spec.json>`.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["name", "nodes"],
+  "properties": {
+    "name": { "type": "string", "minLength": 1 },
+    "args": {},
+    "nodes": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/node" }
+    }
+  },
+  "$defs": {
+    "node": {
+      "oneOf": [
+        { "$ref": "#/$defs/agentNode" },
+        { "$ref": "#/$defs/phaseNode" },
+        { "$ref": "#/$defs/parallelNode" },
+        { "$ref": "#/$defs/pipelineNode" }
+      ]
+    },
+    "agentNode": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "provider", "prompt"],
+      "properties": {
+        "type": { "const": "agent" },
+        "provider": {
+          "description": "The provider that runs this node. Each agent node spins up a NEW one-shot ephemeral worker (codex exec / claude -p) that CAN EDIT files and, by default, shares the repo cwd with sibling nodes.",
+          "enum": ["codex", "claude"]
+        },
+        "prompt": { "type": "string", "minLength": 1 },
+        "phase": { "type": "string", "minLength": 1 },
+        "label": { "type": "string", "minLength": 1 },
+        "model": {
+          "description": "Optional model override; absent uses the provider default.",
+          "type": "string",
+          "minLength": 1
+        },
+        "isolation": {
+          "description": "Opt-in per-node isolation. \"worktree\" runs the node in its own harness-owned throwaway git worktree (its diff is the node's evidence, not auto-merged); absent edits the shared repo cwd.",
+          "enum": ["worktree"]
+        }
+      }
+    },
+    "phaseNode": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "name", "nodes"],
+      "properties": {
+        "type": { "const": "phase" },
+        "name": { "type": "string", "minLength": 1 },
+        "nodes": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/node" }
+        }
+      }
+    },
+    "parallelNode": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "nodes"],
+      "properties": {
+        "type": { "const": "parallel" },
+        "nodes": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/node" }
+        }
+      }
+    },
+    "pipelineNode": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "stages"],
+      "properties": {
+        "type": { "const": "pipeline" },
+        "stages": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/node" }
+        }
+      }
+    }
+  }
+}

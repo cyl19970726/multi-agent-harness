@@ -366,6 +366,12 @@ mod tests {
             created_at: "unix-ms:1".into(),
             ended_at: None,
             summary: None,
+            args: None,
+            agents_spawned: 0,
+            final_output: None,
+            initiated_by: None,
+            spec: None,
+            trace_retention: "durable".into(),
         }
     }
 
@@ -378,6 +384,7 @@ mod tests {
             provider_session_id: None,
             status: WorkflowStepStatus::Running,
             output_summary: None,
+            result: None,
             started_at: "unix-ms:1".into(),
             ended_at: None,
         }
