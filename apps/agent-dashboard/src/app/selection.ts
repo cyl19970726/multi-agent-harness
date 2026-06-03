@@ -32,6 +32,11 @@ export interface SelectionState {
   /** Which tab is open on the agent detail page; defaults to "conversation". */
   agentTab?: AgentTab;
   taskId?: string;
+  /**
+   * The doc opened on the Docs surface, addressed by its repo path
+   * (e.g. "docs/prd.md"); setting it implies the docs surface.
+   */
+  docPath?: string;
   /** Which tab is open on the task document; defaults to "overview". */
   taskTab?: TaskTab;
   /** The selected workflow run id (opens WorkflowRunDetail on the workflows surface). */
@@ -98,6 +103,13 @@ export function selectionFromLocation(base: SelectionState): SelectionState {
   if (goal) next.goalId = goal;
   const task = params.get("task");
   if (task) next.taskId = task;
+  // Canonical doc address: ?doc=<path>; setting it implies the docs surface
+  // (mirror of the ?agent= / ?workflowRun= rules).
+  const doc = params.get("doc");
+  if (doc) {
+    next.docPath = doc;
+    if (!surface) next.surface = "docs";
+  }
   const taskTab = params.get("taskTab");
   if (taskTab && (taskTabs as string[]).includes(taskTab)) {
     next.taskTab = taskTab as TaskTab;
@@ -136,6 +148,7 @@ export function syncSelectionToLocation(selection: SelectionState): void {
   if (selection.teamId) params.set("team", selection.teamId);
   if (selection.goalId) params.set("goal", selection.goalId);
   if (selection.taskId) params.set("task", selection.taskId);
+  if (selection.docPath) params.set("doc", selection.docPath);
   // Only persist a non-default task tab, and only when a task is open.
   if (selection.taskId && selection.taskTab && selection.taskTab !== "overview") {
     params.set("taskTab", selection.taskTab);

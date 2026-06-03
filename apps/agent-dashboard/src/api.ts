@@ -1,6 +1,7 @@
 import type {
   AgentEvent,
   DashboardSnapshot,
+  DocRegistryEntry,
   Message,
   ProviderSession,
   WorkflowDef,
@@ -50,6 +51,18 @@ export async function fetchDoc(
     throw new Error(`HTTP ${response.status}`);
   }
   return (await response.json()) as { path: string; content: string };
+}
+
+/**
+ * Fetch the docs manifest (`docs/registry.json`) and return its `documents`
+ * array. Reuses the allow-listed `/v1/docs` route — the registry lives under
+ * `docs/`, so no extra endpoint is needed. The Docs surface builds its tree from
+ * this. Throws on missing source / HTTP error / malformed JSON.
+ */
+export async function fetchDocRegistry(baseUrl: string): Promise<DocRegistryEntry[]> {
+  const doc = await fetchDoc(baseUrl, "docs/registry.json");
+  const parsed = JSON.parse(doc.content) as { documents?: DocRegistryEntry[] };
+  return parsed.documents ?? [];
 }
 
 /**
