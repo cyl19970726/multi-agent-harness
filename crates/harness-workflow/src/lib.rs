@@ -56,6 +56,12 @@ pub struct AgentStepSpec {
     /// throwaway git worktree; `None` edits the shared repo cwd.
     pub isolation: Option<String>,
     pub prompt: String,
+    /// Optional output schema. `Some(obj)` puts the step into STRUCTURED mode:
+    /// the driver appends a schema instruction to the prompt, then parses +
+    /// validates the worker's reply into [`StepResult::structured`]. The value is
+    /// a JSON object whose top-level keys are the REQUIRED keys the reply must
+    /// carry. `None` = text mode (the reply is returned verbatim as today).
+    pub schema: Option<serde_json::Value>,
 }
 
 /// The outcome of one agent step. `ok == false` is the CC-spec `null` slot: a
@@ -91,6 +97,13 @@ pub struct StepResult {
     /// NDJSON. `None` for mock/test drivers that capture no telemetry. When
     /// present it MUST be a JSON object; non-object values are ignored.
     pub details: Option<serde_json::Value>,
+    /// The parsed + validated structured output, present ONLY when the step ran
+    /// in schema mode (`AgentStepSpec::schema` was `Some`) AND the worker's reply
+    /// parsed into a JSON object carrying every required schema key. `None` for
+    /// text-mode steps and for schema-mode steps whose worker never produced
+    /// valid JSON (those record a `"schema"` failure instead). The Starlark
+    /// `agent()` returns this object to the script when present.
+    pub structured: Option<serde_json::Value>,
 }
 
 impl StepResult {
@@ -227,6 +240,7 @@ pub fn parallel(driver: &AgentStepFn<'_>, specs: &[AgentStepSpec]) -> Vec<StepRe
                         step_id: None,
                         started_at: None,
                         details: None,
+                        structured: None,
                     };
                     let _ = tx.send((index, result));
                     return;
@@ -247,6 +261,7 @@ pub fn parallel(driver: &AgentStepFn<'_>, specs: &[AgentStepSpec]) -> Vec<StepRe
                     step_id: None,
                     started_at: None,
                     details: None,
+                    structured: None,
                 });
 
                 let _ = tx.send((index, result));
@@ -378,6 +393,7 @@ fn dropped_result(item: &AgentStepSpec) -> StepResult {
         step_id: None,
         started_at: None,
         details: None,
+        structured: None,
     }
 }
 
@@ -393,6 +409,7 @@ fn capped_result(item: &AgentStepSpec) -> StepResult {
         step_id: None,
         started_at: None,
         details: None,
+        structured: None,
     }
 }
 
@@ -408,6 +425,7 @@ fn panicked_result(item: &AgentStepSpec) -> StepResult {
         step_id: None,
         started_at: None,
         details: None,
+        structured: None,
     }
 }
 
@@ -455,6 +473,7 @@ pub fn investigate(driver: &AgentStepFn<'_>, topic: &str) -> WorkflowOutcome {
             model: None,
             isolation: None,
             prompt: format!("Scope the investigation of: {topic}. List the modules to audit."),
+            schema: None,
         },
     );
     let scope_ok = scope_step.ok;
@@ -469,6 +488,7 @@ pub fn investigate(driver: &AgentStepFn<'_>, topic: &str) -> WorkflowOutcome {
             model: None,
             isolation: None,
             prompt: format!("Audit the code paths involved in: {topic}."),
+            schema: None,
         },
         AgentStepSpec {
             phase: "audit".to_string(),
@@ -477,6 +497,7 @@ pub fn investigate(driver: &AgentStepFn<'_>, topic: &str) -> WorkflowOutcome {
             model: None,
             isolation: None,
             prompt: format!("Audit the recent diffs related to: {topic}."),
+            schema: None,
         },
     ];
     let parallel_results = parallel(driver, &parallel_specs);
@@ -563,6 +584,9 @@ pub fn step_result_json(result: &StepResult) -> serde_json::Value {
         "ok": result.ok,
         "provider_session_id": result.provider_session_id,
         "output_summary": result.output_summary,
+        // The parsed structured output (schema mode), or null. Lets the dashboard
+        // and `final_output` carry the validated object alongside the summary.
+        "structured": result.structured,
     });
     // Merge the runtime-captured observability fields (model, exit_code,
     // duration_ms, tokens, failure, worktree_diff, ...) onto the same object so
@@ -650,6 +674,7 @@ mod tests {
                 step_id: None,
                 started_at: None,
                 details: None,
+                structured: None,
             }
         }
     }
@@ -686,6 +711,7 @@ mod tests {
                 step_id: None,
                 started_at: None,
                 details: None,
+                structured: None,
             }
         };
         let specs: Vec<AgentStepSpec> = (0..5)
@@ -696,6 +722,7 @@ mod tests {
                 model: None,
                 isolation: None,
                 prompt: format!("prompt {i}"),
+                schema: None,
             })
             .collect();
         let results = parallel(&driver, &specs);
@@ -722,6 +749,7 @@ mod tests {
                     step_id: None,
                     started_at: None,
                     details: None,
+                    structured: None,
                 };
             }
             if spec.label == "l2" {
@@ -738,6 +766,7 @@ mod tests {
                 step_id: None,
                 started_at: None,
                 details: None,
+                structured: None,
             }
         };
         let specs: Vec<AgentStepSpec> = (0..4)
@@ -748,6 +777,7 @@ mod tests {
                 model: None,
                 isolation: None,
                 prompt: "x".to_string(),
+                schema: None,
             })
             .collect();
         let results = parallel(&driver, &specs);
@@ -778,6 +808,7 @@ mod tests {
                 step_id: None,
                 started_at: None,
                 details: None,
+                structured: None,
             }
         };
         let outcome = investigate(&driver, "failure Y");
@@ -814,6 +845,7 @@ mod tests {
                 model: None,
                 isolation: None,
                 prompt: format!("prompt {i}"),
+                schema: None,
             })
             .collect();
         let results = parallel(&driver, &specs);
@@ -840,6 +872,7 @@ mod tests {
                 step_id: None,
                 started_at: None,
                 details: None,
+                structured: None,
             };
             Some((spec.clone(), result))
         })
@@ -853,6 +886,7 @@ mod tests {
             model: None,
             isolation: None,
             prompt: "x".to_string(),
+            schema: None,
         }
     }
 
@@ -917,6 +951,7 @@ mod tests {
                     step_id: None,
                     started_at: None,
                     details: None,
+                    structured: None,
                 },
             ))
         });
@@ -939,6 +974,7 @@ mod tests {
                     step_id: None,
                     started_at: None,
                     details: None,
+                    structured: None,
                 },
             ))
         });
@@ -972,6 +1008,7 @@ mod tests {
                     step_id: None,
                     started_at: None,
                     details: None,
+                    structured: None,
                 },
             ))
         });
@@ -989,6 +1026,7 @@ mod tests {
                     step_id: None,
                     started_at: None,
                     details: None,
+                    structured: None,
                 },
             ))
         });
