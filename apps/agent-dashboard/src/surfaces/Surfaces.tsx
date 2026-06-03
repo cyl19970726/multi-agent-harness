@@ -120,7 +120,7 @@ import type {
   Vision,
   WorkflowWarning,
 } from "../types";
-import type { AgentTab, SelectionState } from "../app/selection";
+import type { AgentTab, SelectionState, TaskTab } from "../app/selection";
 
 interface SurfaceProps {
   model: WorkbenchModel;
@@ -1737,7 +1737,9 @@ export function TaskDocument({
   onSelectionChange,
   actionsEnabled,
   onAction,
-}: SurfaceProps) {
+  taskTab,
+}: SurfaceProps & { taskTab?: TaskTab }) {
+  const tab: TaskTab = taskTab ?? "overview";
   const task = model.selectedTask;
   if (!task) {
     return (
@@ -1873,6 +1875,28 @@ export function TaskDocument({
         />
       </header>
 
+      <Tabs
+        value={tab}
+        onValueChange={(value) => onSelectionChange({ taskTab: value as TaskTab })}
+      >
+        <TabsList>
+          <TabsTrigger value="overview">Overview</TabsTrigger>
+          <TabsTrigger value="deps">
+            Dependencies
+            <TabCount value={dependsOn.length + blocks.length} />
+          </TabsTrigger>
+          <TabsTrigger value="proof">
+            Proof &amp; Decision
+            <TabCount value={reviews.length + evidence.length + proposals.length} />
+          </TabsTrigger>
+          <TabsTrigger value="activity">
+            Activity
+            <TabCount value={taskWarnings.length} tone="bad" />
+          </TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="overview" className="space-y-7">
+
       <DocSection label="Objective">
         <p className="text-[15px] leading-relaxed text-foreground/90">
           {task.objective ?? "No objective recorded."}
@@ -1903,6 +1927,10 @@ export function TaskDocument({
         </div>
       </DocSection>
 
+        </TabsContent>
+
+        <TabsContent value="deps" className="space-y-7">
+
       <DocSection label="Dependencies">
         <div className="grid gap-3 sm:grid-cols-2">
           <div>
@@ -1929,6 +1957,10 @@ export function TaskDocument({
           </div>
         </div>
       </DocSection>
+
+        </TabsContent>
+
+        <TabsContent value="proof" className="space-y-7">
 
       <DocSection label="Proof chain">
         <div className="space-y-3 rounded-lg border border-border bg-card p-4">
@@ -2027,6 +2059,10 @@ export function TaskDocument({
         </div>
       </DocSection>
 
+        </TabsContent>
+
+        <TabsContent value="activity" className="space-y-7">
+
       <DocSection label="Assignment & reports">
         <div className="rounded-lg border border-border bg-card">
           {messages.length ? (
@@ -2061,7 +2097,30 @@ export function TaskDocument({
           </div>
         </DocSection>
       )}
+
+        </TabsContent>
+      </Tabs>
     </DocumentSurface>
+  );
+}
+
+/**
+ * Subtle count chip riding inside a task tab trigger, so the operator can see
+ * which tab holds items (or warnings) without opening it. Renders nothing at 0.
+ */
+function TabCount({ value, tone }: { value: number; tone?: "bad" }) {
+  if (!value) return null;
+  return (
+    <span
+      className={cn(
+        "rounded px-1 text-[10px] font-semibold tabular-nums",
+        tone === "bad"
+          ? "bg-status-bad/15 text-status-bad"
+          : "bg-muted-foreground/15 text-muted-foreground",
+      )}
+    >
+      {value}
+    </span>
   );
 }
 
