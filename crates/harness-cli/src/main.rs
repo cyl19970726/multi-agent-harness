@@ -3801,17 +3801,33 @@ fn workflow_real_agent_step(
             result.started_at = Some(started_at);
             result
         }
-        Err(error) => workflow::StepResult {
-            phase: spec.phase.clone(),
-            label: spec.label.clone(),
-            provider: spec.provider.clone(),
-            isolation: spec.isolation.clone(),
-            ok: false,
-            provider_session_id: None,
-            output_summary: format!("agent step error: {error}"),
-            step_id: Some(step_id),
-            started_at: Some(started_at),
-        },
+        Err(error) => {
+            // A setup/spawn error (e.g. worktree create or process spawn failed)
+            // never reached a provider turn, so it has no usage/exit telemetry.
+            // We still record a structured failure + the static identity so the
+            // dashboard renders the same observability shape as a worker failure.
+            let details = serde_json::json!({
+                "provider": spec.provider,
+                "model": spec.model,
+                "failure": {
+                    "failed": true,
+                    "reason": "spawn",
+                    "detail": error.to_string(),
+                },
+            });
+            workflow::StepResult {
+                phase: spec.phase.clone(),
+                label: spec.label.clone(),
+                provider: spec.provider.clone(),
+                isolation: spec.isolation.clone(),
+                ok: false,
+                provider_session_id: None,
+                output_summary: format!("agent step error: {error}"),
+                step_id: Some(step_id),
+                started_at: Some(started_at),
+                details: Some(details),
+            }
+        }
     }
 }
 
@@ -3851,6 +3867,9 @@ fn try_workflow_real_agent_step(
             // journaled the `running` start row before this step began.
             step_id: None,
             started_at: None,
+            // No worker ran (dry-run), so there is no usage/exit telemetry; we
+            // still surface the requested model so the dashboard can label it.
+            details: Some(serde_json::json!({ "model": spec.model })),
         });
     }
 
@@ -4001,6 +4020,8 @@ fn spawn_ephemeral_worker(
     let session_dir = store.root().join("provider-sessions").join(&session_id);
     fs::create_dir_all(&session_dir)?;
 
+    // Wall-clock span of the worker process itself, for the step's `duration_ms`.
+    let worker_start = Instant::now();
     let spawn = match spec.provider.as_str() {
         "codex" => spawn_codex_ephemeral(&session_dir, &session_id, spec, &cwd, options.timeout_ms),
         "claude" => {
@@ -4012,6 +4033,7 @@ fn spawn_ephemeral_worker(
             )))
         }
     }?;
+    let duration_ms = worker_start.elapsed().as_millis() as u64;
 
     // Collect the worktree diff as the node's evidence (isolation path only). We
     // read it BEFORE the guard drops (which removes the worktree).
@@ -4072,6 +4094,8 @@ fn spawn_ephemeral_worker(
     // guard is None and there is nothing to remove.
     drop(guard);
 
+    let details = build_step_details(spec, &spawn, duration_ms, diff.as_deref());
+
     Ok(workflow::StepResult {
         phase: spec.phase.clone(),
         label: spec.label.clone(),
@@ -4082,7 +4106,77 @@ fn spawn_ephemeral_worker(
         output_summary,
         step_id: None,
         started_at: None,
+        details: Some(details),
     })
+}
+
+/// Maximum worktree-diff text we store on a step result. Diffs above this are
+/// truncated to the cap and flagged with `worktree_diff_truncated: true` so the
+/// dashboard can render a "diff truncated" hint without choking on a huge blob.
+const WORKTREE_DIFF_CAP: usize = 20_000;
+
+/// Assemble the observability `details` object merged onto the step's `result`
+/// JSON (see `workflow::step_result_json`): the model the worker ran, exit code,
+/// duration, normalized token usage, a structured failure (when the step failed),
+/// and the FULL worktree diff text (capped) for the isolation path. Keys here are
+/// additive — the base step_result_json keys win on any collision.
+fn build_step_details(
+    spec: &workflow::AgentStepSpec,
+    spawn: &EphemeralSpawn,
+    duration_ms: u64,
+    diff: Option<&str>,
+) -> serde_json::Value {
+    let mut details = serde_json::json!({
+        "model": spec.model,
+        "exit_code": spawn.exit_code,
+        "duration_ms": duration_ms,
+    });
+    let map = details
+        .as_object_mut()
+        .expect("json! object is always an object");
+
+    if let Some(tokens) = spawn.tokens {
+        map.insert("tokens".into(), tokens.to_json());
+    }
+
+    if let Some(reason) = classify_failure_reason(spawn.ok, spawn.exit_code, spawn.timed_out) {
+        let detail = if spawn.stderr.trim().is_empty() {
+            format!("{} worker step failed ({reason})", spec.provider)
+        } else {
+            spawn.stderr.trim().to_string()
+        };
+        map.insert(
+            "failure".into(),
+            serde_json::json!({
+                "failed": true,
+                "reason": reason,
+                "detail": detail,
+            }),
+        );
+    }
+
+    if let Some(diff) = diff {
+        let (text, truncated) = if diff.len() > WORKTREE_DIFF_CAP {
+            // Truncate on a char boundary at or below the cap.
+            let mut end = WORKTREE_DIFF_CAP;
+            while end > 0 && !diff.is_char_boundary(end) {
+                end -= 1;
+            }
+            (&diff[..end], true)
+        } else {
+            (diff, false)
+        };
+        map.insert(
+            "worktree_diff".into(),
+            serde_json::Value::String(text.to_string()),
+        );
+        map.insert(
+            "worktree_diff_truncated".into(),
+            serde_json::Value::Bool(truncated),
+        );
+    }
+
+    details
 }
 
 /// The outcome of one ephemeral worker process: whether the turn succeeded, the
@@ -4094,6 +4188,121 @@ struct EphemeralSpawn {
     /// Raw NDJSON stdout (one JSON event per line) for neutral-event ingest.
     ndjson: String,
     stderr: String,
+    /// Process exit code; `None` when the worker was killed on timeout / signal.
+    exit_code: Option<i32>,
+    /// True when the per-node timeout fired (the worker was killed mid-turn).
+    timed_out: bool,
+    /// Normalized token usage parsed from the terminal event, when present:
+    /// `{ input, output, total }`. `None` when the stream carried no usage.
+    tokens: Option<TokenUsage>,
+}
+
+/// Normalized token usage for one worker turn, provider-agnostic. Parsed from the
+/// codex `turn.completed.usage` or the claude `result.usage` shape and reduced to
+/// the three numbers the dashboard surfaces. `total` is `input + output` (codex's
+/// `cached_input_tokens` is a SUBSET of `input_tokens`, not additive, and
+/// `reasoning_output_tokens` is a SUBSET of `output_tokens`, so they are not
+/// re-added here).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TokenUsage {
+    input: u64,
+    output: u64,
+    total: u64,
+}
+
+impl TokenUsage {
+    fn to_json(self) -> serde_json::Value {
+        serde_json::json!({
+            "input": self.input,
+            "output": self.output,
+            "total": self.total,
+        })
+    }
+}
+
+/// Parse codex `turn.completed` usage into a normalized [`TokenUsage`]. Codex
+/// `exec --json` emits `{"type":"turn.completed","usage":{...}}` (some builds nest
+/// the usage under `turn`). The usage object carries `input_tokens`,
+/// `output_tokens`, and the SUBSET counters `cached_input_tokens` /
+/// `reasoning_output_tokens` (already included in input/output respectively).
+/// Returns `None` when no terminal usage object is present.
+fn parse_codex_usage(events: &[serde_json::Value]) -> Option<TokenUsage> {
+    events.iter().rev().find_map(|payload| {
+        let ty = payload.get("type").and_then(|t| t.as_str())?;
+        if ty != "turn.completed" && ty != "turn_completed" {
+            return None;
+        }
+        let usage = payload
+            .get("usage")
+            .or_else(|| payload.get("turn").and_then(|t| t.get("usage")))?;
+        let input = usage
+            .get("input_tokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let output = usage
+            .get("output_tokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        Some(TokenUsage {
+            input,
+            output,
+            total: input.saturating_add(output),
+        })
+    })
+}
+
+/// Parse claude `result` usage into a normalized [`TokenUsage`]. Claude
+/// `--output-format stream-json` emits a terminal `{"type":"result","usage":{
+/// "input_tokens":N,"output_tokens":N,...}}`. Returns `None` when no result usage
+/// is present.
+fn parse_claude_usage(events: &[serde_json::Value]) -> Option<TokenUsage> {
+    events.iter().rev().find_map(|payload| {
+        if payload.get("type").and_then(|t| t.as_str()) != Some("result") {
+            return None;
+        }
+        let usage = payload.get("usage")?;
+        let input = usage
+            .get("input_tokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let output = usage
+            .get("output_tokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        Some(TokenUsage {
+            input,
+            output,
+            total: input.saturating_add(output),
+        })
+    })
+}
+
+/// Classify WHY a step failed, into a stable `reason` tag the dashboard groups on.
+/// Precedence: a fired timeout dominates (the worker never reached a clean turn);
+/// then a non-zero / absent exit code; then a delivery that exited 0 but produced
+/// no successful terminal event (`ok == false` with a clean exit == a delivery
+/// problem, e.g. an auth/usage-limit `result` with `subtype != "success"`).
+/// Returns `None` when the step succeeded.
+fn classify_failure_reason(
+    ok: bool,
+    exit_code: Option<i32>,
+    timed_out: bool,
+) -> Option<&'static str> {
+    if ok {
+        return None;
+    }
+    if timed_out {
+        return Some("timeout");
+    }
+    match exit_code {
+        // Clean exit (0) but the delivery still failed == a delivery-layer
+        // problem: a `result`/turn that completed the process but reported no
+        // successful turn (e.g. an auth or usage-limit terminal).
+        Some(0) => Some("delivery"),
+        // A non-zero code, or no code at all (killed by a signal), is a process
+        // exit failure.
+        _ => Some("exit"),
+    }
 }
 
 /// Spawn a one-shot `codex exec` with an EDITABLE (`--sandbox workspace-write`)
@@ -4124,20 +4333,21 @@ fn spawn_codex_ephemeral(
     }
     cmd.arg(&spec.prompt);
 
-    let (process_success, events, stderr_log) = run_ndjson_child(
+    let run = run_ndjson_child(
         cmd,
         session_dir,
         session_id,
         "codex.stream-json.ndjson",
         timeout_ms,
     )?;
-    let codex_events: Vec<CodexExecEvent> = events
+    let codex_events: Vec<CodexExecEvent> = run
+        .events
         .iter()
         .filter_map(|v| serde_json::to_string(v).ok())
         .filter_map(|line| CodexExecEvent::parse_line(&line))
         .collect();
     let ok = matches!(
-        infer_provider_session_status(&codex_events, process_success),
+        infer_provider_session_status(&codex_events, run.process_success),
         ProviderSessionStatus::Succeeded
     );
     // Prefer the parsed agent message; fall back to the last-message file codex
@@ -4146,12 +4356,16 @@ fn spawn_codex_ephemeral(
         .or_else(|| fs::read_to_string(&last_message_ref).ok())
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
+    let tokens = parse_codex_usage(&run.events);
 
     Ok(EphemeralSpawn {
         ok,
         reply,
-        ndjson: ndjson_lines(&events),
-        stderr: stderr_log,
+        ndjson: ndjson_lines(&run.events),
+        stderr: run.stderr,
+        exit_code: run.exit_code,
+        timed_out: run.timed_out,
+        tokens,
     })
 }
 
@@ -4182,30 +4396,49 @@ fn spawn_claude_ephemeral(
         cmd.arg("--model").arg(model);
     }
 
-    let (process_success, events, stderr_log) = run_ndjson_child(
+    let run = run_ndjson_child(
         cmd,
         session_dir,
         session_id,
         "claude.stream-json.ndjson",
         timeout_ms,
     )?;
-    let claude_events: Vec<ClaudeStreamEvent> = events
+    let claude_events: Vec<ClaudeStreamEvent> = run
+        .events
         .iter()
         .filter_map(|v| serde_json::to_string(v).ok())
         .filter_map(|line| ClaudeStreamEvent::parse_line(&line))
         .collect();
     let ok = matches!(
-        infer_claude_session_status(&claude_events, process_success),
+        infer_claude_session_status(&claude_events, run.process_success),
         ProviderSessionStatus::Succeeded
     );
     let reply = extract_claude_reply_text(&claude_events);
+    let tokens = parse_claude_usage(&run.events);
 
     Ok(EphemeralSpawn {
         ok,
         reply,
-        ndjson: ndjson_lines(&events),
-        stderr: stderr_log,
+        ndjson: ndjson_lines(&run.events),
+        stderr: run.stderr,
+        exit_code: run.exit_code,
+        timed_out: run.timed_out,
+        tokens,
     })
+}
+
+/// The terminal state of one NDJSON child process: whether it exited 0, its raw
+/// exit code (None when killed on timeout / signalled), whether the per-node
+/// timeout fired, the parsed event payloads, and any stderr.
+struct NdjsonRun {
+    process_success: bool,
+    /// Process exit code when the child exited on its own; `None` when it was
+    /// killed on timeout or terminated by a signal (no code available).
+    exit_code: Option<i32>,
+    /// True when the per-node timeout fired and we killed the child.
+    timed_out: bool,
+    events: Vec<serde_json::Value>,
+    stderr: String,
 }
 
 /// Spawn a child that emits NDJSON on stdout, non-interactively (stdin closed),
@@ -4214,14 +4447,14 @@ fn spawn_claude_ephemeral(
 /// (2) the shared `<store_root>/provider_turn_events.jsonl` the SSE watcher tails
 /// to push live frames (keyed by session id). Enforces a per-node timeout: on
 /// timeout the child is killed and `process_success=false` (the run tolerates
-/// failed nodes). Returns `(process_success, parsed_event_payloads, stderr)`.
+/// failed nodes). Returns the terminal [`NdjsonRun`].
 fn run_ndjson_child(
     mut cmd: Command,
     session_dir: &Path,
     session_id: &str,
     live_file_name: &str,
     timeout_ms: u64,
-) -> CliResult<(bool, Vec<serde_json::Value>, String)> {
+) -> CliResult<NdjsonRun> {
     let mut child = cmd
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -4299,9 +4532,14 @@ fn run_ndjson_child(
 
     let start = Instant::now();
     let timeout = Duration::from_millis(timeout_ms.max(1));
+    let mut timed_out = false;
+    let mut exit_code: Option<i32> = None;
     let process_success = loop {
         match child.try_wait() {
-            Ok(Some(status)) => break status.success(),
+            Ok(Some(status)) => {
+                exit_code = status.code();
+                break status.success();
+            }
             Ok(None) => {
                 if start.elapsed() > timeout {
                     let _ = child.kill();
@@ -4309,6 +4547,7 @@ fn run_ndjson_child(
                     if stderr_log.is_empty() {
                         stderr_log = "timeout waiting for ephemeral worker".into();
                     }
+                    timed_out = true;
                     break false;
                 }
                 std::thread::sleep(Duration::from_millis(50));
@@ -4317,7 +4556,13 @@ fn run_ndjson_child(
         }
     };
 
-    Ok((process_success, events, stderr_log))
+    Ok(NdjsonRun {
+        process_success,
+        exit_code,
+        timed_out,
+        events,
+        stderr: stderr_log,
+    })
 }
 
 /// Join parsed event payloads back into NDJSON text (one JSON object per line).
@@ -4656,10 +4901,7 @@ fn workflow_gc_trace(
 }
 
 fn workflow_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    require_subcommand(
-        args,
-        "workflow run|run-spec|run-script|list|gc-worktrees|gc-trace",
-    )?;
+    require_subcommand(args, "workflow run|run-script|list|gc-worktrees|gc-trace")?;
     match args[0].as_str() {
         "gc-worktrees" => {
             let result = workflow_gc_worktrees(store)?;
@@ -4686,10 +4928,6 @@ fn workflow_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
         }
         "run" => {
             let result = workflow_run_value(store, &args[1..])?;
-            print_json(&result)?;
-        }
-        "run-spec" => {
-            let result = workflow_run_spec_value(store, &args[1..])?;
             print_json(&result)?;
         }
         "run-script" => {
@@ -4741,105 +4979,20 @@ fn workflow_run_value(store: &HarnessStore, args: &[String]) -> CliResult<serde_
     run_workflow_with_driver(store, &run_id, def, &prompt, &driver)
 }
 
-/// `harness workflow run-spec <spec.json> [--start-runtime] [--dry-run]
-///  [--timeout-ms <ms>]`
-///
-/// Reads a runtime-authored [`workflow::WorkflowSpec`] JSON-IR file, validates it
-/// by parsing, walks the IR via `dispatch_spec`, and journals the run/steps
-/// exactly like the registry `run` path (shared `journal_workflow_outcome`).
-///
-/// Each `agent()` node carries its PROVIDER ("codex" | "claude") directly — the
-/// spec drives delivery, so there is no `--codex`/`--claude` member binding. The
-/// node spins up a NEW one-shot ephemeral worker (Stage B: real spawn; Stage A:
-/// a mock driver returns a provider-carrying StepResult so the IR runs
-/// end-to-end without spawning agents).
-fn workflow_run_spec_value(store: &HarnessStore, args: &[String]) -> CliResult<serde_json::Value> {
-    // The spec path is the first positional arg (not a --flag) or `--spec <path>`.
-    let path = value(args, "--spec")
-        .or_else(|| args.iter().find(|arg| !arg.starts_with("--")).cloned())
-        .ok_or_else(|| {
-            CliError::Usage("workflow run-spec requires a <spec.json> path".to_string())
-        })?;
-
-    let raw = std::fs::read_to_string(&path)
-        .map_err(|error| CliError::Usage(format!("cannot read spec {path}: {error}")))?;
-    let spec: workflow::WorkflowSpec = serde_json::from_str(&raw)
-        .map_err(|error| CliError::Usage(format!("invalid workflow spec {path}: {error}")))?;
-
-    // Retention policy for the heavy per-node turn-event trace. `durable`
-    // (default) persists the trace; `live` streams it over SSE during execution
-    // but does not retain it. Validated up front so a typo fails fast.
-    let trace_retention = value(args, "--trace").unwrap_or_else(|| "durable".to_string());
-    if trace_retention != "durable" && trace_retention != "live" {
-        return Err(CliError::Usage(format!(
-            "--trace must be 'durable' or 'live', got '{trace_retention}'"
-        )));
-    }
-
-    let options = WorkflowDeliveryOptions {
-        dry_run: has_flag(args, "--dry-run"),
-        start_runtime: has_flag(args, "--start-runtime"),
-        timeout_ms: value(args, "--timeout-ms")
-            .and_then(|value| value.parse::<u64>().ok())
-            .unwrap_or(3_000),
-        trace_retention: trace_retention.clone(),
-    };
-
-    // Who initiated the run: an explicit `--initiated-by <id>`, else the
-    // ambient agent member id (when an agent shells out), else "operator".
-    let initiated_by = value(args, "--initiated-by")
-        .or_else(|| std::env::var("HARNESS_AGENT_MEMBER_ID").ok())
-        .filter(|id| !id.is_empty())
-        .unwrap_or_else(|| "operator".to_string());
-
-    // Mint the run id up front so the real driver can journal each step's
-    // `running` row as it starts (live SSE progress), mirroring `workflow run`.
-    let run_id = generated_id("wfrun");
-
-    let run = WorkflowRun {
-        id: run_id.clone(),
-        workflow_name: spec.name.clone(),
-        status: WorkflowRunStatus::Running,
-        step_ids: Vec::new(),
-        created_at: now_string(),
-        ended_at: None,
-        summary: None,
-        // The dynamic IR carries the spec's `args` opaquely onto the run.
-        args: spec.args.clone(),
-        agents_spawned: 0,
-        final_output: None,
-        // Always-persisted durable audit record: who ran it + the raw validated
-        // spec shape, plus the retention policy governing the heavy trace.
-        initiated_by: Some(initiated_by),
-        spec: Some(serde_json::to_value(&spec)?),
-        trace_retention,
-    };
-    store.append_workflow_run(&run)?;
-
-    let outcome = {
-        let run_id = run_id.clone();
-        let driver = move |step: &workflow::AgentStepSpec| {
-            workflow_real_agent_step(store, &run_id, &options, step)
-        };
-        workflow::dispatch_spec(&spec, &driver)
-            .map_err(|error| CliError::Usage(error.to_string()))?
-    };
-
-    journal_workflow_outcome(store, run, &outcome)
-}
-
 /// `harness workflow run-script <prog.star> [--name <n>] [--args <json>]
 ///  [--trace durable|live] [--dry-run] [--start-runtime] [--timeout-ms <ms>]
 ///  [--initiated-by <id>]`
 ///
-/// Reads a runtime-authored Starlark program, evaluates it via
-/// `starlark_front::run_starlark` (the imperative front-end over the same
-/// `agent()`/`parallel()` primitives the JSON IR exposes), and journals the
-/// run/steps exactly like `run-spec` (shared `journal_workflow_outcome`).
+/// Reads a runtime-authored Starlark program — the SOLE dynamic authoring
+/// surface — evaluates it via `starlark_front::run_starlark`, and journals the
+/// run/steps through the shared `journal_workflow_outcome`.
 ///
-/// Unlike the JSON IR, the script body is not a serializable spec; the durable
-/// audit record snapshots the raw script text under
-/// `spec = {"lang":"starlark","script": <text>}` so the run is reproducible.
+/// The program MUST declare a `workflow(name, design_intent)` header (the WHY
+/// behind its shape); `run_starlark` rejects it otherwise. The captured
+/// `design_intent` is persisted on the run, and the raw script text is
+/// snapshotted under `spec = {"lang":"starlark","script": <text>}` for
+/// reproducibility. `--name` defaults to the declared meta name (else the file
+/// stem).
 fn workflow_run_script_value(
     store: &HarnessStore,
     args: &[String],
@@ -4854,7 +5007,8 @@ fn workflow_run_script_value(
     let script = std::fs::read_to_string(&path)
         .map_err(|error| CliError::Usage(format!("cannot read script {path}: {error}")))?;
 
-    // Workflow name: explicit `--name`, else the file stem.
+    // Default workflow name: explicit `--name`, else the file stem. The Starlark
+    // `workflow(...)` header's name can override this default once captured.
     let name = value(args, "--name").unwrap_or_else(|| {
         Path::new(&path)
             .file_stem()
@@ -4900,10 +5054,10 @@ fn workflow_run_script_value(
         .unwrap_or_else(|| "operator".to_string());
 
     // Mint the run id up front so the real driver can journal each step's
-    // `running` row as it starts (live SSE progress), mirroring `run-spec`.
+    // `running` row as it starts (live SSE progress).
     let run_id = generated_id("wfrun");
 
-    let run = WorkflowRun {
+    let mut run = WorkflowRun {
         id: run_id.clone(),
         workflow_name: name.clone(),
         status: WorkflowRunStatus::Running,
@@ -4917,14 +5071,16 @@ fn workflow_run_script_value(
         final_output: None,
         // Always-persisted durable audit record: who ran it + the raw script
         // text (the script is not a serializable spec), plus the retention
-        // policy governing the heavy trace.
+        // policy governing the heavy trace. `design_intent` is filled in from the
+        // captured `workflow(...)` header once evaluation succeeds.
         initiated_by: Some(initiated_by),
+        design_intent: None,
         spec: Some(serde_json::json!({ "lang": "starlark", "script": script })),
         trace_retention,
     };
     store.append_workflow_run(&run)?;
 
-    let outcome = {
+    let started = {
         let run_id = run_id.clone();
         let driver = move |step: &workflow::AgentStepSpec| {
             workflow_real_agent_step(store, &run_id, &options, step)
@@ -4938,7 +5094,12 @@ fn workflow_run_script_value(
         .map_err(|error| CliError::Usage(error.to_string()))?
     };
 
-    journal_workflow_outcome(store, run, &outcome)
+    // Persist the captured mandatory meta: the declared `design_intent` and the
+    // workflow name (the header's name overrides the CLI default).
+    run.design_intent = Some(started.meta.design_intent.clone());
+    run.workflow_name = started.meta.name.clone();
+
+    journal_workflow_outcome(store, run, &started.outcome)
 }
 
 /// Create the WorkflowRun (running), dispatch the workflow body with the given
@@ -4968,6 +5129,7 @@ fn run_workflow_with_driver(
         // Registry runs are operator-triggered and carry no dynamic spec; they
         // default to durable trace retention.
         initiated_by: Some("operator".to_string()),
+        design_intent: None,
         spec: None,
         trace_retention: "durable".to_string(),
     };
@@ -4981,7 +5143,7 @@ fn run_workflow_with_driver(
 
 /// Journal the running `run`'s terminal steps + finalize it from a
 /// [`workflow::WorkflowOutcome`]. Shared by the registry `run` path and the
-/// dynamic `run-spec` (IR) path so both journal identically.
+/// dynamic `run-script` (Starlark) path so both journal identically.
 fn journal_workflow_outcome(
     store: &HarnessStore,
     mut run: WorkflowRun,
@@ -10261,7 +10423,6 @@ fn print_help() {
   codex review --task <task> --agent <agent> --worktree <path> [--base <branch>] [--uncommitted] [--prompt <text>]
   workflow list
   workflow run --name <name> [--prompt <text>] [--start-runtime] [--dry-run] [--timeout-ms <ms>]
-  workflow run-spec <spec.json> [--start-runtime] [--dry-run] [--timeout-ms <ms>]
   workflow run-script <prog.star> [--name <n>] [--args <json>] [--trace durable|live] [--dry-run]
   workflow gc-worktrees
   workflow gc-trace [--keep-runs <n>] [--keep-days <d>] [--dry-run]
@@ -10295,7 +10456,216 @@ mod workflow_runtime_tests {
             output_summary: format!("mock ok: {}", spec.label),
             step_id: None,
             started_at: None,
+            details: None,
         }
+    }
+
+    fn ndjson_values(lines: &[&str]) -> Vec<serde_json::Value> {
+        lines
+            .iter()
+            .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+            .collect()
+    }
+
+    #[test]
+    fn parse_codex_usage_reads_turn_completed_usage() {
+        // Real codex `exec --json` shape: terminal turn.completed carries usage
+        // with input/output and the SUBSET cached/reasoning counters.
+        let events = ndjson_values(&[
+            r#"{"type":"thread.started","thread_id":"t1"}"#,
+            r#"{"type":"item.completed","item":{"type":"agent_message","text":"done"}}"#,
+            r#"{"type":"turn.completed","usage":{"input_tokens":1200,"output_tokens":340,"cached_input_tokens":800,"reasoning_output_tokens":120}}"#,
+        ]);
+        let usage = parse_codex_usage(&events).expect("usage present");
+        assert_eq!(usage.input, 1200);
+        assert_eq!(usage.output, 340);
+        // total is input+output; cached/reasoning are subsets, NOT re-added.
+        assert_eq!(usage.total, 1540);
+    }
+
+    #[test]
+    fn parse_codex_usage_accepts_nested_turn_usage_and_legacy_name() {
+        let events = ndjson_values(&[
+            r#"{"type":"turn_completed","turn":{"usage":{"input_tokens":5,"output_tokens":7}}}"#,
+        ]);
+        let usage = parse_codex_usage(&events).expect("usage present");
+        assert_eq!((usage.input, usage.output, usage.total), (5, 7, 12));
+    }
+
+    #[test]
+    fn parse_codex_usage_absent_is_none() {
+        let events = ndjson_values(&[r#"{"type":"turn.completed"}"#, r#"{"type":"item.started"}"#]);
+        assert!(parse_codex_usage(&events).is_none());
+    }
+
+    #[test]
+    fn parse_claude_usage_reads_result_usage() {
+        // Claude stream-json terminal `result` carries usage.
+        let events = ndjson_values(&[
+            r#"{"type":"system","subtype":"init","session_id":"s1"}"#,
+            r#"{"type":"result","subtype":"success","usage":{"input_tokens":42,"output_tokens":15}}"#,
+        ]);
+        let usage = parse_claude_usage(&events).expect("usage present");
+        assert_eq!((usage.input, usage.output, usage.total), (42, 15, 57));
+    }
+
+    #[test]
+    fn parse_claude_usage_absent_is_none() {
+        let events = ndjson_values(&[r#"{"type":"result","subtype":"success"}"#]);
+        assert!(parse_claude_usage(&events).is_none());
+    }
+
+    #[test]
+    fn classify_failure_reason_ok_is_none() {
+        assert_eq!(classify_failure_reason(true, Some(0), false), None);
+        assert_eq!(classify_failure_reason(true, Some(1), false), None);
+    }
+
+    #[test]
+    fn classify_failure_reason_timeout_dominates() {
+        // Timeout fired (and killed the child, so exit_code is None) → "timeout".
+        assert_eq!(classify_failure_reason(false, None, true), Some("timeout"));
+        // Even with a code present, a fired timeout still classifies as timeout.
+        assert_eq!(
+            classify_failure_reason(false, Some(1), true),
+            Some("timeout")
+        );
+    }
+
+    #[test]
+    fn classify_failure_reason_nonzero_exit_is_exit() {
+        assert_eq!(classify_failure_reason(false, Some(2), false), Some("exit"));
+        // Killed by a signal (no code) without a timeout is still an exit failure.
+        assert_eq!(classify_failure_reason(false, None, false), Some("exit"));
+    }
+
+    #[test]
+    fn classify_failure_reason_clean_exit_but_failed_is_delivery() {
+        // Process exited 0 yet the delivery produced no successful turn (e.g. an
+        // auth / usage-limit terminal) → a delivery-layer failure.
+        assert_eq!(
+            classify_failure_reason(false, Some(0), false),
+            Some("delivery")
+        );
+    }
+
+    #[test]
+    fn build_step_details_success_has_tokens_and_no_failure() {
+        let spec = workflow::AgentStepSpec {
+            phase: "p".into(),
+            label: "l".into(),
+            provider: "codex".into(),
+            model: Some("gpt-5-codex".into()),
+            isolation: None,
+            prompt: "hi".into(),
+        };
+        let spawn = EphemeralSpawn {
+            ok: true,
+            reply: Some("done".into()),
+            ndjson: String::new(),
+            stderr: String::new(),
+            exit_code: Some(0),
+            timed_out: false,
+            tokens: Some(TokenUsage {
+                input: 10,
+                output: 4,
+                total: 14,
+            }),
+        };
+        let details = build_step_details(&spec, &spawn, 1234, None);
+        assert_eq!(details["model"], serde_json::json!("gpt-5-codex"));
+        assert_eq!(details["exit_code"], serde_json::json!(0));
+        assert_eq!(details["duration_ms"], serde_json::json!(1234));
+        assert_eq!(details["tokens"]["total"], serde_json::json!(14));
+        assert!(details.get("failure").is_none());
+        assert!(details.get("worktree_diff").is_none());
+    }
+
+    #[test]
+    fn build_step_details_failure_classifies_and_keeps_stderr() {
+        let spec = workflow::AgentStepSpec {
+            phase: "p".into(),
+            label: "l".into(),
+            provider: "claude".into(),
+            model: None,
+            isolation: None,
+            prompt: "hi".into(),
+        };
+        let spawn = EphemeralSpawn {
+            ok: false,
+            reply: None,
+            ndjson: String::new(),
+            stderr: "boom: provider exploded".into(),
+            exit_code: Some(3),
+            timed_out: false,
+            tokens: None,
+        };
+        let details = build_step_details(&spec, &spawn, 50, None);
+        assert_eq!(details["failure"]["failed"], serde_json::json!(true));
+        assert_eq!(details["failure"]["reason"], serde_json::json!("exit"));
+        assert_eq!(
+            details["failure"]["detail"],
+            serde_json::json!("boom: provider exploded")
+        );
+    }
+
+    #[test]
+    fn build_step_details_caps_large_worktree_diff() {
+        let spec = workflow::AgentStepSpec {
+            phase: "p".into(),
+            label: "l".into(),
+            provider: "codex".into(),
+            model: None,
+            isolation: Some("worktree".into()),
+            prompt: "hi".into(),
+        };
+        let spawn = EphemeralSpawn {
+            ok: true,
+            reply: None,
+            ndjson: String::new(),
+            stderr: String::new(),
+            exit_code: Some(0),
+            timed_out: false,
+            tokens: None,
+        };
+        let big = "x".repeat(WORKTREE_DIFF_CAP + 5_000);
+        let details = build_step_details(&spec, &spawn, 1, Some(&big));
+        let stored = details["worktree_diff"].as_str().expect("diff string");
+        assert_eq!(stored.len(), WORKTREE_DIFF_CAP);
+        assert_eq!(details["worktree_diff_truncated"], serde_json::json!(true));
+
+        // A small diff is stored whole and NOT flagged truncated.
+        let small = "diff --git a b\n+added\n";
+        let details = build_step_details(&spec, &spawn, 1, Some(small));
+        assert_eq!(details["worktree_diff"], serde_json::json!(small));
+        assert_eq!(details["worktree_diff_truncated"], serde_json::json!(false));
+    }
+
+    #[test]
+    fn step_result_json_merges_details_without_overriding_base() {
+        // The base keys (provider/ok/...) always win; details adds new keys.
+        let result = workflow::StepResult {
+            phase: "p".into(),
+            label: "l".into(),
+            provider: "codex".into(),
+            isolation: None,
+            ok: true,
+            provider_session_id: Some("s".into()),
+            output_summary: "summary".into(),
+            step_id: None,
+            started_at: None,
+            details: Some(serde_json::json!({
+                "model": "gpt-5-codex",
+                "duration_ms": 99,
+                // A colliding key must NOT override the base value.
+                "ok": false,
+            })),
+        };
+        let json = workflow::step_result_json(&result);
+        assert_eq!(json["provider"], serde_json::json!("codex"));
+        assert_eq!(json["ok"], serde_json::json!(true)); // base wins
+        assert_eq!(json["model"], serde_json::json!("gpt-5-codex"));
+        assert_eq!(json["duration_ms"], serde_json::json!(99));
     }
 
     #[test]
@@ -10405,6 +10775,7 @@ mod workflow_runtime_tests {
                 agents_spawned: 1,
                 final_output: None,
                 initiated_by: Some("op".into()),
+                design_intent: None,
                 spec: None,
                 trace_retention: "durable".into(),
             })
@@ -10562,6 +10933,7 @@ mod workflow_runtime_tests {
                 output_summary: "mock".to_string(),
                 step_id: None,
                 started_at: None,
+                details: None,
             }
         };
 
@@ -10589,6 +10961,7 @@ mod workflow_runtime_tests {
         // A two-agent Starlark program that chains output. `--dry-run` returns a
         // mock StepResult per node, so no provider is spawned (CI-safe).
         let script = r#"
+workflow("triage", "scan first, then fix what the scan reported so the fix builds on it")
 phase("scan")
 a = agent("scan " + args["area"])
 phase("fix")
@@ -10630,6 +11003,11 @@ agent("fix: " + a, provider = "claude", label = "fixer")
         let spec = final_run.spec.as_ref().expect("spec snapshot");
         assert_eq!(spec.get("lang").and_then(|v| v.as_str()), Some("starlark"));
         assert_eq!(spec.get("script").and_then(|v| v.as_str()), Some(script));
+        // The mandatory design_intent from the `workflow(...)` header is persisted.
+        assert_eq!(
+            final_run.design_intent.as_deref(),
+            Some("scan first, then fix what the scan reported so the fix builds on it")
+        );
         // The parsed --args are carried opaquely onto the run.
         assert_eq!(
             final_run
@@ -10683,6 +11061,27 @@ agent("fix: " + a, provider = "claude", label = "fixer")
         ];
         let err = workflow_run_script_value(&store, &args).expect_err("bad json");
         assert!(matches!(err, CliError::Usage(_)));
+    }
+
+    #[test]
+    fn workflow_run_script_rejects_missing_design_intent() {
+        // A program with no `workflow(...)` header is rejected fail-fast, and the
+        // error mentions design_intent so the author knows what to add.
+        let store = temp_store("run-script-no-intent");
+        let dir = std::env::temp_dir().join(format!("harness-wf-script-{}", generated_id("noi")));
+        fs::create_dir_all(&dir).expect("mkdir script dir");
+        let path = dir.join("noheader.star");
+        fs::write(&path, r#"agent("x")"#).expect("write script");
+
+        let args = vec![path.display().to_string(), "--dry-run".to_string()];
+        let err = workflow_run_script_value(&store, &args).expect_err("rejected");
+        match err {
+            CliError::Usage(message) => assert!(
+                message.contains("design_intent"),
+                "error should mention design_intent: {message}"
+            ),
+            other => panic!("expected Usage error, got {other:?}"),
+        }
     }
 
     #[test]
@@ -10761,6 +11160,7 @@ agent("fix: " + a, provider = "claude", label = "fixer")
                 output_summary: format!("ok: {}", spec.label),
                 step_id: Some(step_id),
                 started_at: Some(started_at),
+                details: None,
             }
         };
 

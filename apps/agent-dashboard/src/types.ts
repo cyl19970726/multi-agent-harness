@@ -508,7 +508,7 @@ export interface WorkflowRun {
   created_at: string;
   ended_at?: string | null;
   summary?: string | null;
-  /** JSON parameterization the dynamic `run-spec` IR was authored with. */
+  /** JSON parameterization the dynamic `run-script` program was authored with. */
   args?: unknown;
   /** How many agent steps this run spawned (the per-run agent count). */
   agents_spawned?: number;
@@ -521,9 +521,16 @@ export interface WorkflowRun {
    */
   initiated_by?: string | null;
   /**
-   * The raw validated `WorkflowSpec` JSON-IR the dynamic `run-spec` path was
-   * authored with — the small durable audit record of the run shape.
+   * The mandatory `design_intent` a Starlark program declares via its
+   * `workflow(name, design_intent)` header — the WHY behind the run's shape.
    * `undefined` for registry runs / legacy rows.
+   */
+  design_intent?: string | null;
+  /**
+   * The authored source the dynamic `run-script` path was run with — the raw
+   * Starlark program text snapshotted as `{ lang: "starlark", script }`, the
+   * small durable audit record of the run shape. `undefined` for registry runs /
+   * legacy rows.
    */
   spec?: unknown;
   /**
@@ -536,10 +543,35 @@ export interface WorkflowRun {
 }
 
 /**
+ * Normalized token usage for one worker turn (mirrors the Rust `TokenUsage`).
+ * `total` is `input + output`; provider subset counters (codex cached /
+ * reasoning, claude cache_*) are NOT re-added.
+ */
+export interface WorkflowStepTokens {
+  input: number;
+  output: number;
+  total: number;
+}
+
+/**
+ * Structured failure carried on a step's {@link WorkflowStepResult} when it did
+ * NOT succeed. `reason` is the classified bucket; `detail` is human-facing
+ * context (typically the worker's stderr).
+ */
+export interface WorkflowStepFailure {
+  failed: boolean;
+  /** Classified failure bucket. */
+  reason: "timeout" | "exit" | "spawn" | "delivery" | string;
+  detail: string;
+}
+
+/**
  * Structured result payload carried on a {@link WorkflowStep}. Mirrors the
- * harness-workflow `step_result_json` shape. The step's actor is a PROVIDER that
- * ran in a NEW one-shot ephemeral worker (codex/claude), not a pre-existing
- * member; `isolation` is set when the node opted into a throwaway git worktree.
+ * harness-workflow `step_result_json` shape PLUS the observability fields the
+ * runtime captures onto each step (see `build_step_details` in harness-cli). The
+ * step's actor is a PROVIDER that ran in a NEW one-shot ephemeral worker
+ * (codex/claude), not a pre-existing member; `isolation` is set when the node
+ * opted into a throwaway git worktree.
  */
 export interface WorkflowStepResult {
   phase?: string;
@@ -551,6 +583,23 @@ export interface WorkflowStepResult {
   ok?: boolean;
   provider_session_id?: string | null;
   output_summary?: string;
+  /** The model the worker actually ran (the requested override), if any. */
+  model?: string | null;
+  /** Process exit code; null when the worker was killed on timeout / signal. */
+  exit_code?: number | null;
+  /** Wall-clock duration of the worker process, in milliseconds. */
+  duration_ms?: number;
+  /** Normalized token usage parsed from the worker's terminal event, if present. */
+  tokens?: WorkflowStepTokens | null;
+  /** Present only when the step failed; describes why. */
+  failure?: WorkflowStepFailure | null;
+  /**
+   * The FULL worktree diff text for an `isolation: "worktree"` step, capped to
+   * 20k chars. Absent for shared-cwd steps. See {@link worktree_diff_truncated}.
+   */
+  worktree_diff?: string;
+  /** True when {@link worktree_diff} was truncated at the cap. */
+  worktree_diff_truncated?: boolean;
 }
 
 /**

@@ -385,6 +385,18 @@ export function WorkflowRunDetail({ model, onSelectionChange, apiUrl }: Workflow
         />
       </header>
 
+      {run.design_intent && (
+        <DocSection label="Design intent">
+          <div className="rounded-md border border-primary/25 bg-primary/5 p-3 text-[13px] leading-relaxed text-foreground">
+            {run.design_intent}
+          </div>
+        </DocSection>
+      )}
+
+      <DocSection label="Run summary">
+        <RunSummary run={run} steps={steps} />
+      </DocSection>
+
       {!running && (
         <DocSection label="Verdict">
           <VerdictCard run={run} steps={steps} tone={tone} />
@@ -446,34 +458,176 @@ function TraceIndicator({ retention }: { retention?: string }) {
   );
 }
 
+/** USD per 1M tokens [input, output] — rough public list prices; ESTIMATE only. */
+const TOKEN_RATES: { match: RegExp; in: number; out: number }[] = [
+  { match: /claude|sonnet|opus|haiku/i, in: 3, out: 15 },
+  { match: /gpt-5|codex|o[0-9]/i, in: 1.25, out: 10 },
+];
+function rateFor(model?: string | null): { in: number; out: number } {
+  const hit = model ? TOKEN_RATES.find((r) => r.match.test(model)) : undefined;
+  return hit ?? { in: 2, out: 10 };
+}
+
+/** Parse a `unix-ms:<n>` (or ISO) timestamp to epoch ms; NaN if unparseable. */
+function parseMs(ts?: string | null): number {
+  if (!ts) return NaN;
+  const m = ts.match(/^unix-ms:(\d+)$/);
+  return m ? Number(m[1]) : Date.parse(ts);
+}
+
 /**
- * Collapsible pretty-printed view of the run's authored `WorkflowSpec` JSON-IR.
- * Reuses the same fenced-code styling as the Rust source / Markdown code blocks
- * so the dynamic spec reads as the run's durable audit record.
+ * Max number of step windows overlapping at once — the OBSERVED parallelism.
+ * Prefers the worker's real `duration_ms` (captured at completion) for the end
+ * bound: journaled `ended_at` is stamped at run-finalize time for every step, so
+ * a serial step looks like it ran until the run ended and would falsely overlap.
+ */
+function maxOverlap(steps: WorkflowStep[]): number {
+  const edges: [number, number][] = [];
+  for (const step of steps) {
+    const start = parseMs(step.started_at);
+    if (Number.isNaN(start)) continue;
+    const dur = step.result?.duration_ms;
+    const endRaw =
+      dur != null ? start + dur : step.ended_at ? parseMs(step.ended_at) : Date.now();
+    const end = Number.isNaN(endRaw) ? start : Math.max(endRaw, start);
+    edges.push([start, 1], [end, -1]);
+  }
+  // Closes (-1) before opens (+1) at equal timestamps so touching windows do
+  // not count as overlapping.
+  edges.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  let current = 0;
+  let max = 0;
+  for (const [, delta] of edges) {
+    current += delta;
+    if (current > max) max = current;
+  }
+  return max;
+}
+
+/**
+ * Run-level rollup from the per-step observability fields: workers, observed
+ * parallelism, wall-clock, total tokens, a rough cost estimate, and the failed
+ * count. Token/cost stats appear once durable workers report usage.
+ */
+function RunSummary({ run, steps }: { run: WorkflowRun; steps: WorkflowStep[] }) {
+  let tokIn = 0;
+  let tokOut = 0;
+  let tokTotal = 0;
+  let cost = 0;
+  let failed = 0;
+  for (const step of steps) {
+    const result = step.result;
+    if (result?.tokens) {
+      tokIn += result.tokens.input;
+      tokOut += result.tokens.output;
+      tokTotal += result.tokens.total;
+      const rate = rateFor(result.model);
+      cost += (result.tokens.input / 1e6) * rate.in + (result.tokens.output / 1e6) * rate.out;
+    }
+    if (result?.failure?.failed) failed += 1;
+  }
+  const parallelism = maxOverlap(steps);
+  const wall = run.ended_at ? parseMs(run.ended_at) - parseMs(run.created_at) : NaN;
+
+  const stats: { label: string; value: ReactNode; bad?: boolean }[] = [
+    { label: "Workers", value: formatCount(steps.length) },
+    { label: "Parallelism", value: `${parallelism}×` },
+  ];
+  if (!Number.isNaN(wall) && wall >= 0) stats.push({ label: "Wall-clock", value: formatMillis(wall) });
+  if (tokTotal > 0) {
+    stats.push({
+      label: "Tokens",
+      value: `${formatCount(tokTotal)} (${formatCount(tokIn)} in · ${formatCount(tokOut)} out)`,
+    });
+  }
+  if (cost > 0) {
+    stats.push({ label: "Est. cost", value: `≈ $${cost < 0.01 ? cost.toFixed(4) : cost.toFixed(2)}` });
+  }
+  if (failed > 0) stats.push({ label: "Failed", value: formatCount(failed), bad: true });
+
+  return (
+    <div className="flex flex-wrap gap-x-6 gap-y-2">
+      {stats.map((stat) => (
+        <div key={stat.label} className="flex flex-col">
+          <span className="text-[10px] uppercase tracking-wider text-muted-foreground">{stat.label}</span>
+          <span
+            className={cn(
+              "text-[13px] tabular-nums",
+              stat.bad ? "text-status-bad" : "text-foreground",
+            )}
+          >
+            {stat.value}
+          </span>
+        </div>
+      ))}
+      {tokTotal === 0 && (
+        <span className="self-center text-[12px] text-muted-foreground">
+          Token usage appears once durable workers report it.
+        </span>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Collapsible pretty-printed view of the run's authored source — the Starlark
+ * program snapshotted as `{ lang: "starlark", script }`. Reuses the same
+ * fenced-code styling as the Rust source / Markdown code blocks so the dynamic
+ * spec reads as the run's durable audit record.
  */
 function SpecDisclosure({ spec }: { spec: unknown }) {
   const [open, setOpen] = useState(false);
-  const pretty = (() => {
+  const [copied, setCopied] = useState(false);
+  // `spec` is journaled as `{ lang: "starlark", script }`; show the ACTUAL
+  // source, not the escaped JSON wrapper. Fall back to a string / pretty JSON.
+  const source = (() => {
+    if (
+      spec &&
+      typeof spec === "object" &&
+      typeof (spec as { script?: unknown }).script === "string"
+    ) {
+      return (spec as { script: string }).script;
+    }
+    if (typeof spec === "string") return spec;
     try {
       return JSON.stringify(spec, null, 2);
     } catch {
       return String(spec);
     }
   })();
+  const lineCount = source.split("\n").length;
+  const copy = () => {
+    void navigator.clipboard?.writeText(source).then(() => {
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1200);
+    });
+  };
   return (
     <div>
-      <button
-        type="button"
-        onClick={() => setOpen((value) => !value)}
-        className="inline-flex items-center gap-1 text-[11px] text-muted-foreground transition-colors hover:text-foreground"
-      >
-        {open ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />}
-        <Code className="size-3" />
-        View spec · WorkflowSpec JSON-IR
-      </button>
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={() => setOpen((value) => !value)}
+          className="inline-flex items-center gap-1 text-[11px] text-muted-foreground transition-colors hover:text-foreground"
+        >
+          {open ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />}
+          <Code className="size-3" />
+          View spec · Starlark source
+          <span className="text-muted-foreground/70">· {lineCount} lines</span>
+        </button>
+        {open && (
+          <button
+            type="button"
+            onClick={copy}
+            className="text-[10px] text-muted-foreground transition-colors hover:text-foreground"
+          >
+            {copied ? "copied ✓" : "copy"}
+          </button>
+        )}
+      </div>
       {open && (
-        <pre className="mt-1.5 max-h-96 overflow-auto whitespace-pre rounded-md border border-border bg-muted/30 p-2 font-mono text-[11px] text-foreground">
-          {pretty}
+        <pre className="mt-1.5 max-h-96 overflow-auto whitespace-pre rounded-md border border-border bg-muted/30 p-2 font-mono text-[11px] leading-relaxed text-foreground">
+          {source}
         </pre>
       )}
     </div>
@@ -727,6 +881,14 @@ function StepCard({
               <span>—</span>
             )}
             <span className="tabular-nums">{stepTiming(step)}</span>
+            {step.result?.model && (
+              <span className="text-foreground/70">· {step.result.model}</span>
+            )}
+            {step.result?.tokens && (
+              <span className="tabular-nums">
+                · {formatCount(step.result.tokens.total)} tok
+              </span>
+            )}
           </div>
 
           {/* Line 3 — output summary */}
@@ -880,6 +1042,7 @@ function StepDrawer({
                 <Markdown source={step.output_summary} />
               </div>
             )}
+            <StepObservability step={step} />
             <DocSection label="Turn">
               <TurnDrillIn
                 session={session}
@@ -894,6 +1057,118 @@ function StepDrawer({
       </aside>
     </div>
   );
+}
+
+/**
+ * Per-step observability panel: the model/exit/duration/token metadata the
+ * runtime captures onto `step.result` (see `build_step_details` in harness-cli),
+ * plus a structured failure callout and a collapsible worktree diff for
+ * isolated steps. Renders nothing when no observability fields are present (e.g.
+ * a still-queued step or an older run with a bare result).
+ */
+function StepObservability({ step }: { step: WorkflowStep }) {
+  const result = step.result;
+  if (!result) return null;
+
+  const { model, exit_code, duration_ms, tokens, failure } = result;
+  const meta: { label: string; value: ReactNode }[] = [];
+  if (model) meta.push({ label: "Model", value: <MonoId>{model}</MonoId> });
+  if (duration_ms != null) {
+    meta.push({ label: "Duration", value: formatMillis(duration_ms) });
+  }
+  if (exit_code != null) {
+    meta.push({
+      label: "Exit code",
+      value: (
+        <Badge tone={exit_code === 0 ? "good" : "bad"}>
+          <span className="tabular-nums">{exit_code}</span>
+        </Badge>
+      ),
+    });
+  }
+  if (tokens) {
+    meta.push({
+      label: "Tokens",
+      value: (
+        <span className="tabular-nums">
+          {formatCount(tokens.total)} total
+          <span className="text-muted-foreground">
+            {" "}
+            · {formatCount(tokens.input)} in · {formatCount(tokens.output)} out
+          </span>
+        </span>
+      ),
+    });
+  }
+
+  const hasDiff = Boolean(result.worktree_diff);
+  if (meta.length === 0 && !failure && !hasDiff) return null;
+
+  return (
+    <DocSection label="Observability">
+      {meta.length > 0 && <DocProperties items={meta} />}
+      {failure?.failed && (
+        <div className="space-y-1.5 rounded-md border border-status-bad/30 bg-status-bad/10 p-2.5">
+          <div className="flex items-center gap-1.5">
+            <Badge tone="bad">{failure.reason}</Badge>
+            <span className="text-[11px] font-medium uppercase tracking-wide text-status-bad">
+              failed
+            </span>
+          </div>
+          {failure.detail && (
+            <pre className="overflow-x-auto whitespace-pre-wrap break-words font-mono text-[11px] text-foreground">
+              {failure.detail}
+            </pre>
+          )}
+        </div>
+      )}
+      {hasDiff && (
+        <WorktreeDiff
+          diff={result.worktree_diff ?? ""}
+          truncated={Boolean(result.worktree_diff_truncated)}
+        />
+      )}
+    </DocSection>
+  );
+}
+
+/** Collapsible monospace worktree diff for an `isolation: "worktree"` step. */
+function WorktreeDiff({ diff, truncated }: { diff: string; truncated: boolean }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="rounded-md border border-border">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-center gap-1.5 px-2.5 py-2 text-left text-[11px] font-medium text-muted-foreground transition-colors hover:text-foreground"
+      >
+        {open ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
+        worktree diff
+        {truncated && <Badge tone="warn">truncated</Badge>}
+      </button>
+      {open && (
+        <pre className="max-h-96 overflow-auto border-t border-border bg-muted/30 p-2.5 font-mono text-[11px] leading-relaxed text-foreground">
+          {diff}
+        </pre>
+      )}
+    </div>
+  );
+}
+
+/** "1.2s" / "850ms" / "2m 05s" from a raw millisecond count. */
+function formatMillis(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  const totalSeconds = ms / 1000;
+  if (totalSeconds < 60) return `${totalSeconds.toFixed(1)}s`;
+  const mins = Math.floor(totalSeconds / 60);
+  const secs = Math.round(totalSeconds % 60);
+  return `${mins}m ${String(secs).padStart(2, "0")}s`;
+}
+
+/** Compact token count: "1,234" up to 9999, then "12.3k". */
+function formatCount(n: number): string {
+  if (n < 10000) return n.toLocaleString();
+  return `${(n / 1000).toFixed(1)}k`;
 }
 
 /* ================================================================== */
