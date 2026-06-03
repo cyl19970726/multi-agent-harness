@@ -202,6 +202,91 @@ agent(
   return { scriptPath, script, runArgs };
 }
 
+// Author a program that drives the STRUCTURED `agent(..., schema=...)` surface:
+// a schema-forced agent() whose parsed dict the script reads a key off, plus a
+// parallel() spec carrying a per-spec schema. In --dry-run the mock driver
+// synthesizes a structured object per required key, so the structured result
+// flows through WITHOUT a live provider.
+const STRUCTURED_INTENT =
+  "Force a schema on the verdict so the synthesizer can branch on a real object, " +
+  "not parse prose — structured output is the whole point of this run.";
+
+function authorStructuredScript() {
+  const script = `workflow("structured-acceptance", "${STRUCTURED_INTENT}")
+
+phase("verdict")
+res = agent(
+    "Judge the login path",
+    label = "judge",
+    schema = {"ok": "", "summary": ""},
+)
+if res != None:
+    log("verdict ok=" + res["ok"] + " summary=" + res["summary"])
+
+phase("fan")
+checks = parallel([
+    {"prompt": "Check " + name, "label": name, "schema": {"status": ""}}
+    for name in args["checks"]
+])
+`;
+  const scriptDir = join(store, "acceptance");
+  mkdirSync(scriptDir, { recursive: true });
+  const scriptPath = join(scriptDir, "structured.star");
+  writeFileSync(scriptPath, script);
+  const runArgs = { checks: ["auth", "session"] };
+  return { scriptPath, script, runArgs };
+}
+
+// Run the structured program and assert the parsed structured object flowed
+// through onto every schema-mode step's result (the mock driver synthesizes one
+// mock string per required key), and that schema-less behavior is unaffected.
+function runStructuredScript(scriptPath, runArgs) {
+  const cmdArgs = [
+    "workflow",
+    "run-script",
+    scriptPath,
+    "--name",
+    "structured-acceptance",
+    "--args",
+    JSON.stringify(runArgs),
+  ];
+  if (!live) cmdArgs.push("--dry-run");
+  const result = harnessJson(cmdArgs);
+  const { run, steps } = result;
+  assert(run.status === "completed", `structured run not completed: ${run.status}`);
+  // 1 serial judge + 2 parallel checks = 3 steps.
+  assert(steps.length === 3, `expected 3 structured steps, got ${steps.length}`);
+
+  const judge = steps.find((step) => step.label === "judge");
+  assert(judge, "judge step missing");
+  // The structured object rode onto the step result (schema keys -> mock values).
+  assert(
+    judge.result?.structured &&
+      typeof judge.result.structured.ok === "string" &&
+      typeof judge.result.structured.summary === "string",
+    `judge structured object missing/incomplete: ${JSON.stringify(judge.result?.structured)}`,
+  );
+
+  // Each parallel check carried its own schema -> a structured object with status.
+  const checks = steps.filter((step) => step.phase === "fan");
+  assert(checks.length === 2, `expected 2 fan checks, got ${checks.length}`);
+  for (const check of checks) {
+    assert(
+      check.result?.structured && typeof check.result.structured.status === "string",
+      `check ${check.label} structured object missing: ${JSON.stringify(check.result?.structured)}`,
+    );
+  }
+
+  // final_output mirrors the steps and carries the structured payloads too.
+  assert(Array.isArray(run.final_output), "structured run final_output missing");
+  const withStructured = run.final_output.filter((entry) => entry.structured);
+  assert(
+    withStructured.length === 3,
+    `expected 3 final_output entries with structured, got ${withStructured.length}`,
+  );
+  return { structured_steps: withStructured.length };
+}
+
 // Author a program that OMITS the mandatory `workflow(name, design_intent)`
 // header — it must be rejected fail-fast before any run completes.
 function authorScriptWithoutDesignIntent() {
@@ -430,6 +515,13 @@ stage("s4", "run has serial -> parallel -> serial shape + final_output", () => {
 stage("s5", "WorkflowRun + steps journaled; script text + design_intent snapshotted", () =>
   assertJournaled(runResult.run.id, authored.script),
 );
+stage("s5b", "agent(schema=...) returns a structured object that flows through", () => {
+  const authoredStructured = authorStructuredScript();
+  return runStructuredScript(
+    authoredStructured.scriptPath,
+    authoredStructured.runArgs,
+  );
+});
 stage("s6", "program WITHOUT a design_intent is rejected fail-fast", () => {
   const { scriptPath } = authorScriptWithoutDesignIntent();
   return assertRejectedWithoutDesignIntent(scriptPath);

@@ -75,8 +75,8 @@ A program calls these globals (no `import`; they are pre-bound):
 | Call | Returns | Meaning |
 | --- | --- | --- |
 | `workflow(name, design_intent)` | — | REQUIRED header. Declares the run name + the WHY behind its shape. Must run once before the body. |
-| `agent(prompt, provider="codex", label=, phase=, model=, isolation=)` | output text | Run ONE ephemeral worker synchronously. `prompt` is positional; the rest are keyword args. `isolation="worktree"` runs it in a throwaway worktree. Capture the return to chain: `scan = agent("...")`. |
-| `parallel([dict, ...])` | list of output strings (input order) | Barrier fan-out: run every spec concurrently, block until ALL finish. Each dict needs a `prompt` and may set `provider` (default `"codex"`), `label`, `phase`, `model`, `isolation`. |
+| `agent(prompt, provider="codex", label=, phase=, model=, isolation=, schema=)` | output text, OR a dict (with `schema=`) | Run ONE ephemeral worker synchronously. `prompt` is positional; the rest are keyword args. `isolation="worktree"` runs it in a throwaway worktree. With `schema={...}` it returns a parsed dict (or `None`) — see [Structured Output](#structured-output-the-foundation). Capture the return to chain: `scan = agent("...")`. |
+| `parallel([dict, ...])` | list (input order) | Barrier fan-out: run every spec concurrently, block until ALL finish. Each element is the parsed dict (if that spec had a `schema` that parsed) else its output string. Each dict needs a `prompt` and may set `provider` (default `"codex"`), `label`, `phase`, `model`, `isolation`, `schema`. |
 | `phase(name)` | — | Set the default phase for the steps that follow. |
 | `log(message)` | — | Emit a progress line. |
 | `args` | value | The `--args` JSON, injected as a module global (e.g. `args["items"]`). |
@@ -104,6 +104,218 @@ an `agent()` call) to run it in its own harness-owned throwaway git worktree und
 NOT auto-merged back and is cleaned up after the call finishes (auto-removed if
 unchanged). Use it as the escape hatch whenever a `parallel` block has two or more
 slots that EDIT files, so they cannot stomp each other.
+
+## Structured Output: the foundation
+
+A worker called WITHOUT `schema` returns free text — and you cannot reliably
+branch on free text. Pass `schema={...}` and the worker is forced to reply with a
+single JSON object carrying the schema's TOP-LEVEL KEYS, parsed back into a native
+Starlark dict:
+
+```python
+res = agent(
+    "Audit " + args["area"] + " and report whether it is safe to ship.",
+    schema={"ok": "bool", "findings": "list of strings"},
+)
+# res is a real dict with native types: res["ok"] is a bool, res["findings"] a list.
+if res == None:
+    log("worker produced no valid JSON — skipping")
+elif res["ok"]:
+    log("clean")
+else:
+    for f in res["findings"]:
+        log("finding: " + f)
+```
+
+The schema's KEYS are the contract; the VALUES (`"bool"`, `"list of strings"`)
+are shape hints handed to the worker. The runtime appends a JSON-only
+instruction, and if the first reply is not a valid JSON object with those keys it
+re-runs the worker ONCE with a corrective nudge. If it STILL fails, the call
+returns **`None`** (and the step is journaled as a schema failure). Always handle
+`None`.
+
+This is what makes verify / judge / synthesis reliable: a verifier that returns
+`{"ok": bool}` is something you can branch on; a verifier that returns a paragraph
+is something you have to guess at. Reach for `schema` on every leaf whose output
+controls the workflow's CONTROL FLOW.
+
+`parallel()` honours `schema` per-spec: a spec with a schema that parsed yields a
+dict in the result list, an unschema'd (or unparsed) spec yields its summary
+string — so guard with `type(x) == "dict"` when a fan-out mixes them.
+
+## The Quality Patterns
+
+A workflow earns its keep by CROSS-CHECKING, not by doing one big call. The
+patterns below all lean on structured output. Each is a few lines of Starlark.
+
+### verify + repair + stop
+
+Do the work, verify it with a SEPARATE schema'd worker, and on failure make
+exactly one repair pass — then stop. Bounded, not an open loop.
+
+```python
+agent("Implement " + args["task"] + " on the shared tree.", label="build")
+v = agent(
+    "Verify the change for " + args["task"] + ". Did it pass?",
+    schema={"ok": "bool", "problems": "list of strings"},
+    label="verify",
+)
+if v != None and not v["ok"]:
+    agent(
+        "Repair these problems in " + args["task"] + ":\n- " + "\n- ".join(v["problems"]),
+        label="repair",
+    )
+# else: it passed (or verify failed to report) — stop. No unbounded retry loop.
+```
+
+### adversarial verify (majority vote)
+
+Do not ask one verifier "is this right?" — spawn N skeptics PER finding, each
+prompted to REFUTE it, defaulting to refuted=true when unsure. Keep the finding
+only if a MAJORITY do NOT refute. Survival-of-scrutiny beats a single rubber stamp.
+
+```python
+N = 3
+panel = parallel([
+    {
+        "prompt": "Try to REFUTE this claim: \"" + finding + "\". If you cannot " +
+                  "confirm it, set refuted=true.",
+        "schema": {"refuted": "bool"},
+        "label": "skeptic",
+    }
+    for _ in range(N)
+])
+refuted = 0
+for v in panel:
+    # Unsure / no-JSON defaults to refuted (conservative).
+    if not (type(v) == "dict" and v["refuted"] == False):
+        refuted += 1
+keep = refuted * 2 < N   # majority did NOT refute
+```
+
+### perspective-diverse verify
+
+Same fan-out, but give each verifier a DISTINCT lens instead of N identical
+refuters — a finding that survives correctness AND security AND reproduction is
+far stronger than one that survives three clones.
+
+```python
+lenses = ["is it logically correct?", "is it a security risk?", "does it actually reproduce?"]
+checks = parallel([
+    {
+        "prompt": "Evaluate \"" + finding + "\" strictly on: " + lens,
+        "schema": {"ok": "bool", "why": "string"},
+        "label": "lens",
+    }
+    for lens in lenses
+])
+passed = [c for c in checks if type(c) == "dict" and c["ok"]]
+keep = len(passed) * 2 > len(lenses)   # most lenses agree
+```
+
+### judge panel
+
+Generate N INDEPENDENT attempts from different angles, score each with parallel
+judges, then synthesize from the winner. Use it when the answer is open-ended and
+quality varies run-to-run.
+
+```python
+angles = ["optimize for clarity", "optimize for performance", "optimize for safety"]
+attempts = parallel([
+    {"prompt": "Solve " + args["task"] + ", " + a, "label": "attempt"} for a in angles
+])
+scores = parallel([
+    {
+        "prompt": "Score this solution 0-10 for " + args["task"] + ":\n" + attempts[i],
+        "schema": {"score": "int"},
+        "label": "judge",
+    }
+    for i in range(len(attempts))
+])
+best, best_score = attempts[0], -1
+for i in range(len(attempts)):
+    s = scores[i]["score"] if type(scores[i]) == "dict" else -1
+    if s > best_score:
+        best, best_score = attempts[i], s
+agent("Refine and finalize this winning solution:\n" + best, label="synthesize")
+```
+
+### loop-until-dry
+
+Keep fanning out finders until K CONSECUTIVE rounds surface nothing new. A
+`while` loop plus a `seen` set turns "find the bugs" into "find them all".
+
+```python
+seen = {}        # used as a set: finding -> True
+dry_rounds = 0
+K = 2            # stop after K consecutive empty rounds
+while dry_rounds < K:
+    rounds = parallel([
+        {"prompt": "Find bugs in " + args["area"] + " NOT in this list:\n" +
+                   "\n".join(seen.keys()),
+         "schema": {"findings": "list of strings"}, "label": "finder"}
+        for _ in range(2)
+    ])
+    fresh = 0
+    for r in rounds:
+        if type(r) == "dict" and type(r["findings"]) == "list":
+            for f in r["findings"]:
+                if f not in seen:
+                    seen[f] = True
+                    fresh += 1
+    dry_rounds = dry_rounds + 1 if fresh == 0 else 0
+log("converged with " + str(len(seen)) + " distinct findings")
+```
+
+### completeness critic
+
+End with one agent whose only job is to ask what is MISSING — the cheap final
+guard against a confident-but-incomplete result.
+
+```python
+gaps = agent(
+    "Here is the finding set for " + args["area"] + ":\n- " + "\n- ".join(seen.keys()) +
+    "\nWhat important cases are still MISSING?",
+    schema={"complete": "bool", "missing": "list of strings"},
+    label="completeness",
+)
+if gaps != None and not gaps["complete"]:
+    log("gaps remain: " + ", ".join(gaps["missing"]))
+```
+
+## Error Tolerance
+
+Workers fail or time out. `agent()` does NOT raise for that — it returns the
+worker's (possibly empty) output, and in `schema` mode a failed/timed-out/garbled
+worker returns **`None`**. So the script keeps running; YOU decide what a missing
+result means:
+
+- Schema'd leaf: check `if res == None: ...` and skip / default conservatively
+  (e.g. count a missing skeptic vote as "refuted").
+- `parallel()`: the result list is always input-length, but some slots may be
+  `None` or a summary string — guard with `type(x) == "dict"` before indexing.
+
+Never assume every slot in a fan-out succeeded; a robust workflow tolerates a
+dead leaf and still reaches a verdict.
+
+## When NOT To Use A Workflow
+
+A single-step task is just one `agent()` call — wrapping it in a `workflow(...)`
+program adds ceremony and buys nothing. A workflow's entire value is STRUCTURE:
+parallelism, cross-checking (verify / adversarial / judge), or loops
+(loop-until-dry). If your program has one `agent()` call and no branch, no
+fan-out, and no loop, you do not want a workflow — you want that one call. Add the
+structure only when the structure is the point.
+
+## Worked Example: bug hunt with adversarial verify
+
+A quality workflow end to end: diverse schema'd finders fan out, every candidate
+finding is cross-examined by a skeptic panel (majority must fail to refute), and
+the confirmed set is synthesized. The runnable copy is
+[`examples/bug-hunt-verify.star`](examples/bug-hunt-verify.star) — it composes
+[structured output](#structured-output-the-foundation),
+[adversarial verify](#adversarial-verify-majority-vote), and `None`-tolerant
+flattening, and runs end-to-end under `--dry-run`.
 
 ## Worked Example: data-driven scan, then parallel fix
 
@@ -207,6 +419,9 @@ its permission profile must allow it:
 - [ ] Program calls only `workflow`/`agent`/`parallel`/`phase`/`log`/`args`; no clock/random/IO assumed.
 - [ ] Every agent leaf (`agent()` call / `parallel` spec) has a `provider` of `"codex"` or `"claude"`.
 - [ ] Parallel slots that EDIT files use `isolation` `"worktree"`.
+- [ ] Every leaf whose output drives control flow uses `schema={...}` and the script handles a `None` (and, in fan-outs, a non-dict) result.
+- [ ] If the workflow has only one `agent()` call and no branch/fan-out/loop, it is NOT a workflow — collapse it to that one call.
+- [ ] Quality steps (verify / adversarial / judge / loop-until-dry / completeness) cross-check rather than trust a single pass, where the task warrants it.
 - [ ] Ran it: `harness workflow run-script <prog.star>` (no member binding needed).
 - [ ] The run is visible in `harness dashboard snapshot` (`workflow_runs` / `workflow_steps`) with its `design_intent`.
 - [ ] The runner's profile allows the `harness` binary and what each leaf's prompt does.

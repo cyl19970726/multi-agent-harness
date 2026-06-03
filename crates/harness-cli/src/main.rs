@@ -3826,6 +3826,7 @@ fn workflow_real_agent_step(
                 step_id: Some(step_id),
                 started_at: Some(started_at),
                 details: Some(details),
+                structured: None,
             }
         }
     }
@@ -3855,6 +3856,21 @@ fn try_workflow_real_agent_step(
             "ephemeral {} worker (dry-run) for {}{model_note}{isolation_note}",
             spec.provider, spec.label,
         );
+        // In schema mode, synthesize a mock structured object (each required key
+        // -> a mock string) so `cargo test` + the acceptance script exercise the
+        // structured path WITHOUT a live provider.
+        let structured = spec.schema.as_ref().map(|schema| {
+            let obj: serde_json::Map<String, serde_json::Value> = schema_required_keys(schema)
+                .into_iter()
+                .map(|key| {
+                    (
+                        key.clone(),
+                        serde_json::Value::String(format!("mock {key}")),
+                    )
+                })
+                .collect();
+            serde_json::Value::Object(obj)
+        });
         return Ok(workflow::StepResult {
             phase: spec.phase.clone(),
             label: spec.label.clone(),
@@ -3870,6 +3886,7 @@ fn try_workflow_real_agent_step(
             // No worker ran (dry-run), so there is no usage/exit telemetry; we
             // still surface the requested model so the dashboard can label it.
             details: Some(serde_json::json!({ "model": spec.model })),
+            structured,
         });
     }
 
@@ -4020,20 +4037,82 @@ fn spawn_ephemeral_worker(
     let session_dir = store.root().join("provider-sessions").join(&session_id);
     fs::create_dir_all(&session_dir)?;
 
+    // One spawn of the configured provider against a (possibly augmented) prompt.
+    // Factored into a closure so structured mode can re-run it once for the retry.
+    let spawn_once = |prompt: &str| -> CliResult<EphemeralSpawn> {
+        match spec.provider.as_str() {
+            "codex" => spawn_codex_ephemeral(
+                &session_dir,
+                &session_id,
+                spec,
+                prompt,
+                &cwd,
+                options.timeout_ms,
+            ),
+            "claude" => spawn_claude_ephemeral(
+                &session_dir,
+                &session_id,
+                spec,
+                prompt,
+                &cwd,
+                options.timeout_ms,
+            ),
+            other => Err(CliError::Usage(format!(
+                "unknown workflow provider {other} (expected codex|claude)"
+            ))),
+        }
+    };
+
+    // STRUCTURED mode (spec.schema is Some): append a JSON-only instruction to the
+    // prompt, then parse + validate the reply into a structured object. On failure
+    // re-run the worker ONCE with a corrective suffix; if it still fails, leave
+    // `structured` None and record a "schema" step failure below. Text-mode steps
+    // (no schema) just deliver the prompt verbatim, as before.
+    let required_keys: Vec<String> = spec
+        .schema
+        .as_ref()
+        .map(schema_required_keys)
+        .unwrap_or_default();
+
     // Wall-clock span of the worker process itself, for the step's `duration_ms`.
     let worker_start = Instant::now();
-    let spawn = match spec.provider.as_str() {
-        "codex" => spawn_codex_ephemeral(&session_dir, &session_id, spec, &cwd, options.timeout_ms),
-        "claude" => {
-            spawn_claude_ephemeral(&session_dir, &session_id, spec, &cwd, options.timeout_ms)
+    let mut structured: Option<serde_json::Value> = None;
+    let spawn = if let Some(schema) = &spec.schema {
+        let instruction = schema_instruction(schema);
+
+        // First attempt: prompt + the JSON-only instruction.
+        let mut spawn = spawn_once(&format!("{}{instruction}", spec.prompt))?;
+        structured = spawn
+            .reply
+            .as_deref()
+            .and_then(extract_json_object)
+            .filter(|obj| object_has_required_keys(obj, &required_keys));
+
+        // ONE corrective retry when the worker produced no valid JSON.
+        if structured.is_none() {
+            let retry_prompt = format!(
+                "{}{instruction}\n\nYour previous reply was not valid JSON with keys [{}]; \
+                 return ONLY that JSON object.",
+                spec.prompt,
+                required_keys.join(", "),
+            );
+            spawn = spawn_once(&retry_prompt)?;
+            structured = spawn
+                .reply
+                .as_deref()
+                .and_then(extract_json_object)
+                .filter(|obj| object_has_required_keys(obj, &required_keys));
         }
-        other => {
-            return Err(CliError::Usage(format!(
-                "unknown workflow provider {other} (expected codex|claude)"
-            )))
-        }
-    }?;
+        spawn
+    } else {
+        spawn_once(&spec.prompt)?
+    };
+
     let duration_ms = worker_start.elapsed().as_millis() as u64;
+
+    // A schema-mode step that never yielded valid JSON is a FAILURE — surface it
+    // so the dashboard shows the same observability shape as a worker failure.
+    let schema_failed = spec.schema.is_some() && structured.is_none();
 
     // Collect the worktree diff as the node's evidence (isolation path only). We
     // read it BEFORE the guard drops (which removes the worktree).
@@ -4088,26 +4167,158 @@ fn spawn_ephemeral_worker(
         let err = if err.len() > 160 { &err[..160] } else { &err };
         output_summary.push_str(&format!(" [error: {err}]"));
     }
+    if schema_failed {
+        output_summary.push_str(" [schema: no valid JSON with required keys]");
+    }
 
     // Drop the guard here (explicitly, for clarity) AFTER the diff is collected —
     // cleanup layer 1 (normal) for the worktree path. For the shared-cwd path the
     // guard is None and there is nothing to remove.
     drop(guard);
 
-    let details = build_step_details(spec, &spawn, duration_ms, diff.as_deref());
+    let mut details = build_step_details(spec, &spawn, duration_ms, diff.as_deref());
+    // Record a "schema" failure (reusing the same failure shape build_step_details
+    // emits for worker failures) so the dashboard renders the schema miss.
+    if schema_failed {
+        if let Some(map) = details.as_object_mut() {
+            map.insert(
+                "failure".into(),
+                serde_json::json!({
+                    "failed": true,
+                    "reason": "schema",
+                    "detail": format!(
+                        "worker reply was not a JSON object with required keys [{}]",
+                        required_keys.join(", "),
+                    ),
+                }),
+            );
+        }
+    }
+
+    // The step is ok iff the worker succeeded AND (text mode OR schema parsed).
+    let ok = spawn.ok && !schema_failed;
 
     Ok(workflow::StepResult {
         phase: spec.phase.clone(),
         label: spec.label.clone(),
         provider: spec.provider.clone(),
         isolation: spec.isolation.clone(),
-        ok: spawn.ok,
+        ok,
         provider_session_id: Some(session_id),
         output_summary,
         step_id: None,
         started_at: None,
         details: Some(details),
+        structured,
     })
+}
+
+/// The REQUIRED top-level keys a schema declares. The schema is a JSON object;
+/// its keys ARE the required keys the structured reply must carry. A non-object
+/// schema (or one with no keys) declares no required keys.
+fn schema_required_keys(schema: &serde_json::Value) -> Vec<String> {
+    schema
+        .as_object()
+        .map(|map| map.keys().cloned().collect())
+        .unwrap_or_default()
+}
+
+/// Build the schema instruction appended to a structured-mode prompt: tell the
+/// worker to reply with ONLY a single JSON object carrying the schema's top-level
+/// keys (no prose, no markdown fences), and inline the compact schema as a shape
+/// hint. Returned with a leading separator so it can be concatenated onto a prompt.
+fn schema_instruction(schema: &serde_json::Value) -> String {
+    let keys = schema_required_keys(schema).join(", ");
+    let compact = serde_json::to_string(schema).unwrap_or_else(|_| "{}".to_string());
+    format!(
+        "\n\nRespond with ONLY a single JSON object with these top-level keys: [{keys}]. \
+         No prose, no markdown fences. Shape hint: {compact}"
+    )
+}
+
+/// Extract a JSON OBJECT from a worker reply, robustly: first strip a leading /
+/// trailing triple-backtick fence (```json ... ``` or ``` ... ```) and try to
+/// parse the whole thing; failing that, take the FIRST balanced `{ ... }` object
+/// substring and parse it. Returns the parsed value only when it is a JSON object.
+fn extract_json_object(reply: &str) -> Option<serde_json::Value> {
+    let trimmed = reply.trim();
+
+    // 1. Strip a surrounding ```json ... ``` (or ``` ... ```) fence if present.
+    let unfenced = strip_code_fence(trimmed);
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(unfenced.trim()) {
+        if value.is_object() {
+            return Some(value);
+        }
+    }
+
+    // 2. Fall back to the first balanced `{ ... }` object in the text.
+    if let Some(slice) = first_balanced_object(trimmed) {
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(slice) {
+            if value.is_object() {
+                return Some(value);
+            }
+        }
+    }
+    None
+}
+
+/// Strip a single surrounding triple-backtick fence from `text` if it both starts
+/// with ``` (optionally ```json / ```JSON) and ends with ```. Returns the inner
+/// body; otherwise returns `text` unchanged.
+fn strip_code_fence(text: &str) -> &str {
+    let Some(rest) = text.strip_prefix("```") else {
+        return text;
+    };
+    // Drop an optional language tag on the opening fence line.
+    let body = match rest.split_once('\n') {
+        Some((_lang, after)) => after,
+        None => rest,
+    };
+    body.strip_suffix("```").unwrap_or(body)
+}
+
+/// Return the first balanced `{ ... }` object substring of `text`, honoring JSON
+/// string literals (so braces inside strings do not affect nesting). `None` when
+/// there is no balanced object.
+fn first_balanced_object(text: &str) -> Option<&str> {
+    let bytes = text.as_bytes();
+    let start = text.find('{')?;
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+    for (offset, &byte) in bytes[start..].iter().enumerate() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match byte {
+            b'"' => in_string = true,
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&text[start..=start + offset]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Whether `obj` (a parsed structured reply) contains EVERY required top-level
+/// key. An empty required set is vacuously satisfied.
+fn object_has_required_keys(obj: &serde_json::Value, required: &[String]) -> bool {
+    match obj.as_object() {
+        Some(map) => required.iter().all(|key| map.contains_key(key)),
+        None => false,
+    }
 }
 
 /// Maximum worktree-diff text we store on a step result. Diffs above this are
@@ -4338,6 +4549,7 @@ fn spawn_codex_ephemeral(
     session_dir: &Path,
     session_id: &str,
     spec: &workflow::AgentStepSpec,
+    prompt: &str,
     cwd: &Path,
     timeout_ms: u64,
 ) -> CliResult<EphemeralSpawn> {
@@ -4355,7 +4567,7 @@ fn spawn_codex_ephemeral(
     if let Some(model) = &spec.model {
         cmd.arg("-m").arg(model);
     }
-    cmd.arg(&spec.prompt);
+    cmd.arg(prompt);
 
     let run = run_ndjson_child(
         cmd,
@@ -4404,12 +4616,13 @@ fn spawn_claude_ephemeral(
     session_dir: &Path,
     session_id: &str,
     spec: &workflow::AgentStepSpec,
+    prompt: &str,
     cwd: &Path,
     timeout_ms: u64,
 ) -> CliResult<EphemeralSpawn> {
     let mut cmd = Command::new("claude");
     cmd.arg("-p")
-        .arg(&spec.prompt)
+        .arg(prompt)
         .arg("--output-format")
         .arg("stream-json")
         .arg("--verbose")
@@ -10503,6 +10716,7 @@ mod workflow_runtime_tests {
             step_id: None,
             started_at: None,
             details: None,
+            structured: None,
         }
     }
 
@@ -10596,6 +10810,74 @@ mod workflow_runtime_tests {
     }
 
     #[test]
+    fn schema_required_keys_reads_top_level_object_keys() {
+        let schema = serde_json::json!({ "ok": "", "summary": "", "score": 0 });
+        let mut keys = schema_required_keys(&schema);
+        keys.sort();
+        assert_eq!(keys, vec!["ok", "score", "summary"]);
+        // A non-object schema declares no required keys.
+        assert!(schema_required_keys(&serde_json::json!("nope")).is_empty());
+    }
+
+    #[test]
+    fn schema_instruction_lists_keys_and_inlines_the_shape() {
+        let schema = serde_json::json!({ "ok": "" });
+        let instruction = schema_instruction(&schema);
+        assert!(instruction.contains("ONLY a single JSON object"));
+        assert!(instruction.contains("ok"));
+        // The compact schema is inlined as a shape hint.
+        assert!(instruction.contains("{\"ok\":\"\"}"));
+    }
+
+    #[test]
+    fn extract_json_object_handles_bare_object() {
+        let value = extract_json_object(r#"{"ok": true, "n": 3}"#).expect("parsed");
+        assert_eq!(value["ok"], serde_json::json!(true));
+        assert_eq!(value["n"], serde_json::json!(3));
+    }
+
+    #[test]
+    fn extract_json_object_strips_a_json_code_fence() {
+        let reply = "```json\n{\"ok\": true, \"summary\": \"done\"}\n```";
+        let value = extract_json_object(reply).expect("parsed");
+        assert_eq!(value["summary"], serde_json::json!("done"));
+        // A bare (langless) fence works too.
+        let reply2 = "```\n{\"ok\": false}\n```";
+        let value2 = extract_json_object(reply2).expect("parsed");
+        assert_eq!(value2["ok"], serde_json::json!(false));
+    }
+
+    #[test]
+    fn extract_json_object_takes_first_balanced_object_amid_prose() {
+        // Prose around the object, plus braces inside a string literal.
+        let reply = "Here is the result:\n{\"msg\": \"a } b\", \"ok\": true}\nThanks!";
+        let value = extract_json_object(reply).expect("parsed");
+        assert_eq!(value["msg"], serde_json::json!("a } b"));
+        assert_eq!(value["ok"], serde_json::json!(true));
+    }
+
+    #[test]
+    fn extract_json_object_rejects_invalid_or_non_object() {
+        assert!(extract_json_object("not json at all").is_none());
+        // A JSON array is not an object.
+        assert!(extract_json_object("[1, 2, 3]").is_none());
+        // An unbalanced object does not parse.
+        assert!(extract_json_object("{\"ok\": true").is_none());
+    }
+
+    #[test]
+    fn object_has_required_keys_present_and_missing() {
+        let obj = serde_json::json!({ "ok": true, "summary": "x" });
+        let required: Vec<String> = vec!["ok".into(), "summary".into()];
+        assert!(object_has_required_keys(&obj, &required));
+        // A missing key fails validation.
+        let missing: Vec<String> = vec!["ok".into(), "score".into()];
+        assert!(!object_has_required_keys(&obj, &missing));
+        // An empty required set is vacuously satisfied.
+        assert!(object_has_required_keys(&obj, &[]));
+    }
+
+    #[test]
     fn build_step_details_success_has_tokens_and_no_failure() {
         let spec = workflow::AgentStepSpec {
             phase: "p".into(),
@@ -10604,6 +10886,7 @@ mod workflow_runtime_tests {
             model: Some("gpt-5-codex".into()),
             isolation: None,
             prompt: "hi".into(),
+            schema: None,
         };
         let spawn = EphemeralSpawn {
             ok: true,
@@ -10638,6 +10921,7 @@ mod workflow_runtime_tests {
             model: None,
             isolation: None,
             prompt: "hi".into(),
+            schema: None,
         };
         let spawn = EphemeralSpawn {
             ok: false,
@@ -10669,6 +10953,7 @@ mod workflow_runtime_tests {
             model: None,
             isolation: Some("worktree".into()),
             prompt: "hi".into(),
+            schema: None,
         };
         let spawn = EphemeralSpawn {
             ok: true,
@@ -10731,6 +11016,7 @@ mod workflow_runtime_tests {
                 // A colliding key must NOT override the base value.
                 "ok": false,
             })),
+            structured: None,
         };
         let json = workflow::step_result_json(&result);
         assert_eq!(json["provider"], serde_json::json!("codex"));
@@ -11005,6 +11291,7 @@ mod workflow_runtime_tests {
                 step_id: None,
                 started_at: None,
                 details: None,
+                structured: None,
             }
         };
 
@@ -11232,6 +11519,7 @@ agent("fix: " + a, provider = "claude", label = "fixer")
                 step_id: Some(step_id),
                 started_at: Some(started_at),
                 details: None,
+                structured: None,
             }
         };
 

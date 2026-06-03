@@ -18,13 +18,19 @@
 //!   structured the way it is. The run is REJECTED if `workflow(...)` is never
 //!   called or `design_intent` is blank / shorter than [`MIN_DESIGN_INTENT_LEN`]
 //!   characters — every workflow must justify its shape.
-//! * `agent(prompt, provider="codex", label=None, phase=None, model=None, isolation=None)`
-//!   — run ONE ephemeral worker synchronously; returns its output text (so the script can
-//!   chain, e.g. `scan = agent(...)` then `scan.splitlines()`).
+//! * `agent(prompt, provider="codex", label=None, phase=None, model=None, isolation=None, schema=None)`
+//!   — run ONE ephemeral worker synchronously. In text mode (no `schema`) it
+//!   returns the worker's output text (so the script can chain, e.g.
+//!   `scan = agent(...)` then `scan.splitlines()`). In STRUCTURED mode
+//!   (`schema={...}`) it forces the worker to reply with a single JSON object
+//!   carrying the schema's top-level keys, then returns the parsed dict
+//!   (`res["ok"]`), or `None` if the worker produced no valid JSON.
 //! * `parallel(specs)` — a barrier fan-out: run every spec concurrently and block until
-//!   ALL finish, returning the list of their output-summary strings in input order.
-//!   `specs` is a list of dicts, each with a required `prompt` and optional `provider`
-//!   (default "codex"), `label`, `phase`, `model`, and `isolation` — e.g.
+//!   ALL finish, returning a list in input order where each element is the parsed
+//!   structured dict (if that spec had a `schema` and parsed) else its
+//!   output-summary string. `specs` is a list of dicts, each with a required
+//!   `prompt` and optional `provider` (default "codex"), `label`, `phase`,
+//!   `model`, `isolation`, and `schema` — e.g.
 //!   `parallel([{"prompt": "fix " + x} for x in args["items"]])`.
 //! * `phase(name)` — set the default phase for subsequent steps.
 //! * `log(message)` — emit a progress line.
@@ -129,6 +135,7 @@ impl StarlarkCtx<'_> {
     }
 
     /// Run one agent step through the driver, record it, and return its result.
+    #[allow(clippy::too_many_arguments)]
     fn run_one(
         &self,
         prompt: String,
@@ -137,6 +144,7 @@ impl StarlarkCtx<'_> {
         phase: Option<String>,
         model: Option<String>,
         isolation: Option<String>,
+        schema: Option<serde_json::Value>,
     ) -> StepResult {
         let spec = AgentStepSpec {
             phase: self.phase_for(phase),
@@ -145,6 +153,7 @@ impl StarlarkCtx<'_> {
             model,
             isolation,
             prompt,
+            schema,
         };
         let result = run_agent_step(self.driver, &spec);
         self.steps.borrow_mut().push(result.clone());
@@ -153,17 +162,14 @@ impl StarlarkCtx<'_> {
 
     /// Run a barrier fan-out over already-extracted plain specs. Drives the
     /// EXISTING crate-level [`crate::parallel`] (scheduler-backed), then records
-    /// every [`StepResult`] in input order and returns their output summaries so
-    /// the caller can build the script-visible return list. No Starlark value
+    /// every [`StepResult`] in input order and returns the results so the caller
+    /// can build the script-visible return list (the structured dict when a spec
+    /// had a schema and parsed, else its summary string). No Starlark value
     /// crosses a thread boundary — the specs were read off the heap before this.
-    fn run_parallel(&self, specs: Vec<AgentStepSpec>) -> Vec<String> {
+    fn run_parallel(&self, specs: Vec<AgentStepSpec>) -> Vec<StepResult> {
         let results = crate::parallel(self.driver, &specs);
-        let summaries: Vec<String> = results
-            .iter()
-            .map(|result| result.output_summary.clone())
-            .collect();
-        self.steps.borrow_mut().extend(results);
-        summaries
+        self.steps.borrow_mut().extend(results.clone());
+        results
     }
 }
 
@@ -189,6 +195,26 @@ fn dict_str(dict: &DictRef<'_>, key: &str) -> anyhow::Result<Option<String>> {
     }
 }
 
+/// Read an optional schema dict off a spec dict (the per-spec structured-output
+/// schema). Returns `None` when the key is absent or Starlark `None`; errors when
+/// present-but-not-a-dict. The dict is converted to a `serde_json` object via
+/// [`value_to_json`] so it can ride on the plain [`AgentStepSpec`] across the
+/// barrier's thread boundary.
+fn dict_schema(dict: &DictRef<'_>, key: &str) -> anyhow::Result<Option<serde_json::Value>> {
+    match dict.get_str(key) {
+        None => Ok(None),
+        Some(value) if value.is_none() => Ok(None),
+        Some(value) => {
+            if DictRef::from_value(value).is_none() {
+                return Err(anyhow::anyhow!(
+                    "parallel() spec field `{key}` must be a dict"
+                ));
+            }
+            Ok(Some(value_to_json(value)))
+        }
+    }
+}
+
 /// Read a `parallel()` `specs` list (a Starlark list of dicts) into PLAIN Rust
 /// [`AgentStepSpec`]s, resolving phase/label defaults via `ctx`. This happens on
 /// the eval thread BEFORE any fan-out, so no Starlark value crosses a thread.
@@ -209,6 +235,7 @@ fn read_parallel_specs(
         let phase = dict_str(&dict, "phase")?;
         let model = dict_str(&dict, "model")?;
         let isolation = dict_str(&dict, "isolation")?;
+        let schema = dict_schema(&dict, "schema")?;
         out.push(AgentStepSpec {
             phase: ctx.phase_for(phase),
             label: label.unwrap_or_else(|| provider.clone()),
@@ -216,12 +243,16 @@ fn read_parallel_specs(
             model,
             isolation,
             prompt,
+            schema,
         });
     }
     Ok(out)
 }
 
 /// The workflow host functions exposed to the script.
+// `agent()` exposes 8 host params (prompt + 6 kwargs + eval) — its expansion trips
+// clippy's arg-count lint; the breadth is the documented host API surface.
+#[allow(clippy::too_many_arguments)]
 #[starlark_module]
 fn workflow_globals(builder: &mut GlobalsBuilder) {
     /// Declare the workflow's mandatory meta: its `name` and a `design_intent`
@@ -237,7 +268,13 @@ fn workflow_globals(builder: &mut GlobalsBuilder) {
         Ok(NoneType)
     }
 
-    /// Run one ephemeral provider worker synchronously and return its output text.
+    /// Run one ephemeral provider worker synchronously.
+    ///
+    /// In TEXT mode (no `schema`) it returns the worker's output text (so the
+    /// script can chain it). In STRUCTURED mode (`schema={...}`) it forces the
+    /// worker to reply with a single JSON object carrying the schema's top-level
+    /// keys and returns the parsed dict (e.g. `res["ok"]`); if the worker never
+    /// produced valid JSON it returns `None` so the script can check/skip.
     fn agent<'v>(
         #[starlark(require = pos)] prompt: String,
         #[starlark(require = named, default = "codex".to_string())] provider: String,
@@ -245,17 +282,49 @@ fn workflow_globals(builder: &mut GlobalsBuilder) {
         #[starlark(require = named)] phase: Option<String>,
         #[starlark(require = named)] model: Option<String>,
         #[starlark(require = named)] isolation: Option<String>,
+        #[starlark(require = named)] schema: Option<Value<'v>>,
         eval: &mut Evaluator<'v, '_, '_>,
-    ) -> anyhow::Result<String> {
-        let result = ctx_of(eval).run_one(prompt, provider, label, phase, model, isolation);
-        Ok(result.output_summary)
+    ) -> anyhow::Result<Value<'v>> {
+        let schema_json = match schema {
+            Some(value) if !value.is_none() => {
+                if DictRef::from_value(value).is_none() {
+                    return Err(anyhow::anyhow!("agent() `schema` must be a dict"));
+                }
+                Some(value_to_json(value))
+            }
+            _ => None,
+        };
+        let has_schema = schema_json.is_some();
+        let result = ctx_of(eval).run_one(
+            prompt,
+            provider,
+            label,
+            phase,
+            model,
+            isolation,
+            schema_json,
+        );
+        let heap = eval.heap();
+        if has_schema {
+            // Structured mode: hand the script the parsed dict, or `None` when the
+            // worker never produced valid JSON (so the script can check/skip).
+            match &result.structured {
+                Some(structured) => Ok(json_to_value(heap, structured)),
+                None => Ok(Value::new_none()),
+            }
+        } else {
+            // Text mode: return the output summary string exactly as before.
+            Ok(heap.alloc(result.output_summary.as_str()))
+        }
     }
 
     /// Run a barrier fan-out: every spec runs concurrently and the call blocks
-    /// until ALL of them finish (the barrier), then returns a list of their
-    /// output-summary strings in input order. `specs` is a list of dicts, each
-    /// with a required `prompt` and optional `provider` (default "codex"),
-    /// `label`, `phase`, `model`, and `isolation`.
+    /// until ALL of them finish (the barrier), then returns a list in input
+    /// order. Each element is the parsed structured dict when that spec carried a
+    /// `schema` and the worker produced valid JSON, else its output-summary
+    /// string (schema-less specs stay backward compatible). `specs` is a list of
+    /// dicts, each with a required `prompt` and optional `provider` (default
+    /// "codex"), `label`, `phase`, `model`, `isolation`, and `schema`.
     fn parallel<'v>(
         #[starlark(require = pos)] specs: Value<'v>,
         eval: &mut Evaluator<'v, '_, '_>,
@@ -264,9 +333,17 @@ fn workflow_globals(builder: &mut GlobalsBuilder) {
         // Extract every spec into PLAIN Rust before any threading — no Starlark
         // value may cross the barrier's thread boundary.
         let extracted = read_parallel_specs(ctx, specs)?;
-        let summaries = ctx.run_parallel(extracted);
+        let results = ctx.run_parallel(extracted);
         let heap = eval.heap();
-        let values: Vec<Value<'v>> = summaries.iter().map(|s| heap.alloc(s.as_str())).collect();
+        let values: Vec<Value<'v>> = results
+            .iter()
+            .map(|result| match &result.structured {
+                // A spec with a schema that parsed → hand the script the dict.
+                Some(structured) => json_to_value(heap, structured),
+                // Schema-less (or unparsed) → the summary string, as before.
+                None => heap.alloc(result.output_summary.as_str()),
+            })
+            .collect();
         Ok(heap.alloc(values))
     }
 
@@ -318,6 +395,45 @@ fn json_to_value<'v>(heap: Heap<'v>, value: &serde_json::Value) -> Value<'v> {
             heap.alloc(AllocDict(entries))
         }
     }
+}
+
+/// The mirror of [`json_to_value`]: recursively read a Starlark value into a
+/// [`serde_json::Value`] so a script-supplied `schema` dict can be carried on the
+/// plain [`AgentStepSpec`] across the barrier's thread boundary. Dicts become
+/// objects, lists become arrays, strings/bools/ints/floats map directly, and
+/// Starlark `None` becomes JSON null. Any value that is none of these (a
+/// function, say) is dropped to JSON null — a schema only carries plain data.
+fn value_to_json(value: Value<'_>) -> serde_json::Value {
+    use serde_json::Value as J;
+    if value.is_none() {
+        return J::Null;
+    }
+    if let Some(b) = value.unpack_bool() {
+        return J::Bool(b);
+    }
+    if let Some(i) = value.unpack_i32() {
+        return J::Number(i.into());
+    }
+    if let Some(s) = value.unpack_str() {
+        return J::String(s.to_string());
+    }
+    if let Some(dict) = DictRef::from_value(value) {
+        let mut map = serde_json::Map::new();
+        for (k, v) in dict.iter() {
+            let key = k
+                .unpack_str()
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| k.to_str());
+            map.insert(key, value_to_json(v));
+        }
+        return J::Object(map);
+    }
+    if let Some(list) = ListRef::from_value(value) {
+        return J::Array(list.iter().map(value_to_json).collect());
+    }
+    // Floats (and any other numeric form not covered above) are not directly
+    // unpackable; fall back to Starlark's own JSON conversion, else JSON null.
+    value.to_json_value().unwrap_or(J::Null)
 }
 
 /// Evaluate a Starlark workflow program, driving every `agent()` call through
@@ -435,6 +551,7 @@ mod tests {
                 step_id: None,
                 started_at: None,
                 details: None,
+                structured: None,
             }
         }
     }
@@ -498,6 +615,7 @@ b = agent("fix what scan found: " + a, provider = "claude", label = "fixer")
             step_id: None,
             started_at: None,
             details: None,
+            structured: None,
         };
         let outcome = run_starlark(&format!("{HEADER}agent(\"x\")"), "demo", None, &driver)
             .expect("run ok")
@@ -550,6 +668,7 @@ b = agent("fix what scan found: " + a, provider = "claude", label = "fixer")
                     step_id: None,
                     started_at: None,
                     details: None,
+                    structured: None,
                 }
             };
             run_starlark(&format!("{HEADER}{script}"), "demo", None, &driver)
@@ -612,5 +731,137 @@ b = agent("fix what scan found: " + a, provider = "claude", label = "fixer")
         );
         assert_eq!(run.meta.source, script);
         assert_eq!(run.outcome.steps.len(), 1);
+    }
+
+    /// A driver that emulates the schema-mode contract: when the spec carries a
+    /// schema it returns a `structured` object (each required key -> "v:<key>");
+    /// otherwise it returns text only. Records the schema each step saw so a test
+    /// can assert the schema threaded through onto the spec.
+    fn structured_driver<'a>(
+        schemas: &'a Mutex<Vec<Option<serde_json::Value>>>,
+    ) -> impl Fn(&AgentStepSpec) -> StepResult + Sync + 'a {
+        move |spec: &AgentStepSpec| {
+            schemas.lock().unwrap().push(spec.schema.clone());
+            let structured = spec.schema.as_ref().map(|schema| {
+                let obj: serde_json::Map<String, serde_json::Value> = schema
+                    .as_object()
+                    .map(|m| m.keys().cloned().collect::<Vec<_>>())
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|k| (k.clone(), serde_json::Value::String(format!("v:{k}"))))
+                    .collect();
+                serde_json::Value::Object(obj)
+            });
+            StepResult {
+                phase: spec.phase.clone(),
+                label: spec.label.clone(),
+                provider: spec.provider.clone(),
+                isolation: spec.isolation.clone(),
+                ok: true,
+                provider_session_id: Some("s".to_string()),
+                output_summary: format!("text: {}", spec.prompt),
+                step_id: None,
+                started_at: None,
+                details: None,
+                structured,
+            }
+        }
+    }
+
+    #[test]
+    fn value_to_json_round_trips_with_json_to_value() {
+        // A nested JSON value -> Starlark value -> JSON value must be identical.
+        let original = serde_json::json!({
+            "ok": true,
+            "count": 3,
+            "name": "audit",
+            "tags": ["a", "b"],
+            "nested": { "k": 1, "flag": false },
+            "missing": serde_json::Value::Null,
+        });
+        Module::with_temp_heap(|module| {
+            let value = json_to_value(module.heap(), &original);
+            let back = value_to_json(value);
+            assert_eq!(back, original);
+            Ok::<(), starlark::Error>(())
+        })
+        .expect("round trip");
+    }
+
+    #[test]
+    fn agent_with_schema_returns_a_dict_the_script_reads() {
+        // agent(prompt, schema={...}) returns the parsed dict, so the script can
+        // read a key off it (res["ok"]) and branch on it.
+        let schemas = Mutex::new(Vec::new());
+        let script = r#"
+res = agent("audit it", schema = {"ok": "", "summary": ""})
+if res["ok"] == "v:ok":
+    log("structured ok: " + res["summary"])
+"#;
+        let outcome = {
+            let driver = structured_driver(&schemas);
+            run_starlark(&format!("{HEADER}{script}"), "demo", None, &driver)
+                .expect("run ok")
+                .outcome
+        };
+        let schemas = schemas.into_inner().unwrap();
+        assert_eq!(schemas.len(), 1);
+        // The schema dict threaded onto the spec as a JSON object.
+        assert_eq!(
+            schemas[0],
+            Some(serde_json::json!({ "ok": "", "summary": "" }))
+        );
+        assert_eq!(outcome.steps.len(), 1);
+        // The step carried the parsed structured object.
+        assert_eq!(
+            outcome.steps[0].structured,
+            Some(serde_json::json!({ "ok": "v:ok", "summary": "v:summary" }))
+        );
+    }
+
+    #[test]
+    fn agent_without_schema_returns_the_text_summary() {
+        // No schema -> the script gets the output_summary STRING exactly as today.
+        let schemas = Mutex::new(Vec::new());
+        let script = r#"
+out = agent("scan it")
+log("got: " + out)
+"#;
+        let outcome = {
+            let driver = structured_driver(&schemas);
+            run_starlark(&format!("{HEADER}{script}"), "demo", None, &driver)
+                .expect("run ok")
+                .outcome
+        };
+        assert_eq!(outcome.steps.len(), 1);
+        assert!(outcome.steps[0].structured.is_none());
+        assert_eq!(outcome.steps[0].output_summary, "text: scan it");
+    }
+
+    #[test]
+    fn parallel_returns_structured_dicts_and_summary_strings_per_spec() {
+        // A mixed barrier: one spec has a schema (returns a dict), one does not
+        // (returns its summary string). Both flow back through parallel().
+        let schemas = Mutex::new(Vec::new());
+        let script = r#"
+results = parallel([
+    {"prompt": "a", "schema": {"verdict": ""}},
+    {"prompt": "b"},
+])
+log("first verdict: " + results[0]["verdict"])
+log("second: " + results[1])
+"#;
+        let outcome = {
+            let driver = structured_driver(&schemas);
+            run_starlark(&format!("{HEADER}{script}"), "demo", None, &driver)
+                .expect("run ok")
+                .outcome
+        };
+        assert_eq!(outcome.steps.len(), 2);
+        assert_eq!(
+            outcome.steps[0].structured,
+            Some(serde_json::json!({ "verdict": "v:verdict" }))
+        );
+        assert!(outcome.steps[1].structured.is_none());
     }
 }
