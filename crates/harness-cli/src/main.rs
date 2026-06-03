@@ -4599,7 +4599,7 @@ fn workflow_gc_trace(
         .filter(|run| run.trace_retention == "durable")
         .collect();
     // Most-recent first, so the first `keep_runs` survive.
-    durable.sort_by(|a, b| created_ms(&b.created_at).cmp(&created_ms(&a.created_at)));
+    durable.sort_by_key(|run| std::cmp::Reverse(created_ms(&run.created_at)));
 
     let steps = latest_workflow_steps_in_append_order(store)?;
     let mut pruned = Vec::new();
