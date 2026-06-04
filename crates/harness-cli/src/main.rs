@@ -4140,9 +4140,19 @@ fn spawn_ephemeral_worker(
     }
 
     let mut output_summary = if let Some(reply) = spawn.reply.clone() {
-        let reply = reply.replace('\n', " ");
-        if reply.len() > 200 {
-            format!("{}...", &reply[..200])
+        // Capture the worker's FINAL answer FAITHFULLY. `output_summary` is the text
+        // `agent()` returns to a Starlark program, which splits it (`.splitlines()`,
+        // first-line REAL/REFUTED verdicts) — so:
+        //  - PRESERVE NEWLINES: collapsing them to spaces silently flattened every
+        //    data-driven fan-out to width-1 and made every vote parser scan the whole
+        //    blob (a structurally-good workflow then measures as "naive").
+        //  - truncate on a CHAR boundary: `&reply[..200]` panics when byte 200 is
+        //    mid-UTF-8 (a real crash on unicode worker output), and 200 chars clipped
+        //    multi-finding lists mid-sentence. Cap generously, only to bound a blob.
+        const OUTPUT_SUMMARY_CAP: usize = 4000;
+        if reply.chars().count() > OUTPUT_SUMMARY_CAP {
+            let clipped: String = reply.chars().take(OUTPUT_SUMMARY_CAP).collect();
+            format!("{clipped}...")
         } else {
             reply
         }
