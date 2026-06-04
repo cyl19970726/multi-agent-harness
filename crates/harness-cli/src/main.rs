@@ -4737,6 +4737,24 @@ struct NdjsonRun {
 /// to push live frames (keyed by session id). Enforces a per-node timeout: on
 /// timeout the child is killed and `process_success=false` (the run tolerates
 /// failed nodes). Returns the terminal [`NdjsonRun`].
+/// SIGKILL the worker's whole process GROUP (the child is the group leader, so
+/// its pid is the pgid; `kill -9 -<pgid>`). codex/claude spawn child binaries
+/// that inherit our stdout pipe — killing only the immediate child would leave a
+/// grandchild holding the pipe open and the reader thread (and its join) blocked
+/// forever. Falls back to killing the immediate child.
+fn kill_worker_tree(child: &mut std::process::Child) {
+    let pid = child.id();
+    #[cfg(unix)]
+    {
+        let _ = Command::new("kill")
+            .arg("-KILL")
+            .arg(format!("-{pid}"))
+            .status();
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
 fn run_ndjson_child(
     mut cmd: Command,
     session_dir: &Path,
@@ -4744,6 +4762,13 @@ fn run_ndjson_child(
     live_file_name: &str,
     timeout_ms: u64,
 ) -> CliResult<NdjsonRun> {
+    // Put the worker in its OWN process group so a timeout can kill the whole
+    // tree (see kill_worker_tree), not just the immediate child.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
     let mut child = cmd
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -4766,59 +4791,69 @@ fn run_ndjson_child(
         .parent()
         .and_then(|provider_sessions| provider_sessions.parent())
         .map(|store_root| store_root.join("provider_turn_events.jsonl"));
-    let mut session_writer = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&live_path)
-        .ok()
-        .map(BufWriter::new);
-    let mut shared_writer = shared_path
-        .as_ref()
-        .and_then(|path| {
-            fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(path)
-                .ok()
-        })
-        .map(BufWriter::new);
+    let session_id_owned = session_id.to_string();
 
-    let mut events = Vec::new();
-    let reader = BufReader::new(stdout);
-    for line in reader.lines() {
-        let Ok(line_str) = line else { continue };
-        let trimmed = line_str.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        let Ok(payload) = serde_json::from_str::<serde_json::Value>(trimmed) else {
-            continue;
-        };
-        if let Some(writer) = session_writer.as_mut() {
-            let _ = writeln!(writer, "{trimmed}");
-            let _ = writer.flush();
-        }
-        if let Some(writer) = shared_writer.as_mut() {
-            let envelope = serde_json::json!({ "session_id": session_id, "event": payload });
-            if let Ok(line) = serde_json::to_string(&envelope) {
-                let _ = writeln!(writer, "{line}");
+    // Read stdout in a DEDICATED THREAD so the main thread can enforce the
+    // per-node timeout by KILLING a HUNG worker — one that stops emitting events
+    // but never closes stdout (an auth/network stall, a wedged provider). The old
+    // code read stdout on the main thread and only checked the timeout AFTER the
+    // read loop returned, so a hung worker (stdout still open) blocked forever and
+    // froze the whole run. The thread tees each event live + collects them;
+    // killing the child closes stdout, which ends this loop.
+    let stdout_handle = std::thread::spawn(move || {
+        let mut session_writer = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&live_path)
+            .ok()
+            .map(BufWriter::new);
+        let mut shared_writer = shared_path
+            .as_ref()
+            .and_then(|path| {
+                fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(path)
+                    .ok()
+            })
+            .map(BufWriter::new);
+        let mut events = Vec::new();
+        for line in BufReader::new(stdout).lines() {
+            let Ok(line_str) = line else { continue };
+            let trimmed = line_str.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let Ok(payload) = serde_json::from_str::<serde_json::Value>(trimmed) else {
+                continue;
+            };
+            if let Some(writer) = session_writer.as_mut() {
+                let _ = writeln!(writer, "{trimmed}");
                 let _ = writer.flush();
             }
+            if let Some(writer) = shared_writer.as_mut() {
+                let envelope =
+                    serde_json::json!({ "session_id": session_id_owned, "event": payload });
+                if let Ok(line) = serde_json::to_string(&envelope) {
+                    let _ = writeln!(writer, "{line}");
+                    let _ = writer.flush();
+                }
+            }
+            events.push(payload);
         }
-        events.push(payload);
-    }
-    if let Some(writer) = session_writer.as_mut() {
-        let _ = writer.flush();
-    }
-    if let Some(writer) = shared_writer.as_mut() {
-        let _ = writer.flush();
-    }
+        events
+    });
 
-    // stdout has closed (the reader loop above ran to EOF). Wait for exit with a
-    // per-node timeout so an interactive/auth hang cannot block the run.
-    let mut stderr_log = String::new();
-    BufReader::new(stderr).read_to_string(&mut stderr_log).ok();
+    // Drain stderr in its own thread so a chatty worker cannot fill the pipe and
+    // block (which would also stall the kill path).
+    let stderr_handle = std::thread::spawn(move || {
+        let mut log = String::new();
+        let _ = BufReader::new(stderr).read_to_string(&mut log);
+        log
+    });
 
+    // Main thread: enforce the per-node timeout. On timeout, KILL the child —
+    // that closes stdout/stderr so the reader threads finish and join cleanly.
     let start = Instant::now();
     let timeout = Duration::from_millis(timeout_ms.max(1));
     let mut timed_out = false;
@@ -4831,11 +4866,7 @@ fn run_ndjson_child(
             }
             Ok(None) => {
                 if start.elapsed() > timeout {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    if stderr_log.is_empty() {
-                        stderr_log = "timeout waiting for ephemeral worker".into();
-                    }
+                    kill_worker_tree(&mut child);
                     timed_out = true;
                     break false;
                 }
@@ -4844,6 +4875,12 @@ fn run_ndjson_child(
             Err(_) => break false,
         }
     };
+
+    let events = stdout_handle.join().unwrap_or_default();
+    let mut stderr_log = stderr_handle.join().unwrap_or_default();
+    if timed_out && stderr_log.is_empty() {
+        stderr_log = "timeout waiting for ephemeral worker".into();
+    }
 
     Ok(NdjsonRun {
         process_success,
@@ -5243,9 +5280,13 @@ fn workflow_run_value(store: &HarnessStore, args: &[String]) -> CliResult<serde_
     let options = WorkflowDeliveryOptions {
         dry_run: has_flag(args, "--dry-run"),
         start_runtime: has_flag(args, "--start-runtime"),
+        // Per-node ephemeral-worker timeout. Default 5 min: a real codex/claude
+        // turn takes ~30-60s, so 3s would kill every worker now that the timeout
+        // actually fires during the read (see run_ndjson_child); this bounds a
+        // hung worker without killing healthy ones.
         timeout_ms: value(args, "--timeout-ms")
             .and_then(|value| value.parse::<u64>().ok())
-            .unwrap_or(3_000),
+            .unwrap_or(300_000),
         // Registry runs always retain their trace durably.
         trace_retention: "durable".to_string(),
     };
@@ -5329,9 +5370,11 @@ fn workflow_run_script_value(
     let options = WorkflowDeliveryOptions {
         dry_run: has_flag(args, "--dry-run"),
         start_runtime: has_flag(args, "--start-runtime"),
+        // Per-node ephemeral-worker timeout. Default 5 min (see the registry-run
+        // path): bounds a hung worker without killing healthy ~30-60s turns.
         timeout_ms: value(args, "--timeout-ms")
             .and_then(|value| value.parse::<u64>().ok())
-            .unwrap_or(3_000),
+            .unwrap_or(300_000),
         trace_retention: trace_retention.clone(),
     };
 
@@ -11018,6 +11061,34 @@ mod workflow_runtime_tests {
         ];
         assert_eq!(parse_worker_model(&codex), None);
         assert_eq!(parse_worker_model(&[]), None);
+    }
+
+    #[test]
+    fn run_ndjson_child_kills_a_hung_worker_via_timeout() {
+        // Regression: a worker that emits one line then HANGS (stdout stays open,
+        // never exits) must be KILLED by the per-node timeout — not block forever.
+        // Before the fix, the read loop ran on the main thread and the timeout was
+        // only checked after EOF, so a hung worker froze the whole run.
+        let root = std::env::temp_dir().join(format!("mah-hang-{}", generated_id("t")));
+        let session_dir = root.join("provider-sessions").join("s");
+        fs::create_dir_all(&session_dir).expect("mkdir");
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c")
+            .arg("printf '{\"type\":\"item\"}\\n'; sleep 600");
+
+        let start = Instant::now();
+        let run = run_ndjson_child(cmd, &session_dir, "s", "out.ndjson", 500).expect("run");
+        let elapsed = start.elapsed();
+
+        assert!(
+            elapsed < Duration::from_secs(8),
+            "must not block on the hung child; took {elapsed:?}"
+        );
+        assert!(run.timed_out, "the timeout must have fired");
+        assert!(!run.process_success);
+        // The single event emitted before the hang was still captured live.
+        assert_eq!(run.events.len(), 1);
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
