@@ -4877,10 +4877,19 @@ fn kill_worker_tree(child: &mut std::process::Child) {
     let pid = child.id();
     #[cfg(unix)]
     {
-        let _ = Command::new("kill")
-            .arg("-KILL")
-            .arg(format!("-{pid}"))
-            .status();
+        // SIGKILL the whole process GROUP (negative pid == the group). The child is
+        // its own group leader (`process_group(0)`), so its pid IS the pgid; a
+        // grandchild (codex/claude spawn a child binary; or a test's `sleep`)
+        // inherits the group, so this reaps the tree and closes the inherited
+        // stdout pipe — which is what lets the reader thread's join return.
+        //
+        // We call `kill(2)` directly rather than shelling out to `kill -9 -<pgid>`:
+        // the external `kill` parses a leading-dash pgid INCONSISTENTLY across
+        // platforms (BSD/macOS accept it; util-linux on CI swallowed it as options),
+        // which left the grandchild alive and hung the reader for the full 600s.
+        unsafe {
+            libc::kill(-(pid as libc::pid_t), libc::SIGKILL);
+        }
     }
     let _ = child.kill();
     let _ = child.wait();
