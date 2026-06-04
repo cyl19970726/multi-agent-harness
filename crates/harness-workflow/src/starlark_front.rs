@@ -32,6 +32,16 @@
 //!   `prompt` and optional `provider` (default "codex"), `label`, `phase`,
 //!   `model`, `isolation`, and `schema` — e.g.
 //!   `parallel([{"prompt": "fix " + x} for x in args["items"]])`.
+//! * `pipeline(items, stages)` — a STREAMING fan-out: every item flows through ALL
+//!   `stages` in order with NO barrier between stages (item A may be in stage 3
+//!   while item B is still in stage 1). Returns a list in input order, one element
+//!   per item: the LAST stage's parsed structured dict (if it had a `schema` and
+//!   parsed) else its output-summary string. `items` is a list of strings OR dicts;
+//!   `stages` is a list of stage dicts (`prompt` TEMPLATE + optional `provider`,
+//!   `label`, `phase`, `model`, `schema`, `writable`). Each stage `prompt` may
+//!   contain the literal `{input}` placeholder, FORWARD-INJECTED with the item
+//!   (stage 1) or the prior stage's output (stage N) — e.g.
+//!   `pipeline(args["files"], [{"prompt": "scan {input}"}, {"prompt": "fix per {input}"}])`.
 //! * `phase(name)` — set the default phase for subsequent steps.
 //! * `log(message)` — emit a progress line.
 //! * `args` — the run's JSON parameterization, injected as a module global value.
@@ -226,6 +236,100 @@ impl StarlarkCtx<'_> {
         self.steps.borrow_mut().extend(results.clone());
         results
     }
+
+    /// Run a streaming pipeline: every `item` flows through ALL `stages` in order,
+    /// items overlapping at stage boundaries (no barrier), via the crate-level
+    /// [`crate::pipeline`] engine. Each stage forward-injects the prior value (the
+    /// item for stage 1, the prior stage's output for stage N) into its prompt
+    /// template, runs the injected driver, and forwards its own output. Records
+    /// EVERY produced [`StepResult`] (item × stage) into `ctx.steps` and returns the
+    /// per-item LAST-stage result for the script-visible return list.
+    ///
+    /// No Starlark value crosses a thread boundary — `items`/`stages` were read off
+    /// the heap into plain data before this. Budget is enforced at pipeline
+    /// granularity: if the ceiling is already reached, every item-stage is a budget
+    /// skip; otherwise the engine runs, then every produced step is tallied AFTER
+    /// the threaded engine returns (on the eval thread — `Cell` is not thread-safe).
+    fn run_pipeline(&self, items: Vec<String>, stages: Vec<StageTemplate>) -> Vec<StepResult> {
+        if items.is_empty() || stages.is_empty() {
+            return Vec::new();
+        }
+
+        if self.over_budget() {
+            // Already over budget: short-circuit every item-stage to a budget skip,
+            // recording one skipped step per item × stage without dispatching.
+            let (budget, spent) = (self.budget_usd.get(), self.spent_usd.get());
+            let mut last_per_item = Vec::with_capacity(items.len());
+            for prior in &items {
+                let mut last = None;
+                for stage in &stages {
+                    let spec = stage.spec_for(prior);
+                    let skip = budget_skip_result(&spec, budget, spent);
+                    self.steps.borrow_mut().push(skip.clone());
+                    last = Some(skip);
+                }
+                last_per_item.push(last.expect("stages is non-empty"));
+            }
+            return last_per_item;
+        }
+
+        // Every produced step (item × stage) is recorded here by the Send + Sync
+        // stage closures, then drained + tallied on the eval thread after the engine
+        // returns. A plain `Mutex<Vec<..>>` is the only thread-safe sink the stage
+        // closures may capture (no Starlark value, no `Cell`).
+        let produced: std::sync::Mutex<Vec<StepResult>> = std::sync::Mutex::new(Vec::new());
+        let driver = self.driver;
+
+        // Build one PipelineStage closure per template. Each receives the prior
+        // value on the incoming spec's `prompt` field, builds its concrete prompt
+        // from its template, runs the driver, records the result, and forwards its
+        // own output as the next stage's prior value (again carried on `prompt`).
+        let pipeline_stages: Vec<crate::PipelineStage<'_>> = stages
+            .iter()
+            .map(|template| {
+                let template = template.clone();
+                let produced = &produced;
+                let stage: crate::PipelineStage<'_> = Box::new(move |incoming: &AgentStepSpec| {
+                    let spec = template.spec_for(&incoming.prompt);
+                    let result = run_agent_step(driver, &spec);
+                    produced.lock().expect("pipeline sink").push(result.clone());
+                    // Carry this stage's output forward as the next stage's input.
+                    let next = AgentStepSpec {
+                        prompt: forward_value(&result),
+                        ..spec
+                    };
+                    Some((next, result))
+                });
+                stage
+            })
+            .collect();
+
+        // The crate engine seeds stage 1 from each item's `AgentStepSpec.prompt`, so
+        // the placeholder is the raw item string; the first stage substitutes it.
+        let seeds: Vec<AgentStepSpec> = items
+            .iter()
+            .map(|item| AgentStepSpec {
+                phase: self.default_phase.clone(),
+                label: String::new(),
+                provider: String::new(),
+                model: None,
+                isolation: None,
+                prompt: item.clone(),
+                schema: None,
+                writable: false,
+            })
+            .collect();
+
+        let last_per_item = crate::pipeline(seeds, pipeline_stages);
+
+        // Tally every produced step on the eval thread (Cell is not thread-safe).
+        let produced = produced.into_inner().expect("pipeline sink");
+        for result in &produced {
+            self.add_spent(result);
+        }
+        self.steps.borrow_mut().extend(produced);
+        last_per_item
+    }
 }
 
 /// Approximate USD cost of one completed step: the provider's billed figure when
@@ -378,6 +482,116 @@ fn read_parallel_specs(
     Ok(out)
 }
 
+/// The placeholder token a `pipeline()` stage prompt template may contain. Stage 1
+/// substitutes it with the (string-rendered) input item; stage N with the prior
+/// stage's output (its parsed structured JSON serialized, else its summary text).
+const PIPELINE_INPUT_PLACEHOLDER: &str = "{input}";
+
+/// A PLAIN-data template for one `pipeline()` stage. Read off the Starlark heap on
+/// the eval thread BEFORE any threading, so the per-item stage closures (which are
+/// `Send + Sync`) capture ONLY this — no Starlark value crosses a thread boundary.
+/// The `prompt_template` may contain [`PIPELINE_INPUT_PLACEHOLDER`], replaced with
+/// the forward-injected prior value when the stage builds its concrete prompt.
+#[derive(Debug, Clone)]
+struct StageTemplate {
+    prompt_template: String,
+    provider: String,
+    /// `None` until resolved against `ctx.phase_for(..)` when building the spec.
+    label: Option<String>,
+    phase: String,
+    model: Option<String>,
+    isolation: Option<String>,
+    schema: Option<serde_json::Value>,
+    writable: bool,
+}
+
+impl StageTemplate {
+    /// Build the concrete [`AgentStepSpec`] this stage runs for one item, forward-
+    /// injecting `prior` (the item for stage 1, the prior stage's output for stage
+    /// N) wherever the template carries [`PIPELINE_INPUT_PLACEHOLDER`].
+    fn spec_for(&self, prior: &str) -> AgentStepSpec {
+        let prompt = self
+            .prompt_template
+            .replace(PIPELINE_INPUT_PLACEHOLDER, prior);
+        AgentStepSpec {
+            phase: self.phase.clone(),
+            label: self.label.clone().unwrap_or_else(|| self.provider.clone()),
+            provider: self.provider.clone(),
+            model: self.model.clone(),
+            isolation: self.isolation.clone(),
+            prompt,
+            schema: self.schema.clone(),
+            writable: self.writable,
+        }
+    }
+}
+
+/// The value a stage forwards to the next stage: a step's parsed structured JSON
+/// serialized to a compact string when present, else its plain summary text.
+fn forward_value(result: &StepResult) -> String {
+    match &result.structured {
+        Some(structured) => {
+            serde_json::to_string(structured).unwrap_or_else(|_| result.output_summary.clone())
+        }
+        None => result.output_summary.clone(),
+    }
+}
+
+/// Read a `pipeline()` `items` list (each element a string OR a dict) into PLAIN
+/// strings to forward-inject into stage 1. A string item is used verbatim; a dict
+/// (or any non-string) item is serialized to compact JSON. Happens on the eval
+/// thread BEFORE any threading, so no Starlark value crosses a thread boundary.
+fn read_pipeline_items(items: Value<'_>) -> anyhow::Result<Vec<String>> {
+    let list = ListRef::from_value(items)
+        .ok_or_else(|| anyhow::anyhow!("pipeline() expects a list of items (strings or dicts)"))?;
+    let mut out = Vec::with_capacity(list.len());
+    for item in list.iter() {
+        if let Some(s) = item.unpack_str() {
+            out.push(s.to_string());
+        } else {
+            let json = value_to_json(item);
+            out.push(serde_json::to_string(&json).unwrap_or_default());
+        }
+    }
+    Ok(out)
+}
+
+/// Read a `pipeline()` `stages` list (a Starlark list of stage dicts) into PLAIN
+/// [`StageTemplate`]s, resolving phase defaults via `ctx`. Happens on the eval
+/// thread BEFORE any threading, mirroring [`read_parallel_specs`].
+fn read_pipeline_stages(
+    ctx: &StarlarkCtx<'_>,
+    stages: Value<'_>,
+) -> anyhow::Result<Vec<StageTemplate>> {
+    let list = ListRef::from_value(stages)
+        .ok_or_else(|| anyhow::anyhow!("pipeline() expects a list of stage dicts"))?;
+    let mut out = Vec::with_capacity(list.len());
+    for item in list.iter() {
+        let dict = DictRef::from_value(item)
+            .ok_or_else(|| anyhow::anyhow!("pipeline() stage must be a dict"))?;
+        let prompt_template = dict_str(&dict, "prompt")?
+            .ok_or_else(|| anyhow::anyhow!("pipeline() stage requires a `prompt` string"))?;
+        let provider = dict_str(&dict, "provider")?.unwrap_or_else(|| "codex".to_string());
+        let label = dict_str(&dict, "label")?;
+        let phase = dict_str(&dict, "phase")?;
+        let model = dict_str(&dict, "model")?;
+        let isolation = dict_str(&dict, "isolation")?;
+        let schema = dict_schema(&dict, "schema")?;
+        let writable = dict_bool(&dict, "writable")?;
+        out.push(StageTemplate {
+            prompt_template,
+            provider,
+            label,
+            phase: ctx.phase_for(phase),
+            model,
+            isolation,
+            schema,
+            writable,
+        });
+    }
+    Ok(out)
+}
+
 /// The workflow host functions exposed to the script.
 // `agent()` exposes 8 host params (prompt + 6 kwargs + eval) — its expansion trips
 // clippy's arg-count lint; the breadth is the documented host API surface.
@@ -493,6 +707,44 @@ fn workflow_globals(builder: &mut GlobalsBuilder) {
                 // A spec with a schema that parsed → hand the script the dict.
                 Some(structured) => json_to_value(heap, structured),
                 // Schema-less (or unparsed) → the summary string, as before.
+                None => heap.alloc(result.output_summary.as_str()),
+            })
+            .collect();
+        Ok(heap.alloc(values))
+    }
+
+    /// Run a STREAMING pipeline: every item in `items` flows through ALL `stages`
+    /// in order, with NO barrier between stages (item A may be in stage 3 while item
+    /// B is still in stage 1). Returns a list in input order, one element per item:
+    /// the LAST stage's parsed structured dict (when that stage carried a `schema`
+    /// and the worker produced valid JSON) else its output-summary string.
+    ///
+    /// `items` is a list whose elements are strings OR dicts (a dict is serialized
+    /// to compact JSON). `stages` is a list of stage dicts, each with a required
+    /// `prompt` TEMPLATE and optional `provider` (default "codex"), `label`,
+    /// `phase`, `model`, `schema`, and `writable`. Each stage's `prompt` template
+    /// may contain the literal `{input}` placeholder: stage 1 substitutes it with
+    /// the item; stage N with stage N-1's output (its parsed structured JSON
+    /// serialized, else its summary text) — the forward-injection that lets a stage
+    /// build on its predecessor.
+    fn pipeline<'v>(
+        #[starlark(require = pos)] items: Value<'v>,
+        #[starlark(require = pos)] stages: Value<'v>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<Value<'v>> {
+        let ctx = ctx_of(eval);
+        // Extract BOTH items and stage templates into PLAIN Rust before any
+        // threading — no Starlark value may cross the streaming engine's threads.
+        let items = read_pipeline_items(items)?;
+        let stages = read_pipeline_stages(ctx, stages)?;
+        let results = ctx.run_pipeline(items, stages);
+        let heap = eval.heap();
+        let values: Vec<Value<'v>> = results
+            .iter()
+            .map(|result| match &result.structured {
+                // The last stage carried a schema that parsed → hand back the dict.
+                Some(structured) => json_to_value(heap, structured),
+                // Schema-less (or unparsed) → the last stage's summary string.
                 None => heap.alloc(result.output_summary.as_str()),
             })
             .collect();
@@ -1269,5 +1521,87 @@ log("second: " + results[1])
             Some(serde_json::json!({ "verdict": "v:verdict" }))
         );
         assert!(outcome.steps[1].structured.is_none());
+    }
+
+    #[test]
+    fn pipeline_flows_every_item_through_all_stages_in_order() {
+        // 2 items x 2 stages: each item must visit BOTH stages, and stage 2's prompt
+        // must carry the forward-injected output of stage 1 (proving the no-barrier
+        // streaming engine threads the prior value into the next stage's template).
+        let seen = Mutex::new(Vec::new());
+        let script = r#"
+results = pipeline(
+    ["alpha", "beta"],
+    [
+        {"prompt": "scan {input}", "label": "s1"},
+        {"prompt": "fix per {input}", "label": "s2"},
+    ],
+)
+log("alpha last: " + results[0])
+log("beta last: " + results[1])
+"#;
+        let outcome = {
+            let driver = recording_driver(&seen);
+            run_starlark(&format!("{HEADER}{script}"), "demo", None, &driver)
+                .expect("run ok")
+                .outcome
+        };
+        let seen = seen.into_inner().unwrap();
+        // 2 items x 2 stages = 4 driver dispatches.
+        assert_eq!(seen.len(), 4);
+        // Every (label, prompt) pair that must have run, regardless of interleaving.
+        // recording_driver returns "ok: <prompt>", so stage 2 sees stage 1's output.
+        let pairs: std::collections::HashSet<(String, String)> = seen.into_iter().collect();
+        assert!(pairs.contains(&("s1".to_string(), "scan alpha".to_string())));
+        assert!(pairs.contains(&("s1".to_string(), "scan beta".to_string())));
+        assert!(pairs.contains(&("s2".to_string(), "fix per ok: scan alpha".to_string())));
+        assert!(pairs.contains(&("s2".to_string(), "fix per ok: scan beta".to_string())));
+
+        // Every produced step (item x stage) is journaled.
+        assert_eq!(outcome.steps.len(), 4);
+        assert!(outcome.steps.iter().all(|s| s.ok));
+        // The script-visible return is the LAST stage's summary, in input order.
+        assert_eq!(outcome.status, WorkflowRunStatus::Completed);
+    }
+
+    #[test]
+    fn pipeline_forward_injects_structured_output_into_next_stage() {
+        // Stage 1 carries a schema; its parsed structured JSON (serialized) must be
+        // forward-injected into stage 2's `{input}` placeholder.
+        let schemas = Mutex::new(Vec::new());
+        let prompts = Mutex::new(Vec::new());
+        let script = r#"
+pipeline(
+    ["item-x"],
+    [
+        {"prompt": "classify {input}", "schema": {"verdict": ""}},
+        {"prompt": "act on {input}", "label": "s2"},
+    ],
+)
+"#;
+        let outcome = {
+            // Wrap structured_driver so we also capture stage 2's concrete prompt.
+            let inner = structured_driver(&schemas);
+            let driver = |spec: &AgentStepSpec| {
+                if spec.label == "s2" {
+                    prompts.lock().unwrap().push(spec.prompt.clone());
+                }
+                inner(spec)
+            };
+            run_starlark(&format!("{HEADER}{script}"), "demo", None, &driver)
+                .expect("run ok")
+                .outcome
+        };
+        assert_eq!(outcome.steps.len(), 2);
+        // Stage 1 produced a structured dict.
+        assert!(outcome.steps.iter().any(|s| s.structured.is_some()));
+        // Stage 2's prompt carries stage 1's serialized structured JSON.
+        let prompts = prompts.into_inner().unwrap();
+        assert_eq!(prompts.len(), 1);
+        assert!(
+            prompts[0].contains("verdict"),
+            "stage 2 prompt must carry stage 1's structured JSON, got: {}",
+            prompts[0]
+        );
     }
 }
