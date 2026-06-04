@@ -48,6 +48,8 @@ use starlark::values::list::ListRef;
 use starlark::values::none::NoneType;
 use starlark::values::{Heap, Value};
 
+use harness_core::WorkflowRunStatus;
+
 use crate::{outcome_from_steps, run_agent_step, AgentStepFn, AgentStepSpec, StepResult};
 use crate::{scheduler_agents_spawned, WorkflowOutcome};
 
@@ -92,6 +94,9 @@ pub struct WorkflowMeta {
     /// The free-text justification for the workflow's shape (validated non-blank
     /// and at least [`MIN_DESIGN_INTENT_LEN`] characters).
     pub design_intent: String,
+    /// The success criterion declared via `workflow(..., success_criterion=…)`,
+    /// if any — the bar the run's `verdict()` is judged against.
+    pub success_criterion: Option<String>,
     /// The raw Starlark program text that was evaluated.
     pub source: String,
 }
@@ -130,6 +135,13 @@ struct StarlarkCtx<'a> {
     /// Cumulative USD spent so far across this run's completed steps — real billed
     /// cost where the provider reports it (claude), else a token-based estimate.
     spent_usd: Cell<f64>,
+    /// The typed run verdict declared via `verdict(ok, reason)`, if any. When set
+    /// it makes the run status intent-relative (ok=false → Failed even if every
+    /// worker ran). `None` = fall back to the step-success rule.
+    verdict: RefCell<Option<(bool, String)>>,
+    /// The success criterion from the `workflow(..., success_criterion=…)` header,
+    /// surfaced in the run summary alongside the verdict.
+    success_criterion: RefCell<Option<String>>,
 }
 
 impl StarlarkCtx<'_> {
@@ -364,10 +376,14 @@ fn workflow_globals(builder: &mut GlobalsBuilder) {
         #[starlark(require = pos)] name: String,
         #[starlark(require = pos)] design_intent: String,
         #[starlark(require = named)] budget_usd: Option<Value<'v>>,
+        #[starlark(require = named)] success_criterion: Option<String>,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> anyhow::Result<NoneType> {
         let ctx = ctx_of(eval);
         *ctx.meta.borrow_mut() = Some((name, design_intent));
+        if let Some(criterion) = success_criterion.filter(|s| !s.trim().is_empty()) {
+            *ctx.success_criterion.borrow_mut() = Some(criterion);
+        }
         // The program may declare a spend ceiling; the operator's CLI
         // `--max-budget-usd` (already in `budget_usd`) wins by taking the smaller.
         // Starlark has no f64 UnpackValue, so accept any number Value (int or
@@ -471,6 +487,19 @@ fn workflow_globals(builder: &mut GlobalsBuilder) {
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> anyhow::Result<NoneType> {
         *ctx_of(eval).current_phase.borrow_mut() = Some(name);
+        Ok(NoneType)
+    }
+
+    /// Declare the run's typed verdict: whether it met its intent (`ok`) and a
+    /// short `reason`. Makes the run status intent-relative — `ok=false` finalizes
+    /// the run as Failed even if every worker step ran, so "workers ran" no longer
+    /// means "intent satisfied". The last call wins.
+    fn verdict<'v>(
+        #[starlark(require = pos)] ok: bool,
+        #[starlark(require = named, default = String::new())] reason: String,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<NoneType> {
+        *ctx_of(eval).verdict.borrow_mut() = Some((ok, reason));
         Ok(NoneType)
     }
 
@@ -600,6 +629,8 @@ pub fn run_starlark_with_budget(
         meta: RefCell::new(None),
         budget_usd: Cell::new(budget_usd),
         spent_usd: Cell::new(0.0),
+        verdict: RefCell::new(None),
+        success_criterion: RefCell::new(None),
     };
 
     // `Extended` enables top-level statements (so an agent can write top-level
@@ -649,12 +680,37 @@ pub fn run_starlark_with_budget(
     }
 
     let steps = ctx.steps.into_inner();
-    let outcome = outcome_from_steps(name, steps, spawned_before);
+    let mut outcome = outcome_from_steps(name, steps, spawned_before);
+    let success_criterion = ctx.success_criterion.into_inner();
+    // A declared verdict makes the run status INTENT-RELATIVE: mechanical
+    // step-success becomes necessary-but-not-sufficient, so a run whose workers all
+    // ran but whose self-check failed reports Failed (not a misleading Completed).
+    if let Some((ok, reason)) = ctx.verdict.into_inner() {
+        outcome.status = if ok {
+            WorkflowRunStatus::Completed
+        } else {
+            WorkflowRunStatus::Failed
+        };
+        let crit = success_criterion
+            .as_deref()
+            .map(|c| format!(" [criterion: {c}]"))
+            .unwrap_or_default();
+        let why = if reason.trim().is_empty() {
+            String::new()
+        } else {
+            format!(" — {reason}")
+        };
+        outcome.summary = format!(
+            "{name} verdict: intent {}{crit}{why}",
+            if ok { "met" } else { "NOT met" }
+        );
+    }
     Ok(StarlarkRun {
         outcome,
         meta: WorkflowMeta {
             name: meta_name,
             design_intent: trimmed.to_string(),
+            success_criterion,
             source: script.to_string(),
         },
     })
@@ -1074,6 +1130,42 @@ agent("use this: " + encoded + " score=" + str(roundtrip["score"]))
             .outcome;
         assert_eq!(calls.load(Ordering::SeqCst), 1, "only the first step runs");
         assert!(!outcome.steps[1].ok);
+    }
+
+    #[test]
+    fn verdict_false_makes_status_failed_even_when_steps_ran() {
+        // A successful step + verdict(False) -> the run is Failed: "workers ran"
+        // is no longer "intent satisfied".
+        let seen = Mutex::new(Vec::new());
+        let script =
+            "\nagent(\"do the work\")\nverdict(False, reason = \"a regression slipped through\")\n";
+        let run = {
+            let driver = recording_driver(&seen);
+            run_starlark(&format!("{HEADER}{script}"), "demo", None, &driver).expect("run ok")
+        };
+        assert_eq!(run.outcome.status, WorkflowRunStatus::Failed);
+        assert!(run.outcome.summary.contains("NOT met"));
+        assert!(run.outcome.summary.contains("regression"));
+        // The step itself still ran fine — the verdict overrides the status only.
+        assert_eq!(run.outcome.steps.len(), 1);
+        assert!(run.outcome.steps[0].ok);
+    }
+
+    #[test]
+    fn verdict_true_keeps_completed_and_surfaces_header_criterion() {
+        let seen = Mutex::new(Vec::new());
+        let script = "workflow(\"demo\", \"run and self-assess against a declared bar\", success_criterion = \"all checks green\")\nagent(\"x\")\nverdict(True, reason = \"all green\")\n";
+        let run = {
+            let driver = recording_driver(&seen);
+            run_starlark(script, "demo", None, &driver).expect("run ok")
+        };
+        assert_eq!(run.outcome.status, WorkflowRunStatus::Completed);
+        assert!(run.outcome.summary.contains("met"));
+        assert!(run.outcome.summary.contains("all checks green"));
+        assert_eq!(
+            run.meta.success_criterion.as_deref(),
+            Some("all checks green")
+        );
     }
 
     #[test]
