@@ -591,6 +591,9 @@ export interface WorkflowStepResult {
   duration_ms?: number;
   /** Normalized token usage parsed from the worker's terminal event, if present. */
   tokens?: WorkflowStepTokens | null;
+  /** The provider's exact billed cost in USD for the turn, when reported (claude
+   * `total_cost_usd`). Absent for codex, which emits only token usage. */
+  cost_usd?: number | null;
   /** Present only when the step failed; describes why. */
   failure?: WorkflowStepFailure | null;
   /**
