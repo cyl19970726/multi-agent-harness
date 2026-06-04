@@ -47,6 +47,7 @@
 //! * `args` — the run's JSON parameterization, injected as a module global value.
 
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 
 use starlark::any::ProvidesStaticType;
 use starlark::environment::{GlobalsBuilder, LibraryExtension, Module};
@@ -152,6 +153,16 @@ struct StarlarkCtx<'a> {
     /// The success criterion from the `workflow(..., success_criterion=…)` header,
     /// surfaced in the run summary alongside the verdict.
     success_criterion: RefCell<Option<String>>,
+    /// Monotonic deterministic leaf-ordinal counter. Assigned ON THE EVAL THREAD
+    /// (single-threaded, before any fan-out) so the Nth leaf of a re-run equals the
+    /// Nth originally as long as control flow matches. One ordinal per `agent()`
+    /// leaf, per `parallel()` spec (in input order), and per pipeline item×stage.
+    ordinal_next: Cell<u64>,
+    /// The replay cache for `--resume`: a map from leaf ordinal to the prior run's
+    /// succeeded [`StepResult`] for that ordinal. When a leaf's ordinal hits, its
+    /// cached result is returned WITHOUT dispatching the (paid) worker and WITHOUT
+    /// tallying budget. Empty when not resuming. Read-only during eval.
+    replay: HashMap<u64, StepResult>,
 }
 
 impl StarlarkCtx<'_> {
@@ -160,6 +171,14 @@ impl StarlarkCtx<'_> {
         explicit
             .or_else(|| self.current_phase.borrow().clone())
             .unwrap_or_else(|| self.default_phase.clone())
+    }
+
+    /// Allocate the next deterministic leaf ordinal. Called on the eval thread in
+    /// issue order, so the Nth call returns N (0-based) on every hermetic re-run.
+    fn next_ordinal(&self) -> u64 {
+        let n = self.ordinal_next.get();
+        self.ordinal_next.set(n + 1);
+        n
     }
 
     /// Run one agent step through the driver, record it, and return its result.
@@ -175,6 +194,28 @@ impl StarlarkCtx<'_> {
         schema: Option<serde_json::Value>,
         writable: bool,
     ) -> StepResult {
+        // Assign this leaf's deterministic ordinal FIRST (before the replay lookup,
+        // budget check, or dispatch) so it is stable across re-runs.
+        let ord = self.next_ordinal();
+
+        // Replay hit: reuse the prior run's succeeded result for this ordinal
+        // WITHOUT dispatching the worker and WITHOUT tallying budget (no re-spend).
+        if let Some(cached) = self.replay.get(&ord) {
+            // Journal a MARKED copy (audit/[replayed] prefix) into ctx.steps, but
+            // return an UNMARKED copy to the script: the prior run's original
+            // `output_summary` is what `agent()` hands the program in text mode, so
+            // a marker here would corrupt downstream prompts and can divert control
+            // flow (branching on agent text) and desynchronize every later ordinal.
+            let mut journaled = cached.clone();
+            journaled.ordinal = Some(ord);
+            mark_replayed(&mut journaled);
+            self.steps.borrow_mut().push(journaled);
+
+            let mut returned = cached.clone();
+            returned.ordinal = Some(ord);
+            return returned;
+        }
+
         let spec = AgentStepSpec {
             phase: self.phase_for(phase),
             label: label.unwrap_or_else(|| provider.clone()),
@@ -184,16 +225,20 @@ impl StarlarkCtx<'_> {
             prompt,
             schema,
             writable,
+            // Thread the ordinal onto the spec so a real driver that journals its
+            // own terminal row stamps the ordinal onto the stored step.
+            ordinal: Some(ord),
         };
         // Short-circuit once the per-run spend ceiling is reached: record the step
         // as a budget skip without dispatching the (paid) worker.
-        let result = if self.over_budget() {
+        let mut result = if self.over_budget() {
             budget_skip_result(&spec, self.budget_usd.get(), self.spent_usd.get())
         } else {
             let r = run_agent_step(self.driver, &spec);
             self.add_spent(&r);
             r
         };
+        result.ordinal = Some(ord);
         self.steps.borrow_mut().push(result.clone());
         result
     }
@@ -218,22 +263,90 @@ impl StarlarkCtx<'_> {
     /// had a schema and parsed, else its summary string). No Starlark value
     /// crosses a thread boundary — the specs were read off the heap before this.
     fn run_parallel(&self, specs: Vec<AgentStepSpec>) -> Vec<StepResult> {
-        // Budget is enforced at barrier granularity: if the ceiling is already
-        // reached, skip the whole batch; otherwise run it and tally every result.
-        let results = if self.over_budget() {
+        // Assign one ordinal per spec in INPUT order on the eval thread, BEFORE any
+        // fan-out — pinning each spec's ordinal deterministically even though the
+        // dispatch runs on threads (the threads never touch the counter).
+        let ords: Vec<u64> = specs.iter().map(|_| self.next_ordinal()).collect();
+
+        // Partition specs into replay HITS (reuse the cached result, no dispatch, no
+        // spend) and MISSES (dispatch for real). Misses keep their input index so we
+        // can merge results back in input order and stamp the right ordinal.
+        // `cached` holds the UNMARKED result that flows back to the script (the prior
+        // run's original summary); `replayed_idx` tags which input slots are replays
+        // so the journaled copy can carry the [replayed] marker without corrupting
+        // the script-visible value (a marker in the return can divert text-branching
+        // control flow and desynchronize later ordinals).
+        let mut cached: Vec<(usize, StepResult)> = Vec::new();
+        let mut replayed_idx: std::collections::HashSet<usize> = std::collections::HashSet::new();
+        let mut to_dispatch: Vec<(usize, AgentStepSpec)> = Vec::new();
+        for (i, spec) in specs.iter().enumerate() {
+            if let Some(hit) = self.replay.get(&ords[i]) {
+                let mut r = hit.clone();
+                r.ordinal = Some(ords[i]);
+                cached.push((i, r));
+                replayed_idx.insert(i);
+            } else {
+                // Stamp the spec's ordinal so a real driver journaling its own
+                // terminal row carries the ordinal onto the stored step.
+                let mut spec = spec.clone();
+                spec.ordinal = Some(ords[i]);
+                to_dispatch.push((i, spec));
+            }
+        }
+
+        // Dispatch ONLY the misses. Budget is enforced at barrier granularity over
+        // the to-dispatch subset: if the ceiling is already reached, every miss is a
+        // budget skip; otherwise the engine runs and every dispatched result is
+        // tallied. An empty to-dispatch skips the engine entirely (no threads).
+        let dispatch_specs: Vec<AgentStepSpec> =
+            to_dispatch.iter().map(|(_, s)| s.clone()).collect();
+        let dispatched: Vec<StepResult> = if dispatch_specs.is_empty() {
+            Vec::new()
+        } else if self.over_budget() {
             let (budget, spent) = (self.budget_usd.get(), self.spent_usd.get());
-            specs
+            dispatch_specs
                 .iter()
                 .map(|spec| budget_skip_result(spec, budget, spent))
                 .collect()
         } else {
-            let results = crate::parallel(self.driver, &specs);
+            let results = crate::parallel(self.driver, &dispatch_specs);
             for result in &results {
                 self.add_spent(result);
             }
             results
         };
-        self.steps.borrow_mut().extend(results.clone());
+
+        // Merge cached + dispatched back into INPUT order, stamping each dispatched
+        // result's ordinal from its original input index.
+        let mut merged: Vec<Option<StepResult>> = vec![None; specs.len()];
+        for (i, r) in cached {
+            merged[i] = Some(r);
+        }
+        for (k, mut r) in dispatched.into_iter().enumerate() {
+            let input_index = to_dispatch[k].0;
+            r.ordinal = Some(ords[input_index]);
+            merged[input_index] = Some(r);
+        }
+        let results: Vec<StepResult> = merged
+            .into_iter()
+            .map(|slot| slot.expect("every spec slot is filled (cached or dispatched)"))
+            .collect();
+
+        // Journal a MARKED copy for replayed slots (audit/[replayed] prefix), but
+        // return the UNMARKED `results` to the caller (script-visible summary stays
+        // the prior run's original text).
+        let journaled: Vec<StepResult> = results
+            .iter()
+            .enumerate()
+            .map(|(i, r)| {
+                let mut j = r.clone();
+                if replayed_idx.contains(&i) {
+                    mark_replayed(&mut j);
+                }
+                j
+            })
+            .collect();
+        self.steps.borrow_mut().extend(journaled);
         results
     }
 
@@ -253,6 +366,19 @@ impl StarlarkCtx<'_> {
     fn run_pipeline(&self, items: Vec<String>, stages: Vec<StageTemplate>) -> Vec<StepResult> {
         if items.is_empty() || stages.is_empty() {
             return Vec::new();
+        }
+
+        // Advance the global ordinal counter item-major (items × stages) on the eval
+        // thread so the ordinals of any LATER run_one/run_parallel leaves stay aligned
+        // with the prior run. pipeline() leaves are EXCLUDED from replay in v1 (the
+        // cache is never consulted for them and their StepResults keep `ordinal: None`)
+        // because a partial-replay pipeline can diverge — a cached stage-N result
+        // changes the value forward-injected into stage N+1. A follow-up can add full
+        // pipeline replay; until then the counter advances so the scheme never desyncs.
+        for _item in 0..items.len() {
+            for _stage in 0..stages.len() {
+                let _ = self.next_ordinal();
+            }
         }
 
         if self.over_budget() {
@@ -317,6 +443,7 @@ impl StarlarkCtx<'_> {
                 prompt: item.clone(),
                 schema: None,
                 writable: false,
+                ordinal: None,
             })
             .collect();
 
@@ -364,6 +491,29 @@ fn price_per_mtok(provider: &str) -> (f64, f64) {
     }
 }
 
+/// The `output_summary` prefix marking a replayed (cache-hit) step. Lets a human
+/// (and the test suite) tell a reused leaf from a freshly dispatched one at a glance.
+const REPLAYED_PREFIX: &str = "[replayed] ";
+
+/// Mark a [`StepResult`] as REPLAYED from a prior run's cache: set
+/// `details["replayed"] = true` (creating a `details` object if absent) and prefix
+/// `output_summary` with [`REPLAYED_PREFIX`] (idempotently). Both markers round-trip
+/// through the store — `details` via [`crate::step_result_json`]'s merge, the prefix
+/// on the summary — so the resumed run has a complete, auditable record.
+fn mark_replayed(result: &mut StepResult) {
+    match result.details.as_mut() {
+        Some(serde_json::Value::Object(map)) => {
+            map.insert("replayed".to_string(), serde_json::Value::Bool(true));
+        }
+        _ => {
+            result.details = Some(serde_json::json!({ "replayed": true }));
+        }
+    }
+    if !result.output_summary.starts_with(REPLAYED_PREFIX) {
+        result.output_summary = format!("{REPLAYED_PREFIX}{}", result.output_summary);
+    }
+}
+
 /// A [`StepResult`] standing in for a step SKIPPED because the per-run budget
 /// ceiling was already reached — recorded as a failed step (reason `budget`) so
 /// the run finalizes degraded and the dashboard shows why it stopped spending.
@@ -389,6 +539,7 @@ fn budget_skip_result(spec: &AgentStepSpec, budget: Option<f64>, spent: f64) -> 
             }
         })),
         structured: None,
+        ordinal: None,
     }
 }
 
@@ -477,6 +628,7 @@ fn read_parallel_specs(
             prompt,
             schema,
             writable,
+            ordinal: None,
         });
     }
     Ok(out)
@@ -522,6 +674,7 @@ impl StageTemplate {
             prompt,
             schema: self.schema.clone(),
             writable: self.writable,
+            ordinal: None,
         }
     }
 }
@@ -872,19 +1025,26 @@ pub fn run_starlark(
     args: Option<&serde_json::Value>,
     driver: &AgentStepFn<'_>,
 ) -> Result<StarlarkRun, StarlarkRunError> {
-    run_starlark_with_budget(script, name, args, driver, None)
+    run_starlark_with_budget(script, name, args, driver, None, None)
 }
 
 /// Like [`run_starlark`] but with an optional per-run spend ceiling in USD (the
-/// CLI `--max-budget-usd`, also lowerable by a `workflow(budget_usd=…)` header).
-/// Once cumulative step cost reaches it, further `agent()` / `parallel()` calls
-/// are short-circuited into failed `budget` steps instead of dispatching workers.
+/// CLI `--max-budget-usd`, also lowerable by a `workflow(budget_usd=…)` header)
+/// and an optional `replay` cache for `--resume`.
+///
+/// Once cumulative step cost reaches the budget, further `agent()` / `parallel()`
+/// calls are short-circuited into failed `budget` steps instead of dispatching
+/// workers. When `replay` is `Some`, each leaf's deterministic ordinal is looked
+/// up in the map: a hit reuses the prior run's succeeded [`StepResult`] WITHOUT
+/// dispatching the worker and WITHOUT tallying budget (the no-re-spend goal); a
+/// miss dispatches for real. `pipeline()` leaves are excluded from replay in v1.
 pub fn run_starlark_with_budget(
     script: &str,
     name: &str,
     args: Option<&serde_json::Value>,
     driver: &AgentStepFn<'_>,
     budget_usd: Option<f64>,
+    replay: Option<HashMap<u64, StepResult>>,
 ) -> Result<StarlarkRun, StarlarkRunError> {
     // Snapshot the scheduler's lifetime spawn counter so the delta attributes this
     // run's agents.
@@ -901,6 +1061,8 @@ pub fn run_starlark_with_budget(
         spent_usd: Cell::new(0.0),
         verdict: RefCell::new(None),
         success_criterion: RefCell::new(None),
+        ordinal_next: Cell::new(0),
+        replay: replay.unwrap_or_default(),
     };
 
     // `Extended` enables top-level statements (so an agent can write top-level
@@ -1032,6 +1194,7 @@ mod tests {
                 started_at: None,
                 details: None,
                 structured: None,
+                ordinal: None,
             }
         }
     }
@@ -1096,6 +1259,7 @@ b = agent("fix what scan found: " + a, provider = "claude", label = "fixer")
             started_at: None,
             details: None,
             structured: None,
+            ordinal: None,
         };
         let outcome = run_starlark(&format!("{HEADER}agent(\"x\")"), "demo", None, &driver)
             .expect("run ok")
@@ -1149,6 +1313,7 @@ b = agent("fix what scan found: " + a, provider = "claude", label = "fixer")
                     started_at: None,
                     details: None,
                     structured: None,
+                    ordinal: None,
                 }
             };
             run_starlark(&format!("{HEADER}{script}"), "demo", None, &driver)
@@ -1244,6 +1409,7 @@ b = agent("fix what scan found: " + a, provider = "claude", label = "fixer")
                 started_at: None,
                 details: None,
                 structured,
+                ordinal: None,
             }
         }
     }
@@ -1370,6 +1536,7 @@ agent("use this: " + encoded + " score=" + str(roundtrip["score"]))
                 started_at: None,
                 details: Some(serde_json::json!({ "cost_usd": cost })),
                 structured: None,
+                ordinal: None,
             }
         }
     }
@@ -1388,6 +1555,7 @@ agent("use this: " + encoded + " score=" + str(roundtrip["score"]))
             None,
             &driver,
             Some(1.0),
+            None,
         )
         .expect("run ok")
         .outcome;
@@ -1410,7 +1578,7 @@ agent("use this: " + encoded + " score=" + str(roundtrip["score"]))
         // Header budget_usd=0.5, no CLI budget: step1 runs (spends 0.6); step2 sees
         // 0.6 >= 0.5 and is skipped.
         let script = "workflow(\"demo\", \"declare a tight budget so the run stops early\", budget_usd = 0.5)\nagent(\"a\")\nagent(\"b\")\n";
-        let outcome = run_starlark_with_budget(script, "demo", None, &driver, None)
+        let outcome = run_starlark_with_budget(script, "demo", None, &driver, None, None)
             .expect("run ok")
             .outcome;
         assert_eq!(calls.load(Ordering::SeqCst), 1, "only the first step runs");
@@ -1501,6 +1669,7 @@ agent("use this: " + encoded + " score=" + str(roundtrip["score"]))
                 started_at: None,
                 details: None,
                 structured: None,
+                ordinal: None,
             }
         }
     }
@@ -1644,6 +1813,260 @@ pipeline(
             prompts[0].contains("verdict"),
             "stage 2 prompt must carry stage 1's structured JSON, got: {}",
             prompts[0]
+        );
+    }
+
+    // ----- Resume / replay tests -----
+
+    /// A driver that counts dispatches (for asserting cached leaves are NOT
+    /// re-dispatched) and echoes the prompt into output_summary.
+    fn counting_driver(
+        calls: &std::sync::atomic::AtomicUsize,
+    ) -> impl Fn(&AgentStepSpec) -> StepResult + Sync + '_ {
+        move |spec: &AgentStepSpec| {
+            calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            StepResult {
+                phase: spec.phase.clone(),
+                label: spec.label.clone(),
+                provider: spec.provider.clone(),
+                isolation: spec.isolation.clone(),
+                ok: true,
+                provider_session_id: Some(format!("session-{}", spec.label)),
+                output_summary: format!("ok: {}", spec.prompt),
+                step_id: None,
+                started_at: None,
+                details: None,
+                structured: None,
+                ordinal: None,
+            }
+        }
+    }
+
+    #[test]
+    fn resume_reuses_cached_leaves_and_skips_driver() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        // A 3-serial-agent program where leaf 2 chains leaf 1's output into its
+        // prompt — so we can prove the CACHED result flows back into the script.
+        let script = r#"
+a = agent("scan the code")
+b = agent("step two: " + a)
+c = agent("step three: " + b)
+"#;
+        // First run: capture every StepResult's ordinal (0,1,2) and outputs.
+        let calls = AtomicUsize::new(0);
+        let first = {
+            let driver = counting_driver(&calls);
+            run_starlark(&format!("{HEADER}{script}"), "demo", None, &driver).expect("run ok")
+        };
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            3,
+            "first run dispatches all 3"
+        );
+        assert_eq!(first.outcome.steps.len(), 3);
+        assert_eq!(first.outcome.steps[0].ordinal, Some(0));
+        assert_eq!(first.outcome.steps[1].ordinal, Some(1));
+        assert_eq!(first.outcome.steps[2].ordinal, Some(2));
+
+        // Build a replay map covering ordinals {0, 1} from the first run.
+        let mut replay = HashMap::new();
+        replay.insert(0u64, first.outcome.steps[0].clone());
+        replay.insert(1u64, first.outcome.steps[1].clone());
+
+        // Second run: resume. The driver must run EXACTLY ONCE (only leaf 2).
+        let calls2 = AtomicUsize::new(0);
+        let seen2 = Mutex::new(Vec::new());
+        let second = {
+            let inner = counting_driver(&calls2);
+            let driver = |spec: &AgentStepSpec| {
+                seen2.lock().unwrap().push(spec.prompt.clone());
+                inner(spec)
+            };
+            run_starlark_with_budget(
+                &format!("{HEADER}{script}"),
+                "demo",
+                None,
+                &driver,
+                None,
+                Some(replay),
+            )
+            .expect("run ok")
+        };
+        assert_eq!(
+            calls2.load(Ordering::SeqCst),
+            1,
+            "only the uncached leaf (ordinal 2) is dispatched"
+        );
+        let steps = &second.outcome.steps;
+        assert_eq!(steps.len(), 3);
+        // Cached leaves carry the [replayed] marker + details flag.
+        for i in [0usize, 1] {
+            assert_eq!(steps[i].ordinal, Some(i as u64));
+            assert!(
+                steps[i].output_summary.starts_with("[replayed] "),
+                "cached leaf {i} output: {}",
+                steps[i].output_summary
+            );
+            assert_eq!(steps[i].details.as_ref().unwrap()["replayed"], true);
+        }
+        // Leaf 2 was freshly dispatched (no marker).
+        assert_eq!(steps[2].ordinal, Some(2));
+        assert!(!steps[2].output_summary.starts_with("[replayed] "));
+        // The cached result flowed back into the script WITHOUT the [replayed]
+        // marker: the script-visible value must be the prior run's ORIGINAL summary,
+        // so downstream prompts are byte-identical to the first run (no corruption,
+        // no control-flow divergence). The marker lives only on the journaled copy.
+        let seen2 = seen2.into_inner().unwrap();
+        assert_eq!(seen2.len(), 1);
+        assert_eq!(
+            seen2[0], "step three: ok: step two: ok: scan the code",
+            "leaf 2 prompt must chain the cached leaf-1 ORIGINAL summary, got: {}",
+            seen2[0]
+        );
+        assert!(
+            !seen2[0].contains("[replayed]"),
+            "the replay marker must NOT leak into the script-visible value, got: {}",
+            seen2[0]
+        );
+    }
+
+    #[test]
+    fn resume_partition_in_parallel() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        // Fan out 4 specs (ordinals 0..3), then chain the joined results into a
+        // downstream leaf (ordinal 4) so we can prove the script-visible parallel
+        // values are the prior run's ORIGINAL summaries (no [replayed] leak).
+        let script = r#"
+rs = parallel([{"prompt": "fix " + x} for x in ["a", "b", "c", "d"]])
+agent("join: " + " | ".join(rs))
+"#;
+        // First run to mint ordinals 0..4.
+        let calls = AtomicUsize::new(0);
+        let first = {
+            let driver = counting_driver(&calls);
+            run_starlark(&format!("{HEADER}{script}"), "demo", None, &driver).expect("run ok")
+        };
+        assert_eq!(first.outcome.steps.len(), 5);
+        let ords: Vec<Option<u64>> = first.outcome.steps.iter().map(|s| s.ordinal).collect();
+        assert_eq!(ords, vec![Some(0), Some(1), Some(2), Some(3), Some(4)]);
+
+        // Replay covers ordinals {0, 2} — two of the four fan-out specs.
+        let mut replay = HashMap::new();
+        replay.insert(0u64, first.outcome.steps[0].clone());
+        replay.insert(2u64, first.outcome.steps[2].clone());
+
+        let calls2 = AtomicUsize::new(0);
+        let seen2 = Mutex::new(Vec::new());
+        let second = {
+            let inner = counting_driver(&calls2);
+            let driver = |spec: &AgentStepSpec| {
+                if spec.prompt.starts_with("join:") {
+                    seen2.lock().unwrap().push(spec.prompt.clone());
+                }
+                inner(spec)
+            };
+            run_starlark_with_budget(
+                &format!("{HEADER}{script}"),
+                "demo",
+                None,
+                &driver,
+                None,
+                Some(replay),
+            )
+            .expect("run ok")
+        };
+        assert_eq!(
+            calls2.load(Ordering::SeqCst),
+            3,
+            "the two uncached fan-out specs plus the downstream join leaf are dispatched"
+        );
+        let steps = &second.outcome.steps;
+        assert_eq!(steps.len(), 5);
+        // Fan-out results journaled in INPUT order with ordinals 0..3, join is 4.
+        let ords2: Vec<Option<u64>> = steps.iter().map(|s| s.ordinal).collect();
+        assert_eq!(ords2, vec![Some(0), Some(1), Some(2), Some(3), Some(4)]);
+        // The two replayed slots carry the marker on the JOURNALED copy; the two
+        // dispatched do not (and neither does the downstream join leaf).
+        assert!(steps[0].output_summary.starts_with("[replayed] "));
+        assert!(!steps[1].output_summary.starts_with("[replayed] "));
+        assert!(steps[2].output_summary.starts_with("[replayed] "));
+        assert!(!steps[3].output_summary.starts_with("[replayed] "));
+        assert!(!steps[4].output_summary.starts_with("[replayed] "));
+        // The SCRIPT-VISIBLE parallel values are the prior run's ORIGINAL summaries:
+        // the downstream join leaf's prompt is byte-identical to a non-resumed run,
+        // with NO [replayed] marker leaking into the paid worker's prompt.
+        let seen2 = seen2.into_inner().unwrap();
+        assert_eq!(seen2.len(), 1);
+        assert_eq!(
+            seen2[0], "join: ok: fix a | ok: fix b | ok: fix c | ok: fix d",
+            "the chained parallel results must be the original summaries, got: {}",
+            seen2[0]
+        );
+    }
+
+    #[test]
+    fn resume_with_empty_map_dispatches_all() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let script = "\nagent(\"a\")\nagent(\"b\")\n";
+        let calls = AtomicUsize::new(0);
+        {
+            let driver = counting_driver(&calls);
+            run_starlark_with_budget(
+                &format!("{HEADER}{script}"),
+                "demo",
+                None,
+                &driver,
+                None,
+                Some(HashMap::new()),
+            )
+            .expect("run ok");
+        }
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "an empty replay map dispatches every leaf, exactly like None"
+        );
+    }
+
+    #[test]
+    fn resume_replayed_leaf_does_not_advance_spend() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        // Without replay and a $1.00 budget, three $0.6 leaves would skip leaf 2
+        // (0 -> 0.6 -> 1.2 >= 1.0). With leaves 0 and 1 REPLAYED (no spend), leaf 2
+        // is the FIRST real dispatch (spent still 0), so it runs instead of skipping.
+        let script = "\nagent(\"a\")\nagent(\"b\")\nagent(\"c\")\n";
+        // First normal run with a spending driver to mint cached results.
+        let calls0 = AtomicUsize::new(0);
+        let first = {
+            let driver = spending_driver(&calls0, 0.6);
+            run_starlark(&format!("{HEADER}{script}"), "demo", None, &driver).expect("run ok")
+        };
+        let mut replay = HashMap::new();
+        replay.insert(0u64, first.outcome.steps[0].clone());
+        replay.insert(1u64, first.outcome.steps[1].clone());
+
+        let calls = AtomicUsize::new(0);
+        let second = {
+            let driver = spending_driver(&calls, 0.6);
+            run_starlark_with_budget(
+                &format!("{HEADER}{script}"),
+                "demo",
+                None,
+                &driver,
+                Some(1.0),
+                Some(replay),
+            )
+            .expect("run ok")
+        };
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "leaf 2 dispatches because replayed leaves cost $0 (no re-spend)"
+        );
+        assert!(
+            second.outcome.steps[2].ok
+                && !second.outcome.steps[2].output_summary.contains("budget"),
+            "leaf 2 ran rather than being budget-skipped"
         );
     }
 }

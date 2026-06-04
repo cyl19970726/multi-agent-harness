@@ -3873,6 +3873,7 @@ fn workflow_real_agent_step(
                 started_at: Some(started_at.clone()),
                 details: Some(details),
                 structured: None,
+                ordinal: spec.ordinal,
             }
         }
     };
@@ -3940,6 +3941,7 @@ fn try_workflow_real_agent_step(
             // still surface the requested model so the dashboard can label it.
             details: Some(serde_json::json!({ "model": spec.model })),
             structured,
+            ordinal: spec.ordinal,
         });
     }
 
@@ -4296,6 +4298,7 @@ fn spawn_ephemeral_worker(
         started_at: None,
         details: Some(details),
         structured,
+        ordinal: spec.ordinal,
     })
 }
 
@@ -5497,6 +5500,75 @@ fn workflow_run_value(store: &HarnessStore, args: &[String]) -> CliResult<serde_
 /// snapshotted under `spec = {"lang":"starlark","script": <text>}` for
 /// reproducibility. `--name` defaults to the declared meta name (else the file
 /// stem).
+/// Reconstruct a [`workflow::StepResult`] from a stored terminal [`WorkflowStep`]
+/// for the `--resume` replay cache. Returns `None` unless the step carries an
+/// ordinal in its `result` JSON (steps journaled before the resume feature have no
+/// ordinal, so they are simply skipped → re-run, never incorrectly reused).
+///
+/// The reconstructed result sets `step_id = None` and `started_at = None` so
+/// [`journal_workflow_outcome`] mints a FRESH terminal row for the NEW (resumed)
+/// run id — replayed leaves journal like normal new steps. `ok = true` because the
+/// caller only feeds Completed steps. `provider`/`isolation`/`structured`/`details`
+/// are read back out of the same `result` object [`workflow::step_result_json`] wrote.
+fn step_result_from_stored(step: &WorkflowStep) -> Option<workflow::StepResult> {
+    let result = step.result.as_ref()?;
+    let ordinal = result.get("ordinal").and_then(|v| v.as_u64())?;
+    let provider = result
+        .get("provider")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    let isolation = result
+        .get("isolation")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let structured = result.get("structured").cloned().filter(|v| !v.is_null());
+    // Carry the captured telemetry blob forward (model/tokens/cost/...). The base
+    // keys step_result_json re-writes from the reconstructed fields take precedence
+    // on the next journal, so passing the whole object back is safe.
+    let details = step.result.clone().filter(|v| v.is_object());
+    Some(workflow::StepResult {
+        phase: step.phase.clone(),
+        label: step.label.clone(),
+        provider,
+        isolation,
+        ok: true,
+        provider_session_id: step.provider_session_id.clone(),
+        output_summary: step.output_summary.clone().unwrap_or_default(),
+        step_id: None,
+        started_at: None,
+        details,
+        structured,
+        ordinal: Some(ordinal),
+    })
+}
+
+/// Build the `--resume` replay cache: a map from leaf ordinal to the prior run's
+/// succeeded [`workflow::StepResult`]. Loads the prior run's latest terminal steps,
+/// keeps only Completed steps carrying an ordinal, and reconstructs each. A prior
+/// FAILED leaf is naturally absent → it re-runs. On duplicate ordinals (should not
+/// happen post-projection) last wins.
+fn build_replay_map(
+    store: &HarnessStore,
+    prior_run_id: &str,
+) -> CliResult<std::collections::HashMap<u64, workflow::StepResult>> {
+    let mut map = std::collections::HashMap::new();
+    for step in latest_workflow_steps_in_append_order(store)? {
+        if step.run_id != prior_run_id {
+            continue;
+        }
+        if step.status != WorkflowStepStatus::Completed {
+            continue;
+        }
+        if let Some(result) = step_result_from_stored(&step) {
+            if let Some(ord) = result.ordinal {
+                map.insert(ord, result);
+            }
+        }
+    }
+    Ok(map)
+}
+
 fn workflow_run_script_value(
     store: &HarnessStore,
     args: &[String],
@@ -5510,6 +5582,43 @@ fn workflow_run_script_value(
 
     let script = std::fs::read_to_string(&path)
         .map_err(|error| CliError::Usage(format!("cannot read script {path}: {error}")))?;
+
+    // Optional `--resume <prior_run_id>`: re-run this SAME script but reuse the
+    // results of leaves that SUCCEEDED in the prior run, so a crash/kill does not
+    // re-spend tokens on already-done work. Build the replay cache here after the
+    // safety guard (the prior run must exist and have snapshotted the IDENTICAL
+    // script; a changed script would misalign the deterministic leaf ordinals).
+    let resume_from = value(args, "--resume");
+    let replay = match &resume_from {
+        Some(prior_run_id) => {
+            let prior = latest_workflow_runs_in_append_order(store)?
+                .into_iter()
+                .find(|r| &r.id == prior_run_id)
+                .ok_or_else(|| {
+                    CliError::Usage(format!("cannot resume {prior_run_id}: no such run"))
+                })?;
+            let prior_script = prior
+                .spec
+                .as_ref()
+                .and_then(|s| s.get("script"))
+                .and_then(|v| v.as_str());
+            match prior_script {
+                Some(prev) if prev == script => {}
+                Some(_) => {
+                    return Err(CliError::Usage(format!(
+                        "cannot resume {prior_run_id}: the script changed since that run"
+                    )))
+                }
+                None => {
+                    return Err(CliError::Usage(format!(
+                        "cannot resume {prior_run_id}: that run has no snapshotted script"
+                    )))
+                }
+            }
+            Some(build_replay_map(store, prior_run_id)?)
+        }
+        None => None,
+    };
 
     // Default workflow name: explicit `--name`, else the file stem. The Starlark
     // `workflow(...)` header's name can override this default once captured.
@@ -5586,7 +5695,16 @@ fn workflow_run_script_value(
         // captured `workflow(...)` header once evaluation succeeds.
         initiated_by: Some(initiated_by),
         design_intent: None,
-        spec: Some(serde_json::json!({ "lang": "starlark", "script": script })),
+        // The resumed run is a NEW run_id; record which prior run it resumed from
+        // so the new run has a complete, auditable record (DESIGN step 6).
+        spec: Some(match &resume_from {
+            Some(prior) => serde_json::json!({
+                "lang": "starlark",
+                "script": script,
+                "resumed_from": prior,
+            }),
+            None => serde_json::json!({ "lang": "starlark", "script": script }),
+        }),
         trace_retention,
     };
     store.append_workflow_run(&run)?;
@@ -5607,6 +5725,7 @@ fn workflow_run_script_value(
             parsed_args.as_ref(),
             &driver,
             max_budget_usd,
+            replay,
         )
         .map_err(|error| CliError::Usage(error.to_string()))?
     };
@@ -10967,7 +11086,7 @@ fn print_help() {
   codex review --task <task> --agent <agent> --worktree <path> [--base <branch>] [--uncommitted] [--prompt <text>]
   workflow list
   workflow run --name <name> [--prompt <text>] [--start-runtime] [--dry-run] [--timeout-ms <ms>]
-  workflow run-script <prog.star> [--name <n>] [--args <json>] [--trace durable|live] [--dry-run]
+  workflow run-script <prog.star> [--name <n>] [--args <json>] [--trace durable|live] [--dry-run] [--resume <prior_run_id>]
   workflow gc-worktrees
   workflow gc-trace [--keep-runs <n>] [--keep-days <d>] [--dry-run]
   serve [--addr 127.0.0.1:8787] [--once]
@@ -11002,6 +11121,7 @@ mod workflow_runtime_tests {
             started_at: None,
             details: None,
             structured: None,
+            ordinal: None,
         }
     }
 
@@ -11224,6 +11344,7 @@ mod workflow_runtime_tests {
             prompt: "hi".into(),
             schema: None,
             writable: false,
+            ordinal: None,
         };
         let spawn = EphemeralSpawn {
             ok: true,
@@ -11262,6 +11383,7 @@ mod workflow_runtime_tests {
             prompt: "hi".into(),
             schema: None,
             writable: false,
+            ordinal: None,
         };
         let spawn = EphemeralSpawn {
             ok: false,
@@ -11297,6 +11419,7 @@ mod workflow_runtime_tests {
             prompt: "hi".into(),
             schema: None,
             writable: false,
+            ordinal: None,
         };
         let spawn = EphemeralSpawn {
             ok: true,
@@ -11390,6 +11513,7 @@ mod workflow_runtime_tests {
                 "ok": false,
             })),
             structured: None,
+            ordinal: None,
         };
         let json = workflow::step_result_json(&result);
         assert_eq!(json["provider"], serde_json::json!("codex"));
@@ -11708,6 +11832,7 @@ mod workflow_runtime_tests {
                 started_at: None,
                 details: None,
                 structured: None,
+                ordinal: None,
             }
         };
 
@@ -11816,6 +11941,151 @@ agent("fix: " + a, provider = "claude", label = "fixer")
         );
         for step in terminal.values() {
             assert_eq!(step.status, WorkflowStepStatus::Completed);
+        }
+    }
+
+    #[test]
+    fn workflow_run_script_resume_reuses_prior_steps() {
+        let store = temp_store("run-script-resume");
+        let script = r#"
+workflow("triage", "scan first then fix, so the fix builds on the scan output")
+a = agent("scan the code")
+agent("fix per " + a, label = "fixer")
+"#;
+        let dir = std::env::temp_dir().join(format!("harness-wf-resume-{}", generated_id("src")));
+        fs::create_dir_all(&dir).expect("mkdir script dir");
+        let path = dir.join("triage.star");
+        fs::write(&path, script).expect("write script");
+
+        // First run (dry-run) to journal succeeded steps carrying ordinals.
+        let args = vec![path.display().to_string(), "--dry-run".to_string()];
+        let first = workflow_run_script_value(&store, &args).expect("first run");
+        let prior_run_id = first
+            .get("run")
+            .and_then(|r| r.get("id"))
+            .and_then(|v| v.as_str())
+            .expect("prior run id")
+            .to_string();
+
+        // The prior steps carry an ordinal in their result JSON (the round-trip).
+        let prior_steps: Vec<WorkflowStep> = latest_workflow_steps_in_append_order(&store)
+            .expect("steps")
+            .into_iter()
+            .filter(|s| s.run_id == prior_run_id)
+            .collect();
+        assert!(prior_steps.iter().all(|s| s
+            .result
+            .as_ref()
+            .and_then(|r| r.get("ordinal"))
+            .is_some()));
+
+        // Resume: re-run the SAME script with --resume <prior_run_id>.
+        let resume_args = vec![
+            path.display().to_string(),
+            "--dry-run".to_string(),
+            "--resume".to_string(),
+            prior_run_id.clone(),
+        ];
+        let second = workflow_run_script_value(&store, &resume_args).expect("resume run");
+        let run = second.get("run").expect("run key");
+        assert_eq!(
+            run.get("status").and_then(|s| s.as_str()),
+            Some("completed")
+        );
+        let new_run_id = run.get("id").and_then(|v| v.as_str()).expect("new run id");
+        assert_ne!(new_run_id, prior_run_id, "resume mints a NEW run id");
+        let step_ids = run
+            .get("step_ids")
+            .and_then(|s| s.as_array())
+            .expect("step_ids");
+        assert_eq!(step_ids.len(), 2, "the resumed run references both leaves");
+
+        // The new run records which prior run it resumed from.
+        let runs = store.workflow_runs().expect("read runs");
+        let final_run = runs
+            .iter()
+            .rev()
+            .find(|r| r.id == new_run_id)
+            .expect("new run row");
+        assert_eq!(
+            final_run
+                .spec
+                .as_ref()
+                .and_then(|s| s.get("resumed_from"))
+                .and_then(|v| v.as_str()),
+            Some(prior_run_id.as_str())
+        );
+
+        // The new run's steps carry the [replayed] marker (driver not re-invoked).
+        let new_steps: Vec<WorkflowStep> = latest_workflow_steps_in_append_order(&store)
+            .expect("steps")
+            .into_iter()
+            .filter(|s| s.run_id == new_run_id)
+            .collect();
+        assert_eq!(new_steps.len(), 2);
+        for step in &new_steps {
+            assert!(
+                step.output_summary
+                    .as_deref()
+                    .unwrap_or_default()
+                    .starts_with("[replayed] "),
+                "resumed step output: {:?}",
+                step.output_summary
+            );
+            assert_eq!(
+                step.result.as_ref().and_then(|r| r.get("replayed")),
+                Some(&serde_json::json!(true))
+            );
+        }
+    }
+
+    #[test]
+    fn workflow_run_script_resume_rejects_changed_script() {
+        let store = temp_store("run-script-resume-changed");
+        let dir =
+            std::env::temp_dir().join(format!("harness-wf-resume-chg-{}", generated_id("src")));
+        fs::create_dir_all(&dir).expect("mkdir script dir");
+        let path = dir.join("triage.star");
+        let original = r#"
+workflow("triage", "a stable design intent that explains the shape")
+agent("scan the code")
+"#;
+        fs::write(&path, original).expect("write script");
+        let first = workflow_run_script_value(
+            &store,
+            &[path.display().to_string(), "--dry-run".to_string()],
+        )
+        .expect("first run");
+        let prior_run_id = first
+            .get("run")
+            .and_then(|r| r.get("id"))
+            .and_then(|v| v.as_str())
+            .expect("prior id")
+            .to_string();
+
+        // Edit the script, then attempt to resume — the guard must reject it.
+        let changed = r#"
+workflow("triage", "a stable design intent that explains the shape")
+agent("scan the code")
+agent("a NEW second leaf that changes the ordinal alignment")
+"#;
+        fs::write(&path, changed).expect("rewrite script");
+        let err = workflow_run_script_value(
+            &store,
+            &[
+                path.display().to_string(),
+                "--dry-run".to_string(),
+                "--resume".to_string(),
+                prior_run_id,
+            ],
+        )
+        .expect_err("changed script rejected");
+        match err {
+            CliError::Usage(msg) => assert!(
+                msg.contains("the script changed"),
+                "unexpected message: {msg}"
+            ),
+            other => panic!("expected Usage error, got {other:?}"),
         }
     }
 
@@ -11936,6 +12206,7 @@ agent("fix: " + a, provider = "claude", label = "fixer")
                 started_at: Some(started_at.clone()),
                 details: None,
                 structured: None,
+                ordinal: None,
             };
             // Mirror the real driver under the live-per-step contract: also
             // journal the TERMINAL row at completion, reusing the same step_id +
