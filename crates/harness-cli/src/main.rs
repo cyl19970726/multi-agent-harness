@@ -4127,6 +4127,22 @@ fn spawn_ephemeral_worker(
         }
     };
 
+    // Retry ONCE on a transient PROCESS crash — a non-zero / signalled exit that
+    // did NOT time out and produced no reply. That is a blip/crash worth retrying;
+    // it deliberately does NOT retry a timeout (we'd just re-hang for another
+    // window) nor a clean-exit delivery failure (auth/usage-limit — we'd reproduce
+    // it). Distinct from the schema-conformance retry below.
+    let spawn_once_resilient = |prompt: &str| -> CliResult<EphemeralSpawn> {
+        let first = spawn_once(prompt)?;
+        let transient_crash =
+            !first.ok && !first.timed_out && first.reply.is_none() && first.exit_code != Some(0);
+        if transient_crash {
+            std::thread::sleep(Duration::from_millis(500));
+            return spawn_once(prompt);
+        }
+        Ok(first)
+    };
+
     // STRUCTURED mode (spec.schema is Some): append a JSON-only instruction to the
     // prompt, then parse + validate the reply into a structured object. On failure
     // re-run the worker ONCE with a corrective suffix; if it still fails, leave
@@ -4147,7 +4163,7 @@ fn spawn_ephemeral_worker(
         // First attempt: prompt + the JSON-only instruction. Prefer the
         // provider-validated `structured` (native --json-schema/--output-schema);
         // fall back to extracting JSON from the reply text (the prompt-hint path).
-        let mut spawn = spawn_once(&format!("{}{instruction}", spec.prompt))?;
+        let mut spawn = spawn_once_resilient(&format!("{}{instruction}", spec.prompt))?;
         structured = spawn.structured.clone().or_else(|| {
             spawn
                 .reply
@@ -4175,7 +4191,7 @@ fn spawn_ephemeral_worker(
         }
         spawn
     } else {
-        spawn_once(&spec.prompt)?
+        spawn_once_resilient(&spec.prompt)?
     };
 
     let duration_ms = worker_start.elapsed().as_millis() as u64;
