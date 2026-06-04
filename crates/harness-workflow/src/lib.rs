@@ -62,6 +62,12 @@ pub struct AgentStepSpec {
     /// a JSON object whose top-level keys are the REQUIRED keys the reply must
     /// carry. `None` = text mode (the reply is returned verbatim as today).
     pub schema: Option<serde_json::Value>,
+    /// Whether this step may EDIT files / run shell. `false` (default) runs the
+    /// worker read-only (codex `--sandbox read-only`; claude read-only tools).
+    /// `true` escalates to an editable sandbox AND auto-isolates the step into a
+    /// throwaway git worktree, so writes land in a discardable checkout (captured
+    /// as the step's diff) instead of the live repo.
+    pub writable: bool,
 }
 
 /// The outcome of one agent step. `ok == false` is the CC-spec `null` slot: a
@@ -474,6 +480,7 @@ pub fn investigate(driver: &AgentStepFn<'_>, topic: &str) -> WorkflowOutcome {
             isolation: None,
             prompt: format!("Scope the investigation of: {topic}. List the modules to audit."),
             schema: None,
+            writable: false,
         },
     );
     let scope_ok = scope_step.ok;
@@ -489,6 +496,7 @@ pub fn investigate(driver: &AgentStepFn<'_>, topic: &str) -> WorkflowOutcome {
             isolation: None,
             prompt: format!("Audit the code paths involved in: {topic}."),
             schema: None,
+            writable: false,
         },
         AgentStepSpec {
             phase: "audit".to_string(),
@@ -498,6 +506,7 @@ pub fn investigate(driver: &AgentStepFn<'_>, topic: &str) -> WorkflowOutcome {
             isolation: None,
             prompt: format!("Audit the recent diffs related to: {topic}."),
             schema: None,
+            writable: false,
         },
     ];
     let parallel_results = parallel(driver, &parallel_specs);
@@ -723,6 +732,7 @@ mod tests {
                 isolation: None,
                 prompt: format!("prompt {i}"),
                 schema: None,
+                writable: false,
             })
             .collect();
         let results = parallel(&driver, &specs);
@@ -778,6 +788,7 @@ mod tests {
                 isolation: None,
                 prompt: "x".to_string(),
                 schema: None,
+                writable: false,
             })
             .collect();
         let results = parallel(&driver, &specs);
@@ -846,6 +857,7 @@ mod tests {
                 isolation: None,
                 prompt: format!("prompt {i}"),
                 schema: None,
+                writable: false,
             })
             .collect();
         let results = parallel(&driver, &specs);
@@ -887,6 +899,7 @@ mod tests {
             isolation: None,
             prompt: "x".to_string(),
             schema: None,
+            writable: false,
         }
     }
 
