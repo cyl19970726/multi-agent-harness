@@ -201,11 +201,19 @@ impl StarlarkCtx<'_> {
         // Replay hit: reuse the prior run's succeeded result for this ordinal
         // WITHOUT dispatching the worker and WITHOUT tallying budget (no re-spend).
         if let Some(cached) = self.replay.get(&ord) {
-            let mut r = cached.clone();
-            r.ordinal = Some(ord);
-            mark_replayed(&mut r);
-            self.steps.borrow_mut().push(r.clone());
-            return r;
+            // Journal a MARKED copy (audit/[replayed] prefix) into ctx.steps, but
+            // return an UNMARKED copy to the script: the prior run's original
+            // `output_summary` is what `agent()` hands the program in text mode, so
+            // a marker here would corrupt downstream prompts and can divert control
+            // flow (branching on agent text) and desynchronize every later ordinal.
+            let mut journaled = cached.clone();
+            journaled.ordinal = Some(ord);
+            mark_replayed(&mut journaled);
+            self.steps.borrow_mut().push(journaled);
+
+            let mut returned = cached.clone();
+            returned.ordinal = Some(ord);
+            return returned;
         }
 
         let spec = AgentStepSpec {
@@ -263,14 +271,20 @@ impl StarlarkCtx<'_> {
         // Partition specs into replay HITS (reuse the cached result, no dispatch, no
         // spend) and MISSES (dispatch for real). Misses keep their input index so we
         // can merge results back in input order and stamp the right ordinal.
+        // `cached` holds the UNMARKED result that flows back to the script (the prior
+        // run's original summary); `replayed_idx` tags which input slots are replays
+        // so the journaled copy can carry the [replayed] marker without corrupting
+        // the script-visible value (a marker in the return can divert text-branching
+        // control flow and desynchronize later ordinals).
         let mut cached: Vec<(usize, StepResult)> = Vec::new();
+        let mut replayed_idx: std::collections::HashSet<usize> = std::collections::HashSet::new();
         let mut to_dispatch: Vec<(usize, AgentStepSpec)> = Vec::new();
         for (i, spec) in specs.iter().enumerate() {
             if let Some(hit) = self.replay.get(&ords[i]) {
                 let mut r = hit.clone();
                 r.ordinal = Some(ords[i]);
-                mark_replayed(&mut r);
                 cached.push((i, r));
+                replayed_idx.insert(i);
             } else {
                 // Stamp the spec's ordinal so a real driver journaling its own
                 // terminal row carries the ordinal onto the stored step.
@@ -318,7 +332,21 @@ impl StarlarkCtx<'_> {
             .map(|slot| slot.expect("every spec slot is filled (cached or dispatched)"))
             .collect();
 
-        self.steps.borrow_mut().extend(results.clone());
+        // Journal a MARKED copy for replayed slots (audit/[replayed] prefix), but
+        // return the UNMARKED `results` to the caller (script-visible summary stays
+        // the prior run's original text).
+        let journaled: Vec<StepResult> = results
+            .iter()
+            .enumerate()
+            .map(|(i, r)| {
+                let mut j = r.clone();
+                if replayed_idx.contains(&i) {
+                    mark_replayed(&mut j);
+                }
+                j
+            })
+            .collect();
+        self.steps.borrow_mut().extend(journaled);
         results
     }
 
@@ -1884,13 +1912,20 @@ c = agent("step three: " + b)
         // Leaf 2 was freshly dispatched (no marker).
         assert_eq!(steps[2].ordinal, Some(2));
         assert!(!steps[2].output_summary.starts_with("[replayed] "));
-        // The cached result flowed back into the script: leaf 2's prompt chained
-        // leaf 1's CACHED (replayed) summary.
+        // The cached result flowed back into the script WITHOUT the [replayed]
+        // marker: the script-visible value must be the prior run's ORIGINAL summary,
+        // so downstream prompts are byte-identical to the first run (no corruption,
+        // no control-flow divergence). The marker lives only on the journaled copy.
         let seen2 = seen2.into_inner().unwrap();
         assert_eq!(seen2.len(), 1);
+        assert_eq!(
+            seen2[0], "step three: ok: step two: ok: scan the code",
+            "leaf 2 prompt must chain the cached leaf-1 ORIGINAL summary, got: {}",
+            seen2[0]
+        );
         assert!(
-            seen2[0].contains("[replayed] ok: step two:"),
-            "leaf 2 prompt must chain the cached leaf-1 summary, got: {}",
+            !seen2[0].contains("[replayed]"),
+            "the replay marker must NOT leak into the script-visible value, got: {}",
             seen2[0]
         );
     }
@@ -1898,25 +1933,38 @@ c = agent("step three: " + b)
     #[test]
     fn resume_partition_in_parallel() {
         use std::sync::atomic::{AtomicUsize, Ordering};
-        let script = r#"parallel([{"prompt": "fix " + x} for x in ["a", "b", "c", "d"]])"#;
-        // First run to mint ordinals 0..3.
+        // Fan out 4 specs (ordinals 0..3), then chain the joined results into a
+        // downstream leaf (ordinal 4) so we can prove the script-visible parallel
+        // values are the prior run's ORIGINAL summaries (no [replayed] leak).
+        let script = r#"
+rs = parallel([{"prompt": "fix " + x} for x in ["a", "b", "c", "d"]])
+agent("join: " + " | ".join(rs))
+"#;
+        // First run to mint ordinals 0..4.
         let calls = AtomicUsize::new(0);
         let first = {
             let driver = counting_driver(&calls);
             run_starlark(&format!("{HEADER}{script}"), "demo", None, &driver).expect("run ok")
         };
-        assert_eq!(first.outcome.steps.len(), 4);
+        assert_eq!(first.outcome.steps.len(), 5);
         let ords: Vec<Option<u64>> = first.outcome.steps.iter().map(|s| s.ordinal).collect();
-        assert_eq!(ords, vec![Some(0), Some(1), Some(2), Some(3)]);
+        assert_eq!(ords, vec![Some(0), Some(1), Some(2), Some(3), Some(4)]);
 
-        // Replay covers ordinals {0, 2} — two of four.
+        // Replay covers ordinals {0, 2} — two of the four fan-out specs.
         let mut replay = HashMap::new();
         replay.insert(0u64, first.outcome.steps[0].clone());
         replay.insert(2u64, first.outcome.steps[2].clone());
 
         let calls2 = AtomicUsize::new(0);
+        let seen2 = Mutex::new(Vec::new());
         let second = {
-            let driver = counting_driver(&calls2);
+            let inner = counting_driver(&calls2);
+            let driver = |spec: &AgentStepSpec| {
+                if spec.prompt.starts_with("join:") {
+                    seen2.lock().unwrap().push(spec.prompt.clone());
+                }
+                inner(spec)
+            };
             run_starlark_with_budget(
                 &format!("{HEADER}{script}"),
                 "demo",
@@ -1929,19 +1977,31 @@ c = agent("step three: " + b)
         };
         assert_eq!(
             calls2.load(Ordering::SeqCst),
-            2,
-            "only the two uncached specs are dispatched"
+            3,
+            "the two uncached fan-out specs plus the downstream join leaf are dispatched"
         );
         let steps = &second.outcome.steps;
-        assert_eq!(steps.len(), 4);
-        // Results returned in INPUT order with ordinals 0..3.
+        assert_eq!(steps.len(), 5);
+        // Fan-out results journaled in INPUT order with ordinals 0..3, join is 4.
         let ords2: Vec<Option<u64>> = steps.iter().map(|s| s.ordinal).collect();
-        assert_eq!(ords2, vec![Some(0), Some(1), Some(2), Some(3)]);
-        // The two replayed slots carry the marker; the two dispatched do not.
+        assert_eq!(ords2, vec![Some(0), Some(1), Some(2), Some(3), Some(4)]);
+        // The two replayed slots carry the marker on the JOURNALED copy; the two
+        // dispatched do not (and neither does the downstream join leaf).
         assert!(steps[0].output_summary.starts_with("[replayed] "));
         assert!(!steps[1].output_summary.starts_with("[replayed] "));
         assert!(steps[2].output_summary.starts_with("[replayed] "));
         assert!(!steps[3].output_summary.starts_with("[replayed] "));
+        assert!(!steps[4].output_summary.starts_with("[replayed] "));
+        // The SCRIPT-VISIBLE parallel values are the prior run's ORIGINAL summaries:
+        // the downstream join leaf's prompt is byte-identical to a non-resumed run,
+        // with NO [replayed] marker leaking into the paid worker's prompt.
+        let seen2 = seen2.into_inner().unwrap();
+        assert_eq!(seen2.len(), 1);
+        assert_eq!(
+            seen2[0], "join: ok: fix a | ok: fix b | ok: fix c | ok: fix d",
+            "the chained parallel results must be the original summaries, got: {}",
+            seen2[0]
+        );
     }
 
     #[test]
