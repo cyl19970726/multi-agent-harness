@@ -4085,6 +4085,11 @@ fn spawn_ephemeral_worker(
     let session_dir = store.root().join("provider-sessions").join(&session_id);
     fs::create_dir_all(&session_dir)?;
 
+    // The structured schema normalized to a real JSON Schema for the providers'
+    // native flags (claude `--json-schema`, codex `--output-schema`). `None` for
+    // text-mode steps.
+    let schema_json = spec.schema.as_ref().map(schema_to_json_schema);
+
     // One spawn of the configured provider against a (possibly augmented) prompt.
     // Factored into a closure so structured mode can re-run it once for the retry.
     let spawn_once = |prompt: &str| -> CliResult<EphemeralSpawn> {
@@ -4093,6 +4098,7 @@ fn spawn_ephemeral_worker(
                 &session_dir,
                 &session_id,
                 spec,
+                schema_json.as_ref(),
                 prompt,
                 &cwd,
                 options.timeout_ms,
@@ -4101,6 +4107,7 @@ fn spawn_ephemeral_worker(
                 &session_dir,
                 &session_id,
                 spec,
+                schema_json.as_ref(),
                 prompt,
                 &cwd,
                 options.timeout_ms,
@@ -4128,13 +4135,17 @@ fn spawn_ephemeral_worker(
     let spawn = if let Some(schema) = &spec.schema {
         let instruction = schema_instruction(schema);
 
-        // First attempt: prompt + the JSON-only instruction.
+        // First attempt: prompt + the JSON-only instruction. Prefer the
+        // provider-validated `structured` (native --json-schema/--output-schema);
+        // fall back to extracting JSON from the reply text (the prompt-hint path).
         let mut spawn = spawn_once(&format!("{}{instruction}", spec.prompt))?;
-        structured = spawn
-            .reply
-            .as_deref()
-            .and_then(extract_json_object)
-            .filter(|obj| object_has_required_keys(obj, &required_keys));
+        structured = spawn.structured.clone().or_else(|| {
+            spawn
+                .reply
+                .as_deref()
+                .and_then(extract_json_object)
+                .filter(|obj| object_has_required_keys(obj, &required_keys))
+        });
 
         // ONE corrective retry when the worker produced no valid JSON.
         if structured.is_none() {
@@ -4145,11 +4156,13 @@ fn spawn_ephemeral_worker(
                 required_keys.join(", "),
             );
             spawn = spawn_once(&retry_prompt)?;
-            structured = spawn
-                .reply
-                .as_deref()
-                .and_then(extract_json_object)
-                .filter(|obj| object_has_required_keys(obj, &required_keys));
+            structured = spawn.structured.clone().or_else(|| {
+                spawn
+                    .reply
+                    .as_deref()
+                    .and_then(extract_json_object)
+                    .filter(|obj| object_has_required_keys(obj, &required_keys))
+            });
         }
         spawn
     } else {
@@ -4258,6 +4271,35 @@ fn spawn_ephemeral_worker(
         started_at: None,
         details: Some(details),
         structured,
+    })
+}
+
+/// Normalize a `schema=` dict into a real JSON Schema suitable for the providers'
+/// native structured-output flags (claude `--json-schema`, codex `--output-schema`).
+/// Two input shapes are accepted: an ALREADY-valid JSON Schema (has `type` or
+/// `properties`) is passed through unchanged; the legacy flat `{ key: "hint" }`
+/// form is wrapped into `{ type:object, properties:{ key:{type:string,
+/// description:hint} }, required:[keys], additionalProperties:false }` so existing
+/// programs gain native enforcement (as string fields) with no change.
+fn schema_to_json_schema(schema: &serde_json::Value) -> serde_json::Value {
+    let Some(obj) = schema.as_object() else {
+        return schema.clone();
+    };
+    if obj.contains_key("type") || obj.contains_key("properties") {
+        return schema.clone();
+    }
+    let mut props = serde_json::Map::new();
+    for (k, v) in obj {
+        props.insert(
+            k.clone(),
+            serde_json::json!({ "type": "string", "description": v.as_str().unwrap_or("") }),
+        );
+    }
+    serde_json::json!({
+        "type": "object",
+        "properties": props,
+        "required": obj.keys().cloned().collect::<Vec<_>>(),
+        "additionalProperties": false,
     })
 }
 
@@ -4401,6 +4443,12 @@ fn build_step_details(
         map.insert("tokens".into(), tokens.to_json());
     }
 
+    if let Some(cost) = spawn.cost_usd {
+        if let Some(n) = serde_json::Number::from_f64(cost) {
+            map.insert("cost_usd".into(), serde_json::Value::Number(n));
+        }
+    }
+
     if let Some(reason) = classify_failure_reason(spawn.ok, spawn.exit_code, spawn.timed_out) {
         let detail = if spawn.stderr.trim().is_empty() {
             format!("{} worker step failed ({reason})", spec.provider)
@@ -4462,6 +4510,15 @@ struct EphemeralSpawn {
     /// whose `exec --json` stream carries no model — the node's requested
     /// `spec.model` is the only signal there.
     model: Option<String>,
+    /// The provider-validated structured object, when the worker ran with a
+    /// native schema flag (claude `--json-schema` → `result.structured_output`;
+    /// codex `--output-schema` → the schema-constrained reply). `None` for
+    /// text-mode steps or when no native structured output was produced — the
+    /// caller then falls back to extracting JSON from the reply text.
+    structured: Option<serde_json::Value>,
+    /// Billed cost in USD for the turn, when the provider reports it (claude's
+    /// `result.total_cost_usd`). `None` for codex, which emits only token usage.
+    cost_usd: Option<f64>,
 }
 
 /// Normalized token usage for one worker turn, provider-agnostic. Parsed from the
@@ -4560,6 +4617,30 @@ fn parse_worker_model(events: &[serde_json::Value]) -> Option<String> {
     })
 }
 
+/// Parse claude's terminal `result` frame for the two extras it carries:
+/// `structured_output` (a schema-validated object, present only when the worker
+/// ran with `--json-schema`) and `total_cost_usd` (the billed turn cost). Returns
+/// `(structured, cost_usd)`, each `None` when absent.
+fn parse_claude_result_extras(
+    events: &[serde_json::Value],
+) -> (Option<serde_json::Value>, Option<f64>) {
+    events
+        .iter()
+        .rev()
+        .find_map(|payload| {
+            if payload.get("type").and_then(|t| t.as_str()) != Some("result") {
+                return None;
+            }
+            let structured = payload
+                .get("structured_output")
+                .filter(|v| v.is_object())
+                .cloned();
+            let cost = payload.get("total_cost_usd").and_then(|v| v.as_f64());
+            Some((structured, cost))
+        })
+        .unwrap_or((None, None))
+}
+
 /// Classify WHY a step failed, into a stable `reason` tag the dashboard groups on.
 /// Precedence: a fired timeout dominates (the worker never reached a clean turn);
 /// then a non-zero / absent exit code; then a delivery that exited 0 but produced
@@ -4590,13 +4671,16 @@ fn classify_failure_reason(
 
 /// Spawn a one-shot `codex exec` with an EDITABLE (`--sandbox workspace-write`)
 /// sandbox, JSON event stream, running in `cwd`. Non-interactive (stdin closed)
-/// with a per-node timeout. Flags verified via `codex exec --help`:
-/// `--json`, `--sandbox workspace-write`, `--cd <dir>`, `-m <model>`,
-/// `--skip-git-repo-check`, `--output-last-message <file>`.
+/// with a per-node timeout. When `schema_json` is set, `--output-schema <file>`
+/// constrains codex's final answer to that JSON Schema. Flags verified via
+/// `codex exec --help`: `--json`, `--sandbox workspace-write`, `--cd <dir>`,
+/// `-m <model>`, `--skip-git-repo-check`, `--output-last-message <file>`,
+/// `--output-schema <file>`.
 fn spawn_codex_ephemeral(
     session_dir: &Path,
     session_id: &str,
     spec: &workflow::AgentStepSpec,
+    schema_json: Option<&serde_json::Value>,
     prompt: &str,
     cwd: &Path,
     timeout_ms: u64,
@@ -4612,6 +4696,14 @@ fn spawn_codex_ephemeral(
         .arg("--json")
         .arg("--output-last-message")
         .arg(&last_message_ref);
+    // Native schema enforcement: write the JSON Schema to a file and constrain the
+    // final answer to it. The reply text then IS the validated JSON object.
+    if let Some(schema) = schema_json {
+        let schema_path = session_dir.join("output-schema.json");
+        if fs::write(&schema_path, schema.to_string()).is_ok() {
+            cmd.arg("--output-schema").arg(&schema_path);
+        }
+    }
     if let Some(model) = &spec.model {
         cmd.arg("-m").arg(model);
     }
@@ -4641,6 +4733,11 @@ fn spawn_codex_ephemeral(
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
     let tokens = parse_codex_usage(&run.events);
+    // With `--output-schema`, the constrained final answer IS the reply text, so
+    // parse it as the validated structured object.
+    let structured = schema_json
+        .and(reply.as_deref())
+        .and_then(extract_json_object);
 
     Ok(EphemeralSpawn {
         ok,
@@ -4652,18 +4749,24 @@ fn spawn_codex_ephemeral(
         tokens,
         // codex exec --json carries no model; only spec.model is known.
         model: None,
+        structured,
+        // codex emits token usage but no dollar cost.
+        cost_usd: None,
     })
 }
 
 /// Spawn a one-shot `claude -p` with EDITING allowed: `--output-format
 /// stream-json --verbose`, an allowedTools set incl. Read/Edit/Write/Bash, and a
 /// non-blocking `--permission-mode bypassPermissions` so it never blocks on an
-/// approval prompt. Runs with cwd = `cwd` (the harness owns isolation; we do NOT
-/// use claude's -w). Flags verified via `claude --help`.
+/// approval prompt. When `schema_json` is set, `--json-schema <inline>` makes
+/// claude emit a schema-validated `result.structured_output`. Runs with cwd =
+/// `cwd` (the harness owns isolation; we do NOT use claude's -w). Flags verified
+/// via `claude --help`.
 fn spawn_claude_ephemeral(
     session_dir: &Path,
     session_id: &str,
     spec: &workflow::AgentStepSpec,
+    schema_json: Option<&serde_json::Value>,
     prompt: &str,
     cwd: &Path,
     timeout_ms: u64,
@@ -4679,6 +4782,11 @@ fn spawn_claude_ephemeral(
         .arg("--allowedTools")
         .arg("Read,Edit,Write,Bash")
         .current_dir(cwd);
+    // Native schema enforcement via constrained decoding: the validated object is
+    // emitted on the terminal `result` event as `structured_output`.
+    if let Some(schema) = schema_json {
+        cmd.arg("--json-schema").arg(schema.to_string());
+    }
     if let Some(model) = &spec.model {
         cmd.arg("--model").arg(model);
     }
@@ -4703,6 +4811,9 @@ fn spawn_claude_ephemeral(
     let reply = extract_claude_reply_text(&claude_events);
     let tokens = parse_claude_usage(&run.events);
     let model = parse_worker_model(&run.events);
+    // `structured_output` (when `--json-schema` ran) + the billed turn cost, both
+    // off the terminal `result` frame.
+    let (structured, cost_usd) = parse_claude_result_extras(&run.events);
 
     Ok(EphemeralSpawn {
         ok,
@@ -4713,6 +4824,8 @@ fn spawn_claude_ephemeral(
         timed_out: run.timed_out,
         tokens,
         model,
+        structured,
+        cost_usd,
     })
 }
 
@@ -10896,6 +11009,57 @@ mod workflow_runtime_tests {
     }
 
     #[test]
+    fn schema_to_json_schema_wraps_flat_and_passes_real_through() {
+        // Flat { key: hint } -> a string-property object schema with required keys.
+        let flat = serde_json::json!({ "verdict": "the call", "score": "0-100" });
+        let js = schema_to_json_schema(&flat);
+        assert_eq!(js["type"], serde_json::json!("object"));
+        assert_eq!(
+            js["properties"]["verdict"]["type"],
+            serde_json::json!("string")
+        );
+        assert_eq!(
+            js["properties"]["verdict"]["description"],
+            serde_json::json!("the call")
+        );
+        assert_eq!(js["additionalProperties"], serde_json::json!(false));
+        let req = js["required"].as_array().expect("required array");
+        assert!(req.contains(&serde_json::json!("verdict")));
+        assert!(req.contains(&serde_json::json!("score")));
+
+        // An already-valid JSON Schema (has `type`/`properties`) is unchanged.
+        let real = serde_json::json!({
+            "type": "object",
+            "properties": { "score": { "type": "integer" } },
+            "required": ["score"],
+        });
+        assert_eq!(schema_to_json_schema(&real), real);
+    }
+
+    #[test]
+    fn parse_claude_result_extras_reads_structured_and_cost() {
+        let events = vec![
+            serde_json::json!({"type": "system", "subtype": "init", "model": "claude-opus-4-8"}),
+            serde_json::json!({
+                "type": "result",
+                "structured_output": { "verdict": "pass", "score": 100 },
+                "total_cost_usd": 0.1866,
+                "usage": { "input_tokens": 5, "output_tokens": 2 }
+            }),
+        ];
+        let (structured, cost) = parse_claude_result_extras(&events);
+        assert_eq!(
+            structured,
+            Some(serde_json::json!({ "verdict": "pass", "score": 100 }))
+        );
+        assert_eq!(cost, Some(0.1866));
+
+        // No `result` frame -> both None.
+        let (s2, c2) = parse_claude_result_extras(&[serde_json::json!({"type": "system"})]);
+        assert!(s2.is_none() && c2.is_none());
+    }
+
+    #[test]
     fn extract_json_object_handles_bare_object() {
         let value = extract_json_object(r#"{"ok": true, "n": 3}"#).expect("parsed");
         assert_eq!(value["ok"], serde_json::json!(true));
@@ -10967,6 +11131,8 @@ mod workflow_runtime_tests {
                 total: 14,
             }),
             model: None,
+            structured: None,
+            cost_usd: None,
         };
         let details = build_step_details(&spec, &spawn, 1234, None);
         // spec.model wins over the (absent) worker-reported model.
@@ -10999,6 +11165,8 @@ mod workflow_runtime_tests {
             tokens: None,
             // The node requested no model, so the worker-reported one is used.
             model: Some("claude-opus-4-8".into()),
+            structured: None,
+            cost_usd: None,
         };
         let details = build_step_details(&spec, &spawn, 50, None);
         assert_eq!(details["model"], serde_json::json!("claude-opus-4-8"));
@@ -11030,6 +11198,8 @@ mod workflow_runtime_tests {
             timed_out: false,
             tokens: None,
             model: None,
+            structured: None,
+            cost_usd: None,
         };
         let big = "x".repeat(WORKTREE_DIFF_CAP + 5_000);
         let details = build_step_details(&spec, &spawn, 1, Some(&big));
