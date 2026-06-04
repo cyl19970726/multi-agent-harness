@@ -5498,6 +5498,10 @@ fn workflow_run_script_value(
         .filter(|id| !id.is_empty())
         .unwrap_or_else(|| "operator".to_string());
 
+    // Reap any orphaned `Running` rows from crashed prior runs before starting a
+    // new one, so phantoms never accumulate in the store / dashboard. Best-effort.
+    let _ = reap_stale_workflow_runs(store);
+
     // Mint the run id up front so the real driver can journal each step's
     // `running` row as it starts (live SSE progress).
     let run_id = generated_id("wfrun");
@@ -8725,6 +8729,40 @@ fn latest_workflow_runs_in_append_order(store: &HarnessStore) -> CliResult<Vec<W
     Ok(ids.into_iter().filter_map(|id| by_id.remove(&id)).collect())
 }
 
+/// Age after which a `Running` WorkflowRun is assumed orphaned and reaped. The
+/// run-script path is SYNCHRONOUS — a run is only `Running` in the store while its
+/// host process is alive — so a row left `Running` past this age means the process
+/// died (crash / Ctrl-C / OOM) before finalizing it. Generous (the longest real
+/// runs are ~1.5h) so a legitimately long run is never reaped.
+const REAP_STALE_RUN_AFTER_MS: u128 = 4 * 60 * 60 * 1000; // 4 hours
+
+/// Finalize every `Running` WorkflowRun older than [`REAP_STALE_RUN_AFTER_MS`] to
+/// `Failed`, so a crashed run does not sit `Running` forever in the store /
+/// snapshot / dashboard. Best-effort, called when a new run starts. Returns the
+/// number reaped.
+fn reap_stale_workflow_runs(store: &HarnessStore) -> CliResult<usize> {
+    let now = current_unix_ms();
+    let mut reaped = 0;
+    for mut run in latest_workflow_runs_in_append_order(store)? {
+        if run.status != WorkflowRunStatus::Running {
+            continue;
+        }
+        let age = now.saturating_sub(created_ms(&run.created_at));
+        if age < REAP_STALE_RUN_AFTER_MS {
+            continue;
+        }
+        run.status = WorkflowRunStatus::Failed;
+        run.ended_at = Some(now_string());
+        run.summary = Some(format!(
+            "reaped: orphaned Running for ~{}h — host process exited before the run finalized",
+            age / (60 * 60 * 1000)
+        ));
+        store.append_workflow_run(&run)?;
+        reaped += 1;
+    }
+    Ok(reaped)
+}
+
 fn latest_workflow_steps_in_append_order(store: &HarnessStore) -> CliResult<Vec<WorkflowStep>> {
     let mut ids = Vec::new();
     let mut by_id = BTreeMap::new();
@@ -11422,6 +11460,49 @@ mod workflow_runtime_tests {
             })
             .expect("append step");
         ndjson
+    }
+
+    #[test]
+    fn reap_stale_workflow_runs_finalizes_old_running_rows() {
+        let store = temp_store("reap-stale");
+        let now = current_unix_ms();
+        let mk = |id: &str, created: u128| WorkflowRun {
+            id: id.into(),
+            workflow_name: "demo".into(),
+            status: WorkflowRunStatus::Running,
+            step_ids: vec![],
+            created_at: format!("unix-ms:{created}"),
+            ended_at: None,
+            summary: None,
+            args: None,
+            agents_spawned: 0,
+            final_output: None,
+            initiated_by: Some("op".into()),
+            design_intent: None,
+            spec: None,
+            trace_retention: "durable".into(),
+        };
+        // One Running run 5h old -> reaped to Failed; one started "now" -> stays.
+        store
+            .append_workflow_run(&mk("wfrun-old", now.saturating_sub(5 * 60 * 60 * 1000)))
+            .expect("append old");
+        store
+            .append_workflow_run(&mk("wfrun-fresh", now))
+            .expect("append fresh");
+
+        let reaped = reap_stale_workflow_runs(&store).expect("reap");
+        assert_eq!(reaped, 1);
+
+        let runs = latest_workflow_runs_in_append_order(&store).expect("read");
+        let find = |id: &str| runs.iter().find(|r| r.id == id).expect("run present");
+        assert_eq!(find("wfrun-old").status, WorkflowRunStatus::Failed);
+        assert!(find("wfrun-old")
+            .summary
+            .as_deref()
+            .unwrap_or("")
+            .contains("reaped"));
+        assert!(find("wfrun-old").ended_at.is_some());
+        assert_eq!(find("wfrun-fresh").status, WorkflowRunStatus::Running);
     }
 
     #[test]
