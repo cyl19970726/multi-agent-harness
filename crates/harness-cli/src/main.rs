@@ -5525,16 +5525,22 @@ fn workflow_run_script_value(
     };
     store.append_workflow_run(&run)?;
 
+    // Optional per-run spend ceiling: once cumulative step cost reaches it, the
+    // runtime short-circuits further agent()/parallel() calls into failed `budget`
+    // steps. A `workflow(budget_usd=…)` header may lower it further.
+    let max_budget_usd = value(args, "--max-budget-usd").and_then(|v| v.parse::<f64>().ok());
+
     let started = {
         let run_id = run_id.clone();
         let driver = move |step: &workflow::AgentStepSpec| {
             workflow_real_agent_step(store, &run_id, &options, step)
         };
-        harness_workflow::starlark_front::run_starlark(
+        harness_workflow::starlark_front::run_starlark_with_budget(
             &script,
             &name,
             parsed_args.as_ref(),
             &driver,
+            max_budget_usd,
         )
         .map_err(|error| CliError::Usage(error.to_string()))?
     };

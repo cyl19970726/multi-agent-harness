@@ -36,7 +36,7 @@
 //! * `log(message)` — emit a progress line.
 //! * `args` — the run's JSON parameterization, injected as a module global value.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 
 use starlark::any::ProvidesStaticType;
 use starlark::environment::{GlobalsBuilder, LibraryExtension, Module};
@@ -124,6 +124,12 @@ struct StarlarkCtx<'a> {
     /// The `(name, design_intent)` captured by the mandatory `workflow()` header,
     /// or `None` until it is called. `run_starlark` enforces that it is set.
     meta: RefCell<Option<(String, String)>>,
+    /// The per-run spend ceiling in USD, if any (the CLI `--max-budget-usd` or the
+    /// smaller `workflow(budget_usd=…)` header). `None` = unbounded.
+    budget_usd: Cell<Option<f64>>,
+    /// Cumulative USD spent so far across this run's completed steps — real billed
+    /// cost where the provider reports it (claude), else a token-based estimate.
+    spent_usd: Cell<f64>,
 }
 
 impl StarlarkCtx<'_> {
@@ -155,9 +161,30 @@ impl StarlarkCtx<'_> {
             prompt,
             schema,
         };
-        let result = run_agent_step(self.driver, &spec);
+        // Short-circuit once the per-run spend ceiling is reached: record the step
+        // as a budget skip without dispatching the (paid) worker.
+        let result = if self.over_budget() {
+            budget_skip_result(&spec, self.budget_usd.get(), self.spent_usd.get())
+        } else {
+            let r = run_agent_step(self.driver, &spec);
+            self.add_spent(&r);
+            r
+        };
         self.steps.borrow_mut().push(result.clone());
         result
+    }
+
+    /// True once the cumulative spend has reached the declared ceiling (if any).
+    fn over_budget(&self) -> bool {
+        self.budget_usd
+            .get()
+            .is_some_and(|b| self.spent_usd.get() >= b)
+    }
+
+    /// Add a completed step's (real or estimated) cost to the running tally.
+    fn add_spent(&self, result: &StepResult) {
+        self.spent_usd
+            .set(self.spent_usd.get() + step_cost_usd(result));
     }
 
     /// Run a barrier fan-out over already-extracted plain specs. Drives the
@@ -167,9 +194,83 @@ impl StarlarkCtx<'_> {
     /// had a schema and parsed, else its summary string). No Starlark value
     /// crosses a thread boundary — the specs were read off the heap before this.
     fn run_parallel(&self, specs: Vec<AgentStepSpec>) -> Vec<StepResult> {
-        let results = crate::parallel(self.driver, &specs);
+        // Budget is enforced at barrier granularity: if the ceiling is already
+        // reached, skip the whole batch; otherwise run it and tally every result.
+        let results = if self.over_budget() {
+            let (budget, spent) = (self.budget_usd.get(), self.spent_usd.get());
+            specs
+                .iter()
+                .map(|spec| budget_skip_result(spec, budget, spent))
+                .collect()
+        } else {
+            let results = crate::parallel(self.driver, &specs);
+            for result in &results {
+                self.add_spent(result);
+            }
+            results
+        };
         self.steps.borrow_mut().extend(results.clone());
         results
+    }
+}
+
+/// Approximate USD cost of one completed step: the provider's billed figure when
+/// it reports one (claude's `cost_usd`), else a token-based estimate via a coarse
+/// per-provider price table (codex/gpt-class emits no dollar amount). Used only to
+/// bound cumulative spend, never for billing.
+fn step_cost_usd(result: &StepResult) -> f64 {
+    let details = result.details.as_ref();
+    if let Some(cost) = details
+        .and_then(|d| d.get("cost_usd"))
+        .and_then(|v| v.as_f64())
+    {
+        return cost;
+    }
+    let tokens = details.and_then(|d| d.get("tokens"));
+    let field = |key: &str| {
+        tokens
+            .and_then(|t| t.get(key))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0)
+    };
+    let (in_rate, out_rate) = price_per_mtok(&result.provider);
+    (field("input") as f64 / 1e6) * in_rate + (field("output") as f64 / 1e6) * out_rate
+}
+
+/// Rough public list price ($ per 1M tokens) `(input, output)` per provider — an
+/// ESTIMATE used only to bound spend when the provider reports no dollar cost.
+fn price_per_mtok(provider: &str) -> (f64, f64) {
+    match provider {
+        "claude" => (3.0, 15.0),
+        _ => (1.25, 10.0), // codex / gpt-5-class default
+    }
+}
+
+/// A [`StepResult`] standing in for a step SKIPPED because the per-run budget
+/// ceiling was already reached — recorded as a failed step (reason `budget`) so
+/// the run finalizes degraded and the dashboard shows why it stopped spending.
+fn budget_skip_result(spec: &AgentStepSpec, budget: Option<f64>, spent: f64) -> StepResult {
+    let budget = budget.unwrap_or(0.0);
+    StepResult {
+        phase: spec.phase.clone(),
+        label: spec.label.clone(),
+        provider: spec.provider.clone(),
+        isolation: spec.isolation.clone(),
+        ok: false,
+        provider_session_id: None,
+        output_summary: format!(
+            "skipped: per-run budget ${budget:.2} reached (spent ${spent:.2}) before this step ran"
+        ),
+        step_id: None,
+        started_at: None,
+        details: Some(serde_json::json!({
+            "failure": {
+                "failed": true,
+                "reason": "budget",
+                "detail": format!("per-run budget ${budget:.2} exceeded (spent ${spent:.2})"),
+            }
+        })),
+        structured: None,
     }
 }
 
@@ -262,9 +363,26 @@ fn workflow_globals(builder: &mut GlobalsBuilder) {
     fn workflow<'v>(
         #[starlark(require = pos)] name: String,
         #[starlark(require = pos)] design_intent: String,
+        #[starlark(require = named)] budget_usd: Option<Value<'v>>,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> anyhow::Result<NoneType> {
-        *ctx_of(eval).meta.borrow_mut() = Some((name, design_intent));
+        let ctx = ctx_of(eval);
+        *ctx.meta.borrow_mut() = Some((name, design_intent));
+        // The program may declare a spend ceiling; the operator's CLI
+        // `--max-budget-usd` (already in `budget_usd`) wins by taking the smaller.
+        // Starlark has no f64 UnpackValue, so accept any number Value (int or
+        // float) and read it back through the JSON bridge.
+        let declared = budget_usd
+            .filter(|v| !v.is_none())
+            .and_then(|v| value_to_json(v).as_f64())
+            .filter(|b| *b > 0.0);
+        if let Some(declared) = declared {
+            let effective = match ctx.budget_usd.get() {
+                Some(cli) => cli.min(declared),
+                None => declared,
+            };
+            ctx.budget_usd.set(Some(effective));
+        }
         Ok(NoneType)
     }
 
@@ -455,6 +573,20 @@ pub fn run_starlark(
     args: Option<&serde_json::Value>,
     driver: &AgentStepFn<'_>,
 ) -> Result<StarlarkRun, StarlarkRunError> {
+    run_starlark_with_budget(script, name, args, driver, None)
+}
+
+/// Like [`run_starlark`] but with an optional per-run spend ceiling in USD (the
+/// CLI `--max-budget-usd`, also lowerable by a `workflow(budget_usd=…)` header).
+/// Once cumulative step cost reaches it, further `agent()` / `parallel()` calls
+/// are short-circuited into failed `budget` steps instead of dispatching workers.
+pub fn run_starlark_with_budget(
+    script: &str,
+    name: &str,
+    args: Option<&serde_json::Value>,
+    driver: &AgentStepFn<'_>,
+    budget_usd: Option<f64>,
+) -> Result<StarlarkRun, StarlarkRunError> {
     // Snapshot the scheduler's lifetime spawn counter so the delta attributes this
     // run's agents.
     let spawned_before = scheduler_agents_spawned();
@@ -466,6 +598,8 @@ pub fn run_starlark(
         steps: RefCell::new(Vec::new()),
         logs: RefCell::new(Vec::new()),
         meta: RefCell::new(None),
+        budget_usd: Cell::new(budget_usd),
+        spent_usd: Cell::new(0.0),
     };
 
     // `Extended` enables top-level statements (so an agent can write top-level
@@ -873,6 +1007,73 @@ agent("use this: " + encoded + " score=" + str(roundtrip["score"]))
             "decoded value usable in the script: {prompt}"
         );
         assert_eq!(outcome.steps.len(), 1);
+    }
+
+    /// A driver that "spends" a fixed USD per call (via `details.cost_usd`) and
+    /// counts dispatches, for budget-ceiling tests.
+    fn spending_driver(
+        calls: &std::sync::atomic::AtomicUsize,
+        cost: f64,
+    ) -> impl Fn(&AgentStepSpec) -> StepResult + Sync + '_ {
+        move |spec: &AgentStepSpec| {
+            calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            StepResult {
+                phase: spec.phase.clone(),
+                label: spec.label.clone(),
+                provider: spec.provider.clone(),
+                isolation: spec.isolation.clone(),
+                ok: true,
+                provider_session_id: Some("s".into()),
+                output_summary: "ok".into(),
+                step_id: None,
+                started_at: None,
+                details: Some(serde_json::json!({ "cost_usd": cost })),
+                structured: None,
+            }
+        }
+    }
+
+    #[test]
+    fn budget_ceiling_short_circuits_further_steps() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let calls = AtomicUsize::new(0);
+        let driver = spending_driver(&calls, 0.6);
+        // CLI budget $1.00: step1 (spent 0 -> runs, 0.6), step2 (0.6 -> runs, 1.2),
+        // step3 (1.2 >= 1.0 -> SKIPPED). The driver dispatches exactly twice.
+        let script = "\nagent(\"a\")\nagent(\"b\")\nagent(\"c\")\n";
+        let outcome = run_starlark_with_budget(
+            &format!("{HEADER}{script}"),
+            "demo",
+            None,
+            &driver,
+            Some(1.0),
+        )
+        .expect("run ok")
+        .outcome;
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "the third step must be skipped once the budget is reached"
+        );
+        assert_eq!(outcome.steps.len(), 3);
+        assert!(outcome.steps[0].ok && outcome.steps[1].ok);
+        assert!(!outcome.steps[2].ok, "third step is a budget skip");
+        assert!(outcome.steps[2].output_summary.contains("budget"));
+    }
+
+    #[test]
+    fn workflow_header_budget_lowers_the_ceiling() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let calls = AtomicUsize::new(0);
+        let driver = spending_driver(&calls, 0.6);
+        // Header budget_usd=0.5, no CLI budget: step1 runs (spends 0.6); step2 sees
+        // 0.6 >= 0.5 and is skipped.
+        let script = "workflow(\"demo\", \"declare a tight budget so the run stops early\", budget_usd = 0.5)\nagent(\"a\")\nagent(\"b\")\n";
+        let outcome = run_starlark_with_budget(script, "demo", None, &driver, None)
+            .expect("run ok")
+            .outcome;
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "only the first step runs");
+        assert!(!outcome.steps[1].ok);
     }
 
     #[test]
