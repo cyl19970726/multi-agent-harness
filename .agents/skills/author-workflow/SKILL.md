@@ -74,11 +74,14 @@ A program calls these globals (no `import`; they are pre-bound):
 
 | Call | Returns | Meaning |
 | --- | --- | --- |
-| `workflow(name, design_intent)` | — | REQUIRED header. Declares the run name + the WHY behind its shape. Must run once before the body. |
-| `agent(prompt, provider="codex", label=, phase=, model=, isolation=, schema=)` | output text, OR a dict (with `schema=`) | Run ONE ephemeral worker synchronously. `prompt` is positional; the rest are keyword args. `isolation="worktree"` runs it in a throwaway worktree. With `schema={...}` it returns a parsed dict (or `None`) — see [Structured Output](#structured-output-the-foundation). Capture the return to chain: `scan = agent("...")`. |
-| `parallel([dict, ...])` | list (input order) | Barrier fan-out: run every spec concurrently, block until ALL finish. Each element is the parsed dict (if that spec had a `schema` that parsed) else its output string. Each dict needs a `prompt` and may set `provider` (default `"codex"`), `label`, `phase`, `model`, `isolation`, `schema`. |
+| `workflow(name, design_intent, budget_usd=, success_criterion=)` | — | REQUIRED header. Declares the run name + the WHY behind its shape. Optional `budget_usd=N` caps the run's cumulative spend; `success_criterion="..."` declares the bar `verdict()` is judged against. Must run once before the body. |
+| `agent(prompt, provider="codex", label=, phase=, model=, isolation=, schema=, writable=False)` | output text, OR a dict (with `schema=`) | Run ONE ephemeral worker synchronously. `prompt` is positional; the rest are keyword args. READ-ONLY by default; `writable=True` lets it edit / run shell AND auto-isolates it into a throwaway worktree. With `schema={...}` it returns a parsed dict (or `None`) — see [Structured Output](#structured-output-the-foundation). Capture the return to chain: `scan = agent("...")`. |
+| `parallel([dict, ...])` | list (input order) | Barrier fan-out: run every spec concurrently, block until ALL finish. Each element is the parsed dict (if that spec had a `schema` that parsed) else its output string. Each dict needs a `prompt` and may set `provider` (default `"codex"`), `label`, `phase`, `model`, `isolation`, `schema`, `writable`. |
+| `pipeline(items, stages)` | list (one per item) | No-barrier streaming: each item flows through every stage independently. `stages` is a list of dicts `{prompt, provider?, model?, schema?, writable?}` whose `prompt` is a TEMPLATE containing `{input}` — replaced with the item for stage 1, then the prior stage's output for each next stage (forward-injection). Returns each item's LAST stage result. |
+| `verdict(ok, reason="")` | — | Declare the run's TYPED outcome. `ok=False` finalizes the run `Failed` even if every worker ran — so "workers ran" ≠ "intent satisfied". A closed-loop program's final gate calls this. |
+| `json.encode(value)` / `json.decode(str)` | string / value | Serialize a prior `agent()`'s dict to inject it verbatim into the next prompt (forward-injection), or parse JSON back. |
 | `phase(name)` | — | Set the default phase for the steps that follow. |
-| `log(message)` | — | Emit a progress line. |
+| `log(message)` | — | Emit a progress line (persisted in the run's `final_output.logs`). |
 | `args` | value | The `--args` JSON, injected as a module global (e.g. `args["items"]`). |
 
 Rules every call obeys:
@@ -86,24 +89,27 @@ Rules every call obeys:
 - `provider` is `"codex"` or `"claude"` — the provider whose ephemeral worker
   runs the leaf. There is NO member binding; the provider drives delivery.
 - `prompt`, `label`, and `phase` are non-empty strings; optional `model` (any
-  non-empty string) overrides the provider's default model.
+  non-empty string) overrides the provider's default model — route a CHEAP model
+  to read-only verify/review steps and the strong model to the builder.
 - The only supported `isolation` value is `"worktree"`.
 - Reference `args` inside a prompt with normal Starlark string concatenation
   (e.g. `"audit " + args["area"]`).
 
-### Workspace and `isolation="worktree"`
+### Workspace: read-only by default, `writable=True` to edit
 
-By default every call edits the SHARED repo cwd. That is what you want for serial
-work (a scan call, then a fix call that builds on it). It is NOT safe when several
-calls mutate the tree at the same time — the runtime does not auto-prevent
-conflicts on the shared tree.
+Every call is READ-ONLY by default — the worker may read files and run searches
+but CANNOT edit files or run shell. This is the safe default for the common case
+(finders, reviewers, verifiers, synthesizers all only read).
 
-Set `"isolation": "worktree"` on a `parallel()` spec (or `isolation="worktree"` on
-an `agent()` call) to run it in its own harness-owned throwaway git worktree under
-`.harness/worktrees/`. That call's `git diff` becomes its evidence; the worktree is
-NOT auto-merged back and is cleaned up after the call finishes (auto-removed if
-unchanged). Use it as the escape hatch whenever a `parallel` block has two or more
-slots that EDIT files, so they cannot stomp each other.
+A call that must EDIT files or run commands sets `writable=True`. That worker is
+automatically run in its own harness-owned throwaway git worktree under
+`.harness/worktrees/` (writes land in a discardable checkout, NOT the live repo);
+its `git diff` becomes the step's evidence, and the worktree is cleaned up after
+(auto-removed if unchanged, never auto-merged). So a `parallel()` block of several
+`writable` slots is automatically conflict-free — each gets its own worktree.
+
+`isolation="worktree"` is the explicit form of the same thing (a read-only call
+that still wants an isolated checkout); `writable=True` implies it.
 
 ## Structured Output: the foundation
 
@@ -306,6 +312,27 @@ parallelism, cross-checking (verify / adversarial / judge), or loops
 (loop-until-dry). If your program has one `agent()` call and no branch, no
 fan-out, and no loop, you do not want a workflow — you want that one call. Add the
 structure only when the structure is the point.
+
+## Worked Example: the CANONICAL closed-loop skeleton
+
+The shape a non-trivial workflow should follow — it composes ALL the idioms in
+one program: a leading typed **plan** injected forward (`json.encode`), a shared
+**COMMON** preamble, a bounded **verify → refine loop** against a schema'd bar, a
+**schema-gated branch** (control flow keys off `check["passed"]`, not prose), a
+cheap model on the read-only verify step, a `budget_usd` ceiling, and a typed
+**`verdict()`** so the run's status means *intent met*, not merely *workers ran*.
+The runnable copy is [`examples/closed-loop.star`](examples/closed-loop.star); it
+runs end-to-end under `--dry-run` (the verdict gate correctly reports `Failed`
+when the bar is not met, even though every worker ran), and persists its `log()`
+lines + verdict + criterion into the run's `final_output`.
+
+```
+harness workflow run-script ./closed-loop.star --args '{"task":"...","bar":"..."}' --max-budget-usd 5
+```
+
+A flat fan-out that only finds-and-reports is an ANTI-PATTERN: it cannot tell a
+good run from an expensive single agent. Start from this skeleton and drop the
+parts you do not need.
 
 ## Worked Example: bug hunt with adversarial verify
 

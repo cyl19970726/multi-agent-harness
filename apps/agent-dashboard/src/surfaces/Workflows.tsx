@@ -514,6 +514,7 @@ function RunSummary({ run, steps }: { run: WorkflowRun; steps: WorkflowStep[] })
   let tokOut = 0;
   let tokTotal = 0;
   let cost = 0;
+  let costExact = false; // true once any step contributed a provider-reported cost
   let failed = 0;
   for (const step of steps) {
     const result = step.result;
@@ -521,6 +522,15 @@ function RunSummary({ run, steps }: { run: WorkflowRun; steps: WorkflowStep[] })
       tokIn += result.tokens.input;
       tokOut += result.tokens.output;
       tokTotal += result.tokens.total;
+    }
+    // Prefer the provider's EXACT billed cost (claude `total_cost_usd`, captured
+    // onto the step); fall back to a token-rate ESTIMATE only when absent (codex
+    // reports no dollar figure). Mixing is fine — the label reflects whether any
+    // exact figure was used.
+    if (typeof result?.cost_usd === "number") {
+      cost += result.cost_usd;
+      costExact = true;
+    } else if (result?.tokens) {
       const rate = rateFor(result.model);
       cost += (result.tokens.input / 1e6) * rate.in + (result.tokens.output / 1e6) * rate.out;
     }
@@ -541,7 +551,12 @@ function RunSummary({ run, steps }: { run: WorkflowRun; steps: WorkflowStep[] })
     });
   }
   if (cost > 0) {
-    stats.push({ label: "Est. cost", value: `≈ $${cost < 0.01 ? cost.toFixed(4) : cost.toFixed(2)}` });
+    // "Cost" once any provider-reported figure is in the total; "Est. cost" (≈)
+    // when it is purely token-rate estimated (e.g. a codex-only run).
+    stats.push({
+      label: costExact ? "Cost" : "Est. cost",
+      value: `${costExact ? "" : "≈ "}$${cost < 0.01 ? cost.toFixed(4) : cost.toFixed(2)}`,
+    });
   }
   if (failed > 0) stats.push({ label: "Failed", value: formatCount(failed), bad: true });
 
@@ -1070,11 +1085,21 @@ function StepObservability({ step }: { step: WorkflowStep }) {
   const result = step.result;
   if (!result) return null;
 
-  const { model, exit_code, duration_ms, tokens, failure } = result;
+  const { model, exit_code, duration_ms, tokens, cost_usd, failure } = result;
   const meta: { label: string; value: ReactNode }[] = [];
   if (model) meta.push({ label: "Model", value: <MonoId>{model}</MonoId> });
   if (duration_ms != null) {
     meta.push({ label: "Duration", value: formatMillis(duration_ms) });
+  }
+  if (typeof cost_usd === "number") {
+    meta.push({
+      label: "Cost",
+      value: (
+        <span className="tabular-nums">
+          ${cost_usd < 0.01 ? cost_usd.toFixed(4) : cost_usd.toFixed(2)}
+        </span>
+      ),
+    });
   }
   if (exit_code != null) {
     meta.push({
