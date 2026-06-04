@@ -3749,6 +3749,11 @@ struct WorkflowDeliveryOptions {
     #[allow(dead_code)]
     start_runtime: bool,
     timeout_ms: u64,
+    /// Per-WORKER spend backstop in USD (the run's `--max-budget-usd`). Passed to
+    /// claude as `--max-budget-usd` so a single worker can never exceed the whole
+    /// run's ceiling between the cumulative tally's barrier-granular checks. `None`
+    /// = no per-worker cap. Codex has no native budget flag, so this is claude-only.
+    max_budget_usd: Option<f64>,
     /// Retention policy for the heavy per-node turn-event trace: "durable"
     /// (default) persists the per-session AgentEvents + retained NDJSON trace;
     /// "live" streams the trace over SSE during execution but prunes it after the
@@ -4114,6 +4119,7 @@ fn spawn_ephemeral_worker(
                 prompt,
                 &cwd,
                 options.timeout_ms,
+                options.max_budget_usd,
             ),
             other => Err(CliError::Usage(format!(
                 "unknown workflow provider {other} (expected codex|claude)"
@@ -4772,6 +4778,7 @@ fn spawn_codex_ephemeral(
 /// claude emit a schema-validated `result.structured_output`. Runs with cwd =
 /// `cwd` (the harness owns isolation; we do NOT use claude's -w). Flags verified
 /// via `claude --help`.
+#[allow(clippy::too_many_arguments)] // the spawn surface (session/spec/schema/cwd/timeout/budget)
 fn spawn_claude_ephemeral(
     session_dir: &Path,
     session_id: &str,
@@ -4780,6 +4787,7 @@ fn spawn_claude_ephemeral(
     prompt: &str,
     cwd: &Path,
     timeout_ms: u64,
+    max_budget_usd: Option<f64>,
 ) -> CliResult<EphemeralSpawn> {
     // Read-only by default (no Edit/Write/Bash); a `writable` node gets the editing
     // tools (and the caller has isolated it into a throwaway worktree). The tool
@@ -4800,6 +4808,15 @@ fn spawn_claude_ephemeral(
         .arg("--allowedTools")
         .arg(tools)
         .current_dir(cwd);
+    // Per-worker spend backstop: bound a single worker to the run's ceiling so it
+    // can't blow the budget between the program's barrier-granular tally checks.
+    // (Soft: claude's --max-budget-usd is a post-turn cap that can overshoot a
+    // little, but it bounds the runaway-single-worker case the tally can miss.)
+    if let Some(budget) = max_budget_usd {
+        if budget > 0.0 {
+            cmd.arg("--max-budget-usd").arg(format!("{budget}"));
+        }
+    }
     // Native schema enforcement via constrained decoding: the validated object is
     // emitted on the terminal `result` event as `structured_output`.
     if let Some(schema) = schema_json {
@@ -5427,6 +5444,7 @@ fn workflow_run_value(store: &HarnessStore, args: &[String]) -> CliResult<serde_
         timeout_ms: value(args, "--timeout-ms")
             .and_then(|value| value.parse::<u64>().ok())
             .unwrap_or(300_000),
+        max_budget_usd: None,
         // Registry runs always retain their trace durably.
         trace_retention: "durable".to_string(),
     };
@@ -5515,6 +5533,7 @@ fn workflow_run_script_value(
         timeout_ms: value(args, "--timeout-ms")
             .and_then(|value| value.parse::<u64>().ok())
             .unwrap_or(300_000),
+        max_budget_usd: value(args, "--max-budget-usd").and_then(|v| v.parse::<f64>().ok()),
         trace_retention: trace_retention.clone(),
     };
 
