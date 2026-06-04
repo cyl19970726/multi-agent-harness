@@ -950,13 +950,15 @@ pub fn run_starlark_with_budget(
     }
 
     let steps = ctx.steps.into_inner();
-    let mut outcome = outcome_from_steps(name, steps, spawned_before);
+    let logs = ctx.logs.into_inner();
+    let verdict = ctx.verdict.into_inner();
     let success_criterion = ctx.success_criterion.into_inner();
+    let mut outcome = outcome_from_steps(name, steps, spawned_before);
     // A declared verdict makes the run status INTENT-RELATIVE: mechanical
     // step-success becomes necessary-but-not-sufficient, so a run whose workers all
     // ran but whose self-check failed reports Failed (not a misleading Completed).
-    if let Some((ok, reason)) = ctx.verdict.into_inner() {
-        outcome.status = if ok {
+    if let Some((ok, reason)) = &verdict {
+        outcome.status = if *ok {
             WorkflowRunStatus::Completed
         } else {
             WorkflowRunStatus::Failed
@@ -972,9 +974,22 @@ pub fn run_starlark_with_budget(
         };
         outcome.summary = format!(
             "{name} verdict: intent {}{crit}{why}",
-            if ok { "met" } else { "NOT met" }
+            if *ok { "met" } else { "NOT met" }
         );
     }
+    // Persist the run's NARRATION + GRADING metadata into final_output so it
+    // survives the run instead of being dropped: the `log()` lines, the typed
+    // `verdict`, and the declared `success_criterion`. The prior final_output (the
+    // per-step array) moves under `steps`. Everything is now auditable post-hoc.
+    let steps_output = outcome.final_output.take();
+    outcome.final_output = Some(serde_json::json!({
+        "steps": steps_output,
+        "logs": logs,
+        "verdict": verdict
+            .as_ref()
+            .map(|(ok, reason)| serde_json::json!({ "ok": ok, "reason": reason })),
+        "success_criterion": success_criterion,
+    }));
     Ok(StarlarkRun {
         outcome,
         meta: WorkflowMeta {
@@ -1436,6 +1451,33 @@ agent("use this: " + encoded + " score=" + str(roundtrip["score"]))
             run.meta.success_criterion.as_deref(),
             Some("all checks green")
         );
+    }
+
+    #[test]
+    fn final_output_persists_logs_verdict_and_criterion() {
+        // log() lines, the typed verdict, and the success_criterion must survive
+        // the run in final_output (previously logs were dropped entirely and the
+        // verdict/criterion lived only in summary prose).
+        let seen = Mutex::new(Vec::new());
+        let script = "workflow(\"demo\", \"do work then self-assess\", success_criterion = \"tests pass\")\nlog(\"starting the scan\")\nagent(\"x\")\nlog(\"scan done\")\nverdict(False, reason = \"a test regressed\")\n";
+        let run = {
+            let driver = recording_driver(&seen);
+            run_starlark(script, "demo", None, &driver).expect("run ok")
+        };
+        let fo = run.outcome.final_output.expect("final_output present");
+        let logs = fo["logs"].as_array().expect("logs array");
+        assert_eq!(logs.len(), 2);
+        assert_eq!(logs[0], serde_json::json!("starting the scan"));
+        assert_eq!(fo["verdict"]["ok"], serde_json::json!(false));
+        assert_eq!(
+            fo["verdict"]["reason"],
+            serde_json::json!("a test regressed")
+        );
+        assert_eq!(fo["success_criterion"], serde_json::json!("tests pass"));
+        // The per-step array is preserved under `steps`.
+        assert!(fo["steps"].as_array().expect("steps array").len() == 1);
+        // And the verdict still drove the status.
+        assert_eq!(run.outcome.status, WorkflowRunStatus::Failed);
     }
 
     /// A driver that records each spec's (label, writable) so writable-flow tests
