@@ -39,7 +39,7 @@
 use std::cell::RefCell;
 
 use starlark::any::ProvidesStaticType;
-use starlark::environment::{GlobalsBuilder, Module};
+use starlark::environment::{GlobalsBuilder, LibraryExtension, Module};
 use starlark::eval::Evaluator;
 use starlark::starlark_module;
 use starlark::syntax::{AstModule, Dialect};
@@ -472,7 +472,12 @@ pub fn run_starlark(
     // `for`/`if`), def, and lambdas — the expressive program shape we want.
     let ast = AstModule::parse("workflow.star", script.to_owned(), &Dialect::Extended)
         .map_err(|error| StarlarkRunError::Parse(error.to_string()))?;
-    let globals = GlobalsBuilder::standard().with(workflow_globals).build();
+    // `Json` adds `json.encode`/`json.decode` so a program can serialize a prior
+    // `agent()`'s structured dict and inject it verbatim into the next prompt —
+    // the forward-injection mechanism the orchestration patterns rely on.
+    let globals = GlobalsBuilder::extended_by(&[LibraryExtension::Json])
+        .with(workflow_globals)
+        .build();
 
     // Evaluate inside a scoped temp heap. The `ctx` lives outside the closure so
     // its accumulated steps survive the heap teardown; only the Starlark values
@@ -836,6 +841,38 @@ log("got: " + out)
         assert_eq!(outcome.steps.len(), 1);
         assert!(outcome.steps[0].structured.is_none());
         assert_eq!(outcome.steps[0].output_summary, "text: scan it");
+    }
+
+    #[test]
+    fn json_encode_decode_is_available_to_scripts() {
+        // The `Json` library extension exposes json.encode/json.decode so a
+        // program can serialize a structured value and inject it verbatim into a
+        // downstream prompt (the forward-injection mechanism).
+        let seen = Mutex::new(Vec::new());
+        let script = r#"
+data = {"verdict": "pass", "score": 100}
+encoded = json.encode(data)
+roundtrip = json.decode(encoded)
+agent("use this: " + encoded + " score=" + str(roundtrip["score"]))
+"#;
+        let outcome = {
+            let driver = recording_driver(&seen);
+            run_starlark(&format!("{HEADER}{script}"), "demo", None, &driver)
+                .expect("run ok")
+                .outcome
+        };
+        let seen = seen.into_inner().unwrap();
+        assert_eq!(seen.len(), 1);
+        let prompt = &seen[0].1;
+        assert!(
+            prompt.contains("\"verdict\":\"pass\""),
+            "encoded JSON injected into the prompt: {prompt}"
+        );
+        assert!(
+            prompt.contains("score=100"),
+            "decoded value usable in the script: {prompt}"
+        );
+        assert_eq!(outcome.steps.len(), 1);
     }
 
     #[test]
