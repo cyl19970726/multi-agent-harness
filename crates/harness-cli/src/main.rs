@@ -4067,7 +4067,10 @@ fn spawn_ephemeral_worker(
 
     // Opt-in isolation: harness-owned throwaway worktree, else the shared cwd.
     // The guard (when present) cleans up on every exit path via Drop.
-    let isolate = spec.isolation.as_deref() == Some("worktree");
+    // A node isolates when it explicitly opts in, OR whenever it is `writable`:
+    // an editing worker runs in a throwaway worktree so its writes land in a
+    // discardable checkout (captured as the step diff), never the live repo.
+    let isolate = spec.isolation.as_deref() == Some("worktree") || spec.writable;
     let guard = if isolate {
         Some(WorktreeGuard::create(&repo_root, run_id, &spec.label)?)
     } else {
@@ -4686,12 +4689,19 @@ fn spawn_codex_ephemeral(
     timeout_ms: u64,
 ) -> CliResult<EphemeralSpawn> {
     let last_message_ref = session_dir.join("last-message.md");
+    // Read-only by default; a `writable` node gets workspace-write (and the caller
+    // has already isolated it into a throwaway worktree).
+    let sandbox = if spec.writable {
+        "workspace-write"
+    } else {
+        "read-only"
+    };
     let mut cmd = Command::new("codex");
     cmd.arg("exec")
         .arg("--cd")
         .arg(cwd)
         .arg("--sandbox")
-        .arg("workspace-write")
+        .arg(sandbox)
         .arg("--skip-git-repo-check")
         .arg("--json")
         .arg("--output-last-message")
@@ -4771,6 +4781,14 @@ fn spawn_claude_ephemeral(
     cwd: &Path,
     timeout_ms: u64,
 ) -> CliResult<EphemeralSpawn> {
+    // Read-only by default (no Edit/Write/Bash); a `writable` node gets the editing
+    // tools (and the caller has isolated it into a throwaway worktree). The tool
+    // allowlist is the gate; bypassPermissions only keeps -p non-interactive.
+    let tools = if spec.writable {
+        "Read,Edit,Write,Bash,Grep,Glob"
+    } else {
+        "Read,Grep,Glob"
+    };
     let mut cmd = Command::new("claude");
     cmd.arg("-p")
         .arg(prompt)
@@ -4780,7 +4798,7 @@ fn spawn_claude_ephemeral(
         .arg("--permission-mode")
         .arg("bypassPermissions")
         .arg("--allowedTools")
-        .arg("Read,Edit,Write,Bash")
+        .arg(tools)
         .current_dir(cwd);
     // Native schema enforcement via constrained decoding: the validated object is
     // emitted on the terminal `result` event as `structured_output`.
@@ -11161,6 +11179,7 @@ mod workflow_runtime_tests {
             isolation: None,
             prompt: "hi".into(),
             schema: None,
+            writable: false,
         };
         let spawn = EphemeralSpawn {
             ok: true,
@@ -11198,6 +11217,7 @@ mod workflow_runtime_tests {
             isolation: None,
             prompt: "hi".into(),
             schema: None,
+            writable: false,
         };
         let spawn = EphemeralSpawn {
             ok: false,
@@ -11232,6 +11252,7 @@ mod workflow_runtime_tests {
             isolation: Some("worktree".into()),
             prompt: "hi".into(),
             schema: None,
+            writable: false,
         };
         let spawn = EphemeralSpawn {
             ok: true,

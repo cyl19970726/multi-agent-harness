@@ -163,6 +163,7 @@ impl StarlarkCtx<'_> {
         model: Option<String>,
         isolation: Option<String>,
         schema: Option<serde_json::Value>,
+        writable: bool,
     ) -> StepResult {
         let spec = AgentStepSpec {
             phase: self.phase_for(phase),
@@ -172,6 +173,7 @@ impl StarlarkCtx<'_> {
             isolation,
             prompt,
             schema,
+            writable,
         };
         // Short-circuit once the per-run spend ceiling is reached: record the step
         // as a budget skip without dispatching the (paid) worker.
@@ -308,6 +310,18 @@ fn dict_str(dict: &DictRef<'_>, key: &str) -> anyhow::Result<Option<String>> {
     }
 }
 
+/// Read an optional bool field off a spec dict. Absent / Starlark `None` → false;
+/// errors when present-but-not-a-bool.
+fn dict_bool(dict: &DictRef<'_>, key: &str) -> anyhow::Result<bool> {
+    match dict.get_str(key) {
+        None => Ok(false),
+        Some(value) if value.is_none() => Ok(false),
+        Some(value) => value
+            .unpack_bool()
+            .ok_or_else(|| anyhow::anyhow!("parallel() spec field `{key}` must be a bool")),
+    }
+}
+
 /// Read an optional schema dict off a spec dict (the per-spec structured-output
 /// schema). Returns `None` when the key is absent or Starlark `None`; errors when
 /// present-but-not-a-dict. The dict is converted to a `serde_json` object via
@@ -349,6 +363,7 @@ fn read_parallel_specs(
         let model = dict_str(&dict, "model")?;
         let isolation = dict_str(&dict, "isolation")?;
         let schema = dict_schema(&dict, "schema")?;
+        let writable = dict_bool(&dict, "writable")?;
         out.push(AgentStepSpec {
             phase: ctx.phase_for(phase),
             label: label.unwrap_or_else(|| provider.clone()),
@@ -357,6 +372,7 @@ fn read_parallel_specs(
             isolation,
             prompt,
             schema,
+            writable,
         });
     }
     Ok(out)
@@ -417,6 +433,7 @@ fn workflow_globals(builder: &mut GlobalsBuilder) {
         #[starlark(require = named)] model: Option<String>,
         #[starlark(require = named)] isolation: Option<String>,
         #[starlark(require = named)] schema: Option<Value<'v>>,
+        #[starlark(require = named, default = false)] writable: bool,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> anyhow::Result<Value<'v>> {
         let schema_json = match schema {
@@ -437,6 +454,7 @@ fn workflow_globals(builder: &mut GlobalsBuilder) {
             model,
             isolation,
             schema_json,
+            writable,
         );
         let heap = eval.heap();
         if has_schema {
@@ -1165,6 +1183,64 @@ agent("use this: " + encoded + " score=" + str(roundtrip["score"]))
         assert_eq!(
             run.meta.success_criterion.as_deref(),
             Some("all checks green")
+        );
+    }
+
+    /// A driver that records each spec's (label, writable) so writable-flow tests
+    /// can assert the kwarg reached the plain spec.
+    fn writable_recording_driver(
+        seen: &Mutex<Vec<(String, bool)>>,
+    ) -> impl Fn(&AgentStepSpec) -> StepResult + Sync + '_ {
+        move |spec: &AgentStepSpec| {
+            seen.lock()
+                .unwrap()
+                .push((spec.label.clone(), spec.writable));
+            StepResult {
+                phase: spec.phase.clone(),
+                label: spec.label.clone(),
+                provider: spec.provider.clone(),
+                isolation: spec.isolation.clone(),
+                ok: true,
+                provider_session_id: Some("s".into()),
+                output_summary: "ok".into(),
+                step_id: None,
+                started_at: None,
+                details: None,
+                structured: None,
+            }
+        }
+    }
+
+    #[test]
+    fn agent_writable_kwarg_flows_onto_the_spec_default_false() {
+        let seen = Mutex::new(Vec::new());
+        let script =
+            "\nagent(\"read it\", label = \"reader\")\nagent(\"fix it\", label = \"fixer\", writable = True)\n";
+        {
+            let driver = writable_recording_driver(&seen);
+            run_starlark(&format!("{HEADER}{script}"), "demo", None, &driver).expect("run ok");
+        }
+        let seen = seen.into_inner().unwrap();
+        assert_eq!(
+            seen,
+            vec![("reader".to_string(), false), ("fixer".to_string(), true)]
+        );
+    }
+
+    #[test]
+    fn parallel_writable_spec_field_flows() {
+        let seen = Mutex::new(Vec::new());
+        let script =
+            "\nparallel([{\"prompt\": \"a\", \"label\": \"x\"}, {\"prompt\": \"b\", \"label\": \"y\", \"writable\": True}])\n";
+        {
+            let driver = writable_recording_driver(&seen);
+            run_starlark(&format!("{HEADER}{script}"), "demo", None, &driver).expect("run ok");
+        }
+        let mut seen = seen.into_inner().unwrap();
+        seen.sort();
+        assert_eq!(
+            seen,
+            vec![("x".to_string(), false), ("y".to_string(), true)]
         );
     }
 
