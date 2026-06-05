@@ -1,0 +1,23 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "multi-agent-harness",
+  "description": "Skills shipped by the multi-agent-harness project.",
+  "owner": {
+    "name": "cyl19970726",
+    "url": "https://github.com/cyl19970726/multi-agent-harness"
+  },
+  "plugins": [
+    {
+      "name": "author-workflow",
+      "displayName": "Author Workflow",
+      "description": "Author a Starlark multi-agent workflow (loops, conditionals, data-driven fan-out, verify-repair, budgets, verdicts) and run it with `harness workflow run-script`.",
+      "version": "0.1.0",
+      "category": "orchestration",
+      "keywords": ["workflow", "orchestration", "starlark", "multi-agent"],
+      "source": {
+        "source": "github",
+        "repo": "cyl19970726/multi-agent-harness"
+      }
+    }
+  ]
+}
