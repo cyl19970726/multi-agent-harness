@@ -20,7 +20,8 @@
     "acceptance:mvp:quick": "node scripts/acceptance-mvp.mjs --skip-static",
     "acceptance:mvp:live": "node scripts/acceptance-mvp.mjs --live-codex",
     "acceptance:autonomous-team": "node scripts/acceptance-autonomous-team.mjs",
-    "acceptance:workflow-starlark": "node scripts/acceptance-workflow-starlark.mjs"
+    "acceptance:workflow-starlark": "node scripts/acceptance-workflow-starlark.mjs",
+    "acceptance:skill-install": "bash scripts/acceptance-skill-install.sh"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.0",
