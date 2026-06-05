@@ -51,7 +51,15 @@ cargo build -p harness-cli
 pnpm install && pnpm dashboard:dev                    # dashboard UI (watch runs live)
 
 # 3. run a workflow your agent authored
-./target/debug/harness workflow run-script prog.star [--timeout-ms 300000] [--max-budget-usd 2.00]
+./target/debug/harness workflow run-script prog.star \
+    [--timeout-ms 300000] [--max-budget-usd 2.00] [--resume <prior_run_id>]
+```
+
+Verify the whole install → service → run journey at any time:
+
+```bash
+pnpm acceptance:skill-install            # local checks (no network)
+pnpm acceptance:skill-install --remote   # + the anonymous curl|bash install path
 ```
 
 ## Repository Layout
@@ -62,7 +70,8 @@ pnpm install && pnpm dashboard:dev                    # dashboard UI (watch runs
 | `schemas/` | Stable JSON schemas shared by API, CLI, adapters, and Dashboard. |
 | `crates/` | Rust backend crates. |
 | `apps/agent-dashboard` | React/Vite Agent Dashboard control-plane app and static build output. |
-| `.agents/skills/` | Generic agent skills. |
+| `skills/` | Shipped, installable skills (the `author-workflow` deliverable). |
+| `.agents/skills/` | This repo's internal runtime skills (auto-discovered by Codex / harness-spawned workers). |
 | `examples/adapters/earning-engine` | First project adapter example. |
 
 ## Start Here
