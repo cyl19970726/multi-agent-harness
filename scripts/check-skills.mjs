@@ -1,7 +1,12 @@
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
 
-const skillsRoot = ".agents/skills";
+// Skills live in two roots: `skills/` holds the SHIPPED deliverable skills (what
+// others install), `.agents/skills/` holds the repo's internal runtime skills
+// (auto-discovered by Codex / harness-spawned workers). A deliverable may be
+// symlinked into `.agents/skills/` for runtime discovery; we skip symlinks so it
+// is validated once, at its real source.
+const skillsRoots = ["skills", ".agents/skills"];
 const failures = [];
 const checked = [];
 const resolvedSkills = new Set();
@@ -63,10 +68,14 @@ function validateSkill(skillDir) {
   resolvedSkills.add(skillName);
 }
 
-// Validate all skills exist and resolve their ids
-if (existsSync(skillsRoot)) {
+// Validate all skills exist and resolve their ids, across both roots. Skip
+// symlinked entries (a deliverable skill symlinked into .agents/skills/ for
+// runtime discovery is validated at its real `skills/` source).
+for (const skillsRoot of skillsRoots) {
+  if (!existsSync(skillsRoot)) continue;
   for (const entry of readdirSync(skillsRoot)) {
     const skillDir = join(skillsRoot, entry);
+    if (lstatSync(skillDir).isSymbolicLink()) continue;
     if (statSync(skillDir).isDirectory()) {
       validateSkill(skillDir);
     }

@@ -32,6 +32,28 @@ Future objects such as `Report`, `Claim`, `Blocker`, and `Permission` are not
 first-version gateable contracts until they have schemas, implementation, and
 checks.
 
+## Quickstart
+
+Install the `author-workflow` skill into your agent, start the harness service,
+then ask your agent to author and run a workflow. Full walkthrough:
+**[docs/getting-started.md](docs/getting-started.md)**.
+
+```bash
+# 1. install the skill (Claude Code + Codex)
+scripts/install-skill.sh --agent both
+#    or standalone:  curl -fsSL .../scripts/install-skill.sh | bash -s -- --agent both
+#    or:             npx skills add cyl19970726/multi-agent-harness --skill author-workflow --agent codex
+#    or (Claude):    /plugin marketplace add cyl19970726/multi-agent-harness && /plugin install author-workflow
+
+# 2. start the service
+cargo build -p harness-cli
+./target/debug/harness serve --addr 127.0.0.1:8787   # API + store
+pnpm install && pnpm dashboard:dev                    # dashboard UI (watch runs live)
+
+# 3. run a workflow your agent authored
+./target/debug/harness workflow run-script prog.star [--timeout-ms 300000] [--max-budget-usd 2.00]
+```
+
 ## Repository Layout
 
 | Path | Purpose |
@@ -67,6 +89,15 @@ checks.
 - [Decisions](docs/decisions/README.md)
 
 ## Skills
+
+**Shipped (install into your own project — see the Quickstart):**
+
+- [**Author workflow**](skills/author-workflow/SKILL.md): teach a shell-capable
+  agent (Claude Code / Codex) to author a Starlark multi-agent workflow and run
+  it with `harness workflow run-script`. Install with
+  `scripts/install-skill.sh --agent both`.
+
+**Internal (this repo's own agents use these via `.agents/skills/`):**
 
 - [Bootstrap project workflow](.agents/skills/bootstrap-project-workflow/SKILL.md):
   create or audit a project's docs, CI/CD, diagrams, task workflow, and

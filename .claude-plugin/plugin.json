@@ -1,0 +1,8 @@
+{
+  "name": "author-workflow",
+  "description": "Teach a shell-capable agent (Claude Code or Codex) to author a dynamic multi-agent workflow at runtime — a Starlark program over the harness runtime — and run it with `harness workflow run-script`. Bundles the author-workflow skill from skills/.",
+  "version": "0.1.0",
+  "author": { "name": "cyl19970726", "url": "https://github.com/cyl19970726/multi-agent-harness" },
+  "homepage": "https://github.com/cyl19970726/multi-agent-harness",
+  "keywords": ["workflow", "orchestration", "starlark", "multi-agent", "codex", "claude"]
+}
