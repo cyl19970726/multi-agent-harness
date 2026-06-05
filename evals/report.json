@@ -1,0 +1,66 @@
+{
+  "mode": "live",
+  "tasks": [
+    {
+      "id": "bug-false-positive",
+      "title": "Find the real bug, reject the plausible-but-false one",
+      "category": "cross-check-verify",
+      "repeats": 1,
+      "baseline": {
+        "meanScore": 1,
+        "scoreStdev": 0,
+        "meanTokens": 24376,
+        "meanWallMs": 11751,
+        "meanWorkers": 1,
+        "runs": [
+          {
+            "findings": [
+              "running_max([]) raises IndexError because it reads nums[0] without handling an empty input.",
+              "median([]) raises IndexError because it tries to average ordered[-1] and ordered[0] when the list is empty."
+            ],
+            "tokens": 24376,
+            "wallMs": 11751,
+            "workers": 1,
+            "status": "completed",
+            "score": 1,
+            "signals": {
+              "realFound": true,
+              "falseReported": false,
+              "findingCount": 2
+            }
+          }
+        ]
+      },
+      "workflow": {
+        "meanScore": 1,
+        "scoreStdev": 0,
+        "meanTokens": 443596,
+        "meanWallMs": 66692,
+        "meanWorkers": 18,
+        "runs": [
+          {
+            "findings": [
+              "median([]) raises IndexError because the even-length path reads ordered[-1] and ordered[0] when the list is empty.",
+              "running_max((x for x in [1,2])) raises TypeError because it assumes nums is indexable and sliceable.",
+              "running_max([]) raises IndexError because it reads nums[0] without checking for an empty input.",
+              "median([]) raises IndexError because it indexes ordered[-1] and ordered[0] when nums is empty."
+            ],
+            "tokens": 443596,
+            "wallMs": 66692,
+            "workers": 18,
+            "status": "completed",
+            "score": 1,
+            "signals": {
+              "realFound": true,
+              "falseReported": false,
+              "findingCount": 4
+            }
+          }
+        ]
+      },
+      "qualityDelta": 0,
+      "costRatio": 18.2,
+      "verdict": "no quality gain (18.2x cost) — structure did not help here"
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "id": "bug-false-positive",
+  "title": "Find the real bug, reject the plausible-but-false one",
+  "category": "cross-check-verify",
+  "repeats": 3,
+  "subject": "subject.py",
+  "grader": "bug-false-positive",
+  "ground_truth": {
+    "real_bug": "running_max([]) raises IndexError — nums[0] with no empty-list guard",
+    "false_bug": "claiming median/sorted() mutates the caller's list — it does not; sorted() returns a new list (only list.sort() mutates)"
+  },
+  "rationale": "A single reviewer often over-reports plausible-but-false bugs (e.g. 'sorted mutates the input'). The workflow's adversarial skeptic panel should refute the false claim while keeping the real crash. This is objective false-positive resistance, graded on the structured findings."
+}

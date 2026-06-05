@@ -3749,6 +3749,11 @@ struct WorkflowDeliveryOptions {
     #[allow(dead_code)]
     start_runtime: bool,
     timeout_ms: u64,
+    /// Per-WORKER spend backstop in USD (the run's `--max-budget-usd`). Passed to
+    /// claude as `--max-budget-usd` so a single worker can never exceed the whole
+    /// run's ceiling between the cumulative tally's barrier-granular checks. `None`
+    /// = no per-worker cap. Codex has no native budget flag, so this is claude-only.
+    max_budget_usd: Option<f64>,
     /// Retention policy for the heavy per-node turn-event trace: "durable"
     /// (default) persists the per-session AgentEvents + retained NDJSON trace;
     /// "live" streams the trace over SSE during execution but prunes it after the
@@ -3766,6 +3771,47 @@ struct WorkflowDeliveryOptions {
 /// This fn is TOTAL: any error (store failure, no runtime, provider failure) is
 /// reported as `StepResult { ok: false, .. }` so the workflow's control flow —
 /// and the `parallel()` barrier — stays in charge rather than unwinding.
+///
+/// Build the TERMINAL `WorkflowStep` row for a finished step. The real
+/// completion time is `started_at + duration_ms` (the worker's measured
+/// duration), not the journal `now`: at finalize every step is journaled with
+/// the same `now`, which would make a serial step falsely overlap the later
+/// parallel ones. Shared by the live per-step journal (in the driver) and the
+/// finalize journal (for mock/test drivers).
+fn build_terminal_step(
+    run_id: &str,
+    step_id: String,
+    started_at: String,
+    result: &workflow::StepResult,
+) -> WorkflowStep {
+    let now = now_string();
+    let ended_at = match (
+        Some(created_ms(&started_at)).filter(|&ms| ms > 0),
+        result
+            .details
+            .as_ref()
+            .and_then(|d| d.get("duration_ms"))
+            .and_then(|v| v.as_u64()),
+    ) {
+        (Some(start_ms), Some(dur)) => {
+            format!("unix-ms:{}", start_ms.saturating_add(u128::from(dur)))
+        }
+        _ => now,
+    };
+    WorkflowStep {
+        id: step_id,
+        run_id: run_id.to_string(),
+        phase: result.phase.clone(),
+        label: result.label.clone(),
+        provider_session_id: result.provider_session_id.clone(),
+        status: result.step_status(),
+        output_summary: Some(result.output_summary.clone()),
+        result: Some(workflow::step_result_json(result)),
+        started_at,
+        ended_at: Some(ended_at),
+    }
+}
+
 fn workflow_real_agent_step(
     store: &HarnessStore,
     run_id: &str,
@@ -3795,10 +3841,10 @@ fn workflow_real_agent_step(
     // row still records the outcome. Best-effort, like the rest of this seam.
     let _ = store.append_workflow_step(&running);
 
-    match try_workflow_real_agent_step(store, options, spec, run_id) {
+    let result = match try_workflow_real_agent_step(store, options, spec, run_id) {
         Ok(mut result) => {
-            result.step_id = Some(step_id);
-            result.started_at = Some(started_at);
+            result.step_id = Some(step_id.clone());
+            result.started_at = Some(started_at.clone());
             result
         }
         Err(error) => {
@@ -3823,13 +3869,21 @@ fn workflow_real_agent_step(
                 ok: false,
                 provider_session_id: None,
                 output_summary: format!("agent step error: {error}"),
-                step_id: Some(step_id),
-                started_at: Some(started_at),
+                step_id: Some(step_id.clone()),
+                started_at: Some(started_at.clone()),
                 details: Some(details),
                 structured: None,
+                ordinal: spec.ordinal,
             }
         }
-    }
+    };
+    // Journal the TERMINAL row the instant this step finishes. The WorkflowStep
+    // SSE watcher tails workflow_steps.jsonl, so the dashboard's per-step status +
+    // tokens now light up live as each worker completes — not batched at run
+    // finalize. `run_workflow_with_driver` recognises this (step_id is Some) and
+    // does not re-journal.
+    let _ = store.append_workflow_step(&build_terminal_step(run_id, step_id, started_at, &result));
+    result
 }
 
 fn try_workflow_real_agent_step(
@@ -3887,6 +3941,7 @@ fn try_workflow_real_agent_step(
             // still surface the requested model so the dashboard can label it.
             details: Some(serde_json::json!({ "model": spec.model })),
             structured,
+            ordinal: spec.ordinal,
         });
     }
 
@@ -4019,7 +4074,10 @@ fn spawn_ephemeral_worker(
 
     // Opt-in isolation: harness-owned throwaway worktree, else the shared cwd.
     // The guard (when present) cleans up on every exit path via Drop.
-    let isolate = spec.isolation.as_deref() == Some("worktree");
+    // A node isolates when it explicitly opts in, OR whenever it is `writable`:
+    // an editing worker runs in a throwaway worktree so its writes land in a
+    // discardable checkout (captured as the step diff), never the live repo.
+    let isolate = spec.isolation.as_deref() == Some("worktree") || spec.writable;
     let guard = if isolate {
         Some(WorktreeGuard::create(&repo_root, run_id, &spec.label)?)
     } else {
@@ -4037,6 +4095,11 @@ fn spawn_ephemeral_worker(
     let session_dir = store.root().join("provider-sessions").join(&session_id);
     fs::create_dir_all(&session_dir)?;
 
+    // The structured schema normalized to a real JSON Schema for the providers'
+    // native flags (claude `--json-schema`, codex `--output-schema`). `None` for
+    // text-mode steps.
+    let schema_json = spec.schema.as_ref().map(schema_to_json_schema);
+
     // One spawn of the configured provider against a (possibly augmented) prompt.
     // Factored into a closure so structured mode can re-run it once for the retry.
     let spawn_once = |prompt: &str| -> CliResult<EphemeralSpawn> {
@@ -4045,6 +4108,7 @@ fn spawn_ephemeral_worker(
                 &session_dir,
                 &session_id,
                 spec,
+                schema_json.as_ref(),
                 prompt,
                 &cwd,
                 options.timeout_ms,
@@ -4053,14 +4117,32 @@ fn spawn_ephemeral_worker(
                 &session_dir,
                 &session_id,
                 spec,
+                schema_json.as_ref(),
                 prompt,
                 &cwd,
                 options.timeout_ms,
+                options.max_budget_usd,
             ),
             other => Err(CliError::Usage(format!(
                 "unknown workflow provider {other} (expected codex|claude)"
             ))),
         }
+    };
+
+    // Retry ONCE on a transient PROCESS crash — a non-zero / signalled exit that
+    // did NOT time out and produced no reply. That is a blip/crash worth retrying;
+    // it deliberately does NOT retry a timeout (we'd just re-hang for another
+    // window) nor a clean-exit delivery failure (auth/usage-limit — we'd reproduce
+    // it). Distinct from the schema-conformance retry below.
+    let spawn_once_resilient = |prompt: &str| -> CliResult<EphemeralSpawn> {
+        let first = spawn_once(prompt)?;
+        let transient_crash =
+            !first.ok && !first.timed_out && first.reply.is_none() && first.exit_code != Some(0);
+        if transient_crash {
+            std::thread::sleep(Duration::from_millis(500));
+            return spawn_once(prompt);
+        }
+        Ok(first)
     };
 
     // STRUCTURED mode (spec.schema is Some): append a JSON-only instruction to the
@@ -4080,13 +4162,17 @@ fn spawn_ephemeral_worker(
     let spawn = if let Some(schema) = &spec.schema {
         let instruction = schema_instruction(schema);
 
-        // First attempt: prompt + the JSON-only instruction.
-        let mut spawn = spawn_once(&format!("{}{instruction}", spec.prompt))?;
-        structured = spawn
-            .reply
-            .as_deref()
-            .and_then(extract_json_object)
-            .filter(|obj| object_has_required_keys(obj, &required_keys));
+        // First attempt: prompt + the JSON-only instruction. Prefer the
+        // provider-validated `structured` (native --json-schema/--output-schema);
+        // fall back to extracting JSON from the reply text (the prompt-hint path).
+        let mut spawn = spawn_once_resilient(&format!("{}{instruction}", spec.prompt))?;
+        structured = spawn.structured.clone().or_else(|| {
+            spawn
+                .reply
+                .as_deref()
+                .and_then(extract_json_object)
+                .filter(|obj| object_has_required_keys(obj, &required_keys))
+        });
 
         // ONE corrective retry when the worker produced no valid JSON.
         if structured.is_none() {
@@ -4097,15 +4183,17 @@ fn spawn_ephemeral_worker(
                 required_keys.join(", "),
             );
             spawn = spawn_once(&retry_prompt)?;
-            structured = spawn
-                .reply
-                .as_deref()
-                .and_then(extract_json_object)
-                .filter(|obj| object_has_required_keys(obj, &required_keys));
+            structured = spawn.structured.clone().or_else(|| {
+                spawn
+                    .reply
+                    .as_deref()
+                    .and_then(extract_json_object)
+                    .filter(|obj| object_has_required_keys(obj, &required_keys))
+            });
         }
         spawn
     } else {
-        spawn_once(&spec.prompt)?
+        spawn_once_resilient(&spec.prompt)?
     };
 
     let duration_ms = worker_start.elapsed().as_millis() as u64;
@@ -4220,6 +4308,36 @@ fn spawn_ephemeral_worker(
         started_at: None,
         details: Some(details),
         structured,
+        ordinal: spec.ordinal,
+    })
+}
+
+/// Normalize a `schema=` dict into a real JSON Schema suitable for the providers'
+/// native structured-output flags (claude `--json-schema`, codex `--output-schema`).
+/// Two input shapes are accepted: an ALREADY-valid JSON Schema (has `type` or
+/// `properties`) is passed through unchanged; the legacy flat `{ key: "hint" }`
+/// form is wrapped into `{ type:object, properties:{ key:{type:string,
+/// description:hint} }, required:[keys], additionalProperties:false }` so existing
+/// programs gain native enforcement (as string fields) with no change.
+fn schema_to_json_schema(schema: &serde_json::Value) -> serde_json::Value {
+    let Some(obj) = schema.as_object() else {
+        return schema.clone();
+    };
+    if obj.contains_key("type") || obj.contains_key("properties") {
+        return schema.clone();
+    }
+    let mut props = serde_json::Map::new();
+    for (k, v) in obj {
+        props.insert(
+            k.clone(),
+            serde_json::json!({ "type": "string", "description": v.as_str().unwrap_or("") }),
+        );
+    }
+    serde_json::json!({
+        "type": "object",
+        "properties": props,
+        "required": obj.keys().cloned().collect::<Vec<_>>(),
+        "additionalProperties": false,
     })
 }
 
@@ -4363,6 +4481,12 @@ fn build_step_details(
         map.insert("tokens".into(), tokens.to_json());
     }
 
+    if let Some(cost) = spawn.cost_usd {
+        if let Some(n) = serde_json::Number::from_f64(cost) {
+            map.insert("cost_usd".into(), serde_json::Value::Number(n));
+        }
+    }
+
     if let Some(reason) = classify_failure_reason(spawn.ok, spawn.exit_code, spawn.timed_out) {
         let detail = if spawn.stderr.trim().is_empty() {
             format!("{} worker step failed ({reason})", spec.provider)
@@ -4424,6 +4548,15 @@ struct EphemeralSpawn {
     /// whose `exec --json` stream carries no model — the node's requested
     /// `spec.model` is the only signal there.
     model: Option<String>,
+    /// The provider-validated structured object, when the worker ran with a
+    /// native schema flag (claude `--json-schema` → `result.structured_output`;
+    /// codex `--output-schema` → the schema-constrained reply). `None` for
+    /// text-mode steps or when no native structured output was produced — the
+    /// caller then falls back to extracting JSON from the reply text.
+    structured: Option<serde_json::Value>,
+    /// Billed cost in USD for the turn, when the provider reports it (claude's
+    /// `result.total_cost_usd`). `None` for codex, which emits only token usage.
+    cost_usd: Option<f64>,
 }
 
 /// Normalized token usage for one worker turn, provider-agnostic. Parsed from the
@@ -4522,6 +4655,30 @@ fn parse_worker_model(events: &[serde_json::Value]) -> Option<String> {
     })
 }
 
+/// Parse claude's terminal `result` frame for the two extras it carries:
+/// `structured_output` (a schema-validated object, present only when the worker
+/// ran with `--json-schema`) and `total_cost_usd` (the billed turn cost). Returns
+/// `(structured, cost_usd)`, each `None` when absent.
+fn parse_claude_result_extras(
+    events: &[serde_json::Value],
+) -> (Option<serde_json::Value>, Option<f64>) {
+    events
+        .iter()
+        .rev()
+        .find_map(|payload| {
+            if payload.get("type").and_then(|t| t.as_str()) != Some("result") {
+                return None;
+            }
+            let structured = payload
+                .get("structured_output")
+                .filter(|v| v.is_object())
+                .cloned();
+            let cost = payload.get("total_cost_usd").and_then(|v| v.as_f64());
+            Some((structured, cost))
+        })
+        .unwrap_or((None, None))
+}
+
 /// Classify WHY a step failed, into a stable `reason` tag the dashboard groups on.
 /// Precedence: a fired timeout dominates (the worker never reached a clean turn);
 /// then a non-zero / absent exit code; then a delivery that exited 0 but produced
@@ -4552,28 +4709,46 @@ fn classify_failure_reason(
 
 /// Spawn a one-shot `codex exec` with an EDITABLE (`--sandbox workspace-write`)
 /// sandbox, JSON event stream, running in `cwd`. Non-interactive (stdin closed)
-/// with a per-node timeout. Flags verified via `codex exec --help`:
-/// `--json`, `--sandbox workspace-write`, `--cd <dir>`, `-m <model>`,
-/// `--skip-git-repo-check`, `--output-last-message <file>`.
+/// with a per-node timeout. When `schema_json` is set, `--output-schema <file>`
+/// constrains codex's final answer to that JSON Schema. Flags verified via
+/// `codex exec --help`: `--json`, `--sandbox workspace-write`, `--cd <dir>`,
+/// `-m <model>`, `--skip-git-repo-check`, `--output-last-message <file>`,
+/// `--output-schema <file>`.
 fn spawn_codex_ephemeral(
     session_dir: &Path,
     session_id: &str,
     spec: &workflow::AgentStepSpec,
+    schema_json: Option<&serde_json::Value>,
     prompt: &str,
     cwd: &Path,
     timeout_ms: u64,
 ) -> CliResult<EphemeralSpawn> {
     let last_message_ref = session_dir.join("last-message.md");
+    // Read-only by default; a `writable` node gets workspace-write (and the caller
+    // has already isolated it into a throwaway worktree).
+    let sandbox = if spec.writable {
+        "workspace-write"
+    } else {
+        "read-only"
+    };
     let mut cmd = Command::new("codex");
     cmd.arg("exec")
         .arg("--cd")
         .arg(cwd)
         .arg("--sandbox")
-        .arg("workspace-write")
+        .arg(sandbox)
         .arg("--skip-git-repo-check")
         .arg("--json")
         .arg("--output-last-message")
         .arg(&last_message_ref);
+    // Native schema enforcement: write the JSON Schema to a file and constrain the
+    // final answer to it. The reply text then IS the validated JSON object.
+    if let Some(schema) = schema_json {
+        let schema_path = session_dir.join("output-schema.json");
+        if fs::write(&schema_path, schema.to_string()).is_ok() {
+            cmd.arg("--output-schema").arg(&schema_path);
+        }
+    }
     if let Some(model) = &spec.model {
         cmd.arg("-m").arg(model);
     }
@@ -4603,6 +4778,11 @@ fn spawn_codex_ephemeral(
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
     let tokens = parse_codex_usage(&run.events);
+    // With `--output-schema`, the constrained final answer IS the reply text, so
+    // parse it as the validated structured object.
+    let structured = schema_json
+        .and(reply.as_deref())
+        .and_then(extract_json_object);
 
     Ok(EphemeralSpawn {
         ok,
@@ -4614,22 +4794,38 @@ fn spawn_codex_ephemeral(
         tokens,
         // codex exec --json carries no model; only spec.model is known.
         model: None,
+        structured,
+        // codex emits token usage but no dollar cost.
+        cost_usd: None,
     })
 }
 
 /// Spawn a one-shot `claude -p` with EDITING allowed: `--output-format
 /// stream-json --verbose`, an allowedTools set incl. Read/Edit/Write/Bash, and a
 /// non-blocking `--permission-mode bypassPermissions` so it never blocks on an
-/// approval prompt. Runs with cwd = `cwd` (the harness owns isolation; we do NOT
-/// use claude's -w). Flags verified via `claude --help`.
+/// approval prompt. When `schema_json` is set, `--json-schema <inline>` makes
+/// claude emit a schema-validated `result.structured_output`. Runs with cwd =
+/// `cwd` (the harness owns isolation; we do NOT use claude's -w). Flags verified
+/// via `claude --help`.
+#[allow(clippy::too_many_arguments)] // the spawn surface (session/spec/schema/cwd/timeout/budget)
 fn spawn_claude_ephemeral(
     session_dir: &Path,
     session_id: &str,
     spec: &workflow::AgentStepSpec,
+    schema_json: Option<&serde_json::Value>,
     prompt: &str,
     cwd: &Path,
     timeout_ms: u64,
+    max_budget_usd: Option<f64>,
 ) -> CliResult<EphemeralSpawn> {
+    // Read-only by default (no Edit/Write/Bash); a `writable` node gets the editing
+    // tools (and the caller has isolated it into a throwaway worktree). The tool
+    // allowlist is the gate; bypassPermissions only keeps -p non-interactive.
+    let tools = if spec.writable {
+        "Read,Edit,Write,Bash,Grep,Glob"
+    } else {
+        "Read,Grep,Glob"
+    };
     let mut cmd = Command::new("claude");
     cmd.arg("-p")
         .arg(prompt)
@@ -4639,8 +4835,22 @@ fn spawn_claude_ephemeral(
         .arg("--permission-mode")
         .arg("bypassPermissions")
         .arg("--allowedTools")
-        .arg("Read,Edit,Write,Bash")
+        .arg(tools)
         .current_dir(cwd);
+    // Per-worker spend backstop: bound a single worker to the run's ceiling so it
+    // can't blow the budget between the program's barrier-granular tally checks.
+    // (Soft: claude's --max-budget-usd is a post-turn cap that can overshoot a
+    // little, but it bounds the runaway-single-worker case the tally can miss.)
+    if let Some(budget) = max_budget_usd {
+        if budget > 0.0 {
+            cmd.arg("--max-budget-usd").arg(format!("{budget}"));
+        }
+    }
+    // Native schema enforcement via constrained decoding: the validated object is
+    // emitted on the terminal `result` event as `structured_output`.
+    if let Some(schema) = schema_json {
+        cmd.arg("--json-schema").arg(schema.to_string());
+    }
     if let Some(model) = &spec.model {
         cmd.arg("--model").arg(model);
     }
@@ -4665,6 +4875,9 @@ fn spawn_claude_ephemeral(
     let reply = extract_claude_reply_text(&claude_events);
     let tokens = parse_claude_usage(&run.events);
     let model = parse_worker_model(&run.events);
+    // `structured_output` (when `--json-schema` ran) + the billed turn cost, both
+    // off the terminal `result` frame.
+    let (structured, cost_usd) = parse_claude_result_extras(&run.events);
 
     Ok(EphemeralSpawn {
         ok,
@@ -4675,6 +4888,8 @@ fn spawn_claude_ephemeral(
         timed_out: run.timed_out,
         tokens,
         model,
+        structured,
+        cost_usd,
     })
 }
 
@@ -4699,6 +4914,33 @@ struct NdjsonRun {
 /// to push live frames (keyed by session id). Enforces a per-node timeout: on
 /// timeout the child is killed and `process_success=false` (the run tolerates
 /// failed nodes). Returns the terminal [`NdjsonRun`].
+/// SIGKILL the worker's whole process GROUP (the child is the group leader, so
+/// its pid is the pgid; `kill -9 -<pgid>`). codex/claude spawn child binaries
+/// that inherit our stdout pipe — killing only the immediate child would leave a
+/// grandchild holding the pipe open and the reader thread (and its join) blocked
+/// forever. Falls back to killing the immediate child.
+fn kill_worker_tree(child: &mut std::process::Child) {
+    let pid = child.id();
+    #[cfg(unix)]
+    {
+        // SIGKILL the whole process GROUP (negative pid == the group). The child is
+        // its own group leader (`process_group(0)`), so its pid IS the pgid; a
+        // grandchild (codex/claude spawn a child binary; or a test's `sleep`)
+        // inherits the group, so this reaps the tree and closes the inherited
+        // stdout pipe — which is what lets the reader thread's join return.
+        //
+        // We call `kill(2)` directly rather than shelling out to `kill -9 -<pgid>`:
+        // the external `kill` parses a leading-dash pgid INCONSISTENTLY across
+        // platforms (BSD/macOS accept it; util-linux on CI swallowed it as options),
+        // which left the grandchild alive and hung the reader for the full 600s.
+        unsafe {
+            libc::kill(-(pid as libc::pid_t), libc::SIGKILL);
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
 fn run_ndjson_child(
     mut cmd: Command,
     session_dir: &Path,
@@ -4706,6 +4948,13 @@ fn run_ndjson_child(
     live_file_name: &str,
     timeout_ms: u64,
 ) -> CliResult<NdjsonRun> {
+    // Put the worker in its OWN process group so a timeout can kill the whole
+    // tree (see kill_worker_tree), not just the immediate child.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
     let mut child = cmd
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -4728,59 +4977,69 @@ fn run_ndjson_child(
         .parent()
         .and_then(|provider_sessions| provider_sessions.parent())
         .map(|store_root| store_root.join("provider_turn_events.jsonl"));
-    let mut session_writer = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&live_path)
-        .ok()
-        .map(BufWriter::new);
-    let mut shared_writer = shared_path
-        .as_ref()
-        .and_then(|path| {
-            fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(path)
-                .ok()
-        })
-        .map(BufWriter::new);
+    let session_id_owned = session_id.to_string();
 
-    let mut events = Vec::new();
-    let reader = BufReader::new(stdout);
-    for line in reader.lines() {
-        let Ok(line_str) = line else { continue };
-        let trimmed = line_str.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        let Ok(payload) = serde_json::from_str::<serde_json::Value>(trimmed) else {
-            continue;
-        };
-        if let Some(writer) = session_writer.as_mut() {
-            let _ = writeln!(writer, "{trimmed}");
-            let _ = writer.flush();
-        }
-        if let Some(writer) = shared_writer.as_mut() {
-            let envelope = serde_json::json!({ "session_id": session_id, "event": payload });
-            if let Ok(line) = serde_json::to_string(&envelope) {
-                let _ = writeln!(writer, "{line}");
+    // Read stdout in a DEDICATED THREAD so the main thread can enforce the
+    // per-node timeout by KILLING a HUNG worker — one that stops emitting events
+    // but never closes stdout (an auth/network stall, a wedged provider). The old
+    // code read stdout on the main thread and only checked the timeout AFTER the
+    // read loop returned, so a hung worker (stdout still open) blocked forever and
+    // froze the whole run. The thread tees each event live + collects them;
+    // killing the child closes stdout, which ends this loop.
+    let stdout_handle = std::thread::spawn(move || {
+        let mut session_writer = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&live_path)
+            .ok()
+            .map(BufWriter::new);
+        let mut shared_writer = shared_path
+            .as_ref()
+            .and_then(|path| {
+                fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(path)
+                    .ok()
+            })
+            .map(BufWriter::new);
+        let mut events = Vec::new();
+        for line in BufReader::new(stdout).lines() {
+            let Ok(line_str) = line else { continue };
+            let trimmed = line_str.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let Ok(payload) = serde_json::from_str::<serde_json::Value>(trimmed) else {
+                continue;
+            };
+            if let Some(writer) = session_writer.as_mut() {
+                let _ = writeln!(writer, "{trimmed}");
                 let _ = writer.flush();
             }
+            if let Some(writer) = shared_writer.as_mut() {
+                let envelope =
+                    serde_json::json!({ "session_id": session_id_owned, "event": payload });
+                if let Ok(line) = serde_json::to_string(&envelope) {
+                    let _ = writeln!(writer, "{line}");
+                    let _ = writer.flush();
+                }
+            }
+            events.push(payload);
         }
-        events.push(payload);
-    }
-    if let Some(writer) = session_writer.as_mut() {
-        let _ = writer.flush();
-    }
-    if let Some(writer) = shared_writer.as_mut() {
-        let _ = writer.flush();
-    }
+        events
+    });
 
-    // stdout has closed (the reader loop above ran to EOF). Wait for exit with a
-    // per-node timeout so an interactive/auth hang cannot block the run.
-    let mut stderr_log = String::new();
-    BufReader::new(stderr).read_to_string(&mut stderr_log).ok();
+    // Drain stderr in its own thread so a chatty worker cannot fill the pipe and
+    // block (which would also stall the kill path).
+    let stderr_handle = std::thread::spawn(move || {
+        let mut log = String::new();
+        let _ = BufReader::new(stderr).read_to_string(&mut log);
+        log
+    });
 
+    // Main thread: enforce the per-node timeout. On timeout, KILL the child —
+    // that closes stdout/stderr so the reader threads finish and join cleanly.
     let start = Instant::now();
     let timeout = Duration::from_millis(timeout_ms.max(1));
     let mut timed_out = false;
@@ -4793,11 +5052,7 @@ fn run_ndjson_child(
             }
             Ok(None) => {
                 if start.elapsed() > timeout {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    if stderr_log.is_empty() {
-                        stderr_log = "timeout waiting for ephemeral worker".into();
-                    }
+                    kill_worker_tree(&mut child);
                     timed_out = true;
                     break false;
                 }
@@ -4806,6 +5061,12 @@ fn run_ndjson_child(
             Err(_) => break false,
         }
     };
+
+    let events = stdout_handle.join().unwrap_or_default();
+    let mut stderr_log = stderr_handle.join().unwrap_or_default();
+    if timed_out && stderr_log.is_empty() {
+        stderr_log = "timeout waiting for ephemeral worker".into();
+    }
 
     Ok(NdjsonRun {
         process_success,
@@ -5205,9 +5466,14 @@ fn workflow_run_value(store: &HarnessStore, args: &[String]) -> CliResult<serde_
     let options = WorkflowDeliveryOptions {
         dry_run: has_flag(args, "--dry-run"),
         start_runtime: has_flag(args, "--start-runtime"),
+        // Per-node ephemeral-worker timeout. Default 5 min: a real codex/claude
+        // turn takes ~30-60s, so 3s would kill every worker now that the timeout
+        // actually fires during the read (see run_ndjson_child); this bounds a
+        // hung worker without killing healthy ones.
         timeout_ms: value(args, "--timeout-ms")
             .and_then(|value| value.parse::<u64>().ok())
-            .unwrap_or(3_000),
+            .unwrap_or(300_000),
+        max_budget_usd: None,
         // Registry runs always retain their trace durably.
         trace_retention: "durable".to_string(),
     };
@@ -5244,6 +5510,75 @@ fn workflow_run_value(store: &HarnessStore, args: &[String]) -> CliResult<serde_
 /// snapshotted under `spec = {"lang":"starlark","script": <text>}` for
 /// reproducibility. `--name` defaults to the declared meta name (else the file
 /// stem).
+/// Reconstruct a [`workflow::StepResult`] from a stored terminal [`WorkflowStep`]
+/// for the `--resume` replay cache. Returns `None` unless the step carries an
+/// ordinal in its `result` JSON (steps journaled before the resume feature have no
+/// ordinal, so they are simply skipped → re-run, never incorrectly reused).
+///
+/// The reconstructed result sets `step_id = None` and `started_at = None` so
+/// [`journal_workflow_outcome`] mints a FRESH terminal row for the NEW (resumed)
+/// run id — replayed leaves journal like normal new steps. `ok = true` because the
+/// caller only feeds Completed steps. `provider`/`isolation`/`structured`/`details`
+/// are read back out of the same `result` object [`workflow::step_result_json`] wrote.
+fn step_result_from_stored(step: &WorkflowStep) -> Option<workflow::StepResult> {
+    let result = step.result.as_ref()?;
+    let ordinal = result.get("ordinal").and_then(|v| v.as_u64())?;
+    let provider = result
+        .get("provider")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    let isolation = result
+        .get("isolation")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let structured = result.get("structured").cloned().filter(|v| !v.is_null());
+    // Carry the captured telemetry blob forward (model/tokens/cost/...). The base
+    // keys step_result_json re-writes from the reconstructed fields take precedence
+    // on the next journal, so passing the whole object back is safe.
+    let details = step.result.clone().filter(|v| v.is_object());
+    Some(workflow::StepResult {
+        phase: step.phase.clone(),
+        label: step.label.clone(),
+        provider,
+        isolation,
+        ok: true,
+        provider_session_id: step.provider_session_id.clone(),
+        output_summary: step.output_summary.clone().unwrap_or_default(),
+        step_id: None,
+        started_at: None,
+        details,
+        structured,
+        ordinal: Some(ordinal),
+    })
+}
+
+/// Build the `--resume` replay cache: a map from leaf ordinal to the prior run's
+/// succeeded [`workflow::StepResult`]. Loads the prior run's latest terminal steps,
+/// keeps only Completed steps carrying an ordinal, and reconstructs each. A prior
+/// FAILED leaf is naturally absent → it re-runs. On duplicate ordinals (should not
+/// happen post-projection) last wins.
+fn build_replay_map(
+    store: &HarnessStore,
+    prior_run_id: &str,
+) -> CliResult<std::collections::HashMap<u64, workflow::StepResult>> {
+    let mut map = std::collections::HashMap::new();
+    for step in latest_workflow_steps_in_append_order(store)? {
+        if step.run_id != prior_run_id {
+            continue;
+        }
+        if step.status != WorkflowStepStatus::Completed {
+            continue;
+        }
+        if let Some(result) = step_result_from_stored(&step) {
+            if let Some(ord) = result.ordinal {
+                map.insert(ord, result);
+            }
+        }
+    }
+    Ok(map)
+}
+
 fn workflow_run_script_value(
     store: &HarnessStore,
     args: &[String],
@@ -5257,6 +5592,43 @@ fn workflow_run_script_value(
 
     let script = std::fs::read_to_string(&path)
         .map_err(|error| CliError::Usage(format!("cannot read script {path}: {error}")))?;
+
+    // Optional `--resume <prior_run_id>`: re-run this SAME script but reuse the
+    // results of leaves that SUCCEEDED in the prior run, so a crash/kill does not
+    // re-spend tokens on already-done work. Build the replay cache here after the
+    // safety guard (the prior run must exist and have snapshotted the IDENTICAL
+    // script; a changed script would misalign the deterministic leaf ordinals).
+    let resume_from = value(args, "--resume");
+    let replay = match &resume_from {
+        Some(prior_run_id) => {
+            let prior = latest_workflow_runs_in_append_order(store)?
+                .into_iter()
+                .find(|r| &r.id == prior_run_id)
+                .ok_or_else(|| {
+                    CliError::Usage(format!("cannot resume {prior_run_id}: no such run"))
+                })?;
+            let prior_script = prior
+                .spec
+                .as_ref()
+                .and_then(|s| s.get("script"))
+                .and_then(|v| v.as_str());
+            match prior_script {
+                Some(prev) if prev == script => {}
+                Some(_) => {
+                    return Err(CliError::Usage(format!(
+                        "cannot resume {prior_run_id}: the script changed since that run"
+                    )))
+                }
+                None => {
+                    return Err(CliError::Usage(format!(
+                        "cannot resume {prior_run_id}: that run has no snapshotted script"
+                    )))
+                }
+            }
+            Some(build_replay_map(store, prior_run_id)?)
+        }
+        None => None,
+    };
 
     // Default workflow name: explicit `--name`, else the file stem. The Starlark
     // `workflow(...)` header's name can override this default once captured.
@@ -5291,9 +5663,12 @@ fn workflow_run_script_value(
     let options = WorkflowDeliveryOptions {
         dry_run: has_flag(args, "--dry-run"),
         start_runtime: has_flag(args, "--start-runtime"),
+        // Per-node ephemeral-worker timeout. Default 5 min (see the registry-run
+        // path): bounds a hung worker without killing healthy ~30-60s turns.
         timeout_ms: value(args, "--timeout-ms")
             .and_then(|value| value.parse::<u64>().ok())
-            .unwrap_or(3_000),
+            .unwrap_or(300_000),
+        max_budget_usd: value(args, "--max-budget-usd").and_then(|v| v.parse::<f64>().ok()),
         trace_retention: trace_retention.clone(),
     };
 
@@ -5303,6 +5678,10 @@ fn workflow_run_script_value(
         .or_else(|| std::env::var("HARNESS_AGENT_MEMBER_ID").ok())
         .filter(|id| !id.is_empty())
         .unwrap_or_else(|| "operator".to_string());
+
+    // Reap any orphaned `Running` rows from crashed prior runs before starting a
+    // new one, so phantoms never accumulate in the store / dashboard. Best-effort.
+    let _ = reap_stale_workflow_runs(store);
 
     // Mint the run id up front so the real driver can journal each step's
     // `running` row as it starts (live SSE progress).
@@ -5326,21 +5705,37 @@ fn workflow_run_script_value(
         // captured `workflow(...)` header once evaluation succeeds.
         initiated_by: Some(initiated_by),
         design_intent: None,
-        spec: Some(serde_json::json!({ "lang": "starlark", "script": script })),
+        // The resumed run is a NEW run_id; record which prior run it resumed from
+        // so the new run has a complete, auditable record (DESIGN step 6).
+        spec: Some(match &resume_from {
+            Some(prior) => serde_json::json!({
+                "lang": "starlark",
+                "script": script,
+                "resumed_from": prior,
+            }),
+            None => serde_json::json!({ "lang": "starlark", "script": script }),
+        }),
         trace_retention,
     };
     store.append_workflow_run(&run)?;
+
+    // Optional per-run spend ceiling: once cumulative step cost reaches it, the
+    // runtime short-circuits further agent()/parallel() calls into failed `budget`
+    // steps. A `workflow(budget_usd=…)` header may lower it further.
+    let max_budget_usd = value(args, "--max-budget-usd").and_then(|v| v.parse::<f64>().ok());
 
     let started = {
         let run_id = run_id.clone();
         let driver = move |step: &workflow::AgentStepSpec| {
             workflow_real_agent_step(store, &run_id, &options, step)
         };
-        harness_workflow::starlark_front::run_starlark(
+        harness_workflow::starlark_front::run_starlark_with_budget(
             &script,
             &name,
             parsed_args.as_ref(),
             &driver,
+            max_budget_usd,
+            replay,
         )
         .map_err(|error| CliError::Usage(error.to_string()))?
     };
@@ -5409,45 +5804,20 @@ fn journal_workflow_outcome(
     // fresh id and stamp the journal time, preserving the pre-existing behavior.
     let mut steps_json = Vec::new();
     for result in &outcome.steps {
+        // The real driver (`workflow_real_agent_step`) already journaled this
+        // step's terminal row the instant it completed — for live per-step SSE.
+        // It is recognisable by a present `step_id`. Mock/test drivers leave it
+        // `None`, so we mint an id and journal the terminal row here.
+        let already_journaled = result.step_id.is_some();
         let step_id = result
             .step_id
             .clone()
             .unwrap_or_else(|| generated_id("wfstep"));
-        let now = now_string();
-        let started_at = result.started_at.clone().unwrap_or_else(|| now.clone());
-        // Real completion time = start + the worker's measured duration. The
-        // journal time (`now`) is identical for EVERY step in a run (they are all
-        // journaled together at finalize), which would make a serial step look
-        // like it overlapped the later parallel ones in the gantt — so prefer
-        // started_at + duration_ms whenever both are known.
-        let ended_at = match (
-            Some(created_ms(&started_at)).filter(|&ms| ms > 0),
-            result
-                .details
-                .as_ref()
-                .and_then(|d| d.get("duration_ms"))
-                .and_then(|v| v.as_u64()),
-        ) {
-            (Some(start_ms), Some(dur)) => {
-                format!("unix-ms:{}", start_ms.saturating_add(u128::from(dur)))
-            }
-            _ => now.clone(),
-        };
-        let step = WorkflowStep {
-            id: step_id.clone(),
-            run_id: run_id.to_string(),
-            phase: result.phase.clone(),
-            label: result.label.clone(),
-            provider_session_id: result.provider_session_id.clone(),
-            status: result.step_status(),
-            output_summary: Some(result.output_summary.clone()),
-            // The structured result mirrors the StepResult (status + linkage),
-            // beyond the human-facing summary.
-            result: Some(workflow::step_result_json(result)),
-            started_at,
-            ended_at: Some(ended_at),
-        };
-        store.append_workflow_step(&step)?;
+        let started_at = result.started_at.clone().unwrap_or_else(now_string);
+        let step = build_terminal_step(&run_id, step_id.clone(), started_at, result);
+        if !already_journaled {
+            store.append_workflow_step(&step)?;
+        }
         run.step_ids.push(step_id);
         steps_json.push(serde_json::to_value(&step)?);
     }
@@ -8550,6 +8920,40 @@ fn latest_workflow_runs_in_append_order(store: &HarnessStore) -> CliResult<Vec<W
     Ok(ids.into_iter().filter_map(|id| by_id.remove(&id)).collect())
 }
 
+/// Age after which a `Running` WorkflowRun is assumed orphaned and reaped. The
+/// run-script path is SYNCHRONOUS — a run is only `Running` in the store while its
+/// host process is alive — so a row left `Running` past this age means the process
+/// died (crash / Ctrl-C / OOM) before finalizing it. Generous (the longest real
+/// runs are ~1.5h) so a legitimately long run is never reaped.
+const REAP_STALE_RUN_AFTER_MS: u128 = 4 * 60 * 60 * 1000; // 4 hours
+
+/// Finalize every `Running` WorkflowRun older than [`REAP_STALE_RUN_AFTER_MS`] to
+/// `Failed`, so a crashed run does not sit `Running` forever in the store /
+/// snapshot / dashboard. Best-effort, called when a new run starts. Returns the
+/// number reaped.
+fn reap_stale_workflow_runs(store: &HarnessStore) -> CliResult<usize> {
+    let now = current_unix_ms();
+    let mut reaped = 0;
+    for mut run in latest_workflow_runs_in_append_order(store)? {
+        if run.status != WorkflowRunStatus::Running {
+            continue;
+        }
+        let age = now.saturating_sub(created_ms(&run.created_at));
+        if age < REAP_STALE_RUN_AFTER_MS {
+            continue;
+        }
+        run.status = WorkflowRunStatus::Failed;
+        run.ended_at = Some(now_string());
+        run.summary = Some(format!(
+            "reaped: orphaned Running for ~{}h — host process exited before the run finalized",
+            age / (60 * 60 * 1000)
+        ));
+        store.append_workflow_run(&run)?;
+        reaped += 1;
+    }
+    Ok(reaped)
+}
+
 fn latest_workflow_steps_in_append_order(store: &HarnessStore) -> CliResult<Vec<WorkflowStep>> {
     let mut ids = Vec::new();
     let mut by_id = BTreeMap::new();
@@ -10692,7 +11096,7 @@ fn print_help() {
   codex review --task <task> --agent <agent> --worktree <path> [--base <branch>] [--uncommitted] [--prompt <text>]
   workflow list
   workflow run --name <name> [--prompt <text>] [--start-runtime] [--dry-run] [--timeout-ms <ms>]
-  workflow run-script <prog.star> [--name <n>] [--args <json>] [--trace durable|live] [--dry-run]
+  workflow run-script <prog.star> [--name <n>] [--args <json>] [--trace durable|live] [--dry-run] [--resume <prior_run_id>]
   workflow gc-worktrees
   workflow gc-trace [--keep-runs <n>] [--keep-days <d>] [--dry-run]
   serve [--addr 127.0.0.1:8787] [--once]
@@ -10727,6 +11131,7 @@ mod workflow_runtime_tests {
             started_at: None,
             details: None,
             structured: None,
+            ordinal: None,
         }
     }
 
@@ -10840,6 +11245,57 @@ mod workflow_runtime_tests {
     }
 
     #[test]
+    fn schema_to_json_schema_wraps_flat_and_passes_real_through() {
+        // Flat { key: hint } -> a string-property object schema with required keys.
+        let flat = serde_json::json!({ "verdict": "the call", "score": "0-100" });
+        let js = schema_to_json_schema(&flat);
+        assert_eq!(js["type"], serde_json::json!("object"));
+        assert_eq!(
+            js["properties"]["verdict"]["type"],
+            serde_json::json!("string")
+        );
+        assert_eq!(
+            js["properties"]["verdict"]["description"],
+            serde_json::json!("the call")
+        );
+        assert_eq!(js["additionalProperties"], serde_json::json!(false));
+        let req = js["required"].as_array().expect("required array");
+        assert!(req.contains(&serde_json::json!("verdict")));
+        assert!(req.contains(&serde_json::json!("score")));
+
+        // An already-valid JSON Schema (has `type`/`properties`) is unchanged.
+        let real = serde_json::json!({
+            "type": "object",
+            "properties": { "score": { "type": "integer" } },
+            "required": ["score"],
+        });
+        assert_eq!(schema_to_json_schema(&real), real);
+    }
+
+    #[test]
+    fn parse_claude_result_extras_reads_structured_and_cost() {
+        let events = vec![
+            serde_json::json!({"type": "system", "subtype": "init", "model": "claude-opus-4-8"}),
+            serde_json::json!({
+                "type": "result",
+                "structured_output": { "verdict": "pass", "score": 100 },
+                "total_cost_usd": 0.1866,
+                "usage": { "input_tokens": 5, "output_tokens": 2 }
+            }),
+        ];
+        let (structured, cost) = parse_claude_result_extras(&events);
+        assert_eq!(
+            structured,
+            Some(serde_json::json!({ "verdict": "pass", "score": 100 }))
+        );
+        assert_eq!(cost, Some(0.1866));
+
+        // No `result` frame -> both None.
+        let (s2, c2) = parse_claude_result_extras(&[serde_json::json!({"type": "system"})]);
+        assert!(s2.is_none() && c2.is_none());
+    }
+
+    #[test]
     fn extract_json_object_handles_bare_object() {
         let value = extract_json_object(r#"{"ok": true, "n": 3}"#).expect("parsed");
         assert_eq!(value["ok"], serde_json::json!(true));
@@ -10897,6 +11353,8 @@ mod workflow_runtime_tests {
             isolation: None,
             prompt: "hi".into(),
             schema: None,
+            writable: false,
+            ordinal: None,
         };
         let spawn = EphemeralSpawn {
             ok: true,
@@ -10911,6 +11369,8 @@ mod workflow_runtime_tests {
                 total: 14,
             }),
             model: None,
+            structured: None,
+            cost_usd: None,
         };
         let details = build_step_details(&spec, &spawn, 1234, None);
         // spec.model wins over the (absent) worker-reported model.
@@ -10932,6 +11392,8 @@ mod workflow_runtime_tests {
             isolation: None,
             prompt: "hi".into(),
             schema: None,
+            writable: false,
+            ordinal: None,
         };
         let spawn = EphemeralSpawn {
             ok: false,
@@ -10943,6 +11405,8 @@ mod workflow_runtime_tests {
             tokens: None,
             // The node requested no model, so the worker-reported one is used.
             model: Some("claude-opus-4-8".into()),
+            structured: None,
+            cost_usd: None,
         };
         let details = build_step_details(&spec, &spawn, 50, None);
         assert_eq!(details["model"], serde_json::json!("claude-opus-4-8"));
@@ -10964,6 +11428,8 @@ mod workflow_runtime_tests {
             isolation: Some("worktree".into()),
             prompt: "hi".into(),
             schema: None,
+            writable: false,
+            ordinal: None,
         };
         let spawn = EphemeralSpawn {
             ok: true,
@@ -10974,6 +11440,8 @@ mod workflow_runtime_tests {
             timed_out: false,
             tokens: None,
             model: None,
+            structured: None,
+            cost_usd: None,
         };
         let big = "x".repeat(WORKTREE_DIFF_CAP + 5_000);
         let details = build_step_details(&spec, &spawn, 1, Some(&big));
@@ -11008,6 +11476,34 @@ mod workflow_runtime_tests {
     }
 
     #[test]
+    fn run_ndjson_child_kills_a_hung_worker_via_timeout() {
+        // Regression: a worker that emits one line then HANGS (stdout stays open,
+        // never exits) must be KILLED by the per-node timeout — not block forever.
+        // Before the fix, the read loop ran on the main thread and the timeout was
+        // only checked after EOF, so a hung worker froze the whole run.
+        let root = std::env::temp_dir().join(format!("mah-hang-{}", generated_id("t")));
+        let session_dir = root.join("provider-sessions").join("s");
+        fs::create_dir_all(&session_dir).expect("mkdir");
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c")
+            .arg("printf '{\"type\":\"item\"}\\n'; sleep 600");
+
+        let start = Instant::now();
+        let run = run_ndjson_child(cmd, &session_dir, "s", "out.ndjson", 500).expect("run");
+        let elapsed = start.elapsed();
+
+        assert!(
+            elapsed < Duration::from_secs(8),
+            "must not block on the hung child; took {elapsed:?}"
+        );
+        assert!(run.timed_out, "the timeout must have fired");
+        assert!(!run.process_success);
+        // The single event emitted before the hang was still captured live.
+        assert_eq!(run.events.len(), 1);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn step_result_json_merges_details_without_overriding_base() {
         // The base keys (provider/ok/...) always win; details adds new keys.
         let result = workflow::StepResult {
@@ -11027,6 +11523,7 @@ mod workflow_runtime_tests {
                 "ok": false,
             })),
             structured: None,
+            ordinal: None,
         };
         let json = workflow::step_result_json(&result);
         assert_eq!(json["provider"], serde_json::json!("codex"));
@@ -11162,6 +11659,49 @@ mod workflow_runtime_tests {
             })
             .expect("append step");
         ndjson
+    }
+
+    #[test]
+    fn reap_stale_workflow_runs_finalizes_old_running_rows() {
+        let store = temp_store("reap-stale");
+        let now = current_unix_ms();
+        let mk = |id: &str, created: u128| WorkflowRun {
+            id: id.into(),
+            workflow_name: "demo".into(),
+            status: WorkflowRunStatus::Running,
+            step_ids: vec![],
+            created_at: format!("unix-ms:{created}"),
+            ended_at: None,
+            summary: None,
+            args: None,
+            agents_spawned: 0,
+            final_output: None,
+            initiated_by: Some("op".into()),
+            design_intent: None,
+            spec: None,
+            trace_retention: "durable".into(),
+        };
+        // One Running run 5h old -> reaped to Failed; one started "now" -> stays.
+        store
+            .append_workflow_run(&mk("wfrun-old", now.saturating_sub(5 * 60 * 60 * 1000)))
+            .expect("append old");
+        store
+            .append_workflow_run(&mk("wfrun-fresh", now))
+            .expect("append fresh");
+
+        let reaped = reap_stale_workflow_runs(&store).expect("reap");
+        assert_eq!(reaped, 1);
+
+        let runs = latest_workflow_runs_in_append_order(&store).expect("read");
+        let find = |id: &str| runs.iter().find(|r| r.id == id).expect("run present");
+        assert_eq!(find("wfrun-old").status, WorkflowRunStatus::Failed);
+        assert!(find("wfrun-old")
+            .summary
+            .as_deref()
+            .unwrap_or("")
+            .contains("reaped"));
+        assert!(find("wfrun-old").ended_at.is_some());
+        assert_eq!(find("wfrun-fresh").status, WorkflowRunStatus::Running);
     }
 
     #[test]
@@ -11302,6 +11842,7 @@ mod workflow_runtime_tests {
                 started_at: None,
                 details: None,
                 structured: None,
+                ordinal: None,
             }
         };
 
@@ -11414,6 +11955,151 @@ agent("fix: " + a, provider = "claude", label = "fixer")
     }
 
     #[test]
+    fn workflow_run_script_resume_reuses_prior_steps() {
+        let store = temp_store("run-script-resume");
+        let script = r#"
+workflow("triage", "scan first then fix, so the fix builds on the scan output")
+a = agent("scan the code")
+agent("fix per " + a, label = "fixer")
+"#;
+        let dir = std::env::temp_dir().join(format!("harness-wf-resume-{}", generated_id("src")));
+        fs::create_dir_all(&dir).expect("mkdir script dir");
+        let path = dir.join("triage.star");
+        fs::write(&path, script).expect("write script");
+
+        // First run (dry-run) to journal succeeded steps carrying ordinals.
+        let args = vec![path.display().to_string(), "--dry-run".to_string()];
+        let first = workflow_run_script_value(&store, &args).expect("first run");
+        let prior_run_id = first
+            .get("run")
+            .and_then(|r| r.get("id"))
+            .and_then(|v| v.as_str())
+            .expect("prior run id")
+            .to_string();
+
+        // The prior steps carry an ordinal in their result JSON (the round-trip).
+        let prior_steps: Vec<WorkflowStep> = latest_workflow_steps_in_append_order(&store)
+            .expect("steps")
+            .into_iter()
+            .filter(|s| s.run_id == prior_run_id)
+            .collect();
+        assert!(prior_steps.iter().all(|s| s
+            .result
+            .as_ref()
+            .and_then(|r| r.get("ordinal"))
+            .is_some()));
+
+        // Resume: re-run the SAME script with --resume <prior_run_id>.
+        let resume_args = vec![
+            path.display().to_string(),
+            "--dry-run".to_string(),
+            "--resume".to_string(),
+            prior_run_id.clone(),
+        ];
+        let second = workflow_run_script_value(&store, &resume_args).expect("resume run");
+        let run = second.get("run").expect("run key");
+        assert_eq!(
+            run.get("status").and_then(|s| s.as_str()),
+            Some("completed")
+        );
+        let new_run_id = run.get("id").and_then(|v| v.as_str()).expect("new run id");
+        assert_ne!(new_run_id, prior_run_id, "resume mints a NEW run id");
+        let step_ids = run
+            .get("step_ids")
+            .and_then(|s| s.as_array())
+            .expect("step_ids");
+        assert_eq!(step_ids.len(), 2, "the resumed run references both leaves");
+
+        // The new run records which prior run it resumed from.
+        let runs = store.workflow_runs().expect("read runs");
+        let final_run = runs
+            .iter()
+            .rev()
+            .find(|r| r.id == new_run_id)
+            .expect("new run row");
+        assert_eq!(
+            final_run
+                .spec
+                .as_ref()
+                .and_then(|s| s.get("resumed_from"))
+                .and_then(|v| v.as_str()),
+            Some(prior_run_id.as_str())
+        );
+
+        // The new run's steps carry the [replayed] marker (driver not re-invoked).
+        let new_steps: Vec<WorkflowStep> = latest_workflow_steps_in_append_order(&store)
+            .expect("steps")
+            .into_iter()
+            .filter(|s| s.run_id == new_run_id)
+            .collect();
+        assert_eq!(new_steps.len(), 2);
+        for step in &new_steps {
+            assert!(
+                step.output_summary
+                    .as_deref()
+                    .unwrap_or_default()
+                    .starts_with("[replayed] "),
+                "resumed step output: {:?}",
+                step.output_summary
+            );
+            assert_eq!(
+                step.result.as_ref().and_then(|r| r.get("replayed")),
+                Some(&serde_json::json!(true))
+            );
+        }
+    }
+
+    #[test]
+    fn workflow_run_script_resume_rejects_changed_script() {
+        let store = temp_store("run-script-resume-changed");
+        let dir =
+            std::env::temp_dir().join(format!("harness-wf-resume-chg-{}", generated_id("src")));
+        fs::create_dir_all(&dir).expect("mkdir script dir");
+        let path = dir.join("triage.star");
+        let original = r#"
+workflow("triage", "a stable design intent that explains the shape")
+agent("scan the code")
+"#;
+        fs::write(&path, original).expect("write script");
+        let first = workflow_run_script_value(
+            &store,
+            &[path.display().to_string(), "--dry-run".to_string()],
+        )
+        .expect("first run");
+        let prior_run_id = first
+            .get("run")
+            .and_then(|r| r.get("id"))
+            .and_then(|v| v.as_str())
+            .expect("prior id")
+            .to_string();
+
+        // Edit the script, then attempt to resume — the guard must reject it.
+        let changed = r#"
+workflow("triage", "a stable design intent that explains the shape")
+agent("scan the code")
+agent("a NEW second leaf that changes the ordinal alignment")
+"#;
+        fs::write(&path, changed).expect("rewrite script");
+        let err = workflow_run_script_value(
+            &store,
+            &[
+                path.display().to_string(),
+                "--dry-run".to_string(),
+                "--resume".to_string(),
+                prior_run_id,
+            ],
+        )
+        .expect_err("changed script rejected");
+        match err {
+            CliError::Usage(msg) => assert!(
+                msg.contains("the script changed"),
+                "unexpected message: {msg}"
+            ),
+            other => panic!("expected Usage error, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn workflow_run_script_rejects_bad_args_json() {
         let store = temp_store("run-script-badargs");
         let dir = std::env::temp_dir().join(format!("harness-wf-script-{}", generated_id("bad")));
@@ -11518,7 +12204,7 @@ agent("fix: " + a, provider = "claude", label = "fixer")
             store
                 .append_workflow_step(&running)
                 .expect("journal running");
-            workflow::StepResult {
+            let result = workflow::StepResult {
                 phase: spec.phase.clone(),
                 label: spec.label.clone(),
                 provider: spec.provider.clone(),
@@ -11526,11 +12212,19 @@ agent("fix: " + a, provider = "claude", label = "fixer")
                 ok: true,
                 provider_session_id: Some(format!("session-{}", spec.label)),
                 output_summary: format!("ok: {}", spec.label),
-                step_id: Some(step_id),
-                started_at: Some(started_at),
+                step_id: Some(step_id.clone()),
+                started_at: Some(started_at.clone()),
                 details: None,
                 structured: None,
-            }
+                ordinal: None,
+            };
+            // Mirror the real driver under the live-per-step contract: also
+            // journal the TERMINAL row at completion, reusing the same step_id +
+            // start time. `run_workflow_with_driver` must then NOT re-journal it.
+            store
+                .append_workflow_step(&build_terminal_step(&run_id, step_id, started_at, &result))
+                .expect("journal terminal");
+            result
         };
 
         let result =
@@ -11543,13 +12237,15 @@ agent("fix: " + a, provider = "claude", label = "fixer")
             Some("completed")
         );
 
-        // Raw append log: a `running` row was journaled at step start, AND a
-        // terminal row was journaled per step (2 rows x 3 steps = 6 rows).
+        // Raw append log: the driver journaled a `running` row at start AND the
+        // terminal row at completion (2 rows x 3 steps = 6). run_workflow_with_driver
+        // recognises the driver-journaled terminal (step_id is Some) and does NOT
+        // re-journal — so the count stays 6, not 9.
         let appended = store.workflow_steps().expect("read step log");
         assert_eq!(
             appended.len(),
             6,
-            "running + terminal rows journaled per step"
+            "driver journals running + terminal per step; finalize does not re-journal"
         );
         assert_eq!(
             appended

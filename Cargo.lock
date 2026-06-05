@@ -788,6 +788,7 @@ dependencies = [
  "harness-core",
  "harness-store",
  "harness-workflow",
+ "libc",
  "notify",
  "serde",
  "serde_json",

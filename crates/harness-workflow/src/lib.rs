@@ -62,6 +62,19 @@ pub struct AgentStepSpec {
     /// a JSON object whose top-level keys are the REQUIRED keys the reply must
     /// carry. `None` = text mode (the reply is returned verbatim as today).
     pub schema: Option<serde_json::Value>,
+    /// Whether this step may EDIT files / run shell. `false` (default) runs the
+    /// worker read-only (codex `--sandbox read-only`; claude read-only tools).
+    /// `true` escalates to an editable sandbox AND auto-isolates the step into a
+    /// throwaway git worktree, so writes land in a discardable checkout (captured
+    /// as the step's diff) instead of the live repo.
+    pub writable: bool,
+    /// The deterministic leaf ordinal the Starlark front-end assigned this spec
+    /// (one per `agent()` leaf / `parallel()` spec). Threaded onto the spec so a
+    /// real driver that journals its OWN terminal row can stamp the ordinal onto
+    /// the row before writing it — keeping the ordinal round-tripping through the
+    /// store for `--resume`. `None` for specs built outside the front-end (the
+    /// built-in `investigate` path, the streaming `pipeline()` engine).
+    pub ordinal: Option<u64>,
 }
 
 /// The outcome of one agent step. `ok == false` is the CC-spec `null` slot: a
@@ -104,6 +117,14 @@ pub struct StepResult {
     /// valid JSON (those record a `"schema"` failure instead). The Starlark
     /// `agent()` returns this object to the script when present.
     pub structured: Option<serde_json::Value>,
+    /// The deterministic leaf ordinal this step was assigned by the Starlark
+    /// front-end (one per `agent()` leaf, per `parallel()` spec, per pipeline
+    /// item×stage), assigned on the eval thread in issue order. It round-trips
+    /// through the store (see [`step_result_json`]) so a `--resume` re-run can key
+    /// a replay cache by ordinal and reuse a prior run's succeeded leaves without
+    /// re-spending. `None` for steps produced outside the ordinal-aware front-end
+    /// (the built-in `investigate` registry path, error slots).
+    pub ordinal: Option<u64>,
 }
 
 impl StepResult {
@@ -241,6 +262,7 @@ pub fn parallel(driver: &AgentStepFn<'_>, specs: &[AgentStepSpec]) -> Vec<StepRe
                         started_at: None,
                         details: None,
                         structured: None,
+                        ordinal: None,
                     };
                     let _ = tx.send((index, result));
                     return;
@@ -262,6 +284,7 @@ pub fn parallel(driver: &AgentStepFn<'_>, specs: &[AgentStepSpec]) -> Vec<StepRe
                     started_at: None,
                     details: None,
                     structured: None,
+                    ordinal: None,
                 });
 
                 let _ = tx.send((index, result));
@@ -394,6 +417,7 @@ fn dropped_result(item: &AgentStepSpec) -> StepResult {
         started_at: None,
         details: None,
         structured: None,
+        ordinal: None,
     }
 }
 
@@ -410,6 +434,7 @@ fn capped_result(item: &AgentStepSpec) -> StepResult {
         started_at: None,
         details: None,
         structured: None,
+        ordinal: None,
     }
 }
 
@@ -426,6 +451,7 @@ fn panicked_result(item: &AgentStepSpec) -> StepResult {
         started_at: None,
         details: None,
         structured: None,
+        ordinal: None,
     }
 }
 
@@ -474,6 +500,8 @@ pub fn investigate(driver: &AgentStepFn<'_>, topic: &str) -> WorkflowOutcome {
             isolation: None,
             prompt: format!("Scope the investigation of: {topic}. List the modules to audit."),
             schema: None,
+            writable: false,
+            ordinal: None,
         },
     );
     let scope_ok = scope_step.ok;
@@ -489,6 +517,8 @@ pub fn investigate(driver: &AgentStepFn<'_>, topic: &str) -> WorkflowOutcome {
             isolation: None,
             prompt: format!("Audit the code paths involved in: {topic}."),
             schema: None,
+            writable: false,
+            ordinal: None,
         },
         AgentStepSpec {
             phase: "audit".to_string(),
@@ -498,6 +528,8 @@ pub fn investigate(driver: &AgentStepFn<'_>, topic: &str) -> WorkflowOutcome {
             isolation: None,
             prompt: format!("Audit the recent diffs related to: {topic}."),
             schema: None,
+            writable: false,
+            ordinal: None,
         },
     ];
     let parallel_results = parallel(driver, &parallel_specs);
@@ -587,6 +619,9 @@ pub fn step_result_json(result: &StepResult) -> serde_json::Value {
         // The parsed structured output (schema mode), or null. Lets the dashboard
         // and `final_output` carry the validated object alongside the summary.
         "structured": result.structured,
+        // The deterministic leaf ordinal, or null. Round-trips so a `--resume`
+        // re-run can key a replay cache by ordinal off the stored step.result.
+        "ordinal": result.ordinal,
     });
     // Merge the runtime-captured observability fields (model, exit_code,
     // duration_ms, tokens, failure, worktree_diff, ...) onto the same object so
@@ -675,6 +710,7 @@ mod tests {
                 started_at: None,
                 details: None,
                 structured: None,
+                ordinal: None,
             }
         }
     }
@@ -712,6 +748,7 @@ mod tests {
                 started_at: None,
                 details: None,
                 structured: None,
+                ordinal: None,
             }
         };
         let specs: Vec<AgentStepSpec> = (0..5)
@@ -723,6 +760,8 @@ mod tests {
                 isolation: None,
                 prompt: format!("prompt {i}"),
                 schema: None,
+                writable: false,
+                ordinal: None,
             })
             .collect();
         let results = parallel(&driver, &specs);
@@ -750,6 +789,7 @@ mod tests {
                     started_at: None,
                     details: None,
                     structured: None,
+                    ordinal: None,
                 };
             }
             if spec.label == "l2" {
@@ -767,6 +807,7 @@ mod tests {
                 started_at: None,
                 details: None,
                 structured: None,
+                ordinal: None,
             }
         };
         let specs: Vec<AgentStepSpec> = (0..4)
@@ -778,6 +819,8 @@ mod tests {
                 isolation: None,
                 prompt: "x".to_string(),
                 schema: None,
+                writable: false,
+                ordinal: None,
             })
             .collect();
         let results = parallel(&driver, &specs);
@@ -809,6 +852,7 @@ mod tests {
                 started_at: None,
                 details: None,
                 structured: None,
+                ordinal: None,
             }
         };
         let outcome = investigate(&driver, "failure Y");
@@ -846,6 +890,8 @@ mod tests {
                 isolation: None,
                 prompt: format!("prompt {i}"),
                 schema: None,
+                writable: false,
+                ordinal: None,
             })
             .collect();
         let results = parallel(&driver, &specs);
@@ -873,6 +919,7 @@ mod tests {
                 started_at: None,
                 details: None,
                 structured: None,
+                ordinal: None,
             };
             Some((spec.clone(), result))
         })
@@ -887,6 +934,8 @@ mod tests {
             isolation: None,
             prompt: "x".to_string(),
             schema: None,
+            writable: false,
+            ordinal: None,
         }
     }
 
@@ -952,6 +1001,7 @@ mod tests {
                     started_at: None,
                     details: None,
                     structured: None,
+                    ordinal: None,
                 },
             ))
         });
@@ -975,6 +1025,7 @@ mod tests {
                     started_at: None,
                     details: None,
                     structured: None,
+                    ordinal: None,
                 },
             ))
         });
@@ -1009,6 +1060,7 @@ mod tests {
                     started_at: None,
                     details: None,
                     structured: None,
+                    ordinal: None,
                 },
             ))
         });
@@ -1027,6 +1079,7 @@ mod tests {
                     started_at: None,
                     details: None,
                     structured: None,
+                    ordinal: None,
                 },
             ))
         });
