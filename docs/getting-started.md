@@ -118,6 +118,19 @@ The run journals one `WorkflowRun` + one `WorkflowStep` per leaf. Read it back:
   `.harness/workflow_steps.jsonl`, or the snapshot API
   `curl -s http://127.0.0.1:8787/v1/snapshot`.
 
+To get a text-producing workflow's **full deliverable** back (each leaf's complete
+reply, not the capped per-step summary):
+
+```bash
+./target/debug/harness workflow get-output <run_id>            # JSON, all leaves
+./target/debug/harness workflow get-output <run_id> --step synthesis --text > plan.md
+```
+
+`get-output` reads the full reply persisted per step at `provider-sessions/<session_id>/reply.txt`
+(durable runs). `--text` prints just the text (pipe it to a file); `--step <label>`
+selects one leaf. Each step reports `source: "reply"` (full) or `"summary"` (the
+capped fallback, e.g. for a `--trace live` run whose trace was pruned).
+
 ## What the skill teaches
 
 `author-workflow` teaches the agent the runtime's host functions

@@ -5317,6 +5317,26 @@ fn ingest_ephemeral_events(
     spawn: &EphemeralSpawn,
     retain_trace: bool,
 ) -> CliResult<()> {
+    // Persist the worker's FULL reply as a human-browsable artifact, so the
+    // deliverable can be retrieved in full (issue #89 item 4). The step's
+    // `output_summary` is capped at OUTPUT_SUMMARY_CAP chars, so a long synthesis
+    // would otherwise only live (scattered) inside the turn trace. Durable runs
+    // only; a `--trace live` run prunes the session dir afterward, and
+    // `workflow get-output` then falls back to the capped summary.
+    if retain_trace {
+        if let Some(reply) = spawn.reply.as_deref() {
+            let reply_path = store
+                .root()
+                .join("provider-sessions")
+                .join(session_id)
+                .join("reply.txt");
+            if let Some(parent) = reply_path.parent() {
+                let _ = fs::create_dir_all(parent);
+            }
+            let _ = fs::write(&reply_path, reply);
+        }
+    }
+
     // The DURABLE per-session AgentEvents are the heavy trace gated by retention.
     // When `retain_trace` is false (a `--trace live` run) we skip them entirely:
     // the live SSE frames already streamed during the spawn loop, so the only
@@ -5467,6 +5487,96 @@ fn prune_live_only_trace(store: &HarnessStore, session_id: &str) {
 /// `.harness/worktrees/` for dirs not tied to an ACTIVE run. Active = a worktree
 /// still registered with git (a leftover from a crash is unregistered after
 /// prune). Conservative: only removes dirs git no longer tracks.
+/// `workflow get-output <run_id> [--step <label>]` — retrieve a run's leaf
+/// OUTPUTS (issue #89 item 4). For text-producing workflows the deliverable was
+/// hard to get back: `output_summary` is capped and the full text otherwise only
+/// lived (scattered) in the turn trace. Each step's full reply is persisted as
+/// `provider-sessions/<session_id>/reply.txt` at ingest (durable runs); this reads
+/// it back, in `step_ids` order, falling back to the capped `output_summary` when
+/// the full artifact is absent (e.g. a `--trace live` run whose dir was pruned).
+/// `source` tells the caller which they got: `"reply"` (full) or `"summary"`.
+fn workflow_get_output_value(
+    store: &HarnessStore,
+    args: &[String],
+) -> CliResult<serde_json::Value> {
+    let run_id = args
+        .iter()
+        .find(|a| !a.starts_with("--"))
+        .cloned()
+        .ok_or_else(|| CliError::Usage("workflow get-output requires a <run_id>".into()))?;
+    let step_filter = value(args, "--step");
+
+    let run = store
+        .workflow_runs()?
+        .into_iter()
+        .rfind(|r| r.id == run_id)
+        .ok_or_else(|| CliError::Usage(format!("workflow run not found: {run_id}")))?;
+
+    // Latest-wins projection of this run's steps, then order by run.step_ids so the
+    // output reads in workflow order (fall back to journal order if step_ids empty).
+    let mut by_id: std::collections::HashMap<String, WorkflowStep> =
+        std::collections::HashMap::new();
+    let mut journal_order: Vec<String> = Vec::new();
+    for step in store.workflow_steps()? {
+        if step.run_id == run_id {
+            if !by_id.contains_key(&step.id) {
+                journal_order.push(step.id.clone());
+            }
+            by_id.insert(step.id.clone(), step);
+        }
+    }
+    let order: Vec<String> = if run.step_ids.is_empty() {
+        journal_order
+    } else {
+        run.step_ids.clone()
+    };
+
+    let mut out_steps = Vec::new();
+    for id in order {
+        let Some(step) = by_id.get(&id) else { continue };
+        if let Some(filter) = &step_filter {
+            if &step.label != filter {
+                continue;
+            }
+        }
+        let (output, source) = match step.provider_session_id.as_deref() {
+            Some(sid) => {
+                let reply_path = store
+                    .root()
+                    .join("provider-sessions")
+                    .join(sid)
+                    .join("reply.txt");
+                match fs::read_to_string(&reply_path) {
+                    Ok(text) => (text, "reply"),
+                    Err(_) => (step.output_summary.clone().unwrap_or_default(), "summary"),
+                }
+            }
+            None => (step.output_summary.clone().unwrap_or_default(), "summary"),
+        };
+        out_steps.push(serde_json::json!({
+            "label": step.label,
+            "status": serde_json::to_value(step.status)?,
+            "provider_session_id": step.provider_session_id,
+            "source": source,
+            "output": output,
+        }));
+    }
+
+    if let Some(filter) = &step_filter {
+        if out_steps.is_empty() {
+            return Err(CliError::Usage(format!(
+                "no step labeled '{filter}' in run {run_id}"
+            )));
+        }
+    }
+
+    Ok(serde_json::json!({
+        "run_id": run_id,
+        "workflow_name": run.workflow_name,
+        "steps": out_steps,
+    }))
+}
+
 fn workflow_gc_worktrees(store: &HarnessStore) -> CliResult<serde_json::Value> {
     let repo_root = workflow_repo_root();
     let repo = repo_root.display().to_string();
@@ -5612,7 +5722,7 @@ fn workflow_gc_trace(
 fn workflow_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     require_subcommand(
         args,
-        "workflow run|run-script|list|reap|gc-worktrees|gc-trace",
+        "workflow run|run-script|get-output|list|reap|gc-worktrees|gc-trace",
     )?;
     match args[0].as_str() {
         "gc-worktrees" => {
@@ -5647,6 +5757,27 @@ fn workflow_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
         "run" => {
             let result = workflow_run_value(store, &args[1..])?;
             print_json(&result)?;
+        }
+        "get-output" => {
+            let result = workflow_get_output_value(store, &args[1..])?;
+            if has_flag(&args[1..], "--text") {
+                // Plain-text mode: print just the deliverable(s), so a text-producing
+                // workflow's output pipes straight to a file (issue #89 item 4).
+                if let Some(steps) = result["steps"].as_array() {
+                    let multi = steps.len() > 1;
+                    for (i, s) in steps.iter().enumerate() {
+                        if i > 0 {
+                            println!("\n---\n");
+                        }
+                        if multi {
+                            println!("## {}\n", s["label"].as_str().unwrap_or(""));
+                        }
+                        println!("{}", s["output"].as_str().unwrap_or(""));
+                    }
+                }
+            } else {
+                print_json(&result)?;
+            }
         }
         "run-script" => {
             // Tell the operator WHICH store this run is written to (stderr, so the
@@ -11391,6 +11522,7 @@ fn print_help() {
   workflow list
   workflow run --name <name> [--prompt <text>] [--start-runtime] [--dry-run] [--timeout-ms <ms>]
   workflow run-script <prog.star> [--name <n>] [--args <json>] [--trace durable|live] [--dry-run] [--resume <prior_run_id>]
+  workflow get-output <run_id> [--step <label>] [--text]
   workflow gc-worktrees
   workflow gc-trace [--keep-runs <n>] [--keep-days <d>] [--dry-run]
   serve [--addr 127.0.0.1:8787] [--once]
@@ -12292,6 +12424,98 @@ mod workflow_runtime_tests {
         assert_eq!(root, PathBuf::from("/explicit/store"));
         // Flag stripped so dispatch sees only the subcommand.
         assert_eq!(args, vec!["serve"]);
+    }
+
+    #[test]
+    fn workflow_get_output_returns_full_reply_and_falls_back_to_summary() {
+        let store = temp_store("get-output");
+        let mk_step = |id: &str, label: &str, sid: &str, summary: &str| WorkflowStep {
+            id: id.into(),
+            run_id: "wfrun-go".into(),
+            phase: "p".into(),
+            label: label.into(),
+            provider_session_id: Some(sid.into()),
+            status: WorkflowStepStatus::Completed,
+            output_summary: Some(summary.into()),
+            result: None,
+            started_at: "unix-ms:1".into(),
+            ended_at: Some("unix-ms:2".into()),
+        };
+        store
+            .append_workflow_run(&WorkflowRun {
+                id: "wfrun-go".into(),
+                workflow_name: "demo".into(),
+                status: WorkflowRunStatus::Completed,
+                step_ids: vec!["s1".into(), "s2".into()],
+                created_at: "unix-ms:1".into(),
+                ended_at: Some("unix-ms:9".into()),
+                summary: None,
+                args: None,
+                agents_spawned: 2,
+                final_output: None,
+                initiated_by: Some("op".into()),
+                design_intent: None,
+                spec: None,
+                trace_retention: "durable".into(),
+                host_pid: None,
+            })
+            .expect("append run");
+        store
+            .append_workflow_step(&mk_step("s1", "scan", "sess-1", "scan summary"))
+            .expect("append s1");
+        store
+            .append_workflow_step(&mk_step(
+                "s2",
+                "synthesis",
+                "sess-2",
+                "synth summary (capped)",
+            ))
+            .expect("append s2");
+
+        // Persist a FULL reply only for s2's session (mirrors ingest writing reply.txt).
+        let full = "FULL synthesis output ".repeat(500); // > any summary cap
+        let dir = store.root().join("provider-sessions").join("sess-2");
+        std::fs::create_dir_all(&dir).expect("mk session dir");
+        std::fs::write(dir.join("reply.txt"), &full).expect("write reply");
+
+        let out = workflow_get_output_value(&store, &["wfrun-go".to_string()]).expect("get-output");
+        let steps = out["steps"].as_array().expect("steps array");
+        assert_eq!(steps.len(), 2);
+        // Order follows run.step_ids: scan (s1) then synthesis (s2).
+        assert_eq!(steps[0]["label"], "scan");
+        assert_eq!(steps[1]["label"], "synthesis");
+        // s1 has no reply.txt -> falls back to the capped summary.
+        assert_eq!(steps[0]["source"], "summary");
+        assert_eq!(steps[0]["output"], "scan summary");
+        // s2 has reply.txt -> full text, source "reply".
+        assert_eq!(steps[1]["source"], "reply");
+        assert_eq!(steps[1]["output"].as_str().unwrap(), full);
+
+        // --step selects one leaf.
+        let one = workflow_get_output_value(
+            &store,
+            &[
+                "wfrun-go".to_string(),
+                "--step".to_string(),
+                "synthesis".to_string(),
+            ],
+        )
+        .expect("get-output --step");
+        let one_steps = one["steps"].as_array().unwrap();
+        assert_eq!(one_steps.len(), 1);
+        assert_eq!(one_steps[0]["label"], "synthesis");
+
+        // Unknown step / unknown run are usage errors.
+        assert!(workflow_get_output_value(
+            &store,
+            &[
+                "wfrun-go".to_string(),
+                "--step".to_string(),
+                "nope".to_string()
+            ]
+        )
+        .is_err());
+        assert!(workflow_get_output_value(&store, &["wfrun-missing".to_string()]).is_err());
     }
 
     #[test]
