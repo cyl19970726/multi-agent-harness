@@ -79,6 +79,7 @@ A program calls these globals (no `import`; they are pre-bound):
 | `parallel([dict, ...])` | list (input order) | Barrier fan-out: run every spec concurrently, block until ALL finish. Each element is the parsed dict (if that spec had a `schema` that parsed) else its output string. Each dict needs a `prompt` and may set `provider` (default `"codex"`), `label`, `phase`, `model`, `isolation`, `schema`, `writable`. |
 | `pipeline(items, stages)` | list (one per item) | No-barrier streaming: each item flows through every stage independently. `stages` is a list of dicts `{prompt, provider?, model?, schema?, writable?}` whose `prompt` is a TEMPLATE containing `{input}` — replaced with the item for stage 1, then the prior stage's output for each next stage (forward-injection). Returns each item's LAST stage result. |
 | `verdict(ok, reason="")` | — | Declare the run's TYPED outcome. `ok=False` finalizes the run `Failed` even if every worker ran — so "workers ran" ≠ "intent satisfied". A closed-loop program's final gate calls this. |
+| `output(value)` | — | Declare the run's RESULT — the one unambiguous answer the calling agent reads back. `value` (a string or dict) is persisted verbatim under `final_output.result`, UNCAPPED, so the caller reads one field instead of digging the answer out of a step by label. Last call wins; pass a `schema`'d dict for a large answer (a free-text `agent()` return was already capped at ~4000 chars). |
 | `json.encode(value)` / `json.decode(str)` | string / value | Serialize a prior `agent()`'s dict to inject it verbatim into the next prompt (forward-injection), or parse JSON back. |
 | `phase(name)` | — | Set the default phase for the steps that follow. |
 | `log(message)` | — | Emit a progress line (persisted in the run's `final_output.logs`). |
@@ -497,8 +498,10 @@ Useful flags:
 | `--max-budget-usd <amt>` | Per-run spend ceiling; once cumulative cost reaches it, further leaves short-circuit into failed `budget` steps (also settable via `workflow(budget_usd=…)`). |
 | `--resume <prior_run_id>` | Re-run the SAME program reusing the prior run's SUCCEEDED leaves (no re-spend); fails if the script changed. |
 | `--trace durable\|live` | Retain the heavy per-step turn-event trace (`durable`, default) or stream-only (`live`). |
+| `--progress` | Stream a compact NDJSON line per step (phase, label, `running`/`ok`/`failed`) to STDERR as the run executes — the phase-by-phase timeline — while STDOUT stays the single final JSON. |
 
-The command prints the journaled run as JSON, including the new `run` id.
+The command prints the journaled run as JSON to STDOUT, including the new `run`
+id and `run.final_output` (see the result-exit note below).
 
 ## Read The Run Back
 
@@ -522,6 +525,34 @@ Confirm: a `WorkflowRun` with your `name`, status moving `running -> completed`
 `phase`, `provider`, and result. The same run renders on the Agent Dashboard
 Workflows surface.
 
+### The result exit: how the calling agent gets the answer
+
+You (the calling agent) invoke `run-script` through your shell tool, so you read
+its result the way you read any CLI tool: **its stdout becomes your tool result
+when the command returns.** `run-script` prints `{"run": {...}, "steps": [...]}`,
+and inside `run.final_output`:
+
+- **`result`** — what your `output(value)` declared. **This is the run's answer**;
+  read this one field. It is `null` if the script never called `output()`.
+- `verdict` — `{ok, reason}` from `verdict()`: did the intent succeed.
+- `success_criterion`, `logs` — the declared bar and the `log()` narration.
+- `steps[]` — per-leaf `output_summary` (capped ~4000 chars), `structured`, and
+  telemetry, for audit.
+
+So a foreground call gives you the whole timeline + answer at once:
+
+```bash
+harness workflow run-script ./prog.star --args '{...}' \
+  | python3 -c 'import sys,json; print(json.load(sys.stdin)["run"]["final_output"]["result"])'
+```
+
+For LIVE tracking (which phase is running now), you cannot read a foreground
+command's stdout mid-run — the shell tool returns it only on exit. Two options:
+add **`--progress`** (NDJSON step events to stderr, which you still see in the
+tool result) and/or run it in the **background** and poll `harness dashboard
+snapshot` (the journal updates per step live). End any answer-producing program
+with `output(...)` so the answer is one field, not a step picked by label.
+
 ## Permission Note
 
 The agent that runs the program invokes the `harness` binary through its shell, so
@@ -540,7 +571,8 @@ its permission profile must allow it:
 ## Checklist
 
 - [ ] Program declares `workflow(name, design_intent)` once, before the body, with a real (>= ~20 char) design_intent.
-- [ ] Program calls only `workflow`/`agent`/`parallel`/`phase`/`log`/`args`; no clock/random/IO assumed.
+- [ ] Program calls only `workflow`/`agent`/`parallel`/`pipeline`/`phase`/`log`/`verdict`/`output`/`args`; no clock/random/IO assumed.
+- [ ] A program that produces an answer ends with `output(value)` so the caller reads `final_output.result` (a large answer goes through a `schema`'d dict, not capped free text).
 - [ ] Every agent leaf (`agent()` call / `parallel` spec) has a `provider` of `"codex"` or `"claude"`.
 - [ ] Parallel slots that EDIT files use `isolation` `"worktree"`.
 - [ ] Every leaf whose output drives control flow uses `schema={...}` and the script handles a `None` (and, in fan-outs, a non-dict) result.

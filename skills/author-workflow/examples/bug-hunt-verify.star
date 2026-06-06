@@ -117,6 +117,11 @@ report = agent(
     schema = REPORT,
 )
 
+# The triaged report IS the run's answer — declare it as the result so the calling
+# agent reads `final_output.result` directly (it is schema'd, so carried uncapped),
+# instead of digging it out of the synthesize step by label.
+output(report)
+
 # Status reflects intent: a completed review with zero confirmed bugs is still a
 # success (nothing survived scrutiny). The verdict is on whether the review ran.
 verdict(type(report) == "dict", reason = "review complete; " + str(len(confirmed)) + " bug(s) confirmed")
