@@ -3845,19 +3845,23 @@ fn workflow_real_agent_step(
     options: &WorkflowDeliveryOptions,
     spec: &workflow::AgentStepSpec,
 ) -> workflow::StepResult {
-    // Journal a `running` WorkflowStep row the instant this step starts, BEFORE
-    // the (slow) provider delivery. The SSE watcher tails workflow_steps.jsonl,
-    // so the dashboard sees each step go live as it starts — genuine per-step
-    // progress, not an end-of-run cluster. The terminal row reuses this id +
-    // start time (see `run_workflow_with_driver`).
+    // Mint the provider session id HERE, before the `running` row, and stamp it
+    // on that row — so the dashboard can link this step to its LIVE turn-event
+    // stream WHILE it runs, not only after it finishes. The worker tees each
+    // event to the shared `provider_turn_events.jsonl` keyed by this id; the
+    // per-node drill-in looks the step's `provider_session_id` up in that live
+    // buffer. If the id were only assigned on the terminal row (as before), a
+    // running step carried `None` and its live tool-by-tool activity could not be
+    // attached until it completed. The worker reuses this exact id.
     let step_id = generated_id("wfstep");
+    let session_id = generated_id("session");
     let started_at = now_string();
     let running = WorkflowStep {
         id: step_id.clone(),
         run_id: run_id.to_string(),
         phase: spec.phase.clone(),
         label: spec.label.clone(),
-        provider_session_id: None,
+        provider_session_id: Some(session_id.clone()),
         status: WorkflowStepStatus::Running,
         output_summary: None,
         result: None,
@@ -3881,7 +3885,7 @@ fn workflow_real_agent_step(
         }));
     }
 
-    let result = match try_workflow_real_agent_step(store, options, spec, run_id) {
+    let result = match try_workflow_real_agent_step(store, options, spec, run_id, &session_id) {
         Ok(mut result) => {
             result.step_id = Some(step_id.clone());
             result.started_at = Some(started_at.clone());
@@ -3944,6 +3948,7 @@ fn try_workflow_real_agent_step(
     options: &WorkflowDeliveryOptions,
     spec: &workflow::AgentStepSpec,
     run_id: &str,
+    session_id: &str,
 ) -> CliResult<workflow::StepResult> {
     // The node references a PROVIDER (not a pre-existing member). In --dry-run
     // (CI default) we return a MOCK StepResult so the run/steps journal, the
@@ -3984,7 +3989,9 @@ fn try_workflow_real_agent_step(
             provider: spec.provider.clone(),
             isolation: spec.isolation.clone(),
             ok: true,
-            provider_session_id: Some(format!("mock-session-{}", spec.label)),
+            // Reuse the caller's session id so the mock terminal row matches the
+            // `running` row's `provider_session_id` (consistent in dry-run too).
+            provider_session_id: Some(session_id.to_string()),
             output_summary,
             // The journaling identity is assigned by the caller, which already
             // journaled the `running` start row before this step began.
@@ -3998,7 +4005,7 @@ fn try_workflow_real_agent_step(
         });
     }
 
-    spawn_ephemeral_worker(store, options, spec, run_id)
+    spawn_ephemeral_worker(store, options, spec, run_id, session_id)
 }
 
 /// RAII guard owning a harness-created throwaway worktree. Its `Drop` removes the
@@ -4122,6 +4129,7 @@ fn spawn_ephemeral_worker(
     options: &WorkflowDeliveryOptions,
     spec: &workflow::AgentStepSpec,
     run_id: &str,
+    session_id: &str,
 ) -> CliResult<workflow::StepResult> {
     let repo_root = workflow_repo_root();
 
@@ -4143,8 +4151,10 @@ fn spawn_ephemeral_worker(
 
     // One ephemeral worker == one ProviderSession. The session id keys the
     // dashboard per-node drill-in (WorkflowStep.provider_session_id) and the
-    // durable NDJSON / live turn-events.
-    let session_id = generated_id("session");
+    // durable NDJSON / live turn-events. It is minted by the caller and already
+    // stamped on the `running` step row, so the live drill-in links mid-flight;
+    // the worker reuses it verbatim.
+    let session_id = session_id.to_string();
     let session_dir = store.root().join("provider-sessions").join(&session_id);
     fs::create_dir_all(&session_dir)?;
 
@@ -11925,6 +11935,66 @@ mod workflow_runtime_tests {
             "the reaped run's open step is closed to Failed"
         );
         assert!(step.ended_at.is_some());
+    }
+
+    #[test]
+    fn running_step_carries_session_id_for_live_drill_in() {
+        // The `running` row a step journals at start must carry the same
+        // provider_session_id as its terminal row — so the dashboard can link the
+        // step to its LIVE turn-event stream WHILE it runs, not only after it
+        // finishes. (dry-run exercises the journaling without spawning a worker.)
+        let store = temp_store("live-step-session");
+        let options = WorkflowDeliveryOptions {
+            dry_run: true,
+            start_runtime: false,
+            timeout_ms: 1_000,
+            max_budget_usd: None,
+            trace_retention: "durable".into(),
+            progress: false,
+        };
+        let spec = workflow::AgentStepSpec {
+            phase: "scan".into(),
+            label: "scan-context".into(),
+            provider: "claude".into(),
+            model: None,
+            isolation: None,
+            prompt: "do the thing".into(),
+            schema: None,
+            writable: false,
+            ordinal: Some(0),
+        };
+
+        let result = workflow_real_agent_step(&store, "wfrun-live", &options, &spec);
+
+        // Read the RAW append log (not the latest-wins projection) so we can
+        // inspect the `running` row distinctly from the terminal row.
+        let rows = store.workflow_steps().expect("read step rows");
+        let running = rows
+            .iter()
+            .find(|s| s.status == WorkflowStepStatus::Running)
+            .expect("a running row was journaled at step start");
+        // THE FIX: the running row must already carry a session id (was `None`).
+        let session = running
+            .provider_session_id
+            .as_deref()
+            .expect("running step carries its session id for the live drill-in");
+        assert!(
+            session.starts_with("session-"),
+            "session id is a real minted id, got {session}"
+        );
+        // The terminal row + the returned result must reuse the SAME id, so the
+        // live buffer and the durable trace resolve to one session.
+        let terminal = rows
+            .iter()
+            .find(|s| {
+                matches!(
+                    s.status,
+                    WorkflowStepStatus::Completed | WorkflowStepStatus::Failed
+                )
+            })
+            .expect("a terminal row was journaled at step finish");
+        assert_eq!(terminal.provider_session_id.as_deref(), Some(session));
+        assert_eq!(result.provider_session_id.as_deref(), Some(session));
     }
 
     #[test]
