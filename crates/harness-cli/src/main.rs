@@ -2386,6 +2386,19 @@ fn serve_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     // Start the SSE watcher thread
     sse::start_sse_watcher(store, sse_manager.clone()).map_err(CliError::Io)?;
 
+    // Start the abandoned-run reaper: periodically flip `Running` runs whose
+    // driver process has died (or legacy runs past the stale window) to `Failed`,
+    // so the dashboard never shows a phantom-running workflow after a driver is
+    // killed/crashes. The terminal rows it appends are tailed and broadcast by
+    // the SSE watcher above, so a live dashboard updates without a refetch.
+    {
+        let reaper_store = store.clone();
+        std::thread::spawn(move || loop {
+            std::thread::sleep(REAP_POLL_INTERVAL);
+            let _ = reap_stale_workflow_runs(&reaper_store);
+        });
+    }
+
     for stream in listener.incoming() {
         let stream = match stream {
             Ok(stream) => stream,
@@ -5453,11 +5466,20 @@ fn workflow_gc_trace(
 }
 
 fn workflow_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    require_subcommand(args, "workflow run|run-script|list|gc-worktrees|gc-trace")?;
+    require_subcommand(
+        args,
+        "workflow run|run-script|list|reap|gc-worktrees|gc-trace",
+    )?;
     match args[0].as_str() {
         "gc-worktrees" => {
             let result = workflow_gc_worktrees(store)?;
             print_json(&result)?;
+        }
+        "reap" => {
+            // One manual reaper pass (the serve loop runs this on an interval).
+            // Useful to clean up abandoned `Running` runs when serve is not up.
+            let reaped = reap_stale_workflow_runs(store)?;
+            print_json(&serde_json::json!({ "reaped": reaped }))?;
         }
         "gc-trace" => {
             let keep_runs = value(&args[1..], "--keep-runs")
@@ -5758,6 +5780,9 @@ fn workflow_run_script_value(
             None => serde_json::json!({ "lang": "starlark", "script": script }),
         }),
         trace_retention,
+        // Stamp this driver process's pid so the serve-side reaper can detect an
+        // abandoned run (driver killed/crashed before journaling a terminal row).
+        host_pid: Some(std::process::id()),
     };
     store.append_workflow_run(&run)?;
 
@@ -5820,6 +5845,9 @@ fn run_workflow_with_driver(
         design_intent: None,
         spec: None,
         trace_retention: "durable".to_string(),
+        // Stamp this driver process's pid so the serve-side reaper can detect an
+        // abandoned run (see the run-script path and `reap_abandoned_runs`).
+        host_pid: Some(std::process::id()),
     };
     store.append_workflow_run(&run)?;
 
@@ -8967,29 +8995,82 @@ fn latest_workflow_runs_in_append_order(store: &HarnessStore) -> CliResult<Vec<W
 /// host process is alive — so a row left `Running` past this age means the process
 /// died (crash / Ctrl-C / OOM) before finalizing it. Generous (the longest real
 /// runs are ~1.5h) so a legitimately long run is never reaped.
+// Age-based backstop for the reaper. The PRIMARY signal is host-pid liveness
+// (a killed driver is caught in seconds); this only governs legacy runs that
+// carry no `host_pid`, plus the rare pid-reuse false-negative.
 const REAP_STALE_RUN_AFTER_MS: u128 = 4 * 60 * 60 * 1000; // 4 hours
 
-/// Finalize every `Running` WorkflowRun older than [`REAP_STALE_RUN_AFTER_MS`] to
-/// `Failed`, so a crashed run does not sit `Running` forever in the store /
-/// snapshot / dashboard. Best-effort, called when a new run starts. Returns the
-/// number reaped.
+/// How often the serve-side reaper scans for abandoned runs. A killed driver is
+/// reflected on the dashboard within this window.
+const REAP_POLL_INTERVAL: Duration = Duration::from_secs(30);
+
+/// Finalize ABANDONED `Running` workflow runs to `Failed`, so a crashed / killed
+/// driver does not sit `Running` forever in the store / snapshot / dashboard.
+///
+/// A run is abandoned when EITHER:
+///   - its `host_pid` is recorded and that process is no longer alive on this
+///     host (driver killed / crashed / Ctrl-C'd) — caught within one poll,
+///     regardless of age; OR
+///   - it has been `Running` longer than [`REAP_STALE_RUN_AFTER_MS`] — the age
+///     backstop covering legacy rows with no `host_pid` (and pid reuse).
+///
+/// Reaping a run also flips its still-open (`running`/`queued`) steps to `failed`
+/// so the per-step view is not frozen mid-flight after the run itself fails. The
+/// appended terminal rows are picked up and broadcast by the SSE watcher, so a
+/// live dashboard updates without a refetch. Best-effort; returns the count of
+/// runs reaped. Same-host only — `host_pid` liveness is meaningless across hosts.
 fn reap_stale_workflow_runs(store: &HarnessStore) -> CliResult<usize> {
     let now = current_unix_ms();
+    // Group the latest step rows by run so a reaped run's open steps close too.
+    let mut steps_by_run: BTreeMap<String, Vec<WorkflowStep>> = BTreeMap::new();
+    for step in latest_workflow_steps_in_append_order(store)? {
+        steps_by_run
+            .entry(step.run_id.clone())
+            .or_default()
+            .push(step);
+    }
     let mut reaped = 0;
     for mut run in latest_workflow_runs_in_append_order(store)? {
         if run.status != WorkflowRunStatus::Running {
             continue;
         }
         let age = now.saturating_sub(created_ms(&run.created_at));
-        if age < REAP_STALE_RUN_AFTER_MS {
+        let pid_dead = run.host_pid.map(|pid| !pid_is_alive(pid)).unwrap_or(false);
+        let too_old = age >= REAP_STALE_RUN_AFTER_MS;
+        if !pid_dead && !too_old {
             continue;
+        }
+        // Close any non-terminal steps so the dashboard's per-step status is not
+        // stuck at `running` after the run itself is failed.
+        if let Some(steps) = steps_by_run.get(&run.id) {
+            for step in steps {
+                if !matches!(
+                    step.status,
+                    WorkflowStepStatus::Running | WorkflowStepStatus::Queued
+                ) {
+                    continue;
+                }
+                let mut closed = step.clone();
+                closed.status = WorkflowStepStatus::Failed;
+                closed.ended_at = Some(now_string());
+                closed.output_summary = Some(match closed.output_summary.as_deref() {
+                    Some(s) if !s.is_empty() => format!("{s} [reaped: driver process gone]"),
+                    _ => "reaped: driver process gone".to_string(),
+                });
+                store.append_workflow_step(&closed)?;
+            }
         }
         run.status = WorkflowRunStatus::Failed;
         run.ended_at = Some(now_string());
-        run.summary = Some(format!(
-            "reaped: orphaned Running for ~{}h — host process exited before the run finalized",
-            age / (60 * 60 * 1000)
-        ));
+        run.summary = Some(match run.host_pid {
+            Some(pid) if pid_dead => format!(
+                "reaped: driver process (pid {pid}) is no longer alive — the run was abandoned before it finalized"
+            ),
+            _ => format!(
+                "reaped: orphaned Running for ~{}h — host process exited before the run finalized",
+                age / (60 * 60 * 1000)
+            ),
+        });
         store.append_workflow_run(&run)?;
         reaped += 1;
     }
@@ -11684,6 +11765,7 @@ mod workflow_runtime_tests {
                 design_intent: None,
                 spec: None,
                 trace_retention: "durable".into(),
+                host_pid: None,
             })
             .expect("append run");
         store
@@ -11722,6 +11804,7 @@ mod workflow_runtime_tests {
             design_intent: None,
             spec: None,
             trace_retention: "durable".into(),
+            host_pid: None,
         };
         // One Running run 5h old -> reaped to Failed; one started "now" -> stays.
         store
@@ -11744,6 +11827,104 @@ mod workflow_runtime_tests {
             .contains("reaped"));
         assert!(find("wfrun-old").ended_at.is_some());
         assert_eq!(find("wfrun-fresh").status, WorkflowRunStatus::Running);
+    }
+
+    #[test]
+    fn reap_finalizes_runs_whose_host_process_is_dead_regardless_of_age() {
+        let store = temp_store("reap-pid");
+        // A child we immediately reap, so its pid is guaranteed dead on this host.
+        let mut child = std::process::Command::new("true")
+            .spawn()
+            .expect("spawn true");
+        let dead_pid = child.id();
+        child.wait().expect("wait true");
+
+        let now = current_unix_ms();
+        // Created "now" (well under the 4h backstop) but its driver pid is dead —
+        // so it must be reaped on pid-liveness alone, not the age window.
+        store
+            .append_workflow_run(&WorkflowRun {
+                id: "wfrun-dead".into(),
+                workflow_name: "demo".into(),
+                status: WorkflowRunStatus::Running,
+                step_ids: vec!["wfstep-dead".into()],
+                created_at: format!("unix-ms:{now}"),
+                ended_at: None,
+                summary: None,
+                args: None,
+                agents_spawned: 0,
+                final_output: None,
+                initiated_by: Some("op".into()),
+                design_intent: None,
+                spec: None,
+                trace_retention: "durable".into(),
+                host_pid: Some(dead_pid),
+            })
+            .expect("append run");
+        // A still-open step under it must be closed to Failed by the reaper too.
+        store
+            .append_workflow_step(&WorkflowStep {
+                id: "wfstep-dead".into(),
+                run_id: "wfrun-dead".into(),
+                phase: "scan".into(),
+                label: "scan-context".into(),
+                provider_session_id: None,
+                status: WorkflowStepStatus::Running,
+                output_summary: None,
+                result: None,
+                started_at: format!("unix-ms:{now}"),
+                ended_at: None,
+            })
+            .expect("append step");
+        // A run with a LIVE pid (this test process) must be left alone.
+        store
+            .append_workflow_run(&WorkflowRun {
+                id: "wfrun-live".into(),
+                workflow_name: "demo".into(),
+                status: WorkflowRunStatus::Running,
+                step_ids: vec![],
+                created_at: format!("unix-ms:{now}"),
+                ended_at: None,
+                summary: None,
+                args: None,
+                agents_spawned: 0,
+                final_output: None,
+                initiated_by: Some("op".into()),
+                design_intent: None,
+                spec: None,
+                trace_retention: "durable".into(),
+                host_pid: Some(std::process::id()),
+            })
+            .expect("append live run");
+
+        let reaped = reap_stale_workflow_runs(&store).expect("reap");
+        assert_eq!(reaped, 1, "only the dead-pid run is reaped");
+
+        let runs = latest_workflow_runs_in_append_order(&store).expect("read runs");
+        let find = |id: &str| runs.iter().find(|r| r.id == id).expect("run present");
+        assert_eq!(find("wfrun-dead").status, WorkflowRunStatus::Failed);
+        assert!(find("wfrun-dead")
+            .summary
+            .as_deref()
+            .unwrap_or("")
+            .contains("no longer alive"));
+        assert_eq!(
+            find("wfrun-live").status,
+            WorkflowRunStatus::Running,
+            "a run whose driver is still alive must not be reaped"
+        );
+
+        let steps = latest_workflow_steps_in_append_order(&store).expect("read steps");
+        let step = steps
+            .iter()
+            .find(|s| s.id == "wfstep-dead")
+            .expect("step present");
+        assert_eq!(
+            step.status,
+            WorkflowStepStatus::Failed,
+            "the reaped run's open step is closed to Failed"
+        );
+        assert!(step.ended_at.is_some());
     }
 
     #[test]

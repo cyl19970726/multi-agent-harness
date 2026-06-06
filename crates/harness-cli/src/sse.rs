@@ -373,6 +373,7 @@ mod tests {
             design_intent: None,
             spec: None,
             trace_retention: "durable".into(),
+            host_pid: None,
         }
     }
 
