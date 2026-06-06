@@ -1305,6 +1305,16 @@ pub struct WorkflowRun {
     /// retain it. Live streaming is independent of this and always happens.
     #[serde(default = "default_trace_retention")]
     pub trace_retention: String,
+    /// OS process id of the `harness workflow run-script`/`run` invocation that
+    /// drives this run, stamped on the initial `running` row. The serve-side
+    /// reaper uses it to detect an ABANDONED run: if the run is still `running`
+    /// but this pid is no longer alive on the host, the driver died (killed /
+    /// crashed / Ctrl-C) before journaling a terminal outcome, so the reaper
+    /// flips it (and its non-terminal steps) to `failed`. `None` for legacy rows
+    /// that predate the field — those fall back to a stale-activity timeout.
+    /// Same-host only (the store, serve, and driver all run locally).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_pid: Option<u32>,
 }
 
 /// Default retention policy for a [`WorkflowRun`]'s turn-event trace. Legacy rows

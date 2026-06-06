@@ -1,3 +1,4 @@
+import { parseTs } from "./readModel";
 import type { WorkflowStep } from "../types";
 
 /**
@@ -74,8 +75,11 @@ interface Window {
 
 /** A step's time window; a still-running step is treated as open until now. */
 function stepWindow(step: WorkflowStep): Window {
-  const start = Date.parse(step.started_at);
-  const end = step.ended_at ? Date.parse(step.ended_at) : Date.now();
+  // Harness timestamps are "unix-ms:<ms>", which `Date.parse` returns NaN for —
+  // use the shared `parseTs` so the gantt geometry and serial/parallel inference
+  // reflect real windows instead of collapsing every step to the same instant.
+  const start = parseTs(step.started_at);
+  const end = step.ended_at ? parseTs(step.ended_at) : Date.now();
   return {
     start: Number.isNaN(start) ? 0 : start,
     end: Number.isNaN(end) ? Number.MAX_SAFE_INTEGER : end,
