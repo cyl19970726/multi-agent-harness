@@ -153,6 +153,12 @@ struct StarlarkCtx<'a> {
     /// The success criterion from the `workflow(..., success_criterion=…)` header,
     /// surfaced in the run summary alongside the verdict.
     success_criterion: RefCell<Option<String>>,
+    /// The run's declared RESULT — the first-class return value an author sets via
+    /// `output(value)`. Persisted verbatim under `final_output.result` (NOT subject
+    /// to the per-step `output_summary` cap), so the calling agent reads one
+    /// unambiguous field instead of digging the answer out of a step by label. The
+    /// last call wins. `None` = the script never declared one.
+    output: RefCell<Option<serde_json::Value>>,
     /// Monotonic deterministic leaf-ordinal counter. Assigned ON THE EVAL THREAD
     /// (single-threaded, before any fan-out) so the Nth leaf of a re-run equals the
     /// Nth originally as long as control flow matches. One ordinal per `agent()`
@@ -926,6 +932,21 @@ fn workflow_globals(builder: &mut GlobalsBuilder) {
         Ok(NoneType)
     }
 
+    /// Declare the run's RESULT — the first-class answer the calling agent reads
+    /// back. The `value` (a string, dict, or any Starlark value) is persisted
+    /// verbatim under `final_output.result`, so a caller reads ONE unambiguous field
+    /// instead of guessing which step's `output_summary` holds the answer. Unlike a
+    /// step summary it is NOT capped, so a structured `value` carries full fidelity
+    /// (a free-text `agent()` return was already capped at the worker boundary — pass
+    /// a `schema=`'d dict for a large answer). The last call wins.
+    fn output<'v>(
+        #[starlark(require = pos)] value: Value<'v>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<NoneType> {
+        *ctx_of(eval).output.borrow_mut() = Some(value_to_json(value));
+        Ok(NoneType)
+    }
+
     /// Emit a progress line (collected for the run's narration).
     fn log<'v>(
         #[starlark(require = pos)] message: String,
@@ -1061,6 +1082,7 @@ pub fn run_starlark_with_budget(
         spent_usd: Cell::new(0.0),
         verdict: RefCell::new(None),
         success_criterion: RefCell::new(None),
+        output: RefCell::new(None),
         ordinal_next: Cell::new(0),
         replay: replay.unwrap_or_default(),
     };
@@ -1115,6 +1137,7 @@ pub fn run_starlark_with_budget(
     let logs = ctx.logs.into_inner();
     let verdict = ctx.verdict.into_inner();
     let success_criterion = ctx.success_criterion.into_inner();
+    let output = ctx.output.into_inner();
     let mut outcome = outcome_from_steps(name, steps, spawned_before);
     // A declared verdict makes the run status INTENT-RELATIVE: mechanical
     // step-success becomes necessary-but-not-sufficient, so a run whose workers all
@@ -1140,11 +1163,13 @@ pub fn run_starlark_with_budget(
         );
     }
     // Persist the run's NARRATION + GRADING metadata into final_output so it
-    // survives the run instead of being dropped: the `log()` lines, the typed
-    // `verdict`, and the declared `success_criterion`. The prior final_output (the
-    // per-step array) moves under `steps`. Everything is now auditable post-hoc.
+    // survives the run instead of being dropped: the declared `output()` RESULT, the
+    // `log()` lines, the typed `verdict`, and the declared `success_criterion`. The
+    // per-step array moves under `steps`. The calling agent reads `result` as the
+    // run's one unambiguous answer; everything else is auditable post-hoc.
     let steps_output = outcome.final_output.take();
     outcome.final_output = Some(serde_json::json!({
+        "result": output,
         "steps": steps_output,
         "logs": logs,
         "verdict": verdict
@@ -1646,6 +1671,41 @@ agent("use this: " + encoded + " score=" + str(roundtrip["score"]))
         assert!(fo["steps"].as_array().expect("steps array").len() == 1);
         // And the verdict still drove the status.
         assert_eq!(run.outcome.status, WorkflowRunStatus::Failed);
+        // No output() was declared, so the run's result is null (not omitted), so a
+        // caller can distinguish "no declared answer" from a missing field.
+        assert_eq!(fo["result"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn output_surfaces_declared_result_in_final_output() {
+        // output(value) is the run's first-class return: the calling agent reads
+        // final_output.result as the one unambiguous answer, verbatim, uncapped —
+        // a dict stays a dict (not stringified, not dug out of a step by label).
+        let seen = Mutex::new(Vec::new());
+        let script = "workflow(\"demo\", \"produce an answer and declare it as the result\")\nagent(\"do the work\")\noutput({\"report\": \"all clear\", \"confirmed\": 3})\n";
+        let run = {
+            let driver = recording_driver(&seen);
+            run_starlark(script, "demo", None, &driver).expect("run ok")
+        };
+        let fo = run.outcome.final_output.expect("final_output present");
+        assert_eq!(fo["result"]["report"], serde_json::json!("all clear"));
+        assert_eq!(fo["result"]["confirmed"], serde_json::json!(3));
+        // The per-step array still rides alongside under `steps`.
+        assert_eq!(fo["steps"].as_array().expect("steps array").len(), 1);
+    }
+
+    #[test]
+    fn output_accepts_a_bare_string_and_last_call_wins() {
+        // A free-text answer is allowed (stored as a JSON string), and the LAST
+        // output() call wins — so a refine loop can overwrite the draft answer.
+        let seen = Mutex::new(Vec::new());
+        let script = "workflow(\"demo\", \"declare a textual result, then supersede it\")\noutput(\"first draft\")\noutput(\"final answer\")\n";
+        let run = {
+            let driver = recording_driver(&seen);
+            run_starlark(script, "demo", None, &driver).expect("run ok")
+        };
+        let fo = run.outcome.final_output.expect("final_output present");
+        assert_eq!(fo["result"], serde_json::json!("final answer"));
     }
 
     /// A driver that records each spec's (label, writable) so writable-flow tests
