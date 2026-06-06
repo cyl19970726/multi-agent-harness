@@ -4105,6 +4105,22 @@ impl WorktreeGuard {
     /// throwaway checkout of HEAD the worker mutates in isolation. Uniform for
     /// both providers (the harness owns the worktree; we never use claude's -w).
     fn create(repo_root: &Path, run_id: &str, node_label: &str) -> CliResult<WorktreeGuard> {
+        // A writable / isolation="worktree" step runs in a throwaway git worktree.
+        // If the workflow's cwd is NOT a git repo, `git worktree add` fails with a
+        // cryptic "fatal: not a git repository". Catch that up front with an
+        // actionable message (issue #89 item 5): the user either runs from a git
+        // repo or keeps the step read-only and pulls the output via get-output.
+        if !is_git_repo(repo_root) {
+            return Err(CliError::Usage(format!(
+                "node '{node_label}' needs an isolated git worktree (it is writable, \
+                 or sets isolation=\"worktree\"), but {} is not a git repository. \
+                 Either run the workflow from a git repo (e.g. `git init` there), or \
+                 make this step READ-ONLY (drop writable / isolation) and retrieve its \
+                 output with `harness workflow get-output <run_id> --step {node_label}`.",
+                repo_root.display()
+            )));
+        }
+
         let slug = sanitize_worktree_slug(node_label);
         let rel = format!(".harness/worktrees/{run_id}-{slug}");
         let path = repo_root.join(&rel);
@@ -4191,6 +4207,20 @@ fn sanitize_worktree_slug(label: &str) -> String {
 /// the gitignored `.harness/worktrees/` beneath it.
 fn workflow_repo_root() -> PathBuf {
     env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+}
+
+/// Whether `path` is inside a git work tree — `git -C <path> rev-parse
+/// --is-inside-work-tree` exits 0 and prints `true`. Used to fail a
+/// writable/isolated workflow step with a clear message BEFORE attempting a
+/// `git worktree add` that would otherwise error cryptically (issue #89 item 5).
+fn is_git_repo(path: &Path) -> bool {
+    Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .args(["rev-parse", "--is-inside-work-tree"])
+        .output()
+        .map(|out| out.status.success())
+        .unwrap_or(false)
 }
 
 /// Spin up a NEW one-shot EDITABLE ephemeral worker for one `agent()` node and
@@ -12534,6 +12564,28 @@ mod workflow_runtime_tests {
         )
         .is_err());
         assert!(workflow_get_output_value(&store, &["wfrun-missing".to_string()]).is_err());
+    }
+
+    #[test]
+    fn worktree_create_in_non_git_dir_gives_actionable_error() {
+        // A writable / isolated step in a non-git cwd must fail with guidance, not
+        // the cryptic raw `git worktree add` error (issue #89 item 5).
+        let dir = std::env::temp_dir().join(format!("harness-nongit-{}", generated_id("ng")));
+        std::fs::create_dir_all(&dir).expect("mk non-git dir");
+        // (WorktreeGuard isn't Debug — match instead of expect_err.)
+        let msg = match WorktreeGuard::create(&dir, "wfrun-x", "writer") {
+            Ok(_) => panic!("a non-git dir must fail clearly, not attempt git worktree add"),
+            Err(e) => e.to_string(),
+        };
+        assert!(
+            msg.contains("not a git repository"),
+            "names the cause: {msg}"
+        );
+        assert!(
+            msg.contains("git init") && msg.contains("get-output"),
+            "offers both fixes (git init / read-only + get-output): {msg}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
