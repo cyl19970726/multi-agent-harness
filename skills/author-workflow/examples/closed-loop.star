@@ -102,6 +102,12 @@ for attempt in range(MAX_ATTEMPTS):
         label = "refine:" + str(attempt + 1),
     )
 
+# ---- the hardened artifact IS the answer — declare it as the run's result ----
+# The calling agent reads `final_output.result` instead of the last refine step.
+# (This artifact is free text, so it rode through the ~4000-char step cap; for a
+# larger answer, have the final producer return a schema'd dict and output() that.)
+output(artifact)
+
 # ---- E: typed VERDICT — status reflects intent, not just step success --------
 verdict(
     passed,

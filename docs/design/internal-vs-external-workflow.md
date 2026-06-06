@@ -343,12 +343,13 @@ for finding in candidates:
         confirmed.append(finding)
 log(str(len(confirmed)) + " of " + str(len(candidates)) + " survived")
 
-# --- synthesize + typed verdict ---
+# --- synthesize, declare the result, typed verdict ---
 phase("synthesize")
 report = agent(
     "Synthesize a triaged report from these CONFIRMED findings (do NOT re-litigate):\n- " +
     "\n- ".join(confirmed),
     schema = REPORT)
+output(report)          # the run's first-class answer; caller reads final_output.result
 verdict(type(report) == "dict",
         reason = "review complete; " + str(len(confirmed)) + " finding(s) confirmed")
 ```
@@ -364,7 +365,7 @@ predict**:
 | Per-finding verify panel | A `parallel()` **nested inside the `pipeline` stage callback** | A **Starlark `for`-loop over `parallel()` calls** (a stage template can't fan out per item) | 1 |
 | Finding shape | `review.findings` is an **array of objects**; verdict is grafted with `{...f, refuted}` | `findings` is **one string**, `.splitlines()`-ed; the finding stays an opaque line | 2 |
 | Collapse + screen | `.flat().filter(Boolean).filter(f => !f.refuted)` | explicit `for` loops accumulating into `confirmed` | 1 |
-| Outcome | `return { confirmed, report }` to the caller | `verdict(...)` **persisted on the run record** | 3 |
+| Outcome / answer | `return { confirmed, report }` to the caller | `output(report)` → `final_output.result`; `verdict(...)` → status, both **persisted on the run record** | 3 |
 | Header | `meta = { name, description, phases }` | `workflow(name, design_intent, budget_usd=, success_criterion=)` — intent mandatory | 3 |
 
 The external version is **longer and more explicit** — not because the runtime is
@@ -397,6 +398,13 @@ not to a missing feature.
    `design_intent`, durable journaling, cross-restart resume, and the reaper are
    the dividend of being a standing artifact — lean on them, and always declare a
    real `success_criterion` + `verdict()`.
+6. **The result exit is the CLI contract.** The caller is an agent invoking us
+   through its shell tool, so our **stdout is its tool result** — we are a CLI
+   tool. `output(value)` makes the answer one field (`final_output.result`,
+   uncapped) instead of a step picked by label; `--progress` streams the
+   phase-by-phase timeline to stderr for live tracking. A foreground call returns
+   its output only on exit, so true live monitoring means `--progress` and/or a
+   background run that polls the per-step journal.
 
 ---
 
@@ -415,5 +423,7 @@ workflow:
   one-per-line strings + `.splitlines()` (root cause 2).
 - An edit step → make it the **one** `writable` worker and run the gate inside it
   (root cause 4).
+- The run's answer → `output(value)` so the caller reads `final_output.result`,
+  not a step picked by label; `--progress` for a live phase timeline (root cause 3).
 - The run's success → a declared `success_criterion` + a typed `verdict()`, not
   just "the workers ran" (root cause 3).
