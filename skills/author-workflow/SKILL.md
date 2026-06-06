@@ -149,6 +149,16 @@ controls the workflow's CONTROL FLOW.
 dict in the result list, an unschema'd (or unparsed) spec yields its summary
 string — so guard with `type(x) == "dict"` when a fan-out mixes them.
 
+**Field types — a `schema` value is enforced as a STRING.** The flat
+`{"key": "hint"}` form makes every field a string on live runs (the hint guides
+the worker; the runtime enforces the key is present). To get a LIST of items out
+of a leaf, have it return them ONE PER LINE and `.splitlines()` the field — the
+robust, dry-run-safe idiom the examples use (`for x in res["items"].splitlines()`).
+For hard array/enum/nested enforcement on a live run, pass a full JSON Schema dict
+(`{"type": "object", "properties": {...}, "required": [...]}`) — it is enforced
+natively, but `--dry-run`'s mock only fills the flat form, so prefer the
+one-per-line idiom in examples that must run under `--dry-run`.
+
 ## The Quality Patterns
 
 A workflow earns its keep by CROSS-CHECKING, not by doing one big call. The
@@ -381,6 +391,28 @@ worktree and joins before the run finalizes. The fan-out WIDTH is decided at
 runtime from the scan's output — a comprehension over its lines — which no static
 shape could express.
 
+## Worked Example: a design tournament (divergent → convergent)
+
+The fullest **divergent-then-convergent** shape — the pattern the real internal
+design runs use. Two parallel TYPED probes map the domain + the constraints;
+three complete designs are generated from orthogonal philosophies, **each seeded
+with the understanding injected forward** (`json.encode`); then a judge scores
+them on named dimensions and grafts ONE winner. Every handoff is a multi-field
+schema, so each step reads typed fields, not prose.
+[`examples/design-tournament.star`](examples/design-tournament.star) — runs under
+`--dry-run`.
+
+## Worked Example: assess → adversarial-verify → synthesize (`pipeline`)
+
+Evaluation as an ADVERSARIAL DIALOGUE, streamed with `pipeline()`:
+`pipeline(dimensions, assess, verify)` flows each dimension `assess → verify` with
+NO barrier; the verifier is fed the assessment (`{input}` forward-injection) and
+tries to REFUTE each claim, emitting a corrected verdict; then one report
+synthesizes the VERIFIED verdicts. A single assessor over-claims — an independent
+refuter that must consolidate a corrected verdict is what makes the synthesis
+trustworthy. [`examples/assess-verify-synthesize.star`](examples/assess-verify-synthesize.star)
+— runs under `--dry-run`.
+
 ## Run It
 
 Write the program to a file, then invoke the CLI. The program's `provider` values
@@ -398,7 +430,9 @@ Useful flags:
 | `--args <json>` | Injected as the `args` global. |
 | `--dry-run` | Use a mock driver so the program runs end-to-end without spawning agents. |
 | `--start-runtime` | Start the provider runtime if it is not already running. |
-| `--timeout-ms <ms>` | Per-step delivery timeout (default 3000). |
+| `--timeout-ms <ms>` | Per-worker wall-clock timeout (default 300000 = 5 min; a hung worker is killed, the run continues). |
+| `--max-budget-usd <amt>` | Per-run spend ceiling; once cumulative cost reaches it, further leaves short-circuit into failed `budget` steps (also settable via `workflow(budget_usd=…)`). |
+| `--resume <prior_run_id>` | Re-run the SAME program reusing the prior run's SUCCEEDED leaves (no re-spend); fails if the script changed. |
 | `--trace durable\|live` | Retain the heavy per-step turn-event trace (`durable`, default) or stream-only (`live`). |
 
 The command prints the journaled run as JSON, including the new `run` id.
