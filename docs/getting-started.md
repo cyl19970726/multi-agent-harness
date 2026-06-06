@@ -69,6 +69,16 @@ pnpm dashboard:dev          # then open the printed URL and click "Load live"
 the live SSE stream) to show each workflow run's per-step progress, tokens, cost,
 and drill-in.
 
+> **`serve` and `run-script` must point at the SAME store.** Each resolves the
+> store root as: `--store <path>` → `HARNESS_ROOT` env → the nearest existing
+> `.harness` walking up from the cwd → `./.harness`. So a `serve` and a
+> `run-script` started anywhere inside the same project tree (which already has a
+> `.harness`) converge automatically. If you run them from unrelated directories,
+> pass the same explicit path to both, e.g. `--store /abs/path/.harness` — otherwise
+> the run journals to one store while the dashboard reads another and shows
+> **nothing**. Both commands print the absolute store path they resolved on
+> startup, so you can compare them at a glance.
+
 ## 3. Author + run a workflow
 
 With the skill installed, ask your agent (Codex or Claude Code) to author a
@@ -94,6 +104,7 @@ Run it through the harness:
 ```bash
 ./target/debug/harness workflow run-script hello.star
 # bounded + safe options:
+#   --store <path>          write to a specific store (match your `serve`'s)
 #   --timeout-ms 300000     per-worker wall-clock ceiling
 #   --max-budget-usd 2.00   per-run spend ceiling (short-circuits when reached)
 #   --resume <prior_run_id> reuse a crashed run's succeeded leaves (no re-spend)
