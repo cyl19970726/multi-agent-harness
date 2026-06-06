@@ -1,49 +1,73 @@
-# BUG HUNT with adversarial verification — a QUALITY review, not a naive fan-out.
-# Diverse finders look from orthogonal lenses; every candidate is then cross-
-# examined by a skeptic PANEL that each tries to REFUTE it (defaulting to refuted
-# when unsure), and a finding survives only if a MAJORITY fail to refute it. The
-# survivors are synthesized into a report. This is the review-harness shape the
-# internal `multica-layout-review` run uses.
+# BUG HUNT with adversarial verification — a QUALITY review, the shape the internal
+# `multica-layout-review` run uses. Diverse finders hunt from orthogonal lenses;
+# every candidate is then cross-examined by a skeptic PANEL that each tries to
+# REFUTE it (defaulting to refuted when unsure); a finding survives only if a
+# MAJORITY fail to refute it; the survivors are synthesized into a triaged report.
 #
-# Note on schema fields: a `schema` field is natively enforced as a STRING, so a
-# finder returns its findings as ONE-PER-LINE TEXT and we `.splitlines()` it — a
-# robust way to get a list of items out of a structured leaf.
+# Note the prompt shape: every leaf has a ROLE, an explicit what-to-READ, the
+# categories to HUNT, and an exact OUTPUT format — not a one-liner. A `schema`
+# field is enforced as a STRING, so list-valued returns come back one-per-line
+# and are `.splitlines()`-ed.
 #
-# Read-only. Run:  harness workflow run-script ./bug-hunt-verify.star \
-#   --args '{"area":"the checkout flow in src/checkout"}'
+# Run:  harness workflow run-script ./bug-hunt-verify.star \
+#   --args '{"area":"the order-pricing module in src/pricing"}'
 
 workflow(
     "bug-hunt-verify",
     "Fan out diverse bug-finders from orthogonal lenses, then adversarially verify " +
     "EACH candidate with a skeptic panel (a majority must fail to refute) so only " +
-    "cross-checked bugs survive, then synthesize the confirmed set — survival-of-" +
+    "cross-checked bugs survive, then synthesize a triaged report — survival-of-" +
     "scrutiny, not a single rubber-stamp.",
-    budget_usd = 6.0,
+    budget_usd = 8.0,
     success_criterion = "every reported bug survived an adversarial skeptic panel",
 )
 
 area = args["area"]
 
-# ---- find: diverse finders, each returns its findings as one-per-line text ----
+# ---- COMMON: the shared frame every worker receives --------------------------
+COMMON = (
+    "AREA UNDER REVIEW: " + area + ".\n" +
+    "Ground EVERY claim in the actual code — name the file and the line. A 'bug' is " +
+    "behavior that is wrong, unsafe, or contract-violating; it is NOT a style nit, a " +
+    "naming preference, or a hypothetical. Do not speculate."
+)
+
+# ---- typed contracts ---------------------------------------------------------
+FINDINGS = {
+    "findings": "each concrete bug you can justify, ONE PER LINE, formatted as " +
+                "`<file>:<line> — <the bug and the concrete failure it causes>`",
+}
+SKEPTIC = {
+    "refuted": "bool: true unless you can clearly confirm this is a REAL bug in the actual code",
+    "reason": "one sentence: why it is (not) a real bug, citing the code",
+}
+REPORT = {
+    "summary": "2-3 sentence overall verdict on the area's correctness",
+    "must_fix": "the blocking bugs that should gate a merge, one per line",
+    "should_fix": "the non-blocking but real bugs, one per line",
+}
+
+# ---- find: diverse finders from orthogonal lenses ----------------------------
 phase("find")
 lenses = [
-    "logic and off-by-one errors",
-    "error handling and unchecked failures",
-    "concurrency and shared-state races",
+    {"key": "logic", "what": "logic and off-by-one errors: wrong conditions, boundary mistakes, mishandled empty/edge cases, incorrect ordering or rounding"},
+    {"key": "failure", "what": "error handling: unchecked failures, swallowed errors, unhandled null/empty, partial writes, resources never released"},
+    {"key": "concurrency", "what": "concurrency and shared state: races, unguarded mutation, deadlocks, ordering assumptions that don't hold under interleaving"},
 ]
 finds = parallel([
     {
-        "prompt": "Hunt for " + lens + " in " + area + ". Report ONLY concrete bugs you " +
-                  "can justify, ONE PER LINE, each naming the location and the defect. " +
-                  "No prose, no preamble.",
+        "prompt": COMMON + "\n\nYou are a specialist bug-finder. READ all of " + area +
+                  " (and the code it calls into) and HUNT specifically for " + lens["what"] +
+                  ".\n\nReport ONLY concrete, justifiable bugs — each on its own line as " +
+                  "`<file>:<line> — <bug + the failure it causes>`. No prose, no preamble.",
         "provider": "codex",
-        "label": "find:" + lens,
-        "schema": {"findings": "the concrete bugs, one per line"},
+        "label": "find:" + lens["key"],
+        "schema": FINDINGS,
     }
     for lens in lenses
 ])
 
-# Flatten: each finder returns a dict whose `findings` is newline-separated text.
+# Flatten the finders' one-per-line findings into a candidate list.
 candidates = []
 for res in finds:
     if type(res) == "dict" and type(res["findings"]) == "string":
@@ -53,44 +77,46 @@ for res in finds:
                 candidates.append(line)
 log("collected " + str(len(candidates)) + " candidate findings")
 
-# ---- verify: a skeptic panel per finding, default-refute ----------------------
-# Each skeptic must ACTIVELY confirm a real bug or it counts as refuted, so a
-# finding only survives if a MAJORITY of the panel did NOT refute it.
+# ---- verify: a skeptic panel per finding, default-refute ---------------------
 phase("verify")
 SKEPTICS = 3
 confirmed = []
 for finding in candidates:
     panel = parallel([
         {
-            "prompt": "You are a skeptical reviewer of " + area + ". Try to REFUTE this " +
-                      "claimed bug: \"" + finding + "\". Set refuted=true unless you can " +
-                      "clearly confirm it is a REAL bug in the actual code.",
+            "prompt": COMMON + "\n\nYou are a SKEPTICAL reviewer whose job is to REFUTE " +
+                      "weak bug reports. Try hard to refute this claimed bug:\n  \"" + finding +
+                      "\"\n\nCheck the ACTUAL code: does the failure really occur, on a reachable " +
+                      "path, given the real types and guards? Set refuted=true unless you can " +
+                      "clearly confirm it is a real bug; set refuted=false ONLY when you are " +
+                      "confident, citing the line.",
             "provider": "codex",
             "label": "skeptic",
-            "schema": {"refuted": "bool", "reason": "one sentence"},
+            "schema": SKEPTIC,
         }
         for _ in range(SKEPTICS)
     ])
-    # A missing / non-dict vote counts as refuted (conservative).
+    # A missing / non-dict / non-false vote counts as refuted (conservative).
     refuted = 0
     for v in panel:
         if not (type(v) == "dict" and v["refuted"] == False):
             refuted += 1
-    if refuted * 2 < SKEPTICS:   # majority did NOT refute
+    if refuted * 2 < SKEPTICS:   # a MAJORITY did NOT refute it
         confirmed.append(finding)
 log(str(len(confirmed)) + " of " + str(len(candidates)) + " findings survived the panel")
 
-# ---- synthesize: a report from the CONFIRMED set ------------------------------
+# ---- synthesize: a triaged report from the CONFIRMED set ---------------------
 phase("synthesize")
 report = agent(
-    "Write a concise, prioritized bug report for " + area + " from these CONFIRMED " +
-    "findings (each survived an adversarial skeptic panel). Group by severity.\n\n" +
-    "CONFIRMED:\n- " + "\n- ".join(confirmed),
+    COMMON + "\n\nYou are the reviewer of record. Write a tight, triaged bug report from " +
+    "these CONFIRMED findings — each already survived an adversarial skeptic panel, so do " +
+    "NOT re-litigate them; classify each as must_fix (blocks merge) or should_fix.\n\n" +
+    "CONFIRMED FINDINGS:\n- " + "\n- ".join(confirmed),
     provider = "codex",
     label = "synthesize",
-    schema = {"summary": "2-3 sentence overall", "must_fix": "the blocking bugs, one per line"},
+    schema = REPORT,
 )
 
-# Status reflects intent: a report with no confirmed bugs is still a successful
-# review (nothing survived scrutiny) — verdict on whether the review COMPLETED.
-verdict(type(report) == "dict", reason = "review complete; " + str(len(confirmed)) + " confirmed")
+# Status reflects intent: a completed review with zero confirmed bugs is still a
+# success (nothing survived scrutiny). The verdict is on whether the review ran.
+verdict(type(report) == "dict", reason = "review complete; " + str(len(confirmed)) + " bug(s) confirmed")
