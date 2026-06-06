@@ -4332,7 +4332,7 @@ fn spawn_ephemeral_worker(
     }
     if !spawn.ok && !spawn.stderr.trim().is_empty() {
         let err = spawn.stderr.replace('\n', " ");
-        let err = if err.len() > 160 { &err[..160] } else { &err };
+        let err = truncate_on_char_boundary(&err, 160);
         output_summary.push_str(&format!(" [error: {err}]"));
     }
     if schema_failed {
@@ -4575,12 +4575,7 @@ fn build_step_details(
 
     if let Some(diff) = diff {
         let (text, truncated) = if diff.len() > WORKTREE_DIFF_CAP {
-            // Truncate on a char boundary at or below the cap.
-            let mut end = WORKTREE_DIFF_CAP;
-            while end > 0 && !diff.is_char_boundary(end) {
-                end -= 1;
-            }
-            (&diff[..end], true)
+            (truncate_on_char_boundary(diff, WORKTREE_DIFF_CAP), true)
         } else {
             (diff, false)
         };
@@ -7522,10 +7517,27 @@ fn json_path_string(value: &serde_json::Value, path: &[&str]) -> Option<String> 
     current.as_str().map(str::to_string)
 }
 
+/// Truncate `s` to at most `max` BYTES without splitting a UTF-8 char: byte
+/// slicing (`&s[..max]`) panics when `max` lands inside a multi-byte char (CJK,
+/// emoji, …), so back off to the nearest char boundary at or below `max` first.
+/// Used on every summary/error path that bounds an arbitrary (possibly non-ASCII)
+/// provider string — a formatting nicety must never be able to panic a live run
+/// after the agent work (and its tokens) are already spent. (issue #89, item 1)
+fn truncate_on_char_boundary(s: &str, max: usize) -> &str {
+    if s.len() <= max {
+        return s;
+    }
+    let mut end = max;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
 fn summarize_json_value(value: &serde_json::Value) -> String {
     let raw = serde_json::to_string(value).unwrap_or_else(|_| "provider event".into());
     if raw.len() > 240 {
-        format!("{}...", &raw[..240])
+        format!("{}...", truncate_on_char_boundary(&raw, 240))
     } else {
         raw
     }
@@ -12106,6 +12118,32 @@ mod workflow_runtime_tests {
             .as_deref()
             .expect("jsonl_ref points at the live file")
             .ends_with("claude.stream-json.ndjson"));
+    }
+
+    #[test]
+    fn truncate_on_char_boundary_never_splits_a_multibyte_char() {
+        // ASCII shorter than the cap is returned unchanged.
+        assert_eq!(truncate_on_char_boundary("hello", 160), "hello");
+
+        // issue #89 P0: a CJK string whose byte cap (240) lands INSIDE a 3-byte
+        // char must back off to a char boundary instead of panicking on `&s[..240]`.
+        let cjk = "保留中文输出不要崩溃".repeat(40); // 10 chars * 3 bytes * 40
+        let out = truncate_on_char_boundary(&cjk, 240);
+        assert!(out.len() <= 240, "respects the byte cap");
+        assert!(cjk.starts_with(out), "is a valid prefix");
+        assert!(
+            cjk.is_char_boundary(out.len()),
+            "ends on a char boundary (no split)"
+        );
+
+        // The summary path that crashed (main.rs:summarize_json_value) must no
+        // longer panic on CJK that overflows the cap.
+        let value = serde_json::Value::String("留".repeat(200));
+        let summary = summarize_json_value(&value); // pre-fix: byte-slice panic
+        assert!(
+            summary.ends_with("..."),
+            "long value is truncated with an ellipsis"
+        );
     }
 
     #[test]
