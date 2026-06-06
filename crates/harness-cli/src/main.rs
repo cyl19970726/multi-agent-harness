@@ -48,14 +48,79 @@ fn main() {
     }
 }
 
+/// Resolve the harness store root with clear precedence so commands run from
+/// different working directories converge on ONE store (issue #89 item 3).
+/// Precedence: explicit `--store <path>` (stripped from `args` so subcommands
+/// don't see it), then `HARNESS_ROOT` env (back-compat), then the nearest
+/// existing `.harness` walking up from the cwd (like git finds `.git`), then
+/// `./.harness` (the historical default).
+///
+/// Without this, `serve` (reads `<serve cwd>/.harness`) and `run-script` (writes
+/// `<run-script cwd>/.harness`) silently used different stores → an empty dashboard.
+fn resolve_store_root(args: &mut Vec<String>) -> PathBuf {
+    if let Some(path) = take_flag_value(args, "--store") {
+        return PathBuf::from(path);
+    }
+    if let Ok(root) = env::var("HARNESS_ROOT") {
+        if !root.is_empty() {
+            return PathBuf::from(root);
+        }
+    }
+    // `init` MATERIALIZES a store and must not adopt an ancestor's — it always
+    // targets `./.harness` (or the explicit `--store`/`HARNESS_ROOT` handled
+    // above). Every other command walks up to the nearest existing `.harness` so
+    // sibling processes (serve + run-script) converge on one store.
+    if args.first().map(String::as_str) != Some("init") {
+        if let Ok(cwd) = env::current_dir() {
+            if let Some(found) = discover_harness_from(&cwd) {
+                return found;
+            }
+        }
+    }
+    PathBuf::from(".harness")
+}
+
+/// Walk up from `start` returning the first existing `<dir>/.harness` directory,
+/// or `None` if none is found up to the filesystem root.
+fn discover_harness_from(start: &Path) -> Option<PathBuf> {
+    let mut dir = start.to_path_buf();
+    loop {
+        let candidate = dir.join(".harness");
+        if candidate.is_dir() {
+            return Some(candidate);
+        }
+        if !dir.pop() {
+            return None;
+        }
+    }
+}
+
+/// Remove the first `--flag <value>` pair from `args`, returning the value. The
+/// flag is always removed; the value is returned only when present (a trailing
+/// `--flag` with no value yields `None`).
+fn take_flag_value(args: &mut Vec<String>, flag: &str) -> Option<String> {
+    let pos = args.iter().position(|a| a == flag)?;
+    args.remove(pos);
+    if pos < args.len() {
+        Some(args.remove(pos))
+    } else {
+        None
+    }
+}
+
 fn run() -> CliResult<()> {
-    let args: Vec<String> = env::args().skip(1).collect();
+    let mut args: Vec<String> = env::args().skip(1).collect();
+    // Resolve the store root FIRST (strips a global `--store <path>` from args so
+    // the subcommand parsers never see it), so `serve` and `run-script` started
+    // from different working directories can be pointed at ONE store (issue #89
+    // item 3).
+    let store_root = resolve_store_root(&mut args);
     if args.is_empty() || args[0] == "help" || args[0] == "--help" {
         print_help();
         return Ok(());
     }
 
-    let store = HarnessStore::new(env::var("HARNESS_ROOT").unwrap_or_else(|_| ".harness".into()));
+    let store = HarnessStore::new(store_root);
     match args[0].as_str() {
         "init" => {
             store.init()?;
@@ -2375,6 +2440,14 @@ fn serve_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     let once = has_flag(args, "--once");
     let listener = TcpListener::bind(&addr)?;
     println!("serving harness API on http://{addr}");
+    // Show WHICH store this serve reads — the #1 confusion in issue #89 item 3 was
+    // serve and run-script silently using different `.harness` dirs. Print the
+    // absolute path so it can be compared against run-script's at a glance.
+    let store_display = std::fs::canonicalize(store.root())
+        .unwrap_or_else(|_| store.root().to_path_buf())
+        .display()
+        .to_string();
+    println!("store: {store_display}  (override with --store <path> or HARNESS_ROOT)");
 
     let sse_manager = sse::SseManager::new();
 
@@ -5576,6 +5649,16 @@ fn workflow_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
             print_json(&result)?;
         }
         "run-script" => {
+            // Tell the operator WHICH store this run is written to (stderr, so the
+            // JSON result on stdout stays clean) — so a serve reading a different
+            // `.harness` is caught immediately (issue #89 item 3).
+            let store_display = std::fs::canonicalize(store.root())
+                .unwrap_or_else(|_| store.root().to_path_buf())
+                .display()
+                .to_string();
+            eprintln!(
+                "workflow store: {store_display}  (point `serve` at the same path: --store <path>)"
+            );
             let result = workflow_run_script_value(store, &args[1..])?;
             print_json(&result)?;
         }
@@ -11313,7 +11396,12 @@ fn print_help() {
   serve [--addr 127.0.0.1:8787] [--once]
   daemon start [--socket <path>] [--idle-secs <n>]   (unix: resident warm-child host)
   daemon status
-  daemon stop"
+  daemon stop
+
+global:
+  --store <path>   store root for any command (else $HARNESS_ROOT, else the
+                   nearest ancestor .harness, else ./.harness). Point `serve`
+                   and `workflow run-script` at the SAME store."
     );
 }
 
@@ -12144,6 +12232,66 @@ mod workflow_runtime_tests {
             summary.ends_with("..."),
             "long value is truncated with an ellipsis"
         );
+    }
+
+    #[test]
+    fn take_flag_value_removes_the_pair_and_returns_the_value() {
+        let mut args = vec![
+            "--store".to_string(),
+            "/tmp/store".to_string(),
+            "serve".to_string(),
+            "--addr".to_string(),
+            "127.0.0.1:1".to_string(),
+        ];
+        assert_eq!(
+            take_flag_value(&mut args, "--store").as_deref(),
+            Some("/tmp/store")
+        );
+        // The pair is stripped so the subcommand parser never sees it.
+        assert_eq!(args, vec!["serve", "--addr", "127.0.0.1:1"]);
+        // Absent flag -> None, args untouched.
+        assert_eq!(take_flag_value(&mut args, "--store"), None);
+        assert_eq!(args.len(), 3);
+        // Trailing flag with no value -> flag removed, None returned.
+        let mut trailing = vec!["serve".to_string(), "--store".to_string()];
+        assert_eq!(take_flag_value(&mut trailing, "--store"), None);
+        assert_eq!(trailing, vec!["serve"]);
+    }
+
+    #[test]
+    fn discover_harness_from_finds_the_nearest_ancestor_dot_harness() {
+        let base = std::env::temp_dir().join(format!("harness-disc-{}", generated_id("d")));
+        let proj = base.join("proj");
+        let deep = proj.join("a").join("b");
+        std::fs::create_dir_all(&deep).expect("mk deep");
+        std::fs::create_dir_all(proj.join(".harness")).expect("mk .harness");
+
+        // From a nested subdir, discovery walks UP to proj/.harness.
+        let found = discover_harness_from(&deep).expect("found ancestor .harness");
+        assert_eq!(
+            std::fs::canonicalize(&found).unwrap(),
+            std::fs::canonicalize(proj.join(".harness")).unwrap()
+        );
+        // A tree with no .harness returns None.
+        let bare = base.join("bare").join("x");
+        std::fs::create_dir_all(&bare).expect("mk bare");
+        // (only true if no ancestor of `bare` has .harness — base/bare has none)
+        assert!(discover_harness_from(&base.join("bare")).is_none());
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn resolve_store_root_prefers_explicit_store_flag() {
+        let mut args = vec![
+            "--store".to_string(),
+            "/explicit/store".to_string(),
+            "serve".to_string(),
+        ];
+        let root = resolve_store_root(&mut args);
+        assert_eq!(root, PathBuf::from("/explicit/store"));
+        // Flag stripped so dispatch sees only the subcommand.
+        assert_eq!(args, vec!["serve"]);
     }
 
     #[test]
