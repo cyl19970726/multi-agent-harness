@@ -344,6 +344,18 @@ A flat fan-out that only finds-and-reports is an ANTI-PATTERN: it cannot tell a
 good run from an expensive single agent. Start from this skeleton and drop the
 parts you do not need.
 
+## Worked Example: a writable build with a gate loop
+
+The WRITABLE counterpart of the closed loop. Because a `writable=True` worker runs
+in its OWN throwaway worktree, a separate implement step and verify step do not
+share a tree — so the whole edit → run-the-gate → fix loop lives INSIDE one
+writable worker (fed a leading typed design), while the PLAN and the `verdict()`
+stay in Starlark. Its build prompt is the internal bar: a role, the injected
+design as ground truth, hard constraints (never weaken a test), numbered
+deliverables, the exact gate command, and a report contract.
+[`examples/build-and-gate.star`](examples/build-and-gate.star) — runs under
+`--dry-run`.
+
 ## Worked Example: bug hunt with adversarial verify
 
 A quality workflow end to end: diverse schema'd finders fan out, every candidate
