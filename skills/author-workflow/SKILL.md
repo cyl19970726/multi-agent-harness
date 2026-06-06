@@ -159,6 +159,22 @@ For hard array/enum/nested enforcement on a live run, pass a full JSON Schema di
 natively, but `--dry-run`'s mock only fills the flat form, so prefer the
 one-per-line idiom in examples that must run under `--dry-run`.
 
+## Default to `pipeline()` over `parallel()`
+
+`parallel()` is a BARRIER — it blocks until every spec finishes. `pipeline()` is
+NOT: each item flows through all stages independently, so item A can be at stage 3
+while item B is still at stage 1. When you have multi-stage PER-ITEM work (find →
+verify each finding; assess → refute each dimension), reach for `pipeline()` first
+— the wall-clock is the slowest single CHAIN, not the slowest stage summed over a
+barrier. (See [`examples/assess-verify-synthesize.star`](examples/assess-verify-synthesize.star).)
+
+Smell test: if you wrote `a = parallel(...)`, then a middle `transform(a)` that is
+just a flatten / map / filter with NO cross-item dependency, then another
+`parallel(...)`, you did not need that barrier — fold the transform into a
+pipeline stage. A barrier is only correct when stage N genuinely needs ALL of
+stage N-1 at once: a dedup/merge across the whole set, an early-exit on the total
+count, or a judge that compares the items to each other.
+
 ## The Quality Patterns
 
 A workflow earns its keep by CROSS-CHECKING, not by doing one big call. The
@@ -283,6 +299,28 @@ while dry_rounds < K:
 log("converged with " + str(len(seen)) + " distinct findings")
 ```
 
+### multi-modal sweep
+
+The FIND-side counterpart of perspective-diverse verify: spawn finders that each
+search a DIFFERENT WAY — by data flow, by failure mode, by entry point, by file —
+each BLIND to what the others surface. One search angle never finds everything; a
+sweep of orthogonal angles does. (The bug-hunt-verify example's three lenses are
+exactly this.)
+
+```python
+angles = [
+    "trace the data flow end to end and flag where it can go wrong",
+    "enumerate every external call and its failure mode",
+    "walk each public entry point and the inputs it fails to validate",
+]
+finds = parallel([
+    {"prompt": "Audit " + area + " by this method ONLY: " + a +
+               ". Report concrete issues, one per line as `file:line — issue`.",
+     "schema": {"items": "the issues, one per line"}, "label": "sweep"}
+    for a in angles
+])
+```
+
 ### completeness critic
 
 End with one agent whose only job is to ask what is MISSING — the cheap final
@@ -313,6 +351,19 @@ result means:
 
 Never assume every slot in a fan-out succeeded; a robust workflow tolerates a
 dead leaf and still reaches a verdict.
+
+## Right-size it, and never cap silently
+
+Scale the STRUCTURE to what was asked. "find any bugs" wants a few finders and a
+single verify pass; "thoroughly audit X" wants a larger finder pool, a 3–5-vote
+adversarial pass, and a synthesis stage. Do not bring a tournament to a one-line
+question, and do not bring a single pass to "be exhaustive." When unsure, lean
+thorough for review/audit/research and brief for a quick check.
+
+And when you DO bound coverage — top-N, no retry, sampling, a fixed round count —
+`log()` what you dropped. A silent cap reads as "covered everything" when it did
+not; a logged one (`log("scanned 50 of 120 files; stopped at the budget")`) keeps
+the run honest about what it actually checked.
 
 ## When NOT To Use A Workflow
 
