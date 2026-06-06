@@ -112,6 +112,12 @@ its `git diff` becomes the step's evidence, and the worktree is cleaned up after
 `isolation="worktree"` is the explicit form of the same thing (a read-only call
 that still wants an isolated checkout); `writable=True` implies it.
 
+**The workflow's cwd must be a git repo for `writable` / `isolation="worktree"`
+steps** — the throwaway worktree is created with `git worktree add`. In a non-git
+directory such a step fails fast with an actionable error. Either run the workflow
+from a git repo (`git init`), or keep the step READ-ONLY and retrieve its produced
+text with `harness workflow get-output <run_id> --step <label>`.
+
 ## Structured Output: the foundation
 
 A worker called WITHOUT `schema` returns free text — and you cannot reliably
