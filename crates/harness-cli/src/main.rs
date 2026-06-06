@@ -4158,6 +4158,13 @@ fn spawn_ephemeral_worker(
     let session_dir = store.root().join("provider-sessions").join(&session_id);
     fs::create_dir_all(&session_dir)?;
 
+    // Publish a RUNNING ProviderSession row NOW, before the blocking spawn — so the
+    // dashboard's per-node drill-in resolves this step's session WHILE it runs and
+    // renders the live turn-event stream, instead of "no turn yet" until the step
+    // finishes. `ingest_ephemeral_events` writes the terminal row afterward (same
+    // id, latest-wins).
+    write_running_ephemeral_session(store, &session_id, &session_dir, spec);
+
     // The structured schema normalized to a real JSON Schema for the providers'
     // native flags (claude `--json-schema`, codex `--output-schema`). `None` for
     // text-mode steps.
@@ -5176,6 +5183,65 @@ fn ephemeral_worktree_diff(worktree: &Path) -> Option<String> {
 /// streams its tool calls. Reuses the existing claude stream-json reducer
 /// (`ingest_claude_stream_json`) for claude; emits a neutral event per codex
 /// NDJSON line for codex, mirroring the existing provider-output ingest.
+/// Write a RUNNING [`ProviderSession`] row the instant a workflow worker starts,
+/// BEFORE the blocking spawn. The dashboard's per-node drill-in resolves a step's
+/// turn-event stream via its `provider_session_id`, so without this row a RUNNING
+/// step rendered "no turn yet" — its live `provider_turn_event`s reached the
+/// frontend but had no session row to attach to — until it finished and
+/// [`ingest_ephemeral_events`] wrote the terminal row. This publishes the row up
+/// front (same id; the terminal row supersedes it latest-wins) and pre-creates the
+/// live NDJSON so `GET /v1/provider-sessions/{id}/events` returns a growing list
+/// from t0 rather than a missing-file error. Best-effort: a failure here must not
+/// abort the step — the terminal row still records the outcome.
+fn write_running_ephemeral_session(
+    store: &HarnessStore,
+    session_id: &str,
+    session_dir: &Path,
+    spec: &workflow::AgentStepSpec,
+) {
+    let live_file = if spec.provider == "claude" {
+        "claude.stream-json.ndjson"
+    } else {
+        "codex.stream-json.ndjson"
+    };
+    let live_path = session_dir.join(live_file);
+    // Pre-create the live NDJSON so the events route serves [] (then a growing
+    // list) during the turn instead of erroring on a not-yet-existent file.
+    let _ = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&live_path);
+    let jsonl_ref = Some(live_path.display().to_string());
+    let session = ProviderSession {
+        id: session_id.into(),
+        provider: spec.provider.clone(),
+        agent_member_id: session_id.into(),
+        task_id: None,
+        workspace_ref: None,
+        provider_thread_id: None,
+        provider_turn_id: None,
+        terminal_source: None,
+        status: ProviderSessionStatus::Running,
+        command: spec.provider.clone(),
+        args: Vec::new(),
+        prompt_ref: None,
+        prompt_summary: Some(format!(
+            "ephemeral {} worker: {}",
+            spec.provider, spec.label
+        )),
+        provider_session_ref: None,
+        stdout_ref: jsonl_ref.clone(),
+        jsonl_ref,
+        transcript_ref: None,
+        last_message_ref: None,
+        exit_code: None,
+        started_at: now_string(),
+        ended_at: None,
+        evidence_ids: Vec::new(),
+    };
+    let _ = store.append_provider_session(&session);
+}
+
 fn ingest_ephemeral_events(
     store: &HarnessStore,
     session_id: &str,
@@ -11995,6 +12061,51 @@ mod workflow_runtime_tests {
             .expect("a terminal row was journaled at step finish");
         assert_eq!(terminal.provider_session_id.as_deref(), Some(session));
         assert_eq!(result.provider_session_id.as_deref(), Some(session));
+    }
+
+    #[test]
+    fn running_provider_session_row_is_published_before_the_worker_finishes() {
+        // The per-node drill-in resolves a step's live turn-event stream via its
+        // provider_session_id -> the matching ProviderSession ROW. Without a row
+        // published at step START, a RUNNING step renders "no turn yet" and its
+        // live events (already streaming) have nothing to attach to. This asserts
+        // the row exists, is RUNNING (not terminal), and the live NDJSON is
+        // pre-created so the events route serves a growing list from t0.
+        let store = temp_store("live-session-row");
+        let session_id = "session-test-live";
+        let session_dir = store.root().join("provider-sessions").join(session_id);
+        std::fs::create_dir_all(&session_dir).expect("mk session dir");
+        let spec = workflow::AgentStepSpec {
+            phase: "work".into(),
+            label: "explore".into(),
+            provider: "claude".into(),
+            model: None,
+            isolation: None,
+            prompt: "p".into(),
+            schema: None,
+            writable: false,
+            ordinal: Some(0),
+        };
+
+        write_running_ephemeral_session(&store, session_id, &session_dir, &spec);
+
+        let sessions = store.provider_sessions().expect("read sessions");
+        let row = sessions
+            .iter()
+            .find(|s| s.id == session_id)
+            .expect("a RUNNING provider session row is published at step start");
+        assert_eq!(row.status, ProviderSessionStatus::Running);
+        assert!(row.ended_at.is_none(), "running row has no ended_at");
+        assert!(row.exit_code.is_none(), "running row has no exit code");
+        assert!(
+            session_dir.join("claude.stream-json.ndjson").exists(),
+            "live NDJSON pre-created so the events route serves a growing list"
+        );
+        assert!(row
+            .jsonl_ref
+            .as_deref()
+            .expect("jsonl_ref points at the live file")
+            .ends_with("claude.stream-json.ndjson"));
     }
 
     #[test]
