@@ -70,6 +70,13 @@ randomness, and no IO. The orchestration (which agents run, in what order, with 
 prompts) is therefore deterministic — the ONLY nondeterminism lives in the journaled
 `agent()` leaves.
 
+**Identifiers must be ASCII** (a Starlark/Python-2 rule): a non-ASCII variable name
+like `要点 = agent(...)` fails to PARSE (`invalid input 要`). Non-ASCII text is fully
+supported everywhere it belongs — inside string LITERALS: prompts, `label=`, the
+`workflow(name, design_intent)` strings, and of course the agents' output. So write a
+fully Chinese workflow freely; just keep variable names ASCII (`scan = agent("用中文…")`,
+not `扫描 = agent(...)`).
+
 A program calls these globals (no `import`; they are pre-bound):
 
 | Call | Returns | Meaning |
