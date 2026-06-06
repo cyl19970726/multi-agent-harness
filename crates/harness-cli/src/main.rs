@@ -3760,6 +3760,20 @@ struct WorkflowDeliveryOptions {
     /// run so a PAST run shows "trace not retained". Live streaming itself is
     /// independent and always happens.
     trace_retention: String,
+    /// When true, emit a compact NDJSON progress line to STDERR as each step goes
+    /// `running` then terminal — so an agent caller that invoked us via its shell
+    /// tool sees the phase-by-phase timeline (which step/phase is live) alongside
+    /// the clean final result on STDOUT. Off by default (opt-in `--progress`) so
+    /// quiet callers and stdout-parsers are unaffected. Stderr is the conventional
+    /// progress stream; stdout stays a single parseable JSON document.
+    progress: bool,
+}
+
+/// Emit one compact NDJSON progress event to STDERR (used when `--progress` is on).
+/// Stderr — not stdout — so stdout stays a single parseable JSON document; an agent
+/// caller's shell tool captures both streams, so it still sees the live timeline.
+fn emit_progress(event: &serde_json::Value) {
+    eprintln!("{event}");
 }
 
 /// The REAL agent-step driver. Drives one provider delivery through the neutral
@@ -3841,6 +3855,19 @@ fn workflow_real_agent_step(
     // row still records the outcome. Best-effort, like the rest of this seam.
     let _ = store.append_workflow_step(&running);
 
+    // Live progress to stderr (opt-in): the caller sees this step go live — its
+    // phase and label — the instant it starts, not batched at run finalize.
+    if options.progress {
+        emit_progress(&serde_json::json!({
+            "event": "step",
+            "status": "running",
+            "phase": spec.phase,
+            "label": spec.label,
+            "provider": spec.provider,
+            "ordinal": spec.ordinal,
+        }));
+    }
+
     let result = match try_workflow_real_agent_step(store, options, spec, run_id) {
         Ok(mut result) => {
             result.step_id = Some(step_id.clone());
@@ -3883,6 +3910,19 @@ fn workflow_real_agent_step(
     // finalize. `run_workflow_with_driver` recognises this (step_id is Some) and
     // does not re-journal.
     let _ = store.append_workflow_step(&build_terminal_step(run_id, step_id, started_at, &result));
+
+    // Live progress to stderr (opt-in): the step's terminal status the instant it
+    // finishes, so the caller tracks completion per phase as the run streams.
+    if options.progress {
+        emit_progress(&serde_json::json!({
+            "event": "step",
+            "status": if result.ok { "ok" } else { "failed" },
+            "phase": result.phase,
+            "label": result.label,
+            "ok": result.ok,
+            "ordinal": result.ordinal,
+        }));
+    }
     result
 }
 
@@ -5476,6 +5516,7 @@ fn workflow_run_value(store: &HarnessStore, args: &[String]) -> CliResult<serde_
         max_budget_usd: None,
         // Registry runs always retain their trace durably.
         trace_retention: "durable".to_string(),
+        progress: has_flag(args, "--progress"),
     };
 
     // The run id is minted up front so the driver can journal each step's
@@ -5670,6 +5711,7 @@ fn workflow_run_script_value(
             .unwrap_or(300_000),
         max_budget_usd: value(args, "--max-budget-usd").and_then(|v| v.parse::<f64>().ok()),
         trace_retention: trace_retention.clone(),
+        progress: has_flag(args, "--progress"),
     };
 
     // Who initiated the run: an explicit `--initiated-by <id>`, else the
