@@ -211,6 +211,7 @@ function RunsTable({
               </span>
               <span className="min-w-0">
                 <Badge tone={tone}>{run.status}</Badge>
+                {run.dry_run && <Badge tone="warn">dry-run</Badge>}
               </span>
               <span className="min-w-0">
                 <ShapeGlyph steps={steps} />
@@ -331,6 +332,7 @@ export function WorkflowRunDetail({ model, onSelectionChange, apiUrl }: Workflow
               </h1>
               <div className="mt-1 flex flex-wrap items-center gap-1.5">
                 <Badge tone={tone}>{run.status}</Badge>
+                {run.dry_run && <Badge tone="warn">dry-run</Badge>}
                 <MonoId>{run.id}</MonoId>
               </div>
             </div>

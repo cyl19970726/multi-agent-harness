@@ -374,6 +374,7 @@ mod tests {
             spec: None,
             trace_retention: "durable".into(),
             host_pid: None,
+            dry_run: false,
         }
     }
 

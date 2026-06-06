@@ -4037,8 +4037,13 @@ fn try_workflow_real_agent_step(
             Some(model) => format!(", model={model}"),
             None => String::new(),
         };
+        // Include multi-byte (CJK) text in the mock output so the dry-run path
+        // exercises the SAME truncation/summary code a real non-ASCII run hits —
+        // a dry-run that stays pure-ASCII gave a false green for the CJK
+        // byte-slice panic class (issue #89 item 2; the panic itself is fixed in
+        // #94, this keeps dry-run representative so a regression can't hide).
         let output_summary = format!(
-            "ephemeral {} worker (dry-run) for {}{model_note}{isolation_note}",
+            "ephemeral {} worker (dry-run) for {}{model_note}{isolation_note} · 校验占位中文输出",
             spec.provider, spec.label,
         );
         // In schema mode, synthesize a mock structured object (each required key
@@ -5831,6 +5836,9 @@ fn workflow_run_value(store: &HarnessStore, args: &[String]) -> CliResult<serde_
     // rather than only emitting a terminal row after the whole body returns.
     let run_id = generated_id("wfrun");
 
+    // Read the Copy flag before the `move` driver closure consumes `options`.
+    let is_dry_run = options.dry_run;
+
     // Build the injectable real driver. The store, run id, and options are
     // captured by reference; the closure is Sync (HarnessStore serializes writes
     // via flock) so it can be shared across the parallel barrier's scoped threads.
@@ -5841,7 +5849,7 @@ fn workflow_run_value(store: &HarnessStore, args: &[String]) -> CliResult<serde_
         }
     };
 
-    run_workflow_with_driver(store, &run_id, def, &prompt, &driver)
+    run_workflow_with_driver(store, &run_id, def, &prompt, is_dry_run, &driver)
 }
 
 /// `harness workflow run-script <prog.star> [--name <n>] [--args <json>]
@@ -6068,6 +6076,9 @@ fn workflow_run_script_value(
         // Stamp this driver process's pid so the serve-side reaper can detect an
         // abandoned run (driver killed/crashed before journaling a terminal row).
         host_pid: Some(std::process::id()),
+        // Mark dry-run validation runs so they are never mistaken for real runs in
+        // the jsonl / dashboard (issue #89 item 2).
+        dry_run: options.dry_run,
     };
     store.append_workflow_run(&run)?;
 
@@ -6109,6 +6120,7 @@ fn run_workflow_with_driver(
     run_id: &str,
     def: &workflow::WorkflowDef,
     prompt: &str,
+    dry_run: bool,
     driver: &workflow::AgentStepFn<'_>,
 ) -> CliResult<serde_json::Value> {
     let run = WorkflowRun {
@@ -6133,6 +6145,7 @@ fn run_workflow_with_driver(
         // Stamp this driver process's pid so the serve-side reaper can detect an
         // abandoned run (see the run-script path and `reap_abandoned_runs`).
         host_pid: Some(std::process::id()),
+        dry_run,
     };
     store.append_workflow_run(&run)?;
 
@@ -11972,7 +11985,7 @@ mod workflow_runtime_tests {
         let driver = |spec: &workflow::AgentStepSpec| ok_step(spec);
 
         let run_id = generated_id("wfrun");
-        let result = run_workflow_with_driver(&store, &run_id, def, "failure X", &driver)
+        let result = run_workflow_with_driver(&store, &run_id, def, "failure X", false, &driver)
             .expect("run workflow");
 
         // The returned run is completed and references 3 steps (serial + 2 parallel).
@@ -12074,6 +12087,7 @@ mod workflow_runtime_tests {
                 spec: None,
                 trace_retention: "durable".into(),
                 host_pid: None,
+                dry_run: false,
             })
             .expect("append run");
         store
@@ -12113,6 +12127,7 @@ mod workflow_runtime_tests {
             spec: None,
             trace_retention: "durable".into(),
             host_pid: None,
+            dry_run: false,
         };
         // One Running run 5h old -> reaped to Failed; one started "now" -> stays.
         store
@@ -12167,6 +12182,7 @@ mod workflow_runtime_tests {
                 spec: None,
                 trace_retention: "durable".into(),
                 host_pid: Some(dead_pid),
+                dry_run: false,
             })
             .expect("append run");
         // A still-open step under it must be closed to Failed by the reaper too.
@@ -12202,6 +12218,7 @@ mod workflow_runtime_tests {
                 spec: None,
                 trace_retention: "durable".into(),
                 host_pid: Some(std::process::id()),
+                dry_run: false,
             })
             .expect("append live run");
 
@@ -12458,6 +12475,7 @@ mod workflow_runtime_tests {
                 spec: None,
                 trace_retention: "durable".into(),
                 host_pid: None,
+                dry_run: false,
             })
             .expect("append run");
         store
@@ -12661,7 +12679,7 @@ mod workflow_runtime_tests {
         };
 
         let run_id = generated_id("wfrun");
-        let result = run_workflow_with_driver(&store, &run_id, def, "failure Y", &driver)
+        let result = run_workflow_with_driver(&store, &run_id, def, "failure Y", false, &driver)
             .expect("run workflow");
         let run = result.get("run").expect("run key");
         assert_eq!(run.get("status").and_then(|s| s.as_str()), Some("failed"));
@@ -12731,6 +12749,9 @@ agent("fix: " + a, provider = "claude", label = "fixer")
             final_run.design_intent.as_deref(),
             Some("scan first, then fix what the scan reported so the fix builds on it")
         );
+        // This was a `--dry-run`, so the journaled run is marked as such — a
+        // validation run must be distinguishable from a real one (issue #89 item 2).
+        assert!(final_run.dry_run, "dry-run runs are marked dry_run: true");
         // The parsed --args are carried opaquely onto the run.
         assert_eq!(
             final_run
@@ -12965,7 +12986,7 @@ agent("a NEW second leaf that changes the ordinal alignment")
         let def = registry.get("investigate").expect("registered");
         let driver = |spec: &workflow::AgentStepSpec| ok_step(spec);
         let run_id = generated_id("wfrun");
-        run_workflow_with_driver(&store, &run_id, def, "x", &driver).expect("run");
+        run_workflow_with_driver(&store, &run_id, def, "x", false, &driver).expect("run");
 
         let snapshot = dashboard_snapshot(&store).expect("snapshot");
         let runs = snapshot
@@ -13041,8 +13062,8 @@ agent("a NEW second leaf that changes the ordinal alignment")
             result
         };
 
-        let result =
-            run_workflow_with_driver(&store, &run_id, def, "topic", &driver).expect("run workflow");
+        let result = run_workflow_with_driver(&store, &run_id, def, "topic", false, &driver)
+            .expect("run workflow");
         assert_eq!(
             result
                 .get("run")
