@@ -1315,6 +1315,14 @@ pub struct WorkflowRun {
     /// Same-host only (the store, serve, and driver all run locally).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub host_pid: Option<u32>,
+    /// True when this run was a `--dry-run` validation (mock driver, no provider
+    /// spawned, no tokens spent), false for a real (live) run. A dry-run journals
+    /// the SAME `workflow_name` into the SAME store, so without this marker a dry
+    /// validation run is easily mistaken for a real one when reading the jsonl or
+    /// the dashboard (issue #89 item 2). `#[serde(default)]` → legacy rows read as
+    /// `false` (they predate the flag; dry-run journaling is newer).
+    #[serde(default)]
+    pub dry_run: bool,
 }
 
 /// Default retention policy for a [`WorkflowRun`]'s turn-event trace. Legacy rows

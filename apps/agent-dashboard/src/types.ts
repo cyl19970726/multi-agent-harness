@@ -540,6 +540,12 @@ export interface WorkflowRun {
    * Live streaming is independent of this and always happens.
    */
   trace_retention?: "durable" | "live" | string;
+  /**
+   * True when this run was a `--dry-run` validation (mock driver, no provider
+   * spawned, no tokens). Surfaced as a "dry-run" badge so a validation run is
+   * never mistaken for a real one. `undefined`/false for live and legacy rows.
+   */
+  dry_run?: boolean;
 }
 
 /**
