@@ -167,7 +167,7 @@ function RunsTable({
   onOpen: (id: string) => void;
 }) {
   const cols =
-    "grid-cols-[minmax(0,1.9fr)_minmax(0,1fr)_minmax(0,1.3fr)_minmax(0,1fr)_minmax(0,1.5fr)]";
+    "grid-cols-[minmax(0,1.9fr)_minmax(0,1.1fr)_minmax(0,1fr)_minmax(0,1.3fr)_minmax(0,1fr)_minmax(0,1.5fr)]";
   return (
     <div className="overflow-hidden">
       <div
@@ -177,6 +177,7 @@ function RunsTable({
         )}
       >
         <span>Run</span>
+        <span>Started</span>
         <span>Status</span>
         <span>Steps</span>
         <span className="hidden lg:block">Duration</span>
@@ -208,6 +209,9 @@ function RunsTable({
                     <MonoId>{run.id}</MonoId>
                   </span>
                 </span>
+              </span>
+              <span className="min-w-0">
+                <CompactTimestamp value={run.created_at} />
               </span>
               <span className="min-w-0">
                 <Badge tone={tone}>{run.status}</Badge>
@@ -1354,6 +1358,33 @@ function CollapsibleRow({
       {open ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />}
       {label}
     </button>
+  );
+}
+
+/**
+ * Compact launch time for the runs list: clock + short date on one line, a
+ * relative "Nm ago" under it, full datetime on hover — so "which runs are
+ * current" reads at a glance without opening the detail. parseTs handles the
+ * "unix-ms:<n>" format (raw Date.parse returns NaN on the prefix).
+ */
+function CompactTimestamp({ value }: { value: string }) {
+  const ms = parseTs(value);
+  if (Number.isNaN(ms))
+    return <span className="text-[12px] text-muted-foreground">—</span>;
+  const d = new Date(ms);
+  return (
+    <span className="block min-w-0" title={d.toLocaleString()}>
+      <span className="block truncate text-[12px] tabular-nums text-foreground/80">
+        {d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+        <span className="text-muted-foreground">
+          {" "}
+          {d.toLocaleDateString([], { month: "short", day: "numeric" })}
+        </span>
+      </span>
+      <span className="block truncate text-[10px] text-muted-foreground">
+        {relativeTime(ms)}
+      </span>
+    </span>
   );
 }
 
