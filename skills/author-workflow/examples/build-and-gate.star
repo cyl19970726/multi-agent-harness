@@ -44,12 +44,16 @@ BUILD_RESULT = {
 }
 
 # ---- plan: a typed design, read-only -----------------------------------------
+# Long prompts read better as triple-quoted strings with .format() injection than
+# as `+ "\n" +` concatenation; the body is flush-left so no indentation leaks in.
 phase("plan")
 design = agent(
-    "You are the tech lead. Read the relevant code, then design the SMALLEST correct " +
-    "implementation of this task:\n  " + task + "\n\n" +
-    "Produce: the approach, the exact files/functions to touch (with why), the test " +
-    "plan that will prove it, and the risks. Do NOT implement anything yet — design it.",
+    """You are the tech lead. Read the relevant code, then design the SMALLEST correct
+implementation of this task:
+  {task}
+
+Produce: the approach, the exact files/functions to touch (with why), the test
+plan that will prove it, and the risks. Do NOT implement anything yet — design it.""".format(task=task),
     label = "design",
     schema = DESIGN,
 )
@@ -58,22 +62,31 @@ design_json = json.encode(design) if type(design) == "dict" else "{}"
 # ---- build: ONE writable worker implements + gates + fixes until green --------
 phase("build")
 result = agent(
-    "You are implementing a change in a throwaway git worktree. Do NOT git commit; " +
-    "leave the changes in the working tree.\n\n" +
-    "TASK: " + task + "\n\n" +
-    "FOLLOW THIS DESIGN (verify it against the real files; correct it where the code " +
-    "disagrees):\n" + design_json + "\n\n" +
-    "HARD CONSTRAINTS:\n" +
-    "- Make the smallest correct change that satisfies the task; match the surrounding style.\n" +
-    "- NEVER weaken, skip, or delete a test to make the gate pass — fix the real cause.\n" +
-    "- Do NOT touch unrelated code or change public behavior outside the task's scope.\n\n" +
-    "REQUIRED DELIVERABLES:\n" +
-    "1. The implementation, per the design.\n" +
-    "2. Tests covering the new behavior (do not weaken existing ones).\n\n" +
-    "THEN GATE: run `" + gate + "`. If it fails, read the errors, FIX the ROOT CAUSE, " +
-    "and re-run — up to 5 honest attempts. Never use --no-verify and never fake a pass.\n\n" +
-    "Report: gate_green (true ONLY if the gate exited 0), a one-line summary, the files " +
-    "you changed, and any blockers if it could not go green.",
+    """You are implementing a change in a throwaway git worktree. Do NOT git commit;
+leave the changes in the working tree.
+
+TASK: {task}
+
+FOLLOW THIS DESIGN (verify it against the real files; correct it where the code
+disagrees):
+{design_json}
+
+HARD CONSTRAINTS:
+- Make the smallest correct change that satisfies the task; match the surrounding style.
+- NEVER weaken, skip, or delete a test to make the gate pass — fix the real cause.
+- Do NOT touch unrelated code or change public behavior outside the task's scope.
+
+REQUIRED DELIVERABLES:
+1. The implementation, per the design.
+2. Tests covering the new behavior (do not weaken existing ones).
+
+THEN GATE: run `{gate}`. If it fails, read the errors, FIX the ROOT CAUSE, and
+re-run — up to 5 honest attempts. Never use --no-verify and never fake a pass.
+
+Report: gate_green (true ONLY if the gate exited 0), a one-line summary, the files
+you changed, and any blockers if it could not go green.""".format(
+        task=task, design_json=design_json, gate=gate,
+    ),
     label = "build",
     writable = True,          # edits + shell run in its own worktree; the diff is the evidence
     schema = BUILD_RESULT,

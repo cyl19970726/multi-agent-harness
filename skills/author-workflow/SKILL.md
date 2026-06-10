@@ -100,8 +100,65 @@ Rules every call obeys:
   non-empty string) overrides the provider's default model — route a CHEAP model
   to read-only verify/review steps and the strong model to the builder.
 - The only supported `isolation` value is `"worktree"`.
-- Reference `args` inside a prompt with normal Starlark string concatenation
-  (e.g. `"audit " + args["area"]`).
+- Reference `args` inside a prompt with `+` concatenation (`"audit " + args["area"]`)
+  for short one-liners, or `.format()` into a triple-quoted string for longer /
+  multi-line prompts — see [Writing prompt text](#writing-prompt-text-triple-quote-long-prompts).
+
+### Writing prompt text: triple-quote long prompts
+
+`+` concatenation is fine for a short one-liner, but a long or multi-line prompt
+(a role brief, a numbered deliverable list, a report contract) is far more
+readable as a **triple-quoted string** — standard Starlark, enabled here, and it
+preserves newlines verbatim:
+
+```python
+res = agent(
+    """You are a payments auditor. Audit {area}.
+
+Look for, in order:
+- missing idempotency keys on writes
+- unhandled refund / chargeback races
+- money paths that skip the ledger
+
+Return a numbered list, one concrete finding per line as `file:line — issue`.""".format(area=args["area"]),
+    schema={"items": "the findings, one per line"},
+    label="audit",
+)
+```
+
+`.format(name=value)` injects args (a clean alternative to `"… " + args["area"]
++ " …"`); `'''…'''` is the single-quote form. **The one gotcha: a triple-quoted
+string keeps every character between the quotes, including leading indentation.**
+So write the body flush-left even when the assignment is indented inside a `def`,
+`if`, or comprehension — otherwise the indentation leaks into the prompt:
+
+```python
+def build_prompt(task):
+    # WRONG — every line after the first carries 8 leading spaces into the prompt
+    return """Implement {task}.
+        Keep tests green.""".format(task=task)
+    # RIGHT — body flush-left; only the first line sits on the return statement
+    return """Implement {task}.
+Keep tests green.""".format(task=task)
+```
+
+(A stray leading newline from opening `"""` on its own line is usually harmless —
+strip it with `.strip()` /  `.lstrip("\n")` if a worker is whitespace-sensitive.)
+
+**Starlark does NOT auto-join adjacent string literals.** Python concatenates
+`"a" "b"` into `"ab"`; Starlark rejects it as a parse error (`unexpected string
+literal … expected one of "+", …`). So to break a long single-line string across
+source lines you must use explicit `+` or a triple-quoted block — never bare
+adjacent strings:
+
+```python
+# WRONG — parse error in Starlark (this is a Python-only convenience)
+workflow("x", "first part "
+              "second part")
+# RIGHT — explicit + , or a triple-quoted string
+workflow("x", "first part " +
+              "second part")
+```
 
 ### Workspace: read-only by default, `writable=True` to edit
 
