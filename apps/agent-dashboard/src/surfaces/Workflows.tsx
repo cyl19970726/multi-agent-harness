@@ -25,7 +25,7 @@ import { Avatar } from "@/components/workbench/Avatar";
 import { Markdown } from "@/components/workbench/Markdown";
 import { workflowRunTone, workflowStepTone } from "@/components/workbench/tones";
 
-import { formatDuration, type WorkbenchModel } from "../model/readModel";
+import { formatDuration, parseTs, type WorkbenchModel } from "../model/readModel";
 import {
   describeShape,
   inferWorkflowShape,
@@ -1358,7 +1358,9 @@ function CollapsibleRow({
 }
 
 function Timestamp({ value }: { value: string }) {
-  const ms = Date.parse(value);
+  // created_at / ended_at are "unix-ms:<n>"; Date.parse can't read that prefix
+  // (→ NaN → the raw "unix-ms:…" string leaked into the UI). parseTs handles it.
+  const ms = parseTs(value);
   if (Number.isNaN(ms)) return <>{value}</>;
   return (
     <span className="tabular-nums">

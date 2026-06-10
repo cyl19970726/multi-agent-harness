@@ -461,8 +461,11 @@ function sortWorkflowRuns(runs: WorkflowRun[]): WorkflowRun[] {
     const aRunning = (a.status ?? "").toLowerCase() === "running";
     const bRunning = (b.status ?? "").toLowerCase() === "running";
     if (aRunning !== bRunning) return aRunning ? -1 : 1;
-    const aMs = Date.parse(a.created_at) || 0;
-    const bMs = Date.parse(b.created_at) || 0;
+    // created_at is "unix-ms:<n>", which Date.parse cannot read (→ NaN → every
+    // run tied at 0, leaving append order). parseTs strips the prefix so the
+    // list actually sorts most-recent-launch first.
+    const aMs = parseTs(a.created_at) || 0;
+    const bMs = parseTs(b.created_at) || 0;
     return bMs - aMs;
   });
 }
