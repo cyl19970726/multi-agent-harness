@@ -145,6 +145,21 @@ Keep tests green.""".format(task=task)
 (A stray leading newline from opening `"""` on its own line is usually harmless —
 strip it with `.strip()` /  `.lstrip("\n")` if a worker is whitespace-sensitive.)
 
+**Starlark does NOT auto-join adjacent string literals.** Python concatenates
+`"a" "b"` into `"ab"`; Starlark rejects it as a parse error (`unexpected string
+literal … expected one of "+", …`). So to break a long single-line string across
+source lines you must use explicit `+` or a triple-quoted block — never bare
+adjacent strings:
+
+```python
+# WRONG — parse error in Starlark (this is a Python-only convenience)
+workflow("x", "first part "
+              "second part")
+# RIGHT — explicit + , or a triple-quoted string
+workflow("x", "first part " +
+              "second part")
+```
+
 ### Workspace: read-only by default, `writable=True` to edit
 
 Every call is READ-ONLY by default — the worker may read files and run searches
