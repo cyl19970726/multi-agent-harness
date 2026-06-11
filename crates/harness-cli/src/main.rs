@@ -6,6 +6,7 @@ use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use harness_core::{
@@ -4520,22 +4521,16 @@ fn spawn_ephemeral_worker(
     }
 
     let mut output_summary = if let Some(reply) = spawn.reply.clone() {
-        // Capture the worker's FINAL answer FAITHFULLY. `output_summary` is the text
-        // `agent()` returns to a Starlark program, which splits it (`.splitlines()`,
-        // first-line REAL/REFUTED verdicts) — so:
-        //  - PRESERVE NEWLINES: collapsing them to spaces silently flattened every
-        //    data-driven fan-out to width-1 and made every vote parser scan the whole
-        //    blob (a structurally-good workflow then measures as "naive").
-        //  - truncate on a CHAR boundary: `&reply[..200]` panics when byte 200 is
-        //    mid-UTF-8 (a real crash on unicode worker output), and 200 chars clipped
-        //    multi-finding lists mid-sentence. Cap generously, only to bound a blob.
-        const OUTPUT_SUMMARY_CAP: usize = 4000;
-        if reply.chars().count() > OUTPUT_SUMMARY_CAP {
-            let clipped: String = reply.chars().take(OUTPUT_SUMMARY_CAP).collect();
-            format!("{clipped}...")
-        } else {
-            reply
-        }
+        // The worker's FINAL answer, FULL and FAITHFUL — NOT truncated. This is the
+        // text `agent()` hands the program in text mode: the program splits it
+        // (`.splitlines()`, first-line verdicts) AND forward-injects it into the next
+        // leaf's prompt. Capping it (the old 4000-char clip) silently truncated the
+        // node's output, so chaining a long result into a later leaf (e.g. a synthesis
+        // over deep-dive sections) lost most of the input — a real design defect. The
+        // full text is the node's data; newlines are preserved; reply.txt keeps a
+        // durable copy too. Bounding runaway output is the budget/idle-timeout's job,
+        // not a silent clip here.
+        reply
     } else {
         format!(
             "{} ephemeral worker for {} ({})",
@@ -5266,13 +5261,22 @@ fn run_ndjson_child(
         .map(|store_root| store_root.join("provider_turn_events.jsonl"));
     let session_id_owned = session_id.to_string();
 
-    // Read stdout in a DEDICATED THREAD so the main thread can enforce the
-    // per-node timeout by KILLING a HUNG worker — one that stops emitting events
-    // but never closes stdout (an auth/network stall, a wedged provider). The old
-    // code read stdout on the main thread and only checked the timeout AFTER the
-    // read loop returned, so a hung worker (stdout still open) blocked forever and
-    // froze the whole run. The thread tees each event live + collects them;
-    // killing the child closes stdout, which ends this loop.
+    // IDLE-timeout clock. A productive worker keeps emitting events, each resetting
+    // this to "now"; the main thread kills only a worker that has gone SILENT for
+    // `timeout_ms` (a wedged provider / auth or network stall) — never a slow but
+    // still-streaming turn. Stored as millis-since-`start`.
+    let start = Instant::now();
+    let last_activity_ms = Arc::new(AtomicU64::new(0));
+    let activity_ms = Arc::clone(&last_activity_ms);
+    let activity_start = start;
+
+    // Read stdout in a DEDICATED THREAD so the main thread can enforce the idle
+    // timeout by KILLING a worker that stops emitting events but never closes stdout
+    // (an auth/network stall, a wedged provider). The old code read stdout on the
+    // main thread and only checked the deadline AFTER the read loop returned, so a
+    // hung worker (stdout still open) blocked forever and froze the whole run. The
+    // thread tees each event live + collects them; killing the child closes stdout,
+    // which ends this loop.
     let stdout_handle = std::thread::spawn(move || {
         let mut session_writer = fs::OpenOptions::new()
             .create(true)
@@ -5297,6 +5301,11 @@ fn run_ndjson_child(
             if trimmed.is_empty() {
                 continue;
             }
+            // Any non-empty output proves the worker is alive — reset the idle clock.
+            activity_ms.store(
+                activity_start.elapsed().as_millis() as u64,
+                Ordering::Relaxed,
+            );
             let Ok(payload) = serde_json::from_str::<serde_json::Value>(trimmed) else {
                 continue;
             };
@@ -5325,10 +5334,12 @@ fn run_ndjson_child(
         log
     });
 
-    // Main thread: enforce the per-node timeout. On timeout, KILL the child —
-    // that closes stdout/stderr so the reader threads finish and join cleanly.
-    let start = Instant::now();
-    let timeout = Duration::from_millis(timeout_ms.max(1));
+    // Main thread: enforce the IDLE timeout. While the worker keeps streaming events
+    // the idle clock resets, so a slow-but-productive turn runs to completion however
+    // long it takes; only a worker SILENT for `timeout_ms` (a wedged provider, an
+    // auth/network stall) is killed. Killing closes stdout/stderr so the reader
+    // threads finish and join cleanly.
+    let idle_limit = Duration::from_millis(timeout_ms.max(1));
     let mut timed_out = false;
     let mut exit_code: Option<i32> = None;
     let process_success = loop {
@@ -5338,7 +5349,8 @@ fn run_ndjson_child(
                 break status.success();
             }
             Ok(None) => {
-                if start.elapsed() > timeout {
+                let last = Duration::from_millis(last_activity_ms.load(Ordering::Relaxed));
+                if start.elapsed().saturating_sub(last) > idle_limit {
                     kill_worker_tree(&mut child);
                     timed_out = true;
                     break false;
@@ -5964,11 +5976,12 @@ fn workflow_run_value(store: &HarnessStore, args: &[String]) -> CliResult<serde_
         start_runtime: has_flag(args, "--start-runtime"),
         // Per-node ephemeral-worker timeout. Default 5 min: a real codex/claude
         // turn takes ~30-60s, so 3s would kill every worker now that the timeout
-        // actually fires during the read (see run_ndjson_child); this bounds a
-        // hung worker without killing healthy ones.
+        // actually fires during the read (see run_ndjson_child); this is an IDLE
+        // limit — a worker is killed only after this long with NO output, so a slow
+        // but productive turn is never cut off. Default 15 min of silence.
         timeout_ms: value(args, "--timeout-ms")
             .and_then(|value| value.parse::<u64>().ok())
-            .unwrap_or(300_000),
+            .unwrap_or(900_000),
         max_budget_usd: None,
         // Registry runs always retain their trace durably.
         trace_retention: "durable".to_string(),
@@ -6163,11 +6176,12 @@ fn workflow_run_script_value(
     let options = WorkflowDeliveryOptions {
         dry_run: has_flag(args, "--dry-run"),
         start_runtime: has_flag(args, "--start-runtime"),
-        // Per-node ephemeral-worker timeout. Default 5 min (see the registry-run
-        // path): bounds a hung worker without killing healthy ~30-60s turns.
+        // Per-node ephemeral-worker IDLE timeout: a worker is killed only after this
+        // long with NO output (a wedged provider), so a slow-but-streaming turn runs
+        // to completion. Default 15 min of silence.
         timeout_ms: value(args, "--timeout-ms")
             .and_then(|value| value.parse::<u64>().ok())
-            .unwrap_or(300_000),
+            .unwrap_or(900_000),
         max_budget_usd: value(args, "--max-budget-usd").and_then(|v| v.parse::<f64>().ok()),
         trace_retention: trace_retention.clone(),
         progress: has_flag(args, "--progress"),
@@ -12065,10 +12079,8 @@ mod workflow_runtime_tests {
 
     #[test]
     fn run_ndjson_child_kills_a_hung_worker_via_timeout() {
-        // Regression: a worker that emits one line then HANGS (stdout stays open,
-        // never exits) must be KILLED by the per-node timeout — not block forever.
-        // Before the fix, the read loop ran on the main thread and the timeout was
-        // only checked after EOF, so a hung worker froze the whole run.
+        // A worker that emits one line then HANGS (stdout open, never exits) goes
+        // SILENT, so the IDLE timeout fires and kills it — not block forever.
         let root = std::env::temp_dir().join(format!("mah-hang-{}", generated_id("t")));
         let session_dir = root.join("provider-sessions").join("s");
         fs::create_dir_all(&session_dir).expect("mkdir");
@@ -12077,6 +12089,7 @@ mod workflow_runtime_tests {
             .arg("printf '{\"type\":\"item\"}\\n'; sleep 600");
 
         let start = Instant::now();
+        // 500ms IDLE limit: after the one event, silence > 500ms → killed.
         let run = run_ndjson_child(cmd, &session_dir, "s", "out.ndjson", 500).expect("run");
         let elapsed = start.elapsed();
 
@@ -12084,10 +12097,35 @@ mod workflow_runtime_tests {
             elapsed < Duration::from_secs(8),
             "must not block on the hung child; took {elapsed:?}"
         );
-        assert!(run.timed_out, "the timeout must have fired");
+        assert!(run.timed_out, "the idle timeout must have fired");
         assert!(!run.process_success);
         // The single event emitted before the hang was still captured live.
         assert_eq!(run.events.len(), 1);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn run_ndjson_child_does_not_kill_a_slow_but_streaming_worker() {
+        // The point of the IDLE timeout: a worker that keeps emitting events runs to
+        // completion even though its TOTAL runtime (~800ms) far exceeds the idle
+        // limit (300ms) — because it never goes silent that long. A fixed total-
+        // wall-clock timeout would have wrongly killed it.
+        let root = std::env::temp_dir().join(format!("mah-slow-{}", generated_id("t")));
+        let session_dir = root.join("provider-sessions").join("s");
+        fs::create_dir_all(&session_dir).expect("mkdir");
+        let mut cmd = Command::new("sh");
+        // 8 events, ~100ms apart → ~800ms total, never silent for 300ms.
+        cmd.arg("-c")
+            .arg("for i in 1 2 3 4 5 6 7 8; do printf '{\"type\":\"item\"}\\n'; sleep 0.1; done");
+
+        let run = run_ndjson_child(cmd, &session_dir, "s", "out.ndjson", 300).expect("run");
+
+        assert!(
+            !run.timed_out,
+            "a continuously-streaming worker must NOT be killed by the idle timeout"
+        );
+        assert!(run.process_success, "it should exit cleanly on its own");
+        assert_eq!(run.events.len(), 8, "all streamed events captured");
         let _ = fs::remove_dir_all(&root);
     }
 
