@@ -1304,21 +1304,30 @@ export function GoalDocument({ model, onSelectionChange }: SurfaceProps) {
       </header>
 
       {goal.description_md && (
-        <DocSection label="Description">
-          <Markdown source={goal.description_md} />
-        </DocSection>
+        <GoalMdSection
+          icon={FileText}
+          title="Description"
+          hint="what & why"
+          source={goal.description_md}
+        />
       )}
 
       {goal.design_md && (
-        <DocSection label="Design — key problems first, then the big picture">
-          <Markdown source={goal.design_md} />
-        </DocSection>
+        <GoalMdSection
+          icon={Wrench}
+          title="Design"
+          hint="key problems first, then the big picture"
+          source={goal.design_md}
+        />
       )}
 
       {goal.acceptance_md && (
-        <DocSection label="Acceptance — how this is verified for real">
-          <Markdown source={goal.acceptance_md} />
-        </DocSection>
+        <GoalMdSection
+          icon={CheckCircle2}
+          title="Acceptance"
+          hint="how this is verified for real"
+          source={goal.acceptance_md}
+        />
       )}
 
       {(goal.explorations?.length ?? 0) > 0 && (
@@ -1450,6 +1459,36 @@ function LabeledList({
         ))}
       </ul>
     </div>
+  );
+}
+
+/**
+ * A clearly-delineated markdown block for a goal's lifecycle docs — a header bar
+ * (icon + title + one-line hint) over a bordered body, so it is obvious which
+ * section the content below belongs to.
+ */
+function GoalMdSection({
+  icon: Icon,
+  title,
+  hint,
+  source,
+}: {
+  icon: typeof FileText;
+  title: string;
+  hint: string;
+  source: string;
+}) {
+  return (
+    <section className="overflow-hidden rounded-xl border border-border bg-card/40">
+      <header className="flex items-center gap-2 border-b border-border bg-muted/40 px-4 py-2.5">
+        <Icon className="size-4 shrink-0 text-foreground/70" />
+        <h2 className="text-sm font-semibold tracking-tight text-foreground">{title}</h2>
+        <span className="truncate text-[11px] text-muted-foreground">· {hint}</span>
+      </header>
+      <div className="px-4 py-3.5">
+        <Markdown source={source} />
+      </div>
+    </section>
   );
 }
 

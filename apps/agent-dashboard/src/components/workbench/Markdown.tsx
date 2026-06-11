@@ -67,22 +67,50 @@ function render(source: string): ReactNode[] {
       continue;
     }
 
-    // List (unordered or ordered) — consume the contiguous run
+    // List (unordered or ordered) — consume a contiguous run, JOINING multi-line
+    // items (indented continuation lines belong to the current item) and tolerating
+    // blank lines between items, so a loose list stays ONE <ol>/<ul> with correct
+    // 1..n numbering instead of collapsing into many single-item lists.
     if (/^\s*([-*]|\d+\.)\s+/.test(line)) {
       const ordered = /^\s*\d+\.\s+/.test(line);
       const items: string[] = [];
-      while (i < lines.length && /^\s*([-*]|\d+\.)\s+/.test(lines[i])) {
-        items.push(lines[i].replace(/^\s*([-*]|\d+\.)\s+/, ""));
-        i += 1;
+      while (i < lines.length) {
+        const l = lines[i];
+        const marker = /^\s*([-*]|\d+\.)\s+(.*)$/.exec(l);
+        if (marker) {
+          items.push(marker[2]);
+          i += 1;
+        } else if (l.trim() === "") {
+          // A blank line continues the list only if another item follows it.
+          let j = i + 1;
+          while (j < lines.length && lines[j].trim() === "") j += 1;
+          if (j < lines.length && /^\s*([-*]|\d+\.)\s+/.test(lines[j])) {
+            i = j;
+          } else {
+            break;
+          }
+        } else if (items.length > 0 && /^\s+\S/.test(l)) {
+          // Indented continuation → fold it onto the current item.
+          items[items.length - 1] += " " + l.trim();
+          i += 1;
+        } else {
+          break;
+        }
       }
       const ListTag = ordered ? "ol" : "ul";
       blocks.push(
         <ListTag
           key={key++}
-          className={ordered ? "list-decimal space-y-1 pl-5" : "list-disc space-y-1 pl-5"}
+          className={
+            ordered
+              ? "list-decimal space-y-1.5 pl-5 marker:text-muted-foreground"
+              : "list-disc space-y-1.5 pl-5 marker:text-muted-foreground"
+          }
         >
           {items.map((item, index) => (
-            <li key={index}>{inline(item)}</li>
+            <li key={index} className="pl-1">
+              {inline(item)}
+            </li>
           ))}
         </ListTag>,
       );
