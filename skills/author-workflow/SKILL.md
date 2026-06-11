@@ -173,6 +173,15 @@ its `git diff` becomes the step's evidence, and the worktree is cleaned up after
 (auto-removed if unchanged, never auto-merged). So a `parallel()` block of several
 `writable` slots is automatically conflict-free — each gets its own worktree.
 
+A `writable` worker runs with **FULL permissions** — codex `--sandbox
+danger-full-access`, claude `--permission-mode bypassPermissions` — so it can run
+arbitrary shell, **`git add`/`git commit`**, install deps, and reach the network.
+(Codex's `workspace-write` was deliberately NOT used: it blocks writes to `.git/`,
+so commits failed with "sandbox denied .git".) The throwaway worktree — not an OS
+sandbox — is the boundary: a `writable` prompt executes for real, so scope it, and
+never point a workflow with destructive/money-moving `writable` steps at a tree you
+care about.
+
 `isolation="worktree"` is the explicit form of the same thing (a read-only call
 that still wants an isolated checkout); `writable=True` implies it.
 
