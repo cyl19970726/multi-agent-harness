@@ -1,0 +1,4 @@
+interface:
+  display_name: "Author Goal"
+  short_description: "Write a markdown-first Goal and move it through its gated lifecycle."
+  default_prompt: "Author or advance a Goal: write description / design (key problems FIRST, grounded in file:line) / real acceptance, run multi-agent exploration, and transition draft → exploring → explored → working → done → verifying → verified through the gates the harness CLI enforces."

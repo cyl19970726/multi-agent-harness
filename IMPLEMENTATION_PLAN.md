@@ -52,7 +52,7 @@ gates refusing illegal transitions.
 **Goal**: a skill teaching how to write description/design(key-problems-first)/
 acceptance and how to pass each gate to transition stages.
 **Success**: `pnpm check:skills` + `check:doc-governance` green.
-**Status**: Not Started
+**Status**: Complete (.agents/skills/author-goal; check:skills 6 skills green).
 
 ## Stage 5: Dashboard (stage bar + 3 markdown sections)
 **Goal**: Goal detail surface renders a stage flow bar + the three markdown
