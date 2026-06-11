@@ -46,7 +46,7 @@ explore-add`, `goal design-set`, `goal acceptance-set`, `goal stage <to>`
 (gate-enforced), `goal show` (renders sections + stage).
 **Success**: `cargo test` green; a goal can be driven draft→verified via CLI with
 gates refusing illegal transitions.
-**Status**: Not Started
+**Status**: Complete (e2e verified: gates reject draft→working, explored-without-design, working-without-acceptance; explore-add auto-increments round; harness-cli 145 pass, only the pre-existing macOS resident_daemon socket flakes fail).
 
 ## Stage 4: `author-goal` skill
 **Goal**: a skill teaching how to write description/design(key-problems-first)/

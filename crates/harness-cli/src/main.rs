@@ -11,10 +11,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use harness_core::{
     build_launch_spec, AgentEvent, AgentMember, AgentMemberStatus, AgentProviderConfig,
     AgentRuntime, AgentRuntimeHealth, AgentRuntimeStatus, AgentTeam, AgentTeamStatus, Decision,
-    EvaluationOutcome, Evidence, Gap, GapSeverity, GapStatus, Goal, GoalCase, GoalDesign,
-    GoalEvaluation, GoalStage, GoalStatus, LaunchMcp, LaunchPermission, Message, MessageDelivery,
-    MessageDeliveryStatus, MessageKind, MessageTerminalSource, Proposal, ProposalStatus,
-    ProviderChildThread, ProviderChildThreadStatus, ProviderKind, ProviderSession,
+    EvaluationOutcome, Evidence, Exploration, Gap, GapSeverity, GapStatus, Goal, GoalCase,
+    GoalDesign, GoalEvaluation, GoalStage, GoalStatus, LaunchMcp, LaunchPermission, Message,
+    MessageDelivery, MessageDeliveryStatus, MessageKind, MessageTerminalSource, Proposal,
+    ProposalStatus, ProviderChildThread, ProviderChildThreadStatus, ProviderKind, ProviderSession,
     ProviderSessionStatus, Review, ReviewVerdict, SenderKind, Task, TaskStatus, Vision,
     WorkflowRun, WorkflowRunStatus, WorkflowStep, WorkflowStepStatus,
 };
@@ -398,8 +398,42 @@ fn team_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     Ok(())
 }
 
+/// Read a markdown field value from either an inline `--<name>` flag or a
+/// `--<name>-file <path>` (file content). Long markdown is awkward as a shell
+/// arg, so the `-file` form is the ergonomic path for design/acceptance bodies.
+fn md_value(args: &[String], name: &str) -> CliResult<Option<String>> {
+    if let Some(v) = value(args, &format!("--{name}")) {
+        return Ok(Some(v));
+    }
+    if let Some(path) = value(args, &format!("--{name}-file")) {
+        let content = std::fs::read_to_string(&path)
+            .map_err(|e| CliError::Usage(format!("cannot read --{name}-file {path}: {e}")))?;
+        return Ok(Some(content));
+    }
+    Ok(None)
+}
+
+/// Load the latest row for a goal id, or a clear not-found error.
+fn goal_load(store: &HarnessStore, id: &str) -> CliResult<Goal> {
+    latest_goals(store)?
+        .remove(id)
+        .ok_or_else(|| CliError::Usage(format!("goal not found: {id}")))
+}
+
+/// Parse a lifecycle stage string via the serde snake_case mapping.
+fn parse_goal_stage(s: &str) -> CliResult<GoalStage> {
+    serde_json::from_value(serde_json::Value::String(s.to_string())).map_err(|_| {
+        CliError::Usage(format!(
+            "unknown stage `{s}` (draft|exploring|explored|working|done|verifying|verified)"
+        ))
+    })
+}
+
 fn goal_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    require_subcommand(args, "goal create|list|learning-status|evaluate|close")?;
+    require_subcommand(
+        args,
+        "goal create|list|show|describe-set|design-set|acceptance-set|explore-add|stage|learning-status|evaluate|close",
+    )?;
     match args[0].as_str() {
         "create" => {
             let goal = Goal {
@@ -416,15 +450,86 @@ fn goal_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
                 goal_design_id: value(args, "--goal-design"),
                 closed_by_decision_id: value(args, "--closed-by-decision"),
                 git_metadata: None,
-                stage: GoalStage::default(),
-                description_md: None,
-                design_md: None,
-                acceptance_md: None,
+                // A goal is born in `draft`; it must be explored before it can work.
+                stage: GoalStage::Draft,
+                description_md: md_value(args, "description")?,
+                design_md: md_value(args, "design")?,
+                acceptance_md: md_value(args, "acceptance")?,
                 explorations: Vec::new(),
-                skill_refs: Vec::new(),
-                stage_changed_at: None,
+                skill_refs: many(args, "--skill-ref"),
+                stage_changed_at: Some(now_string()),
             };
             persist_new_goal(store, &goal)?;
+            print_json(&goal)?;
+        }
+        "show" => {
+            let id = required(args, "--id").or_else(|_| required(args, "--goal"))?;
+            print_json(&goal_load(store, &id)?)?;
+        }
+        "describe-set" | "design-set" | "acceptance-set" => {
+            let id = required(args, "--id").or_else(|_| required(args, "--goal"))?;
+            let mut goal = goal_load(store, &id)?;
+            let body = md_value(args, "md")?.ok_or_else(|| {
+                CliError::Usage(format!("{} needs --md <text> or --md-file <path>", args[0]))
+            })?;
+            match args[0].as_str() {
+                "describe-set" => goal.description_md = Some(body),
+                "design-set" => goal.design_md = Some(body),
+                "acceptance-set" => goal.acceptance_md = Some(body),
+                _ => unreachable!(),
+            }
+            goal.updated_at = now_string();
+            store.append_goal(&goal)?;
+            print_json(&goal)?;
+        }
+        "explore-add" => {
+            let id = required(args, "--id").or_else(|_| required(args, "--goal"))?;
+            let mut goal = goal_load(store, &id)?;
+            let author = required(args, "--author")?;
+            let round = value(args, "--round")
+                .and_then(|r| r.parse::<u32>().ok())
+                .unwrap_or_else(|| {
+                    goal.explorations
+                        .iter()
+                        .map(|e| e.round)
+                        .max()
+                        .map_or(1, |m| m + 1)
+                });
+            let notes = md_value(args, "notes")?.ok_or_else(|| {
+                CliError::Usage("explore-add needs --notes <text> or --notes-file <path>".into())
+            })?;
+            goal.explorations.push(Exploration {
+                author,
+                round,
+                notes_md: notes,
+                created_at: now_string(),
+            });
+            goal.updated_at = now_string();
+            store.append_goal(&goal)?;
+            print_json(&goal)?;
+        }
+        "stage" => {
+            let id = required(args, "--id").or_else(|_| required(args, "--goal"))?;
+            let to = parse_goal_stage(&required(args, "--to")?)?;
+            let mut goal = goal_load(store, &id)?;
+            // The gate is where substance is enforced (design before explored,
+            // real acceptance before working). Refuse otherwise.
+            goal.check_transition(to).map_err(CliError::Usage)?;
+            goal.stage = to;
+            goal.status = to.to_status();
+            let now = now_string();
+            goal.stage_changed_at = Some(now.clone());
+            goal.updated_at = now;
+            store.append_goal(&goal)?;
+            append_agent_event(
+                store,
+                &goal.owner_agent_id,
+                None,
+                None,
+                "goal_stage_changed",
+                &format!("Goal {id} → stage {}", to.as_str()),
+                None,
+            )?;
             print_json(&goal)?;
         }
         "learning-status" => {
