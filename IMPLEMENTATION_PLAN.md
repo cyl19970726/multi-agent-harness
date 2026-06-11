@@ -38,7 +38,7 @@ issue — confirmed identical on clean master, unrelated to this change.)
 **Goal**: `schemas/goal.schema.json` gains the new optional properties; a valid
 fixture exercises them.
 **Success**: `pnpm check:schema-fixtures` green.
-**Status**: Not Started
+**Status**: Complete (27 valid / 21 invalid fixtures green; new `with-lifecycle.json`).
 
 ## Stage 3: CLI (write the markdown, transition the stage)
 **Goal**: `goal create` (md via `--*-file`/stdin + `--skill-ref`), `goal

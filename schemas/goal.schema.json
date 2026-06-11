@@ -79,6 +79,40 @@
           "items": { "type": "string", "minLength": 1 }
         }
       }
+    },
+    "stage": {
+      "type": "string",
+      "enum": [
+        "draft",
+        "exploring",
+        "explored",
+        "working",
+        "done",
+        "verifying",
+        "verified"
+      ]
+    },
+    "description_md": { "type": ["string", "null"] },
+    "design_md": { "type": ["string", "null"] },
+    "acceptance_md": { "type": ["string", "null"] },
+    "stage_changed_at": { "type": ["string", "null"] },
+    "explorations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["author", "notes_md", "created_at"],
+        "properties": {
+          "author": { "type": "string", "minLength": 1 },
+          "round": { "type": "integer", "minimum": 0 },
+          "notes_md": { "type": "string", "minLength": 1 },
+          "created_at": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "skill_refs": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
     }
   }
 }
