@@ -19,6 +19,19 @@ import { useEventStream } from "./useEventStream";
 import { WorkbenchShell } from "./WorkbenchShell";
 
 const apiDefault = "http://127.0.0.1:8787";
+/**
+ * Allow the harness API to be deep-linked via `?api=<url>` so a single link can
+ * point the dashboard at a specific store (e.g. a second `harness serve`) without
+ * hand-editing the Debug field. Falls back to the default when absent.
+ */
+function apiFromLocation(): string {
+  try {
+    const fromUrl = new URLSearchParams(window.location.search).get("api");
+    return fromUrl && fromUrl.trim() ? fromUrl.trim() : apiDefault;
+  } catch {
+    return apiDefault;
+  }
+}
 /** Canonical "snapshot came from the live harness" marker; gates write actions. */
 const liveSource = "live";
 const offlineLabel = "not connected";
@@ -35,7 +48,7 @@ const emptySnapshot: DashboardSnapshot = {};
 const pollIntervalMs = 5000;
 
 export function App() {
-  const [apiUrl, setApiUrl] = useState(apiDefault);
+  const [apiUrl, setApiUrl] = useState(apiFromLocation);
   const [snapshot, setSnapshot] = useState<DashboardSnapshot>(emptySnapshot);
   // The registered workflow catalog (GET /v1/workflows) is run-independent and
   // lives outside the snapshot, so it is fetched alongside the snapshot.
