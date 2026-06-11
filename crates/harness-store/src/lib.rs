@@ -389,7 +389,7 @@ mod tests {
     use std::sync::{Arc, Barrier};
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use harness_core::{Goal, GoalStatus, MessageKind, SenderKind};
+    use harness_core::{Goal, GoalStage, GoalStatus, MessageKind, SenderKind};
 
     use super::*;
 
@@ -406,10 +406,8 @@ mod tests {
         let goal = Goal {
             id: "goal-1".into(),
             title: "Self-host".into(),
-            objective: "Manage this repo through harness objects".into(),
             owner_agent_id: "leader-1".into(),
             status: GoalStatus::Active,
-            success_criteria: vec!["Goal is persisted".into()],
             priority: "p0".into(),
             created_at: "2026-05-26T00:00:00Z".into(),
             updated_at: "2026-05-26T00:00:00Z".into(),
@@ -417,6 +415,13 @@ mod tests {
             goal_design_id: None,
             closed_by_decision_id: None,
             git_metadata: None,
+            stage: GoalStage::default(),
+            description_md: None,
+            design_md: None,
+            acceptance_md: None,
+            explorations: Vec::new(),
+            skill_refs: Vec::new(),
+            stage_changed_at: None,
         };
 
         store.append_goal(&goal).expect("append goal");
@@ -449,10 +454,8 @@ mod tests {
                     let goal = Goal {
                         id: format!("goal-{worker}-{index}"),
                         title: "Concurrent".into(),
-                        objective: "Append without corrupting JSONL rows".into(),
                         owner_agent_id: "leader-1".into(),
                         status: GoalStatus::Active,
-                        success_criteria: vec!["Goal is persisted".into()],
                         priority: "p1".into(),
                         created_at: "2026-05-26T00:00:00Z".into(),
                         updated_at: "2026-05-26T00:00:00Z".into(),
@@ -460,6 +463,13 @@ mod tests {
                         goal_design_id: None,
                         closed_by_decision_id: None,
                         git_metadata: None,
+                        stage: GoalStage::default(),
+                        description_md: None,
+                        design_md: None,
+                        acceptance_md: None,
+                        explorations: Vec::new(),
+                        skill_refs: Vec::new(),
+                        stage_changed_at: None,
                     };
                     store.append_goal(&goal).expect("append goal");
                 }
@@ -497,10 +507,8 @@ mod tests {
         let goal = Goal {
             id: "goal-stale-lock".into(),
             title: "Stale lock".into(),
-            objective: "Recover after interrupted writer".into(),
             owner_agent_id: "leader-1".into(),
             status: GoalStatus::Active,
-            success_criteria: vec!["Goal is persisted".into()],
             priority: "p1".into(),
             created_at: "2026-05-26T00:00:00Z".into(),
             updated_at: "2026-05-26T00:00:00Z".into(),
@@ -508,6 +516,13 @@ mod tests {
             goal_design_id: None,
             closed_by_decision_id: None,
             git_metadata: None,
+            stage: GoalStage::default(),
+            description_md: None,
+            design_md: None,
+            acceptance_md: None,
+            explorations: Vec::new(),
+            skill_refs: Vec::new(),
+            stage_changed_at: None,
         };
 
         store

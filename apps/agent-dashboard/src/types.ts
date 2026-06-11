@@ -5,6 +5,26 @@ export type TaskStatus = "planned" | "assigned" | "running" | "blocked" | "revie
  * are not shown as columns. See ADR 0019.
  */
 export type GoalStatus = "active" | "blocked" | "review" | "done" | "complete" | "archived";
+/**
+ * Markdown-first Goal lifecycle stage (distinct from the legacy `GoalStatus`
+ * kanban). Phases: exploration (exploring→explored), work (working→done),
+ * acceptance (verifying→verified).
+ */
+export type GoalStage =
+  | "draft"
+  | "exploring"
+  | "explored"
+  | "working"
+  | "done"
+  | "verifying"
+  | "verified";
+/** One multi-agent / multi-round exploration note feeding `design_md`. */
+export interface Exploration {
+  author: string;
+  round?: number;
+  notes_md: string;
+  created_at: string;
+}
 export type DeliveryStatus = "queued" | "delivered" | "acknowledged" | "failed";
 
 /**
@@ -27,17 +47,23 @@ export type ProviderSessionStatus = "queued" | "running" | "succeeded" | "failed
 export interface Goal {
   id: string;
   title?: string;
-  objective?: string;
   owner_agent_id?: string;
   status?: string;
   priority?: string;
-  success_criteria?: string[];
   created_at?: string;
   updated_at?: string;
   vision_id?: string | null;
   goal_design_id?: string | null;
   closed_by_decision_id?: string | null;
   git_metadata?: GitMetadata | null;
+  // Markdown-first lifecycle (additive).
+  stage?: GoalStage;
+  description_md?: string | null;
+  design_md?: string | null;
+  acceptance_md?: string | null;
+  explorations?: Exploration[];
+  skill_refs?: string[];
+  stage_changed_at?: string | null;
 }
 
 export interface Task {

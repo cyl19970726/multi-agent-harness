@@ -110,9 +110,11 @@ import type {
   AgentStats,
   DeliveryStatus,
   DocRegistryEntry,
+  Exploration,
   Goal,
   GoalDesign,
   GoalEvaluation,
+  GoalStage,
   Message,
   ProviderChildThread,
   ProviderSession,
@@ -507,7 +509,9 @@ function GoalCard({
         </span>
         <Badge tone={goalTone(goal.status)}>{goal.status ?? "active"}</Badge>
       </div>
-      <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{goal.objective}</p>
+      {goal.stage && (
+        <p className="mt-1 text-[11px] font-medium text-muted-foreground">stage: {goal.stage}</p>
+      )}
       <div className="mt-2 inline-flex items-center gap-1 text-[11px] text-muted-foreground">
         <ClipboardList className="size-3" /> {tasks.length} tasks
       </div>
@@ -1296,27 +1300,62 @@ export function GoalDocument({ model, onSelectionChange }: SurfaceProps) {
             { label: "Updated", value: fmtTime(goal.updated_at) },
           ]}
         />
+        <GoalStageBar stage={goal.stage} />
       </header>
 
-      <DocSection label="Objective">
-        <p className="text-[15px] leading-relaxed text-foreground/90">
-          {goal.objective ?? "No objective recorded."}
-        </p>
-      </DocSection>
+      {goal.description_md && (
+        <GoalMdSection
+          icon={FileText}
+          title="Description"
+          hint="what & why"
+          source={goal.description_md}
+        />
+      )}
 
-      <DocSection label="Success criteria">
-        <CriteriaList items={goal.success_criteria} empty="No success criteria recorded" />
-      </DocSection>
+      {goal.design_md && (
+        <GoalMdSection
+          icon={Wrench}
+          title="Design"
+          hint="key problems first, then the big picture"
+          source={goal.design_md}
+        />
+      )}
+
+      {goal.acceptance_md && (
+        <GoalMdSection
+          icon={CheckCircle2}
+          title="Acceptance"
+          hint="how this is verified for real"
+          source={goal.acceptance_md}
+        />
+      )}
+
+      {(goal.explorations?.length ?? 0) > 0 && (
+        <CollapsibleSection
+          kicker="Multi-agent / multi-round"
+          title={`Exploration (${goal.explorations!.length})`}
+        >
+          <GoalExplorations explorations={goal.explorations!} />
+        </CollapsibleSection>
+      )}
+
+      {(goal.skill_refs?.length ?? 0) > 0 && (
+        <DocSection label="Skills">
+          <div className="flex flex-wrap gap-1.5">
+            {goal.skill_refs!.map((s) => (
+              <Badge key={s} tone="info">
+                {s}
+              </Badge>
+            ))}
+          </div>
+        </DocSection>
+      )}
 
       <DocSection label="Tasks">
         <div className="rounded-lg border border-border bg-card">
           <GoalTasksJump model={model} onSelectionChange={onSelectionChange} />
         </div>
       </DocSection>
-
-      <CollapsibleSection kicker="Executable thesis" title="Goal design">
-        <GoalDesignSection design={design} />
-      </CollapsibleSection>
 
       <CollapsibleSection kicker="Retrospective" title="Goal evaluation">
         <GoalEvaluationSection evaluation={evaluation} />
@@ -1423,40 +1462,102 @@ function LabeledList({
   );
 }
 
-/** Render a GoalDesign as a real section: scenario, non-goals, acceptance gates. */
-function GoalDesignSection({ design }: { design?: GoalDesign }) {
-  if (!design) {
-    return (
-      <EmptyState
-        title="No goal design recorded"
-        description="A GoalDesign captures the scenario, non-goals, and acceptance gates before work starts."
-      />
-    );
-  }
+/**
+ * A clearly-delineated markdown block for a goal's lifecycle docs — a header bar
+ * (icon + title + one-line hint) over a bordered body, so it is obvious which
+ * section the content below belongs to.
+ */
+function GoalMdSection({
+  icon: Icon,
+  title,
+  hint,
+  source,
+}: {
+  icon: typeof FileText;
+  title: string;
+  hint: string;
+  source: string;
+}) {
+  return (
+    <section className="overflow-hidden rounded-xl border border-border bg-card/40">
+      <header className="flex items-center gap-2 border-b border-border bg-muted/40 px-4 py-2.5">
+        <Icon className="size-4 shrink-0 text-foreground/70" />
+        <h2 className="text-sm font-semibold tracking-tight text-foreground">{title}</h2>
+        <span className="truncate text-[11px] text-muted-foreground">· {hint}</span>
+      </header>
+      <div className="px-4 py-3.5">
+        <Markdown source={source} />
+      </div>
+    </section>
+  );
+}
+
+/** The markdown-first lifecycle stages, grouped by phase. */
+const GOAL_STAGES: { stage: GoalStage; phase: string }[] = [
+  { stage: "draft", phase: "" },
+  { stage: "exploring", phase: "explore" },
+  { stage: "explored", phase: "explore" },
+  { stage: "working", phase: "work" },
+  { stage: "done", phase: "work" },
+  { stage: "verifying", phase: "accept" },
+  { stage: "verified", phase: "accept" },
+];
+
+/** Horizontal stage-flow bar: past stages muted-done, current highlighted, future faint. */
+function GoalStageBar({ stage }: { stage?: GoalStage }) {
+  const current = stage ?? "draft";
+  const order = Math.max(
+    0,
+    GOAL_STAGES.findIndex((s) => s.stage === current),
+  );
+  return (
+    <div className="flex flex-wrap items-center gap-1 rounded-lg border border-border bg-card p-2">
+      {GOAL_STAGES.map((s, i) => {
+        const isCurrent = s.stage === current;
+        const isPast = i < order;
+        return (
+          <div key={s.stage} className="flex items-center gap-1">
+            <span
+              className={cn(
+                "rounded-md px-2 py-0.5 text-[11px] font-medium",
+                isCurrent
+                  ? "bg-primary text-primary-foreground"
+                  : isPast
+                    ? "bg-accent text-foreground/70"
+                    : "text-muted-foreground",
+              )}
+            >
+              {s.stage}
+            </span>
+            {i < GOAL_STAGES.length - 1 && (
+              <ChevronRight
+                className={cn(
+                  "size-3",
+                  i < order ? "text-foreground/40" : "text-muted-foreground/30",
+                )}
+              />
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/** Multi-agent / multi-round exploration notes feeding the design. */
+function GoalExplorations({ explorations }: { explorations: Exploration[] }) {
   return (
     <div className="space-y-3 p-4">
-      <div className="flex items-center gap-2">
-        <MonoId>{design.id}</MonoId>
-        {design.agent_team && <Badge tone="info">team: {design.agent_team}</Badge>}
-      </div>
-      {design.scenario_summary && (
-        <p className="text-[13px] leading-relaxed text-foreground/90">
-          {design.scenario_summary}
-        </p>
-      )}
-      {design.risk_and_permission_boundaries && (
-        <div>
-          <p className="mb-1 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-            <StatusDot tone="warn" /> Risk & permission boundaries
-          </p>
-          <p className="text-[13px] text-foreground/90">
-            {design.risk_and_permission_boundaries}
-          </p>
+      {explorations.map((e, i) => (
+        <div key={i} className="rounded-lg border border-border bg-background p-3">
+          <div className="mb-1 flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
+            <Badge tone="info">round {e.round ?? 1}</Badge>
+            <span className="font-medium text-foreground/80">{e.author}</span>
+            <span>· {fmtTime(e.created_at)}</span>
+          </div>
+          <Markdown source={e.notes_md} />
         </div>
-      )}
-      <LabeledList label="Non-goals" items={design.non_goals} tone="bad" />
-      <LabeledList label="Required infra" items={design.required_infra} tone="info" />
-      <LabeledList label="Acceptance gates" items={design.acceptance_gates} tone="good" />
+      ))}
     </div>
   );
 }

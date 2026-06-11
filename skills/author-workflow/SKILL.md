@@ -86,7 +86,7 @@ A program calls these globals (no `import`; they are pre-bound):
 | `parallel([dict, ...])` | list (input order) | Barrier fan-out: run every spec concurrently, block until ALL finish. Each element is the parsed dict (if that spec had a `schema` that parsed) else its output string. Each dict needs a `prompt` and may set `provider` (default `"codex"`), `label`, `phase`, `model`, `isolation`, `schema`, `writable`. |
 | `pipeline(items, stages)` | list (one per item) | No-barrier streaming: each item flows through every stage independently. `stages` is a list of dicts `{prompt, provider?, model?, schema?, writable?}` whose `prompt` is a TEMPLATE containing `{input}` — replaced with the item for stage 1, then the prior stage's output for each next stage (forward-injection). Returns each item's LAST stage result. |
 | `verdict(ok, reason="")` | — | Declare the run's TYPED outcome. `ok=False` finalizes the run `Failed` even if every worker ran — so "workers ran" ≠ "intent satisfied". A closed-loop program's final gate calls this. |
-| `output(value)` | — | Declare the run's RESULT — the one unambiguous answer the calling agent reads back. `value` (a string or dict) is persisted verbatim under `final_output.result`, UNCAPPED, so the caller reads one field instead of digging the answer out of a step by label. Last call wins; pass a `schema`'d dict for a large answer (a free-text `agent()` return was already capped at ~4000 chars). |
+| `output(value)` | — | Declare the run's RESULT — the one unambiguous answer the calling agent reads back. `value` (a string or dict) is persisted verbatim under `final_output.result`, UNCAPPED, so the caller reads one field instead of digging the answer out of a step by label. Last call wins; pass a `schema`'d dict when you want the answer typed (a free-text `agent()` return is the worker's FULL reply — not truncated). |
 | `json.encode(value)` / `json.decode(str)` | string / value | Serialize a prior `agent()`'s dict to inject it verbatim into the next prompt (forward-injection), or parse JSON back. |
 | `phase(name)` | — | Set the default phase for the steps that follow. |
 | `log(message)` | — | Emit a progress line (persisted in the run's `final_output.logs`). |
@@ -564,7 +564,7 @@ Useful flags:
 | `--args <json>` | Injected as the `args` global. |
 | `--dry-run` | Use a mock driver so the program runs end-to-end without spawning agents. |
 | `--start-runtime` | Start the provider runtime if it is not already running. |
-| `--timeout-ms <ms>` | Per-worker wall-clock timeout (default 300000 = 5 min; a hung worker is killed, the run continues). |
+| `--timeout-ms <ms>` | Per-worker **IDLE** timeout (default 900000 = 15 min). A worker is killed only after this long with NO output — a slow-but-streaming turn runs to completion however long it takes; only a SILENT (wedged provider / auth or network stall) worker is killed. NOT a total wall-clock cap. |
 | `--max-budget-usd <amt>` | Per-run spend ceiling; once cumulative cost reaches it, further leaves short-circuit into failed `budget` steps (also settable via `workflow(budget_usd=…)`). |
 | `--resume <prior_run_id>` | Re-run the SAME program reusing the prior run's SUCCEEDED leaves (no re-spend); fails if the script changed. |
 | `--trace durable\|live` | Retain the heavy per-step turn-event trace (`durable`, default) or stream-only (`live`). |
@@ -606,7 +606,7 @@ and inside `run.final_output`:
   read this one field. It is `null` if the script never called `output()`.
 - `verdict` — `{ok, reason}` from `verdict()`: did the intent succeed.
 - `success_criterion`, `logs` — the declared bar and the `log()` narration.
-- `steps[]` — per-leaf `output_summary` (capped ~4000 chars), `structured`, and
+- `steps[]` — per-leaf `output_summary` (the worker's FULL reply, untruncated), `structured`, and
   telemetry, for audit.
 
 So a foreground call gives you the whole timeline + answer at once:
