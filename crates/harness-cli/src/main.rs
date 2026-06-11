@@ -5006,10 +5006,14 @@ fn spawn_codex_ephemeral(
     timeout_ms: u64,
 ) -> CliResult<EphemeralSpawn> {
     let last_message_ref = session_dir.join("last-message.md");
-    // Read-only by default; a `writable` node gets workspace-write (and the caller
-    // has already isolated it into a throwaway worktree).
+    // Read-only by default; a `writable` node gets FULL access (the codex analogue of
+    // claude's `--permission-mode bypassPermissions`). NOT `workspace-write`: that
+    // mode blocks writes to `.git/`, so a worker could edit files but `git add`/
+    // `git commit` failed ("sandbox denied .git") and network was off. The caller has
+    // already isolated the worker into a throwaway worktree, so the worktree (not the
+    // codex sandbox) is the boundary — give it full access to actually do the work.
     let sandbox = if spec.writable {
-        "workspace-write"
+        "danger-full-access"
     } else {
         "read-only"
     };
