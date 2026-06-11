@@ -110,9 +110,11 @@ import type {
   AgentStats,
   DeliveryStatus,
   DocRegistryEntry,
+  Exploration,
   Goal,
   GoalDesign,
   GoalEvaluation,
+  GoalStage,
   Message,
   ProviderChildThread,
   ProviderSession,
@@ -1296,7 +1298,47 @@ export function GoalDocument({ model, onSelectionChange }: SurfaceProps) {
             { label: "Updated", value: fmtTime(goal.updated_at) },
           ]}
         />
+        <GoalStageBar stage={goal.stage} />
       </header>
+
+      {goal.description_md && (
+        <DocSection label="Description">
+          <Markdown source={goal.description_md} />
+        </DocSection>
+      )}
+
+      {goal.design_md && (
+        <DocSection label="Design — key problems first, then the big picture">
+          <Markdown source={goal.design_md} />
+        </DocSection>
+      )}
+
+      {goal.acceptance_md && (
+        <DocSection label="Acceptance — how this is verified for real">
+          <Markdown source={goal.acceptance_md} />
+        </DocSection>
+      )}
+
+      {(goal.explorations?.length ?? 0) > 0 && (
+        <CollapsibleSection
+          kicker="Multi-agent / multi-round"
+          title={`Exploration (${goal.explorations!.length})`}
+        >
+          <GoalExplorations explorations={goal.explorations!} />
+        </CollapsibleSection>
+      )}
+
+      {(goal.skill_refs?.length ?? 0) > 0 && (
+        <DocSection label="Skills">
+          <div className="flex flex-wrap gap-1.5">
+            {goal.skill_refs!.map((s) => (
+              <Badge key={s} tone="info">
+                {s}
+              </Badge>
+            ))}
+          </div>
+        </DocSection>
+      )}
 
       <DocSection label="Objective">
         <p className="text-[15px] leading-relaxed text-foreground/90">
@@ -1419,6 +1461,76 @@ function LabeledList({
           </li>
         ))}
       </ul>
+    </div>
+  );
+}
+
+/** The markdown-first lifecycle stages, grouped by phase. */
+const GOAL_STAGES: { stage: GoalStage; phase: string }[] = [
+  { stage: "draft", phase: "" },
+  { stage: "exploring", phase: "explore" },
+  { stage: "explored", phase: "explore" },
+  { stage: "working", phase: "work" },
+  { stage: "done", phase: "work" },
+  { stage: "verifying", phase: "accept" },
+  { stage: "verified", phase: "accept" },
+];
+
+/** Horizontal stage-flow bar: past stages muted-done, current highlighted, future faint. */
+function GoalStageBar({ stage }: { stage?: GoalStage }) {
+  const current = stage ?? "draft";
+  const order = Math.max(
+    0,
+    GOAL_STAGES.findIndex((s) => s.stage === current),
+  );
+  return (
+    <div className="flex flex-wrap items-center gap-1 rounded-lg border border-border bg-card p-2">
+      {GOAL_STAGES.map((s, i) => {
+        const isCurrent = s.stage === current;
+        const isPast = i < order;
+        return (
+          <div key={s.stage} className="flex items-center gap-1">
+            <span
+              className={cn(
+                "rounded-md px-2 py-0.5 text-[11px] font-medium",
+                isCurrent
+                  ? "bg-primary text-primary-foreground"
+                  : isPast
+                    ? "bg-accent text-foreground/70"
+                    : "text-muted-foreground",
+              )}
+            >
+              {s.stage}
+            </span>
+            {i < GOAL_STAGES.length - 1 && (
+              <ChevronRight
+                className={cn(
+                  "size-3",
+                  i < order ? "text-foreground/40" : "text-muted-foreground/30",
+                )}
+              />
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/** Multi-agent / multi-round exploration notes feeding the design. */
+function GoalExplorations({ explorations }: { explorations: Exploration[] }) {
+  return (
+    <div className="space-y-3 p-4">
+      {explorations.map((e, i) => (
+        <div key={i} className="rounded-lg border border-border bg-background p-3">
+          <div className="mb-1 flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
+            <Badge tone="info">round {e.round ?? 1}</Badge>
+            <span className="font-medium text-foreground/80">{e.author}</span>
+            <span>· {fmtTime(e.created_at)}</span>
+          </div>
+          <Markdown source={e.notes_md} />
+        </div>
+      ))}
     </div>
   );
 }

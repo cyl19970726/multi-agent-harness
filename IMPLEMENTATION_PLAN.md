@@ -58,11 +58,11 @@ acceptance and how to pass each gate to transition stages.
 **Goal**: Goal detail surface renders a stage flow bar + the three markdown
 sections + the explorations list (markdown rendered).
 **Success**: `pnpm check:dashboard` green; in-browser screenshot shows it.
-**Status**: Not Started
+**Status**: Complete (stage flow bar + Markdown-rendered description/design/acceptance + explorations; verified in-browser against goal-provider-neutral).
 
 ## Stage 6: Migrate the two real goals
 **Goal**: re-express `goal-self-hosting` and `goal-provider-neutral` in the new
 model — design_md carries the grounded key problems (the gaps stay linked),
 acceptance_md the real acceptance — and verify in the frontend.
 **Success**: both goals show their markdown + stage in the dashboard.
-**Status**: Not Started
+**Status**: Complete (goal-provider-neutral + goal-self-hosting migrated to stage=explored with grounded design_md/key-problems, real acceptance_md, and exploration notes; data lives in the store).
