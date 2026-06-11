@@ -67,7 +67,13 @@ harness goal explore-add --id <goal> --author <who> --notes-file notes.md
 ```
 
 ### design_md (explored) — key problems FIRST
-The design is only as good as the problems it identified. Lead with them:
+The tasks are CUT FROM this doc, so a shallow design yields deviated tasks. Go
+DEEP and EXHAUSTIVE: identify **all** the key problems (not a tidy few), and make
+the architecture **concrete** — actual type/trait signatures, data structures,
+file:line, before/after — not prose gestures. If a section reads like a summary,
+it is too thin. Deep design is naturally multi-agent: fan out parallel grounded
+deep-dives (e.g. via [[author-workflow]], codex-heavy) and synthesize their FULL
+output. The design is only as good as the problems it identified. Lead with them:
 
 1. **Key problems** — the genuine, grounded obstacles, each tied to real evidence
    (`file:line`, a command, a measurement). This is where the value is. Example:
@@ -127,8 +133,10 @@ harness goal stage --id <goal> --to verified          # only after REAL acceptan
 harness goal show --id <goal>
 ```
 
-Long markdown goes through `--<field>-file <path>` (or `--md-file`); the inline
-`--<field>` / `--md` form is for short text.
+**Always write markdown via `--md-file <path>`** (or `--<field>-file`). The inline
+`--md "…\n…"` form passes a LITERAL backslash-n through the shell — it does NOT
+become a newline, so headings/lists render as one mangled blob. Inline is only ever
+safe for a single short line with no newlines.
 
 ## Anti-patterns (reject these)
 
