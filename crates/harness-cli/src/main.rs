@@ -12,7 +12,7 @@ use harness_core::{
     build_launch_spec, AgentEvent, AgentMember, AgentMemberStatus, AgentProviderConfig,
     AgentRuntime, AgentRuntimeHealth, AgentRuntimeStatus, AgentTeam, AgentTeamStatus, Decision,
     EvaluationOutcome, Evidence, Gap, GapSeverity, GapStatus, Goal, GoalCase, GoalDesign,
-    GoalEvaluation, GoalStatus, LaunchMcp, LaunchPermission, Message, MessageDelivery,
+    GoalEvaluation, GoalStage, GoalStatus, LaunchMcp, LaunchPermission, Message, MessageDelivery,
     MessageDeliveryStatus, MessageKind, MessageTerminalSource, Proposal, ProposalStatus,
     ProviderChildThread, ProviderChildThreadStatus, ProviderKind, ProviderSession,
     ProviderSessionStatus, Review, ReviewVerdict, SenderKind, Task, TaskStatus, Vision,
@@ -416,6 +416,13 @@ fn goal_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
                 goal_design_id: value(args, "--goal-design"),
                 closed_by_decision_id: value(args, "--closed-by-decision"),
                 git_metadata: None,
+                stage: GoalStage::default(),
+                description_md: None,
+                design_md: None,
+                acceptance_md: None,
+                explorations: Vec::new(),
+                skill_refs: Vec::new(),
+                stage_changed_at: None,
             };
             persist_new_goal(store, &goal)?;
             print_json(&goal)?;
@@ -1163,6 +1170,13 @@ fn autonomy_decide_value(store: &HarnessStore, args: &[String]) -> CliResult<ser
                 goal_design_id: None,
                 closed_by_decision_id: None,
                 git_metadata: None,
+                stage: GoalStage::default(),
+                description_md: None,
+                design_md: None,
+                acceptance_md: None,
+                explorations: Vec::new(),
+                skill_refs: Vec::new(),
+                stage_changed_at: None,
             };
             store.append_goal(&goal)?;
             created_goal = Some(goal);
@@ -3109,6 +3123,13 @@ fn create_goal_value(
         goal_design_id: json_string(body, "goal_design"),
         closed_by_decision_id: json_string(body, "closed_by_decision"),
         git_metadata: None,
+        stage: GoalStage::default(),
+        description_md: None,
+        design_md: None,
+        acceptance_md: None,
+        explorations: Vec::new(),
+        skill_refs: Vec::new(),
+        stage_changed_at: None,
     };
     persist_new_goal(store, &goal)?;
     Ok(serde_json::to_value(goal)?)
@@ -15671,6 +15692,13 @@ mod tests {
             goal_design_id: None,
             closed_by_decision_id: None,
             git_metadata: None,
+            stage: GoalStage::default(),
+            description_md: None,
+            design_md: None,
+            acceptance_md: None,
+            explorations: Vec::new(),
+            skill_refs: Vec::new(),
+            stage_changed_at: None,
         }
     }
 

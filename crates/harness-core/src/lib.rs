@@ -14,6 +14,76 @@ pub enum GoalStatus {
     Archived,
 }
 
+/// Goal lifecycle stage (markdown-first model). Distinct from the legacy
+/// [`GoalStatus`] kanban state, which is kept for back-compat and derived from
+/// the stage via [`GoalStage::to_status`]. Additive: old rows without a `stage`
+/// deserialize as `Draft`.
+///
+/// Phases: exploration (`exploring`→`explored`), work (`working`→`done`),
+/// acceptance (`verifying`→`verified`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum GoalStage {
+    #[default]
+    Draft,
+    Exploring,
+    Explored,
+    Working,
+    Done,
+    Verifying,
+    Verified,
+}
+
+impl GoalStage {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            GoalStage::Draft => "draft",
+            GoalStage::Exploring => "exploring",
+            GoalStage::Explored => "explored",
+            GoalStage::Working => "working",
+            GoalStage::Done => "done",
+            GoalStage::Verifying => "verifying",
+            GoalStage::Verified => "verified",
+        }
+    }
+
+    /// Linear position, for forward / back-edge ordering.
+    fn order(self) -> u8 {
+        match self {
+            GoalStage::Draft => 0,
+            GoalStage::Exploring => 1,
+            GoalStage::Explored => 2,
+            GoalStage::Working => 3,
+            GoalStage::Done => 4,
+            GoalStage::Verifying => 5,
+            GoalStage::Verified => 6,
+        }
+    }
+
+    /// Map the lifecycle stage onto the legacy kanban [`GoalStatus`] so existing
+    /// dashboard filters and gates keep working during migration.
+    pub fn to_status(self) -> GoalStatus {
+        match self {
+            GoalStage::Draft | GoalStage::Exploring | GoalStage::Explored | GoalStage::Working => {
+                GoalStatus::Active
+            }
+            GoalStage::Done | GoalStage::Verifying => GoalStatus::Review,
+            GoalStage::Verified => GoalStatus::Done,
+        }
+    }
+}
+
+/// One exploration contribution toward a Goal's design. Exploration is
+/// multi-agent / multi-round; these raw notes are synthesized into `design_md`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Exploration {
+    pub author: String,
+    #[serde(default)]
+    pub round: u32,
+    pub notes_md: String,
+    pub created_at: String,
+}
+
 /// Shared git/worktree context for a Goal or Task (ADR 0019). All fields
 /// optional; additive — old rows that omit it deserialize as `None`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -53,6 +123,75 @@ pub struct Goal {
     pub closed_by_decision_id: Option<String>,
     #[serde(default)]
     pub git_metadata: Option<GitMetadata>,
+    /// Lifecycle stage (markdown-first model). Additive; old rows default to `Draft`.
+    #[serde(default)]
+    pub stage: GoalStage,
+    /// Draft seed: what this goal is and why.
+    #[serde(default)]
+    pub description_md: Option<String>,
+    /// Written after exploration: key problems FIRST, then Big Picture / Overview
+    /// / approach. Absorbs the legacy GoalDesign field soup.
+    #[serde(default)]
+    pub design_md: Option<String>,
+    /// Written BEFORE work starts: the real acceptance — criteria, scenario, and
+    /// how to verify for real.
+    #[serde(default)]
+    pub acceptance_md: Option<String>,
+    /// Multi-agent / multi-round exploration notes feeding `design_md`.
+    #[serde(default)]
+    pub explorations: Vec<Exploration>,
+    /// Domain skills needed to DO this goal's work (distinct from `author-goal`).
+    #[serde(default)]
+    pub skill_refs: Vec<String>,
+    /// When `stage` last changed.
+    #[serde(default)]
+    pub stage_changed_at: Option<String>,
+}
+
+impl Goal {
+    /// Validate a lifecycle transition, returning `Err(reason)` when disallowed.
+    /// Forward moves are strictly one stage at a time and may be gated; the only
+    /// back-edges are "re-open exploration" (any → `exploring`) and "real
+    /// acceptance failed → rework" (`verifying` → `working`).
+    pub fn check_transition(&self, to: GoalStage) -> Result<(), String> {
+        let from = self.stage;
+        if to == from {
+            return Err(format!("goal is already in stage `{}`", from.as_str()));
+        }
+        // Back-edges first.
+        if to == GoalStage::Exploring {
+            return Ok(()); // any stage may re-open exploration
+        }
+        if from == GoalStage::Verifying && to == GoalStage::Working {
+            return Ok(()); // real acceptance failed → back to work
+        }
+        // Forward: exactly one step.
+        if to.order() != from.order() + 1 {
+            return Err(format!(
+                "illegal transition `{}` → `{}` (forward moves are one stage at a time; \
+                 allowed back-edges are any→exploring and verifying→working)",
+                from.as_str(),
+                to.as_str()
+            ));
+        }
+        // Forward gates — where substance is enforced.
+        let blank = |s: &Option<String>| s.as_deref().map(str::trim).unwrap_or("").is_empty();
+        match (from, to) {
+            (GoalStage::Exploring, GoalStage::Explored) if blank(&self.design_md) => Err(
+                "cannot enter `explored`: design_md is empty — write the design \
+                     (key problems FIRST, then Big Picture / Overview) before marking \
+                     exploration complete"
+                    .to_string(),
+            ),
+            (GoalStage::Explored, GoalStage::Working) if blank(&self.acceptance_md) => Err(
+                "cannot enter `working`: acceptance_md is empty — write the real \
+                     acceptance (criteria + scenario + how to verify for real) BEFORE \
+                     work starts"
+                    .to_string(),
+            ),
+            _ => Ok(()),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1460,6 +1599,18 @@ mod tests {
                 base_branch: Some("master".to_string()),
                 ..Default::default()
             }),
+            stage: GoalStage::Explored,
+            description_md: Some("what and why".to_string()),
+            design_md: Some("key problems first, then overview".to_string()),
+            acceptance_md: Some("real acceptance: use it for real".to_string()),
+            explorations: vec![Exploration {
+                author: "observer".to_string(),
+                round: 1,
+                notes_md: "first grounded pass".to_string(),
+                created_at: "2026-05-26T00:00:00Z".to_string(),
+            }],
+            skill_refs: vec!["author-goal".to_string()],
+            stage_changed_at: Some("2026-05-26T00:00:00Z".to_string()),
         };
 
         let json = serde_json::to_string(&goal).expect("serialize goal");
@@ -1467,6 +1618,97 @@ mod tests {
 
         assert_eq!(parsed, goal);
         assert!(parsed.validate().is_ok());
+    }
+
+    fn goal_in_stage(stage: GoalStage) -> Goal {
+        Goal {
+            id: "g".into(),
+            title: "t".into(),
+            objective: "o".into(),
+            owner_agent_id: "lead".into(),
+            status: GoalStatus::Active,
+            success_criteria: vec![],
+            priority: "p0".into(),
+            created_at: "unix-ms:1".into(),
+            updated_at: "unix-ms:1".into(),
+            vision_id: None,
+            goal_design_id: None,
+            closed_by_decision_id: None,
+            git_metadata: None,
+            stage,
+            description_md: None,
+            design_md: None,
+            acceptance_md: None,
+            explorations: vec![],
+            skill_refs: vec![],
+            stage_changed_at: None,
+        }
+    }
+
+    #[test]
+    fn goal_stage_defaults_to_draft_for_legacy_rows() {
+        // A pre-lifecycle goal row (no stage / md fields) must still deserialize.
+        let legacy = r#"{"id":"g","title":"t","objective":"o","owner_agent_id":"lead",
+            "status":"active","success_criteria":[],"priority":"p0",
+            "created_at":"unix-ms:1","updated_at":"unix-ms:1"}"#;
+        let g: Goal = serde_json::from_str(legacy).expect("deserialize legacy goal");
+        assert_eq!(g.stage, GoalStage::Draft);
+        assert!(g.design_md.is_none());
+        assert!(g.explorations.is_empty());
+        assert!(g.skill_refs.is_empty());
+    }
+
+    #[test]
+    fn explored_gate_requires_design_md() {
+        let mut g = goal_in_stage(GoalStage::Exploring);
+        assert!(g.check_transition(GoalStage::Explored).is_err());
+        g.design_md = Some("grounded design with key problems".into());
+        assert!(g.check_transition(GoalStage::Explored).is_ok());
+    }
+
+    #[test]
+    fn working_gate_requires_acceptance_md() {
+        let mut g = goal_in_stage(GoalStage::Explored);
+        assert!(g.check_transition(GoalStage::Working).is_err());
+        g.acceptance_md = Some("real acceptance: use it for real".into());
+        assert!(g.check_transition(GoalStage::Working).is_ok());
+    }
+
+    #[test]
+    fn back_edges_are_allowed() {
+        for s in [GoalStage::Draft, GoalStage::Working, GoalStage::Verified] {
+            assert!(
+                goal_in_stage(s)
+                    .check_transition(GoalStage::Exploring)
+                    .is_ok(),
+                "{:?} should be able to re-open exploration",
+                s
+            );
+        }
+        assert!(goal_in_stage(GoalStage::Verifying)
+            .check_transition(GoalStage::Working)
+            .is_ok());
+    }
+
+    #[test]
+    fn forward_skip_and_same_stage_rejected() {
+        assert!(goal_in_stage(GoalStage::Draft)
+            .check_transition(GoalStage::Working)
+            .is_err());
+        assert!(goal_in_stage(GoalStage::Working)
+            .check_transition(GoalStage::Working)
+            .is_err());
+        // verifying -> verified is a clean one-step forward (no gate).
+        assert!(goal_in_stage(GoalStage::Verifying)
+            .check_transition(GoalStage::Verified)
+            .is_ok());
+    }
+
+    #[test]
+    fn stage_maps_to_legacy_status() {
+        assert_eq!(GoalStage::Working.to_status(), GoalStatus::Active);
+        assert_eq!(GoalStage::Done.to_status(), GoalStatus::Review);
+        assert_eq!(GoalStage::Verified.to_status(), GoalStatus::Done);
     }
 
     #[test]

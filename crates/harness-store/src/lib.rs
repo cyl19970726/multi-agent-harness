@@ -389,7 +389,7 @@ mod tests {
     use std::sync::{Arc, Barrier};
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use harness_core::{Goal, GoalStatus, MessageKind, SenderKind};
+    use harness_core::{Goal, GoalStage, GoalStatus, MessageKind, SenderKind};
 
     use super::*;
 
@@ -417,6 +417,13 @@ mod tests {
             goal_design_id: None,
             closed_by_decision_id: None,
             git_metadata: None,
+            stage: GoalStage::default(),
+            description_md: None,
+            design_md: None,
+            acceptance_md: None,
+            explorations: Vec::new(),
+            skill_refs: Vec::new(),
+            stage_changed_at: None,
         };
 
         store.append_goal(&goal).expect("append goal");
@@ -460,6 +467,13 @@ mod tests {
                         goal_design_id: None,
                         closed_by_decision_id: None,
                         git_metadata: None,
+                        stage: GoalStage::default(),
+                        description_md: None,
+                        design_md: None,
+                        acceptance_md: None,
+                        explorations: Vec::new(),
+                        skill_refs: Vec::new(),
+                        stage_changed_at: None,
                     };
                     store.append_goal(&goal).expect("append goal");
                 }
@@ -508,6 +522,13 @@ mod tests {
             goal_design_id: None,
             closed_by_decision_id: None,
             git_metadata: None,
+            stage: GoalStage::default(),
+            description_md: None,
+            design_md: None,
+            acceptance_md: None,
+            explorations: Vec::new(),
+            skill_refs: Vec::new(),
+            stage_changed_at: None,
         };
 
         store
