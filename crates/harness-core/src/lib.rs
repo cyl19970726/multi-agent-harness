@@ -108,10 +108,8 @@ pub struct GitMetadata {
 pub struct Goal {
     pub id: String,
     pub title: String,
-    pub objective: String,
     pub owner_agent_id: String,
     pub status: GoalStatus,
-    pub success_criteria: Vec<String>,
     pub priority: String,
     pub created_at: String,
     pub updated_at: String,
@@ -1198,7 +1196,6 @@ impl Validate for Goal {
     fn validate(&self) -> Result<(), ValidationError> {
         require_non_empty(&self.id, "Goal.id")?;
         require_non_empty(&self.title, "Goal.title")?;
-        require_non_empty(&self.objective, "Goal.objective")?;
         require_non_empty(&self.owner_agent_id, "Goal.owner_agent_id")?;
         require_non_empty(&self.priority, "Goal.priority")?;
         require_non_empty(&self.created_at, "Goal.created_at")?;
@@ -1583,10 +1580,8 @@ mod tests {
         let goal = Goal {
             id: "goal-1".to_string(),
             title: "Self-host MVP".to_string(),
-            objective: "Use the harness to manage its own development".to_string(),
             owner_agent_id: "leader-1".to_string(),
             status: GoalStatus::Active,
-            success_criteria: vec!["Self-hosting task graph is visible".to_string()],
             priority: "p0".to_string(),
             created_at: "2026-05-26T00:00:00Z".to_string(),
             updated_at: "2026-05-26T00:00:00Z".to_string(),
@@ -1624,10 +1619,8 @@ mod tests {
         Goal {
             id: "g".into(),
             title: "t".into(),
-            objective: "o".into(),
             owner_agent_id: "lead".into(),
             status: GoalStatus::Active,
-            success_criteria: vec![],
             priority: "p0".into(),
             created_at: "unix-ms:1".into(),
             updated_at: "unix-ms:1".into(),
@@ -1648,8 +1641,8 @@ mod tests {
     #[test]
     fn goal_stage_defaults_to_draft_for_legacy_rows() {
         // A pre-lifecycle goal row (no stage / md fields) must still deserialize.
-        let legacy = r#"{"id":"g","title":"t","objective":"o","owner_agent_id":"lead",
-            "status":"active","success_criteria":[],"priority":"p0",
+        let legacy = r#"{"id":"g","title":"t","owner_agent_id":"lead",
+            "status":"active","priority":"p0",
             "created_at":"unix-ms:1","updated_at":"unix-ms:1"}"#;
         let g: Goal = serde_json::from_str(legacy).expect("deserialize legacy goal");
         assert_eq!(g.stage, GoalStage::Draft);

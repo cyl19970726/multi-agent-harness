@@ -509,7 +509,9 @@ function GoalCard({
         </span>
         <Badge tone={goalTone(goal.status)}>{goal.status ?? "active"}</Badge>
       </div>
-      <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{goal.objective}</p>
+      {goal.stage && (
+        <p className="mt-1 text-[11px] font-medium text-muted-foreground">stage: {goal.stage}</p>
+      )}
       <div className="mt-2 inline-flex items-center gap-1 text-[11px] text-muted-foreground">
         <ClipboardList className="size-3" /> {tasks.length} tasks
       </div>
@@ -1340,25 +1342,11 @@ export function GoalDocument({ model, onSelectionChange }: SurfaceProps) {
         </DocSection>
       )}
 
-      <DocSection label="Objective">
-        <p className="text-[15px] leading-relaxed text-foreground/90">
-          {goal.objective ?? "No objective recorded."}
-        </p>
-      </DocSection>
-
-      <DocSection label="Success criteria">
-        <CriteriaList items={goal.success_criteria} empty="No success criteria recorded" />
-      </DocSection>
-
       <DocSection label="Tasks">
         <div className="rounded-lg border border-border bg-card">
           <GoalTasksJump model={model} onSelectionChange={onSelectionChange} />
         </div>
       </DocSection>
-
-      <CollapsibleSection kicker="Executable thesis" title="Goal design">
-        <GoalDesignSection design={design} />
-      </CollapsibleSection>
 
       <CollapsibleSection kicker="Retrospective" title="Goal evaluation">
         <GoalEvaluationSection evaluation={evaluation} />
@@ -1531,44 +1519,6 @@ function GoalExplorations({ explorations }: { explorations: Exploration[] }) {
           <Markdown source={e.notes_md} />
         </div>
       ))}
-    </div>
-  );
-}
-
-/** Render a GoalDesign as a real section: scenario, non-goals, acceptance gates. */
-function GoalDesignSection({ design }: { design?: GoalDesign }) {
-  if (!design) {
-    return (
-      <EmptyState
-        title="No goal design recorded"
-        description="A GoalDesign captures the scenario, non-goals, and acceptance gates before work starts."
-      />
-    );
-  }
-  return (
-    <div className="space-y-3 p-4">
-      <div className="flex items-center gap-2">
-        <MonoId>{design.id}</MonoId>
-        {design.agent_team && <Badge tone="info">team: {design.agent_team}</Badge>}
-      </div>
-      {design.scenario_summary && (
-        <p className="text-[13px] leading-relaxed text-foreground/90">
-          {design.scenario_summary}
-        </p>
-      )}
-      {design.risk_and_permission_boundaries && (
-        <div>
-          <p className="mb-1 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-            <StatusDot tone="warn" /> Risk & permission boundaries
-          </p>
-          <p className="text-[13px] text-foreground/90">
-            {design.risk_and_permission_boundaries}
-          </p>
-        </div>
-      )}
-      <LabeledList label="Non-goals" items={design.non_goals} tone="bad" />
-      <LabeledList label="Required infra" items={design.required_infra} tone="info" />
-      <LabeledList label="Acceptance gates" items={design.acceptance_gates} tone="good" />
     </div>
   );
 }

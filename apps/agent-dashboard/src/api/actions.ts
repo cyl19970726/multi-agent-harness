@@ -154,21 +154,19 @@ export function createAgent(params: {
  */
 export function createGoal(params: {
   title: string;
-  objective: string;
   owner: string;
-  success?: string[];
   priority?: string;
+  description_md?: string;
 }): ActionDescriptor {
   const body: Record<string, unknown> = {
     title: params.title,
-    objective: params.objective,
     owner: params.owner,
   };
-  if (params.success && params.success.length) {
-    body.success = params.success;
-  }
   if (params.priority) {
     body.priority = params.priority;
+  }
+  if (params.description_md) {
+    body.description_md = params.description_md;
   }
   return { method: "POST", path: "/v1/goals", body };
 }

@@ -47,11 +47,9 @@ export type ProviderSessionStatus = "queued" | "running" | "succeeded" | "failed
 export interface Goal {
   id: string;
   title?: string;
-  objective?: string;
   owner_agent_id?: string;
   status?: string;
   priority?: string;
-  success_criteria?: string[];
   created_at?: string;
   updated_at?: string;
   vision_id?: string | null;

@@ -439,10 +439,8 @@ fn goal_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
             let goal = Goal {
                 id: value(args, "--id").unwrap_or_else(|| generated_id("goal")),
                 title: required(args, "--title")?,
-                objective: required(args, "--objective")?,
                 owner_agent_id: required(args, "--owner")?,
                 status: GoalStatus::Active,
-                success_criteria: many(args, "--success"),
                 priority: value(args, "--priority").unwrap_or_else(|| "p0".into()),
                 created_at: now_string(),
                 updated_at: now_string(),
@@ -1264,10 +1262,8 @@ fn autonomy_decide_value(store: &HarnessStore, args: &[String]) -> CliResult<ser
             let goal = Goal {
                 id: goal_id,
                 title: required(args, "--goal-title")?,
-                objective: required(args, "--goal-objective")?,
                 owner_agent_id: lead.clone(),
                 status: GoalStatus::Active,
-                success_criteria: many(args, "--goal-success"),
                 priority: value(args, "--priority").unwrap_or_else(|| "p0".into()),
                 created_at: now_string(),
                 updated_at: now_string(),
@@ -1865,18 +1861,12 @@ fn accept_scheduled_next_round(
         next_goal_id.clone(),
         "--goal-title".into(),
         format!("Next autonomous round from {source_goal_id}"),
-        "--goal-objective".into(),
-        format!(
-            "Continue from evaluated goal {source_goal_id} and source task {source_task_id} through the autonomous runner."
-        ),
         "--create-task".into(),
         next_task_id.clone(),
         "--task-title".into(),
         format!("Follow-up: continue from {source_task_id}"),
         "--task-objective".into(),
-        format!(
-            "Execute the next autonomous runner task generated from proposal {proposal_id}."
-        ),
+        format!("Execute the next autonomous runner task generated from proposal {proposal_id}."),
     ];
     let goal_success = if options.goal_success.is_empty() {
         vec!["Generated next-round task is assigned and visible in Dashboard state.".into()]
@@ -3216,11 +3206,9 @@ fn create_goal_value(
     let goal = Goal {
         id: json_string(body, "id").unwrap_or_else(|| generated_id("goal")),
         title: required_json_string(body, "title")?,
-        objective: required_json_string(body, "objective")?,
         owner_agent_id: required_json_string(body, "owner")
             .or_else(|_| required_json_string(body, "owner_agent_id"))?,
         status: GoalStatus::Active,
-        success_criteria: json_string_array(body, "success"),
         priority: json_string(body, "priority").unwrap_or_else(|| "p0".into()),
         created_at: now_string(),
         updated_at: now_string(),
@@ -15786,10 +15774,8 @@ mod tests {
         Goal {
             id: id.into(),
             title: "Goal".into(),
-            objective: "Test goal".into(),
             owner_agent_id: "leader".into(),
             status: GoalStatus::Active,
-            success_criteria: vec!["pass".into()],
             priority: "p0".into(),
             created_at: "unix-ms:1".into(),
             updated_at: "unix-ms:1".into(),

@@ -7,10 +7,8 @@
   "required": [
     "id",
     "title",
-    "objective",
     "owner_agent_id",
     "status",
-    "success_criteria",
     "priority",
     "created_at",
     "updated_at"
@@ -24,10 +22,6 @@
       "type": "string",
       "minLength": 1
     },
-    "objective": {
-      "type": "string",
-      "minLength": 1
-    },
     "owner_agent_id": {
       "type": "string",
       "minLength": 1
@@ -35,13 +29,6 @@
     "status": {
       "type": "string",
       "enum": ["active", "blocked", "review", "done", "complete", "archived"]
-    },
-    "success_criteria": {
-      "type": "array",
-      "items": {
-        "type": "string",
-        "minLength": 1
-      }
     },
     "priority": {
       "type": "string",
