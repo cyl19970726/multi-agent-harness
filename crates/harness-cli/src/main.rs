@@ -5607,44 +5607,11 @@ fn ingest_ephemeral_events(
     // When `retain_trace` is false (a `--trace live` run) we skip them entirely:
     // the live SSE frames already streamed during the spawn loop, so the only
     // thing we omit is the historical (post-run) trace.
-    if retain_trace && spec.provider == "claude" {
-        // Reuse the neutral claude reducer; it writes AgentEvents AND a
-        // ProviderSession, but it mints its OWN session id from the stream. To
-        // keep the WorkflowStep.provider_session_id linkage stable we still need
-        // a ProviderSession under OUR session_id, so we additionally write that
-        // row below (latest-wins; the reducer's row coexists harmlessly).
-        let _ = ingest_claude_stream_json(store, session_id, None, None, &spawn.ndjson);
-    } else if retain_trace {
-        // Codex: one neutral AgentEvent per NDJSON line, mirroring the
-        // provider-output ingest path (event_type from the `type` discriminant).
-        for line in spawn.ndjson.lines() {
-            let Ok(payload) = serde_json::from_str::<serde_json::Value>(line.trim()) else {
-                continue;
-            };
-            let event_type = payload
-                .get("type")
-                .and_then(|t| t.as_str())
-                .unwrap_or("provider_output")
-                .replace(['/', '.'], "_");
-            let event = AgentEvent {
-                id: generated_id("event"),
-                agent_member_id: session_id.into(),
-                provider_runtime_id: None,
-                task_id: None,
-                provider: "codex".into(),
-                provider_thread_id: payload
-                    .get("thread_id")
-                    .and_then(|v| v.as_str())
-                    .map(str::to_string),
-                provider_turn_id: None,
-                provider_child_thread_id: None,
-                event_type,
-                summary: summarize_json_value(&payload),
-                payload_ref: None,
-                created_at: now_string(),
-            };
-            let _ = store.append_event(&event);
-        }
+    if retain_trace {
+        // claude => claude reducer; codex/unknown => codex AgentEvent loop (unchanged policy).
+        provider_adapter(&spec.provider)
+            .unwrap_or(&CodexAdapter as &dyn ProviderAdapter)
+            .ingest_ephemeral_trace(store, session_id, spawn);
     }
 
     // A ProviderSession keyed by OUR session id — the stable drill-in key, always
@@ -9931,6 +9898,16 @@ trait ProviderAdapter: Sync {
     /// which the ProviderSession `jsonl_ref` points at during a turn.
     fn live_ndjson_file_name(&self) -> &'static str;
 
+    /// Reduce this provider's retained ephemeral NDJSON trace into neutral
+    /// AgentEvents (and, for claude, a coexisting ProviderSession). Called only on
+    /// durable runs. Ingest errors are swallowed — they must never fail the step.
+    fn ingest_ephemeral_trace(
+        &self,
+        store: &HarnessStore,
+        session_id: &str,
+        spawn: &EphemeralSpawn,
+    );
+
     fn spawn_ephemeral(&self, ctx: &EphemeralSpawnContext<'_>) -> CliResult<EphemeralSpawn>;
 }
 
@@ -9944,6 +9921,44 @@ impl ProviderAdapter for CodexAdapter {
 
     fn live_ndjson_file_name(&self) -> &'static str {
         "codex.stream-json.ndjson"
+    }
+
+    fn ingest_ephemeral_trace(
+        &self,
+        store: &HarnessStore,
+        session_id: &str,
+        spawn: &EphemeralSpawn,
+    ) {
+        // Codex: one neutral AgentEvent per NDJSON line, mirroring the
+        // provider-output ingest path (event_type from the `type` discriminant).
+        for line in spawn.ndjson.lines() {
+            let Ok(payload) = serde_json::from_str::<serde_json::Value>(line.trim()) else {
+                continue;
+            };
+            let event_type = payload
+                .get("type")
+                .and_then(|t| t.as_str())
+                .unwrap_or("provider_output")
+                .replace(['/', '.'], "_");
+            let event = AgentEvent {
+                id: generated_id("event"),
+                agent_member_id: session_id.into(),
+                provider_runtime_id: None,
+                task_id: None,
+                provider: self.name().into(),
+                provider_thread_id: payload
+                    .get("thread_id")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string),
+                provider_turn_id: None,
+                provider_child_thread_id: None,
+                event_type,
+                summary: summarize_json_value(&payload),
+                payload_ref: None,
+                created_at: now_string(),
+            };
+            let _ = store.append_event(&event);
+        }
     }
 
     fn spawn_ephemeral(&self, ctx: &EphemeralSpawnContext<'_>) -> CliResult<EphemeralSpawn> {
@@ -9967,6 +9982,15 @@ impl ProviderAdapter for ClaudeAdapter {
 
     fn live_ndjson_file_name(&self) -> &'static str {
         "claude.stream-json.ndjson"
+    }
+
+    fn ingest_ephemeral_trace(
+        &self,
+        store: &HarnessStore,
+        session_id: &str,
+        spawn: &EphemeralSpawn,
+    ) {
+        let _ = ingest_claude_stream_json(store, session_id, None, None, &spawn.ndjson);
     }
 
     fn spawn_ephemeral(&self, ctx: &EphemeralSpawnContext<'_>) -> CliResult<EphemeralSpawn> {
