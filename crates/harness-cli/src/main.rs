@@ -4942,6 +4942,24 @@ fn parse_claude_result_extras(
         .unwrap_or((None, None))
 }
 
+fn codex_delivery_telemetry(
+    raw_events: &[serde_json::Value],
+    spec: &LaunchSpec,
+) -> (Option<TokenUsage>, Option<f64>, Option<String>) {
+    (parse_codex_usage(raw_events), None, spec.model.clone())
+}
+
+fn claude_delivery_telemetry(
+    raw_events: &[serde_json::Value],
+) -> (Option<TokenUsage>, Option<f64>, Option<String>) {
+    let (_, cost_usd) = parse_claude_result_extras(raw_events);
+    (
+        parse_claude_usage(raw_events),
+        cost_usd,
+        parse_worker_model(raw_events),
+    )
+}
+
 /// Classify WHY a step failed, into a stable `reason` tag the dashboard groups on.
 /// Precedence: a fired timeout dominates (the worker never reached a clean turn);
 /// then a non-zero / absent exit code; then a delivery that exited 0 but produced
@@ -6505,6 +6523,9 @@ fn deliver_agent_messages_value(
                 provider_session_id: Some(delivery_id.clone()),
                 evidence_ids,
                 exit_code: Some(0),
+                tokens: None,
+                cost_usd: None,
+                model: None,
                 summary: "dry-run delivery completed".into(),
             }
         } else {
@@ -6554,6 +6575,9 @@ fn deliver_agent_messages_value(
                     provider_session_id: Some(delivery_id.clone()),
                     evidence_ids,
                     exit_code: Some(1),
+                    tokens: None,
+                    cost_usd: None,
+                    model: None,
                     summary,
                 }
             } else if runtime.is_none() {
@@ -6582,6 +6606,9 @@ fn deliver_agent_messages_value(
                     provider_session_id: Some(delivery_id.clone()),
                     evidence_ids,
                     exit_code: Some(1),
+                    tokens: None,
+                    cost_usd: None,
+                    model: None,
                     summary,
                 }
             } else {
@@ -6703,7 +6730,10 @@ fn deliver_agent_messages_value(
             "request_ref": delivery.request_ref,
             "stdout_ref": delivery.stdout_ref,
             "stderr_ref": delivery.stderr_ref,
-            "exit_code": delivery.exit_code
+            "exit_code": delivery.exit_code,
+            "tokens": delivery.tokens.map(TokenUsage::to_json),
+            "cost_usd": delivery.cost_usd,
+            "model": delivery.model
         }));
         if delivery_unresolved {
             break;
@@ -6867,6 +6897,9 @@ struct DeliveryOutcome {
     provider_session_id: Option<String>,
     evidence_ids: Vec<String>,
     exit_code: Option<i32>,
+    tokens: Option<TokenUsage>,
+    cost_usd: Option<f64>,
+    model: Option<String>,
     summary: String,
 }
 
@@ -10674,7 +10707,7 @@ fn run_codex_exec_process(
     message: &Message,
     delivery_id: &str,
     timeout_ms: u64,
-) -> CliResult<(bool, Vec<CodexExecEvent>, String)> {
+) -> CliResult<CodexExecDeliveryRun> {
     // Build the command: `codex exec --json <prompt>`
     // The LaunchSpec is composed from the member/message; the exec arg is the message_content.
     let message_content = format!(
@@ -10757,7 +10790,7 @@ fn run_codex_exec_process(
         .filter_map(|line| CodexExecEvent::parse_line(&line))
         .collect();
 
-    Ok((run.process_success, events, run.stderr))
+    Ok((run.process_success, events, run.events, run.stderr))
 }
 
 fn apply_codex_model_and_effort_args(cmd: &mut Command, spec: &LaunchSpec) {
@@ -10862,10 +10895,12 @@ fn run_codex_exec_delivery(
 
     // The resume id used for this delivery (same source as the spawned command:
     // the member's prior provider thread id). Recorded into the session args.
-    let resume_id = build_launch_spec(member, message).resume;
+    let spec = build_launch_spec(member, message);
+    let resume_id = spec.resume.clone();
 
-    let (process_success, events, stderr_log) =
+    let (process_success, events, raw_events, stderr_log) =
         run_codex_exec_process(&session_dir, member, message, delivery_id, timeout_ms)?;
+    let (tokens, cost_usd, model) = codex_delivery_telemetry(&raw_events, &spec);
 
     // The event NDJSON is the live file run_codex_exec_process already wrote
     // incrementally (mid-turn streaming) — point the session row at it rather
@@ -10939,6 +10974,9 @@ fn run_codex_exec_delivery(
         provider_session_id: Some(delivery_id.to_string()),
         evidence_ids: vec![evidence_id],
         exit_code,
+        tokens,
+        cost_usd,
+        model,
         summary,
     })
 }
@@ -10962,6 +11000,15 @@ fn run_provider_delivery(
 
 // WP-5: Codex exec-stream runtime (no persistent process).
 // Each delivery spawns `codex exec --json`, so no app-server socket is needed.
+
+type CodexExecDeliveryRun = (bool, Vec<CodexExecEvent>, Vec<serde_json::Value>, String);
+type ClaudeDeliveryRun = (
+    bool,
+    Vec<ClaudeStreamEvent>,
+    Vec<serde_json::Value>,
+    Option<String>,
+    String,
+);
 
 fn start_codex_exec_runtime(store: &HarnessStore, member: &AgentMember) -> CliResult<AgentRuntime> {
     let runtime_id = generated_id("runtime");
@@ -11074,15 +11121,17 @@ fn run_claude_delivery(
     // Opt-in resident path (HARNESS_CLAUDE_RESIDENT=1): instead of spawning a
     // fresh `claude -p <prompt>` that exits per turn, hold a `claude
     // --input-format stream-json` process open and feed the turn as a stdin
-    // frame (see `resident.rs`). The returned tuple shape is identical, so
-    // everything below (NDJSON write, status infer, evidence, ProviderSession)
-    // is reused verbatim. When unset/false the default path runs unchanged.
+    // frame (see `resident.rs`). The returned tuple shape is identical to the
+    // default path, so everything below (NDJSON write, status infer, telemetry,
+    // evidence, ProviderSession) is reused verbatim. When unset/false the default
+    // path runs unchanged.
     let resident = env::var("HARNESS_CLAUDE_RESIDENT").as_deref() == Ok("1");
-    let (process_success, events, session_id, stderr_log) = if resident {
+    let (process_success, events, raw_events, session_id, stderr_log) = if resident {
         run_claude_resident_delivery_real(&session_dir, member, message, timeout_ms)?
     } else {
         run_claude_exec_delivery_real(&session_dir, member, message, timeout_ms)?
     };
+    let (tokens, cost_usd, model) = claude_delivery_telemetry(&raw_events);
 
     // Save NDJSON events to jsonl_ref for ingest.
     let ndjson_ref = session_dir.join("claude.stream-json.ndjson");
@@ -11196,6 +11245,9 @@ fn run_claude_delivery(
         provider_session_id: Some(delivery_id.to_string()),
         evidence_ids: vec![evidence_id],
         exit_code: if process_success { Some(0) } else { Some(1) },
+        tokens,
+        cost_usd,
+        model,
         summary: if process_success {
             // Surface the agent's actual reply as the report content; fall back
             // to a status line only when the turn produced no assistant text.
@@ -11214,7 +11266,7 @@ fn run_claude_exec_delivery_real(
     member: &AgentMember,
     message: &Message,
     timeout_ms: u64,
-) -> CliResult<(bool, Vec<ClaudeStreamEvent>, Option<String>, String)> {
+) -> CliResult<ClaudeDeliveryRun> {
     // Build the message content envelope (harness context).
     let message_content = format!(
         "Harness message envelope:\nmessage_id: {}\nkind: task\ntask_id: {}\nfrom_agent_id: {}\nto_agent_id: {}\nchannel: -\ncontent:\n{}",
@@ -11311,7 +11363,13 @@ fn run_claude_exec_delivery_real(
         .collect::<Vec<_>>();
 
     let session_id = extract_session_id_from_claude_events(&events);
-    Ok((run.process_success, events, session_id, run.stderr))
+    Ok((
+        run.process_success,
+        events,
+        run.events,
+        session_id,
+        run.stderr,
+    ))
 }
 
 fn apply_claude_model_and_effort_args(cmd: &mut Command, spec: &LaunchSpec) {
@@ -11366,8 +11424,9 @@ fn build_resident_config(member: &AgentMember, message: &Message) -> resident::R
 
 /// Opt-in resident sibling of [`run_claude_exec_delivery_real`]. Holds a
 /// `claude --input-format stream-json` process open and feeds the turn as a
-/// stdin frame, returning the SAME `(success, events, session_id, stderr)`
-/// tuple so `run_claude_delivery` is untouched.
+/// stdin frame, returning the SAME `(success, events, raw_events, session_id, stderr)`
+/// tuple shape as the default path so `run_claude_delivery` can share the same
+/// status, telemetry, and recording logic.
 ///
 /// Two modes (both opt-in via `HARNESS_CLAUDE_RESIDENT=1`):
 ///   * Daemon-first (unix): if a resident daemon owns the per-workspace socket,
@@ -11383,7 +11442,7 @@ fn run_claude_resident_delivery_real(
     member: &AgentMember,
     message: &Message,
     timeout_ms: u64,
-) -> CliResult<(bool, Vec<ClaudeStreamEvent>, Option<String>, String)> {
+) -> CliResult<ClaudeDeliveryRun> {
     let message_content = format!(
         "Harness message envelope:\nmessage_id: {}\nkind: task\ntask_id: {}\nfrom_agent_id: {}\nto_agent_id: {}\nchannel: -\ncontent:\n{}",
         message.id,
@@ -11431,7 +11490,14 @@ fn run_claude_resident_delivery_real(
                         }
                         stderr_log.push_str(&error);
                     }
-                    return Ok((response.success, events, response.session_id, stderr_log));
+                    let raw_events = events.iter().map(|event| event.payload.clone()).collect();
+                    return Ok((
+                        response.success,
+                        events,
+                        raw_events,
+                        response.session_id,
+                        stderr_log,
+                    ));
                 }
                 Err(error) => {
                     // The connect succeeded but the round-trip failed (daemon
@@ -11441,6 +11507,7 @@ fn run_claude_resident_delivery_real(
                     let stderr_log = fs::read_to_string(&stderr_path).unwrap_or_default();
                     return Ok((
                         false,
+                        Vec::new(),
                         Vec::new(),
                         None,
                         format!("resident daemon delivery failed: {error}\n{stderr_log}"),
@@ -11466,6 +11533,7 @@ fn run_claude_resident_delivery_real(
             return Ok((
                 false,
                 Vec::new(),
+                Vec::new(),
                 session_id,
                 format!("{error}\n{stderr_log}"),
             ));
@@ -11481,6 +11549,7 @@ fn run_claude_resident_delivery_real(
             payload: event.payload,
         })
         .collect();
+    let raw_events = events.iter().map(|event| event.payload.clone()).collect();
     let session_id = turn.session_id;
     let stderr_log = fs::read_to_string(&stderr_path).unwrap_or_default();
 
@@ -11489,7 +11558,7 @@ fn run_claude_resident_delivery_real(
     // calls; the in-process pool (resident.rs) is the seam for that later.
     resident.shutdown();
 
-    Ok((turn.success, events, session_id, stderr_log))
+    Ok((turn.success, events, raw_events, session_id, stderr_log))
 }
 
 fn parse_hook_payload(input: &str) -> serde_json::Value {
@@ -12115,6 +12184,89 @@ mod workflow_runtime_tests {
         // No `result` frame -> both None.
         let (s2, c2) = parse_claude_result_extras(&[serde_json::json!({"type": "system"})]);
         assert!(s2.is_none() && c2.is_none());
+    }
+
+    fn delivery_outcome_for_test(
+        tokens: Option<TokenUsage>,
+        cost_usd: Option<f64>,
+        model: Option<String>,
+    ) -> DeliveryOutcome {
+        DeliveryOutcome {
+            status: ProviderSessionStatus::Succeeded,
+            provider_thread_id: None,
+            provider_turn_id: None,
+            terminal_source: Some(MessageTerminalSource::Unknown),
+            stdout_ref: None,
+            stderr_ref: None,
+            request_ref: None,
+            provider_request_id: None,
+            provider_session_id: Some("delivery-test".into()),
+            evidence_ids: Vec::new(),
+            exit_code: Some(0),
+            tokens,
+            cost_usd,
+            model,
+            summary: "test delivery".into(),
+        }
+    }
+
+    #[test]
+    fn persistent_codex_delivery_outcome_uses_raw_event_tokens_and_spec_model() {
+        let spec = launch_spec_with_model_effort(Some("gpt-5-codex"), None);
+        let raw_events = ndjson_values(&[
+            r#"{"type":"item.completed","item":{"type":"agent_message","text":"done"}}"#,
+            r#"{"type":"turn.completed","usage":{"input_tokens":11,"output_tokens":7}}"#,
+        ]);
+
+        let (tokens, cost_usd, model) = codex_delivery_telemetry(&raw_events, &spec);
+        let outcome = delivery_outcome_for_test(tokens, cost_usd, model);
+
+        assert_eq!(
+            outcome.tokens,
+            Some(TokenUsage {
+                input: 11,
+                output: 7,
+                total: 18,
+            })
+        );
+        assert_eq!(outcome.model.as_deref(), Some("gpt-5-codex"));
+        assert_eq!(outcome.cost_usd, None);
+    }
+
+    #[test]
+    fn persistent_claude_delivery_outcome_uses_raw_event_tokens_model_and_cost() {
+        let raw_events = ndjson_values(&[
+            r#"{"type":"system","subtype":"init","model":"claude-opus-4-8"}"#,
+            r#"{"type":"result","subtype":"success","total_cost_usd":0.025,"usage":{"input_tokens":40,"output_tokens":9}}"#,
+        ]);
+
+        let (tokens, cost_usd, model) = claude_delivery_telemetry(&raw_events);
+        let outcome = delivery_outcome_for_test(tokens, cost_usd, model);
+
+        assert_eq!(
+            outcome.tokens,
+            Some(TokenUsage {
+                input: 40,
+                output: 9,
+                total: 49,
+            })
+        );
+        assert_eq!(outcome.model.as_deref(), Some("claude-opus-4-8"));
+        assert_eq!(outcome.cost_usd, Some(0.025));
+    }
+
+    #[test]
+    fn delivery_outcome_defaults_have_no_telemetry_for_non_provider_paths() {
+        let dry_run = delivery_outcome_for_test(None, None, None);
+        let mut failure = delivery_outcome_for_test(None, None, None);
+        failure.status = ProviderSessionStatus::Failed;
+        failure.exit_code = Some(1);
+
+        for outcome in [dry_run, failure] {
+            assert_eq!(outcome.tokens, None);
+            assert_eq!(outcome.cost_usd, None);
+            assert_eq!(outcome.model, None);
+        }
     }
 
     #[test]
