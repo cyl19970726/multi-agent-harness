@@ -815,78 +815,20 @@ fn hook_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     )?;
     match args[0].as_str() {
         "record" => {
-            record_codex_hook_event(store, args)?;
+            // Hooks are codex's runtime mechanism. Default to codex (today's only
+            // caller passes no provider), but honor an explicit --provider /
+            // HARNESS_PROVIDER override; a non-codex provider gets the trait default
+            // (an explicit "does not support hook events" error), never a mis-stamped
+            // codex event.
+            let provider = value(args, "--provider")
+                .or_else(|| std::env::var("HARNESS_PROVIDER").ok())
+                .filter(|p| !p.is_empty())
+                .unwrap_or_else(|| CodexAdapter.name().to_string());
+            let adapter = provider_adapter(&provider)
+                .ok_or_else(|| unknown_provider_error(&provider, "hook record"))?;
+            adapter.record_hook_event(store, args)?;
         }
         other => return Err(CliError::Usage(format!("unknown hook command: {other}"))),
-    }
-    Ok(())
-}
-
-fn record_codex_hook_event(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    store.init()?;
-    let agent_id = value(args, "--agent")
-        .or_else(|| env::var("HARNESS_AGENT_MEMBER_ID").ok())
-        .ok_or_else(|| CliError::Usage("--agent is required".into()))?;
-    let runtime_id = value(args, "--runtime").or_else(|| env::var("HARNESS_AGENT_RUNTIME_ID").ok());
-    let mut stdin = String::new();
-    std::io::stdin().read_to_string(&mut stdin)?;
-    let payload = parse_hook_payload(&stdin);
-    let hook_event_name = value(args, "--event")
-        .or_else(|| json_str(&payload, "hook_event_name"))
-        .unwrap_or_else(|| "unknown".into());
-    let task_id = value(args, "--task")
-        .or_else(|| env::var("HARNESS_TASK_ID").ok())
-        .or_else(|| {
-            latest_member(store, &agent_id)
-                .ok()
-                .and_then(|member| member.current_task_id)
-        });
-    let provider_thread_id = thread_id_from_container(&payload);
-    let provider_turn_id =
-        json_str(&payload, "turn_id").or_else(|| turn_id_from_container(&payload));
-    let event_id = generated_id("event");
-    let payload_ref = persist_hook_payload(store, &event_id, &payload)?;
-    let now = now_string();
-    let event = AgentEvent {
-        id: event_id,
-        agent_member_id: agent_id.clone(),
-        provider_runtime_id: runtime_id.clone(),
-        task_id: task_id.clone(),
-        provider: "codex".into(),
-        provider_thread_id: provider_thread_id.clone(),
-        provider_turn_id: provider_turn_id.clone(),
-        provider_child_thread_id: json_str(&payload, "agent_id"),
-        event_type: format!("codex_hook.{hook_event_name}"),
-        summary: codex_hook_summary(&hook_event_name, &payload),
-        payload_ref: Some(payload_ref),
-        created_at: now.clone(),
-    };
-    store.append_event(&event)?;
-    if let Ok(mut member) = latest_member(store, &agent_id) {
-        member.last_seen_at = Some(now.clone());
-        member.status = if hook_event_name.eq_ignore_ascii_case("stop") {
-            member.current_task_id = None;
-            AgentMemberStatus::Idle
-        } else {
-            AgentMemberStatus::Running
-        };
-        store.append_member(&member)?;
-    }
-    if let Some(runtime_id) = runtime_id {
-        if let Some(mut runtime) = latest_runtime(store, &runtime_id)? {
-            runtime.last_event_at = Some(now);
-            store.append_runtime(&runtime)?;
-        }
-    }
-    if hook_event_name.eq_ignore_ascii_case("stop") {
-        reconcile_running_provider_sessions(
-            store,
-            &agent_id,
-            task_id.as_deref(),
-            provider_thread_id.as_deref(),
-            provider_turn_id.as_deref(),
-            MessageTerminalSource::HookStop,
-        )?;
     }
     Ok(())
 }
@@ -9795,6 +9737,17 @@ trait ProviderAdapter: Sync {
     /// which the ProviderSession `jsonl_ref` points at during a turn.
     fn live_ndjson_file_name(&self) -> &'static str;
 
+    /// Record a provider hook event into the neutral event log. Hooks are a
+    /// codex-runtime mechanism; the default reports the provider has no hook
+    /// integration — an explicit error beats silently recording a codex-shaped
+    /// event. Only CodexAdapter overrides this.
+    fn record_hook_event(&self, _store: &HarnessStore, _args: &[String]) -> CliResult<()> {
+        Err(CliError::Usage(format!(
+            "provider {} does not support hook events",
+            self.name()
+        )))
+    }
+
     /// Reduce this provider's retained ephemeral NDJSON trace into neutral
     /// AgentEvents (and, for claude, a coexisting ProviderSession). Called only on
     /// durable runs. Ingest errors are swallowed — they must never fail the step.
@@ -9830,6 +9783,76 @@ impl ProviderAdapter for CodexAdapter {
 
     fn live_ndjson_file_name(&self) -> &'static str {
         "codex.stream-json.ndjson"
+    }
+
+    fn record_hook_event(&self, store: &HarnessStore, args: &[String]) -> CliResult<()> {
+        store.init()?;
+        let agent_id = value(args, "--agent")
+            .or_else(|| env::var("HARNESS_AGENT_MEMBER_ID").ok())
+            .ok_or_else(|| CliError::Usage("--agent is required".into()))?;
+        let runtime_id =
+            value(args, "--runtime").or_else(|| env::var("HARNESS_AGENT_RUNTIME_ID").ok());
+        let mut stdin = String::new();
+        std::io::stdin().read_to_string(&mut stdin)?;
+        let payload = parse_hook_payload(&stdin);
+        let hook_event_name = value(args, "--event")
+            .or_else(|| json_str(&payload, "hook_event_name"))
+            .unwrap_or_else(|| "unknown".into());
+        let task_id = value(args, "--task")
+            .or_else(|| env::var("HARNESS_TASK_ID").ok())
+            .or_else(|| {
+                latest_member(store, &agent_id)
+                    .ok()
+                    .and_then(|member| member.current_task_id)
+            });
+        let provider_thread_id = thread_id_from_container(&payload);
+        let provider_turn_id =
+            json_str(&payload, "turn_id").or_else(|| turn_id_from_container(&payload));
+        let event_id = generated_id("event");
+        let payload_ref = persist_hook_payload(store, &event_id, &payload)?;
+        let now = now_string();
+        let event = AgentEvent {
+            id: event_id,
+            agent_member_id: agent_id.clone(),
+            provider_runtime_id: runtime_id.clone(),
+            task_id: task_id.clone(),
+            provider: self.name().into(),
+            provider_thread_id: provider_thread_id.clone(),
+            provider_turn_id: provider_turn_id.clone(),
+            provider_child_thread_id: json_str(&payload, "agent_id"),
+            event_type: format!("codex_hook.{hook_event_name}"),
+            summary: codex_hook_summary(&hook_event_name, &payload),
+            payload_ref: Some(payload_ref),
+            created_at: now.clone(),
+        };
+        store.append_event(&event)?;
+        if let Ok(mut member) = latest_member(store, &agent_id) {
+            member.last_seen_at = Some(now.clone());
+            member.status = if hook_event_name.eq_ignore_ascii_case("stop") {
+                member.current_task_id = None;
+                AgentMemberStatus::Idle
+            } else {
+                AgentMemberStatus::Running
+            };
+            store.append_member(&member)?;
+        }
+        if let Some(runtime_id) = runtime_id {
+            if let Some(mut runtime) = latest_runtime(store, &runtime_id)? {
+                runtime.last_event_at = Some(now);
+                store.append_runtime(&runtime)?;
+            }
+        }
+        if hook_event_name.eq_ignore_ascii_case("stop") {
+            reconcile_running_provider_sessions(
+                store,
+                &agent_id,
+                task_id.as_deref(),
+                provider_thread_id.as_deref(),
+                provider_turn_id.as_deref(),
+                MessageTerminalSource::HookStop,
+            )?;
+        }
+        Ok(())
     }
 
     fn ingest_ephemeral_trace(
