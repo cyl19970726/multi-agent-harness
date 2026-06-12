@@ -14,11 +14,12 @@ use harness_core::{
     AgentRuntime, AgentRuntimeHealth, AgentRuntimeStatus, AgentTeam, AgentTeamStatus, Decision,
     EvaluationOutcome, Evidence, Exploration, Gap, GapSeverity, GapStatus, Goal, GoalCase,
     GoalDesign, GoalEvaluation, GoalStage, GoalStatus, HarnessTokenUsage, HarnessToolCall,
-    HarnessTurnEvent, HarnessTurnEventKind, LaunchMcp, LaunchPermission, LaunchSpec, Message,
-    MessageDelivery, MessageDeliveryStatus, MessageKind, MessageTerminalSource, Proposal,
-    ProposalStatus, ProviderChildThread, ProviderChildThreadStatus, ProviderSession,
-    ProviderSessionStatus, Review, ReviewVerdict, SenderKind, Task, TaskStatus, Vision,
-    WorkflowRun, WorkflowRunStatus, WorkflowStep, WorkflowStepStatus,
+    HarnessToolResult, HarnessTurnEvent, HarnessTurnEventKind, LaunchMcp, LaunchPermission,
+    LaunchSpec, Message, MessageDelivery, MessageDeliveryStatus, MessageKind,
+    MessageTerminalSource, Proposal, ProposalStatus, ProviderChildThread,
+    ProviderChildThreadStatus, ProviderSession, ProviderSessionStatus, Review, ReviewVerdict,
+    SenderKind, Task, TaskStatus, Vision, WorkflowRun, WorkflowRunStatus, WorkflowStep,
+    WorkflowStepStatus,
 };
 use harness_store::{HarnessStore, MessageDeliveryClaimResult};
 use thiserror::Error;
@@ -10414,6 +10415,194 @@ impl ProviderAdapter for ClaudeAdapter {
         args
     }
 
+    fn normalize_turn_event(
+        &self,
+        session_id: &str,
+        seq: u64,
+        raw: &serde_json::Value,
+    ) -> HarnessTurnEvent {
+        let mut event = generic_turn_event(self.name(), session_id, seq, raw);
+        let payload = raw;
+
+        match raw.get("type").and_then(|value| value.as_str()) {
+            Some("system") => {
+                event.kind = HarnessTurnEventKind::ProviderMeta;
+                event.model = payload
+                    .get("model")
+                    .and_then(|value| value.as_str())
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string);
+                event.provider_thread_id = payload
+                    .get("session_id")
+                    .and_then(|value| value.as_str())
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string);
+            }
+            Some("assistant") => {
+                let Some(blocks) = payload
+                    .get("message")
+                    .and_then(|message| message.get("content"))
+                    .and_then(|content| content.as_array())
+                else {
+                    event.kind = HarnessTurnEventKind::ProviderMeta;
+                    return event;
+                };
+
+                if let Some(block) = blocks.iter().find(|block| {
+                    block.get("type").and_then(|value| value.as_str()) == Some("tool_use")
+                }) {
+                    event.kind = HarnessTurnEventKind::ToolCall;
+                    event.provider_item_id = block
+                        .get("id")
+                        .and_then(|value| value.as_str())
+                        .filter(|value| !value.is_empty())
+                        .map(str::to_string);
+                    event.tool_call = Some(HarnessToolCall {
+                        id: event.provider_item_id.clone(),
+                        name: block
+                            .get("name")
+                            .and_then(|value| value.as_str())
+                            .filter(|value| !value.is_empty())
+                            .unwrap_or("tool_use")
+                            .to_string(),
+                        args: block.get("input").cloned().unwrap_or_else(|| block.clone()),
+                    });
+                } else if blocks.iter().any(|block| {
+                    block.get("type").and_then(|value| value.as_str()) == Some("thinking")
+                }) {
+                    event.kind = HarnessTurnEventKind::Reasoning;
+                    let parts: Vec<&str> = blocks
+                        .iter()
+                        .filter(|block| {
+                            block.get("type").and_then(|value| value.as_str()) == Some("thinking")
+                        })
+                        .filter_map(|block| {
+                            block
+                                .get("thinking")
+                                .or_else(|| block.get("text"))
+                                .and_then(|value| value.as_str())
+                        })
+                        .collect();
+                    if !parts.is_empty() {
+                        event.text = Some(parts.join("\n"));
+                    }
+                } else if blocks
+                    .iter()
+                    .any(|block| block.get("type").and_then(|value| value.as_str()) == Some("text"))
+                {
+                    event.kind = HarnessTurnEventKind::Message;
+                    event.role = Some("assistant".into());
+                    let parts: Vec<&str> = blocks
+                        .iter()
+                        .filter(|block| {
+                            block.get("type").and_then(|value| value.as_str()) == Some("text")
+                        })
+                        .filter_map(|block| block.get("text").and_then(|value| value.as_str()))
+                        .collect();
+                    if !parts.is_empty() {
+                        event.text = Some(parts.join("\n"));
+                    }
+                } else {
+                    event.kind = HarnessTurnEventKind::ProviderMeta;
+                }
+            }
+            Some("user") => {
+                let Some(block) = payload
+                    .get("message")
+                    .and_then(|message| message.get("content"))
+                    .and_then(|content| content.as_array())
+                    .and_then(|blocks| {
+                        blocks.iter().find(|block| {
+                            block.get("type").and_then(|value| value.as_str())
+                                == Some("tool_result")
+                        })
+                    })
+                else {
+                    event.kind = HarnessTurnEventKind::ProviderMeta;
+                    return event;
+                };
+
+                event.kind = HarnessTurnEventKind::ToolResult;
+                event.provider_item_id = block
+                    .get("tool_use_id")
+                    .and_then(|value| value.as_str())
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string);
+                let content = block
+                    .get("content")
+                    .map(|value| {
+                        value
+                            .as_str()
+                            .map(str::to_string)
+                            .unwrap_or_else(|| value.to_string())
+                    })
+                    .unwrap_or_default();
+                event.tool_result = Some(HarnessToolResult {
+                    tool_call_id: event.provider_item_id.clone(),
+                    name: None,
+                    content,
+                    is_error: block
+                        .get("is_error")
+                        .and_then(|value| value.as_bool())
+                        .unwrap_or(false),
+                });
+            }
+            Some("result") => {
+                let raw_usage = payload.get("usage");
+                event.usage =
+                    parse_claude_usage(std::slice::from_ref(raw)).map(|usage| HarnessTokenUsage {
+                        input_tokens: usage.input,
+                        output_tokens: usage.output,
+                        total_tokens: usage.total,
+                        cached_input_tokens: raw_usage
+                            .and_then(|usage| usage.get("cached_input_tokens"))
+                            .and_then(serde_json::Value::as_u64),
+                        reasoning_output_tokens: raw_usage
+                            .and_then(|usage| usage.get("reasoning_output_tokens"))
+                            .and_then(serde_json::Value::as_u64),
+                    });
+                let (_structured, cost_usd) = parse_claude_result_extras(std::slice::from_ref(raw));
+                event.cost_usd = cost_usd;
+                event.model = parse_worker_model(std::slice::from_ref(raw));
+                event.text = payload
+                    .get("result")
+                    .and_then(|value| value.as_str())
+                    .map(str::to_string);
+
+                match payload.get("subtype").and_then(|value| value.as_str()) {
+                    Some(subtype) if subtype != "success" => {
+                        event.kind = HarnessTurnEventKind::Error;
+                        event.error = Some(
+                            payload
+                                .get("result")
+                                .and_then(|value| value.as_str())
+                                .or_else(|| payload.get("error").and_then(|value| value.as_str()))
+                                .map(str::to_string)
+                                .or_else(|| {
+                                    payload
+                                        .get("error")
+                                        .and_then(|error| error.get("message"))
+                                        .and_then(|value| value.as_str())
+                                        .map(str::to_string)
+                                })
+                                .or_else(|| payload.get("error").map(|value| value.to_string()))
+                                .unwrap_or_else(|| format!("claude result subtype {subtype}")),
+                        );
+                    }
+                    _ => {
+                        event.kind = HarnessTurnEventKind::TurnCompleted;
+                    }
+                }
+            }
+            Some("stream_event") => {
+                event.kind = HarnessTurnEventKind::ProviderMeta;
+            }
+            _ => {}
+        }
+
+        event
+    }
+
     fn start_runtime(&self, store: &HarnessStore, member: &AgentMember) -> CliResult<AgentRuntime> {
         start_claude_runtime(store, member)
     }
@@ -13415,6 +13604,198 @@ mod workflow_runtime_tests {
     }
 
     #[test]
+    fn claude_normalize_system_sets_provider_meta_model_thread_and_retains_raw() {
+        let raw = serde_json::json!({
+            "type": "system",
+            "subtype": "init",
+            "session_id": "claude-session-1",
+            "model": "claude-opus-4-8"
+        });
+
+        let event = ClaudeAdapter.normalize_turn_event("session-C", 1, &raw);
+
+        assert_eq!(event.session_id, "session-C");
+        assert_eq!(event.provider, "claude");
+        assert_eq!(event.seq, 1);
+        assert_eq!(event.kind, HarnessTurnEventKind::ProviderMeta);
+        assert_eq!(event.model.as_deref(), Some("claude-opus-4-8"));
+        assert_eq!(
+            event.provider_thread_id.as_deref(),
+            Some("claude-session-1")
+        );
+        assert_eq!(event.raw_provider_event, raw);
+    }
+
+    #[test]
+    fn claude_normalize_assistant_text_sets_message_role_text_and_retains_raw() {
+        let raw = serde_json::json!({
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "hello"},
+                    {"type": "text", "text": "world"}
+                ]
+            }
+        });
+
+        let event = ClaudeAdapter.normalize_turn_event("session-C", 2, &raw);
+
+        assert_eq!(event.kind, HarnessTurnEventKind::Message);
+        assert_eq!(event.role.as_deref(), Some("assistant"));
+        assert_eq!(event.text.as_deref(), Some("hello\nworld"));
+        assert_eq!(event.raw_provider_event, raw);
+    }
+
+    #[test]
+    fn claude_normalize_assistant_tool_use_sets_tool_call_and_retains_raw() {
+        let raw = serde_json::json!({
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "checking"},
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_01",
+                        "name": "Read",
+                        "input": {"file_path": "Cargo.toml"}
+                    }
+                ]
+            }
+        });
+
+        let event = ClaudeAdapter.normalize_turn_event("session-C", 3, &raw);
+
+        assert_eq!(event.kind, HarnessTurnEventKind::ToolCall);
+        assert_eq!(event.provider_item_id.as_deref(), Some("toolu_01"));
+        assert_eq!(
+            event.tool_call,
+            Some(HarnessToolCall {
+                id: Some("toolu_01".into()),
+                name: "Read".into(),
+                args: serde_json::json!({"file_path": "Cargo.toml"}),
+            })
+        );
+        assert_eq!(event.raw_provider_event, raw);
+    }
+
+    #[test]
+    fn claude_normalize_user_tool_result_sets_tool_result_and_retains_raw() {
+        let raw = serde_json::json!({
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "toolu_01",
+                        "content": [{"type": "text", "text": "file contents"}],
+                        "is_error": true
+                    }
+                ]
+            }
+        });
+
+        let event = ClaudeAdapter.normalize_turn_event("session-C", 4, &raw);
+
+        assert_eq!(event.kind, HarnessTurnEventKind::ToolResult);
+        assert_eq!(event.provider_item_id.as_deref(), Some("toolu_01"));
+        assert_eq!(
+            event.tool_result,
+            Some(HarnessToolResult {
+                tool_call_id: Some("toolu_01".into()),
+                name: None,
+                content: serde_json::json!([{"type": "text", "text": "file contents"}]).to_string(),
+                is_error: true,
+            })
+        );
+        assert_eq!(event.raw_provider_event, raw);
+    }
+
+    #[test]
+    fn claude_normalize_result_success_sets_completed_usage_cost_and_retains_raw() {
+        let raw = serde_json::json!({
+            "type": "result",
+            "subtype": "success",
+            "result": "final answer",
+            "total_cost_usd": 0.1866,
+            "structured_output": {"verdict": "pass"},
+            "usage": {
+                "input_tokens": 42,
+                "output_tokens": 15,
+                "cached_input_tokens": 7,
+                "reasoning_output_tokens": 3
+            }
+        });
+
+        let event = ClaudeAdapter.normalize_turn_event("session-C", 5, &raw);
+
+        assert_eq!(event.kind, HarnessTurnEventKind::TurnCompleted);
+        assert_eq!(event.text.as_deref(), Some("final answer"));
+        assert_eq!(
+            event.usage,
+            Some(HarnessTokenUsage {
+                input_tokens: 42,
+                output_tokens: 15,
+                total_tokens: 57,
+                cached_input_tokens: Some(7),
+                reasoning_output_tokens: Some(3),
+            })
+        );
+        assert_eq!(event.cost_usd, Some(0.1866));
+        assert_eq!(event.raw_provider_event, raw);
+    }
+
+    #[test]
+    fn claude_normalize_result_non_success_sets_error_and_retains_raw() {
+        let raw = serde_json::json!({
+            "type": "result",
+            "subtype": "error_during_execution",
+            "result": "tool failed",
+            "usage": {"input_tokens": 1, "output_tokens": 2}
+        });
+
+        let event = ClaudeAdapter.normalize_turn_event("session-C", 6, &raw);
+
+        assert_eq!(event.kind, HarnessTurnEventKind::Error);
+        assert_eq!(event.text.as_deref(), Some("tool failed"));
+        assert_eq!(event.error.as_deref(), Some("tool failed"));
+        assert_eq!(
+            event.usage,
+            Some(HarnessTokenUsage {
+                input_tokens: 1,
+                output_tokens: 2,
+                total_tokens: 3,
+                cached_input_tokens: None,
+                reasoning_output_tokens: None,
+            })
+        );
+        assert_eq!(event.raw_provider_event, raw);
+    }
+
+    #[test]
+    fn claude_normalize_unrecognized_type_stays_unknown_and_retains_raw() {
+        let raw = serde_json::json!({
+            "type": "provider_specific",
+            "payload": {"n": 1}
+        });
+
+        let event = ClaudeAdapter.normalize_turn_event("session-C", 7, &raw);
+
+        assert_eq!(event.session_id, "session-C");
+        assert_eq!(event.provider, "claude");
+        assert_eq!(event.seq, 7);
+        assert_eq!(event.kind, HarnessTurnEventKind::Unknown);
+        assert_eq!(event.raw_provider_event, raw);
+        assert!(event.provider_thread_id.is_none());
+        assert!(event.text.is_none());
+        assert!(event.tool_call.is_none());
+        assert!(event.tool_result.is_none());
+        assert!(event.usage.is_none());
+    }
+
+    #[test]
     fn read_provider_session_normalized_events_preserves_order_and_raw() {
         let store = temp_store("normalized-events");
         let ndjson = store
@@ -13440,11 +13821,11 @@ mod workflow_runtime_tests {
         assert_eq!(events.len(), 2);
         assert_eq!(events[0].provider, "claude");
         assert_eq!(events[0].seq, 0);
-        assert_eq!(events[0].kind, HarnessTurnEventKind::Unknown);
+        assert_eq!(events[0].kind, HarnessTurnEventKind::ProviderMeta);
         assert_eq!(events[0].raw_provider_event, raw0);
         assert_eq!(events[1].provider, "claude");
         assert_eq!(events[1].seq, 1);
-        assert_eq!(events[1].kind, HarnessTurnEventKind::Unknown);
+        assert_eq!(events[1].kind, HarnessTurnEventKind::TurnCompleted);
         assert_eq!(events[1].raw_provider_event, raw1);
     }
 
