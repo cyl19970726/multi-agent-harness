@@ -108,6 +108,8 @@ pub struct ResidentConfig {
     pub binary: String,
     /// `--model <model>` when set.
     pub model: Option<String>,
+    /// `--effort <effort>` when set.
+    pub effort: Option<String>,
     /// `--permission-mode <mode>`; always emitted (mirrors the default path).
     pub permission_mode: String,
     /// `--allowedTools <csv>` when non-empty.
@@ -136,6 +138,7 @@ impl ResidentConfig {
     pub fn fingerprint(&self) -> String {
         let mut parts: Vec<String> = Vec::new();
         parts.push(format!("model={}", self.model.as_deref().unwrap_or("-")));
+        parts.push(format!("effort={}", self.effort.as_deref().unwrap_or("-")));
         parts.push(format!("perm={}", self.permission_mode));
         parts.push(format!("tools={}", self.tools.join(",")));
         parts.push(format!("sys={}", self.system_prompt));
@@ -170,6 +173,9 @@ impl ResidentConfig {
         }
         if let Some(model) = &self.model {
             cmd.arg("--model").arg(model);
+        }
+        if let Some(effort) = &self.effort {
+            cmd.arg("--effort").arg(effort);
         }
         cmd.arg("--permission-mode").arg(&self.permission_mode);
         if !self.tools.is_empty() {
@@ -728,6 +734,7 @@ mod tests {
         ResidentConfig {
             binary: binary.display().to_string(),
             model: None,
+            effort: None,
             permission_mode: "plan".into(),
             tools: vec![],
             system_prompt: String::new(),
@@ -795,6 +802,7 @@ mod tests {
         let base = ResidentConfig {
             binary: "claude".into(),
             model: None,
+            effort: None,
             permission_mode: "plan".into(),
             tools: vec![],
             system_prompt: String::new(),
@@ -806,6 +814,10 @@ mod tests {
         let mut other = base.clone();
         other.model = Some("opus".into());
         assert_ne!(base.fingerprint(), other.fingerprint());
+
+        let mut effort_changed = base.clone();
+        effort_changed.effort = Some("high".into());
+        assert_ne!(base.fingerprint(), effort_changed.fingerprint());
 
         let mut cwd_changed = base.clone();
         cwd_changed.cwd = "/b".into();
