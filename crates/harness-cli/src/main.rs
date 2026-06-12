@@ -4950,14 +4950,39 @@ fn codex_delivery_telemetry(
     (parse_codex_usage(raw_events), None, spec.model.clone())
 }
 
+fn codex_delivery_structured(reply: Option<&str>, spec: &LaunchSpec) -> Option<serde_json::Value> {
+    spec.output_schema
+        .as_ref()
+        .and_then(|_| reply.and_then(extract_json_object))
+}
+
+/// The structured output is the turn's ANSWER, so it is surfaced only on a
+/// SUCCEEDED delivery. A failed/stale turn may have emitted partial or
+/// schema-violating JSON that must not be reported as the structured result.
+fn structured_for_status(
+    status: &ProviderSessionStatus,
+    structured: Option<serde_json::Value>,
+) -> Option<serde_json::Value> {
+    match status {
+        ProviderSessionStatus::Succeeded => structured,
+        _ => None,
+    }
+}
+
 fn claude_delivery_telemetry(
     raw_events: &[serde_json::Value],
-) -> (Option<TokenUsage>, Option<f64>, Option<String>) {
-    let (_, cost_usd) = parse_claude_result_extras(raw_events);
+) -> (
+    Option<TokenUsage>,
+    Option<f64>,
+    Option<String>,
+    Option<serde_json::Value>,
+) {
+    let (structured, cost_usd) = parse_claude_result_extras(raw_events);
     (
         parse_claude_usage(raw_events),
         cost_usd,
         parse_worker_model(raw_events),
+        structured,
     )
 }
 
@@ -6527,6 +6552,7 @@ fn deliver_agent_messages_value(
                 tokens: None,
                 cost_usd: None,
                 model: None,
+                structured: None,
                 summary: "dry-run delivery completed".into(),
             }
         } else {
@@ -6579,6 +6605,7 @@ fn deliver_agent_messages_value(
                     tokens: None,
                     cost_usd: None,
                     model: None,
+                    structured: None,
                     summary,
                 }
             } else if runtime.is_none() {
@@ -6610,6 +6637,7 @@ fn deliver_agent_messages_value(
                     tokens: None,
                     cost_usd: None,
                     model: None,
+                    structured: None,
                     summary,
                 }
             } else {
@@ -6734,7 +6762,8 @@ fn deliver_agent_messages_value(
             "exit_code": delivery.exit_code,
             "tokens": delivery.tokens.map(TokenUsage::to_json),
             "cost_usd": delivery.cost_usd,
-            "model": delivery.model
+            "model": delivery.model,
+            "structured": delivery.structured
         }));
         if delivery_unresolved {
             break;
@@ -6901,6 +6930,7 @@ struct DeliveryOutcome {
     tokens: Option<TokenUsage>,
     cost_usd: Option<f64>,
     model: Option<String>,
+    structured: Option<serde_json::Value>,
     summary: String,
 }
 
@@ -10960,6 +10990,9 @@ fn run_codex_exec_delivery(
     let provider_thread_id = extract_thread_id_from_exec_events(&events);
     let provider_turn_id = extract_turn_id_from_exec_events(&events);
     let exit_code = if process_success { Some(0) } else { Some(1) };
+    let reply = extract_codex_reply_text(&events);
+    let structured =
+        structured_for_status(&status, codex_delivery_structured(reply.as_deref(), &spec));
 
     let evidence_id = record_exec_delivery_session(
         store,
@@ -10981,7 +11014,8 @@ fn run_codex_exec_delivery(
     )?;
 
     let summary = match status {
-        ProviderSessionStatus::Succeeded => extract_codex_reply_text(&events)
+        ProviderSessionStatus::Succeeded => reply
+            .clone()
             .unwrap_or_else(|| "Codex exec --json turn completed successfully".into()),
         ProviderSessionStatus::Failed => {
             if stderr_log.is_empty() {
@@ -11014,6 +11048,7 @@ fn run_codex_exec_delivery(
         tokens,
         cost_usd,
         model,
+        structured,
         summary,
     })
 }
@@ -11168,7 +11203,7 @@ fn run_claude_delivery(
     } else {
         run_claude_exec_delivery_real(&session_dir, member, message, timeout_ms)?
     };
-    let (tokens, cost_usd, model) = claude_delivery_telemetry(&raw_events);
+    let (tokens, cost_usd, model, raw_structured) = claude_delivery_telemetry(&raw_events);
 
     // Save NDJSON events to jsonl_ref for ingest.
     let ndjson_ref = session_dir.join("claude.stream-json.ndjson");
@@ -11180,6 +11215,7 @@ fn run_claude_delivery(
     fs::write(&ndjson_ref, &ndjson_content)?;
 
     let status = infer_claude_session_status(&events, process_success);
+    let structured = structured_for_status(&status, raw_structured);
     let terminal_source = status_to_terminal_source(&status);
     let resolved_session_id = session_id
         .clone()
@@ -11285,6 +11321,7 @@ fn run_claude_delivery(
         tokens,
         cost_usd,
         model,
+        structured,
         summary: if process_success {
             // Surface the agent's actual reply as the report content; fall back
             // to a status line only when the turn produced no assistant text.
@@ -12311,6 +12348,7 @@ mod workflow_runtime_tests {
         tokens: Option<TokenUsage>,
         cost_usd: Option<f64>,
         model: Option<String>,
+        structured: Option<serde_json::Value>,
     ) -> DeliveryOutcome {
         DeliveryOutcome {
             status: ProviderSessionStatus::Succeeded,
@@ -12327,6 +12365,7 @@ mod workflow_runtime_tests {
             tokens,
             cost_usd,
             model,
+            structured,
             summary: "test delivery".into(),
         }
     }
@@ -12340,7 +12379,7 @@ mod workflow_runtime_tests {
         ]);
 
         let (tokens, cost_usd, model) = codex_delivery_telemetry(&raw_events, &spec);
-        let outcome = delivery_outcome_for_test(tokens, cost_usd, model);
+        let outcome = delivery_outcome_for_test(tokens, cost_usd, model, None);
 
         assert_eq!(
             outcome.tokens,
@@ -12361,8 +12400,8 @@ mod workflow_runtime_tests {
             r#"{"type":"result","subtype":"success","total_cost_usd":0.025,"usage":{"input_tokens":40,"output_tokens":9}}"#,
         ]);
 
-        let (tokens, cost_usd, model) = claude_delivery_telemetry(&raw_events);
-        let outcome = delivery_outcome_for_test(tokens, cost_usd, model);
+        let (tokens, cost_usd, model, structured) = claude_delivery_telemetry(&raw_events);
+        let outcome = delivery_outcome_for_test(tokens, cost_usd, model, structured);
 
         assert_eq!(
             outcome.tokens,
@@ -12374,12 +12413,65 @@ mod workflow_runtime_tests {
         );
         assert_eq!(outcome.model.as_deref(), Some("claude-opus-4-8"));
         assert_eq!(outcome.cost_usd, Some(0.025));
+        assert_eq!(outcome.structured, None);
+    }
+
+    #[test]
+    fn persistent_claude_delivery_outcome_uses_result_structured_output() {
+        let raw_events = vec![
+            serde_json::json!({"type":"system","subtype":"init","model":"claude-opus-4-8"}),
+            serde_json::json!({
+                "type":"result",
+                "subtype":"success",
+                "structured_output": { "verdict": "pass", "score": 100 },
+                "total_cost_usd": 0.025,
+                "usage": { "input_tokens": 40, "output_tokens": 9 }
+            }),
+        ];
+
+        let (tokens, cost_usd, model, structured) = claude_delivery_telemetry(&raw_events);
+        let outcome = delivery_outcome_for_test(tokens, cost_usd, model, structured);
+
+        assert_eq!(
+            outcome.structured,
+            Some(serde_json::json!({ "verdict": "pass", "score": 100 }))
+        );
+        assert_eq!(outcome.cost_usd, Some(0.025));
+    }
+
+    #[test]
+    fn persistent_codex_delivery_outcome_extracts_structured_only_with_schema() {
+        let mut spec = launch_spec_with_model_effort(Some("gpt-5-codex"), None);
+        spec.output_schema = Some(serde_json::json!({ "verdict": "pass/fail" }));
+        let reply = r#"{"verdict":"pass","summary":"done"}"#;
+
+        let outcome = delivery_outcome_for_test(
+            None,
+            None,
+            spec.model.clone(),
+            codex_delivery_structured(Some(reply), &spec),
+        );
+
+        assert_eq!(
+            outcome.structured,
+            Some(serde_json::json!({ "verdict": "pass", "summary": "done" }))
+        );
+
+        let no_schema = launch_spec_with_model_effort(Some("gpt-5-codex"), None);
+        let outcome = delivery_outcome_for_test(
+            None,
+            None,
+            no_schema.model.clone(),
+            codex_delivery_structured(Some(reply), &no_schema),
+        );
+
+        assert_eq!(outcome.structured, None);
     }
 
     #[test]
     fn delivery_outcome_defaults_have_no_telemetry_for_non_provider_paths() {
-        let dry_run = delivery_outcome_for_test(None, None, None);
-        let mut failure = delivery_outcome_for_test(None, None, None);
+        let dry_run = delivery_outcome_for_test(None, None, None, None);
+        let mut failure = delivery_outcome_for_test(None, None, None, None);
         failure.status = ProviderSessionStatus::Failed;
         failure.exit_code = Some(1);
 
@@ -12387,6 +12479,27 @@ mod workflow_runtime_tests {
             assert_eq!(outcome.tokens, None);
             assert_eq!(outcome.cost_usd, None);
             assert_eq!(outcome.model, None);
+            assert_eq!(outcome.structured, None);
+        }
+    }
+
+    #[test]
+    fn structured_is_surfaced_only_on_succeeded_status() {
+        let value = serde_json::json!({ "verdict": "pass" });
+        assert_eq!(
+            structured_for_status(&ProviderSessionStatus::Succeeded, Some(value.clone())),
+            Some(value.clone())
+        );
+        // A turn that RAN but did not succeed must not report a (possibly partial /
+        // schema-violating) structured result, even if one was extracted.
+        for status in [
+            ProviderSessionStatus::Failed,
+            ProviderSessionStatus::Stale,
+            ProviderSessionStatus::Canceled,
+            ProviderSessionStatus::Running,
+            ProviderSessionStatus::Queued,
+        ] {
+            assert_eq!(structured_for_status(&status, Some(value.clone())), None);
         }
     }
 
