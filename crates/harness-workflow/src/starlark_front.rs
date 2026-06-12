@@ -496,17 +496,8 @@ fn step_cost_usd(result: &StepResult) -> f64 {
             .and_then(|v| v.as_u64())
             .unwrap_or(0)
     };
-    let (in_rate, out_rate) = price_per_mtok(&result.provider);
+    let (in_rate, out_rate) = harness_core::provider_price_per_mtok(&result.provider);
     (field("input") as f64 / 1e6) * in_rate + (field("output") as f64 / 1e6) * out_rate
-}
-
-/// Rough public list price ($ per 1M tokens) `(input, output)` per provider — an
-/// ESTIMATE used only to bound spend when the provider reports no dollar cost.
-fn price_per_mtok(provider: &str) -> (f64, f64) {
-    match provider {
-        "claude" => (3.0, 15.0),
-        _ => (1.25, 10.0), // codex / gpt-5-class default
-    }
 }
 
 /// The `output_summary` prefix marking a replayed (cache-hit) step. Lets a human
