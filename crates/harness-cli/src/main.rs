@@ -3928,7 +3928,7 @@ struct DeliveryOptions {
 // ---------------------------------------------------------------------------
 // Workflow runtime CLI (WP1)
 //
-// `harness workflow run --name <name> [--prompt <text>] [--timeout-ms N] [--dry-run]`
+// `harness workflow run --name <name> [--prompt <text>] [--timeout-ms N] [--model <m>] [--effort <e>] [--dry-run]`
 //
 // Creates a WorkflowRun (status running), dispatches the named built-in Rust
 // workflow through the registry, journals each WorkflowStep, and sets the run
@@ -3950,6 +3950,12 @@ struct WorkflowDeliveryOptions {
     #[allow(dead_code)]
     start_runtime: bool,
     timeout_ms: u64,
+    /// Run-level default model for real workflow leaves. A leaf's own
+    /// `model = ...` still wins.
+    default_model: Option<String>,
+    /// Run-level default reasoning effort for real workflow leaves. A leaf's own
+    /// `effort = ...` still wins.
+    default_effort: Option<String>,
     /// Per-WORKER spend backstop in USD (the run's `--max-budget-usd`). Passed to
     /// claude as `--max-budget-usd` so a single worker can never exceed the whole
     /// run's ceiling between the cumulative tally's barrier-granular checks. `None`
@@ -3975,6 +3981,20 @@ struct WorkflowDeliveryOptions {
 /// caller's shell tool captures both streams, so it still sees the live timeline.
 fn emit_progress(event: &serde_json::Value) {
     eprintln!("{event}");
+}
+
+fn workflow_effective_model<'a>(
+    options: &'a WorkflowDeliveryOptions,
+    spec: &'a workflow::AgentStepSpec,
+) -> Option<&'a str> {
+    spec.model.as_deref().or(options.default_model.as_deref())
+}
+
+fn workflow_effective_effort<'a>(
+    options: &'a WorkflowDeliveryOptions,
+    spec: &'a workflow::AgentStepSpec,
+) -> Option<&'a str> {
+    spec.effort.as_deref().or(options.default_effort.as_deref())
 }
 
 /// The REAL agent-step driver. Drives one provider delivery through the neutral
@@ -4086,7 +4106,7 @@ fn workflow_real_agent_step(
             // dashboard renders the same observability shape as a worker failure.
             let details = serde_json::json!({
                 "provider": spec.provider,
-                "model": spec.model,
+                "model": workflow_effective_model(options, spec),
                 "failure": {
                     "failed": true,
                     "reason": "spawn",
@@ -4395,6 +4415,8 @@ fn spawn_ephemeral_worker(
 
     // One spawn of the configured provider against a (possibly augmented) prompt.
     // Factored into a closure so structured mode can re-run it once for the retry.
+    let effective_model = workflow_effective_model(options, spec);
+    let effective_effort = workflow_effective_effort(options, spec);
     let spawn_once = |prompt: &str| -> CliResult<EphemeralSpawn> {
         match spec.provider.as_str() {
             "codex" => spawn_codex_ephemeral(
@@ -4404,6 +4426,8 @@ fn spawn_ephemeral_worker(
                 schema_json.as_ref(),
                 prompt,
                 &cwd,
+                effective_model,
+                effective_effort,
                 options.timeout_ms,
             ),
             "claude" => spawn_claude_ephemeral(
@@ -4413,6 +4437,8 @@ fn spawn_ephemeral_worker(
                 schema_json.as_ref(),
                 prompt,
                 &cwd,
+                effective_model,
+                effective_effort,
                 options.timeout_ms,
                 options.max_budget_usd,
             ),
@@ -4561,7 +4587,8 @@ fn spawn_ephemeral_worker(
     // guard is None and there is nothing to remove.
     drop(guard);
 
-    let mut details = build_step_details(spec, &spawn, duration_ms, diff.as_deref());
+    let mut details =
+        build_step_details(spec, &spawn, effective_model, duration_ms, diff.as_deref());
     // Record a "schema" failure (reusing the same failure shape build_step_details
     // emits for worker failures) so the dashboard renders the schema miss.
     if schema_failed {
@@ -4749,12 +4776,15 @@ const WORKTREE_DIFF_CAP: usize = 20_000;
 fn build_step_details(
     spec: &workflow::AgentStepSpec,
     spawn: &EphemeralSpawn,
+    effective_model: Option<&str>,
     duration_ms: u64,
     diff: Option<&str>,
 ) -> serde_json::Value {
     // The node's requested model wins; otherwise fall back to the model the
     // worker reported in its own output (claude's init frame).
-    let model = spec.model.clone().or_else(|| spawn.model.clone());
+    let model = effective_model
+        .map(|model| model.to_string())
+        .or_else(|| spawn.model.clone());
     let mut details = serde_json::json!({
         "model": model,
         "exit_code": spawn.exit_code,
@@ -4996,6 +5026,7 @@ fn classify_failure_reason(
 /// `codex exec --help`: `--json`, `--sandbox workspace-write`, `--cd <dir>`,
 /// `-m <model>`, `--skip-git-repo-check`, `--output-last-message <file>`,
 /// `--output-schema <file>`.
+#[allow(clippy::too_many_arguments)] // the spawn surface (session/spec/schema/cwd/model/effort/timeout)
 fn spawn_codex_ephemeral(
     session_dir: &Path,
     session_id: &str,
@@ -5003,6 +5034,8 @@ fn spawn_codex_ephemeral(
     schema_json: Option<&serde_json::Value>,
     prompt: &str,
     cwd: &Path,
+    model: Option<&str>,
+    effort: Option<&str>,
     timeout_ms: u64,
 ) -> CliResult<EphemeralSpawn> {
     let last_message_ref = session_dir.join("last-message.md");
@@ -5035,11 +5068,11 @@ fn spawn_codex_ephemeral(
             cmd.arg("--output-schema").arg(&schema_path);
         }
     }
-    if let Some(model) = &spec.model {
+    if let Some(model) = model {
         cmd.arg("-m").arg(model);
     }
     // Reasoning effort: codex takes it as a config override (no dedicated flag).
-    if let Some(effort) = &spec.effort {
+    if let Some(effort) = effort {
         cmd.arg("-c")
             .arg(format!("model_reasoning_effort={effort}"));
     }
@@ -5113,6 +5146,8 @@ fn spawn_claude_ephemeral(
     schema_json: Option<&serde_json::Value>,
     prompt: &str,
     cwd: &Path,
+    model: Option<&str>,
+    effort: Option<&str>,
     timeout_ms: u64,
     max_budget_usd: Option<f64>,
 ) -> CliResult<EphemeralSpawn> {
@@ -5160,11 +5195,11 @@ fn spawn_claude_ephemeral(
     if let Some(schema) = schema_json {
         cmd.arg("--json-schema").arg(schema.to_string());
     }
-    if let Some(model) = &spec.model {
+    if let Some(model) = model {
         cmd.arg("--model").arg(model);
     }
     // Reasoning effort: claude has a native session flag.
-    if let Some(effort) = &spec.effort {
+    if let Some(effort) = effort {
         cmd.arg("--effort").arg(effort);
     }
     if let Some(model) = &spec.fallback_model {
@@ -6019,6 +6054,8 @@ fn workflow_run_value(store: &HarnessStore, args: &[String]) -> CliResult<serde_
         timeout_ms: value(args, "--timeout-ms")
             .and_then(|value| value.parse::<u64>().ok())
             .unwrap_or(900_000),
+        default_model: value(args, "--model"),
+        default_effort: value(args, "--effort"),
         max_budget_usd: None,
         // Registry runs always retain their trace durably.
         trace_retention: "durable".to_string(),
@@ -6048,7 +6085,7 @@ fn workflow_run_value(store: &HarnessStore, args: &[String]) -> CliResult<serde_
 
 /// `harness workflow run-script <prog.star> [--name <n>] [--args <json>]
 ///  [--trace durable|live] [--dry-run] [--start-runtime] [--timeout-ms <ms>]
-///  [--initiated-by <id>]`
+///  [--model <m>] [--effort <e>] [--initiated-by <id>]`
 ///
 /// Reads a runtime-authored Starlark program — the SOLE dynamic authoring
 /// surface — evaluates it via `starlark_front::run_starlark`, and journals the
@@ -6219,6 +6256,8 @@ fn workflow_run_script_value(
         timeout_ms: value(args, "--timeout-ms")
             .and_then(|value| value.parse::<u64>().ok())
             .unwrap_or(900_000),
+        default_model: value(args, "--model"),
+        default_effort: value(args, "--effort"),
         max_budget_usd: value(args, "--max-budget-usd").and_then(|v| v.parse::<f64>().ok()),
         trace_retention: trace_retention.clone(),
         progress: has_flag(args, "--progress"),
@@ -11728,8 +11767,8 @@ fn print_help() {
   codex run --task <task> --agent <agent> --worktree <path> --prompt <text>
   codex review --task <task> --agent <agent> --worktree <path> [--base <branch>] [--uncommitted] [--prompt <text>]
   workflow list
-  workflow run --name <name> [--prompt <text>] [--start-runtime] [--dry-run] [--timeout-ms <ms>]
-  workflow run-script <prog.star> [--name <n>] [--args <json>] [--trace durable|live] [--dry-run] [--resume <prior_run_id>]
+  workflow run --name <name> [--prompt <text>] [--start-runtime] [--dry-run] [--timeout-ms <ms>] [--model <m>] [--effort <e>]
+  workflow run-script <prog.star> [--name <n>] [--args <json>] [--trace durable|live] [--dry-run] [--resume <prior_run_id>] [--timeout-ms <ms>] [--model <m>] [--effort <e>]
   workflow get-output <run_id> [--step <label>] [--text]
   workflow gc-worktrees
   workflow gc-trace [--keep-runs <n>] [--keep-days <d>] [--dry-run]
@@ -11741,7 +11780,9 @@ fn print_help() {
 global:
   --store <path>   store root for any command (else $HARNESS_ROOT, else the
                    nearest ancestor .harness, else ./.harness). Point `serve`
-                   and `workflow run-script` at the SAME store."
+                   and `workflow run-script` at the SAME store.
+  --timeout-ms <ms> workflow worker idle timeout (default 900000 = 15 min);
+                   a worker is killed only after this long with NO output."
     );
 }
 
@@ -12015,7 +12056,7 @@ mod workflow_runtime_tests {
             structured: None,
             cost_usd: None,
         };
-        let details = build_step_details(&spec, &spawn, 1234, None);
+        let details = build_step_details(&spec, &spawn, spec.model.as_deref(), 1234, None);
         // spec.model wins over the (absent) worker-reported model.
         assert_eq!(details["model"], serde_json::json!("gpt-5-codex"));
         assert_eq!(details["exit_code"], serde_json::json!(0));
@@ -12055,7 +12096,7 @@ mod workflow_runtime_tests {
             structured: None,
             cost_usd: None,
         };
-        let details = build_step_details(&spec, &spawn, 50, None);
+        let details = build_step_details(&spec, &spawn, spec.model.as_deref(), 50, None);
         assert_eq!(details["model"], serde_json::json!("claude-opus-4-8"));
         assert_eq!(details["failure"]["failed"], serde_json::json!(true));
         assert_eq!(details["failure"]["reason"], serde_json::json!("exit"));
@@ -12095,14 +12136,14 @@ mod workflow_runtime_tests {
             cost_usd: None,
         };
         let big = "x".repeat(WORKTREE_DIFF_CAP + 5_000);
-        let details = build_step_details(&spec, &spawn, 1, Some(&big));
+        let details = build_step_details(&spec, &spawn, spec.model.as_deref(), 1, Some(&big));
         let stored = details["worktree_diff"].as_str().expect("diff string");
         assert_eq!(stored.len(), WORKTREE_DIFF_CAP);
         assert_eq!(details["worktree_diff_truncated"], serde_json::json!(true));
 
         // A small diff is stored whole and NOT flagged truncated.
         let small = "diff --git a b\n+added\n";
-        let details = build_step_details(&spec, &spawn, 1, Some(small));
+        let details = build_step_details(&spec, &spawn, spec.model.as_deref(), 1, Some(small));
         assert_eq!(details["worktree_diff"], serde_json::json!(small));
         assert_eq!(details["worktree_diff_truncated"], serde_json::json!(false));
     }
@@ -12124,6 +12165,46 @@ mod workflow_runtime_tests {
         ];
         assert_eq!(parse_worker_model(&codex), None);
         assert_eq!(parse_worker_model(&[]), None);
+    }
+
+    #[test]
+    fn workflow_run_defaults_do_not_override_leaf_model_or_effort() {
+        let options = WorkflowDeliveryOptions {
+            dry_run: false,
+            start_runtime: false,
+            timeout_ms: 1_000,
+            default_model: Some("run-model".into()),
+            default_effort: Some("medium".into()),
+            max_budget_usd: None,
+            trace_retention: "durable".into(),
+            progress: false,
+        };
+        let mut spec = workflow::AgentStepSpec {
+            phase: "p".into(),
+            label: "l".into(),
+            provider: "codex".into(),
+            model: None,
+            effort: None,
+            fallback_model: None,
+            image: Vec::new(),
+            add_dir: Vec::new(),
+            isolation: None,
+            prompt: "hi".into(),
+            schema: None,
+            writable: false,
+            ordinal: None,
+        };
+
+        assert_eq!(workflow_effective_model(&options, &spec), Some("run-model"));
+        assert_eq!(workflow_effective_effort(&options, &spec), Some("medium"));
+
+        spec.model = Some("leaf-model".into());
+        spec.effort = Some("high".into());
+        assert_eq!(
+            workflow_effective_model(&options, &spec),
+            Some("leaf-model")
+        );
+        assert_eq!(workflow_effective_effort(&options, &spec), Some("high"));
     }
 
     #[test]
@@ -12494,6 +12575,8 @@ mod workflow_runtime_tests {
             dry_run: true,
             start_runtime: false,
             timeout_ms: 1_000,
+            default_model: None,
+            default_effort: None,
             max_budget_usd: None,
             trace_retention: "durable".into(),
             progress: false,
