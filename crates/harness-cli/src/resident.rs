@@ -110,6 +110,9 @@ pub struct ResidentConfig {
     pub model: Option<String>,
     /// `--effort <effort>` when set.
     pub effort: Option<String>,
+    /// `--json-schema <inline>` when set (the pre-normalized JSON Schema string,
+    /// mirroring the fresh `claude -p` persistent path's structured-output flag).
+    pub output_schema_json: Option<String>,
     /// `--permission-mode <mode>`; always emitted (mirrors the default path).
     pub permission_mode: String,
     /// `--allowedTools <csv>` when non-empty.
@@ -139,6 +142,10 @@ impl ResidentConfig {
         let mut parts: Vec<String> = Vec::new();
         parts.push(format!("model={}", self.model.as_deref().unwrap_or("-")));
         parts.push(format!("effort={}", self.effort.as_deref().unwrap_or("-")));
+        parts.push(format!(
+            "schema={}",
+            self.output_schema_json.as_deref().unwrap_or("-")
+        ));
         parts.push(format!("perm={}", self.permission_mode));
         parts.push(format!("tools={}", self.tools.join(",")));
         parts.push(format!("sys={}", self.system_prompt));
@@ -176,6 +183,9 @@ impl ResidentConfig {
         }
         if let Some(effort) = &self.effort {
             cmd.arg("--effort").arg(effort);
+        }
+        if let Some(schema) = &self.output_schema_json {
+            cmd.arg("--json-schema").arg(schema);
         }
         cmd.arg("--permission-mode").arg(&self.permission_mode);
         if !self.tools.is_empty() {
@@ -735,6 +745,7 @@ mod tests {
             binary: binary.display().to_string(),
             model: None,
             effort: None,
+            output_schema_json: None,
             permission_mode: "plan".into(),
             tools: vec![],
             system_prompt: String::new(),
@@ -803,6 +814,7 @@ mod tests {
             binary: "claude".into(),
             model: None,
             effort: None,
+            output_schema_json: None,
             permission_mode: "plan".into(),
             tools: vec![],
             system_prompt: String::new(),
@@ -818,6 +830,10 @@ mod tests {
         let mut effort_changed = base.clone();
         effort_changed.effort = Some("high".into());
         assert_ne!(base.fingerprint(), effort_changed.fingerprint());
+
+        let mut schema_changed = base.clone();
+        schema_changed.output_schema_json = Some("{\"type\":\"object\"}".into());
+        assert_ne!(base.fingerprint(), schema_changed.fingerprint());
 
         let mut cwd_changed = base.clone();
         cwd_changed.cwd = "/b".into();
