@@ -1467,14 +1467,18 @@ pipeline(
                 .outcome
         };
 
-        let seen: std::collections::HashMap<String, (Vec<String>, Vec<String>, Option<String>)> =
-            seen.into_inner()
-                .unwrap()
-                .into_iter()
-                .map(|(label, image, add_dir, fallback_model)| {
-                    (label, (image, add_dir, fallback_model))
-                })
-                .collect();
+        #[allow(clippy::type_complexity)]
+        let seen: std::collections::HashMap<
+            String,
+            (Vec<String>, Vec<String>, Option<String>),
+        > = seen
+            .into_inner()
+            .unwrap()
+            .into_iter()
+            .map(|(label, image, add_dir, fallback_model)| {
+                (label, (image, add_dir, fallback_model))
+            })
+            .collect();
         assert_eq!(seen["single"].0, vec!["a.png".to_string()]);
         assert_eq!(seen["single"].1, vec!["src".to_string()]);
         assert_eq!(seen["single"].2.as_deref(), Some("claude-sonnet"));
