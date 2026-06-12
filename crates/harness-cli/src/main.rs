@@ -10799,6 +10799,7 @@ fn run_codex_exec_process(
     // Map LaunchSpec to codex flags
     apply_codex_model_and_effort_args(&mut cmd, &spec);
     apply_codex_output_schema_arg(&mut cmd, &spec, session_dir)?;
+    apply_codex_mcp_args(&mut cmd, &spec)?;
 
     if !resuming {
         // Map permission to sandbox (fresh sessions only).
@@ -10811,13 +10812,6 @@ fn run_codex_exec_process(
         }
         for root in &spec.writable_roots {
             cmd.arg("--add-dir").arg(root);
-        }
-    }
-
-    // Map MCP config if present
-    if let Some(mcp) = &spec.mcp {
-        if !mcp.servers.is_empty() {
-            // TODO: Map LaunchMcp to codex --config mcp_servers format when Codex MCP support is complete
         }
     }
 
@@ -10869,6 +10863,50 @@ fn apply_codex_output_schema_arg(
         cmd.arg("--output-schema").arg(&schema_path);
     }
     Ok(())
+}
+
+fn apply_codex_mcp_args(cmd: &mut Command, spec: &LaunchSpec) -> CliResult<()> {
+    let Some(mcp) = &spec.mcp else {
+        return Ok(());
+    };
+
+    for server in &mcp.servers {
+        let id_key = codex_mcp_id_key(&server.id);
+        if !server.command.is_empty() {
+            // Codex stdio MCP config stores the binary separately from argv rest.
+            let bin = serde_json::to_string(&server.command[0])
+                .map_err(|e| CliError::Usage(format!("mcp command serialize: {e}")))?;
+            cmd.arg("-c")
+                .arg(format!("mcp_servers.{id_key}.command={bin}"));
+            if server.command.len() > 1 {
+                let args = serde_json::to_string(&server.command[1..])
+                    .map_err(|e| CliError::Usage(format!("mcp args serialize: {e}")))?;
+                cmd.arg("-c")
+                    .arg(format!("mcp_servers.{id_key}.args={args}"));
+            }
+        } else if let Some(url) = &server.url {
+            let u = serde_json::to_string(url)
+                .map_err(|e| CliError::Usage(format!("mcp url serialize: {e}")))?;
+            cmd.arg("-c").arg(format!("mcp_servers.{id_key}.url={u}"));
+        }
+        // Codex's mcp_servers schema has no allowed_tools field, so the neutral
+        // allowlist is intentionally not mapped; transport is implied by
+        // command-vs-url.
+    }
+
+    Ok(())
+}
+
+fn codex_mcp_id_key(id: &str) -> String {
+    if !id.is_empty()
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        id.to_string()
+    } else {
+        serde_json::to_string(id).expect("serializing string key should not fail")
+    }
 }
 
 // Run a single Codex exec delivery, writing identical ProviderSession/Evidence rows.
@@ -12014,7 +12052,7 @@ global:
 #[cfg(test)]
 mod workflow_runtime_tests {
     use super::*;
-    use harness_core::WorkflowStepStatus;
+    use harness_core::{LaunchMcpServer, WorkflowStepStatus};
 
     fn temp_store(tag: &str) -> HarnessStore {
         let root = std::env::temp_dir().join(format!("harness-wf-test-{}", generated_id(tag)));
@@ -12038,6 +12076,32 @@ mod workflow_runtime_tests {
             skill_refs: Vec::new(),
             resume: None,
             output: None,
+        }
+    }
+
+    fn launch_spec_with_mcp(mcp: Option<LaunchMcp>) -> LaunchSpec {
+        let mut spec = launch_spec_with_model_effort(None, None);
+        spec.mcp = mcp;
+        spec
+    }
+
+    fn mcp_stdio_server(id: &str, command: &[&str]) -> LaunchMcpServer {
+        LaunchMcpServer {
+            id: id.to_string(),
+            transport: Some("stdio".to_string()),
+            command: command.iter().map(|part| part.to_string()).collect(),
+            url: None,
+            allowed_tools: Vec::new(),
+        }
+    }
+
+    fn mcp_http_server(id: &str, url: &str) -> LaunchMcpServer {
+        LaunchMcpServer {
+            id: id.to_string(),
+            transport: Some("http".to_string()),
+            command: Vec::new(),
+            url: Some(url.to_string()),
+            allowed_tools: Vec::new(),
         }
     }
 
@@ -12140,6 +12204,83 @@ mod workflow_runtime_tests {
             "no schema file should be written when schema is absent"
         );
         let _ = fs::remove_dir_all(&session_dir);
+    }
+
+    #[test]
+    fn persistent_codex_mcp_stdio_command_and_args_match_config_schema() {
+        let spec = launch_spec_with_mcp(Some(LaunchMcp {
+            servers: vec![mcp_stdio_server("filesys", &["npx", "-y", "pkg"])],
+        }));
+        let mut cmd = Command::new("codex");
+        apply_codex_mcp_args(&mut cmd, &spec).expect("apply mcp args");
+
+        assert_eq!(
+            command_args(&cmd),
+            vec![
+                "-c",
+                "mcp_servers.filesys.command=\"npx\"",
+                "-c",
+                "mcp_servers.filesys.args=[\"-y\",\"pkg\"]"
+            ]
+        );
+    }
+
+    #[test]
+    fn persistent_codex_mcp_single_command_omits_args() {
+        let spec = launch_spec_with_mcp(Some(LaunchMcp {
+            servers: vec![mcp_stdio_server("single", &["mcp-bin"])],
+        }));
+        let mut cmd = Command::new("codex");
+        apply_codex_mcp_args(&mut cmd, &spec).expect("apply mcp args");
+
+        let args = command_args(&cmd);
+        assert_eq!(args, vec!["-c", "mcp_servers.single.command=\"mcp-bin\""]);
+        assert!(!args.iter().any(|arg| arg.contains(".args=")));
+    }
+
+    #[test]
+    fn persistent_codex_mcp_http_url_matches_config_schema() {
+        let spec = launch_spec_with_mcp(Some(LaunchMcp {
+            servers: vec![mcp_http_server("remote", "https://example.com/mcp")],
+        }));
+        let mut cmd = Command::new("codex");
+        apply_codex_mcp_args(&mut cmd, &spec).expect("apply mcp args");
+
+        assert_eq!(
+            command_args(&cmd),
+            vec!["-c", "mcp_servers.remote.url=\"https://example.com/mcp\""]
+        );
+    }
+
+    #[test]
+    fn persistent_codex_mcp_absent_or_empty_emits_no_config_flags() {
+        for spec in [
+            launch_spec_with_mcp(None),
+            launch_spec_with_mcp(Some(LaunchMcp {
+                servers: Vec::new(),
+            })),
+        ] {
+            let mut cmd = Command::new("codex");
+            apply_codex_mcp_args(&mut cmd, &spec).expect("apply mcp args");
+
+            let args = command_args(&cmd);
+            assert!(args.is_empty());
+            assert!(!args.iter().any(|arg| arg.contains("mcp_servers")));
+        }
+    }
+
+    #[test]
+    fn persistent_codex_mcp_quotes_non_bare_id_key_path() {
+        let spec = launch_spec_with_mcp(Some(LaunchMcp {
+            servers: vec![mcp_stdio_server("my id.v1", &["npx"])],
+        }));
+        let mut cmd = Command::new("codex");
+        apply_codex_mcp_args(&mut cmd, &spec).expect("apply mcp args");
+
+        assert_eq!(
+            command_args(&cmd),
+            vec!["-c", "mcp_servers.\"my id.v1\".command=\"npx\""]
+        );
     }
 
     #[test]
