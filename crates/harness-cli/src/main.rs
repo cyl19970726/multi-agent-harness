@@ -3266,6 +3266,7 @@ fn build_member_from_json(body: &serde_json::Value) -> CliResult<AgentMember> {
             service_tier: json_string(body, "service_tier"),
             collaboration_mode: json_string(body, "collaboration_mode"),
             effort: json_string(body, "effort"),
+            output_schema: body.get("output_schema").filter(|v| !v.is_null()).cloned(),
             approval_policy: json_string(body, "approval_policy"),
             approvals_reviewer: json_string(body, "approvals_reviewer"),
             sandbox_policy: json_string(body, "sandbox_policy"),
@@ -9650,6 +9651,7 @@ fn latest_teams(store: &HarnessStore) -> CliResult<BTreeMap<String, AgentTeam>> 
 }
 
 fn build_member_from_args(args: &[String], status: AgentMemberStatus) -> CliResult<AgentMember> {
+    let output_schema = output_schema_from_args(args)?;
     Ok(AgentMember {
         id: value(args, "--id").unwrap_or_else(|| generated_id("agent")),
         name: required(args, "--name")?,
@@ -9663,6 +9665,7 @@ fn build_member_from_args(args: &[String], status: AgentMemberStatus) -> CliResu
             service_tier: value(args, "--service-tier"),
             collaboration_mode: value(args, "--collaboration-mode"),
             effort: value(args, "--effort"),
+            output_schema,
             approval_policy: value(args, "--approval-policy"),
             approvals_reviewer: value(args, "--approvals-reviewer"),
             sandbox_policy: value(args, "--sandbox-policy"),
@@ -9691,6 +9694,20 @@ fn build_member_from_args(args: &[String], status: AgentMemberStatus) -> CliResu
         created_at: now_string(),
         last_seen_at: None,
     })
+}
+
+fn output_schema_from_args(args: &[String]) -> CliResult<Option<serde_json::Value>> {
+    let Some(path) = value(args, "--output-schema-file") else {
+        return Ok(None);
+    };
+    let contents = fs::read_to_string(&path)
+        .map_err(|e| CliError::Usage(format!("failed to read --output-schema-file {path}: {e}")))?;
+    let schema = serde_json::from_str::<serde_json::Value>(&contents).map_err(|e| {
+        CliError::Usage(format!(
+            "failed to parse --output-schema-file {path} as JSON: {e}"
+        ))
+    })?;
+    Ok(Some(schema))
 }
 
 fn ensure_agent_prompt(
@@ -10751,6 +10768,7 @@ fn run_codex_exec_process(
 
     // Map LaunchSpec to codex flags
     apply_codex_model_and_effort_args(&mut cmd, &spec);
+    apply_codex_output_schema_arg(&mut cmd, &spec, session_dir)?;
 
     if !resuming {
         // Map permission to sandbox (fresh sessions only).
@@ -10802,6 +10820,25 @@ fn apply_codex_model_and_effort_args(cmd: &mut Command, spec: &LaunchSpec) {
         cmd.arg("-c")
             .arg(format!("model_reasoning_effort={effort}"));
     }
+}
+
+fn apply_codex_output_schema_arg(
+    cmd: &mut Command,
+    spec: &LaunchSpec,
+    session_dir: &Path,
+) -> CliResult<()> {
+    if let Some(schema) = &spec.output_schema {
+        let schema_path = session_dir.join("output-schema.json");
+        let schema_json = schema_to_json_schema(schema);
+        fs::write(&schema_path, schema_json.to_string()).map_err(|e| {
+            CliError::Usage(format!(
+                "failed to write codex output schema to {}: {e}",
+                schema_path.display()
+            ))
+        })?;
+        cmd.arg("--output-schema").arg(&schema_path);
+    }
+    Ok(())
 }
 
 // Run a single Codex exec delivery, writing identical ProviderSession/Evidence rows.
@@ -11314,6 +11351,7 @@ fn run_claude_exec_delivery_real(
     // Map LaunchSpec to claude flags
     // Model selection
     apply_claude_model_and_effort_args(&mut cmd, &spec);
+    apply_claude_output_schema_arg(&mut cmd, &spec);
 
     // Permission mapping
     let permission_mode = ClaudeAdapter.map_permission(spec.permission);
@@ -11382,6 +11420,13 @@ fn apply_claude_model_and_effort_args(cmd: &mut Command, spec: &LaunchSpec) {
     }
 }
 
+fn apply_claude_output_schema_arg(cmd: &mut Command, spec: &LaunchSpec) {
+    if let Some(schema) = &spec.output_schema {
+        cmd.arg("--json-schema")
+            .arg(schema_to_json_schema(schema).to_string());
+    }
+}
+
 /// Build a [`resident::ResidentConfig`] from the same launch inputs the default
 /// path uses, so the resident invocation surface matches `claude -p` flag for
 /// flag (only `-p <prompt>` becomes `--input-format stream-json`).
@@ -11412,6 +11457,10 @@ fn build_resident_config(member: &AgentMember, message: &Message) -> resident::R
         binary: "claude".into(),
         model: spec.model.clone(),
         effort: spec.effort.clone(),
+        output_schema_json: spec
+            .output_schema
+            .as_ref()
+            .map(|schema| schema_to_json_schema(schema).to_string()),
         permission_mode: ClaudeAdapter.map_permission(spec.permission).to_string(),
         tools: spec.tools.clone(),
         system_prompt,
@@ -11854,7 +11903,7 @@ fn print_help() {
     println!(
         "harness commands:
   init
-  agent create --name <name> --role <role> [--description <text>] [--provider codex|claude] [--team <team>] [--skill <skill>] [--prompt <text>] [--prompt-ref <path>] [--worktree <path>] [--permission-profile <profile>] [--runtime-workspace-root <path>] [--approval-policy <policy>] [--sandbox-policy <policy>] [--service-tier <tier>] [--collaboration-mode <mode>] [--effort <e>] [--provider-agent-path <path>] [--provider-agent-nickname <name>] [--provider-agent-role <role>] [--start]
+  agent create --name <name> --role <role> [--description <text>] [--provider codex|claude] [--team <team>] [--skill <skill>] [--prompt <text>] [--prompt-ref <path>] [--worktree <path>] [--permission-profile <profile>] [--runtime-workspace-root <path>] [--approval-policy <policy>] [--sandbox-policy <policy>] [--service-tier <tier>] [--collaboration-mode <mode>] [--effort <e>] [--output-schema-file <path>] [--provider-agent-path <path>] [--provider-agent-nickname <name>] [--provider-agent-role <role>] [--start]
   agent list
   agent start --id <agent>
   agent health --id <agent>
@@ -11943,6 +11992,7 @@ mod workflow_runtime_tests {
             message_content: "hello".into(),
             model: model.map(str::to_string),
             effort: effort.map(str::to_string),
+            output_schema: None,
             permission: LaunchPermission::WorkspaceWrite,
             writable_roots: Vec::new(),
             tools: Vec::new(),
@@ -12007,6 +12057,77 @@ mod workflow_runtime_tests {
         let args = command_args(&cmd);
         assert_eq!(args, vec!["--model", "opus"]);
         assert!(!args.iter().any(|arg| arg == "--effort"));
+    }
+
+    #[test]
+    fn persistent_codex_schema_arg_matches_ephemeral_mapping() {
+        let session_dir =
+            std::env::temp_dir().join(format!("harness-codex-schema-{}", generated_id("test")));
+        fs::create_dir_all(&session_dir).expect("create session dir");
+        let mut spec = launch_spec_with_model_effort(None, None);
+        spec.output_schema = Some(serde_json::json!({ "verdict": "pass/fail" }));
+        let mut cmd = Command::new("codex");
+        apply_codex_output_schema_arg(&mut cmd, &spec, &session_dir).expect("apply schema arg");
+
+        let schema_path = session_dir.join("output-schema.json");
+        assert_eq!(
+            command_args(&cmd),
+            vec![
+                "--output-schema".to_string(),
+                schema_path.to_string_lossy().to_string()
+            ]
+        );
+        let written: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(&schema_path).expect("schema file should be written"),
+        )
+        .expect("schema file should contain JSON");
+        assert_eq!(
+            written,
+            schema_to_json_schema(spec.output_schema.as_ref().unwrap())
+        );
+        let _ = fs::remove_dir_all(&session_dir);
+    }
+
+    #[test]
+    fn persistent_codex_omits_schema_arg_when_absent() {
+        let session_dir =
+            std::env::temp_dir().join(format!("harness-codex-schema-{}", generated_id("test")));
+        fs::create_dir_all(&session_dir).expect("create session dir");
+        let spec = launch_spec_with_model_effort(None, None);
+        let mut cmd = Command::new("codex");
+        apply_codex_output_schema_arg(&mut cmd, &spec, &session_dir).expect("apply schema arg");
+
+        assert!(command_args(&cmd).is_empty());
+        assert!(
+            !session_dir.join("output-schema.json").exists(),
+            "no schema file should be written when schema is absent"
+        );
+        let _ = fs::remove_dir_all(&session_dir);
+    }
+
+    #[test]
+    fn persistent_claude_schema_arg_matches_ephemeral_mapping() {
+        let mut spec = launch_spec_with_model_effort(None, None);
+        spec.output_schema = Some(serde_json::json!({ "verdict": "pass/fail" }));
+        let mut cmd = Command::new("claude");
+        apply_claude_output_schema_arg(&mut cmd, &spec);
+
+        assert_eq!(
+            command_args(&cmd),
+            vec![
+                "--json-schema".to_string(),
+                schema_to_json_schema(spec.output_schema.as_ref().unwrap()).to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn persistent_claude_omits_schema_arg_when_absent() {
+        let spec = launch_spec_with_model_effort(None, None);
+        let mut cmd = Command::new("claude");
+        apply_claude_output_schema_arg(&mut cmd, &spec);
+
+        assert!(command_args(&cmd).is_empty());
     }
 
     fn ok_step(spec: &workflow::AgentStepSpec) -> workflow::StepResult {

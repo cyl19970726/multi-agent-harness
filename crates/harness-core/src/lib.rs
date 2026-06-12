@@ -220,6 +220,8 @@ pub struct AgentProviderConfig {
     #[serde(default)]
     pub effort: Option<String>,
     #[serde(default)]
+    pub output_schema: Option<serde_json::Value>,
+    #[serde(default)]
     pub approval_policy: Option<String>,
     #[serde(default)]
     pub approvals_reviewer: Option<String>,
@@ -372,6 +374,10 @@ pub struct LaunchSpec {
     /// Reasoning effort (Pillar 1). `None` = provider default.
     #[serde(default)]
     pub effort: Option<String>,
+    /// Optional structured-output schema to enforce natively when the provider
+    /// supports it. `None` = no schema flag.
+    #[serde(default)]
+    pub output_schema: Option<serde_json::Value>,
     /// Neutral permission posture for this turn.
     pub permission: LaunchPermission,
     /// Paths the turn may write (basis for `workspaceWrite` / `--add-dir`).
@@ -514,6 +520,7 @@ pub fn build_launch_spec(member: &AgentMember, message: &Message) -> LaunchSpec 
         message_content: compose_message_content(message),
         model: member.model.clone(),
         effort: member.provider_config.effort.clone(),
+        output_schema: member.provider_config.output_schema.clone(),
         permission,
         writable_roots,
         // The abstract allowed-tool set is not yet sourced from a neutral member
@@ -2251,6 +2258,11 @@ mod tests {
         let mut member = sample_member();
         member.provider_config.sandbox_policy = Some("workspaceWrite".to_string());
         member.provider_config.effort = Some("medium".to_string());
+        member.provider_config.output_schema = Some(serde_json::json!({
+            "type": "object",
+            "properties": { "verdict": { "type": "string" } },
+            "required": ["verdict"]
+        }));
         member.runtime_workspace_roots = vec!["crates".to_string()];
         let spec = build_launch_spec(&member, &sample_message());
 
@@ -2261,6 +2273,11 @@ mod tests {
         // the Codex `workspaceWrite` vocabulary it was mapped from.
         assert!(json.contains("\"permission\":\"workspace_write\""));
         assert!(json.contains("\"effort\":\"medium\""));
+        assert!(json.contains("\"output_schema\""));
+        assert_eq!(
+            parsed.output_schema, member.provider_config.output_schema,
+            "launch spec should round-trip the optional output schema"
+        );
         assert!(!json.contains("workspaceWrite"));
     }
 
@@ -2271,6 +2288,7 @@ mod tests {
         }))
         .expect("legacy provider config without effort should deserialize");
         assert!(provider_config.effort.is_none());
+        assert!(provider_config.output_schema.is_none());
 
         let spec: LaunchSpec = serde_json::from_value(serde_json::json!({
             "message_content": "legacy turn",
@@ -2279,6 +2297,20 @@ mod tests {
         }))
         .expect("legacy launch spec without effort should deserialize");
         assert!(spec.effort.is_none());
+        assert!(spec.output_schema.is_none());
+    }
+
+    #[test]
+    fn build_launch_spec_carries_output_schema_from_provider_config() {
+        let mut member = sample_member();
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": { "ok": { "type": "boolean" } },
+            "required": ["ok"]
+        });
+        member.provider_config.output_schema = Some(schema.clone());
+        let spec = build_launch_spec(&member, &sample_message());
+        assert_eq!(spec.output_schema, Some(schema));
     }
 
     #[test]
