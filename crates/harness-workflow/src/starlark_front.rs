@@ -196,6 +196,7 @@ impl StarlarkCtx<'_> {
         label: Option<String>,
         phase: Option<String>,
         model: Option<String>,
+        effort: Option<String>,
         isolation: Option<String>,
         schema: Option<serde_json::Value>,
         writable: bool,
@@ -227,6 +228,7 @@ impl StarlarkCtx<'_> {
             label: label.unwrap_or_else(|| provider.clone()),
             provider,
             model,
+            effort,
             isolation,
             prompt,
             schema,
@@ -445,6 +447,7 @@ impl StarlarkCtx<'_> {
                 label: String::new(),
                 provider: String::new(),
                 model: None,
+                effort: None,
                 isolation: None,
                 prompt: item.clone(),
                 schema: None,
@@ -622,6 +625,7 @@ fn read_parallel_specs(
         let label = dict_str(&dict, "label")?;
         let phase = dict_str(&dict, "phase")?;
         let model = dict_str(&dict, "model")?;
+        let effort = dict_str(&dict, "effort")?;
         let isolation = dict_str(&dict, "isolation")?;
         let schema = dict_schema(&dict, "schema")?;
         let writable = dict_bool(&dict, "writable")?;
@@ -630,6 +634,7 @@ fn read_parallel_specs(
             label: label.unwrap_or_else(|| provider.clone()),
             provider,
             model,
+            effort,
             isolation,
             prompt,
             schema,
@@ -658,6 +663,7 @@ struct StageTemplate {
     label: Option<String>,
     phase: String,
     model: Option<String>,
+    effort: Option<String>,
     isolation: Option<String>,
     schema: Option<serde_json::Value>,
     writable: bool,
@@ -676,6 +682,7 @@ impl StageTemplate {
             label: self.label.clone().unwrap_or_else(|| self.provider.clone()),
             provider: self.provider.clone(),
             model: self.model.clone(),
+            effort: self.effort.clone(),
             isolation: self.isolation.clone(),
             prompt,
             schema: self.schema.clone(),
@@ -734,6 +741,7 @@ fn read_pipeline_stages(
         let label = dict_str(&dict, "label")?;
         let phase = dict_str(&dict, "phase")?;
         let model = dict_str(&dict, "model")?;
+        let effort = dict_str(&dict, "effort")?;
         let isolation = dict_str(&dict, "isolation")?;
         let schema = dict_schema(&dict, "schema")?;
         let writable = dict_bool(&dict, "writable")?;
@@ -743,6 +751,7 @@ fn read_pipeline_stages(
             label,
             phase: ctx.phase_for(phase),
             model,
+            effort,
             isolation,
             schema,
             writable,
@@ -804,6 +813,7 @@ fn workflow_globals(builder: &mut GlobalsBuilder) {
         #[starlark(require = named)] label: Option<String>,
         #[starlark(require = named)] phase: Option<String>,
         #[starlark(require = named)] model: Option<String>,
+        #[starlark(require = named)] effort: Option<String>,
         #[starlark(require = named)] isolation: Option<String>,
         #[starlark(require = named)] schema: Option<Value<'v>>,
         #[starlark(require = named, default = false)] writable: bool,
@@ -825,6 +835,7 @@ fn workflow_globals(builder: &mut GlobalsBuilder) {
             label,
             phase,
             model,
+            effort,
             isolation,
             schema_json,
             writable,

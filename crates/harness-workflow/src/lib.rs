@@ -52,6 +52,11 @@ pub struct AgentStepSpec {
     pub provider: String,
     /// Optional model override; `None` uses the provider default.
     pub model: Option<String>,
+    /// Optional reasoning-effort override, passed through to the provider verbatim:
+    /// codex → `-c model_reasoning_effort=<effort>` (minimal|low|medium|high),
+    /// claude → `--effort <effort>` (low|medium|high|xhigh|max). `None` uses the
+    /// provider default. Not validated here — the provider CLI rejects bad values.
+    pub effort: Option<String>,
     /// Optional per-node isolation. `Some("worktree")` runs the step in its own
     /// throwaway git worktree; `None` edits the shared repo cwd.
     pub isolation: Option<String>,
@@ -497,6 +502,7 @@ pub fn investigate(driver: &AgentStepFn<'_>, topic: &str) -> WorkflowOutcome {
             label: "scope-question".to_string(),
             provider: "codex".to_string(),
             model: None,
+            effort: None,
             isolation: None,
             prompt: format!("Scope the investigation of: {topic}. List the modules to audit."),
             schema: None,
@@ -514,6 +520,7 @@ pub fn investigate(driver: &AgentStepFn<'_>, topic: &str) -> WorkflowOutcome {
             label: "audit-codex".to_string(),
             provider: "codex".to_string(),
             model: None,
+            effort: None,
             isolation: None,
             prompt: format!("Audit the code paths involved in: {topic}."),
             schema: None,
@@ -525,6 +532,7 @@ pub fn investigate(driver: &AgentStepFn<'_>, topic: &str) -> WorkflowOutcome {
             label: "audit-claude".to_string(),
             provider: "claude".to_string(),
             model: None,
+            effort: None,
             isolation: None,
             prompt: format!("Audit the recent diffs related to: {topic}."),
             schema: None,
@@ -757,6 +765,7 @@ mod tests {
                 label: format!("l{i}"),
                 provider: "codex".to_string(),
                 model: None,
+                effort: None,
                 isolation: None,
                 prompt: format!("prompt {i}"),
                 schema: None,
@@ -816,6 +825,7 @@ mod tests {
                 label: format!("l{i}"),
                 provider: "codex".to_string(),
                 model: None,
+                effort: None,
                 isolation: None,
                 prompt: "x".to_string(),
                 schema: None,
@@ -887,6 +897,7 @@ mod tests {
                 label: format!("l{i}"),
                 provider: "codex".to_string(),
                 model: None,
+                effort: None,
                 isolation: None,
                 prompt: format!("prompt {i}"),
                 schema: None,
@@ -931,6 +942,7 @@ mod tests {
             label: label.to_string(),
             provider: "codex".to_string(),
             model: None,
+            effort: None,
             isolation: None,
             prompt: "x".to_string(),
             schema: None,

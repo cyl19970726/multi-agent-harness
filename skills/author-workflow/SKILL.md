@@ -82,8 +82,8 @@ A program calls these globals (no `import`; they are pre-bound):
 | Call | Returns | Meaning |
 | --- | --- | --- |
 | `workflow(name, design_intent, budget_usd=, success_criterion=)` | — | REQUIRED header. Declares the run name + the WHY behind its shape. Optional `budget_usd=N` caps the run's cumulative spend; `success_criterion="..."` declares the bar `verdict()` is judged against. Must run once before the body. |
-| `agent(prompt, provider="codex", label=, phase=, model=, isolation=, schema=, writable=False)` | output text, OR a dict (with `schema=`) | Run ONE ephemeral worker synchronously. `prompt` is positional; the rest are keyword args. READ-ONLY by default; `writable=True` lets it edit / run shell AND auto-isolates it into a throwaway worktree. With `schema={...}` it returns a parsed dict (or `None`) — see [Structured Output](#structured-output-the-foundation). Capture the return to chain: `scan = agent("...")`. |
-| `parallel([dict, ...])` | list (input order) | Barrier fan-out: run every spec concurrently, block until ALL finish. Each element is the parsed dict (if that spec had a `schema` that parsed) else its output string. Each dict needs a `prompt` and may set `provider` (default `"codex"`), `label`, `phase`, `model`, `isolation`, `schema`, `writable`. |
+| `agent(prompt, provider="codex", label=, phase=, model=, effort=, isolation=, schema=, writable=False)` | output text, OR a dict (with `schema=`) | Run ONE ephemeral worker synchronously. `prompt` is positional; the rest are keyword args. `model=` overrides the provider default model; `effort=` overrides reasoning effort (see the rules below). READ-ONLY by default; `writable=True` lets it edit / run shell AND auto-isolates it into a throwaway worktree. With `schema={...}` it returns a parsed dict (or `None`) — see [Structured Output](#structured-output-the-foundation). Capture the return to chain: `scan = agent("...")`. |
+| `parallel([dict, ...])` | list (input order) | Barrier fan-out: run every spec concurrently, block until ALL finish. Each element is the parsed dict (if that spec had a `schema` that parsed) else its output string. Each dict needs a `prompt` and may set `provider` (default `"codex"`), `label`, `phase`, `model`, `effort`, `isolation`, `schema`, `writable`. |
 | `pipeline(items, stages)` | list (one per item) | No-barrier streaming: each item flows through every stage independently. `stages` is a list of dicts `{prompt, provider?, model?, schema?, writable?}` whose `prompt` is a TEMPLATE containing `{input}` — replaced with the item for stage 1, then the prior stage's output for each next stage (forward-injection). Returns each item's LAST stage result. |
 | `verdict(ok, reason="")` | — | Declare the run's TYPED outcome. `ok=False` finalizes the run `Failed` even if every worker ran — so "workers ran" ≠ "intent satisfied". A closed-loop program's final gate calls this. |
 | `output(value)` | — | Declare the run's RESULT — the one unambiguous answer the calling agent reads back. `value` (a string or dict) is persisted verbatim under `final_output.result`, UNCAPPED, so the caller reads one field instead of digging the answer out of a step by label. Last call wins; pass a `schema`'d dict when you want the answer typed (a free-text `agent()` return is the worker's FULL reply — not truncated). |
@@ -99,6 +99,12 @@ Rules every call obeys:
 - `prompt`, `label`, and `phase` are non-empty strings; optional `model` (any
   non-empty string) overrides the provider's default model — route a CHEAP model
   to read-only verify/review steps and the strong model to the builder.
+- `effort` overrides the worker's reasoning effort, passed through verbatim to the
+  provider — codex accepts `minimal|low|medium|high` (mapped to `-c
+  model_reasoning_effort=…`), claude accepts `low|medium|high|xhigh|max` (mapped to
+  `--effort …`). Use a low effort on cheap mechanical leaves and a high effort on the
+  hard reasoning step. Not validated by the runtime — the provider CLI rejects a
+  value it does not know, so use each provider's own levels.
 - The only supported `isolation` value is `"worktree"`.
 - Reference `args` inside a prompt with `+` concatenation (`"audit " + args["area"]`)
   for short one-liners, or `.format()` into a triple-quoted string for longer /
