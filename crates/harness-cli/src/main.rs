@@ -4836,6 +4836,20 @@ fn build_step_details(
         );
     }
 
+    if !spawn.warnings.is_empty() {
+        map.insert(
+            "observability_warnings".into(),
+            serde_json::Value::Array(
+                spawn
+                    .warnings
+                    .iter()
+                    .cloned()
+                    .map(serde_json::Value::String)
+                    .collect(),
+            ),
+        );
+    }
+
     details
 }
 
@@ -4869,6 +4883,9 @@ struct EphemeralSpawn {
     /// Billed cost in USD for the turn, when the provider reports it (claude's
     /// `result.total_cost_usd`). `None` for codex, which emits only token usage.
     cost_usd: Option<f64>,
+    /// Advisory observability issues from the streaming path. These never affect
+    /// step success semantics.
+    warnings: Vec<String>,
 }
 
 /// Normalized token usage for one worker turn, provider-agnostic. Parsed from the
@@ -5128,6 +5145,7 @@ fn spawn_codex_ephemeral(
         structured,
         // codex emits token usage but no dollar cost.
         cost_usd: None,
+        warnings: run.warnings,
     })
 }
 
@@ -5244,6 +5262,7 @@ fn spawn_claude_ephemeral(
         model,
         structured,
         cost_usd,
+        warnings: run.warnings,
     })
 }
 
@@ -5259,6 +5278,7 @@ struct NdjsonRun {
     timed_out: bool,
     events: Vec<serde_json::Value>,
     stderr: String,
+    warnings: Vec<String>,
 }
 
 /// Spawn a child that emits NDJSON on stdout, non-interactively (stdin closed),
@@ -5350,23 +5370,30 @@ fn run_ndjson_child(
     // thread tees each event live + collects them; killing the child closes stdout,
     // which ends this loop.
     let stdout_handle = std::thread::spawn(move || {
-        let mut session_writer = fs::OpenOptions::new()
+        let mut warnings = Vec::new();
+        let mut session_writer = match fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(&live_path)
-            .ok()
-            .map(BufWriter::new);
-        let mut shared_writer = shared_path
-            .as_ref()
-            .and_then(|path| {
-                fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(path)
-                    .ok()
-            })
-            .map(BufWriter::new);
+        {
+            Ok(file) => Some(BufWriter::new(file)),
+            Err(_) => {
+                warnings.push("failed to open live ndjson file".to_string());
+                None
+            }
+        };
+        let mut shared_writer = match shared_path.as_ref() {
+            Some(path) => match fs::OpenOptions::new().create(true).append(true).open(path) {
+                Ok(file) => Some(BufWriter::new(file)),
+                Err(_) => {
+                    warnings.push("failed to open shared ndjson file".to_string());
+                    None
+                }
+            },
+            None => None,
+        };
         let mut events = Vec::new();
+        let mut dropped_lines = 0usize;
         for line in BufReader::new(stdout).lines() {
             let Ok(line_str) = line else { continue };
             let trimmed = line_str.trim();
@@ -5379,6 +5406,7 @@ fn run_ndjson_child(
                 Ordering::Relaxed,
             );
             let Ok(payload) = serde_json::from_str::<serde_json::Value>(trimmed) else {
+                dropped_lines += 1;
                 continue;
             };
             if let Some(writer) = session_writer.as_mut() {
@@ -5395,7 +5423,12 @@ fn run_ndjson_child(
             }
             events.push(payload);
         }
-        events
+        if dropped_lines > 0 {
+            warnings.push(format!(
+                "{dropped_lines} stdout line(s) were not valid JSON and were dropped"
+            ));
+        }
+        (events, warnings)
     });
 
     // Drain stderr in its own thread so a chatty worker cannot fill the pipe and
@@ -5433,10 +5466,13 @@ fn run_ndjson_child(
         }
     };
 
-    let events = stdout_handle.join().unwrap_or_default();
+    let (events, mut warnings) = stdout_handle.join().unwrap_or_default();
     let mut stderr_log = stderr_handle.join().unwrap_or_default();
     if timed_out && stderr_log.is_empty() {
         stderr_log = "timeout waiting for ephemeral worker".into();
+    }
+    if timed_out {
+        warnings.push("ephemeral worker timed out".to_string());
     }
 
     Ok(NdjsonRun {
@@ -5445,6 +5481,7 @@ fn run_ndjson_child(
         timed_out,
         events,
         stderr: stderr_log,
+        warnings,
     })
 }
 
@@ -12055,6 +12092,7 @@ mod workflow_runtime_tests {
             model: None,
             structured: None,
             cost_usd: None,
+            warnings: Vec::new(),
         };
         let details = build_step_details(&spec, &spawn, spec.model.as_deref(), 1234, None);
         // spec.model wins over the (absent) worker-reported model.
@@ -12095,6 +12133,7 @@ mod workflow_runtime_tests {
             model: Some("claude-opus-4-8".into()),
             structured: None,
             cost_usd: None,
+            warnings: Vec::new(),
         };
         let details = build_step_details(&spec, &spawn, spec.model.as_deref(), 50, None);
         assert_eq!(details["model"], serde_json::json!("claude-opus-4-8"));
@@ -12134,6 +12173,7 @@ mod workflow_runtime_tests {
             model: None,
             structured: None,
             cost_usd: None,
+            warnings: Vec::new(),
         };
         let big = "x".repeat(WORKTREE_DIFF_CAP + 5_000);
         let details = build_step_details(&spec, &spawn, spec.model.as_deref(), 1, Some(&big));
@@ -12229,8 +12269,36 @@ mod workflow_runtime_tests {
         );
         assert!(run.timed_out, "the idle timeout must have fired");
         assert!(!run.process_success);
+        assert!(run
+            .warnings
+            .iter()
+            .any(|warning| warning == "ephemeral worker timed out"));
         // The single event emitted before the hang was still captured live.
         assert_eq!(run.events.len(), 1);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn run_ndjson_child_warns_and_keeps_valid_events_after_junk_stdout() {
+        let root = std::env::temp_dir().join(format!("mah-junk-{}", generated_id("t")));
+        let session_dir = root.join("provider-sessions").join("s");
+        fs::create_dir_all(&session_dir).expect("mkdir");
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c")
+            .arg("printf 'not-json\\n'; printf '{\"type\":\"item\",\"n\":1}\\n'");
+
+        let run = run_ndjson_child(cmd, &session_dir, "s", "out.ndjson", 1_000).expect("run");
+
+        assert!(run.process_success);
+        assert!(!run.timed_out);
+        assert_eq!(
+            run.events,
+            vec![serde_json::json!({"type": "item", "n": 1})]
+        );
+        assert!(run
+            .warnings
+            .iter()
+            .any(|warning| warning == "1 stdout line(s) were not valid JSON and were dropped"));
         let _ = fs::remove_dir_all(&root);
     }
 
