@@ -9737,6 +9737,14 @@ trait ProviderAdapter: Sync {
     /// which the ProviderSession `jsonl_ref` points at during a turn.
     fn live_ndjson_file_name(&self) -> &'static str;
 
+    /// Map a LaunchPermission to this provider's CLI permission flag value
+    /// (codex `--sandbox`, claude `--permission-mode`).
+    fn map_permission(&self, perm: LaunchPermission) -> &'static str;
+
+    /// The recorded argv head for this provider's delivery command (the
+    /// ProviderSession `args` audit field), optionally resuming `resume_id`.
+    fn recorded_args(&self, resume_id: Option<&str>) -> Vec<String>;
+
     /// Record a provider hook event into the neutral event log. Hooks are a
     /// codex-runtime mechanism; the default reports the provider has no hook
     /// integration — an explicit error beats silently recording a codex-shaped
@@ -9797,6 +9805,27 @@ impl ProviderAdapter for CodexAdapter {
 
     fn live_ndjson_file_name(&self) -> &'static str {
         "codex.stream-json.ndjson"
+    }
+
+    fn map_permission(&self, perm: LaunchPermission) -> &'static str {
+        match perm {
+            LaunchPermission::ReadOnly => "read-only",
+            LaunchPermission::WorkspaceWrite => "workspace-write",
+            LaunchPermission::FullAccess => "danger-full-access",
+        }
+    }
+
+    fn recorded_args(&self, resume_id: Option<&str>) -> Vec<String> {
+        match resume_id {
+            Some(id) => vec![
+                "codex".into(),
+                "exec".into(),
+                "resume".into(),
+                "--json".into(),
+                id.into(),
+            ],
+            None => vec!["codex".into(), "exec".into(), "--json".into()],
+        }
     }
 
     fn start_runtime(&self, store: &HarnessStore, member: &AgentMember) -> CliResult<AgentRuntime> {
@@ -10053,6 +10082,28 @@ impl ProviderAdapter for ClaudeAdapter {
 
     fn live_ndjson_file_name(&self) -> &'static str {
         "claude.stream-json.ndjson"
+    }
+
+    fn map_permission(&self, perm: LaunchPermission) -> &'static str {
+        match perm {
+            LaunchPermission::ReadOnly => "plan",
+            LaunchPermission::WorkspaceWrite => "acceptEdits",
+            LaunchPermission::FullAccess => "bypassPermissions",
+        }
+    }
+
+    fn recorded_args(&self, resume_id: Option<&str>) -> Vec<String> {
+        let mut args = vec![
+            "-p".into(),
+            "--output-format".into(),
+            "stream-json".into(),
+            "--verbose".into(),
+        ];
+        if let Some(id) = resume_id {
+            args.push("--resume".into());
+            args.push(id.into());
+        }
+        args
     }
 
     fn start_runtime(&self, store: &HarnessStore, member: &AgentMember) -> CliResult<AgentRuntime> {
@@ -10557,28 +10608,6 @@ fn extract_codex_reply_text(events: &[CodexExecEvent]) -> Option<String> {
     (!parts.is_empty()).then(|| parts.join("\n"))
 }
 
-/// Spawn `codex exec --json` with the delivery configuration and parse NDJSON output.
-///
-/// Returns (process_success: bool, events: Vec<CodexExecEvent>, stderr_log: String).
-/// process_success = exit code 0; events = parsed NDJSON; stderr_log = captured stderr.
-/// Map LaunchPermission to Claude --permission-mode value.
-fn launch_permission_to_claude_mode(perm: LaunchPermission) -> &'static str {
-    match perm {
-        LaunchPermission::ReadOnly => "plan",
-        LaunchPermission::WorkspaceWrite => "acceptEdits",
-        LaunchPermission::FullAccess => "bypassPermissions",
-    }
-}
-
-/// Map LaunchPermission to Codex --sandbox value.
-fn launch_permission_to_codex_sandbox(perm: LaunchPermission) -> &'static str {
-    match perm {
-        LaunchPermission::ReadOnly => "read-only",
-        LaunchPermission::WorkspaceWrite => "workspace-write",
-        LaunchPermission::FullAccess => "danger-full-access",
-    }
-}
-
 /// Write a temporary MCP config JSON file for Claude.
 /// Returns the path to the temporary file, or None if mcp is empty/None.
 fn write_temp_mcp_config(mcp: Option<&LaunchMcp>) -> CliResult<Option<String>> {
@@ -10692,7 +10721,7 @@ fn run_codex_exec_process(
 
     if !resuming {
         // Map permission to sandbox (fresh sessions only).
-        let sandbox = launch_permission_to_codex_sandbox(spec.permission);
+        let sandbox = CodexAdapter.map_permission(spec.permission);
         cmd.arg("--sandbox").arg(sandbox);
 
         // Map workspace and writable roots (fresh sessions only).
@@ -10753,39 +10782,6 @@ struct ExecDeliverySessionRecord<'a> {
     resume_id: Option<String>,
 }
 
-/// Build the recorded codex argv for a delivery, mirroring `run_codex_exec_process`.
-/// When `resume_id` is set the turn is dispatched as `codex exec resume --json <id>`;
-/// otherwise it is a fresh `codex exec --json`.
-fn codex_recorded_args(resume_id: Option<&str>) -> Vec<String> {
-    match resume_id {
-        Some(id) => vec![
-            "codex".into(),
-            "exec".into(),
-            "resume".into(),
-            "--json".into(),
-            id.into(),
-        ],
-        None => vec!["codex".into(), "exec".into(), "--json".into()],
-    }
-}
-
-/// Build the recorded claude argv for a delivery, mirroring the spawn in
-/// `run_claude_exec_delivery_real`. When `resume_id` is set the turn carries
-/// `--resume <id>`; otherwise it is a fresh `claude -p` session.
-fn claude_recorded_args(resume_id: Option<&str>) -> Vec<String> {
-    let mut args = vec![
-        "-p".into(),
-        "--output-format".into(),
-        "stream-json".into(),
-        "--verbose".into(),
-    ];
-    if let Some(id) = resume_id {
-        args.push("--resume".into());
-        args.push(id.into());
-    }
-    args
-}
-
 fn record_exec_delivery_session(
     store: &HarnessStore,
     record: ExecDeliverySessionRecord<'_>,
@@ -10821,7 +10817,7 @@ fn record_exec_delivery_session(
         terminal_source: record.terminal_source,
         status: record.status,
         command: "harness".into(),
-        args: codex_recorded_args(record.resume_id.as_deref()),
+        args: CodexAdapter.recorded_args(record.resume_id.as_deref()),
         prompt_ref: record.member.prompt_ref.clone(),
         prompt_summary: Some(format!("deliver message {}", record.message.id)),
         provider_session_ref: None,
@@ -11105,7 +11101,7 @@ fn run_claude_delivery(
     let recorded_args = if resident {
         resident::resident_recorded_args(used_resume_id.as_deref())
     } else {
-        claude_recorded_args(used_resume_id.as_deref())
+        ClaudeAdapter.recorded_args(used_resume_id.as_deref())
     };
 
     // Record an Evidence row for the delivery session, mirroring the codex path
@@ -11259,7 +11255,7 @@ fn run_claude_exec_delivery_real(
     }
 
     // Permission mapping
-    let permission_mode = launch_permission_to_claude_mode(spec.permission);
+    let permission_mode = ClaudeAdapter.map_permission(spec.permission);
     cmd.arg("--permission-mode").arg(permission_mode);
 
     // Tools (allowed-tools if spec.tools is non-empty)
@@ -11338,7 +11334,7 @@ fn build_resident_config(member: &AgentMember, message: &Message) -> resident::R
     resident::ResidentConfig {
         binary: "claude".into(),
         model: spec.model.clone(),
-        permission_mode: launch_permission_to_claude_mode(spec.permission).to_string(),
+        permission_mode: ClaudeAdapter.map_permission(spec.permission).to_string(),
         tools: spec.tools.clone(),
         system_prompt,
         mcp_config_path,

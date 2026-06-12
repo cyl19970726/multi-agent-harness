@@ -28,7 +28,7 @@ mod launch_spec_mapping_tests {
 
     // Test cases for permission mapping
     #[test]
-    fn test_launch_permission_to_claude_mode() {
+    fn test_claude_permission_mode_mapping() {
         assert_eq!(LaunchPermission::ReadOnly.to_claude_mode(), "plan");
         assert_eq!(
             LaunchPermission::WorkspaceWrite.to_claude_mode(),
@@ -41,7 +41,7 @@ mod launch_spec_mapping_tests {
     }
 
     #[test]
-    fn test_launch_permission_to_codex_sandbox() {
+    fn test_codex_sandbox_mapping() {
         assert_eq!(LaunchPermission::ReadOnly.to_codex_sandbox(), "read-only");
         assert_eq!(
             LaunchPermission::WorkspaceWrite.to_codex_sandbox(),
