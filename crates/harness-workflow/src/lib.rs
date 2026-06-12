@@ -57,6 +57,8 @@ pub struct AgentStepSpec {
     /// claude → `--effort <effort>` (low|medium|high|xhigh|max). `None` uses the
     /// provider default. Not validated here — the provider CLI rejects bad values.
     pub effort: Option<String>,
+    /// Image file paths to attach to the worker. Empty means no images.
+    pub image: Vec<String>,
     /// Optional per-node isolation. `Some("worktree")` runs the step in its own
     /// throwaway git worktree; `None` edits the shared repo cwd.
     pub isolation: Option<String>,
@@ -503,6 +505,7 @@ pub fn investigate(driver: &AgentStepFn<'_>, topic: &str) -> WorkflowOutcome {
             provider: "codex".to_string(),
             model: None,
             effort: None,
+            image: Vec::new(),
             isolation: None,
             prompt: format!("Scope the investigation of: {topic}. List the modules to audit."),
             schema: None,
@@ -521,6 +524,7 @@ pub fn investigate(driver: &AgentStepFn<'_>, topic: &str) -> WorkflowOutcome {
             provider: "codex".to_string(),
             model: None,
             effort: None,
+            image: Vec::new(),
             isolation: None,
             prompt: format!("Audit the code paths involved in: {topic}."),
             schema: None,
@@ -533,6 +537,7 @@ pub fn investigate(driver: &AgentStepFn<'_>, topic: &str) -> WorkflowOutcome {
             provider: "claude".to_string(),
             model: None,
             effort: None,
+            image: Vec::new(),
             isolation: None,
             prompt: format!("Audit the recent diffs related to: {topic}."),
             schema: None,
@@ -766,6 +771,7 @@ mod tests {
                 provider: "codex".to_string(),
                 model: None,
                 effort: None,
+                image: Vec::new(),
                 isolation: None,
                 prompt: format!("prompt {i}"),
                 schema: None,
@@ -826,6 +832,7 @@ mod tests {
                 provider: "codex".to_string(),
                 model: None,
                 effort: None,
+                image: Vec::new(),
                 isolation: None,
                 prompt: "x".to_string(),
                 schema: None,
@@ -898,6 +905,7 @@ mod tests {
                 provider: "codex".to_string(),
                 model: None,
                 effort: None,
+                image: Vec::new(),
                 isolation: None,
                 prompt: format!("prompt {i}"),
                 schema: None,
@@ -943,6 +951,7 @@ mod tests {
             provider: "codex".to_string(),
             model: None,
             effort: None,
+            image: Vec::new(),
             isolation: None,
             prompt: "x".to_string(),
             schema: None,

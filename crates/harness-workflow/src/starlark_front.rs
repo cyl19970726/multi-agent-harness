@@ -197,6 +197,7 @@ impl StarlarkCtx<'_> {
         phase: Option<String>,
         model: Option<String>,
         effort: Option<String>,
+        image: Vec<String>,
         isolation: Option<String>,
         schema: Option<serde_json::Value>,
         writable: bool,
@@ -229,6 +230,7 @@ impl StarlarkCtx<'_> {
             provider,
             model,
             effort,
+            image,
             isolation,
             prompt,
             schema,
@@ -448,6 +450,7 @@ impl StarlarkCtx<'_> {
                 provider: String::new(),
                 model: None,
                 effort: None,
+                image: Vec::new(),
                 isolation: None,
                 prompt: item.clone(),
                 schema: None,
@@ -586,6 +589,31 @@ fn dict_bool(dict: &DictRef<'_>, key: &str) -> anyhow::Result<bool> {
     }
 }
 
+/// Read a Starlark list of strings. Used for `image`, whose host-function value
+/// cannot be unpacked directly into `Vec<String>` on the Starlark version we use.
+fn value_str_list(value: Value<'_>, field: &str) -> anyhow::Result<Vec<String>> {
+    let list =
+        ListRef::from_value(value).ok_or_else(|| anyhow::anyhow!("{field} must be a list"))?;
+    let mut out = Vec::with_capacity(list.len());
+    for item in list.iter() {
+        let s = item
+            .unpack_str()
+            .ok_or_else(|| anyhow::anyhow!("{field} must be a list of strings"))?;
+        out.push(s.to_string());
+    }
+    Ok(out)
+}
+
+/// Read an optional list-of-strings field off a spec dict. Absent / Starlark
+/// `None` -> empty; errors when present-but-not-a-list or with non-string items.
+fn dict_str_list(dict: &DictRef<'_>, key: &str) -> anyhow::Result<Vec<String>> {
+    match dict.get_str(key) {
+        None => Ok(Vec::new()),
+        Some(value) if value.is_none() => Ok(Vec::new()),
+        Some(value) => value_str_list(value, &format!("parallel() spec field `{key}`")),
+    }
+}
+
 /// Read an optional schema dict off a spec dict (the per-spec structured-output
 /// schema). Returns `None` when the key is absent or Starlark `None`; errors when
 /// present-but-not-a-dict. The dict is converted to a `serde_json` object via
@@ -626,6 +654,7 @@ fn read_parallel_specs(
         let phase = dict_str(&dict, "phase")?;
         let model = dict_str(&dict, "model")?;
         let effort = dict_str(&dict, "effort")?;
+        let image = dict_str_list(&dict, "image")?;
         let isolation = dict_str(&dict, "isolation")?;
         let schema = dict_schema(&dict, "schema")?;
         let writable = dict_bool(&dict, "writable")?;
@@ -635,6 +664,7 @@ fn read_parallel_specs(
             provider,
             model,
             effort,
+            image,
             isolation,
             prompt,
             schema,
@@ -664,6 +694,7 @@ struct StageTemplate {
     phase: String,
     model: Option<String>,
     effort: Option<String>,
+    image: Vec<String>,
     isolation: Option<String>,
     schema: Option<serde_json::Value>,
     writable: bool,
@@ -683,6 +714,7 @@ impl StageTemplate {
             provider: self.provider.clone(),
             model: self.model.clone(),
             effort: self.effort.clone(),
+            image: self.image.clone(),
             isolation: self.isolation.clone(),
             prompt,
             schema: self.schema.clone(),
@@ -742,6 +774,7 @@ fn read_pipeline_stages(
         let phase = dict_str(&dict, "phase")?;
         let model = dict_str(&dict, "model")?;
         let effort = dict_str(&dict, "effort")?;
+        let image = dict_str_list(&dict, "image")?;
         let isolation = dict_str(&dict, "isolation")?;
         let schema = dict_schema(&dict, "schema")?;
         let writable = dict_bool(&dict, "writable")?;
@@ -752,6 +785,7 @@ fn read_pipeline_stages(
             phase: ctx.phase_for(phase),
             model,
             effort,
+            image,
             isolation,
             schema,
             writable,
@@ -761,8 +795,8 @@ fn read_pipeline_stages(
 }
 
 /// The workflow host functions exposed to the script.
-// `agent()` exposes 8 host params (prompt + 6 kwargs + eval) — its expansion trips
-// clippy's arg-count lint; the breadth is the documented host API surface.
+// `agent()` exposes a broad host API surface, and its expansion trips clippy's
+// arg-count lint.
 #[allow(clippy::too_many_arguments)]
 #[starlark_module]
 fn workflow_globals(builder: &mut GlobalsBuilder) {
@@ -814,6 +848,7 @@ fn workflow_globals(builder: &mut GlobalsBuilder) {
         #[starlark(require = named)] phase: Option<String>,
         #[starlark(require = named)] model: Option<String>,
         #[starlark(require = named)] effort: Option<String>,
+        #[starlark(require = named)] image: Option<Value<'v>>,
         #[starlark(require = named)] isolation: Option<String>,
         #[starlark(require = named)] schema: Option<Value<'v>>,
         #[starlark(require = named, default = false)] writable: bool,
@@ -828,6 +863,10 @@ fn workflow_globals(builder: &mut GlobalsBuilder) {
             }
             _ => None,
         };
+        let image = match image {
+            Some(value) if !value.is_none() => value_str_list(value, "agent() `image`")?,
+            _ => Vec::new(),
+        };
         let has_schema = schema_json.is_some();
         let result = ctx_of(eval).run_one(
             prompt,
@@ -836,6 +875,7 @@ fn workflow_globals(builder: &mut GlobalsBuilder) {
             phase,
             model,
             effort,
+            image,
             isolation,
             schema_json,
             writable,
@@ -1360,6 +1400,53 @@ b = agent("fix what scan found: " + a, provider = "claude", label = "fixer")
         assert_eq!(isolations, vec![Some("worktree".to_string())]);
         assert_eq!(outcome.steps.len(), 1);
         assert_eq!(outcome.steps[0].isolation.as_deref(), Some("worktree"));
+    }
+
+    #[test]
+    fn image_kwarg_flows_onto_agent_parallel_and_pipeline_specs() {
+        let seen = Mutex::new(Vec::<(String, Vec<String>)>::new());
+        let script = r#"
+agent("inspect", label = "single", image = ["a.png"])
+parallel([{"prompt": "compare", "label": "fanout", "image": ["b.png", "c.jpg"]}])
+pipeline(
+    ["item"],
+    [{"prompt": "stage {input}", "label": "pipe", "image": ["d.webp"]}],
+)
+"#;
+        let outcome = {
+            let driver = |spec: &AgentStepSpec| {
+                seen.lock()
+                    .unwrap()
+                    .push((spec.label.clone(), spec.image.clone()));
+                StepResult {
+                    phase: spec.phase.clone(),
+                    label: spec.label.clone(),
+                    provider: spec.provider.clone(),
+                    isolation: spec.isolation.clone(),
+                    ok: true,
+                    provider_session_id: Some("s".to_string()),
+                    output_summary: "ok".to_string(),
+                    step_id: None,
+                    started_at: None,
+                    details: None,
+                    structured: None,
+                    ordinal: None,
+                }
+            };
+            run_starlark(&format!("{HEADER}{script}"), "demo", None, &driver)
+                .expect("run ok")
+                .outcome
+        };
+
+        let seen: std::collections::HashMap<String, Vec<String>> =
+            seen.into_inner().unwrap().into_iter().collect();
+        assert_eq!(seen["single"], vec!["a.png".to_string()]);
+        assert_eq!(
+            seen["fanout"],
+            vec!["b.png".to_string(), "c.jpg".to_string()]
+        );
+        assert_eq!(seen["pipe"], vec!["d.webp".to_string()]);
+        assert_eq!(outcome.steps.len(), 3);
     }
 
     #[test]

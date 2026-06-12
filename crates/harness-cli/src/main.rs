@@ -5043,6 +5043,9 @@ fn spawn_codex_ephemeral(
         cmd.arg("-c")
             .arg(format!("model_reasoning_effort={effort}"));
     }
+    for path in &spec.image {
+        cmd.arg("-i").arg(path);
+    }
     cmd.arg(prompt);
 
     let run = run_ndjson_child(
@@ -5109,6 +5112,17 @@ fn spawn_claude_ephemeral(
     timeout_ms: u64,
     max_budget_usd: Option<f64>,
 ) -> CliResult<EphemeralSpawn> {
+    let prompt_with_images;
+    let prompt = if spec.image.is_empty() {
+        prompt
+    } else {
+        prompt_with_images = format!(
+            "Attached image files (read them with the Read tool): {}\n\n{}",
+            spec.image.join(", "),
+            prompt
+        );
+        &prompt_with_images
+    };
     // Read-only by default (no Edit/Write/Bash); a `writable` node gets the editing
     // tools (and the caller has isolated it into a throwaway worktree). The tool
     // allowlist is the gate; bypassPermissions only keeps -p non-interactive.
@@ -11966,6 +11980,7 @@ mod workflow_runtime_tests {
             provider: "codex".into(),
             model: Some("gpt-5-codex".into()),
             effort: None,
+            image: Vec::new(),
             isolation: None,
             prompt: "hi".into(),
             schema: None,
@@ -12006,6 +12021,7 @@ mod workflow_runtime_tests {
             provider: "claude".into(),
             model: None,
             effort: None,
+            image: Vec::new(),
             isolation: None,
             prompt: "hi".into(),
             schema: None,
@@ -12043,6 +12059,7 @@ mod workflow_runtime_tests {
             provider: "codex".into(),
             model: None,
             effort: None,
+            image: Vec::new(),
             isolation: Some("worktree".into()),
             prompt: "hi".into(),
             schema: None,
@@ -12471,6 +12488,7 @@ mod workflow_runtime_tests {
             provider: "claude".into(),
             model: None,
             effort: None,
+            image: Vec::new(),
             isolation: None,
             prompt: "do the thing".into(),
             schema: None,
@@ -12529,6 +12547,7 @@ mod workflow_runtime_tests {
             provider: "claude".into(),
             model: None,
             effort: None,
+            image: Vec::new(),
             isolation: None,
             prompt: "p".into(),
             schema: None,
