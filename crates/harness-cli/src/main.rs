@@ -13,11 +13,12 @@ use harness_core::{
     build_launch_spec, AgentEvent, AgentMember, AgentMemberStatus, AgentProviderConfig,
     AgentRuntime, AgentRuntimeHealth, AgentRuntimeStatus, AgentTeam, AgentTeamStatus, Decision,
     EvaluationOutcome, Evidence, Exploration, Gap, GapSeverity, GapStatus, Goal, GoalCase,
-    GoalDesign, GoalEvaluation, GoalStage, GoalStatus, LaunchMcp, LaunchPermission, LaunchSpec,
-    Message, MessageDelivery, MessageDeliveryStatus, MessageKind, MessageTerminalSource, Proposal,
-    ProposalStatus, ProviderChildThread, ProviderChildThreadStatus, ProviderSession,
-    ProviderSessionStatus, Review, ReviewVerdict, SenderKind, Task, TaskStatus, Vision,
-    WorkflowRun, WorkflowRunStatus, WorkflowStep, WorkflowStepStatus,
+    GoalDesign, GoalEvaluation, GoalStage, GoalStatus, HarnessTurnEvent, HarnessTurnEventKind,
+    LaunchMcp, LaunchPermission, LaunchSpec, Message, MessageDelivery, MessageDeliveryStatus,
+    MessageKind, MessageTerminalSource, Proposal, ProposalStatus, ProviderChildThread,
+    ProviderChildThreadStatus, ProviderSession, ProviderSessionStatus, Review, ReviewVerdict,
+    SenderKind, Task, TaskStatus, Vision, WorkflowRun, WorkflowRunStatus, WorkflowStep,
+    WorkflowStepStatus,
 };
 use harness_store::{HarnessStore, MessageDeliveryClaimResult};
 use thiserror::Error;
@@ -2695,6 +2696,39 @@ fn handle_http_connection(
                     &serde_json::json!({"error": "doc_not_found", "detail": detail}),
                 )?,
             },
+            // GET /v1/provider-sessions/{id}/normalized-events — normalized
+            // HarnessTurnEvent[] computed on read from the retained RAW
+            // per-session provider NDJSON. This does not write new storage and
+            // intentionally uses provider adapter defaults until S2b/S2c add
+            // provider-specific mappings.
+            session_path
+                if session_path.starts_with("/v1/provider-sessions/")
+                    && session_path.ends_with("/normalized-events") =>
+            {
+                // Session ids are generated tokens (delivery-<ts>-<n>): safe
+                // path chars, no URL-decoding needed.
+                let session_id = session_path
+                    .strip_prefix("/v1/provider-sessions/")
+                    .and_then(|rest| rest.strip_suffix("/normalized-events"))
+                    .unwrap_or_default()
+                    .to_string();
+                match read_provider_session_normalized_events(store, &session_id) {
+                    Ok((events, truncated)) => write_http_json(
+                        &mut stream,
+                        "200 OK",
+                        &serde_json::json!({
+                            "session_id": session_id,
+                            "events": events,
+                            "truncated": truncated,
+                        }),
+                    )?,
+                    Err(detail) => write_http_json(
+                        &mut stream,
+                        "404 Not Found",
+                        &serde_json::json!({"error": "session_events_not_found", "detail": detail.to_string()}),
+                    )?,
+                }
+            }
             // GET /v1/provider-sessions/{id}/events — the RAW provider turn,
             // 1:1: every line of the persisted claude/codex stream as parsed
             // JSON, so the dashboard can show the agent's actual events
@@ -9318,6 +9352,58 @@ fn read_provider_session_events(
     Ok((events, truncated))
 }
 
+/// A normalized event for a raw provider frame we have no specific mapping
+/// for yet: retains the raw JSON, stamps provider/seq/ts, kind = Unknown.
+fn generic_turn_event(
+    provider: &str,
+    session_id: &str,
+    seq: u64,
+    raw: &serde_json::Value,
+) -> HarnessTurnEvent {
+    HarnessTurnEvent {
+        session_id: session_id.to_string(),
+        provider: provider.to_string(),
+        seq,
+        ts: now_string(),
+        provider_thread_id: None,
+        provider_turn_id: None,
+        provider_item_id: None,
+        kind: HarnessTurnEventKind::Unknown,
+        role: None,
+        text: None,
+        delta: None,
+        tool_call: None,
+        tool_result: None,
+        usage: None,
+        model: None,
+        duration_ms: None,
+        cost_usd: None,
+        status: None,
+        error: None,
+        raw_provider_event: raw.clone(),
+    }
+}
+
+/// Read a session's RAW per-session events and normalize each to a
+/// HarnessTurnEvent (normalize-on-read; no new storage, raw route unchanged).
+fn read_provider_session_normalized_events(
+    store: &HarnessStore,
+    session_id: &str,
+) -> CliResult<(Vec<HarnessTurnEvent>, bool)> {
+    let session = latest_provider_session(store, session_id)?
+        .ok_or_else(|| CliError::Usage(format!("provider session not found: {session_id}")))?;
+    let (raw_events, truncated) = read_provider_session_events(store, session_id)?;
+    let normalized = raw_events
+        .iter()
+        .enumerate()
+        .map(|(i, raw)| match provider_adapter(&session.provider) {
+            Some(adapter) => adapter.normalize_turn_event(session_id, i as u64, raw),
+            None => generic_turn_event(&session.provider, session_id, i as u64, raw),
+        })
+        .collect();
+    Ok((normalized, truncated))
+}
+
 /// Outcome of reading one provider session's PERSISTED turn-event trace for the
 /// historical drill-in (`GET /v1/sessions/<id>/events`). Distinguishes a durable
 /// run whose heavy trace survived from a `--trace live` run whose trace was
@@ -9836,6 +9922,18 @@ trait ProviderAdapter: Sync {
             "provider {} does not support hook events",
             self.name()
         )))
+    }
+
+    /// Map ONE raw provider event frame to a normalized HarnessTurnEvent. The
+    /// default is a generic Unknown event (raw retained); each provider overrides
+    /// it to map its own vocabulary. `seq` is the harness-assigned per-session index.
+    fn normalize_turn_event(
+        &self,
+        session_id: &str,
+        seq: u64,
+        raw: &serde_json::Value,
+    ) -> HarnessTurnEvent {
+        generic_turn_event(self.name(), session_id, seq, raw)
     }
 
     /// Reduce this provider's retained ephemeral NDJSON trace into neutral
@@ -13086,6 +13184,61 @@ mod workflow_runtime_tests {
             ended_at: Some("unix-ms:2".into()),
             evidence_ids: Vec::new(),
         }
+    }
+
+    #[test]
+    fn provider_adapter_default_normalizes_unknown_and_retains_raw() {
+        let raw = serde_json::json!({
+            "type": "provider_specific",
+            "payload": {"n": 1}
+        });
+
+        let event = CodexAdapter.normalize_turn_event("session-T", 7, &raw);
+
+        assert_eq!(event.session_id, "session-T");
+        assert_eq!(event.provider, "codex");
+        assert_eq!(event.seq, 7);
+        assert_eq!(event.kind, HarnessTurnEventKind::Unknown);
+        assert_eq!(event.raw_provider_event, raw);
+        assert!(event.provider_thread_id.is_none());
+        assert!(event.provider_turn_id.is_none());
+        assert!(event.text.is_none());
+        assert!(event.tool_call.is_none());
+        assert!(event.usage.is_none());
+    }
+
+    #[test]
+    fn read_provider_session_normalized_events_preserves_order_and_raw() {
+        let store = temp_store("normalized-events");
+        let ndjson = store
+            .root()
+            .join("provider-sessions")
+            .join("session-N")
+            .join("claude.stream-json.ndjson");
+        fs::create_dir_all(ndjson.parent().unwrap()).expect("mkdir session dir");
+        let raw0 = serde_json::json!({"type": "assistant", "text": "first"});
+        let raw1 = serde_json::json!({"type": "result", "status": "ok"});
+        fs::write(&ndjson, format!("{raw0}\nnot-json\n{raw1}\n")).expect("write ndjson");
+        store
+            .append_provider_session(&provider_session_with_ref(
+                "session-N",
+                Some(ndjson.display().to_string()),
+            ))
+            .expect("append durable session");
+
+        let (events, truncated) =
+            read_provider_session_normalized_events(&store, "session-N").expect("read events");
+
+        assert!(!truncated);
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].provider, "claude");
+        assert_eq!(events[0].seq, 0);
+        assert_eq!(events[0].kind, HarnessTurnEventKind::Unknown);
+        assert_eq!(events[0].raw_provider_event, raw0);
+        assert_eq!(events[1].provider, "claude");
+        assert_eq!(events[1].seq, 1);
+        assert_eq!(events[1].kind, HarnessTurnEventKind::Unknown);
+        assert_eq!(events[1].raw_provider_event, raw1);
     }
 
     /// Seed one durable run: a real per-session NDJSON + ProviderSession(jsonl_ref),
