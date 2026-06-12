@@ -218,6 +218,8 @@ pub struct AgentProviderConfig {
     #[serde(default)]
     pub collaboration_mode: Option<String>,
     #[serde(default)]
+    pub effort: Option<String>,
+    #[serde(default)]
     pub approval_policy: Option<String>,
     #[serde(default)]
     pub approvals_reviewer: Option<String>,
@@ -367,6 +369,9 @@ pub struct LaunchSpec {
     /// Model selection (Pillar 1). `None` = provider default.
     #[serde(default)]
     pub model: Option<String>,
+    /// Reasoning effort (Pillar 1). `None` = provider default.
+    #[serde(default)]
+    pub effort: Option<String>,
     /// Neutral permission posture for this turn.
     pub permission: LaunchPermission,
     /// Paths the turn may write (basis for `workspaceWrite` / `--add-dir`).
@@ -508,6 +513,7 @@ pub fn build_launch_spec(member: &AgentMember, message: &Message) -> LaunchSpec 
         prompt_ref: member.prompt_ref.clone(),
         message_content: compose_message_content(message),
         model: member.model.clone(),
+        effort: member.provider_config.effort.clone(),
         permission,
         writable_roots,
         // The abstract allowed-tool set is not yet sourced from a neutral member
@@ -2138,6 +2144,7 @@ mod tests {
     fn launch_spec_composes_from_member_and_message() {
         let mut member = sample_member();
         member.provider_config.sandbox_policy = Some("workspace-write".to_string());
+        member.provider_config.effort = Some("high".to_string());
         member.runtime_workspace_roots = vec!["crates/harness-core".to_string()];
         member.provider_config.runtime_workspace_roots = vec!["crates/harness-cli".to_string()];
         let message = sample_message();
@@ -2150,6 +2157,7 @@ mod tests {
             Some(".harness/prompts/worker.md")
         );
         assert_eq!(spec.model.as_deref(), Some("o3"));
+        assert_eq!(spec.effort.as_deref(), Some("high"));
         assert_eq!(spec.skill_refs, vec!["harness-workflow".to_string()]);
         // Pillar 2 workspace flows through as the cwd / worktree root.
         assert_eq!(spec.workspace.as_deref(), Some("../worktrees/task-1"));
@@ -2242,6 +2250,7 @@ mod tests {
     fn launch_spec_round_trips_json() {
         let mut member = sample_member();
         member.provider_config.sandbox_policy = Some("workspaceWrite".to_string());
+        member.provider_config.effort = Some("medium".to_string());
         member.runtime_workspace_roots = vec!["crates".to_string()];
         let spec = build_launch_spec(&member, &sample_message());
 
@@ -2251,7 +2260,25 @@ mod tests {
         // The neutral permission serializes to its snake_case wire spelling, not
         // the Codex `workspaceWrite` vocabulary it was mapped from.
         assert!(json.contains("\"permission\":\"workspace_write\""));
+        assert!(json.contains("\"effort\":\"medium\""));
         assert!(!json.contains("workspaceWrite"));
+    }
+
+    #[test]
+    fn effort_defaults_to_none_for_legacy_json() {
+        let provider_config: AgentProviderConfig = serde_json::from_value(serde_json::json!({
+            "service_tier": "default"
+        }))
+        .expect("legacy provider config without effort should deserialize");
+        assert!(provider_config.effort.is_none());
+
+        let spec: LaunchSpec = serde_json::from_value(serde_json::json!({
+            "message_content": "legacy turn",
+            "model": "o3",
+            "permission": "workspace_write"
+        }))
+        .expect("legacy launch spec without effort should deserialize");
+        assert!(spec.effort.is_none());
     }
 
     #[test]

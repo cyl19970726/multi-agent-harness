@@ -13,8 +13,8 @@ use harness_core::{
     build_launch_spec, AgentEvent, AgentMember, AgentMemberStatus, AgentProviderConfig,
     AgentRuntime, AgentRuntimeHealth, AgentRuntimeStatus, AgentTeam, AgentTeamStatus, Decision,
     EvaluationOutcome, Evidence, Exploration, Gap, GapSeverity, GapStatus, Goal, GoalCase,
-    GoalDesign, GoalEvaluation, GoalStage, GoalStatus, LaunchMcp, LaunchPermission, Message,
-    MessageDelivery, MessageDeliveryStatus, MessageKind, MessageTerminalSource, Proposal,
+    GoalDesign, GoalEvaluation, GoalStage, GoalStatus, LaunchMcp, LaunchPermission, LaunchSpec,
+    Message, MessageDelivery, MessageDeliveryStatus, MessageKind, MessageTerminalSource, Proposal,
     ProposalStatus, ProviderChildThread, ProviderChildThreadStatus, ProviderSession,
     ProviderSessionStatus, Review, ReviewVerdict, SenderKind, Task, TaskStatus, Vision,
     WorkflowRun, WorkflowRunStatus, WorkflowStep, WorkflowStepStatus,
@@ -3265,6 +3265,7 @@ fn build_member_from_json(body: &serde_json::Value) -> CliResult<AgentMember> {
         provider_config: AgentProviderConfig {
             service_tier: json_string(body, "service_tier"),
             collaboration_mode: json_string(body, "collaboration_mode"),
+            effort: json_string(body, "effort"),
             approval_policy: json_string(body, "approval_policy"),
             approvals_reviewer: json_string(body, "approvals_reviewer"),
             sandbox_policy: json_string(body, "sandbox_policy"),
@@ -9628,6 +9629,7 @@ fn build_member_from_args(args: &[String], status: AgentMemberStatus) -> CliResu
         provider_config: AgentProviderConfig {
             service_tier: value(args, "--service-tier"),
             collaboration_mode: value(args, "--collaboration-mode"),
+            effort: value(args, "--effort"),
             approval_policy: value(args, "--approval-policy"),
             approvals_reviewer: value(args, "--approvals-reviewer"),
             sandbox_policy: value(args, "--sandbox-policy"),
@@ -10715,9 +10717,7 @@ fn run_codex_exec_process(
     cmd.env("CODEX_DEVELOPER_INSTRUCTIONS", developer_instructions);
 
     // Map LaunchSpec to codex flags
-    if let Some(model) = &spec.model {
-        cmd.arg("-m").arg(model);
-    }
+    apply_codex_model_and_effort_args(&mut cmd, &spec);
 
     if !resuming {
         // Map permission to sandbox (fresh sessions only).
@@ -10758,6 +10758,17 @@ fn run_codex_exec_process(
         .collect();
 
     Ok((run.process_success, events, run.stderr))
+}
+
+fn apply_codex_model_and_effort_args(cmd: &mut Command, spec: &LaunchSpec) {
+    if let Some(model) = &spec.model {
+        cmd.arg("-m").arg(model);
+    }
+    // Reasoning effort: codex takes it as a config override (no dedicated flag).
+    if let Some(effort) = &spec.effort {
+        cmd.arg("-c")
+            .arg(format!("model_reasoning_effort={effort}"));
+    }
 }
 
 // Run a single Codex exec delivery, writing identical ProviderSession/Evidence rows.
@@ -11250,9 +11261,7 @@ fn run_claude_exec_delivery_real(
 
     // Map LaunchSpec to claude flags
     // Model selection
-    if let Some(model) = &spec.model {
-        cmd.arg("--model").arg(model);
-    }
+    apply_claude_model_and_effort_args(&mut cmd, &spec);
 
     // Permission mapping
     let permission_mode = ClaudeAdapter.map_permission(spec.permission);
@@ -11305,6 +11314,16 @@ fn run_claude_exec_delivery_real(
     Ok((run.process_success, events, session_id, run.stderr))
 }
 
+fn apply_claude_model_and_effort_args(cmd: &mut Command, spec: &LaunchSpec) {
+    if let Some(model) = &spec.model {
+        cmd.arg("--model").arg(model);
+    }
+    // Reasoning effort: claude has a native session flag.
+    if let Some(effort) = &spec.effort {
+        cmd.arg("--effort").arg(effort);
+    }
+}
+
 /// Build a [`resident::ResidentConfig`] from the same launch inputs the default
 /// path uses, so the resident invocation surface matches `claude -p` flag for
 /// flag (only `-p <prompt>` becomes `--input-format stream-json`).
@@ -11334,6 +11353,7 @@ fn build_resident_config(member: &AgentMember, message: &Message) -> resident::R
     resident::ResidentConfig {
         binary: "claude".into(),
         model: spec.model.clone(),
+        effort: spec.effort.clone(),
         permission_mode: ClaudeAdapter.map_permission(spec.permission).to_string(),
         tools: spec.tools.clone(),
         system_prompt,
@@ -11765,7 +11785,7 @@ fn print_help() {
     println!(
         "harness commands:
   init
-  agent create --name <name> --role <role> [--description <text>] [--provider codex|claude] [--team <team>] [--skill <skill>] [--prompt <text>] [--prompt-ref <path>] [--worktree <path>] [--permission-profile <profile>] [--runtime-workspace-root <path>] [--approval-policy <policy>] [--sandbox-policy <policy>] [--service-tier <tier>] [--collaboration-mode <mode>] [--provider-agent-path <path>] [--provider-agent-nickname <name>] [--provider-agent-role <role>] [--start]
+  agent create --name <name> --role <role> [--description <text>] [--provider codex|claude] [--team <team>] [--skill <skill>] [--prompt <text>] [--prompt-ref <path>] [--worktree <path>] [--permission-profile <profile>] [--runtime-workspace-root <path>] [--approval-policy <policy>] [--sandbox-policy <policy>] [--service-tier <tier>] [--collaboration-mode <mode>] [--effort <e>] [--provider-agent-path <path>] [--provider-agent-nickname <name>] [--provider-agent-role <role>] [--start]
   agent list
   agent start --id <agent>
   agent health --id <agent>
@@ -11846,6 +11866,78 @@ mod workflow_runtime_tests {
         let store = HarnessStore::new(&root);
         store.init().expect("init store");
         store
+    }
+
+    fn launch_spec_with_model_effort(model: Option<&str>, effort: Option<&str>) -> LaunchSpec {
+        LaunchSpec {
+            prompt_ref: None,
+            message_content: "hello".into(),
+            model: model.map(str::to_string),
+            effort: effort.map(str::to_string),
+            permission: LaunchPermission::WorkspaceWrite,
+            writable_roots: Vec::new(),
+            tools: Vec::new(),
+            workspace: None,
+            mcp: None,
+            skill_refs: Vec::new(),
+            resume: None,
+            output: None,
+        }
+    }
+
+    fn command_args(cmd: &Command) -> Vec<String> {
+        cmd.get_args()
+            .map(|arg| arg.to_string_lossy().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn persistent_codex_effort_arg_matches_ephemeral_mapping() {
+        let spec = launch_spec_with_model_effort(Some("o4-mini"), Some("high"));
+        let mut cmd = Command::new("codex");
+        apply_codex_model_and_effort_args(&mut cmd, &spec);
+
+        assert_eq!(
+            command_args(&cmd),
+            vec!["-m", "o4-mini", "-c", "model_reasoning_effort=high"]
+        );
+    }
+
+    #[test]
+    fn persistent_codex_omits_effort_arg_when_absent() {
+        let spec = launch_spec_with_model_effort(Some("o4-mini"), None);
+        let mut cmd = Command::new("codex");
+        apply_codex_model_and_effort_args(&mut cmd, &spec);
+
+        let args = command_args(&cmd);
+        assert_eq!(args, vec!["-m", "o4-mini"]);
+        assert!(!args.iter().any(|arg| arg == "-c"));
+        assert!(!args
+            .iter()
+            .any(|arg| arg.starts_with("model_reasoning_effort=")));
+    }
+
+    #[test]
+    fn persistent_claude_effort_arg_matches_ephemeral_mapping() {
+        let spec = launch_spec_with_model_effort(Some("opus"), Some("medium"));
+        let mut cmd = Command::new("claude");
+        apply_claude_model_and_effort_args(&mut cmd, &spec);
+
+        assert_eq!(
+            command_args(&cmd),
+            vec!["--model", "opus", "--effort", "medium"]
+        );
+    }
+
+    #[test]
+    fn persistent_claude_omits_effort_arg_when_absent() {
+        let spec = launch_spec_with_model_effort(Some("opus"), None);
+        let mut cmd = Command::new("claude");
+        apply_claude_model_and_effort_args(&mut cmd, &spec);
+
+        let args = command_args(&cmd);
+        assert_eq!(args, vec!["--model", "opus"]);
+        assert!(!args.iter().any(|arg| arg == "--effort"));
     }
 
     fn ok_step(spec: &workflow::AgentStepSpec) -> workflow::StepResult {
@@ -16263,6 +16355,7 @@ mod tests {
             "name": "Worker One",
             "role": "worker",
             "provider": "codex",
+            "effort": "high",
             "skill": ["frontend-design"]
         });
 
@@ -16285,6 +16378,7 @@ mod tests {
         let persisted = members.get(&member_id).expect("member persisted in store");
         assert_eq!(persisted.name, "Worker One");
         assert_eq!(persisted.status, AgentMemberStatus::Idle);
+        assert_eq!(persisted.provider_config.effort.as_deref(), Some("high"));
         assert_eq!(persisted.skill_refs, vec!["frontend-design"]);
         assert!(
             persisted.prompt_ref.is_some(),

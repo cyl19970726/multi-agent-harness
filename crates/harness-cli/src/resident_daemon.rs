@@ -388,6 +388,7 @@ mod tests {
         ResidentConfig {
             binary: binary.display().to_string(),
             model: None,
+            effort: None,
             permission_mode: "plan".into(),
             tools: vec![],
             system_prompt: String::new(),
@@ -432,6 +433,7 @@ mod tests {
             config: ResidentConfig {
                 binary: "claude".into(),
                 model: Some("opus".into()),
+                effort: Some("high".into()),
                 permission_mode: "plan".into(),
                 tools: vec!["Bash".into(), "Read".into()],
                 system_prompt: "be helpful".into(),
