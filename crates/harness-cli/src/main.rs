@@ -4418,32 +4418,23 @@ fn spawn_ephemeral_worker(
     let effective_model = workflow_effective_model(options, spec);
     let effective_effort = workflow_effective_effort(options, spec);
     let spawn_once = |prompt: &str| -> CliResult<EphemeralSpawn> {
-        match spec.provider.as_str() {
-            "codex" => spawn_codex_ephemeral(
-                &session_dir,
-                &session_id,
-                spec,
-                schema_json.as_ref(),
-                prompt,
-                &cwd,
-                effective_model,
-                effective_effort,
-                options.timeout_ms,
-            ),
-            "claude" => spawn_claude_ephemeral(
-                &session_dir,
-                &session_id,
-                spec,
-                schema_json.as_ref(),
-                prompt,
-                &cwd,
-                effective_model,
-                effective_effort,
-                options.timeout_ms,
-                options.max_budget_usd,
-            ),
-            other => Err(CliError::Usage(format!(
-                "unknown workflow provider {other} (expected codex|claude)"
+        let ctx = EphemeralSpawnContext {
+            session_dir: &session_dir,
+            session_id: &session_id,
+            spec,
+            schema_json: schema_json.as_ref(),
+            prompt,
+            cwd: &cwd,
+            model: effective_model,
+            effort: effective_effort,
+            timeout_ms: options.timeout_ms,
+            max_budget_usd: options.max_budget_usd,
+        };
+        match provider_adapter(spec.provider.as_str()) {
+            Some(adapter) => adapter.spawn_ephemeral(&ctx),
+            None => Err(CliError::Usage(format!(
+                "unknown workflow provider {} (expected codex|claude)",
+                spec.provider
             ))),
         }
     };
@@ -9918,15 +9909,32 @@ fn build_bootstrap_prompt(member: &AgentMember) -> String {
 // fast with an explicit, debuggable message rather than silently assuming Codex.
 // ---------------------------------------------------------------------------
 
-/// Provider-specific behaviour boundary (Issue #107 Gap 1). Stage 1 only carries
-/// the provider's canonical name; later stages grow this trait to own command
-/// building, event interpretation, pricing, permission mapping, etc. As later
+/// Everything a one-shot ephemeral provider spawn needs, bundled so the
+/// `ProviderAdapter::spawn_ephemeral` dispatch method takes a single arg and
+/// stays object-safe. Mirrors the params of the per-provider spawn helpers.
+struct EphemeralSpawnContext<'a> {
+    session_dir: &'a Path,
+    session_id: &'a str,
+    spec: &'a workflow::AgentStepSpec,
+    schema_json: Option<&'a serde_json::Value>,
+    prompt: &'a str,
+    cwd: &'a Path,
+    model: Option<&'a str>,
+    effort: Option<&'a str>,
+    timeout_ms: u64,
+    max_budget_usd: Option<f64>,
+}
+
+/// Provider-specific behaviour boundary (Issue #107 Gap 1). Stage 3 carries the
+/// provider's canonical name and the workflow ephemeral spawn dispatch. As later
 /// stages migrate each dispatch site onto this trait, the registry becomes the
-/// single source of truth for which providers the harness supports; Stage 1 wires
-/// `unknown_provider_error` to it while `ProviderKind` dispatch still coexists.
+/// single source of truth for which providers the harness supports while
+/// `ProviderKind` dispatch still coexists.
 trait ProviderAdapter: Sync {
     /// Canonical provider id as used in `member.provider` and `agent(provider=...)`.
     fn name(&self) -> &'static str;
+
+    fn spawn_ephemeral(&self, ctx: &EphemeralSpawnContext<'_>) -> CliResult<EphemeralSpawn>;
 }
 
 struct CodexAdapter;
@@ -9936,16 +9944,53 @@ impl ProviderAdapter for CodexAdapter {
     fn name(&self) -> &'static str {
         "codex"
     }
+
+    fn spawn_ephemeral(&self, ctx: &EphemeralSpawnContext<'_>) -> CliResult<EphemeralSpawn> {
+        spawn_codex_ephemeral(
+            ctx.session_dir,
+            ctx.session_id,
+            ctx.spec,
+            ctx.schema_json,
+            ctx.prompt,
+            ctx.cwd,
+            ctx.model,
+            ctx.effort,
+            ctx.timeout_ms,
+        )
+    }
 }
 impl ProviderAdapter for ClaudeAdapter {
     fn name(&self) -> &'static str {
         "claude"
+    }
+
+    fn spawn_ephemeral(&self, ctx: &EphemeralSpawnContext<'_>) -> CliResult<EphemeralSpawn> {
+        spawn_claude_ephemeral(
+            ctx.session_dir,
+            ctx.session_id,
+            ctx.spec,
+            ctx.schema_json,
+            ctx.prompt,
+            ctx.cwd,
+            ctx.model,
+            ctx.effort,
+            ctx.timeout_ms,
+            ctx.max_budget_usd,
+        )
     }
 }
 
 /// All providers the harness recognises, in canonical display order.
 fn provider_registry() -> &'static [&'static dyn ProviderAdapter] {
     &[&CodexAdapter, &ClaudeAdapter]
+}
+
+/// The adapter for a provider id, or `None` if unrecognised.
+fn provider_adapter(name: &str) -> Option<&'static dyn ProviderAdapter> {
+    provider_registry()
+        .iter()
+        .copied()
+        .find(|adapter| adapter.name() == name)
 }
 
 /// The supported provider ids, derived from the registry (single source of truth).
