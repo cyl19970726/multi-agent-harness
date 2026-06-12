@@ -15,7 +15,7 @@ use harness_core::{
     EvaluationOutcome, Evidence, Exploration, Gap, GapSeverity, GapStatus, Goal, GoalCase,
     GoalDesign, GoalEvaluation, GoalStage, GoalStatus, LaunchMcp, LaunchPermission, Message,
     MessageDelivery, MessageDeliveryStatus, MessageKind, MessageTerminalSource, Proposal,
-    ProposalStatus, ProviderChildThread, ProviderChildThreadStatus, ProviderKind, ProviderSession,
+    ProposalStatus, ProviderChildThread, ProviderChildThreadStatus, ProviderSession,
     ProviderSessionStatus, Review, ReviewVerdict, SenderKind, Task, TaskStatus, Vision,
     WorkflowRun, WorkflowRunStatus, WorkflowStep, WorkflowStepStatus,
 };
@@ -7285,7 +7285,7 @@ fn ingest_provider_output(
     // shape we parse and the provider string we stamp; on lookup failure default to codex.
     let provider = latest_member(store, agent_member_id)
         .map(|member| member.provider)
-        .unwrap_or_else(|_| ProviderKind::Codex.to_string());
+        .unwrap_or_else(|_| CodexAdapter.name().to_string());
     match provider_adapter(&provider) {
         Some(adapter) => {
             adapter.ingest_output(store, agent_member_id, runtime_id, task_id, source_ref)
@@ -9725,10 +9725,10 @@ struct EphemeralSpawnContext<'a> {
 }
 
 /// Provider-specific behaviour boundary (Issue #107 Gap 1). Stage 3 carries the
-/// provider's canonical name and the workflow ephemeral spawn dispatch. As later
-/// stages migrate each dispatch site onto this trait, the registry becomes the
-/// single source of truth for which providers the harness supports while
-/// `ProviderKind` dispatch still coexists.
+/// provider's canonical name and the workflow ephemeral spawn dispatch. Every
+/// provider dispatch site in the CLI routes through this trait and the
+/// `provider_adapter` registry, which is the single source of truth for the
+/// providers the harness supports.
 trait ProviderAdapter: Sync {
     /// Canonical provider id as used in `member.provider` and `agent(provider=...)`.
     fn name(&self) -> &'static str;
