@@ -191,7 +191,7 @@ impl ResidentConfig {
 }
 
 /// The recorded argv (for `ProviderSession.args`) of a resident invocation,
-/// the resident-mode sibling of `claude_recorded_args` in `main.rs`. This is
+/// the resident-mode sibling of `ClaudeAdapter::recorded_args` in `main.rs`. This is
 /// recording-only and honestly reflects `--input-format stream-json` instead of
 /// `-p <prompt>`.
 pub fn resident_recorded_args(resume_id: Option<&str>) -> Vec<String> {
