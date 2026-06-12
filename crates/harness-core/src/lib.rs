@@ -579,6 +579,17 @@ impl std::fmt::Display for ProviderKind {
     }
 }
 
+/// Rough public list price ($ per 1M tokens) `(input, output)` per provider — an
+/// ESTIMATE used only to bound workflow spend when the provider reports no dollar
+/// cost. The single source of truth for provider pricing across the harness.
+/// Unknown providers fall back to the codex/gpt-5-class rate to preserve behavior.
+pub fn provider_price_per_mtok(provider: &str) -> (f64, f64) {
+    match provider {
+        "claude" => (3.0, 15.0),
+        _ => (1.25, 10.0), // codex / gpt-5-class default
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentTeamStatus {
@@ -1533,6 +1544,13 @@ mod tests {
         // Unknown providers round-trip without losing fidelity.
         assert_eq!(kind.to_string(), "gemini");
         assert_eq!(ProviderKind::from("gemini".to_string()), kind);
+    }
+
+    #[test]
+    fn provider_price_per_mtok_preserves_provider_rates() {
+        assert_eq!(provider_price_per_mtok("claude"), (3.0, 15.0));
+        assert_eq!(provider_price_per_mtok("codex"), (1.25, 10.0));
+        assert_eq!(provider_price_per_mtok("gemini"), (1.25, 10.0));
     }
 
     #[test]
