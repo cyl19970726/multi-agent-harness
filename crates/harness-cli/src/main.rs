@@ -5043,8 +5043,12 @@ fn spawn_codex_ephemeral(
         cmd.arg("-c")
             .arg(format!("model_reasoning_effort={effort}"));
     }
+    // codex has no fallback-model flag; only providers with a native flag use it.
     for path in &spec.image {
         cmd.arg("-i").arg(path);
+    }
+    for path in &spec.add_dir {
+        cmd.arg("--add-dir").arg(path);
     }
     cmd.arg(prompt);
 
@@ -5162,6 +5166,12 @@ fn spawn_claude_ephemeral(
     // Reasoning effort: claude has a native session flag.
     if let Some(effort) = &spec.effort {
         cmd.arg("--effort").arg(effort);
+    }
+    if let Some(model) = &spec.fallback_model {
+        cmd.arg("--fallback-model").arg(model);
+    }
+    for path in &spec.add_dir {
+        cmd.arg("--add-dir").arg(path);
     }
 
     let run = run_ndjson_child(
@@ -11980,7 +11990,9 @@ mod workflow_runtime_tests {
             provider: "codex".into(),
             model: Some("gpt-5-codex".into()),
             effort: None,
+            fallback_model: None,
             image: Vec::new(),
+            add_dir: Vec::new(),
             isolation: None,
             prompt: "hi".into(),
             schema: None,
@@ -12021,7 +12033,9 @@ mod workflow_runtime_tests {
             provider: "claude".into(),
             model: None,
             effort: None,
+            fallback_model: None,
             image: Vec::new(),
+            add_dir: Vec::new(),
             isolation: None,
             prompt: "hi".into(),
             schema: None,
@@ -12059,7 +12073,9 @@ mod workflow_runtime_tests {
             provider: "codex".into(),
             model: None,
             effort: None,
+            fallback_model: None,
             image: Vec::new(),
+            add_dir: Vec::new(),
             isolation: Some("worktree".into()),
             prompt: "hi".into(),
             schema: None,
@@ -12488,7 +12504,9 @@ mod workflow_runtime_tests {
             provider: "claude".into(),
             model: None,
             effort: None,
+            fallback_model: None,
             image: Vec::new(),
+            add_dir: Vec::new(),
             isolation: None,
             prompt: "do the thing".into(),
             schema: None,
@@ -12547,7 +12565,9 @@ mod workflow_runtime_tests {
             provider: "claude".into(),
             model: None,
             effort: None,
+            fallback_model: None,
             image: Vec::new(),
+            add_dir: Vec::new(),
             isolation: None,
             prompt: "p".into(),
             schema: None,
