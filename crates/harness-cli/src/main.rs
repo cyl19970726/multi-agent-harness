@@ -9770,6 +9770,9 @@ trait ProviderAdapter: Sync {
         source_ref: &str,
     ) -> CliResult<()>;
 
+    /// Spawn (or attach) the persistent runtime for a member of this provider.
+    fn start_runtime(&self, store: &HarnessStore, member: &AgentMember) -> CliResult<AgentRuntime>;
+
     fn spawn_ephemeral(&self, ctx: &EphemeralSpawnContext<'_>) -> CliResult<EphemeralSpawn>;
 }
 
@@ -9783,6 +9786,10 @@ impl ProviderAdapter for CodexAdapter {
 
     fn live_ndjson_file_name(&self) -> &'static str {
         "codex.stream-json.ndjson"
+    }
+
+    fn start_runtime(&self, store: &HarnessStore, member: &AgentMember) -> CliResult<AgentRuntime> {
+        start_codex_exec_runtime(store, member)
     }
 
     fn record_hook_event(&self, store: &HarnessStore, args: &[String]) -> CliResult<()> {
@@ -10025,6 +10032,10 @@ impl ProviderAdapter for ClaudeAdapter {
         "claude.stream-json.ndjson"
     }
 
+    fn start_runtime(&self, store: &HarnessStore, member: &AgentMember) -> CliResult<AgentRuntime> {
+        start_claude_runtime(store, member)
+    }
+
     fn ingest_ephemeral_trace(
         &self,
         store: &HarnessStore,
@@ -10090,10 +10101,9 @@ fn unknown_provider_error(provider: &str, concern: &str) -> CliError {
 
 /// Spawn (or attach) the runtime for a member, routed by `member.provider`.
 fn start_provider_runtime(store: &HarnessStore, member: &AgentMember) -> CliResult<AgentRuntime> {
-    match ProviderKind::from(member.provider.as_str()) {
-        ProviderKind::Codex => start_codex_exec_runtime(store, member),
-        ProviderKind::Claude => start_claude_runtime(store, member),
-        ProviderKind::Unknown(provider) => Err(unknown_provider_error(&provider, "runtime start")),
+    match provider_adapter(&member.provider) {
+        Some(adapter) => adapter.start_runtime(store, member),
+        None => Err(unknown_provider_error(&member.provider, "runtime start")),
     }
 }
 
