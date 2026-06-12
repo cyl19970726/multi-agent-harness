@@ -5038,6 +5038,11 @@ fn spawn_codex_ephemeral(
     if let Some(model) = &spec.model {
         cmd.arg("-m").arg(model);
     }
+    // Reasoning effort: codex takes it as a config override (no dedicated flag).
+    if let Some(effort) = &spec.effort {
+        cmd.arg("-c")
+            .arg(format!("model_reasoning_effort={effort}"));
+    }
     cmd.arg(prompt);
 
     let run = run_ndjson_child(
@@ -5139,6 +5144,10 @@ fn spawn_claude_ephemeral(
     }
     if let Some(model) = &spec.model {
         cmd.arg("--model").arg(model);
+    }
+    // Reasoning effort: claude has a native session flag.
+    if let Some(effort) = &spec.effort {
+        cmd.arg("--effort").arg(effort);
     }
 
     let run = run_ndjson_child(
@@ -11956,6 +11965,7 @@ mod workflow_runtime_tests {
             label: "l".into(),
             provider: "codex".into(),
             model: Some("gpt-5-codex".into()),
+            effort: None,
             isolation: None,
             prompt: "hi".into(),
             schema: None,
@@ -11995,6 +12005,7 @@ mod workflow_runtime_tests {
             label: "l".into(),
             provider: "claude".into(),
             model: None,
+            effort: None,
             isolation: None,
             prompt: "hi".into(),
             schema: None,
@@ -12031,6 +12042,7 @@ mod workflow_runtime_tests {
             label: "l".into(),
             provider: "codex".into(),
             model: None,
+            effort: None,
             isolation: Some("worktree".into()),
             prompt: "hi".into(),
             schema: None,
@@ -12458,6 +12470,7 @@ mod workflow_runtime_tests {
             label: "scan-context".into(),
             provider: "claude".into(),
             model: None,
+            effort: None,
             isolation: None,
             prompt: "do the thing".into(),
             schema: None,
@@ -12515,6 +12528,7 @@ mod workflow_runtime_tests {
             label: "explore".into(),
             provider: "claude".into(),
             model: None,
+            effort: None,
             isolation: None,
             prompt: "p".into(),
             schema: None,
