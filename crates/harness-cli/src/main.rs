@@ -13,12 +13,12 @@ use harness_core::{
     build_launch_spec, AgentEvent, AgentMember, AgentMemberStatus, AgentProviderConfig,
     AgentRuntime, AgentRuntimeHealth, AgentRuntimeStatus, AgentTeam, AgentTeamStatus, Decision,
     EvaluationOutcome, Evidence, Exploration, Gap, GapSeverity, GapStatus, Goal, GoalCase,
-    GoalDesign, GoalEvaluation, GoalStage, GoalStatus, HarnessTurnEvent, HarnessTurnEventKind,
-    LaunchMcp, LaunchPermission, LaunchSpec, Message, MessageDelivery, MessageDeliveryStatus,
-    MessageKind, MessageTerminalSource, Proposal, ProposalStatus, ProviderChildThread,
-    ProviderChildThreadStatus, ProviderSession, ProviderSessionStatus, Review, ReviewVerdict,
-    SenderKind, Task, TaskStatus, Vision, WorkflowRun, WorkflowRunStatus, WorkflowStep,
-    WorkflowStepStatus,
+    GoalDesign, GoalEvaluation, GoalStage, GoalStatus, HarnessTokenUsage, HarnessToolCall,
+    HarnessTurnEvent, HarnessTurnEventKind, LaunchMcp, LaunchPermission, LaunchSpec, Message,
+    MessageDelivery, MessageDeliveryStatus, MessageKind, MessageTerminalSource, Proposal,
+    ProposalStatus, ProviderChildThread, ProviderChildThreadStatus, ProviderSession,
+    ProviderSessionStatus, Review, ReviewVerdict, SenderKind, Task, TaskStatus, Vision,
+    WorkflowRun, WorkflowRunStatus, WorkflowStep, WorkflowStepStatus,
 };
 use harness_store::{HarnessStore, MessageDeliveryClaimResult};
 use thiserror::Error;
@@ -10008,6 +10008,134 @@ impl ProviderAdapter for CodexAdapter {
         }
     }
 
+    fn normalize_turn_event(
+        &self,
+        session_id: &str,
+        seq: u64,
+        raw: &serde_json::Value,
+    ) -> HarnessTurnEvent {
+        let mut event = generic_turn_event(self.name(), session_id, seq, raw);
+
+        if let Some(error) = raw.get("error") {
+            event.kind = HarnessTurnEventKind::Error;
+            event.error = Some(
+                error
+                    .as_str()
+                    .map(str::to_string)
+                    .or_else(|| {
+                        error
+                            .get("message")
+                            .and_then(|message| message.as_str())
+                            .map(str::to_string)
+                    })
+                    .unwrap_or_else(|| error.to_string()),
+            );
+            return event;
+        }
+
+        match raw.get("type").and_then(|value| value.as_str()) {
+            Some("thread.started") => {
+                event.kind = HarnessTurnEventKind::ProviderMeta;
+                event.provider_thread_id = raw
+                    .get("thread_id")
+                    .and_then(|value| value.as_str())
+                    .map(str::to_string);
+            }
+            Some("turn.started") => {
+                event.kind = HarnessTurnEventKind::TurnStarted;
+                event.provider_turn_id = raw
+                    .get("turn_id")
+                    .and_then(|value| value.as_str())
+                    .or_else(|| {
+                        raw.get("turn")
+                            .and_then(|turn| turn.get("id"))
+                            .and_then(|value| value.as_str())
+                    })
+                    .map(str::to_string);
+            }
+            Some("item.started") => {
+                event.kind = HarnessTurnEventKind::ProviderMeta;
+                event.provider_item_id = raw
+                    .get("item")
+                    .and_then(|item| item.get("id"))
+                    .and_then(|value| value.as_str())
+                    .map(str::to_string);
+            }
+            Some("item.completed") => {
+                if let Some(item) = raw.get("item") {
+                    event.provider_item_id = item
+                        .get("id")
+                        .and_then(|value| value.as_str())
+                        .map(str::to_string);
+                    match item.get("type").and_then(|value| value.as_str()) {
+                        Some("agent_message") => {
+                            event.kind = HarnessTurnEventKind::Message;
+                            event.role = Some("assistant".into());
+                            event.text = item
+                                .get("text")
+                                .and_then(|value| value.as_str())
+                                .map(str::to_string);
+                        }
+                        Some("reasoning") => {
+                            event.kind = HarnessTurnEventKind::Reasoning;
+                            event.text = item
+                                .get("text")
+                                .and_then(|value| value.as_str())
+                                .map(str::to_string);
+                        }
+                        Some("command_execution") => {
+                            event.kind = HarnessTurnEventKind::ToolCall;
+                            let name = item
+                                .get("command")
+                                .and_then(|value| value.as_str())
+                                .filter(|value| !value.is_empty())
+                                .unwrap_or("command_execution")
+                                .to_string();
+                            event.tool_call = Some(HarnessToolCall {
+                                id: event.provider_item_id.clone(),
+                                name,
+                                args: item.clone(),
+                            });
+                        }
+                        _ => {
+                            event.kind = HarnessTurnEventKind::ProviderMeta;
+                        }
+                    }
+                } else {
+                    event.kind = HarnessTurnEventKind::ProviderMeta;
+                }
+            }
+            Some("turn.completed") | Some("turn_completed") => {
+                event.kind = HarnessTurnEventKind::TurnCompleted;
+                // The raw usage object lives where parse_codex_usage reads it, so
+                // the normalized usage also keeps codex's cached/reasoning subtotals.
+                let raw_usage = raw
+                    .get("usage")
+                    .or_else(|| raw.get("turn").and_then(|turn| turn.get("usage")));
+                event.usage =
+                    parse_codex_usage(std::slice::from_ref(raw)).map(|usage| HarnessTokenUsage {
+                        input_tokens: usage.input,
+                        output_tokens: usage.output,
+                        total_tokens: usage.total,
+                        cached_input_tokens: raw_usage
+                            .and_then(|usage| usage.get("cached_input_tokens"))
+                            .and_then(serde_json::Value::as_u64),
+                        reasoning_output_tokens: raw_usage
+                            .and_then(|usage| usage.get("reasoning_output_tokens"))
+                            .and_then(serde_json::Value::as_u64),
+                    });
+            }
+            // Codex emits `thread.idle` as the terminal idle marker (see
+            // codex_event_is_terminal); there is no `turn.idle`.
+            Some("thread.idle") | Some("thread_idle") => {
+                event.kind = HarnessTurnEventKind::ProviderMeta;
+            }
+            _ => {}
+        }
+
+        event
+    }
+
     fn start_runtime(&self, store: &HarnessStore, member: &AgentMember) -> CliResult<AgentRuntime> {
         start_codex_exec_runtime(store, member)
     }
@@ -13187,7 +13315,86 @@ mod workflow_runtime_tests {
     }
 
     #[test]
-    fn provider_adapter_default_normalizes_unknown_and_retains_raw() {
+    fn codex_normalize_thread_started_sets_provider_thread_id_and_retains_raw() {
+        let raw = serde_json::json!({
+            "type": "thread.started",
+            "thread_id": "thread-1"
+        });
+
+        let event = CodexAdapter.normalize_turn_event("session-T", 7, &raw);
+
+        assert_eq!(event.session_id, "session-T");
+        assert_eq!(event.provider, "codex");
+        assert_eq!(event.seq, 7);
+        assert_eq!(event.kind, HarnessTurnEventKind::ProviderMeta);
+        assert_eq!(event.provider_thread_id.as_deref(), Some("thread-1"));
+        assert_eq!(event.raw_provider_event, raw);
+    }
+
+    #[test]
+    fn codex_normalize_turn_started_sets_kind_and_provider_turn_id_and_retains_raw() {
+        let raw = serde_json::json!({
+            "type": "turn.started",
+            "turn_id": "turn-1"
+        });
+
+        let event = CodexAdapter.normalize_turn_event("session-T", 8, &raw);
+
+        assert_eq!(event.kind, HarnessTurnEventKind::TurnStarted);
+        assert_eq!(event.provider_turn_id.as_deref(), Some("turn-1"));
+        assert_eq!(event.raw_provider_event, raw);
+    }
+
+    #[test]
+    fn codex_normalize_agent_message_item_completed_sets_message_and_retains_raw() {
+        let raw = serde_json::json!({
+            "type": "item.completed",
+            "item": {
+                "id": "item-1",
+                "type": "agent_message",
+                "text": "done"
+            }
+        });
+
+        let event = CodexAdapter.normalize_turn_event("session-T", 9, &raw);
+
+        assert_eq!(event.kind, HarnessTurnEventKind::Message);
+        assert_eq!(event.provider_item_id.as_deref(), Some("item-1"));
+        assert_eq!(event.role.as_deref(), Some("assistant"));
+        assert_eq!(event.text.as_deref(), Some("done"));
+        assert_eq!(event.raw_provider_event, raw);
+    }
+
+    #[test]
+    fn codex_normalize_turn_completed_sets_usage_and_retains_raw() {
+        let raw = serde_json::json!({
+            "type": "turn.completed",
+            "usage": {
+                "input_tokens": 1200,
+                "output_tokens": 340,
+                "cached_input_tokens": 800,
+                "reasoning_output_tokens": 120
+            }
+        });
+
+        let event = CodexAdapter.normalize_turn_event("session-T", 10, &raw);
+
+        assert_eq!(event.kind, HarnessTurnEventKind::TurnCompleted);
+        assert_eq!(
+            event.usage,
+            Some(HarnessTokenUsage {
+                input_tokens: 1200,
+                output_tokens: 340,
+                total_tokens: 1540,
+                cached_input_tokens: Some(800),
+                reasoning_output_tokens: Some(120),
+            })
+        );
+        assert_eq!(event.raw_provider_event, raw);
+    }
+
+    #[test]
+    fn codex_normalize_unrecognized_type_stays_unknown_and_retains_raw() {
         let raw = serde_json::json!({
             "type": "provider_specific",
             "payload": {"n": 1}
