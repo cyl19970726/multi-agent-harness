@@ -9773,6 +9773,17 @@ trait ProviderAdapter: Sync {
     /// Spawn (or attach) the persistent runtime for a member of this provider.
     fn start_runtime(&self, store: &HarnessStore, member: &AgentMember) -> CliResult<AgentRuntime>;
 
+    /// Run a single message delivery against this provider's persistent runtime.
+    fn run_delivery(
+        &self,
+        store: &HarnessStore,
+        member: &AgentMember,
+        runtime: &AgentRuntime,
+        message: &Message,
+        delivery_id: &str,
+        timeout_ms: u64,
+    ) -> CliResult<DeliveryOutcome>;
+
     fn spawn_ephemeral(&self, ctx: &EphemeralSpawnContext<'_>) -> CliResult<EphemeralSpawn>;
 }
 
@@ -9790,6 +9801,18 @@ impl ProviderAdapter for CodexAdapter {
 
     fn start_runtime(&self, store: &HarnessStore, member: &AgentMember) -> CliResult<AgentRuntime> {
         start_codex_exec_runtime(store, member)
+    }
+
+    fn run_delivery(
+        &self,
+        store: &HarnessStore,
+        member: &AgentMember,
+        runtime: &AgentRuntime,
+        message: &Message,
+        delivery_id: &str,
+        timeout_ms: u64,
+    ) -> CliResult<DeliveryOutcome> {
+        run_codex_exec_delivery(store, member, runtime, message, delivery_id, timeout_ms)
     }
 
     fn record_hook_event(&self, store: &HarnessStore, args: &[String]) -> CliResult<()> {
@@ -10034,6 +10057,18 @@ impl ProviderAdapter for ClaudeAdapter {
 
     fn start_runtime(&self, store: &HarnessStore, member: &AgentMember) -> CliResult<AgentRuntime> {
         start_claude_runtime(store, member)
+    }
+
+    fn run_delivery(
+        &self,
+        store: &HarnessStore,
+        member: &AgentMember,
+        runtime: &AgentRuntime,
+        message: &Message,
+        delivery_id: &str,
+        timeout_ms: u64,
+    ) -> CliResult<DeliveryOutcome> {
+        run_claude_delivery(store, member, runtime, message, delivery_id, timeout_ms)
     }
 
     fn ingest_ephemeral_trace(
@@ -10910,14 +10945,11 @@ fn run_provider_delivery(
     delivery_id: &str,
     timeout_ms: u64,
 ) -> CliResult<DeliveryOutcome> {
-    match ProviderKind::from(member.provider.as_str()) {
-        ProviderKind::Codex => {
-            run_codex_exec_delivery(store, member, runtime, message, delivery_id, timeout_ms)
+    match provider_adapter(&member.provider) {
+        Some(adapter) => {
+            adapter.run_delivery(store, member, runtime, message, delivery_id, timeout_ms)
         }
-        ProviderKind::Claude => {
-            run_claude_delivery(store, member, runtime, message, delivery_id, timeout_ms)
-        }
-        ProviderKind::Unknown(provider) => Err(unknown_provider_error(&provider, "delivery")),
+        None => Err(unknown_provider_error(&member.provider, "delivery")),
     }
 }
 
