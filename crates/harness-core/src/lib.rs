@@ -774,6 +774,99 @@ pub struct ProviderSession {
     pub evidence_ids: Vec<String>,
 }
 
+/// Normalized, provider-neutral turn-event kind. Maps both codex
+/// (`type`/`item`) and claude (stream-json `type`/subtype) vocabularies onto
+/// one taxonomy so the dashboard and a 3rd provider need no per-provider branch.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HarnessTurnEventKind {
+    TurnStarted,
+    TurnCompleted,
+    MessageDelta,
+    Message,
+    ToolCall,
+    ToolResult,
+    Reasoning,
+    Usage,
+    Error,
+    ProviderMeta,
+    Unknown,
+}
+
+/// A normalized tool invocation (`ToolCall` kind).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HarnessToolCall {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    pub name: String,
+    pub args: serde_json::Value,
+}
+
+/// A normalized tool result (`ToolResult` kind).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HarnessToolResult {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    pub content: String,
+    pub is_error: bool,
+}
+
+/// Normalized token usage (`Usage`/`TurnCompleted` kinds).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HarnessTokenUsage {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub total_tokens: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cached_input_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_output_tokens: Option<u64>,
+}
+
+/// One normalized turn event. `raw_provider_event` always retains the original
+/// provider JSON for audit / debugging / a "show raw" toggle. `seq` is a
+/// harness-assigned monotonic per-session counter; `ts` is harness-assigned at
+/// ingest. `session_id` is the harness provider-session row id.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HarnessTurnEvent {
+    pub session_id: String,
+    pub provider: String,
+    pub seq: u64,
+    pub ts: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_thread_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_turn_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_item_id: Option<String>,
+    pub kind: HarnessTurnEventKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delta: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call: Option<HarnessToolCall>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_result: Option<HarnessToolResult>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<HarnessTokenUsage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_usd: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    pub raw_provider_event: serde_json::Value,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentRuntimeStatus {
@@ -2007,6 +2100,119 @@ mod tests {
 
         assert_eq!(parsed, session);
         assert!(parsed.validate().is_ok());
+    }
+
+    #[test]
+    fn harness_turn_event_round_trips_json_and_omits_absent_optionals() {
+        let tool_event = HarnessTurnEvent {
+            session_id: "session-1".to_string(),
+            provider: "codex".to_string(),
+            seq: 1,
+            ts: "2026-06-13T00:00:00Z".to_string(),
+            provider_thread_id: None,
+            provider_turn_id: Some("turn-1".to_string()),
+            provider_item_id: None,
+            kind: HarnessTurnEventKind::ToolCall,
+            role: None,
+            text: None,
+            delta: None,
+            tool_call: Some(HarnessToolCall {
+                id: Some("call-1".to_string()),
+                name: "shell".to_string(),
+                args: serde_json::json!({ "cmd": "cargo test -p harness-core" }),
+            }),
+            tool_result: None,
+            usage: None,
+            model: Some("gpt-5".to_string()),
+            duration_ms: None,
+            cost_usd: None,
+            status: None,
+            error: None,
+            raw_provider_event: serde_json::json!({
+                "type": "item",
+                "item": { "type": "tool_call", "id": "call-1" }
+            }),
+        };
+
+        let usage_event = HarnessTurnEvent {
+            session_id: "session-1".to_string(),
+            provider: "codex".to_string(),
+            seq: 2,
+            ts: "2026-06-13T00:00:01Z".to_string(),
+            provider_thread_id: None,
+            provider_turn_id: None,
+            provider_item_id: None,
+            kind: HarnessTurnEventKind::Usage,
+            role: None,
+            text: None,
+            delta: None,
+            tool_call: None,
+            tool_result: None,
+            usage: Some(HarnessTokenUsage {
+                input_tokens: 10,
+                output_tokens: 20,
+                total_tokens: 30,
+                cached_input_tokens: None,
+                reasoning_output_tokens: Some(5),
+            }),
+            model: None,
+            duration_ms: None,
+            cost_usd: None,
+            status: None,
+            error: None,
+            raw_provider_event: serde_json::json!({
+                "type": "usage",
+                "input_tokens": 10,
+                "output_tokens": 20
+            }),
+        };
+
+        for event in [tool_event, usage_event] {
+            let json = serde_json::to_value(&event).expect("serialize turn event");
+            let parsed: HarnessTurnEvent =
+                serde_json::from_value(json.clone()).expect("deserialize turn event");
+
+            assert_eq!(parsed, event);
+            assert!(json.get("raw_provider_event").is_some());
+            assert!(json.get("provider_thread_id").is_none());
+            assert!(json.get("provider_item_id").is_none());
+            assert!(json.get("role").is_none());
+            assert!(json.get("text").is_none());
+            assert!(json.get("delta").is_none());
+            assert!(json.get("duration_ms").is_none());
+            assert!(json.get("cost_usd").is_none());
+            assert!(json.get("status").is_none());
+            assert!(json.get("error").is_none());
+        }
+    }
+
+    #[test]
+    fn harness_turn_event_kind_wire_spellings_are_snake_case() {
+        // These wire strings are the API contract the SSE stream, the
+        // /v1/.../events endpoints, and the dashboard key on — pin every variant.
+        let cases = [
+            (HarnessTurnEventKind::TurnStarted, "turn_started"),
+            (HarnessTurnEventKind::TurnCompleted, "turn_completed"),
+            (HarnessTurnEventKind::MessageDelta, "message_delta"),
+            (HarnessTurnEventKind::Message, "message"),
+            (HarnessTurnEventKind::ToolCall, "tool_call"),
+            (HarnessTurnEventKind::ToolResult, "tool_result"),
+            (HarnessTurnEventKind::Reasoning, "reasoning"),
+            (HarnessTurnEventKind::Usage, "usage"),
+            (HarnessTurnEventKind::Error, "error"),
+            (HarnessTurnEventKind::ProviderMeta, "provider_meta"),
+            (HarnessTurnEventKind::Unknown, "unknown"),
+        ];
+        for (kind, wire) in cases {
+            assert_eq!(
+                serde_json::to_value(&kind).expect("serialize kind"),
+                serde_json::Value::String(wire.to_string()),
+                "kind {kind:?} should serialize to {wire:?}"
+            );
+            let back: HarnessTurnEventKind =
+                serde_json::from_value(serde_json::json!(wire)).expect("deserialize kind");
+            assert_eq!(back, kind);
+        }
     }
 
     #[test]
