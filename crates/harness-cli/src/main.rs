@@ -7339,120 +7339,17 @@ fn ingest_provider_output(
     task_id: Option<&str>,
     source_ref: &str,
 ) -> CliResult<()> {
-    // The member's declared provider is the source of truth for which native
-    // output shape we are parsing and which provider string we stamp on the
-    // resulting events/child-threads (BE-WP6). Codex uses the existing neutral
-    // parser; Claude's native shape lands in BE-WP8.
+    // The member's declared provider is the source of truth for the native output
+    // shape we parse and the provider string we stamp; on lookup failure default to codex.
     let provider = latest_member(store, agent_member_id)
         .map(|member| member.provider)
         .unwrap_or_else(|_| ProviderKind::Codex.to_string());
-    match ProviderKind::from(provider.as_str()) {
-        ProviderKind::Codex => {}
-        ProviderKind::Claude => {
-            // WP-3: Parse Claude stream-json NDJSON output using neutral reducer
-            let text = fs::read_to_string(source_ref).unwrap_or_default();
-            ingest_claude_stream_json(store, agent_member_id, runtime_id, task_id, &text)?;
-            return Ok(());
+    match provider_adapter(&provider) {
+        Some(adapter) => {
+            adapter.ingest_output(store, agent_member_id, runtime_id, task_id, source_ref)
         }
-        ProviderKind::Unknown(provider) => {
-            return Err(unknown_provider_error(&provider, "output ingest"));
-        }
+        None => Err(unknown_provider_error(&provider, "output ingest")),
     }
-    let text = fs::read_to_string(source_ref).unwrap_or_default();
-    for value in extract_provider_json_values(&text) {
-        let method = value
-            .get("method")
-            .and_then(|value| value.as_str())
-            .or_else(|| value.get("type").and_then(|value| value.as_str()))
-            .unwrap_or("provider_output");
-        let event_type = method.replace(['/', '.'], "_");
-        let summary = summarize_json_value(&value);
-        let provider_context = value.get("params").unwrap_or(&value);
-        let provider_thread_id = thread_id_from_container(provider_context);
-        let provider_turn_id = turn_id_from_container(provider_context);
-        let provider_child_thread_id = provider_child_thread_id_from_container(provider_context);
-        let event = AgentEvent {
-            id: generated_id("event"),
-            agent_member_id: agent_member_id.into(),
-            provider_runtime_id: runtime_id.map(str::to_string),
-            task_id: task_id.map(str::to_string),
-            provider: provider.clone(),
-            provider_thread_id: provider_thread_id.clone(),
-            provider_turn_id: provider_turn_id.clone(),
-            provider_child_thread_id: provider_child_thread_id.clone(),
-            event_type: event_type.clone(),
-            summary,
-            payload_ref: Some(source_ref.into()),
-            created_at: now_string(),
-        };
-        store.append_event(&event)?;
-        if let Some(child_thread) = provider_child_thread_from_event(
-            &provider,
-            agent_member_id,
-            runtime_id,
-            task_id,
-            provider_thread_id.as_deref(),
-            &value,
-        ) {
-            store.append_provider_child_thread(&child_thread)?;
-        }
-        if event_type.contains("turn_plan_updated") || event_type.contains("turn_diff_updated") {
-            if let Some(task_id) = task_id {
-                let proposal = Proposal {
-                    id: generated_id("proposal"),
-                    task_id: task_id.into(),
-                    agent_member_id: agent_member_id.into(),
-                    title: format!("Provider {}", event_type),
-                    summary: "Proposal candidate from provider notification".into(),
-                    status: ProposalStatus::Draft,
-                    changed_paths: Vec::new(),
-                    evidence_ids: Vec::new(),
-                    created_at: now_string(),
-                    updated_at: now_string(),
-                };
-                store.append_proposal(&proposal)?;
-            }
-        }
-        if let Some(terminal_source) = terminal_source_from_provider_event(&value, &event_type) {
-            let reconciled = reconcile_running_provider_sessions(
-                store,
-                agent_member_id,
-                task_id,
-                provider_thread_id.as_deref(),
-                provider_turn_id.as_deref(),
-                terminal_source,
-            )?;
-            if reconciled {
-                continue;
-            }
-        }
-        if event_type.contains("turn_completed") {
-            let report = Message {
-                id: generated_id("msg"),
-                task_id: task_id.map(str::to_string),
-                from_agent_id: agent_member_id.into(),
-                to_agent_id: None,
-                channel: Some("provider-report".into()),
-                kind: MessageKind::Report,
-                delivery_status: MessageDeliveryStatus::Delivered,
-                content: "Provider turn completed".into(),
-                evidence_ids: Vec::new(),
-                created_at: now_string(),
-                delivery: Some(MessageDelivery {
-                    provider_session_id: None,
-                    provider_request_id: None,
-                    provider_thread_id,
-                    provider_turn_id,
-                    terminal_source: Some(MessageTerminalSource::TurnCompleted),
-                    delivered_at: Some(now_string()),
-                    last_error: None,
-                }),
-                sender_kind: SenderKind::Agent,
-            };
-            store.append_message(&report)?;
-        }
-    }
-    Ok(())
 }
 
 fn terminal_source_from_provider_event(
@@ -9908,6 +9805,18 @@ trait ProviderAdapter: Sync {
         spawn: &EphemeralSpawn,
     );
 
+    /// Ingest a persistent provider runtime's recorded output file (`source_ref`)
+    /// into neutral AgentEvents / child-threads / proposals / reconciliations /
+    /// reports. The provider-output ingest counterpart of the runtime delivery path.
+    fn ingest_output(
+        &self,
+        store: &HarnessStore,
+        agent_member_id: &str,
+        runtime_id: Option<&str>,
+        task_id: Option<&str>,
+        source_ref: &str,
+    ) -> CliResult<()>;
+
     fn spawn_ephemeral(&self, ctx: &EphemeralSpawnContext<'_>) -> CliResult<EphemeralSpawn>;
 }
 
@@ -9974,6 +9883,115 @@ impl ProviderAdapter for CodexAdapter {
             ctx.timeout_ms,
         )
     }
+
+    fn ingest_output(
+        &self,
+        store: &HarnessStore,
+        agent_member_id: &str,
+        runtime_id: Option<&str>,
+        task_id: Option<&str>,
+        source_ref: &str,
+    ) -> CliResult<()> {
+        let provider = self.name().to_string();
+        let text = fs::read_to_string(source_ref).unwrap_or_default();
+        for value in extract_provider_json_values(&text) {
+            let method = value
+                .get("method")
+                .and_then(|value| value.as_str())
+                .or_else(|| value.get("type").and_then(|value| value.as_str()))
+                .unwrap_or("provider_output");
+            let event_type = method.replace(['/', '.'], "_");
+            let summary = summarize_json_value(&value);
+            let provider_context = value.get("params").unwrap_or(&value);
+            let provider_thread_id = thread_id_from_container(provider_context);
+            let provider_turn_id = turn_id_from_container(provider_context);
+            let provider_child_thread_id =
+                provider_child_thread_id_from_container(provider_context);
+            let event = AgentEvent {
+                id: generated_id("event"),
+                agent_member_id: agent_member_id.into(),
+                provider_runtime_id: runtime_id.map(str::to_string),
+                task_id: task_id.map(str::to_string),
+                provider: provider.clone(),
+                provider_thread_id: provider_thread_id.clone(),
+                provider_turn_id: provider_turn_id.clone(),
+                provider_child_thread_id: provider_child_thread_id.clone(),
+                event_type: event_type.clone(),
+                summary,
+                payload_ref: Some(source_ref.into()),
+                created_at: now_string(),
+            };
+            store.append_event(&event)?;
+            if let Some(child_thread) = provider_child_thread_from_event(
+                &provider,
+                agent_member_id,
+                runtime_id,
+                task_id,
+                provider_thread_id.as_deref(),
+                &value,
+            ) {
+                store.append_provider_child_thread(&child_thread)?;
+            }
+            if event_type.contains("turn_plan_updated") || event_type.contains("turn_diff_updated")
+            {
+                if let Some(task_id) = task_id {
+                    let proposal = Proposal {
+                        id: generated_id("proposal"),
+                        task_id: task_id.into(),
+                        agent_member_id: agent_member_id.into(),
+                        title: format!("Provider {}", event_type),
+                        summary: "Proposal candidate from provider notification".into(),
+                        status: ProposalStatus::Draft,
+                        changed_paths: Vec::new(),
+                        evidence_ids: Vec::new(),
+                        created_at: now_string(),
+                        updated_at: now_string(),
+                    };
+                    store.append_proposal(&proposal)?;
+                }
+            }
+            if let Some(terminal_source) = terminal_source_from_provider_event(&value, &event_type)
+            {
+                let reconciled = reconcile_running_provider_sessions(
+                    store,
+                    agent_member_id,
+                    task_id,
+                    provider_thread_id.as_deref(),
+                    provider_turn_id.as_deref(),
+                    terminal_source,
+                )?;
+                if reconciled {
+                    continue;
+                }
+            }
+            if event_type.contains("turn_completed") {
+                let report = Message {
+                    id: generated_id("msg"),
+                    task_id: task_id.map(str::to_string),
+                    from_agent_id: agent_member_id.into(),
+                    to_agent_id: None,
+                    channel: Some("provider-report".into()),
+                    kind: MessageKind::Report,
+                    delivery_status: MessageDeliveryStatus::Delivered,
+                    content: "Provider turn completed".into(),
+                    evidence_ids: Vec::new(),
+                    created_at: now_string(),
+                    delivery: Some(MessageDelivery {
+                        provider_session_id: None,
+                        provider_request_id: None,
+                        provider_thread_id,
+                        provider_turn_id,
+                        terminal_source: Some(MessageTerminalSource::TurnCompleted),
+                        delivered_at: Some(now_string()),
+                        last_error: None,
+                    }),
+                    sender_kind: SenderKind::Agent,
+                };
+                store.append_message(&report)?;
+            }
+        }
+        Ok(())
+    }
 }
 impl ProviderAdapter for ClaudeAdapter {
     fn name(&self) -> &'static str {
@@ -10006,6 +10024,18 @@ impl ProviderAdapter for ClaudeAdapter {
             ctx.timeout_ms,
             ctx.max_budget_usd,
         )
+    }
+
+    fn ingest_output(
+        &self,
+        store: &HarnessStore,
+        agent_member_id: &str,
+        runtime_id: Option<&str>,
+        task_id: Option<&str>,
+        source_ref: &str,
+    ) -> CliResult<()> {
+        let text = fs::read_to_string(source_ref).unwrap_or_default();
+        ingest_claude_stream_json(store, agent_member_id, runtime_id, task_id, &text)
     }
 }
 
