@@ -197,7 +197,9 @@ impl StarlarkCtx<'_> {
         phase: Option<String>,
         model: Option<String>,
         effort: Option<String>,
+        fallback_model: Option<String>,
         image: Vec<String>,
+        add_dir: Vec<String>,
         isolation: Option<String>,
         schema: Option<serde_json::Value>,
         writable: bool,
@@ -230,7 +232,9 @@ impl StarlarkCtx<'_> {
             provider,
             model,
             effort,
+            fallback_model,
             image,
+            add_dir,
             isolation,
             prompt,
             schema,
@@ -450,7 +454,9 @@ impl StarlarkCtx<'_> {
                 provider: String::new(),
                 model: None,
                 effort: None,
+                fallback_model: None,
                 image: Vec::new(),
+                add_dir: Vec::new(),
                 isolation: None,
                 prompt: item.clone(),
                 schema: None,
@@ -654,7 +660,9 @@ fn read_parallel_specs(
         let phase = dict_str(&dict, "phase")?;
         let model = dict_str(&dict, "model")?;
         let effort = dict_str(&dict, "effort")?;
+        let fallback_model = dict_str(&dict, "fallback_model")?;
         let image = dict_str_list(&dict, "image")?;
+        let add_dir = dict_str_list(&dict, "add_dir")?;
         let isolation = dict_str(&dict, "isolation")?;
         let schema = dict_schema(&dict, "schema")?;
         let writable = dict_bool(&dict, "writable")?;
@@ -664,7 +672,9 @@ fn read_parallel_specs(
             provider,
             model,
             effort,
+            fallback_model,
             image,
+            add_dir,
             isolation,
             prompt,
             schema,
@@ -694,7 +704,9 @@ struct StageTemplate {
     phase: String,
     model: Option<String>,
     effort: Option<String>,
+    fallback_model: Option<String>,
     image: Vec<String>,
+    add_dir: Vec<String>,
     isolation: Option<String>,
     schema: Option<serde_json::Value>,
     writable: bool,
@@ -714,7 +726,9 @@ impl StageTemplate {
             provider: self.provider.clone(),
             model: self.model.clone(),
             effort: self.effort.clone(),
+            fallback_model: self.fallback_model.clone(),
             image: self.image.clone(),
+            add_dir: self.add_dir.clone(),
             isolation: self.isolation.clone(),
             prompt,
             schema: self.schema.clone(),
@@ -774,7 +788,9 @@ fn read_pipeline_stages(
         let phase = dict_str(&dict, "phase")?;
         let model = dict_str(&dict, "model")?;
         let effort = dict_str(&dict, "effort")?;
+        let fallback_model = dict_str(&dict, "fallback_model")?;
         let image = dict_str_list(&dict, "image")?;
+        let add_dir = dict_str_list(&dict, "add_dir")?;
         let isolation = dict_str(&dict, "isolation")?;
         let schema = dict_schema(&dict, "schema")?;
         let writable = dict_bool(&dict, "writable")?;
@@ -785,7 +801,9 @@ fn read_pipeline_stages(
             phase: ctx.phase_for(phase),
             model,
             effort,
+            fallback_model,
             image,
+            add_dir,
             isolation,
             schema,
             writable,
@@ -848,7 +866,9 @@ fn workflow_globals(builder: &mut GlobalsBuilder) {
         #[starlark(require = named)] phase: Option<String>,
         #[starlark(require = named)] model: Option<String>,
         #[starlark(require = named)] effort: Option<String>,
+        #[starlark(require = named)] fallback_model: Option<String>,
         #[starlark(require = named)] image: Option<Value<'v>>,
+        #[starlark(require = named)] add_dir: Option<Value<'v>>,
         #[starlark(require = named)] isolation: Option<String>,
         #[starlark(require = named)] schema: Option<Value<'v>>,
         #[starlark(require = named, default = false)] writable: bool,
@@ -867,6 +887,10 @@ fn workflow_globals(builder: &mut GlobalsBuilder) {
             Some(value) if !value.is_none() => value_str_list(value, "agent() `image`")?,
             _ => Vec::new(),
         };
+        let add_dir = match add_dir {
+            Some(value) if !value.is_none() => value_str_list(value, "agent() `add_dir`")?,
+            _ => Vec::new(),
+        };
         let has_schema = schema_json.is_some();
         let result = ctx_of(eval).run_one(
             prompt,
@@ -875,7 +899,9 @@ fn workflow_globals(builder: &mut GlobalsBuilder) {
             phase,
             model,
             effort,
+            fallback_model,
             image,
+            add_dir,
             isolation,
             schema_json,
             writable,
@@ -1403,21 +1429,24 @@ b = agent("fix what scan found: " + a, provider = "claude", label = "fixer")
     }
 
     #[test]
-    fn image_kwarg_flows_onto_agent_parallel_and_pipeline_specs() {
-        let seen = Mutex::new(Vec::<(String, Vec<String>)>::new());
+    fn passthrough_kwargs_flow_onto_agent_parallel_and_pipeline_specs() {
+        let seen = Mutex::new(Vec::<(String, Vec<String>, Vec<String>, Option<String>)>::new());
         let script = r#"
-agent("inspect", label = "single", image = ["a.png"])
-parallel([{"prompt": "compare", "label": "fanout", "image": ["b.png", "c.jpg"]}])
+agent("inspect", label = "single", image = ["a.png"], add_dir = ["src"], fallback_model = "claude-sonnet")
+parallel([{"prompt": "compare", "label": "fanout", "image": ["b.png", "c.jpg"], "add_dir": ["crates"], "fallback_model": "claude-haiku"}])
 pipeline(
     ["item"],
-    [{"prompt": "stage {input}", "label": "pipe", "image": ["d.webp"]}],
+    [{"prompt": "stage {input}", "label": "pipe", "image": ["d.webp"], "add_dir": ["skills"], "fallback_model": "claude-opus"}],
 )
 "#;
         let outcome = {
             let driver = |spec: &AgentStepSpec| {
-                seen.lock()
-                    .unwrap()
-                    .push((spec.label.clone(), spec.image.clone()));
+                seen.lock().unwrap().push((
+                    spec.label.clone(),
+                    spec.image.clone(),
+                    spec.add_dir.clone(),
+                    spec.fallback_model.clone(),
+                ));
                 StepResult {
                     phase: spec.phase.clone(),
                     label: spec.label.clone(),
@@ -1438,14 +1467,26 @@ pipeline(
                 .outcome
         };
 
-        let seen: std::collections::HashMap<String, Vec<String>> =
-            seen.into_inner().unwrap().into_iter().collect();
-        assert_eq!(seen["single"], vec!["a.png".to_string()]);
+        let seen: std::collections::HashMap<String, (Vec<String>, Vec<String>, Option<String>)> =
+            seen.into_inner()
+                .unwrap()
+                .into_iter()
+                .map(|(label, image, add_dir, fallback_model)| {
+                    (label, (image, add_dir, fallback_model))
+                })
+                .collect();
+        assert_eq!(seen["single"].0, vec!["a.png".to_string()]);
+        assert_eq!(seen["single"].1, vec!["src".to_string()]);
+        assert_eq!(seen["single"].2.as_deref(), Some("claude-sonnet"));
         assert_eq!(
-            seen["fanout"],
+            seen["fanout"].0,
             vec!["b.png".to_string(), "c.jpg".to_string()]
         );
-        assert_eq!(seen["pipe"], vec!["d.webp".to_string()]);
+        assert_eq!(seen["fanout"].1, vec!["crates".to_string()]);
+        assert_eq!(seen["fanout"].2.as_deref(), Some("claude-haiku"));
+        assert_eq!(seen["pipe"].0, vec!["d.webp".to_string()]);
+        assert_eq!(seen["pipe"].1, vec!["skills".to_string()]);
+        assert_eq!(seen["pipe"].2.as_deref(), Some("claude-opus"));
         assert_eq!(outcome.steps.len(), 3);
     }
 
