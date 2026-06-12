@@ -5535,11 +5535,9 @@ fn write_running_ephemeral_session(
     session_dir: &Path,
     spec: &workflow::AgentStepSpec,
 ) {
-    let live_file = if spec.provider == "claude" {
-        "claude.stream-json.ndjson"
-    } else {
-        "codex.stream-json.ndjson"
-    };
+    let live_file = provider_adapter(&spec.provider)
+        .map(|adapter| adapter.live_ndjson_file_name())
+        .unwrap_or_else(|| CodexAdapter.live_ndjson_file_name());
     let live_path = session_dir.join(live_file);
     // Pre-create the live NDJSON so the events route serves [] (then a growing
     // list) during the turn instead of erroring on a not-yet-existent file.
@@ -5654,11 +5652,9 @@ fn ingest_ephemeral_events(
     // jsonl_ref/stdout_ref point at the retained per-session NDJSON ONLY when the
     // trace is durable; a live-only run leaves them None so the drill-in renders
     // "trace not retained" (the NDJSON is pruned after the run).
-    let live_file = if spec.provider == "claude" {
-        "claude.stream-json.ndjson"
-    } else {
-        "codex.stream-json.ndjson"
-    };
+    let live_file = provider_adapter(&spec.provider)
+        .map(|adapter| adapter.live_ndjson_file_name())
+        .unwrap_or_else(|| CodexAdapter.live_ndjson_file_name());
     let jsonl_ref = if retain_trace {
         Some(
             store
@@ -6979,11 +6975,8 @@ fn claim_message_for_delivery(
     // before the first event lands. Same delivery_id → same session row as the
     // terminal row, so the poll resolves to the growing file throughout. Both
     // providers stream; the file name matches what each exec path writes.
-    let live_filename = match member.provider.as_str() {
-        "codex" => Some("codex.stream-json.ndjson"),
-        "claude" => Some("claude.stream-json.ndjson"),
-        _ => None,
-    };
+    let live_filename =
+        provider_adapter(member.provider.as_str()).map(|adapter| adapter.live_ndjson_file_name());
     if let Some(filename) = live_filename {
         let session_dir = store.root().join("provider-sessions").join(delivery_id);
         let live_path = session_dir.join(filename);
@@ -9934,6 +9927,10 @@ trait ProviderAdapter: Sync {
     /// Canonical provider id as used in `member.provider` and `agent(provider=...)`.
     fn name(&self) -> &'static str;
 
+    /// The per-session live NDJSON filename this provider's spawn/delivery writes,
+    /// which the ProviderSession `jsonl_ref` points at during a turn.
+    fn live_ndjson_file_name(&self) -> &'static str;
+
     fn spawn_ephemeral(&self, ctx: &EphemeralSpawnContext<'_>) -> CliResult<EphemeralSpawn>;
 }
 
@@ -9943,6 +9940,10 @@ struct ClaudeAdapter;
 impl ProviderAdapter for CodexAdapter {
     fn name(&self) -> &'static str {
         "codex"
+    }
+
+    fn live_ndjson_file_name(&self) -> &'static str {
+        "codex.stream-json.ndjson"
     }
 
     fn spawn_ephemeral(&self, ctx: &EphemeralSpawnContext<'_>) -> CliResult<EphemeralSpawn> {
@@ -9962,6 +9963,10 @@ impl ProviderAdapter for CodexAdapter {
 impl ProviderAdapter for ClaudeAdapter {
     fn name(&self) -> &'static str {
         "claude"
+    }
+
+    fn live_ndjson_file_name(&self) -> &'static str {
+        "claude.stream-json.ndjson"
     }
 
     fn spawn_ephemeral(&self, ctx: &EphemeralSpawnContext<'_>) -> CliResult<EphemeralSpawn> {
