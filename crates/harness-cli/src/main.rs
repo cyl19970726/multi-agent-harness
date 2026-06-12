@@ -9918,10 +9918,46 @@ fn build_bootstrap_prompt(member: &AgentMember) -> String {
 // fast with an explicit, debuggable message rather than silently assuming Codex.
 // ---------------------------------------------------------------------------
 
+/// Provider-specific behaviour boundary (Issue #107 Gap 1). Stage 1 only carries
+/// the provider's canonical name; later stages grow this trait to own command
+/// building, event interpretation, pricing, permission mapping, etc. As later
+/// stages migrate each dispatch site onto this trait, the registry becomes the
+/// single source of truth for which providers the harness supports; Stage 1 wires
+/// `unknown_provider_error` to it while `ProviderKind` dispatch still coexists.
+trait ProviderAdapter: Sync {
+    /// Canonical provider id as used in `member.provider` and `agent(provider=...)`.
+    fn name(&self) -> &'static str;
+}
+
+struct CodexAdapter;
+struct ClaudeAdapter;
+
+impl ProviderAdapter for CodexAdapter {
+    fn name(&self) -> &'static str {
+        "codex"
+    }
+}
+impl ProviderAdapter for ClaudeAdapter {
+    fn name(&self) -> &'static str {
+        "claude"
+    }
+}
+
+/// All providers the harness recognises, in canonical display order.
+fn provider_registry() -> &'static [&'static dyn ProviderAdapter] {
+    &[&CodexAdapter, &ClaudeAdapter]
+}
+
+/// The supported provider ids, derived from the registry (single source of truth).
+fn supported_provider_names() -> Vec<&'static str> {
+    provider_registry().iter().map(|a| a.name()).collect()
+}
+
 /// Build the standard error for a provider the harness does not recognise.
 fn unknown_provider_error(provider: &str, concern: &str) -> CliError {
     CliError::Usage(format!(
-        "unknown provider {provider:?} for {concern}; supported providers: codex, claude"
+        "unknown provider {provider:?} for {concern}; supported providers: {}",
+        supported_provider_names().join(", ")
     ))
 }
 
@@ -13626,9 +13662,12 @@ mod tests {
         let error = start_provider_runtime(&store, &member)
             .expect_err("unknown provider must fail fast rather than assume codex");
         let message = error.to_string();
-        assert!(
-            message.contains("unknown provider") && message.contains("gemini"),
-            "expected explicit unknown-provider error, got: {message}"
+        // Assert the EXACT message: the supported list is now derived from the
+        // provider registry, so this guards against ordering/spacing/list drift
+        // (which a substring check would silently miss).
+        assert_eq!(
+            message,
+            "unknown provider \"gemini\" for runtime start; supported providers: codex, claude"
         );
 
         let _ = std::fs::remove_dir_all(root);

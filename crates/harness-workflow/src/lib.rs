@@ -24,13 +24,6 @@ use harness_core::{WorkflowRunStatus, WorkflowStepStatus};
 
 pub mod starlark_front;
 
-/// The set of providers a workflow node may target. Each `agent()` node spins up
-/// a NEW one-shot ephemeral provider process (codex exec / claude -p); the node
-/// references a PROVIDER, not a pre-existing member. The runtime stays
-/// provider-agnostic — it only carries the validated provider string through to
-/// the injected delivery driver.
-pub const SUPPORTED_PROVIDERS: [&str; 2] = ["codex", "claude"];
-
 /// The only supported per-node isolation mode. An `agent()` node may opt in to
 /// `isolation: "worktree"` (exactly like Claude Code's Workflow `isolation:
 /// 'worktree'`): that node runs in its own throwaway git worktree whose diff is
