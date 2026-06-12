@@ -5108,6 +5108,7 @@ fn spawn_codex_ephemeral(
         session_id,
         "codex.stream-json.ndjson",
         timeout_ms,
+        "ephemeral worker",
     )?;
     let codex_events: Vec<CodexExecEvent> = run
         .events
@@ -5233,6 +5234,7 @@ fn spawn_claude_ephemeral(
         session_id,
         "claude.stream-json.ndjson",
         timeout_ms,
+        "ephemeral worker",
     )?;
     let claude_events: Vec<ClaudeStreamEvent> = run
         .events
@@ -5321,6 +5323,11 @@ fn run_ndjson_child(
     session_id: &str,
     live_file_name: &str,
     timeout_ms: u64,
+    // Human label for this worker in spawn/timeout error + warning strings
+    // (e.g. "ephemeral worker", "codex exec", "claude -p"). The persistent member
+    // path passes its provider-specific label so failure summaries read the same
+    // as before this runner was shared.
+    context: &str,
 ) -> CliResult<NdjsonRun> {
     // Put the worker in its OWN process group so a timeout can kill the whole
     // tree (see kill_worker_tree), not just the immediate child.
@@ -5334,16 +5341,16 @@ fn run_ndjson_child(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|error| CliError::Usage(format!("failed to spawn ephemeral worker: {error}")))?;
+        .map_err(|error| CliError::Usage(format!("failed to spawn {context}: {error}")))?;
 
     let stdout = child
         .stdout
         .take()
-        .ok_or_else(|| CliError::Usage("ephemeral worker stdout not available".into()))?;
+        .ok_or_else(|| CliError::Usage(format!("{context} stdout not available")))?;
     let stderr = child
         .stderr
         .take()
-        .ok_or_else(|| CliError::Usage("ephemeral worker stderr not available".into()))?;
+        .ok_or_else(|| CliError::Usage(format!("{context} stderr not available")))?;
 
     let _ = fs::create_dir_all(session_dir);
     let live_path = session_dir.join(live_file_name);
@@ -5469,10 +5476,10 @@ fn run_ndjson_child(
     let (events, mut warnings) = stdout_handle.join().unwrap_or_default();
     let mut stderr_log = stderr_handle.join().unwrap_or_default();
     if timed_out && stderr_log.is_empty() {
-        stderr_log = "timeout waiting for ephemeral worker".into();
+        stderr_log = format!("timeout waiting for {context}");
     }
     if timed_out {
-        warnings.push("ephemeral worker timed out".to_string());
+        warnings.push(format!("{context} timed out"));
     }
 
     Ok(NdjsonRun {
@@ -9977,30 +9984,6 @@ impl ClaudeStreamEvent {
     }
 }
 
-/// Parse NDJSON from `claude -p` stream-json stdout into a ClaudeStreamEvent
-/// stream, invoking `on_event` with each parsed event's payload AS IT IS READ —
-/// used to tee events MID-TURN to the session NDJSON (Stage A poll) and the
-/// shared turn-events file (Stage B live SSE) so the agent TUI streams in real
-/// time. Resilient: skips invalid/partial lines. Pass `None::<fn(&_)>` for a
-/// plain parse with no live tee; the returned Vec is identical either way, so
-/// status inference / reply extraction / the terminal row are unaffected.
-fn parse_claude_stream_json_to<F: FnMut(&serde_json::Value)>(
-    reader: impl BufRead,
-    mut on_event: Option<F>,
-) -> Vec<ClaudeStreamEvent> {
-    let mut events = Vec::new();
-    for line in reader.lines() {
-        let Ok(line_str) = line else { continue };
-        if let Some(event) = ClaudeStreamEvent::parse_line(&line_str) {
-            if let Some(callback) = on_event.as_mut() {
-                callback(&event.payload);
-            }
-            events.push(event);
-        }
-    }
-    events
-}
-
 /// Infer provider session status from Claude stream-json events.
 fn infer_claude_session_status(
     events: &[ClaudeStreamEvent],
@@ -10520,97 +10503,24 @@ fn run_codex_exec_process(
         }
     }
 
-    let mut child = cmd
-        .stdin(Stdio::null())
-        .stderr(Stdio::piped())
-        .stdout(Stdio::piped())
-        .current_dir(cwd.clone().unwrap_or_else(|| ".".into()))
-        .spawn()
-        .map_err(|error| CliError::Usage(format!("spawn codex exec failed: {error}")))?;
+    cmd.current_dir(cwd.clone().unwrap_or_else(|| ".".into()));
 
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| CliError::Usage("codex exec stdout not available".into()))?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| CliError::Usage("codex exec stderr not available".into()))?;
+    let run = run_ndjson_child(
+        cmd,
+        session_dir,
+        delivery_id,
+        "codex.stream-json.ndjson",
+        timeout_ms,
+        "codex exec",
+    )?;
+    let events = run
+        .events
+        .iter()
+        .filter_map(|payload| serde_json::to_string(payload).ok())
+        .filter_map(|line| CodexExecEvent::parse_line(&line))
+        .collect();
 
-    // Parse stdout as NDJSON in real time, teeing each parsed event to TWO sinks
-    // (mirroring the claude path) so the agent TUI streams MID-TURN: the durable
-    // per-session NDJSON the claim row's jsonl_ref points at, AND the shared
-    // <store_root>/provider_turn_events.jsonl the SSE watcher tails. Best-effort.
-    let reader = BufReader::new(stdout);
-    let _ = fs::create_dir_all(session_dir);
-    let live_path = session_dir.join("codex.stream-json.ndjson");
-    let shared_path = session_dir
-        .parent()
-        .and_then(|provider_sessions| provider_sessions.parent())
-        .map(|store_root| store_root.join("provider_turn_events.jsonl"));
-    let mut session_writer = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&live_path)
-        .ok()
-        .map(BufWriter::new);
-    let mut shared_writer = shared_path
-        .as_ref()
-        .and_then(|path| {
-            fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(path)
-                .ok()
-        })
-        .map(BufWriter::new);
-    let events = parse_codex_ndjson_to(
-        reader,
-        Some(|payload: &serde_json::Value| {
-            if let Some(writer) = session_writer.as_mut() {
-                if let Ok(line) = serde_json::to_string(payload) {
-                    let _ = writeln!(writer, "{line}");
-                    let _ = writer.flush();
-                }
-            }
-            if let Some(writer) = shared_writer.as_mut() {
-                let envelope = serde_json::json!({ "session_id": delivery_id, "event": payload });
-                if let Ok(line) = serde_json::to_string(&envelope) {
-                    let _ = writeln!(writer, "{line}");
-                    let _ = writer.flush();
-                }
-            }
-        }),
-    );
-    if let Some(writer) = session_writer.as_mut() {
-        let _ = writer.flush();
-    }
-    if let Some(writer) = shared_writer.as_mut() {
-        let _ = writer.flush();
-    }
-
-    // Capture stderr.
-    let mut stderr_log = String::new();
-    BufReader::new(stderr).read_to_string(&mut stderr_log).ok();
-
-    // Wait for process with timeout.
-    let start = Instant::now();
-    let timeout = Duration::from_millis(timeout_ms.max(1));
-    let process_success = loop {
-        if start.elapsed() > timeout {
-            let _ = child.kill();
-            break false;
-        }
-        match child.try_wait() {
-            Ok(Some(status)) => break status.success(),
-            Ok(None) => {
-                std::thread::sleep(Duration::from_millis(50));
-            }
-            Err(_) => break false,
-        }
-    };
-
-    Ok((process_success, events, stderr_log))
+    Ok((run.process_success, events, run.stderr))
 }
 
 // Run a single Codex exec delivery, writing identical ProviderSession/Evidence rows.
@@ -11170,126 +11080,28 @@ fn run_claude_exec_delivery_real(
     let cwd_str = cwd.unwrap_or_else(|| ".".to_string());
     cmd.current_dir(&cwd_str);
 
-    // Spawn the process. Close stdin: the prompt is supplied via `-p`, so claude
-    // must not block reading piped stdin. Without this it inherits the parent's
-    // stdin and can hang waiting for an EOF that never arrives.
-    let mut child = cmd
-        .stdin(Stdio::null())
-        .stderr(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .map_err(|error| CliError::Usage(format!("failed to spawn claude -p process: {error}")))?;
-
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| CliError::Usage("claude -p stdout not available".into()))?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| CliError::Usage("claude -p stderr not available".into()))?;
-
-    // Parse stdout as NDJSON in real time, teeing each parsed event to TWO sinks
-    // so the agent TUI streams MID-TURN: (1) the durable per-session NDJSON the
-    // claim row's jsonl_ref points at (Stage A: poll + recorded turns), and (2) a
-    // shared <store_root>/provider_turn_events.jsonl of {session_id, event} lines
-    // the SSE watcher tails to push live frames (Stage B). Best-effort: a tee
-    // failure must not break delivery.
-    let reader = BufReader::new(stdout);
-    let _ = fs::create_dir_all(session_dir);
-    let live_path = session_dir.join("claude.stream-json.ndjson");
     let delivery_id = session_dir
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or_default()
         .to_string();
-    let shared_path = session_dir
-        .parent()
-        .and_then(|provider_sessions| provider_sessions.parent())
-        .map(|store_root| store_root.join("provider_turn_events.jsonl"));
-    let mut session_writer = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&live_path)
-        .ok()
-        .map(BufWriter::new);
-    let mut shared_writer = shared_path
-        .as_ref()
-        .and_then(|path| {
-            fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(path)
-                .ok()
-        })
-        .map(BufWriter::new);
-    let events = parse_claude_stream_json_to(
-        reader,
-        Some(|payload: &serde_json::Value| {
-            if let Some(writer) = session_writer.as_mut() {
-                if let Ok(line) = serde_json::to_string(payload) {
-                    let _ = writeln!(writer, "{line}");
-                    let _ = writer.flush();
-                }
-            }
-            if let Some(writer) = shared_writer.as_mut() {
-                let envelope = serde_json::json!({ "session_id": delivery_id, "event": payload });
-                if let Ok(line) = serde_json::to_string(&envelope) {
-                    let _ = writeln!(writer, "{line}");
-                    let _ = writer.flush();
-                }
-            }
-        }),
-    );
-    if let Some(writer) = session_writer.as_mut() {
-        let _ = writer.flush();
-    }
-    if let Some(writer) = shared_writer.as_mut() {
-        let _ = writer.flush();
-    }
-
-    // Capture stderr.
-    let mut stderr_log = String::new();
-    BufReader::new(stderr).read_to_string(&mut stderr_log).ok();
-
-    // Wait for process with timeout.
-    let start = Instant::now();
-    let timeout = Duration::from_millis(timeout_ms.max(1));
-    loop {
-        match child.try_wait() {
-            Ok(Some(_status)) => break,
-            Ok(None) => {
-                if start.elapsed() > timeout {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    let session_id = extract_session_id_from_claude_events(&events);
-                    return Ok((
-                        false,
-                        events,
-                        session_id,
-                        "timeout waiting for claude -p process".into(),
-                    ));
-                }
-                std::thread::sleep(Duration::from_millis(50));
-            }
-            Err(error) => {
-                let session_id = extract_session_id_from_claude_events(&events);
-                return Ok((false, events, session_id, format!("wait failed: {error}")));
-            }
-        }
-    }
-
-    let final_output = child
-        .wait_with_output()
-        .map_err(|error| CliError::Usage(format!("failed to collect claude -p output: {error}")))?;
+    let run = run_ndjson_child(
+        cmd,
+        session_dir,
+        &delivery_id,
+        "claude.stream-json.ndjson",
+        timeout_ms,
+        "claude -p process",
+    )?;
+    let events = run
+        .events
+        .iter()
+        .filter_map(|payload| serde_json::to_string(payload).ok())
+        .filter_map(|line| ClaudeStreamEvent::parse_line(&line))
+        .collect::<Vec<_>>();
 
     let session_id = extract_session_id_from_claude_events(&events);
-    Ok((
-        final_output.status.success(),
-        events,
-        session_id,
-        stderr_log,
-    ))
+    Ok((run.process_success, events, session_id, run.stderr))
 }
 
 /// Build a [`resident::ResidentConfig`] from the same launch inputs the default
@@ -12260,7 +12072,15 @@ mod workflow_runtime_tests {
 
         let start = Instant::now();
         // 500ms IDLE limit: after the one event, silence > 500ms → killed.
-        let run = run_ndjson_child(cmd, &session_dir, "s", "out.ndjson", 500).expect("run");
+        let run = run_ndjson_child(
+            cmd,
+            &session_dir,
+            "s",
+            "out.ndjson",
+            500,
+            "ephemeral worker",
+        )
+        .expect("run");
         let elapsed = start.elapsed();
 
         assert!(
@@ -12287,7 +12107,15 @@ mod workflow_runtime_tests {
         cmd.arg("-c")
             .arg("printf 'not-json\\n'; printf '{\"type\":\"item\",\"n\":1}\\n'");
 
-        let run = run_ndjson_child(cmd, &session_dir, "s", "out.ndjson", 1_000).expect("run");
+        let run = run_ndjson_child(
+            cmd,
+            &session_dir,
+            "s",
+            "out.ndjson",
+            1_000,
+            "ephemeral worker",
+        )
+        .expect("run");
 
         assert!(run.process_success);
         assert!(!run.timed_out);
@@ -12316,7 +12144,15 @@ mod workflow_runtime_tests {
         cmd.arg("-c")
             .arg("for i in 1 2 3 4 5 6 7 8; do printf '{\"type\":\"item\"}\\n'; sleep 0.1; done");
 
-        let run = run_ndjson_child(cmd, &session_dir, "s", "out.ndjson", 300).expect("run");
+        let run = run_ndjson_child(
+            cmd,
+            &session_dir,
+            "s",
+            "out.ndjson",
+            300,
+            "ephemeral worker",
+        )
+        .expect("run");
 
         assert!(
             !run.timed_out,
