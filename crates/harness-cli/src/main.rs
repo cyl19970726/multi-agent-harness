@@ -10509,17 +10509,54 @@ impl ProviderAdapter for ClaudeAdapter {
                     return vec![event];
                 };
 
-                if let Some(block) = blocks.iter().find(|block| {
+                let mut events = Vec::new();
+
+                let thinking_parts: Vec<&str> = blocks
+                    .iter()
+                    .filter(|block| {
+                        block.get("type").and_then(|value| value.as_str()) == Some("thinking")
+                    })
+                    .filter_map(|block| {
+                        block
+                            .get("thinking")
+                            .or_else(|| block.get("text"))
+                            .and_then(|value| value.as_str())
+                    })
+                    .collect();
+                if !thinking_parts.is_empty() {
+                    let mut reasoning_event = generic_turn_event(self.name(), session_id, raw);
+                    reasoning_event.kind = HarnessTurnEventKind::Reasoning;
+                    reasoning_event.text = Some(thinking_parts.join("\n"));
+                    events.push(reasoning_event);
+                }
+
+                let text_parts: Vec<&str> = blocks
+                    .iter()
+                    .filter(|block| {
+                        block.get("type").and_then(|value| value.as_str()) == Some("text")
+                    })
+                    .filter_map(|block| block.get("text").and_then(|value| value.as_str()))
+                    .collect();
+                if !text_parts.is_empty() {
+                    let mut message_event = generic_turn_event(self.name(), session_id, raw);
+                    message_event.kind = HarnessTurnEventKind::Message;
+                    message_event.role = Some("assistant".into());
+                    message_event.text = Some(text_parts.join("\n"));
+                    events.push(message_event);
+                }
+
+                for block in blocks.iter().filter(|block| {
                     block.get("type").and_then(|value| value.as_str()) == Some("tool_use")
                 }) {
-                    event.kind = HarnessTurnEventKind::ToolCall;
-                    event.provider_item_id = block
+                    let mut tool_call_event = generic_turn_event(self.name(), session_id, raw);
+                    tool_call_event.kind = HarnessTurnEventKind::ToolCall;
+                    tool_call_event.provider_item_id = block
                         .get("id")
                         .and_then(|value| value.as_str())
                         .filter(|value| !value.is_empty())
                         .map(str::to_string);
-                    event.tool_call = Some(HarnessToolCall {
-                        id: event.provider_item_id.clone(),
+                    tool_call_event.tool_call = Some(HarnessToolCall {
+                        id: tool_call_event.provider_item_id.clone(),
                         name: block
                             .get("name")
                             .and_then(|value| value.as_str())
@@ -10528,85 +10565,62 @@ impl ProviderAdapter for ClaudeAdapter {
                             .to_string(),
                         args: block.get("input").cloned().unwrap_or_else(|| block.clone()),
                     });
-                } else if blocks.iter().any(|block| {
-                    block.get("type").and_then(|value| value.as_str()) == Some("thinking")
-                }) {
-                    event.kind = HarnessTurnEventKind::Reasoning;
-                    let parts: Vec<&str> = blocks
-                        .iter()
-                        .filter(|block| {
-                            block.get("type").and_then(|value| value.as_str()) == Some("thinking")
-                        })
-                        .filter_map(|block| {
-                            block
-                                .get("thinking")
-                                .or_else(|| block.get("text"))
-                                .and_then(|value| value.as_str())
-                        })
-                        .collect();
-                    if !parts.is_empty() {
-                        event.text = Some(parts.join("\n"));
-                    }
-                } else if blocks
-                    .iter()
-                    .any(|block| block.get("type").and_then(|value| value.as_str()) == Some("text"))
-                {
-                    event.kind = HarnessTurnEventKind::Message;
-                    event.role = Some("assistant".into());
-                    let parts: Vec<&str> = blocks
-                        .iter()
-                        .filter(|block| {
-                            block.get("type").and_then(|value| value.as_str()) == Some("text")
-                        })
-                        .filter_map(|block| block.get("text").and_then(|value| value.as_str()))
-                        .collect();
-                    if !parts.is_empty() {
-                        event.text = Some(parts.join("\n"));
-                    }
-                } else {
-                    event.kind = HarnessTurnEventKind::ProviderMeta;
+                    events.push(tool_call_event);
                 }
+
+                if events.is_empty() {
+                    event.kind = HarnessTurnEventKind::ProviderMeta;
+                    return vec![event];
+                }
+                return events;
             }
             Some("user") => {
-                let Some(block) = payload
+                let Some(blocks) = payload
                     .get("message")
                     .and_then(|message| message.get("content"))
                     .and_then(|content| content.as_array())
-                    .and_then(|blocks| {
-                        blocks.iter().find(|block| {
-                            block.get("type").and_then(|value| value.as_str())
-                                == Some("tool_result")
-                        })
-                    })
                 else {
                     event.kind = HarnessTurnEventKind::ProviderMeta;
                     return vec![event];
                 };
 
-                event.kind = HarnessTurnEventKind::ToolResult;
-                event.provider_item_id = block
-                    .get("tool_use_id")
-                    .and_then(|value| value.as_str())
-                    .filter(|value| !value.is_empty())
-                    .map(str::to_string);
-                let content = block
-                    .get("content")
-                    .map(|value| {
-                        value
-                            .as_str()
-                            .map(str::to_string)
-                            .unwrap_or_else(|| value.to_string())
-                    })
-                    .unwrap_or_default();
-                event.tool_result = Some(HarnessToolResult {
-                    tool_call_id: event.provider_item_id.clone(),
-                    name: None,
-                    content,
-                    is_error: block
-                        .get("is_error")
-                        .and_then(|value| value.as_bool())
-                        .unwrap_or(false),
-                });
+                let mut events = Vec::new();
+                for block in blocks.iter().filter(|block| {
+                    block.get("type").and_then(|value| value.as_str()) == Some("tool_result")
+                }) {
+                    let mut tool_result_event = generic_turn_event(self.name(), session_id, raw);
+                    tool_result_event.kind = HarnessTurnEventKind::ToolResult;
+                    tool_result_event.provider_item_id = block
+                        .get("tool_use_id")
+                        .and_then(|value| value.as_str())
+                        .filter(|value| !value.is_empty())
+                        .map(str::to_string);
+                    let content = block
+                        .get("content")
+                        .map(|value| {
+                            value
+                                .as_str()
+                                .map(str::to_string)
+                                .unwrap_or_else(|| value.to_string())
+                        })
+                        .unwrap_or_default();
+                    tool_result_event.tool_result = Some(HarnessToolResult {
+                        tool_call_id: tool_result_event.provider_item_id.clone(),
+                        name: None,
+                        content,
+                        is_error: block
+                            .get("is_error")
+                            .and_then(|value| value.as_bool())
+                            .unwrap_or(false),
+                    });
+                    events.push(tool_result_event);
+                }
+
+                if events.is_empty() {
+                    event.kind = HarnessTurnEventKind::ProviderMeta;
+                    return vec![event];
+                }
+                return events;
             }
             Some("result") => {
                 let raw_usage = payload.get("usage");
@@ -13940,7 +13954,6 @@ mod workflow_runtime_tests {
             "message": {
                 "role": "assistant",
                 "content": [
-                    {"type": "text", "text": "checking"},
                     {
                         "type": "tool_use",
                         "id": "toolu_01",
@@ -13965,6 +13978,123 @@ mod workflow_runtime_tests {
                 args: serde_json::json!({"file_path": "Cargo.toml"}),
             })
         );
+        assert_eq!(event.raw_provider_event, raw);
+    }
+
+    #[test]
+    fn claude_normalize_assistant_text_then_tool_use_expands_in_order_and_retains_raw() {
+        let raw = serde_json::json!({
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "checking"},
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_01",
+                        "name": "Read",
+                        "input": {"file_path": "Cargo.toml"}
+                    }
+                ]
+            }
+        });
+
+        let events = ClaudeAdapter.normalize_turn_event("session-C", &raw);
+        assert_eq!(events.len(), 2);
+        assert!(events.iter().all(|event| event.raw_provider_event == raw));
+
+        assert_eq!(events[0].kind, HarnessTurnEventKind::Message);
+        assert_eq!(events[0].role.as_deref(), Some("assistant"));
+        assert_eq!(events[0].text.as_deref(), Some("checking"));
+
+        assert_eq!(events[1].kind, HarnessTurnEventKind::ToolCall);
+        assert_eq!(events[1].provider_item_id.as_deref(), Some("toolu_01"));
+        assert_eq!(
+            events[1].tool_call,
+            Some(HarnessToolCall {
+                id: Some("toolu_01".into()),
+                name: "Read".into(),
+                args: serde_json::json!({"file_path": "Cargo.toml"}),
+            })
+        );
+    }
+
+    #[test]
+    fn claude_normalize_assistant_thinking_text_and_tool_uses_expands_in_order_and_retains_raw() {
+        let raw = serde_json::json!({
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "content": [
+                    {"type": "thinking", "thinking": "thinking one"},
+                    {"type": "text", "text": "done thinking"},
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_A",
+                        "name": "Read",
+                        "input": {"file_path": "Cargo.toml"}
+                    },
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_B",
+                        "name": "Write",
+                        "input": {"file_path": "README.md", "content": "notes"}
+                    }
+                ]
+            }
+        });
+
+        let events = ClaudeAdapter.normalize_turn_event("session-C", &raw);
+        assert_eq!(events.len(), 4);
+        assert!(events.iter().all(|event| event.raw_provider_event == raw));
+
+        assert_eq!(events[0].kind, HarnessTurnEventKind::Reasoning);
+        assert_eq!(events[0].text.as_deref(), Some("thinking one"));
+
+        assert_eq!(events[1].kind, HarnessTurnEventKind::Message);
+        assert_eq!(events[1].role.as_deref(), Some("assistant"));
+        assert_eq!(events[1].text.as_deref(), Some("done thinking"));
+
+        assert_eq!(events[2].kind, HarnessTurnEventKind::ToolCall);
+        assert_eq!(events[2].provider_item_id.as_deref(), Some("toolu_A"));
+        assert_eq!(
+            events[2].tool_call,
+            Some(HarnessToolCall {
+                id: Some("toolu_A".into()),
+                name: "Read".into(),
+                args: serde_json::json!({"file_path": "Cargo.toml"}),
+            })
+        );
+
+        assert_eq!(events[3].kind, HarnessTurnEventKind::ToolCall);
+        assert_eq!(events[3].provider_item_id.as_deref(), Some("toolu_B"));
+        assert_eq!(
+            events[3].tool_call,
+            Some(HarnessToolCall {
+                id: Some("toolu_B".into()),
+                name: "Write".into(),
+                args: serde_json::json!({"file_path": "README.md", "content": "notes"}),
+            })
+        );
+    }
+
+    #[test]
+    fn claude_normalize_assistant_unknown_content_block_stays_provider_meta_and_retains_raw() {
+        let raw = serde_json::json!({
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "content": [
+                    {"type": "server_tool_use", "id": "srv_01"}
+                ]
+            }
+        });
+
+        let events = ClaudeAdapter.normalize_turn_event("session-C", &raw);
+        assert_eq!(events.len(), 1);
+        let event = &events[0];
+
+        assert_eq!(event.kind, HarnessTurnEventKind::ProviderMeta);
         assert_eq!(event.raw_provider_event, raw);
     }
 
@@ -14001,6 +14131,57 @@ mod workflow_runtime_tests {
             })
         );
         assert_eq!(event.raw_provider_event, raw);
+    }
+
+    #[test]
+    fn claude_normalize_user_tool_results_expand_in_order_and_retain_raw() {
+        let raw = serde_json::json!({
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "u1",
+                        "content": "first"
+                    },
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "u2",
+                        "content": [{"type": "text", "text": "second"}],
+                        "is_error": true
+                    }
+                ]
+            }
+        });
+
+        let events = ClaudeAdapter.normalize_turn_event("session-C", &raw);
+        assert_eq!(events.len(), 2);
+        assert!(events.iter().all(|event| event.raw_provider_event == raw));
+
+        assert_eq!(events[0].kind, HarnessTurnEventKind::ToolResult);
+        assert_eq!(events[0].provider_item_id.as_deref(), Some("u1"));
+        assert_eq!(
+            events[0].tool_result,
+            Some(HarnessToolResult {
+                tool_call_id: Some("u1".into()),
+                name: None,
+                content: "first".into(),
+                is_error: false,
+            })
+        );
+
+        assert_eq!(events[1].kind, HarnessTurnEventKind::ToolResult);
+        assert_eq!(events[1].provider_item_id.as_deref(), Some("u2"));
+        assert_eq!(
+            events[1].tool_result,
+            Some(HarnessToolResult {
+                tool_call_id: Some("u2".into()),
+                name: None,
+                content: serde_json::json!([{"type": "text", "text": "second"}]).to_string(),
+                is_error: true,
+            })
+        );
     }
 
     #[test]
