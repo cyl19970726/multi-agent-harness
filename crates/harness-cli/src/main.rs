@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::env;
 use std::fs;
 use std::io::{BufRead, BufReader, BufWriter, Read, Write};
@@ -6,7 +6,7 @@ use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use harness_core::{
@@ -2470,6 +2470,17 @@ fn handle_sse_stream(
                             break; // Client disconnected
                         }
                     }
+                    sse::SseEventFrame::ProviderTurnEventNormalized(value) => {
+                        if sse::write_sse_frame(
+                            &mut stream,
+                            "provider_turn_event_normalized",
+                            &value,
+                        )
+                        .is_err()
+                        {
+                            break; // Client disconnected
+                        }
+                    }
                 }
                 last_keepalive = std::time::Instant::now();
             }
@@ -2510,8 +2521,51 @@ fn serve_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     // per-session NDJSON remains the durable source for catch-up.
     let _ = fs::write(store.root().join("provider_turn_events.jsonl"), b"");
 
+    let normalize_store = store.clone();
+    let provider_cache = Mutex::new(HashMap::<String, String>::new());
+    let next_seq_cache = Mutex::new(HashMap::<String, u64>::new());
+    let normalize = move |session_id: &str, raw: &serde_json::Value| -> Vec<serde_json::Value> {
+        let provider = {
+            let Ok(mut cache) = provider_cache.lock() else {
+                return Vec::new();
+            };
+            if let Some(provider) = cache.get(session_id).cloned() {
+                provider
+            } else {
+                let session = match latest_provider_session(&normalize_store, session_id) {
+                    Ok(Some(session)) => session,
+                    Ok(None) | Err(_) => return Vec::new(),
+                };
+                let provider = session.provider;
+                cache.insert(session_id.to_string(), provider.clone());
+                provider
+            }
+        };
+
+        let next_seq = {
+            let Ok(cache) = next_seq_cache.lock() else {
+                return Vec::new();
+            };
+            cache.get(session_id).copied().unwrap_or(0)
+        };
+        let events = normalize_live_turn_event(&provider, session_id, raw, next_seq);
+        if events.is_empty() {
+            return Vec::new();
+        }
+
+        let Ok(mut cache) = next_seq_cache.lock() else {
+            return Vec::new();
+        };
+        cache.insert(session_id.to_string(), next_seq + events.len() as u64);
+
+        events
+            .into_iter()
+            .filter_map(|event| serde_json::to_value(event).ok())
+            .collect()
+    };
+
     // Start the SSE watcher thread
-    sse::start_sse_watcher(store, sse_manager.clone()).map_err(CliError::Io)?;
+    sse::start_sse_watcher(store, sse_manager.clone(), normalize).map_err(CliError::Io)?;
 
     // Start the abandoned-run reaper: periodically flip `Running` runs whose
     // driver process has died (or legacy runs past the stale window) to `Failed`,
@@ -9385,6 +9439,25 @@ fn generic_turn_event(
     }
 }
 
+fn normalize_live_turn_event(
+    provider: &str,
+    session_id: &str,
+    raw: &serde_json::Value,
+    next_seq: u64,
+) -> Vec<HarnessTurnEvent> {
+    match provider_adapter(provider) {
+        Some(adapter) => adapter.normalize_turn_event(session_id, raw),
+        None => vec![generic_turn_event(provider, session_id, raw)],
+    }
+    .into_iter()
+    .enumerate()
+    .map(|(index, mut event)| {
+        event.seq = next_seq + index as u64;
+        event
+    })
+    .collect()
+}
+
 /// Read a session's RAW per-session events and normalize each to a
 /// HarnessTurnEvent (normalize-on-read; no new storage, raw route unchanged).
 fn read_provider_session_normalized_events(
@@ -13680,6 +13753,51 @@ mod workflow_runtime_tests {
     }
 
     #[test]
+    fn live_normalize_codex_command_execution_assigns_seq_and_serializes_payload_events() {
+        let raw = serde_json::json!({
+            "type": "item.completed",
+            "item": {
+                "id": "cmd-live",
+                "type": "command_execution",
+                "command": "cargo test",
+                "aggregated_output": "ok\n",
+                "exit_code": 0
+            }
+        });
+
+        let events = normalize_live_turn_event("codex", "session-live", &raw, 41);
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].kind, HarnessTurnEventKind::ToolCall);
+        assert_eq!(events[0].seq, 41);
+        assert_eq!(events[0].raw_provider_event, raw);
+        assert_eq!(events[1].kind, HarnessTurnEventKind::ToolResult);
+        assert_eq!(events[1].seq, 42);
+        assert_eq!(events[1].raw_provider_event, raw);
+
+        let payload = serde_json::json!({
+            "session_id": "session-live",
+            "events": events
+                .iter()
+                .map(serde_json::to_value)
+                .collect::<Result<Vec<_>, _>>()
+                .expect("serialize events"),
+        });
+        let payload_events = payload
+            .get("events")
+            .and_then(|value| value.as_array())
+            .expect("payload events");
+        assert_eq!(payload_events.len(), 2);
+        assert_eq!(
+            payload_events[0].get("kind").and_then(|v| v.as_str()),
+            Some("tool_call")
+        );
+        assert_eq!(
+            payload_events[1].get("kind").and_then(|v| v.as_str()),
+            Some("tool_result")
+        );
+    }
+
+    #[test]
     fn codex_normalize_command_execution_without_output_or_error_emits_call_only() {
         let raw = serde_json::json!({
             "type": "item.completed",
@@ -14185,6 +14303,37 @@ mod workflow_runtime_tests {
     }
 
     #[test]
+    fn live_normalize_claude_expansion_assigns_monotonic_seq_from_next_seq() {
+        let raw = serde_json::json!({
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "u1",
+                        "content": "first"
+                    },
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "u2",
+                        "content": "second"
+                    }
+                ]
+            }
+        });
+
+        let events = normalize_live_turn_event("claude", "session-C", &raw, 8);
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].kind, HarnessTurnEventKind::ToolResult);
+        assert_eq!(events[0].seq, 8);
+        assert_eq!(events[0].raw_provider_event, raw);
+        assert_eq!(events[1].kind, HarnessTurnEventKind::ToolResult);
+        assert_eq!(events[1].seq, 9);
+        assert_eq!(events[1].raw_provider_event, raw);
+    }
+
+    #[test]
     fn claude_normalize_result_success_sets_completed_usage_cost_and_retains_raw() {
         let raw = serde_json::json!({
             "type": "result",
@@ -14270,6 +14419,24 @@ mod workflow_runtime_tests {
         assert!(event.tool_call.is_none());
         assert!(event.tool_result.is_none());
         assert!(event.usage.is_none());
+    }
+
+    #[test]
+    fn live_normalize_unknown_provider_falls_back_to_generic_event_with_seq() {
+        let raw = serde_json::json!({
+            "type": "provider_specific",
+            "payload": {"n": 1}
+        });
+
+        let events = normalize_live_turn_event("mystery", "session-U", &raw, 17);
+        assert_eq!(events.len(), 1);
+        let event = &events[0];
+
+        assert_eq!(event.session_id, "session-U");
+        assert_eq!(event.provider, "mystery");
+        assert_eq!(event.seq, 17);
+        assert_eq!(event.kind, HarnessTurnEventKind::Unknown);
+        assert_eq!(event.raw_provider_event, raw);
     }
 
     #[test]
@@ -18426,7 +18593,8 @@ mod sse_tests {
         let serve_store = store.clone();
         std::thread::spawn(move || {
             let sse_manager = sse::SseManager::new();
-            sse::start_sse_watcher(&serve_store, sse_manager.clone()).expect("watcher");
+            sse::start_sse_watcher(&serve_store, sse_manager.clone(), |_, _| Vec::new())
+                .expect("watcher");
             for stream in listener.incoming() {
                 let Ok(stream) = stream else { continue };
                 let conn_store = serve_store.clone();
