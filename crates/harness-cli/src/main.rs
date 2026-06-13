@@ -2817,6 +2817,40 @@ fn handle_http_connection(
                     )?,
                 }
             }
+            // GET /v1/sessions/{id}/normalized-events — the normalized
+            // (HarnessTurnEvent[]) companion to the historical raw endpoint
+            // below, computed on read from the DURABLE per-session NDJSON. Same
+            // `retained` semantics: a pruned `--trace live` run returns
+            // `retained: false` with an empty list so the dashboard can render
+            // "trace not retained" provider-agnostically. Matched BEFORE the raw
+            // `/events` arm because it is the more specific suffix.
+            sessions_norm_path
+                if sessions_norm_path.starts_with("/v1/sessions/")
+                    && sessions_norm_path.ends_with("/normalized-events") =>
+            {
+                let session_id = sessions_norm_path
+                    .strip_prefix("/v1/sessions/")
+                    .and_then(|rest| rest.strip_suffix("/normalized-events"))
+                    .unwrap_or_default()
+                    .to_string();
+                match read_session_turn_events_normalized(store, &session_id) {
+                    Ok((retained, events, truncated)) => write_http_json(
+                        &mut stream,
+                        "200 OK",
+                        &serde_json::json!({
+                            "session_id": session_id,
+                            "retained": retained,
+                            "events": events,
+                            "truncated": truncated,
+                        }),
+                    )?,
+                    Err(detail) => write_http_json(
+                        &mut stream,
+                        "404 Not Found",
+                        &serde_json::json!({"error": "session_events_not_found", "detail": detail.to_string()}),
+                    )?,
+                }
+            }
             // GET /v1/sessions/{id}/events — the PERSISTED per-session turn
             // events for a completed durable run's historical drill-in (two-tier
             // persistence read side). Reads the durable per-session NDJSON the
@@ -9482,6 +9516,43 @@ fn read_provider_session_normalized_events(
     Ok((normalized, truncated))
 }
 
+/// Historical (completed-run) normalized read: the normalize-on-read companion to
+/// `read_session_turn_events`, used by `GET /v1/sessions/{id}/normalized-events`.
+/// Mirrors `read_provider_session_normalized_events` but reads the DURABLE
+/// per-session NDJSON via the two-tier-persistence path so it can also report
+/// `retained` — a `--trace live` run whose trace was pruned returns
+/// `(retained=false, [], false)` so the dashboard renders "trace not retained"
+/// instead of a 404, exactly like the raw historical endpoint.
+fn read_session_turn_events_normalized(
+    store: &HarnessStore,
+    session_id: &str,
+) -> CliResult<(bool, Vec<HarnessTurnEvent>, bool)> {
+    let raw = read_session_turn_events(store, session_id)?;
+    if !raw.retained {
+        return Ok((false, Vec::new(), raw.truncated));
+    }
+    // The provider drives adapter selection; a retained trace always has its
+    // ProviderSession row, but fall back to the generic adapter if it is missing
+    // so a normalized read never fails on a recoverable lookup.
+    let provider = latest_provider_session(store, session_id)?
+        .map(|session| session.provider)
+        .unwrap_or_default();
+    let normalized = raw
+        .events
+        .iter()
+        .flat_map(|event| match provider_adapter(&provider) {
+            Some(adapter) => adapter.normalize_turn_event(session_id, event),
+            None => vec![generic_turn_event(&provider, session_id, event)],
+        })
+        .enumerate()
+        .map(|(i, mut event)| {
+            event.seq = i as u64;
+            event
+        })
+        .collect();
+    Ok((true, normalized, raw.truncated))
+}
+
 /// Outcome of reading one provider session's PERSISTED turn-event trace for the
 /// historical drill-in (`GET /v1/sessions/<id>/events`). Distinguishes a durable
 /// run whose heavy trace survived from a `--trace live` run whose trace was
@@ -15105,6 +15176,65 @@ mod workflow_runtime_tests {
         let out = read_session_turn_events(&store, "session-Z").expect("read events");
         assert!(!out.retained, "missing session has no retained trace");
         assert!(out.events.is_empty());
+    }
+
+    #[test]
+    fn historical_normalized_events_normalize_durable_trace_and_report_retained() {
+        let store = temp_store("historical-normalized");
+        let ndjson = store
+            .root()
+            .join("provider-sessions")
+            .join("session-HN")
+            .join("claude.stream-json.ndjson");
+        fs::create_dir_all(ndjson.parent().unwrap()).expect("mkdir session dir");
+        // A real-ish claude trace: an assistant text block then a result.
+        fs::write(
+            &ndjson,
+            "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"hi\"}]}}\n{\"type\":\"result\",\"subtype\":\"success\"}\n",
+        )
+        .expect("write ndjson");
+        store
+            .append_provider_session(&provider_session_with_ref(
+                "session-HN",
+                Some(ndjson.display().to_string()),
+            ))
+            .expect("append durable session");
+
+        let (retained, events, truncated) =
+            read_session_turn_events_normalized(&store, "session-HN").expect("read normalized");
+        assert!(retained, "durable run must report retained");
+        assert!(!truncated);
+        assert_eq!(events.len(), 2);
+        // Provider-agnostic canonical kinds (claude assistant text -> Message,
+        // result -> TurnCompleted), monotonic seq, raw retained on each.
+        assert_eq!(events[0].kind, HarnessTurnEventKind::Message);
+        assert_eq!(events[0].seq, 0);
+        assert_eq!(events[0].text.as_deref(), Some("hi"));
+        assert!(!events[0].raw_provider_event.is_null());
+        assert_eq!(events[1].kind, HarnessTurnEventKind::TurnCompleted);
+        assert_eq!(events[1].seq, 1);
+        assert!(!events[1].raw_provider_event.is_null());
+    }
+
+    #[test]
+    fn historical_normalized_events_report_not_retained_for_pruned_trace() {
+        let store = temp_store("historical-normalized-pruned");
+        // Live-only run: row survives, jsonl_ref pruned -> not retained, no events.
+        store
+            .append_provider_session(&provider_session_with_ref("session-HP", None))
+            .expect("append live-only session");
+
+        let (retained, events, truncated) =
+            read_session_turn_events_normalized(&store, "session-HP").expect("read normalized");
+        assert!(
+            !retained,
+            "pruned --trace live run must report not retained"
+        );
+        assert!(
+            events.is_empty(),
+            "not-retained trace yields no normalized events"
+        );
+        assert!(!truncated);
     }
 
     #[test]

@@ -2,6 +2,7 @@ import type {
   AgentEvent,
   DashboardSnapshot,
   DocRegistryEntry,
+  HarnessTurnEvent,
   Message,
   ProviderSession,
   WorkflowDef,
@@ -97,6 +98,10 @@ export type SseFrame =
   // A single raw provider turn event teed live during a delivery (Stage B): the
   // agent TUI consumes these for sub-second streaming, falling back to polling.
   | { kind: "provider_turn_event"; sessionId: string; event: Record<string, unknown> }
+  // The NORMALIZED companion (Stage B): canonical HarnessTurnEvent[] expanded
+  // from one raw event, so the provider-agnostic TUI streams live without
+  // re-normalizing at the render layer. Merged by `seq` against the snapshot.
+  | { kind: "provider_turn_event_normalized"; sessionId: string; events: HarnessTurnEvent[] }
   | { kind: "workflow_run"; run: WorkflowRun }
   | { kind: "workflow_step"; step: WorkflowStep };
 
@@ -152,6 +157,16 @@ export function openEventStream(baseUrl: string, handlers: EventStreamHandlers):
     const data = parse<{ session_id?: string; event?: Record<string, unknown> }>(event as MessageEvent);
     if (data?.session_id && data.event) {
       handlers.onFrame({ kind: "provider_turn_event", sessionId: data.session_id, event: data.event });
+    }
+  });
+  source.addEventListener("provider_turn_event_normalized", (event) => {
+    const data = parse<{ session_id?: string; events?: HarnessTurnEvent[] }>(event as MessageEvent);
+    if (data?.session_id && Array.isArray(data.events)) {
+      handlers.onFrame({
+        kind: "provider_turn_event_normalized",
+        sessionId: data.session_id,
+        events: data.events,
+      });
     }
   });
   source.addEventListener("workflow_run", (event) => {
@@ -211,6 +226,26 @@ export function applyFrame(snapshot: DashboardSnapshot, frame: SseFrame): Dashbo
       return {
         ...snapshot,
         live_turn_events: { ...current, [frame.sessionId]: next },
+        generated_at: new Date().toISOString(),
+      };
+    }
+    case "provider_turn_event_normalized": {
+      // Merge this session's normalized events by `seq` (latest-wins), so a
+      // duplicate replay or out-of-order frame self-heals and the buffer stays
+      // sorted/aligned with the /normalized-events read endpoint. Capped like
+      // the raw buffer so a long turn cannot grow memory unbounded.
+      const LIVE_CAP = 2000;
+      const current = snapshot.live_normalized_events ?? {};
+      const existing = current[frame.sessionId] ?? [];
+      const bySeq = new Map<number, HarnessTurnEvent>();
+      for (const event of existing) bySeq.set(event.seq, event);
+      for (const event of frame.events) bySeq.set(event.seq, event);
+      const merged = Array.from(bySeq.values())
+        .sort((a, b) => a.seq - b.seq)
+        .slice(0, LIVE_CAP);
+      return {
+        ...snapshot,
+        live_normalized_events: { ...current, [frame.sessionId]: merged },
         generated_at: new Date().toISOString(),
       };
     }

@@ -464,6 +464,80 @@ export interface GoalLearningStatus {
   event_order?: Record<string, unknown>;
 }
 
+/**
+ * Canonical, provider-agnostic turn-event vocabulary (mirrors harness-core
+ * `HarnessTurnEventKind`, snake_case wire spelling). The dashboard renders off
+ * `kind` so a new provider needs no new frontend branch — the backend
+ * `ProviderAdapter::normalize_turn_event` maps its raw events onto these.
+ */
+export type HarnessTurnEventKind =
+  | "turn_started"
+  | "turn_completed"
+  | "message_delta"
+  | "message"
+  | "tool_call"
+  | "tool_result"
+  | "reasoning"
+  | "usage"
+  | "error"
+  | "provider_meta"
+  | "unknown";
+
+/** A normalized tool invocation (`tool_call` kind). */
+export interface HarnessToolCall {
+  id?: string;
+  name: string;
+  args: unknown;
+}
+
+/** A normalized tool result (`tool_result` kind). */
+export interface HarnessToolResult {
+  tool_call_id?: string;
+  name?: string;
+  content: string;
+  is_error: boolean;
+}
+
+/** Normalized token usage (`usage`/`turn_completed` kinds). */
+export interface HarnessTokenUsage {
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  cached_input_tokens?: number;
+  reasoning_output_tokens?: number;
+}
+
+/**
+ * One normalized turn event, from `GET /v1/provider-sessions/{id}/normalized-events`
+ * (and the historical `/v1/sessions/{id}/normalized-events`) or the live
+ * `provider_turn_event_normalized` SSE frame. `raw_provider_event` always
+ * retains the original provider JSON so a "show raw" view loses nothing; `seq`
+ * is a harness-assigned monotonic per-session counter used to merge/dedupe the
+ * live stream against a fetched snapshot.
+ */
+export interface HarnessTurnEvent {
+  session_id: string;
+  provider: string;
+  seq: number;
+  ts: string;
+  provider_thread_id?: string;
+  provider_turn_id?: string;
+  provider_item_id?: string;
+  kind: HarnessTurnEventKind;
+  role?: string;
+  text?: string;
+  delta?: string;
+  tool_call?: HarnessToolCall;
+  tool_result?: HarnessToolResult;
+  usage?: HarnessTokenUsage;
+  model?: string;
+  duration_ms?: number;
+  cost_usd?: number;
+  status?: string;
+  error?: string;
+  raw_provider_event: unknown;
+}
+
 export interface DashboardSnapshot {
   generated_at?: string;
   goals?: Goal[];
@@ -492,6 +566,13 @@ export interface DashboardSnapshot {
    * snapshot; accumulated by applyFrame so the agent TUI streams sub-second.
    */
   live_turn_events?: Record<string, Record<string, unknown>[]>;
+  /**
+   * Transient, client-only: NORMALIZED turn events pushed live via SSE
+   * (provider_turn_event_normalized, Stage B), keyed by session id and merged
+   * by `seq` (latest-wins) so the canonical TUI streams sub-second and aligns
+   * with the /normalized-events read endpoint. Never sent by the backend snapshot.
+   */
+  live_normalized_events?: Record<string, HarnessTurnEvent[]>;
   workflow_runs?: WorkflowRun[];
   workflow_steps?: WorkflowStep[];
 }
