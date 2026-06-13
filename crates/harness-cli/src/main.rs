@@ -10096,9 +10096,69 @@ impl ProviderAdapter for CodexAdapter {
                                 .to_string();
                             event.tool_call = Some(HarnessToolCall {
                                 id: event.provider_item_id.clone(),
-                                name,
+                                name: name.clone(),
                                 args: item.clone(),
                             });
+                            let output = item
+                                .get("aggregated_output")
+                                .and_then(|value| value.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            let exit_code = item.get("exit_code").and_then(|value| value.as_i64());
+                            let failed = exit_code.is_some_and(|code| code != 0);
+                            // Emit a ToolResult whenever the command produced ANY
+                            // output (raw, not trimmed — whitespace-only output is
+                            // still real output and must not be discarded) or it
+                            // failed. Content is the actual output verbatim; fall
+                            // back to `exit N` only when there is literally no
+                            // output. Trimming/hide-if-blank is a render concern the
+                            // dashboard owns; the canonical event stays faithful.
+                            if !output.is_empty() || failed {
+                                let mut result = generic_turn_event(self.name(), session_id, raw);
+                                result.provider_item_id = event.provider_item_id.clone();
+                                result.kind = HarnessTurnEventKind::ToolResult;
+                                result.tool_result = Some(HarnessToolResult {
+                                    tool_call_id: event.provider_item_id.clone(),
+                                    name: Some(name),
+                                    content: if output.is_empty() {
+                                        format!("exit {}", exit_code.unwrap_or_default())
+                                    } else {
+                                        output
+                                    },
+                                    is_error: failed,
+                                });
+                                return vec![event, result];
+                            }
+                            return vec![event];
+                        }
+                        Some("file_change") => {
+                            let changes = item
+                                .get("changes")
+                                .and_then(|value| value.as_array())
+                                .filter(|changes| !changes.is_empty());
+                            if let Some(changes) = changes {
+                                let mut events = Vec::with_capacity(changes.len());
+                                for change in changes {
+                                    let name =
+                                        match change.get("kind").and_then(|value| value.as_str()) {
+                                            Some("add") => "Write",
+                                            Some("delete") => "Delete",
+                                            _ => "Edit",
+                                        };
+                                    let mut change_event =
+                                        generic_turn_event(self.name(), session_id, raw);
+                                    change_event.provider_item_id = event.provider_item_id.clone();
+                                    change_event.kind = HarnessTurnEventKind::ToolCall;
+                                    change_event.tool_call = Some(HarnessToolCall {
+                                        id: event.provider_item_id.clone(),
+                                        name: name.into(),
+                                        args: change.clone(),
+                                    });
+                                    events.push(change_event);
+                                }
+                                return events;
+                            }
+                            event.kind = HarnessTurnEventKind::ProviderMeta;
                         }
                         _ => {
                             event.kind = HarnessTurnEventKind::ProviderMeta;
@@ -13559,6 +13619,217 @@ mod workflow_runtime_tests {
         assert_eq!(event.role.as_deref(), Some("assistant"));
         assert_eq!(event.text.as_deref(), Some("done"));
         assert_eq!(event.raw_provider_event, raw);
+    }
+
+    #[test]
+    fn codex_normalize_command_execution_with_output_emits_call_and_result() {
+        let raw = serde_json::json!({
+            "type": "item.completed",
+            "item": {
+                "id": "cmd-1",
+                "type": "command_execution",
+                "command": "cargo test",
+                "aggregated_output": "ok\n",
+                "exit_code": 0
+            }
+        });
+
+        let events = CodexAdapter.normalize_turn_event("session-T", &raw);
+        assert_eq!(events.len(), 2);
+
+        let call = &events[0];
+        assert_eq!(call.kind, HarnessTurnEventKind::ToolCall);
+        assert_eq!(call.provider_item_id.as_deref(), Some("cmd-1"));
+        assert_eq!(
+            call.tool_call,
+            Some(HarnessToolCall {
+                id: Some("cmd-1".into()),
+                name: "cargo test".into(),
+                args: raw.get("item").unwrap().clone(),
+            })
+        );
+        assert_eq!(call.raw_provider_event, raw);
+
+        let result = &events[1];
+        assert_eq!(result.kind, HarnessTurnEventKind::ToolResult);
+        assert_eq!(result.provider_item_id.as_deref(), Some("cmd-1"));
+        assert_eq!(
+            result.tool_result,
+            Some(HarnessToolResult {
+                tool_call_id: Some("cmd-1".into()),
+                name: Some("cargo test".into()),
+                content: "ok\n".into(),
+                is_error: false,
+            })
+        );
+        assert_eq!(result.raw_provider_event, raw);
+    }
+
+    #[test]
+    fn codex_normalize_command_execution_without_output_or_error_emits_call_only() {
+        let raw = serde_json::json!({
+            "type": "item.completed",
+            "item": {
+                "id": "cmd-1",
+                "type": "command_execution",
+                "command": "cargo test",
+                "aggregated_output": "",
+                "exit_code": 0
+            }
+        });
+
+        let events = CodexAdapter.normalize_turn_event("session-T", &raw);
+        assert_eq!(events.len(), 1);
+        let event = &events[0];
+
+        assert_eq!(event.kind, HarnessTurnEventKind::ToolCall);
+        assert_eq!(event.provider_item_id.as_deref(), Some("cmd-1"));
+        assert_eq!(
+            event.tool_call,
+            Some(HarnessToolCall {
+                id: Some("cmd-1".into()),
+                name: "cargo test".into(),
+                args: raw.get("item").unwrap().clone(),
+            })
+        );
+        assert!(event.tool_result.is_none());
+        assert_eq!(event.raw_provider_event, raw);
+    }
+
+    #[test]
+    fn codex_normalize_command_execution_nonzero_exit_emits_error_result() {
+        let raw = serde_json::json!({
+            "type": "item.completed",
+            "item": {
+                "id": "cmd-1",
+                "type": "command_execution",
+                "command": "cargo test",
+                "aggregated_output": "",
+                "exit_code": 2
+            }
+        });
+
+        let events = CodexAdapter.normalize_turn_event("session-T", &raw);
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].kind, HarnessTurnEventKind::ToolCall);
+        assert_eq!(events[0].raw_provider_event, raw);
+
+        let result = &events[1];
+        assert_eq!(result.kind, HarnessTurnEventKind::ToolResult);
+        assert_eq!(
+            result.tool_result,
+            Some(HarnessToolResult {
+                tool_call_id: Some("cmd-1".into()),
+                name: Some("cargo test".into()),
+                content: "exit 2".into(),
+                is_error: true,
+            })
+        );
+        assert_eq!(result.raw_provider_event, raw);
+    }
+
+    #[test]
+    fn codex_normalize_command_execution_whitespace_output_is_preserved() {
+        // Whitespace-only output is still real output: the ToolResult must carry
+        // the verbatim string, NOT fall back to `exit N`. Emptiness is decided on
+        // the raw string, not a trimmed one, so a newline-only result survives.
+        let raw = serde_json::json!({
+            "type": "item.completed",
+            "item": {
+                "id": "cmd-ws",
+                "type": "command_execution",
+                "command": "printf '\\n'",
+                "aggregated_output": "\n",
+                "exit_code": 1
+            }
+        });
+
+        let events = CodexAdapter.normalize_turn_event("session-T", &raw);
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].kind, HarnessTurnEventKind::ToolCall);
+
+        let result = &events[1];
+        assert_eq!(result.kind, HarnessTurnEventKind::ToolResult);
+        assert_eq!(
+            result.tool_result,
+            Some(HarnessToolResult {
+                tool_call_id: Some("cmd-ws".into()),
+                name: Some("printf '\\n'".into()),
+                content: "\n".into(),
+                is_error: true,
+            })
+        );
+        assert_eq!(result.raw_provider_event, raw);
+    }
+
+    #[test]
+    fn codex_normalize_file_change_emits_one_tool_call_per_change() {
+        let raw = serde_json::json!({
+            "type": "item.completed",
+            "item": {
+                "id": "file-1",
+                "type": "file_change",
+                "changes": [
+                    {"kind": "add", "path": "/a"},
+                    {"kind": "delete", "path": "/b"}
+                ]
+            }
+        });
+
+        let events = CodexAdapter.normalize_turn_event("session-T", &raw);
+        assert_eq!(events.len(), 2);
+
+        assert_eq!(events[0].kind, HarnessTurnEventKind::ToolCall);
+        assert_eq!(events[0].provider_item_id.as_deref(), Some("file-1"));
+        let first_call = events[0].tool_call.as_ref().unwrap();
+        assert_eq!(first_call.id.as_deref(), Some("file-1"));
+        assert_eq!(first_call.name, "Write");
+        assert_eq!(
+            first_call.args.get("path").and_then(|path| path.as_str()),
+            Some("/a")
+        );
+        assert_eq!(events[0].raw_provider_event, raw);
+
+        assert_eq!(events[1].kind, HarnessTurnEventKind::ToolCall);
+        assert_eq!(events[1].provider_item_id.as_deref(), Some("file-1"));
+        let second_call = events[1].tool_call.as_ref().unwrap();
+        assert_eq!(second_call.id.as_deref(), Some("file-1"));
+        assert_eq!(second_call.name, "Delete");
+        assert_eq!(
+            second_call.args.get("path").and_then(|path| path.as_str()),
+            Some("/b")
+        );
+        assert_eq!(events[1].raw_provider_event, raw);
+    }
+
+    #[test]
+    fn codex_normalize_file_change_without_changes_stays_provider_meta() {
+        for raw in [
+            serde_json::json!({
+                "type": "item.completed",
+                "item": {
+                    "id": "file-1",
+                    "type": "file_change",
+                    "changes": []
+                }
+            }),
+            serde_json::json!({
+                "type": "item.completed",
+                "item": {
+                    "id": "file-1",
+                    "type": "file_change"
+                }
+            }),
+        ] {
+            let events = CodexAdapter.normalize_turn_event("session-T", &raw);
+            assert_eq!(events.len(), 1);
+            let event = &events[0];
+
+            assert_eq!(event.kind, HarnessTurnEventKind::ProviderMeta);
+            assert_eq!(event.provider_item_id.as_deref(), Some("file-1"));
+            assert!(event.tool_call.is_none());
+            assert_eq!(event.raw_provider_event, raw);
+        }
     }
 
     #[test]
