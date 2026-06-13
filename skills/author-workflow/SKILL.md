@@ -368,14 +368,18 @@ agent("Refine and finalize this winning solution:\n" + best, label="synthesize")
 
 ### loop-until-dry
 
-Keep fanning out finders until K CONSECUTIVE rounds surface nothing new. A
-`while` loop plus a `seen` set turns "find the bugs" into "find them all".
+Keep fanning out finders until K CONSECUTIVE rounds surface nothing new — a
+`seen` set turns "find the bugs" into "find them all". Starlark has **no `while`
+loop** (`while` is a reserved keyword that does not parse), so bound the hunt with
+`for _ in range(MAX_ROUNDS)` and `break` once it converges. (`break` and
+`continue` DO work in `for` loops; only `while` is missing.)
 
 ```python
-seen = {}        # used as a set: finding -> True
+seen = {}          # used as a set: finding -> True
 dry_rounds = 0
-K = 2            # stop after K consecutive empty rounds
-while dry_rounds < K:
+K = 2              # stop after K consecutive empty rounds
+MAX_ROUNDS = 8     # no `while` in Starlark: bound the loop, then break on convergence
+for _ in range(MAX_ROUNDS):
     rounds = parallel([
         {"prompt": "Find bugs in " + args["area"] + " NOT in this list:\n" +
                    "\n".join(seen.keys()),
@@ -390,6 +394,8 @@ while dry_rounds < K:
                     seen[f] = True
                     fresh += 1
     dry_rounds = dry_rounds + 1 if fresh == 0 else 0
+    if dry_rounds >= K:
+        break
 log("converged with " + str(len(seen)) + " distinct findings")
 ```
 

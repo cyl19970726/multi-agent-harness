@@ -57,6 +57,7 @@ use starlark::syntax::{AstModule, Dialect};
 use starlark::values::dict::DictRef;
 use starlark::values::list::ListRef;
 use starlark::values::none::NoneType;
+use starlark::values::tuple::UnpackTuple;
 use starlark::values::{Heap, Value};
 
 use harness_core::WorkflowRunStatus;
@@ -956,14 +957,28 @@ fn workflow_globals(builder: &mut GlobalsBuilder) {
     /// build on its predecessor.
     fn pipeline<'v>(
         #[starlark(require = pos)] items: Value<'v>,
-        #[starlark(require = pos)] stages: Value<'v>,
+        // Accept BOTH the canonical list form `pipeline(items, [s1, s2])` (what the
+        // skill examples use) AND the bare-positional form `pipeline(items, s1, s2,
+        // ...)` — the latter used to fail with a cryptic "Wrong number of positional
+        // arguments" before the body even ran (issue #139 item 4). Collecting the
+        // stages as varargs lets us normalize either shape into the stage list.
+        #[starlark(args)] stages: UnpackTuple<Value<'v>>,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> anyhow::Result<Value<'v>> {
+        // A single list argument IS the stage list; multiple positional stages get
+        // wrapped into one. (A lone dict — `pipeline(items, {..})` — also wraps.)
+        let stage_values = stages.items;
+        let stages_value: Value<'v> =
+            if stage_values.len() == 1 && ListRef::from_value(stage_values[0]).is_some() {
+                stage_values[0]
+            } else {
+                eval.heap().alloc(stage_values)
+            };
         let ctx = ctx_of(eval);
         // Extract BOTH items and stage templates into PLAIN Rust before any
         // threading — no Starlark value may cross the streaming engine's threads.
         let items = read_pipeline_items(items)?;
-        let stages = read_pipeline_stages(ctx, stages)?;
+        let stages = read_pipeline_stages(ctx, stages_value)?;
         let results = ctx.run_pipeline(items, stages);
         let heap = eval.heap();
         let values: Vec<Value<'v>> = results
@@ -993,7 +1008,10 @@ fn workflow_globals(builder: &mut GlobalsBuilder) {
     /// means "intent satisfied". The last call wins.
     fn verdict<'v>(
         #[starlark(require = pos)] ok: bool,
-        #[starlark(require = named, default = String::new())] reason: String,
+        // Accept `reason` either positionally (`verdict(ok, "why")`) or by keyword
+        // (`verdict(ok, reason="why")`) — the bare positional form is the natural
+        // thing to write and used to error (issue #139 item 6).
+        #[starlark(default = String::new())] reason: String,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> anyhow::Result<NoneType> {
         *ctx_of(eval).verdict.borrow_mut() = Some((ok, reason));
@@ -1967,6 +1985,52 @@ log("beta last: " + results[1])
         assert!(outcome.steps.iter().all(|s| s.ok));
         // The script-visible return is the LAST stage's summary, in input order.
         assert_eq!(outcome.status, WorkflowRunStatus::Completed);
+    }
+
+    #[test]
+    fn pipeline_accepts_bare_positional_stages_not_just_a_list() {
+        // issue #139 item 4: `pipeline(items, stage1, stage2)` (bare positional
+        // stages, the generic-tool convention) must work, not only the canonical
+        // `pipeline(items, [stage1, stage2])` list form. Both normalize identically.
+        let seen = Mutex::new(Vec::new());
+        let script = r#"
+results = pipeline(
+    ["alpha"],
+    {"prompt": "scan {input}", "label": "s1"},
+    {"prompt": "fix per {input}", "label": "s2"},
+)
+log("alpha last: " + results[0])
+"#;
+        let outcome = {
+            let driver = recording_driver(&seen);
+            run_starlark(&format!("{HEADER}{script}"), "demo", None, &driver)
+                .expect("run ok")
+                .outcome
+        };
+        let pairs: std::collections::HashSet<(String, String)> =
+            seen.into_inner().unwrap().into_iter().collect();
+        assert!(pairs.contains(&("s1".to_string(), "scan alpha".to_string())));
+        assert!(pairs.contains(&("s2".to_string(), "fix per ok: scan alpha".to_string())));
+        assert_eq!(outcome.steps.len(), 2);
+        assert_eq!(outcome.status, WorkflowRunStatus::Completed);
+    }
+
+    #[test]
+    fn verdict_accepts_a_positional_reason() {
+        // issue #139 item 6: `verdict(ok, "msg")` (bare positional reason) must
+        // work, not only the keyword form `verdict(ok, reason="msg")`.
+        let seen = Mutex::new(Vec::new());
+        let script = "agent(\"x\")\nverdict(False, \"a regression slipped through\")\n";
+        let run = {
+            let driver = recording_driver(&seen);
+            run_starlark(&format!("{HEADER}{script}"), "demo", None, &driver).expect("run ok")
+        };
+        assert_eq!(run.outcome.status, WorkflowRunStatus::Failed);
+        let fo = run.outcome.final_output.expect("final_output");
+        assert_eq!(
+            fo["verdict"]["reason"],
+            serde_json::json!("a regression slipped through")
+        );
     }
 
     #[test]

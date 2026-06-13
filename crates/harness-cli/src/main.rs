@@ -3593,7 +3593,14 @@ fn codex_run(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     }
     command_args.push(prompt.clone());
 
-    let output = Command::new("codex").args(&command_args).output()?;
+    // Redirect stdin to /dev/null: `codex exec` with an inherited (empty) stdin
+    // can wedge forever on "Reading additional input from stdin…" (issue #139
+    // item 1). `.output()` leaves stdin inherited, so null it explicitly — the
+    // same guard run_ndjson_child already applies to the ephemeral/persistent paths.
+    let output = Command::new("codex")
+        .args(&command_args)
+        .stdin(Stdio::null())
+        .output()?;
     fs::write(&jsonl_ref, &output.stdout)?;
     fs::write(&stdout_ref, &output.stderr)?;
 
@@ -3697,9 +3704,12 @@ fn codex_review(store: &HarnessStore, args: &[String]) -> CliResult<()> {
         command_args.push(prompt);
     }
 
+    // Null stdin so a no-TTY `codex exec` can't wedge on "Reading additional
+    // input from stdin…" (issue #139 item 1); `.output()` leaves it inherited.
     let output = Command::new("codex")
         .args(&command_args)
         .current_dir(&worktree)
+        .stdin(Stdio::null())
         .output()?;
     fs::write(&stdout_ref, &output.stdout)?;
     fs::write(&stderr_ref, &output.stderr)?;
@@ -4688,9 +4698,15 @@ fn spawn_ephemeral_worker(
 /// native structured-output flags (claude `--json-schema`, codex `--output-schema`).
 /// Two input shapes are accepted: an ALREADY-valid JSON Schema (has `type` or
 /// `properties`) is passed through unchanged; the legacy flat `{ key: "hint" }`
-/// form is wrapped into `{ type:object, properties:{ key:{type:string,
-/// description:hint} }, required:[keys], additionalProperties:false }` so existing
-/// programs gain native enforcement (as string fields) with no change.
+/// form is wrapped into `{ type:object, properties:{...}, required:[keys],
+/// additionalProperties:false }`.
+///
+/// A flat hint that is a WELL-KNOWN type word (`bool`/`int`/`number`/…) becomes a
+/// real JSON-Schema scalar type, so the provider returns — and the workflow script
+/// reads back — a real bool/int/number instead of a string (issue #139 item 5:
+/// `{ "ok": "bool" }` used to yield the STRING `"true"`, making `if res["ok"]:`
+/// always truthy). Any other hint stays a `string` field with the hint kept as its
+/// `description`, exactly as before.
 fn schema_to_json_schema(schema: &serde_json::Value) -> serde_json::Value {
     let Some(obj) = schema.as_object() else {
         return schema.clone();
@@ -4700,10 +4716,21 @@ fn schema_to_json_schema(schema: &serde_json::Value) -> serde_json::Value {
     }
     let mut props = serde_json::Map::new();
     for (k, v) in obj {
-        props.insert(
-            k.clone(),
-            serde_json::json!({ "type": "string", "description": v.as_str().unwrap_or("") }),
-        );
+        let hint = v.as_str().unwrap_or("");
+        let json_type = match hint.trim().to_ascii_lowercase().as_str() {
+            "bool" | "boolean" => "boolean",
+            "int" | "integer" => "integer",
+            "number" | "float" | "double" => "number",
+            _ => "string",
+        };
+        let mut field = serde_json::Map::new();
+        field.insert("type".into(), serde_json::Value::from(json_type));
+        // Keep the hint as the description only when it carries real meaning — a
+        // bare type word ("bool") becomes the type and needs no description.
+        if json_type == "string" && !hint.is_empty() {
+            field.insert("description".into(), serde_json::Value::from(hint));
+        }
+        props.insert(k.clone(), serde_json::Value::Object(field));
     }
     serde_json::json!({
         "type": "object",
@@ -5228,11 +5255,23 @@ fn spawn_codex_ephemeral(
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
     let tokens = parse_codex_usage(&run.events);
-    // With `--output-schema`, the constrained final answer IS the reply text, so
-    // parse it as the validated structured object.
-    let structured = schema_json
-        .and(reply.as_deref())
-        .and_then(extract_json_object);
+    // With `--output-schema`, the constrained answer is the turn's FINAL message.
+    // Parse structured output from that final message — the `--output-last-message`
+    // file first, then the last `agent_message` — NOT the joined narration, so a
+    // streamed preamble ("I'll start by inspecting…") can't be captured as the
+    // result (issue #139 item 2). Fall back to the joined reply only as a last resort.
+    let structured = schema_json.and_then(|_| {
+        fs::read_to_string(&last_message_ref)
+            .ok()
+            .as_deref()
+            .and_then(extract_json_object)
+            .or_else(|| {
+                extract_codex_final_message(&codex_events)
+                    .as_deref()
+                    .and_then(extract_json_object)
+            })
+            .or_else(|| reply.as_deref().and_then(extract_json_object))
+    });
 
     Ok(EphemeralSpawn {
         ok,
@@ -11324,6 +11363,29 @@ fn extract_codex_reply_text(events: &[CodexExecEvent]) -> Option<String> {
     (!parts.is_empty()).then(|| parts.join("\n"))
 }
 
+/// The codex turn's FINAL assistant message — the LAST non-empty `agent_message`
+/// item. Where [`extract_codex_reply_text`] concatenates every message for the
+/// human-facing reply, this returns only the terminal one, so structured-output
+/// parsing reads the schema-constrained answer rather than an earlier streamed
+/// preamble (issue #139 item 2).
+fn extract_codex_final_message(events: &[CodexExecEvent]) -> Option<String> {
+    let mut last = None;
+    for event in events {
+        let Some(item) = event.payload.get("item") else {
+            continue;
+        };
+        if item.get("type").and_then(|t| t.as_str()) != Some("agent_message") {
+            continue;
+        }
+        if let Some(text) = item.get("text").and_then(|t| t.as_str()) {
+            if !text.trim().is_empty() {
+                last = Some(text.trim().to_string());
+            }
+        }
+    }
+    last
+}
+
 /// Write a temporary MCP config JSON file for Claude.
 /// Returns the path to the temporary file, or None if mcp is empty/None.
 fn write_temp_mcp_config(mcp: Option<&LaunchMcp>) -> CliResult<Option<String>> {
@@ -13094,6 +13156,39 @@ mod workflow_runtime_tests {
             "required": ["score"],
         });
         assert_eq!(schema_to_json_schema(&real), real);
+    }
+
+    #[test]
+    fn schema_to_json_schema_coerces_known_type_hints() {
+        // Well-known type words become real JSON-Schema scalar types (issue #139
+        // item 5) — no `description`, so the provider returns a real bool/int/
+        // number, not the string "true"/"7". Descriptive hints stay `string`.
+        let flat = serde_json::json!({
+            "ok": "bool",
+            "count": "int",
+            "ratio": "number",
+            "note": "a short reason",
+        });
+        let js = schema_to_json_schema(&flat);
+        assert_eq!(js["properties"]["ok"]["type"], serde_json::json!("boolean"));
+        assert!(js["properties"]["ok"].get("description").is_none());
+        assert_eq!(
+            js["properties"]["count"]["type"],
+            serde_json::json!("integer")
+        );
+        assert_eq!(
+            js["properties"]["ratio"]["type"],
+            serde_json::json!("number")
+        );
+        // A non-type-word hint is still a string field with the hint as description.
+        assert_eq!(
+            js["properties"]["note"]["type"],
+            serde_json::json!("string")
+        );
+        assert_eq!(
+            js["properties"]["note"]["description"],
+            serde_json::json!("a short reason")
+        );
     }
 
     #[test]
@@ -19050,5 +19145,43 @@ invalid json line
         }];
 
         assert_eq!(extract_turn_id_from_exec_events(&events), None);
+    }
+
+    #[test]
+    fn extract_codex_final_message_returns_terminal_message_not_joined() {
+        // issue #139 item 2: structured-output parsing must read the FINAL
+        // agent_message, not the joined narration — a streamed preamble
+        // ("I'll start by inspecting…") must not be captured as the result.
+        let events = vec![
+            CodexExecEvent {
+                event_type: "item.completed".into(),
+                payload: serde_json::json!({
+                    "item": {"type": "agent_message", "text": "I'll start by inspecting the repo."}
+                }),
+            },
+            CodexExecEvent {
+                event_type: "item.completed".into(),
+                payload: serde_json::json!({
+                    "item": {"type": "agent_message", "text": "{\"ok\": true}"}
+                }),
+            },
+        ];
+        // The human-facing reply joins every message…
+        assert_eq!(
+            extract_codex_reply_text(&events).as_deref(),
+            Some("I'll start by inspecting the repo.\n{\"ok\": true}")
+        );
+        // …but the final-message extractor returns only the terminal one, which
+        // parses cleanly to the structured object (no preamble pollution).
+        assert_eq!(
+            extract_codex_final_message(&events).as_deref(),
+            Some("{\"ok\": true}")
+        );
+        assert_eq!(
+            extract_codex_final_message(&events)
+                .as_deref()
+                .and_then(extract_json_object),
+            Some(serde_json::json!({"ok": true}))
+        );
     }
 }
