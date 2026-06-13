@@ -35,6 +35,9 @@ pub enum SseEventFrame {
     /// A single raw provider turn event ({session_id, event}), teed live during
     /// a delivery so the agent TUI streams sub-second instead of polling (Stage B).
     ProviderTurnEvent(serde_json::Value),
+    /// Normalized companion to ProviderTurnEvent for live Stage B consumers:
+    /// {session_id, events: HarnessTurnEvent[]}.
+    ProviderTurnEventNormalized(serde_json::Value),
 }
 
 /// Manages SSE client subscriptions and broadcasts
@@ -84,7 +87,14 @@ impl Clone for SseManager {
 /// Start a background watcher thread that monitors jsonl files for appends
 /// and broadcasts new records to all SSE clients. WP2: added workflow_runs.jsonl
 /// and workflow_steps.jsonl.
-pub fn start_sse_watcher(store: &HarnessStore, manager: SseManager) -> std::io::Result<()> {
+pub fn start_sse_watcher<N>(
+    store: &HarnessStore,
+    manager: SseManager,
+    normalize: N,
+) -> std::io::Result<()>
+where
+    N: Fn(&str, &serde_json::Value) -> Vec<serde_json::Value> + Send + 'static,
+{
     let store_root = store.root().to_path_buf();
 
     thread::spawn(move || {
@@ -125,9 +135,9 @@ pub fn start_sse_watcher(store: &HarnessStore, manager: SseManager) -> std::io::
                 &mut consumed_offsets,
                 |line| {
                     if let Ok(event) = serde_json::from_str::<AgentEvent>(line) {
-                        Some(SseEventFrame::AgentEvent(event))
+                        vec![SseEventFrame::AgentEvent(event)]
                     } else {
-                        None
+                        Vec::new()
                     }
                 },
                 &manager,
@@ -140,9 +150,9 @@ pub fn start_sse_watcher(store: &HarnessStore, manager: SseManager) -> std::io::
                 &mut consumed_offsets,
                 |line| {
                     if let Ok(msg) = serde_json::from_str::<Message>(line) {
-                        Some(SseEventFrame::Message(msg))
+                        vec![SseEventFrame::Message(msg)]
                     } else {
-                        None
+                        Vec::new()
                     }
                 },
                 &manager,
@@ -155,9 +165,9 @@ pub fn start_sse_watcher(store: &HarnessStore, manager: SseManager) -> std::io::
                 &mut consumed_offsets,
                 |line| {
                     if let Ok(session) = serde_json::from_str::<ProviderSession>(line) {
-                        Some(SseEventFrame::ProviderSession(session))
+                        vec![SseEventFrame::ProviderSession(session)]
                     } else {
-                        None
+                        Vec::new()
                     }
                 },
                 &manager,
@@ -170,9 +180,9 @@ pub fn start_sse_watcher(store: &HarnessStore, manager: SseManager) -> std::io::
                 &mut consumed_offsets,
                 |line| {
                     if let Ok(run) = serde_json::from_str::<WorkflowRun>(line) {
-                        Some(SseEventFrame::WorkflowRun(run))
+                        vec![SseEventFrame::WorkflowRun(run)]
                     } else {
-                        None
+                        Vec::new()
                     }
                 },
                 &manager,
@@ -185,25 +195,44 @@ pub fn start_sse_watcher(store: &HarnessStore, manager: SseManager) -> std::io::
                 &mut consumed_offsets,
                 |line| {
                     if let Ok(step) = serde_json::from_str::<WorkflowStep>(line) {
-                        Some(SseEventFrame::WorkflowStep(step))
+                        vec![SseEventFrame::WorkflowStep(step)]
                     } else {
-                        None
+                        Vec::new()
                     }
                 },
                 &manager,
             );
 
             // Check provider_turn_events.jsonl (Stage B): each line is a raw
-            // {session_id, event} teed during a claude delivery; broadcast it so
-            // the agent TUI streams live without polling.
+            // {session_id, event} teed during a provider delivery; broadcast it
+            // so the agent TUI streams live without polling.
             check_and_broadcast_appends(
                 &store_root,
                 "provider_turn_events.jsonl",
                 &mut consumed_offsets,
                 |line| {
-                    serde_json::from_str::<serde_json::Value>(line)
-                        .ok()
-                        .map(SseEventFrame::ProviderTurnEvent)
+                    let Ok(envelope) = serde_json::from_str::<serde_json::Value>(line) else {
+                        return Vec::new();
+                    };
+
+                    let mut frames = vec![SseEventFrame::ProviderTurnEvent(envelope.clone())];
+                    if let Some(session_id) = envelope
+                        .get("session_id")
+                        .and_then(|value| value.as_str())
+                        .filter(|value| !value.is_empty())
+                    {
+                        let raw = &envelope["event"];
+                        let normalized = normalize(session_id, raw);
+                        if !normalized.is_empty() {
+                            frames.push(SseEventFrame::ProviderTurnEventNormalized(
+                                serde_json::json!({
+                                    "session_id": session_id,
+                                    "events": normalized,
+                                }),
+                            ));
+                        }
+                    }
+                    frames
                 },
                 &manager,
             );
@@ -226,7 +255,7 @@ fn check_and_broadcast_appends<F>(
     parse_line: F,
     manager: &SseManager,
 ) where
-    F: Fn(&str) -> Option<SseEventFrame>,
+    F: Fn(&str) -> Vec<SseEventFrame>,
 {
     let path = store_root.join(filename);
     let Ok(metadata) = fs::metadata(&path) else {
@@ -275,7 +304,7 @@ fn check_and_broadcast_appends<F>(
         if trimmed.is_empty() {
             continue;
         }
-        if let Some(frame) = parse_line(trimmed) {
+        for frame in parse_line(trimmed) {
             manager.broadcast(frame);
         }
     }
@@ -393,22 +422,28 @@ mod tests {
         }
     }
 
-    fn message_frame(line: &str) -> Option<SseEventFrame> {
+    fn message_frame(line: &str) -> Vec<SseEventFrame> {
         serde_json::from_str::<Message>(line)
             .ok()
             .map(SseEventFrame::Message)
+            .into_iter()
+            .collect()
     }
 
-    fn workflow_run_frame(line: &str) -> Option<SseEventFrame> {
+    fn workflow_run_frame(line: &str) -> Vec<SseEventFrame> {
         serde_json::from_str::<WorkflowRun>(line)
             .ok()
             .map(SseEventFrame::WorkflowRun)
+            .into_iter()
+            .collect()
     }
 
-    fn workflow_step_frame(line: &str) -> Option<SseEventFrame> {
+    fn workflow_step_frame(line: &str) -> Vec<SseEventFrame> {
         serde_json::from_str::<WorkflowStep>(line)
             .ok()
             .map(SseEventFrame::WorkflowStep)
+            .into_iter()
+            .collect()
     }
 
     /// A JSONL row whose write is observed in two pieces (the watcher polls
@@ -545,6 +580,92 @@ mod tests {
             count, 1,
             "complete row broadcast exactly once across two polls"
         );
+
+        std::fs::remove_dir_all(&root).expect("cleanup");
+    }
+
+    /// The generalized append parser must preserve the old single-frame file
+    /// behavior: valid rows emit one frame, malformed rows emit zero frames.
+    #[test]
+    fn single_frame_rows_still_emit_one_and_parse_failures_emit_zero() {
+        let root = unique_dir("single-frame");
+        std::fs::create_dir_all(&root).expect("create root");
+        let path = root.join("messages.jsonl");
+
+        let manager = SseManager::new();
+        let rx = manager.subscribe();
+        let mut offsets: HashMap<String, u64> = HashMap::new();
+
+        let row = serde_json::to_string(&test_message("message-valid")).expect("ser");
+        std::fs::write(&path, format!("{row}\nnot-json\n")).expect("write rows");
+
+        check_and_broadcast_appends(
+            &root,
+            "messages.jsonl",
+            &mut offsets,
+            message_frame,
+            &manager,
+        );
+
+        let mut received = Vec::new();
+        while let Ok(frame) = rx.try_recv() {
+            match frame {
+                SseEventFrame::Message(message) => received.push(message.id),
+                other => panic!("unexpected frame {other:?}"),
+            }
+        }
+
+        assert_eq!(received, vec!["message-valid".to_string()]);
+
+        std::fs::remove_dir_all(&root).expect("cleanup");
+    }
+
+    /// A parse callback may now fan out one complete JSONL row into multiple
+    /// SSE frames; offset handling remains one-row-at-a-time.
+    #[test]
+    fn one_line_can_broadcast_multiple_frames() {
+        let root = unique_dir("multi-frame");
+        std::fs::create_dir_all(&root).expect("create root");
+        let path = root.join("provider_turn_events.jsonl");
+
+        let manager = SseManager::new();
+        let rx = manager.subscribe();
+        let mut offsets: HashMap<String, u64> = HashMap::new();
+
+        std::fs::write(
+            &path,
+            serde_json::json!({"session_id": "s-1", "event": {"type": "x"}}).to_string() + "\n",
+        )
+        .expect("write row");
+
+        check_and_broadcast_appends(
+            &root,
+            "provider_turn_events.jsonl",
+            &mut offsets,
+            |_| {
+                vec![
+                    SseEventFrame::ProviderTurnEvent(serde_json::json!({"raw": true})),
+                    SseEventFrame::ProviderTurnEventNormalized(serde_json::json!({
+                        "session_id": "s-1",
+                        "events": [],
+                    })),
+                ]
+            },
+            &manager,
+        );
+
+        let mut raw = 0;
+        let mut normalized = 0;
+        while let Ok(frame) = rx.try_recv() {
+            match frame {
+                SseEventFrame::ProviderTurnEvent(_) => raw += 1,
+                SseEventFrame::ProviderTurnEventNormalized(_) => normalized += 1,
+                other => panic!("unexpected frame {other:?}"),
+            }
+        }
+
+        assert_eq!(raw, 1);
+        assert_eq!(normalized, 1);
 
         std::fs::remove_dir_all(&root).expect("cleanup");
     }
