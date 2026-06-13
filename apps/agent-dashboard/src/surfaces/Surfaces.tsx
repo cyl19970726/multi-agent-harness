@@ -115,6 +115,7 @@ import type {
   GoalDesign,
   GoalEvaluation,
   GoalStage,
+  HarnessTurnEvent,
   Message,
   ProviderChildThread,
   ProviderSession,
@@ -2868,7 +2869,7 @@ function CurrentWorkBanner({
           session={running}
           apiUrl={apiUrl}
           defaultOpen
-          liveEvents={model.snapshot.live_turn_events?.[running.id]}
+          liveNormalizedEvents={model.snapshot.live_normalized_events?.[running.id]}
         />
       </div>
     );
@@ -3438,29 +3439,34 @@ export function TurnDrillIn({
   session,
   apiUrl,
   defaultOpen = false,
-  liveEvents,
+  liveNormalizedEvents,
   historical = false,
 }: {
   session: ProviderSession;
   apiUrl?: string;
   defaultOpen?: boolean;
-  /** SSE-pushed events for this session (Stage B); preferred over the poll when
-   * it is further ahead, giving sub-second streaming. */
-  liveEvents?: RawTurnEvent[];
+  /** SSE-pushed NORMALIZED events for this session (Stage B
+   * `provider_turn_event_normalized`); merged by `seq` with the fetch for
+   * sub-second streaming. */
+  liveNormalizedEvents?: HarnessTurnEvent[];
   /**
    * Backfill a COMPLETED run's trace from the durable per-session NDJSON via
-   * `GET /v1/sessions/{id}/events` (two-tier persistence read side) instead of
-   * the live `provider-sessions/{id}/events` tee. When the run was `--trace
-   * live`, that endpoint reports `retained: false`, and we render an explicit
-   * "trace not retained" state rather than an empty/loading turn. The live path
-   * (running session + `liveEvents`) is unaffected.
+   * `GET /v1/sessions/{id}/normalized-events` (two-tier persistence read side)
+   * instead of the live `provider-sessions/{id}/normalized-events` tee. When the
+   * run was `--trace live`, that endpoint reports `retained: false`, and we
+   * render an explicit "trace not retained" state rather than an empty/loading
+   * turn. The live path (running session + `liveNormalizedEvents`) is unaffected.
    */
   historical?: boolean;
 }) {
   const [open, setOpen] = useState(defaultOpen);
-  const [events, setEvents] = useState<RawTurnEvent[] | null>(null);
+  const [events, setEvents] = useState<HarnessTurnEvent[] | null>(null);
   const [truncated, setTruncated] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Toggle the drawer between the canonical normalized view (default) and the
+  // raw provider events recovered from each event's retained `raw_provider_event`
+  // — so the operator can always inspect the original payload (nothing is lost).
+  const [showRaw, setShowRaw] = useState(false);
   // `null` until the historical endpoint answers; `false` marks a `--trace
   // live` run whose trace was pruned ("trace not retained"). Always `true` on
   // the live path, which never consults the historical endpoint.
@@ -3471,11 +3477,13 @@ export function TurnDrillIn({
   // streams over the live tee + SSE buffer.
   const useHistorical = historical && !running;
   const duration = formatDuration(session.started_at, session.ended_at);
-  // Show whichever source is further along: the SSE live buffer (sub-second) or
-  // the polled/fetched events (durable catch-up). On terminal the final fetch
-  // reconciles, so `events` wins once complete.
-  const display =
-    liveEvents && liveEvents.length > (events?.length ?? 0) ? liveEvents : events;
+  // Reconcile the SSE live buffer with the fetched snapshot by `seq` (the
+  // harness assigns a stable monotonic per-session seq), so duplicates/out-of-
+  // order frames collapse and the terminal fetch and the live stream converge.
+  const display: HarnessTurnEvent[] | null =
+    events === null && !liveNormalizedEvents
+      ? null
+      : mergeNormalizedBySeq(events ?? [], liveNormalizedEvents ?? []);
   const notRetained = useHistorical && retained === false;
 
   useEffect(() => {
@@ -3487,12 +3495,12 @@ export function TurnDrillIn({
       inFlight.current = true;
       try {
         const url = useHistorical
-          ? `${base}/v1/sessions/${encodeURIComponent(session.id)}/events`
-          : `${base}/v1/provider-sessions/${encodeURIComponent(session.id)}/events`;
+          ? `${base}/v1/sessions/${encodeURIComponent(session.id)}/normalized-events`
+          : `${base}/v1/provider-sessions/${encodeURIComponent(session.id)}/normalized-events`;
         const res = await fetch(url);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = (await res.json()) as {
-          events?: RawTurnEvent[];
+          events?: HarnessTurnEvent[];
           truncated?: boolean;
           retained?: boolean;
         };
@@ -3574,7 +3582,28 @@ export function TurnDrillIn({
             </span>
           ) : (
             <>
-              <TurnTui events={display} />
+              {/* normalized (default) vs raw provider payloads — raw loses nothing */}
+              <div className="mb-1 flex items-center justify-end gap-1 text-[10px] text-muted-foreground">
+                <button
+                  type="button"
+                  onClick={() => setShowRaw(false)}
+                  className={cn("rounded px-1.5 py-0.5 transition-colors hover:text-foreground", !showRaw && "bg-muted text-foreground")}
+                >
+                  normalized
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowRaw(true)}
+                  className={cn("rounded px-1.5 py-0.5 transition-colors hover:text-foreground", showRaw && "bg-muted text-foreground")}
+                >
+                  raw
+                </button>
+              </div>
+              {showRaw ? (
+                <TurnTui events={rawEventsFromNormalized(display)} />
+              ) : (
+                <NormalizedTurnTui events={display} />
+              )}
               {truncated && (
                 <p className="pt-1 text-[10px] text-muted-foreground">…older events truncated</p>
               )}
@@ -3899,6 +3928,171 @@ function compactJson(value: unknown): string {
   } catch {
     return String(value);
   }
+}
+
+/**
+ * Merge two normalized streams by `seq` (latest-wins), kept sorted — used to
+ * reconcile the SSE live buffer with the fetched `/normalized-events` snapshot.
+ * Because the harness assigns a stable monotonic `seq` per session, a duplicate
+ * or out-of-order frame collapses onto its slot instead of double-rendering.
+ */
+function mergeNormalizedBySeq(
+  fetched: HarnessTurnEvent[],
+  live: HarnessTurnEvent[],
+): HarnessTurnEvent[] {
+  const bySeq = new Map<number, HarnessTurnEvent>();
+  for (const event of fetched) bySeq.set(event.seq, event);
+  for (const event of live) bySeq.set(event.seq, event);
+  return Array.from(bySeq.values()).sort((a, b) => a.seq - b.seq);
+}
+
+/**
+ * The raw provider events behind a normalized stream, for the "raw" toggle.
+ * A 1→N expansion (one raw event → several HarnessTurnEvents) shares the same
+ * `raw_provider_event`, so collapse consecutive identical raws to recover the
+ * original 1:1 provider sequence the legacy {@link TurnTui} renders.
+ */
+function rawEventsFromNormalized(events: HarnessTurnEvent[]): RawTurnEvent[] {
+  const out: RawTurnEvent[] = [];
+  let lastJson = "";
+  for (const event of events) {
+    const raw = (event.raw_provider_event ?? {}) as RawTurnEvent;
+    const json = JSON.stringify(raw);
+    if (json !== lastJson) {
+      out.push(raw);
+      lastJson = json;
+    }
+  }
+  return out;
+}
+
+/** Result footer for a normalized `turn_completed`: status · duration · cost · tokens. */
+function NormalizedResultFooter({ event }: { event: HarnessTurnEvent }) {
+  const subtype = event.status ?? (event.error ? "error" : "success");
+  const ms = event.duration_ms;
+  const cost = event.cost_usd;
+  const inTok = event.usage?.input_tokens;
+  const outTok = event.usage?.output_tokens;
+  const parts = [
+    ms != null ? `${(ms / 1000).toFixed(1)}s` : null,
+    cost != null ? `$${cost.toFixed(4)}` : null,
+    inTok != null || outTok != null ? `${inTok ?? "?"}→${outTok ?? "?"} tok` : null,
+  ].filter(Boolean);
+  return (
+    <div className="mt-1 flex flex-wrap items-center gap-1.5 border-t border-border/40 pt-1 text-[10px] text-muted-foreground">
+      <Badge tone={subtype === "success" ? "good" : "warn"}>result · {subtype}</Badge>
+      {parts.length > 0 && <span>{parts.join(" · ")}</span>}
+    </div>
+  );
+}
+
+/**
+ * Render a turn from the canonical {@link HarnessTurnEvent} stream — the
+ * PROVIDER-AGNOSTIC successor to {@link TurnTui}. It walks events in `seq` order
+ * and switches on `kind` only (no codex/claude branching), so a new provider
+ * inherits the same ⏺ tool_call / ⎿ tool_result / ✻ reasoning / assistant-prose
+ * vocabulary the moment its `ProviderAdapter::normalize_turn_event` lands — no
+ * frontend change. Detail is never lost: `raw_provider_event` is retained on
+ * every event and surfaced via the drill-in's "raw" toggle.
+ */
+function NormalizedTurnTui({ events }: { events: HarnessTurnEvent[] }) {
+  const toolNames = new Map<string, string>();
+  const rows: ReactNode[] = [];
+  for (const event of events) {
+    const key = String(event.seq);
+    switch (event.kind) {
+      case "turn_started":
+        // Lifecycle marker, no operator-facing content (mirrors the raw path
+        // skipping thread.started / turn.started).
+        break;
+      case "reasoning": {
+        const text = event.text ?? "";
+        rows.push(
+          <TuiRow
+            key={key}
+            glyph="✻"
+            muted
+            label="thinking"
+            body={text ? (text.length > 200 ? `${text.slice(0, 200)}…` : text) : "(reasoning)"}
+          />,
+        );
+        break;
+      }
+      case "message":
+      case "message_delta": {
+        const text = event.text ?? event.delta ?? "";
+        if (text.trim()) {
+          rows.push(
+            <div key={key} className="py-1 text-[12px] text-foreground/90">
+              <Markdown source={text} />
+            </div>,
+          );
+        }
+        break;
+      }
+      case "tool_call": {
+        const name = event.tool_call?.name ?? "tool";
+        if (event.tool_call?.id) toolNames.set(event.tool_call.id, name);
+        // Some providers set `name` TO the full command (codex command_execution),
+        // so the one-line arg would just repeat it — show it once in that case.
+        const arg = toolUseArg(event.tool_call?.args);
+        rows.push(
+          <TuiRow key={key} glyph="⏺" tone="info" label={name} body={arg === name ? undefined : arg} mono />,
+        );
+        break;
+      }
+      case "tool_result": {
+        const result = event.tool_result;
+        const name = (result?.tool_call_id ? toolNames.get(result.tool_call_id) : undefined) ?? result?.name;
+        const text = result?.content ?? "";
+        rows.push(
+          <TuiRow
+            key={key}
+            glyph="⎿"
+            indent
+            tone={result?.is_error ? "bad" : undefined}
+            label={name}
+            body={text.length > 600 ? `${text.slice(0, 600)}…` : text}
+            mono
+          />,
+        );
+        break;
+      }
+      case "turn_completed":
+        rows.push(<NormalizedResultFooter key={key} event={event} />);
+        break;
+      case "usage": {
+        const usage = event.usage;
+        rows.push(
+          <TuiRow
+            key={key}
+            dim
+            label="usage"
+            body={usage ? `${usage.input_tokens}→${usage.output_tokens} tok` : ""}
+          />,
+        );
+        break;
+      }
+      case "error":
+        rows.push(<TuiRow key={key} glyph="✗" tone="bad" label="error" body={event.error ?? "(error)"} />);
+        break;
+      case "provider_meta": {
+        const bits = [
+          event.model ? `model ${event.model}` : "",
+          event.status ? event.status : "",
+        ].filter(Boolean);
+        // Suppress content-free meta so the stream stays readable.
+        if (bits.length > 0) {
+          rows.push(<TuiRow key={key} dim label="meta" body={bits.join(" · ")} />);
+        }
+        break;
+      }
+      default:
+        // `unknown` (or any future kind): fall back to the retained raw payload.
+        rows.push(<TuiRow key={key} dim label={event.kind || "event"} body={compactJson(event.raw_provider_event)} mono />);
+    }
+  }
+  return <div className="space-y-0.5">{rows}</div>;
 }
 
 /**

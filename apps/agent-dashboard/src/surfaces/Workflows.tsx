@@ -35,6 +35,7 @@ import {
 } from "../model/workflowShape";
 import { normalizeBaseUrl } from "../api";
 import type {
+  HarnessTurnEvent,
   ProviderSession,
   WorkflowRun,
   WorkflowStep,
@@ -851,10 +852,10 @@ function StepCard({
   const roleHint = roleHintFromLabel(step.label);
   const isRequired = phase.kind === "serial" && phase.steps[0]?.id === step.id;
   const isToleratedFail = phase.kind === "parallel" && tone === "bad";
-  // The SSE-pushed live buffer for this node's session, keyed by session id —
-  // threaded into TurnDrillIn so the node detail streams sub-second.
-  const liveEvents = session
-    ? model.snapshot.live_turn_events?.[session.id]
+  // The SSE-pushed NORMALIZED live buffer for this node's session, keyed by
+  // session id — threaded into TurnDrillIn so the node detail streams sub-second.
+  const liveNormalizedEvents = session
+    ? model.snapshot.live_normalized_events?.[session.id]
     : undefined;
 
   return (
@@ -934,7 +935,7 @@ function StepCard({
         <div className="flex items-center justify-between gap-2 px-3 pb-3">
           {session ? (
             <>
-              <TurnDrillIn session={session} apiUrl={apiUrl} liveEvents={liveEvents} historical={historical} />
+              <TurnDrillIn session={session} apiUrl={apiUrl} liveNormalizedEvents={liveNormalizedEvents} historical={historical} />
               <button
                 type="button"
                 onClick={() => setDrawerOpen(true)}
@@ -960,7 +961,7 @@ function StepCard({
           tone={tone}
           provider={provider}
           isolation={isolation}
-          liveEvents={liveEvents}
+          liveNormalizedEvents={liveNormalizedEvents}
           apiUrl={apiUrl}
           historical={historical}
           onClose={() => setDrawerOpen(false)}
@@ -983,7 +984,7 @@ function StepDrawer({
   tone,
   provider,
   isolation,
-  liveEvents,
+  liveNormalizedEvents,
   apiUrl,
   historical,
   onClose,
@@ -993,7 +994,7 @@ function StepDrawer({
   tone: StatusTone;
   provider?: string;
   isolation?: string | null;
-  liveEvents?: Record<string, unknown>[];
+  liveNormalizedEvents?: HarnessTurnEvent[];
   apiUrl?: string;
   historical?: boolean;
   onClose: () => void;
@@ -1069,7 +1070,7 @@ function StepDrawer({
                 session={session}
                 apiUrl={apiUrl}
                 defaultOpen
-                liveEvents={liveEvents}
+                liveNormalizedEvents={liveNormalizedEvents}
                 historical={historical}
               />
             </DocSection>
