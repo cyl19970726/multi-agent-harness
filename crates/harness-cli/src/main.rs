@@ -9354,17 +9354,17 @@ fn read_provider_session_events(
 }
 
 /// A normalized event for a raw provider frame we have no specific mapping
-/// for yet: retains the raw JSON, stamps provider/seq/ts, kind = Unknown.
+/// for yet: retains the raw JSON, stamps provider/ts, kind = Unknown. The
+/// caller/read helper assigns the final sequence number.
 fn generic_turn_event(
     provider: &str,
     session_id: &str,
-    seq: u64,
     raw: &serde_json::Value,
 ) -> HarnessTurnEvent {
     HarnessTurnEvent {
         session_id: session_id.to_string(),
         provider: provider.to_string(),
-        seq,
+        seq: 0,
         ts: now_string(),
         provider_thread_id: None,
         provider_turn_id: None,
@@ -9396,10 +9396,14 @@ fn read_provider_session_normalized_events(
     let (raw_events, truncated) = read_provider_session_events(store, session_id)?;
     let normalized = raw_events
         .iter()
+        .flat_map(|raw| match provider_adapter(&session.provider) {
+            Some(adapter) => adapter.normalize_turn_event(session_id, raw),
+            None => vec![generic_turn_event(&session.provider, session_id, raw)],
+        })
         .enumerate()
-        .map(|(i, raw)| match provider_adapter(&session.provider) {
-            Some(adapter) => adapter.normalize_turn_event(session_id, i as u64, raw),
-            None => generic_turn_event(&session.provider, session_id, i as u64, raw),
+        .map(|(i, mut event)| {
+            event.seq = i as u64;
+            event
         })
         .collect();
     Ok((normalized, truncated))
@@ -9925,16 +9929,15 @@ trait ProviderAdapter: Sync {
         )))
     }
 
-    /// Map ONE raw provider event frame to a normalized HarnessTurnEvent. The
-    /// default is a generic Unknown event (raw retained); each provider overrides
-    /// it to map its own vocabulary. `seq` is the harness-assigned per-session index.
+    /// Map one raw provider event frame to normalized HarnessTurnEvents. The
+    /// default is a single generic Unknown event (raw retained); each provider
+    /// overrides it to map its own vocabulary. The read helper assigns final seq.
     fn normalize_turn_event(
         &self,
         session_id: &str,
-        seq: u64,
         raw: &serde_json::Value,
-    ) -> HarnessTurnEvent {
-        generic_turn_event(self.name(), session_id, seq, raw)
+    ) -> Vec<HarnessTurnEvent> {
+        vec![generic_turn_event(self.name(), session_id, raw)]
     }
 
     /// Reduce this provider's retained ephemeral NDJSON trace into neutral
@@ -10012,10 +10015,9 @@ impl ProviderAdapter for CodexAdapter {
     fn normalize_turn_event(
         &self,
         session_id: &str,
-        seq: u64,
         raw: &serde_json::Value,
-    ) -> HarnessTurnEvent {
-        let mut event = generic_turn_event(self.name(), session_id, seq, raw);
+    ) -> Vec<HarnessTurnEvent> {
+        let mut event = generic_turn_event(self.name(), session_id, raw);
 
         if let Some(error) = raw.get("error") {
             event.kind = HarnessTurnEventKind::Error;
@@ -10031,7 +10033,7 @@ impl ProviderAdapter for CodexAdapter {
                     })
                     .unwrap_or_else(|| error.to_string()),
             );
-            return event;
+            return vec![event];
         }
 
         match raw.get("type").and_then(|value| value.as_str()) {
@@ -10134,7 +10136,7 @@ impl ProviderAdapter for CodexAdapter {
             _ => {}
         }
 
-        event
+        vec![event]
     }
 
     fn start_runtime(&self, store: &HarnessStore, member: &AgentMember) -> CliResult<AgentRuntime> {
@@ -10418,10 +10420,9 @@ impl ProviderAdapter for ClaudeAdapter {
     fn normalize_turn_event(
         &self,
         session_id: &str,
-        seq: u64,
         raw: &serde_json::Value,
-    ) -> HarnessTurnEvent {
-        let mut event = generic_turn_event(self.name(), session_id, seq, raw);
+    ) -> Vec<HarnessTurnEvent> {
+        let mut event = generic_turn_event(self.name(), session_id, raw);
         let payload = raw;
 
         match raw.get("type").and_then(|value| value.as_str()) {
@@ -10445,7 +10446,7 @@ impl ProviderAdapter for ClaudeAdapter {
                     .and_then(|content| content.as_array())
                 else {
                     event.kind = HarnessTurnEventKind::ProviderMeta;
-                    return event;
+                    return vec![event];
                 };
 
                 if let Some(block) = blocks.iter().find(|block| {
@@ -10519,7 +10520,7 @@ impl ProviderAdapter for ClaudeAdapter {
                     })
                 else {
                     event.kind = HarnessTurnEventKind::ProviderMeta;
-                    return event;
+                    return vec![event];
                 };
 
                 event.kind = HarnessTurnEventKind::ToolResult;
@@ -10600,7 +10601,7 @@ impl ProviderAdapter for ClaudeAdapter {
             _ => {}
         }
 
-        event
+        vec![event]
     }
 
     fn start_runtime(&self, store: &HarnessStore, member: &AgentMember) -> CliResult<AgentRuntime> {
@@ -13510,11 +13511,13 @@ mod workflow_runtime_tests {
             "thread_id": "thread-1"
         });
 
-        let event = CodexAdapter.normalize_turn_event("session-T", 7, &raw);
+        let events = CodexAdapter.normalize_turn_event("session-T", &raw);
+        assert_eq!(events.len(), 1);
+        let event = &events[0];
 
         assert_eq!(event.session_id, "session-T");
         assert_eq!(event.provider, "codex");
-        assert_eq!(event.seq, 7);
+        assert_eq!(event.seq, 0);
         assert_eq!(event.kind, HarnessTurnEventKind::ProviderMeta);
         assert_eq!(event.provider_thread_id.as_deref(), Some("thread-1"));
         assert_eq!(event.raw_provider_event, raw);
@@ -13527,7 +13530,9 @@ mod workflow_runtime_tests {
             "turn_id": "turn-1"
         });
 
-        let event = CodexAdapter.normalize_turn_event("session-T", 8, &raw);
+        let events = CodexAdapter.normalize_turn_event("session-T", &raw);
+        assert_eq!(events.len(), 1);
+        let event = &events[0];
 
         assert_eq!(event.kind, HarnessTurnEventKind::TurnStarted);
         assert_eq!(event.provider_turn_id.as_deref(), Some("turn-1"));
@@ -13545,7 +13550,9 @@ mod workflow_runtime_tests {
             }
         });
 
-        let event = CodexAdapter.normalize_turn_event("session-T", 9, &raw);
+        let events = CodexAdapter.normalize_turn_event("session-T", &raw);
+        assert_eq!(events.len(), 1);
+        let event = &events[0];
 
         assert_eq!(event.kind, HarnessTurnEventKind::Message);
         assert_eq!(event.provider_item_id.as_deref(), Some("item-1"));
@@ -13566,7 +13573,9 @@ mod workflow_runtime_tests {
             }
         });
 
-        let event = CodexAdapter.normalize_turn_event("session-T", 10, &raw);
+        let events = CodexAdapter.normalize_turn_event("session-T", &raw);
+        assert_eq!(events.len(), 1);
+        let event = &events[0];
 
         assert_eq!(event.kind, HarnessTurnEventKind::TurnCompleted);
         assert_eq!(
@@ -13589,11 +13598,13 @@ mod workflow_runtime_tests {
             "payload": {"n": 1}
         });
 
-        let event = CodexAdapter.normalize_turn_event("session-T", 7, &raw);
+        let events = CodexAdapter.normalize_turn_event("session-T", &raw);
+        assert_eq!(events.len(), 1);
+        let event = &events[0];
 
         assert_eq!(event.session_id, "session-T");
         assert_eq!(event.provider, "codex");
-        assert_eq!(event.seq, 7);
+        assert_eq!(event.seq, 0);
         assert_eq!(event.kind, HarnessTurnEventKind::Unknown);
         assert_eq!(event.raw_provider_event, raw);
         assert!(event.provider_thread_id.is_none());
@@ -13612,11 +13623,13 @@ mod workflow_runtime_tests {
             "model": "claude-opus-4-8"
         });
 
-        let event = ClaudeAdapter.normalize_turn_event("session-C", 1, &raw);
+        let events = ClaudeAdapter.normalize_turn_event("session-C", &raw);
+        assert_eq!(events.len(), 1);
+        let event = &events[0];
 
         assert_eq!(event.session_id, "session-C");
         assert_eq!(event.provider, "claude");
-        assert_eq!(event.seq, 1);
+        assert_eq!(event.seq, 0);
         assert_eq!(event.kind, HarnessTurnEventKind::ProviderMeta);
         assert_eq!(event.model.as_deref(), Some("claude-opus-4-8"));
         assert_eq!(
@@ -13639,7 +13652,9 @@ mod workflow_runtime_tests {
             }
         });
 
-        let event = ClaudeAdapter.normalize_turn_event("session-C", 2, &raw);
+        let events = ClaudeAdapter.normalize_turn_event("session-C", &raw);
+        assert_eq!(events.len(), 1);
+        let event = &events[0];
 
         assert_eq!(event.kind, HarnessTurnEventKind::Message);
         assert_eq!(event.role.as_deref(), Some("assistant"));
@@ -13665,7 +13680,9 @@ mod workflow_runtime_tests {
             }
         });
 
-        let event = ClaudeAdapter.normalize_turn_event("session-C", 3, &raw);
+        let events = ClaudeAdapter.normalize_turn_event("session-C", &raw);
+        assert_eq!(events.len(), 1);
+        let event = &events[0];
 
         assert_eq!(event.kind, HarnessTurnEventKind::ToolCall);
         assert_eq!(event.provider_item_id.as_deref(), Some("toolu_01"));
@@ -13697,7 +13714,9 @@ mod workflow_runtime_tests {
             }
         });
 
-        let event = ClaudeAdapter.normalize_turn_event("session-C", 4, &raw);
+        let events = ClaudeAdapter.normalize_turn_event("session-C", &raw);
+        assert_eq!(events.len(), 1);
+        let event = &events[0];
 
         assert_eq!(event.kind, HarnessTurnEventKind::ToolResult);
         assert_eq!(event.provider_item_id.as_deref(), Some("toolu_01"));
@@ -13729,7 +13748,9 @@ mod workflow_runtime_tests {
             }
         });
 
-        let event = ClaudeAdapter.normalize_turn_event("session-C", 5, &raw);
+        let events = ClaudeAdapter.normalize_turn_event("session-C", &raw);
+        assert_eq!(events.len(), 1);
+        let event = &events[0];
 
         assert_eq!(event.kind, HarnessTurnEventKind::TurnCompleted);
         assert_eq!(event.text.as_deref(), Some("final answer"));
@@ -13756,7 +13777,9 @@ mod workflow_runtime_tests {
             "usage": {"input_tokens": 1, "output_tokens": 2}
         });
 
-        let event = ClaudeAdapter.normalize_turn_event("session-C", 6, &raw);
+        let events = ClaudeAdapter.normalize_turn_event("session-C", &raw);
+        assert_eq!(events.len(), 1);
+        let event = &events[0];
 
         assert_eq!(event.kind, HarnessTurnEventKind::Error);
         assert_eq!(event.text.as_deref(), Some("tool failed"));
@@ -13781,11 +13804,13 @@ mod workflow_runtime_tests {
             "payload": {"n": 1}
         });
 
-        let event = ClaudeAdapter.normalize_turn_event("session-C", 7, &raw);
+        let events = ClaudeAdapter.normalize_turn_event("session-C", &raw);
+        assert_eq!(events.len(), 1);
+        let event = &events[0];
 
         assert_eq!(event.session_id, "session-C");
         assert_eq!(event.provider, "claude");
-        assert_eq!(event.seq, 7);
+        assert_eq!(event.seq, 0);
         assert_eq!(event.kind, HarnessTurnEventKind::Unknown);
         assert_eq!(event.raw_provider_event, raw);
         assert!(event.provider_thread_id.is_none());
