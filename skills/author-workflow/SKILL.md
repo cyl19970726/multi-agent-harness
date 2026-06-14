@@ -84,8 +84,8 @@ A program calls these globals (no `import`; they are pre-bound):
 | `workflow(name, design_intent, budget_usd=, success_criterion=)` | — | REQUIRED header. Declares the run name + the WHY behind its shape. Optional `budget_usd=N` caps the run's cumulative spend; `success_criterion="..."` declares the bar `verdict()` is judged against. Must run once before the body. |
 | `agent(prompt, provider="codex", label=, phase=, model=, effort=, fallback_model=, image=, add_dir=, isolation=, schema=, writable=False)` | output text, OR a dict (with `schema=`) | Run ONE ephemeral worker synchronously. `prompt` is positional; the rest are keyword args. `model=` overrides the provider default model; `effort=` overrides reasoning effort (see the rules below); `fallback_model=` sets a provider fallback model when supported; `image=` is a list of image file paths; `add_dir=` is a list of extra directory paths. READ-ONLY by default; `writable=True` lets it edit / run shell AND auto-isolates it into a throwaway worktree. With `schema={...}` it returns a parsed dict (or `None`) — see [Structured Output](#structured-output-the-foundation). Capture the return to chain: `scan = agent("...")`. |
 | `parallel([dict, ...])` | list (input order) | Barrier fan-out: run every spec concurrently, block until ALL finish. Each element is the parsed dict (if that spec had a `schema` that parsed) else its output string. Each dict needs a `prompt` and may set `provider` (default `"codex"`), `label`, `phase`, `model`, `effort`, `fallback_model`, `image`, `add_dir`, `isolation`, `schema`, `writable`. |
-| `pipeline(items, stages)` | list (one per item) | No-barrier streaming: each item flows through every stage independently. `stages` is a list of dicts `{prompt, provider?, label?, phase?, model?, effort?, fallback_model?, image?, add_dir?, isolation?, schema?, writable?}` whose `prompt` is a TEMPLATE containing `{input}` — replaced with the item for stage 1, then the prior stage's output for each next stage (forward-injection). Returns each item's LAST stage result. |
-| `verdict(ok, reason="")` | — | Declare the run's TYPED outcome. `ok=False` finalizes the run `Failed` even if every worker ran — so "workers ran" ≠ "intent satisfied". A closed-loop program's final gate calls this. |
+| `pipeline(items, stages)` | list (one per item) | No-barrier streaming: each item flows through every stage independently. `stages` is a list of dicts `{prompt, provider?, label?, phase?, model?, effort?, fallback_model?, image?, add_dir?, isolation?, schema?, writable?}` (or pass the stages as positional args: `pipeline(items, s1, s2)`) whose `prompt` is a TEMPLATE containing `{input}` — replaced with the item for stage 1, then the prior stage's output for each next stage (forward-injection). Returns each item's LAST stage result. |
+| `verdict(ok, reason="")` | — | Declare the run's TYPED outcome. `reason` may be positional or keyword (`verdict(ok, "why")` ≡ `verdict(ok, reason="why")`). `ok=False` finalizes the run `Failed` even if every worker ran — so "workers ran" ≠ "intent satisfied". A closed-loop program's final gate calls this. |
 | `output(value)` | — | Declare the run's RESULT — the one unambiguous answer the calling agent reads back. `value` (a string or dict) is persisted verbatim under `final_output.result`, UNCAPPED, so the caller reads one field instead of digging the answer out of a step by label. Last call wins; pass a `schema`'d dict when you want the answer typed (a free-text `agent()` return is the worker's FULL reply — not truncated). |
 | `json.encode(value)` / `json.decode(str)` | string / value | Serialize a prior `agent()`'s dict to inject it verbatim into the next prompt (forward-injection), or parse JSON back. |
 | `phase(name)` | — | Set the default phase for the steps that follow. |
@@ -243,10 +243,14 @@ controls the workflow's CONTROL FLOW.
 dict in the result list, an unschema'd (or unparsed) spec yields its summary
 string — so guard with `type(x) == "dict"` when a fan-out mixes them.
 
-**Field types — a `schema` value is enforced as a STRING.** The flat
-`{"key": "hint"}` form makes every field a string on live runs (the hint guides
-the worker; the runtime enforces the key is present). To get a LIST of items out
-of a leaf, have it return them ONE PER LINE and `.splitlines()` the field — the
+**Field types — known type words COERCE; other hints stay strings.** In the flat
+`{"key": "hint"}` form a hint that is a recognised scalar type word — `"bool"`,
+`"int"`/`"integer"`, `"number"`/`"float"` — is enforced as that REAL JSON type, so
+`{"ok": "bool"}` gives you a real `True`/`False` and `{"n": "int"}` a real integer
+(branch directly: `if res["ok"]:`, no string compare). Any OTHER hint (e.g.
+`"the file path"`, `"list of strings"`) stays a STRING — the hint just guides the
+worker and the runtime enforces the key is present. To get a LIST out of a leaf,
+have it return items ONE PER LINE and `.splitlines()` the string field — the
 robust, dry-run-safe idiom the examples use (`for x in res["items"].splitlines()`).
 For hard array/enum/nested enforcement on a live run, pass a full JSON Schema dict
 (`{"type": "object", "properties": {...}, "required": [...]}`) — it is enforced

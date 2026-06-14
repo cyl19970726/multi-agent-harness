@@ -113,6 +113,9 @@ if [ $REAL -eq 1 ]; then
     # #1: every codex leaf finished (a stdin wedge would leave a step not-ok / time out).
     [ "$(check_json "$TMP/p1.json" "all(s['ok'] for s in d['run']['final_output']['steps'])")" = "1" ] \
       && ok "#1 all codex leaves finished (no stdin wedge)" || bad "#1 a codex leaf stalled"
+    # #7: both SAME-LABEL writable nodes ('wdup') got their own worktree and succeeded.
+    [ "$(check_json "$TMP/p1.json" "len([s for s in d['run']['final_output']['steps'] if s['label']=='wdup'])==2 and all(s['ok'] for s in d['run']['final_output']['steps'] if s['label']=='wdup')")" = "1" ] \
+      && ok "#7 same-label parallel writable nodes both got a worktree" || bad "#7 same-label writable nodes collided"
 
     CMD_SID="$(python3 -c "import json; d=json.load(open('$TMP/p1.json')); print(next((s['provider_session_id'] for s in d['run']['final_output']['steps'] if s['label']=='cmd'), ''))" 2>/dev/null)"
 
