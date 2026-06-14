@@ -25,6 +25,14 @@ agent("Run the shell command: ls crates ; then in one sentence say which crates 
 pipe = pipeline(["beta"], {"prompt": "Reply with exactly this word: {input}", "label": "echo"})
 log("pipe_len=" + str(len(pipe)))
 
+# #7: two SAME-LABEL writable nodes in parallel. Each must get its OWN throwaway
+# worktree (keyed by the per-leaf session id), so BOTH succeed — previously the
+# 2nd collided on one branch+path and failed. verify-fixes.sh asserts both ok.
+parallel([
+    {"prompt": "Create a file named probe.txt containing ALPHA in the repo root, then say done.", "writable": True, "label": "wdup"},
+    {"prompt": "Create a file named probe.txt containing BETA in the repo root, then say done.", "writable": True, "label": "wdup"},
+])
+
 # #6: verdict with a POSITIONAL reason. `ok` is True ONLY if #5 produced a real bool+int
 # (a string "true" would fail `== True`), so a passing verdict is itself the #5 proof.
 ok = type(typed) == "dict" and typed["ok"] == True and typed["n"] == 7

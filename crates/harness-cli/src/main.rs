@@ -4312,11 +4312,33 @@ struct WorktreeGuard {
     branch: String,
 }
 
+/// The throwaway worktree's relative path and temp branch for one leaf, keyed by
+/// run + node label + the per-leaf `session_id`. The `session_id` disambiguator is
+/// what makes two SAME-LABEL writable nodes (e.g. a fan-out of workers all labeled
+/// "fix") get DISTINCT worktrees instead of colliding on one branch+path — the
+/// collision that made the 2nd+ such node fail with a cryptic "branch already
+/// checked out" git error (issue #139 item 7).
+fn worktree_paths(run_id: &str, node_label: &str, session_id: &str) -> (String, String) {
+    let slug = sanitize_worktree_slug(node_label);
+    let unique = sanitize_worktree_slug(session_id);
+    (
+        format!(".harness/worktrees/{run_id}-{slug}-{unique}"),
+        format!("harness/wt/{run_id}-{slug}-{unique}"),
+    )
+}
+
 impl WorktreeGuard {
     /// `git -C <repo> worktree add -B <branch> <path> HEAD` — a detach-free
     /// throwaway checkout of HEAD the worker mutates in isolation. Uniform for
     /// both providers (the harness owns the worktree; we never use claude's -w).
-    fn create(repo_root: &Path, run_id: &str, node_label: &str) -> CliResult<WorktreeGuard> {
+    /// The branch+path are unique per LEAF (via `session_id`), so concurrent
+    /// same-label writable nodes never collide (issue #139 item 7).
+    fn create(
+        repo_root: &Path,
+        run_id: &str,
+        node_label: &str,
+        session_id: &str,
+    ) -> CliResult<WorktreeGuard> {
         // A writable / isolation="worktree" step runs in a throwaway git worktree.
         // If the workflow's cwd is NOT a git repo, `git worktree add` fails with a
         // cryptic "fatal: not a git repository". Catch that up front with an
@@ -4333,10 +4355,8 @@ impl WorktreeGuard {
             )));
         }
 
-        let slug = sanitize_worktree_slug(node_label);
-        let rel = format!(".harness/worktrees/{run_id}-{slug}");
+        let (rel, branch) = worktree_paths(run_id, node_label, session_id);
         let path = repo_root.join(&rel);
-        let branch = format!("harness/wt/{run_id}-{slug}");
 
         // Defensive: a stale dir from a crashed prior run would make `add` fail.
         if path.exists() {
@@ -4460,7 +4480,12 @@ fn spawn_ephemeral_worker(
     // discardable checkout (captured as the step diff), never the live repo.
     let isolate = spec.isolation.as_deref() == Some("worktree") || spec.writable;
     let guard = if isolate {
-        Some(WorktreeGuard::create(&repo_root, run_id, &spec.label)?)
+        Some(WorktreeGuard::create(
+            &repo_root,
+            run_id,
+            &spec.label,
+            session_id,
+        )?)
     } else {
         None
     };
@@ -15140,7 +15165,7 @@ mod workflow_runtime_tests {
         let dir = std::env::temp_dir().join(format!("harness-nongit-{}", generated_id("ng")));
         std::fs::create_dir_all(&dir).expect("mk non-git dir");
         // (WorktreeGuard isn't Debug — match instead of expect_err.)
-        let msg = match WorktreeGuard::create(&dir, "wfrun-x", "writer") {
+        let msg = match WorktreeGuard::create(&dir, "wfrun-x", "writer", "session-x-0") {
             Ok(_) => panic!("a non-git dir must fail clearly, not attempt git worktree add"),
             Err(e) => e.to_string(),
         };
@@ -15153,6 +15178,24 @@ mod workflow_runtime_tests {
             "offers both fixes (git init / read-only + get-output): {msg}"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn worktree_paths_are_unique_per_leaf_even_with_duplicate_labels() {
+        // issue #139 item 7: two SAME-LABEL writable nodes in one run must NOT
+        // share a worktree path/branch (the collision that failed the 2nd node).
+        // The per-leaf session_id disambiguates them.
+        let (rel_a, br_a) = worktree_paths("wfrun-1", "dup", "session-1-0");
+        let (rel_b, br_b) = worktree_paths("wfrun-1", "dup", "session-1-1");
+        assert_ne!(rel_a, rel_b, "same-label leaves must get distinct paths");
+        assert_ne!(br_a, br_b, "same-label leaves must get distinct branches");
+        // Stable for the same leaf, and the label + run are still in the name.
+        assert_eq!(
+            worktree_paths("wfrun-1", "dup", "session-1-0"),
+            (rel_a.clone(), br_a.clone())
+        );
+        assert!(rel_a.contains("wfrun-1") && rel_a.contains("dup"));
+        assert!(br_a.starts_with("harness/wt/"));
     }
 
     #[test]
