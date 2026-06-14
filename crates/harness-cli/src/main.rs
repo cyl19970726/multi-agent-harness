@@ -5253,6 +5253,13 @@ fn spawn_codex_ephemeral(
     for path in &spec.add_dir {
         cmd.arg("--add-dir").arg(path);
     }
+    // `-i/--image <FILE>...` is VARIADIC: a positional prompt placed after it is
+    // swallowed as another image path, so codex finds no PROMPT positional, reads
+    // an empty stdin, and dies with "No prompt provided via stdin." Terminate
+    // option parsing with `--` so the prompt is unambiguously the PROMPT positional.
+    if !spec.image.is_empty() {
+        cmd.arg("--");
+    }
     cmd.arg(prompt);
 
     let run = run_ndjson_child(
