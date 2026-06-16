@@ -5927,6 +5927,32 @@ fn workflow_repo_root(project: &ProjectContext) -> PathBuf {
     project.project_root.clone()
 }
 
+/// Resolve the cwd a PERSISTENT provider delivery (codex / claude) runs from
+/// (goal-multi-project P3, Stage 3). Precedence:
+///   1. `member.worktree_ref` — an explicitly pinned workspace always wins.
+///   2. `project.project_root` — the SELECTED project's root, so the worker reads
+///      the right `CLAUDE.md` / `AGENTS.md` / `.claude/` even when a long-running
+///      `serve` switched projects and never `cd`d.
+///   3. `env::current_dir()` — last-resort compatibility fallback (a raw
+///      `--store`/`HARNESS_ROOT` store with no pinned identity degrades to today's
+///      behavior; see `workflow_project_context`).
+///
+/// Returns a display string (the `Command::current_dir` callers already pass a
+/// string) defaulting to `"."` only if even the process cwd is unreadable.
+fn delivery_worker_cwd(member: &AgentMember, project: &ProjectContext) -> String {
+    if let Some(worktree) = member.worktree_ref.clone() {
+        return worktree;
+    }
+    let project_root = project.project_root.as_path();
+    if !project_root.as_os_str().is_empty() {
+        return project_root.display().to_string();
+    }
+    env::current_dir()
+        .ok()
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|| ".".to_string())
+}
+
 /// Whether `path` is inside a git work tree — `git -C <path> rev-parse
 /// --is-inside-work-tree` exits 0 and prints `true`. Used to fail a
 /// writable/isolated workflow step with a clear message BEFORE attempting a
@@ -8150,6 +8176,13 @@ fn deliver_agent_messages_value(
         start_runtime,
         timeout_ms,
     } = options;
+    // The SELECTED project for this delivery (goal-multi-project P3, Stage 3). The
+    // centralized store self-describes its project via `metadata.json`, so we
+    // recover it the SAME way workflows do (`workflow_project_context`) instead of
+    // threading a resolved context through every command/API delivery entry point.
+    // A raw `--store`/`HARNESS_ROOT`/walk-up store with no pinned identity degrades
+    // to today's cwd-as-project-root behavior, preserving back-compat.
+    let project = workflow_project_context(store);
     let mut member = latest_member(store, &agent_id)?;
     ensure_member_accepts_delivery(&member)?;
     let mut runtime = match member.provider_runtime_id.as_deref() {
@@ -8364,6 +8397,7 @@ fn deliver_agent_messages_value(
                     &claimed_message,
                     &delivery_id,
                     timeout_ms,
+                    &project,
                 )?
             }
         };
@@ -11702,6 +11736,13 @@ trait ProviderAdapter: Sync {
     fn start_runtime(&self, store: &HarnessStore, member: &AgentMember) -> CliResult<AgentRuntime>;
 
     /// Run a single message delivery against this provider's persistent runtime.
+    ///
+    /// `project` is the selected [`ProjectContext`] (goal-multi-project P3): the
+    /// worker's cwd derives from `project.project_root` when the member is not
+    /// pinned to a specific `worktree_ref`, so a long-running `serve` that switched
+    /// projects (and never `cd`d) still spawns the worker in the right tree where
+    /// its `CLAUDE.md` / `AGENTS.md` live.
+    #[allow(clippy::too_many_arguments)]
     fn run_delivery(
         &self,
         store: &HarnessStore,
@@ -11710,6 +11751,7 @@ trait ProviderAdapter: Sync {
         message: &Message,
         delivery_id: &str,
         timeout_ms: u64,
+        project: &ProjectContext,
     ) -> CliResult<DeliveryOutcome>;
 
     fn spawn_ephemeral(&self, ctx: &EphemeralSpawnContext<'_>) -> CliResult<EphemeralSpawn>;
@@ -11939,6 +11981,7 @@ impl ProviderAdapter for CodexAdapter {
         start_codex_exec_runtime(store, member)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn run_delivery(
         &self,
         store: &HarnessStore,
@@ -11947,8 +11990,17 @@ impl ProviderAdapter for CodexAdapter {
         message: &Message,
         delivery_id: &str,
         timeout_ms: u64,
+        project: &ProjectContext,
     ) -> CliResult<DeliveryOutcome> {
-        run_codex_exec_delivery(store, member, runtime, message, delivery_id, timeout_ms)
+        run_codex_exec_delivery(
+            store,
+            member,
+            runtime,
+            message,
+            delivery_id,
+            timeout_ms,
+            project,
+        )
     }
 
     fn record_hook_event(&self, store: &HarnessStore, args: &[String]) -> CliResult<()> {
@@ -12418,6 +12470,7 @@ impl ProviderAdapter for ClaudeAdapter {
         start_claude_runtime(store, member)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn run_delivery(
         &self,
         store: &HarnessStore,
@@ -12426,8 +12479,17 @@ impl ProviderAdapter for ClaudeAdapter {
         message: &Message,
         delivery_id: &str,
         timeout_ms: u64,
+        project: &ProjectContext,
     ) -> CliResult<DeliveryOutcome> {
-        run_claude_delivery(store, member, runtime, message, delivery_id, timeout_ms)
+        run_claude_delivery(
+            store,
+            member,
+            runtime,
+            message,
+            delivery_id,
+            timeout_ms,
+            project,
+        )
     }
 
     fn ingest_ephemeral_trace(
@@ -13003,6 +13065,7 @@ fn run_codex_exec_process(
     message: &Message,
     delivery_id: &str,
     timeout_ms: u64,
+    project: &ProjectContext,
 ) -> CliResult<CodexExecDeliveryRun> {
     // Build the command: `codex exec --json <prompt>`
     // The LaunchSpec is composed from the member/message; the exec arg is the message_content.
@@ -13016,11 +13079,10 @@ fn run_codex_exec_process(
     );
 
     let developer_instructions = provider_developer_instructions(member);
-    let cwd = member.worktree_ref.clone().or_else(|| {
-        env::current_dir()
-            .ok()
-            .map(|path| path.display().to_string())
-    });
+    // cwd precedence (P3, Stage 3): member.worktree_ref → selected
+    // project.project_root → process cwd. Codex discovers AGENTS.md from its cwd,
+    // so a `serve` that switched projects must still spawn here in the project root.
+    let cwd = delivery_worker_cwd(member, project);
 
     // Build LaunchSpec from member and message
     let spec = build_launch_spec(member, message);
@@ -13064,7 +13126,7 @@ fn run_codex_exec_process(
         }
     }
 
-    cmd.current_dir(cwd.clone().unwrap_or_else(|| ".".into()));
+    cmd.current_dir(&cwd);
 
     let run = run_ndjson_child(
         cmd,
@@ -13235,6 +13297,7 @@ fn record_exec_delivery_session(
 }
 
 /// This is the exec-stream variant of run_codex_app_server_exchange.
+#[allow(clippy::too_many_arguments)]
 fn run_codex_exec_delivery(
     store: &HarnessStore,
     member: &AgentMember,
@@ -13242,6 +13305,7 @@ fn run_codex_exec_delivery(
     message: &Message,
     delivery_id: &str,
     timeout_ms: u64,
+    project: &ProjectContext,
 ) -> CliResult<DeliveryOutcome> {
     let session_dir = store.root().join("provider-sessions").join(delivery_id);
     fs::create_dir_all(&session_dir)?;
@@ -13252,8 +13316,14 @@ fn run_codex_exec_delivery(
     let spec = build_launch_spec(member, message);
     let resume_id = spec.resume.clone();
 
-    let (process_success, events, raw_events, stderr_log) =
-        run_codex_exec_process(&session_dir, member, message, delivery_id, timeout_ms)?;
+    let (process_success, events, raw_events, stderr_log) = run_codex_exec_process(
+        &session_dir,
+        member,
+        message,
+        delivery_id,
+        timeout_ms,
+        project,
+    )?;
     let (tokens, cost_usd, model) = codex_delivery_telemetry(&raw_events, &spec);
 
     // The event NDJSON is the live file run_codex_exec_process already wrote
@@ -13341,6 +13411,7 @@ fn run_codex_exec_delivery(
 }
 
 /// Run a single message delivery against the member's runtime, routed by provider.
+#[allow(clippy::too_many_arguments)]
 fn run_provider_delivery(
     store: &HarnessStore,
     member: &AgentMember,
@@ -13348,11 +13419,18 @@ fn run_provider_delivery(
     message: &Message,
     delivery_id: &str,
     timeout_ms: u64,
+    project: &ProjectContext,
 ) -> CliResult<DeliveryOutcome> {
     match provider_adapter(&member.provider) {
-        Some(adapter) => {
-            adapter.run_delivery(store, member, runtime, message, delivery_id, timeout_ms)
-        }
+        Some(adapter) => adapter.run_delivery(
+            store,
+            member,
+            runtime,
+            message,
+            delivery_id,
+            timeout_ms,
+            project,
+        ),
         None => Err(unknown_provider_error(&member.provider, "delivery")),
     }
 }
@@ -13463,6 +13541,7 @@ fn start_claude_runtime(store: &HarnessStore, member: &AgentMember) -> CliResult
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_claude_delivery(
     store: &HarnessStore,
     member: &AgentMember,
@@ -13470,6 +13549,7 @@ fn run_claude_delivery(
     message: &Message,
     delivery_id: &str,
     timeout_ms: u64,
+    project: &ProjectContext,
 ) -> CliResult<DeliveryOutcome> {
     let session_dir = store.root().join("provider-sessions").join(delivery_id);
     fs::create_dir_all(&session_dir)?;
@@ -13486,9 +13566,9 @@ fn run_claude_delivery(
     // path runs unchanged.
     let resident = env::var("HARNESS_CLAUDE_RESIDENT").as_deref() == Ok("1");
     let (process_success, events, raw_events, session_id, stderr_log) = if resident {
-        run_claude_resident_delivery_real(&session_dir, member, message, timeout_ms)?
+        run_claude_resident_delivery_real(&session_dir, member, message, timeout_ms, project)?
     } else {
-        run_claude_exec_delivery_real(&session_dir, member, message, timeout_ms)?
+        run_claude_exec_delivery_real(&session_dir, member, message, timeout_ms, project)?
     };
     let (tokens, cost_usd, model, raw_structured) = claude_delivery_telemetry(&raw_events);
 
@@ -13627,6 +13707,7 @@ fn run_claude_exec_delivery_real(
     member: &AgentMember,
     message: &Message,
     timeout_ms: u64,
+    project: &ProjectContext,
 ) -> CliResult<ClaudeDeliveryRun> {
     // Build the message content envelope (harness context).
     let message_content = format!(
@@ -13641,12 +13722,11 @@ fn run_claude_exec_delivery_real(
     // Compose system prompt (developer instructions from member prompt_ref).
     let system_prompt = provider_developer_instructions(member);
 
-    // Determine CWD from member or current directory.
-    let cwd = member.worktree_ref.clone().or_else(|| {
-        env::current_dir()
-            .ok()
-            .map(|path| path.display().to_string())
-    });
+    // cwd precedence (P3, Stage 3): member.worktree_ref → selected
+    // project.project_root → process cwd. Claude Code discovers CLAUDE.md /
+    // .claude/ (and keys per-project memory) from its cwd, so a `serve` that
+    // switched projects must still spawn here in the selected project root.
+    let cwd = delivery_worker_cwd(member, project);
 
     // Build LaunchSpec from member and message
     let spec = build_launch_spec(member, message);
@@ -13701,8 +13781,7 @@ fn run_claude_exec_delivery_real(
     }
 
     // Add working directory.
-    let cwd_str = cwd.unwrap_or_else(|| ".".to_string());
-    cmd.current_dir(&cwd_str);
+    cmd.current_dir(&cwd);
 
     let delivery_id = session_dir
         .file_name()
@@ -13754,18 +13833,16 @@ fn apply_claude_output_schema_arg(cmd: &mut Command, spec: &LaunchSpec) {
 /// Build a [`resident::ResidentConfig`] from the same launch inputs the default
 /// path uses, so the resident invocation surface matches `claude -p` flag for
 /// flag (only `-p <prompt>` becomes `--input-format stream-json`).
-fn build_resident_config(member: &AgentMember, message: &Message) -> resident::ResidentConfig {
+fn build_resident_config(
+    member: &AgentMember,
+    message: &Message,
+    project: &ProjectContext,
+) -> resident::ResidentConfig {
     let spec = build_launch_spec(member, message);
     let system_prompt = provider_developer_instructions(member);
-    let cwd = member
-        .worktree_ref
-        .clone()
-        .or_else(|| {
-            env::current_dir()
-                .ok()
-                .map(|path| path.display().to_string())
-        })
-        .unwrap_or_else(|| ".".to_string());
+    // Same cwd precedence as the default Claude path (P3, Stage 3):
+    // member.worktree_ref → selected project.project_root → process cwd.
+    let cwd = delivery_worker_cwd(member, project);
 
     let mcp_config_path = write_temp_mcp_config(spec.mcp.as_ref()).ok().flatten();
 
@@ -13815,6 +13892,7 @@ fn run_claude_resident_delivery_real(
     member: &AgentMember,
     message: &Message,
     timeout_ms: u64,
+    project: &ProjectContext,
 ) -> CliResult<ClaudeDeliveryRun> {
     let message_content = format!(
         "Harness message envelope:\nmessage_id: {}\nkind: task\ntask_id: {}\nfrom_agent_id: {}\nto_agent_id: {}\nchannel: -\ncontent:\n{}",
@@ -13825,7 +13903,7 @@ fn run_claude_resident_delivery_real(
         message.content
     );
 
-    let config = build_resident_config(member, message);
+    let config = build_resident_config(member, message, project);
     let stderr_path = session_dir.join("claude.stderr");
     let timeout = Duration::from_millis(timeout_ms.max(1));
 
@@ -17955,6 +18033,13 @@ mod tests {
         // succeed; if absent, it fails with a spawn error. Both cases prove
         // routing to claude (provider path is correct). The test is about
         // routing, not binary availability in the test environment.
+        let project = ProjectContext {
+            id: harness_core::GLOBAL_PROJECT_ID.into(),
+            project_root: root.clone(),
+            store_root: store.root().to_path_buf(),
+            kind: ProjectKind::Repo,
+            is_git_repo: false,
+        };
         let result = run_provider_delivery(
             &store,
             &member,
@@ -17962,6 +18047,7 @@ mod tests {
             &message,
             "delivery-claude",
             100, // Short timeout; no claude binary in test env
+            &project,
         );
 
         match result {
