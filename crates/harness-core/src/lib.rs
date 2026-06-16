@@ -774,6 +774,106 @@ pub struct ProviderSession {
     pub evidence_ids: Vec<String>,
 }
 
+// ---------------------------------------------------------------------------
+// Multi-project identity (goal-multi-project, Stage 0 — pure layer, no I/O).
+//
+// A project's STORE (the JSONL ledgers + provider-sessions) is centralized under
+// `~/.harness/projects/<id>/`, but its PROJECT ROOT (the git repo / dir where a
+// worker runs and reads CLAUDE.md / AGENTS.md / memory) stays where it is. These
+// two roots are deliberately distinct — see `ProjectContext`.
+// ---------------------------------------------------------------------------
+
+/// Reserved project id for the GLOBAL project, rooted at `$HOME` itself. Its
+/// relative path is empty, so it cannot share the slug space — hence a reserved id.
+pub const GLOBAL_PROJECT_ID: &str = "_global";
+
+/// Whether a project is a specific repo/dir or the reserved global (`$HOME`) one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectKind {
+    Repo,
+    Global,
+}
+
+/// A resolved project. `project_root` is where workers run (and CLAUDE.md /
+/// AGENTS.md / memory resolve); `store_root` is the centralized
+/// `~/.harness/projects/<id>/` where the JSONL ledgers live. Keeping them separate
+/// is the core of multi-project: the store centralizes while worktrees + agent cwd
+/// stay tied to the project's own directory/git.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectContext {
+    pub id: String,
+    pub project_root: std::path::PathBuf,
+    pub store_root: std::path::PathBuf,
+    pub kind: ProjectKind,
+    pub is_git_repo: bool,
+}
+
+/// FNV-1a 64-bit — a small, stable, dependency-free hash used to content-address
+/// projects OUTSIDE `$HOME` (where there is no clean relative slug). Stable across
+/// runs/platforms (unlike `std::hash::DefaultHasher`), which is what a durable
+/// project id needs; it is not used for any security purpose.
+fn fnv1a_hex16(bytes: &[u8]) -> String {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for &b in bytes {
+        hash ^= b as u64;
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{hash:016x}")
+}
+
+/// Make one path segment filesystem-safe for use inside a project-id slug:
+/// keep `[A-Za-z0-9._-]`, replace every other char (incl. path separators) with `-`.
+fn sanitize_id_segment(s: &str) -> String {
+    s.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect()
+}
+
+/// Derive a STABLE project id from a project's canonical absolute path, relative to
+/// the canonical `$HOME`:
+/// - `path == home` → [`GLOBAL_PROJECT_ID`] (`_global`).
+/// - under `home` → the relative path with separators flattened to `-`
+///   (e.g. `~/ai-luodi/jyx3d` → `ai-luodi-jyx3d`).
+/// - outside `home` → `proj-<fnv1a-hex16>` of the canonical path string.
+///
+/// Callers should pass realpath-canonicalized paths so symlinks / `..` don't mint
+/// two ids for one project. NOTE (known edge): the `/`→`-` flattening can collide
+/// `a/b-c` with `a-b/c`; acceptable for v1, revisit if it bites.
+pub fn project_id_for_path(path: &std::path::Path, home: &std::path::Path) -> String {
+    if path == home {
+        return GLOBAL_PROJECT_ID.to_string();
+    }
+    match path.strip_prefix(home) {
+        Ok(rel) => {
+            let slug = sanitize_id_segment(
+                &rel.to_string_lossy()
+                    .replace(std::path::MAIN_SEPARATOR, "-"),
+            );
+            // A leading/trailing or doubled '-' from odd paths is harmless; an empty
+            // slug (shouldn't happen, since path != home) falls back to the hash.
+            if slug.is_empty() {
+                format!("proj-{}", fnv1a_hex16(path.to_string_lossy().as_bytes()))
+            } else {
+                slug
+            }
+        }
+        Err(_) => format!("proj-{}", fnv1a_hex16(path.to_string_lossy().as_bytes())),
+    }
+}
+
+/// The centralized store root for a project id, under a harness home (`~/.harness`):
+/// `<harness_home>/projects/<id>`.
+pub fn project_store_root(harness_home: &std::path::Path, id: &str) -> std::path::PathBuf {
+    harness_home.join("projects").join(id)
+}
+
 /// Normalized, provider-neutral turn-event kind. Maps both codex
 /// (`type`/`item`) and claude (stream-json `type`/subtype) vocabularies onto
 /// one taxonomy so the dashboard and a 3rd provider need no per-provider branch.
@@ -2100,6 +2200,73 @@ mod tests {
 
         assert_eq!(parsed, session);
         assert!(parsed.validate().is_ok());
+    }
+
+    #[test]
+    fn project_id_for_path_home_is_global() {
+        let home = std::path::Path::new("/Users/me");
+        assert_eq!(project_id_for_path(home, home), GLOBAL_PROJECT_ID);
+    }
+
+    #[test]
+    fn project_id_for_path_under_home_flattens_to_slug() {
+        let home = std::path::Path::new("/Users/me");
+        assert_eq!(
+            project_id_for_path(std::path::Path::new("/Users/me/multi-agent-harness"), home),
+            "multi-agent-harness"
+        );
+        assert_eq!(
+            project_id_for_path(std::path::Path::new("/Users/me/ai-luodi/jyx3d"), home),
+            "ai-luodi-jyx3d"
+        );
+    }
+
+    #[test]
+    fn project_id_for_path_outside_home_is_stable_hash() {
+        let home = std::path::Path::new("/Users/me");
+        let id = project_id_for_path(std::path::Path::new("/opt/work/thing"), home);
+        assert!(id.starts_with("proj-"), "external path → hashed id: {id}");
+        // Stable across calls (a durable id must not change run-to-run).
+        assert_eq!(
+            id,
+            project_id_for_path(std::path::Path::new("/opt/work/thing"), home)
+        );
+        // Distinct paths → distinct ids.
+        assert_ne!(
+            id,
+            project_id_for_path(std::path::Path::new("/opt/work/other"), home)
+        );
+    }
+
+    #[test]
+    fn project_store_root_is_under_projects() {
+        let home = std::path::Path::new("/Users/me/.harness");
+        assert_eq!(
+            project_store_root(home, "ai-luodi-jyx3d"),
+            std::path::Path::new("/Users/me/.harness/projects/ai-luodi-jyx3d")
+        );
+        assert_eq!(
+            project_store_root(home, GLOBAL_PROJECT_ID),
+            std::path::Path::new("/Users/me/.harness/projects/_global")
+        );
+    }
+
+    #[test]
+    fn project_context_round_trips_json() {
+        let ctx = ProjectContext {
+            id: "ai-luodi-jyx3d".into(),
+            project_root: std::path::PathBuf::from("/Users/me/ai-luodi/jyx3d"),
+            store_root: std::path::PathBuf::from("/Users/me/.harness/projects/ai-luodi-jyx3d"),
+            kind: ProjectKind::Repo,
+            is_git_repo: true,
+        };
+        let json = serde_json::to_string(&ctx).expect("serialize");
+        assert_eq!(
+            serde_json::from_str::<ProjectContext>(&json).expect("deserialize"),
+            ctx
+        );
+        // kind is snake_case on the wire.
+        assert!(json.contains("\"kind\":\"repo\""));
     }
 
     #[test]
