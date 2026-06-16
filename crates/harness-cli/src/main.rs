@@ -18,9 +18,10 @@ use harness_core::{
     HarnessTokenUsage, HarnessToolCall, HarnessToolResult, HarnessTurnEvent, HarnessTurnEventKind,
     Knowledge, KnowledgeSource, LaunchMcp, LaunchPermission, LaunchSpec, Message, MessageDelivery,
     MessageDeliveryStatus, MessageKind, MessageTerminalSource, OrchestrationPhaseRun,
-    OrchestrationStatus, Proposal, ProposalStatus, ProviderChildThread, ProviderChildThreadStatus,
-    ProviderSession, ProviderSessionStatus, Review, ReviewVerdict, SenderKind, Task, TaskStatus,
-    VerdictOutcome, Vision, WorkflowRun, WorkflowRunStatus, WorkflowStep, WorkflowStepStatus,
+    OrchestrationStatus, ProjectContext, ProjectKind, Proposal, ProposalStatus,
+    ProviderChildThread, ProviderChildThreadStatus, ProviderSession, ProviderSessionStatus, Review,
+    ReviewVerdict, SenderKind, Task, TaskStatus, VerdictOutcome, Vision, WorkflowRun,
+    WorkflowRunStatus, WorkflowStep, WorkflowStepStatus,
 };
 use harness_store::{HarnessStore, MessageDeliveryClaimResult};
 use thiserror::Error;
@@ -1782,6 +1783,7 @@ fn goal_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
                 max_budget_usd: value(args, "--max-budget-usd").and_then(|v| v.parse::<f64>().ok()),
                 trace_retention,
                 progress: has_flag(args, "--progress"),
+                project: workflow_project_context(store),
             };
             let (run_id, outcome) = run_phase_compiled_script(
                 store,
@@ -1865,6 +1867,7 @@ fn goal_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
                 max_budget_usd: value(args, "--max-budget-usd").and_then(|v| v.parse::<f64>().ok()),
                 trace_retention,
                 progress: has_flag(args, "--progress"),
+                project: workflow_project_context(store),
             };
             let run_phase = |script: &str, name: &str, resume_from: Option<&str>| {
                 run_phase_compiled_script(store, script, name, &options, resume_from)
@@ -5475,6 +5478,13 @@ struct WorkflowDeliveryOptions {
     /// quiet callers and stdout-parsers are unaffected. Stderr is the conventional
     /// progress stream; stdout stays a single parseable JSON document.
     progress: bool,
+    /// The project this run executes against (goal-multi-project P3/P4). Its
+    /// `project_root` — NOT the harness process cwd — is the worker's shared cwd and
+    /// the base for git worktrees; its `store_root` is where the JSONL ledgers live.
+    /// `is_git_repo` / `kind` drive the GLOBAL / non-git policy. The two roots are
+    /// deliberately split so the centralized store can live off the repo while
+    /// worktrees + CLAUDE.md stay pinned to the project tree.
+    project: ProjectContext,
 }
 
 /// Emit one compact NDJSON progress event to STDERR (used when `--progress` is on).
@@ -5873,11 +5883,48 @@ fn sanitize_worktree_slug(label: &str) -> String {
     }
 }
 
+/// Derive the [`ProjectContext`] a workflow run executes against, from the store
+/// it writes to (goal-multi-project P3/P4). The centralized store self-describes
+/// its project via `<store_root>/metadata.json` (`canonical_path` = the project
+/// root), so we read that to recover the project root WITHOUT threading the
+/// resolved context through every command signature.
+///
+/// BACK-COMPAT: a store with no `metadata.json` — a raw `--store <path>` /
+/// `HARNESS_ROOT` / legacy cwd-walk-up store — has no pinned project identity, so
+/// we fall back to TODAY'S behavior exactly: `project_root` = the harness process
+/// cwd (what `workflow_repo_root()` returned before), `store_root` = the store
+/// root, git-ness probed live. This keeps existing serve + run-script flows
+/// unchanged: a project only overrides the cwd when it was explicitly selected.
+fn workflow_project_context(store: &HarnessStore) -> ProjectContext {
+    let store_root = store.root().to_path_buf();
+    if let Ok(Some(meta)) = project::read_metadata(&store_root) {
+        return ProjectContext {
+            id: meta.project_id,
+            project_root: meta.canonical_path,
+            store_root,
+            kind: meta.kind,
+            is_git_repo: meta.is_git_repo,
+        };
+    }
+    // No pinned identity → preserve the historical cwd-as-repo-root behavior.
+    let project_root = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let is_git_repo = is_git_repo(&project_root);
+    ProjectContext {
+        id: harness_core::GLOBAL_PROJECT_ID.to_string(),
+        project_root,
+        store_root,
+        kind: ProjectKind::Repo,
+        is_git_repo,
+    }
+}
+
 /// Resolve the repo root the worktrees are created under. The shared default
-/// workspace is the current working directory (the repo cwd); worktrees live in
-/// the gitignored `.harness/worktrees/` beneath it.
-fn workflow_repo_root() -> PathBuf {
-    env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+/// workspace is the run's project root (where CLAUDE.md / AGENTS.md / memory live
+/// and the git repo is); worktrees live in the gitignored `.harness/worktrees/`
+/// beneath it. This is the run's `project.project_root` — NOT the harness process
+/// cwd, which a long-running `serve` never `cd`s after a project switch (P3).
+fn workflow_repo_root(project: &ProjectContext) -> PathBuf {
+    project.project_root.clone()
 }
 
 /// Whether `path` is inside a git work tree — `git -C <path> rev-parse
@@ -5910,7 +5957,13 @@ fn spawn_ephemeral_worker(
     run_id: &str,
     session_id: &str,
 ) -> CliResult<workflow::StepResult> {
-    let repo_root = workflow_repo_root();
+    // The worker's shared cwd + worktree base is the PROJECT ROOT (the git repo
+    // where CLAUDE.md / AGENTS.md / memory live), NOT the harness process cwd and
+    // NOT the centralized store_root (goal-multi-project P3/P4). A long-running
+    // `serve` never `cd`s after a project switch, so reading process cwd here would
+    // run the worker in the wrong tree.
+    let project = &options.project;
+    let repo_root = workflow_repo_root(project);
 
     // Opt-in isolation: harness-owned throwaway worktree, else the shared cwd.
     // The guard (when present) cleans up on every exit path via Drop.
@@ -5918,6 +5971,27 @@ fn spawn_ephemeral_worker(
     // an editing worker runs in a throwaway worktree so its writes land in a
     // discardable checkout (captured as the step diff), never the live repo.
     let isolate = spec.isolation.as_deref() == Some("worktree") || spec.writable;
+
+    // GLOBAL / non-git policy (P5): an isolated/writable node needs a git worktree,
+    // which cannot exist in a non-git project (the reserved `_global` `~/` project,
+    // or any non-repo root). Fail LOUD with the same actionable message the
+    // `is_git_repo` gate in `WorktreeGuard::create` uses (#89 item 5) — surfaced
+    // here BEFORE the worktree attempt so the project id / kind is named. Read-only
+    // `isolation=none` nodes are unaffected and run in the shared project root.
+    if isolate && !project.is_git_repo {
+        return Err(CliError::Usage(format!(
+            "node '{}' needs an isolated git worktree (it is writable, or sets \
+             isolation=\"worktree\"), but project '{}' ({}) is not a git repository. \
+             Run this step READ-ONLY (drop writable / isolation=\"none\") and retrieve \
+             its output with `harness workflow get-output <run_id> --step {}`, or run \
+             the workflow against a git-backed project.",
+            spec.label,
+            project.id,
+            repo_root.display(),
+            spec.label,
+        )));
+    }
+
     let guard = if isolate {
         Some(WorktreeGuard::create(
             &repo_root,
@@ -6054,7 +6128,10 @@ fn spawn_ephemeral_worker(
     let schema_failed = spec.schema.is_some() && structured.is_none();
 
     // Collect the worktree diff as the node's evidence (isolation path only). We
-    // read it BEFORE the guard drops (which removes the worktree).
+    // read it BEFORE the guard drops (which removes the worktree). Non-git /
+    // GLOBAL projects never reach the isolation path (the policy gate above rejects
+    // a writable/isolated node there), so diff evidence is necessarily skipped for
+    // them — read-only `_global` nodes simply carry no diff (P5, documented).
     let diff = if isolate {
         ephemeral_worktree_diff(&cwd)
     } else {
@@ -7429,7 +7506,10 @@ fn workflow_get_output_value(
 }
 
 fn workflow_gc_worktrees(store: &HarnessStore) -> CliResult<serde_json::Value> {
-    let repo_root = workflow_repo_root();
+    // Worktrees live under the PROJECT ROOT (not the centralized store, not the
+    // harness process cwd), so GC them there too (goal-multi-project P4). The git
+    // commands tolerate a missing/moved project_root by failing soft (empty output).
+    let repo_root = workflow_repo_root(&workflow_project_context(store));
     let repo = repo_root.display().to_string();
 
     // Prune dangling administrative entries first.
@@ -7678,6 +7758,7 @@ fn workflow_run_value(store: &HarnessStore, args: &[String]) -> CliResult<serde_
         // Registry runs always retain their trace durably.
         trace_retention: "durable".to_string(),
         progress: has_flag(args, "--progress"),
+        project: workflow_project_context(store),
     };
 
     // The run id is minted up front so the driver can journal each step's
@@ -7879,6 +7960,7 @@ fn workflow_run_script_value(
         max_budget_usd: value(args, "--max-budget-usd").and_then(|v| v.parse::<f64>().ok()),
         trace_retention: trace_retention.clone(),
         progress: has_flag(args, "--progress"),
+        project: workflow_project_context(store),
     };
 
     // Who initiated the run: an explicit `--initiated-by <id>`, else the
@@ -14234,6 +14316,23 @@ mod workflow_runtime_tests {
         store
     }
 
+    /// A throwaway [`ProjectContext`] for tests that build a `WorkflowDeliveryOptions`
+    /// directly (goal-multi-project): `project_root` is a fresh temp dir distinct
+    /// from the store, so worker-cwd assertions are unambiguous. Not a git repo by
+    /// default; pass `is_git_repo` per the case under test.
+    fn temp_project_context(tag: &str, is_git_repo: bool) -> ProjectContext {
+        let project_root =
+            std::env::temp_dir().join(format!("harness-wf-proj-{}", generated_id(tag)));
+        std::fs::create_dir_all(&project_root).expect("mk project root");
+        ProjectContext {
+            id: "_global".to_string(),
+            store_root: project_root.join(".store"),
+            project_root,
+            kind: ProjectKind::Repo,
+            is_git_repo,
+        }
+    }
+
     fn launch_spec_with_model_effort(model: Option<&str>, effort: Option<&str>) -> LaunchSpec {
         LaunchSpec {
             prompt_ref: None,
@@ -15056,6 +15155,7 @@ mod workflow_runtime_tests {
             max_budget_usd: None,
             trace_retention: "durable".into(),
             progress: false,
+            project: temp_project_context("eff", false),
         };
         let mut spec = workflow::AgentStepSpec {
             phase: "p".into(),
@@ -16336,6 +16436,7 @@ mod workflow_runtime_tests {
             max_budget_usd: None,
             trace_retention: "durable".into(),
             progress: false,
+            project: temp_project_context("live", false),
         };
         let spec = workflow::AgentStepSpec {
             phase: "scan".into(),
@@ -16636,6 +16737,220 @@ mod workflow_runtime_tests {
             "offers both fixes (git init / read-only + get-output): {msg}"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ---- goal-multi-project: workflow-cwd phase ---------------------------------
+
+    /// A throwaway spec for the cwd/worktree/policy tests below.
+    fn cwd_test_spec(
+        label: &str,
+        writable: bool,
+        isolation: Option<&str>,
+    ) -> workflow::AgentStepSpec {
+        workflow::AgentStepSpec {
+            phase: "p".into(),
+            label: label.into(),
+            provider: "claude".into(),
+            model: None,
+            effort: None,
+            fallback_model: None,
+            image: Vec::new(),
+            add_dir: Vec::new(),
+            isolation: isolation.map(str::to_string),
+            prompt: "noop".into(),
+            schema: None,
+            writable,
+            ordinal: Some(0),
+        }
+    }
+
+    #[test]
+    fn workflow_repo_root_is_project_root_not_process_cwd() {
+        // worktree-root-split: the worker's shared cwd + worktree base is the
+        // PROJECT ROOT (a long-running `serve` never `cd`s), NOT `env::current_dir`.
+        let project_root =
+            std::env::temp_dir().join(format!("harness-projroot-{}", generated_id("pr")));
+        std::fs::create_dir_all(&project_root).expect("mk project root");
+        let ctx = ProjectContext {
+            id: "demo".into(),
+            project_root: project_root.clone(),
+            store_root: std::env::temp_dir().join("some-central-store"),
+            kind: ProjectKind::Repo,
+            is_git_repo: true,
+        };
+        let resolved = workflow_repo_root(&ctx);
+        assert_eq!(resolved, project_root, "repo root must be project_root");
+        assert_ne!(
+            resolved,
+            env::current_dir().unwrap(),
+            "must NOT fall back to the harness process cwd"
+        );
+        let _ = std::fs::remove_dir_all(&project_root);
+    }
+
+    #[test]
+    fn workflow_project_context_falls_back_to_cwd_without_metadata() {
+        // BACK-COMPAT: a store with no metadata.json (a raw --store / HARNESS_ROOT /
+        // walk-up store) has no pinned identity, so the project_root degrades to the
+        // harness process cwd exactly as before, and store_root is the store root.
+        let store = temp_store("nometa");
+        let ctx = workflow_project_context(&store);
+        assert_eq!(
+            ctx.project_root,
+            env::current_dir().unwrap(),
+            "no metadata → cwd is the project root (today's behavior)"
+        );
+        assert_eq!(ctx.store_root, store.root());
+    }
+
+    #[test]
+    fn workflow_project_context_reads_pinned_metadata() {
+        // A central store self-describes its project via metadata.json; the workflow
+        // recovers the real project_root from it (NOT the process cwd).
+        let store = temp_store("withmeta");
+        let project_root =
+            std::env::temp_dir().join(format!("harness-pinned-{}", generated_id("pin")));
+        std::fs::create_dir_all(&project_root).expect("mk pinned root");
+        let pinned = ProjectContext {
+            id: "pinned-proj".into(),
+            project_root: project_root.clone(),
+            store_root: store.root().to_path_buf(),
+            kind: ProjectKind::Repo,
+            is_git_repo: false,
+        };
+        project::write_metadata(&pinned, None).expect("write metadata");
+
+        let ctx = workflow_project_context(&store);
+        assert_eq!(ctx.id, "pinned-proj");
+        assert_eq!(ctx.project_root, project_root);
+        assert_eq!(ctx.store_root, store.root());
+        assert!(!ctx.is_git_repo);
+        let _ = std::fs::remove_dir_all(&project_root);
+    }
+
+    #[test]
+    fn spawn_writable_node_in_non_git_project_fails_loud() {
+        // global-workflow-policy: a writable / isolation="worktree" node in a non-git
+        // project (the reserved `_global` ~/ project) is rejected BEFORE any provider
+        // spawn with an actionable message naming the project and offering the fix.
+        let store = temp_store("nongit-writable");
+        let project_root =
+            std::env::temp_dir().join(format!("harness-global-{}", generated_id("g")));
+        std::fs::create_dir_all(&project_root).expect("mk global root");
+        let options = WorkflowDeliveryOptions {
+            dry_run: false,
+            start_runtime: false,
+            timeout_ms: 1_000,
+            default_model: None,
+            default_effort: None,
+            max_budget_usd: None,
+            trace_retention: "durable".into(),
+            progress: false,
+            project: ProjectContext {
+                id: harness_core::GLOBAL_PROJECT_ID.into(),
+                project_root: project_root.clone(),
+                store_root: store.root().to_path_buf(),
+                kind: ProjectKind::Global,
+                is_git_repo: false,
+            },
+        };
+        let spec = cwd_test_spec("writer", true, None);
+        let err = spawn_ephemeral_worker(&store, &options, &spec, "wfrun-ng", "session-ng-0")
+            .expect_err("writable node in a non-git project must fail loud");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("not a git repository"),
+            "names the cause: {msg}"
+        );
+        assert!(
+            msg.contains(harness_core::GLOBAL_PROJECT_ID),
+            "names the offending project id: {msg}"
+        );
+        assert!(
+            msg.contains("get-output") && msg.contains("isolation"),
+            "offers the read-only fix: {msg}"
+        );
+        let _ = std::fs::remove_dir_all(&project_root);
+    }
+
+    #[test]
+    fn spawn_isolation_worktree_node_in_non_git_project_also_fails_loud() {
+        // The same gate must fire for an explicit isolation="worktree" node even when
+        // it is not `writable` — both need a git worktree that a non-git project lacks.
+        let store = temp_store("nongit-iso");
+        let project_root =
+            std::env::temp_dir().join(format!("harness-globaliso-{}", generated_id("gi")));
+        std::fs::create_dir_all(&project_root).expect("mk global iso root");
+        let options = WorkflowDeliveryOptions {
+            dry_run: false,
+            start_runtime: false,
+            timeout_ms: 1_000,
+            default_model: None,
+            default_effort: None,
+            max_budget_usd: None,
+            trace_retention: "durable".into(),
+            progress: false,
+            project: ProjectContext {
+                id: harness_core::GLOBAL_PROJECT_ID.into(),
+                project_root: project_root.clone(),
+                store_root: store.root().to_path_buf(),
+                kind: ProjectKind::Global,
+                is_git_repo: false,
+            },
+        };
+        let spec = cwd_test_spec("iso", false, Some("worktree"));
+        let err = spawn_ephemeral_worker(&store, &options, &spec, "wfrun-gi", "session-gi-0")
+            .expect_err("isolation=worktree in a non-git project must fail loud");
+        assert!(
+            err.to_string().contains("not a git repository"),
+            "names the cause: {err}"
+        );
+        let _ = std::fs::remove_dir_all(&project_root);
+    }
+
+    #[test]
+    fn writable_worktree_path_is_under_project_root() {
+        // worktree-root-split: a writable leaf's git worktree lives under
+        // <project_root>/.harness/worktrees/... — pinned to the repo, NOT the
+        // centralized store and NOT the harness process cwd. We init a real git repo
+        // as the project root, create the worktree directly, and assert its path.
+        let project_root =
+            std::env::temp_dir().join(format!("harness-gitproj-{}", generated_id("gp")));
+        std::fs::create_dir_all(&project_root).expect("mk git project root");
+        // Minimal git repo with one commit so `worktree add HEAD` works.
+        let git = |args: &[&str]| {
+            Command::new("git")
+                .arg("-C")
+                .arg(&project_root)
+                .args(args)
+                .output()
+                .expect("git")
+        };
+        assert!(git(&["init"]).status.success(), "git init");
+        let _ = git(&["config", "user.email", "t@t"]);
+        let _ = git(&["config", "user.name", "t"]);
+        std::fs::write(project_root.join("README"), "x").expect("seed file");
+        let _ = git(&["add", "-A"]);
+        assert!(
+            git(&["commit", "-m", "init"]).status.success(),
+            "git commit"
+        );
+
+        let guard = WorktreeGuard::create(&project_root, "wfrun-gp", "writer", "session-gp-0")
+            .expect("worktree create in a git project");
+        assert!(
+            guard.path.starts_with(&project_root),
+            "worktree must live under the project root: {:?}",
+            guard.path
+        );
+        assert!(
+            guard.path.to_string_lossy().contains(".harness/worktrees/"),
+            "worktree path must be the gitignored .harness/worktrees/ dir: {:?}",
+            guard.path
+        );
+        assert!(guard.path.is_dir(), "worktree dir was actually created");
+        drop(guard);
+        let _ = std::fs::remove_dir_all(&project_root);
     }
 
     #[test]
