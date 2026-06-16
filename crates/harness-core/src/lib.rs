@@ -174,6 +174,48 @@ pub enum VerdictOutcome {
     CleanFail,
 }
 
+/// Status of a goal-level orchestration run (`harness goal run-phases`): the
+/// durable checkpoint that sequences a goal's phases.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum OrchestrationStatus {
+    #[default]
+    Running,
+    Completed,
+    Failed,
+}
+
+/// One phase's outcome inside a [`GoalOrchestrationRun`] — which compiled
+/// workflow ran it and whether its verdict passed. Append-only audit.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OrchestrationPhaseRun {
+    pub phase_id: String,
+    #[serde(default)]
+    pub workflow_run_id: Option<String>,
+    #[serde(default)]
+    pub compiled_path: Option<String>,
+    pub passed: bool,
+    pub started_at: String,
+    #[serde(default)]
+    pub ended_at: Option<String>,
+}
+
+/// The durable checkpoint for `harness goal run-phases`: it sequences a goal's
+/// phases, gating each on its verdict, and records each phase run so `--resume`
+/// can re-enter without re-spending completed phases. Latest-row-wins like every
+/// other store object (re-appended as the run progresses).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GoalOrchestrationRun {
+    pub id: String,
+    pub goal_id: String,
+    #[serde(default)]
+    pub status: OrchestrationStatus,
+    #[serde(default)]
+    pub phase_runs: Vec<OrchestrationPhaseRun>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
 /// Shared git/worktree context for a Goal or Task (ADR 0019). All fields
 /// optional; additive — old rows that omit it deserialize as `None`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -2490,6 +2532,40 @@ mod tests {
         let back: Task = serde_json::from_str(&j).expect("de task");
         assert_eq!(back, t);
         assert_eq!(back.status, TaskStatus::Superseded);
+    }
+
+    #[test]
+    fn goal_orchestration_run_round_trips_and_status_is_snake_case() {
+        let run = GoalOrchestrationRun {
+            id: "goalrun-1".into(),
+            goal_id: "g".into(),
+            status: OrchestrationStatus::Failed,
+            phase_runs: vec![OrchestrationPhaseRun {
+                phase_id: "p1".into(),
+                workflow_run_id: Some("wfrun-1".into()),
+                compiled_path: Some(".harness/compiled/g__p1__abc.star".into()),
+                passed: false,
+                started_at: "unix-ms:1".into(),
+                ended_at: Some("unix-ms:2".into()),
+            }],
+            created_at: "unix-ms:1".into(),
+            updated_at: "unix-ms:2".into(),
+        };
+        let j = serde_json::to_string(&run).expect("ser");
+        assert!(
+            j.contains("\"status\":\"failed\""),
+            "snake_case status: {j}"
+        );
+        assert_eq!(
+            serde_json::from_str::<GoalOrchestrationRun>(&j).expect("de"),
+            run
+        );
+        // Legacy/default: status defaults to running, phase_runs to empty.
+        let legacy =
+            r#"{"id":"r","goal_id":"g","created_at":"unix-ms:1","updated_at":"unix-ms:1"}"#;
+        let d: GoalOrchestrationRun = serde_json::from_str(legacy).expect("de legacy");
+        assert_eq!(d.status, OrchestrationStatus::Running);
+        assert!(d.phase_runs.is_empty());
     }
 
     #[test]

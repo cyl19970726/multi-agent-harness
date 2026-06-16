@@ -7,9 +7,9 @@ use std::time::{Duration, Instant};
 
 use harness_core::{
     AgentEvent, AgentMember, AgentRuntime, AgentTeam, Decision, Evidence, Gap, Goal, GoalCase,
-    GoalDesign, GoalEvaluation, Message, MessageDelivery, MessageDeliveryStatus,
-    MessageTerminalSource, Proposal, ProviderChildThread, ProviderSession, ProviderSessionStatus,
-    Review, Task, Vision, WorkflowRun, WorkflowStep,
+    GoalDesign, GoalEvaluation, GoalOrchestrationRun, Message, MessageDelivery,
+    MessageDeliveryStatus, MessageTerminalSource, Proposal, ProviderChildThread, ProviderSession,
+    ProviderSessionStatus, Review, Task, Vision, WorkflowRun, WorkflowStep,
 };
 use serde::{de::DeserializeOwned, Serialize};
 use thiserror::Error;
@@ -143,6 +143,10 @@ impl HarnessStore {
         self.append_jsonl("workflow_steps.jsonl", value)
     }
 
+    pub fn append_goal_orchestration_run(&self, value: &GoalOrchestrationRun) -> StoreResult<()> {
+        self.append_jsonl("goal_orchestration_runs.jsonl", value)
+    }
+
     pub fn claim_queued_message_delivery(
         &self,
         agent_member_id: &str,
@@ -266,6 +270,10 @@ impl HarnessStore {
 
     pub fn workflow_steps(&self) -> StoreResult<Vec<WorkflowStep>> {
         self.read_jsonl("workflow_steps.jsonl")
+    }
+
+    pub fn goal_orchestration_runs(&self) -> StoreResult<Vec<GoalOrchestrationRun>> {
+        self.read_jsonl("goal_orchestration_runs.jsonl")
     }
 
     fn append_jsonl<T: Serialize>(&self, file_name: &str, value: &T) -> StoreResult<()> {
