@@ -404,6 +404,9 @@ mod tests {
         ));
         let store = HarnessStore::new(&root);
         let goal = Goal {
+            phases: Vec::new(),
+            knowledge: Vec::new(),
+            design_synthesis_at: None,
             id: "goal-1".into(),
             title: "Self-host".into(),
             owner_agent_id: "leader-1".into(),
@@ -452,6 +455,9 @@ mod tests {
                 barrier.wait();
                 for index in 0..appends_per_worker {
                     let goal = Goal {
+                        phases: Vec::new(),
+                        knowledge: Vec::new(),
+                        design_synthesis_at: None,
                         id: format!("goal-{worker}-{index}"),
                         title: "Concurrent".into(),
                         owner_agent_id: "leader-1".into(),
@@ -505,6 +511,9 @@ mod tests {
         std::fs::write(root.join(".store.lock"), "left by interrupted writer\n")
             .expect("write existing lock file");
         let goal = Goal {
+            phases: Vec::new(),
+            knowledge: Vec::new(),
+            design_synthesis_at: None,
             id: "goal-stale-lock".into(),
             title: "Stale lock".into(),
             owner_agent_id: "leader-1".into(),

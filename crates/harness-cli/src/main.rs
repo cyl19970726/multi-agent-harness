@@ -440,6 +440,9 @@ fn goal_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     match args[0].as_str() {
         "create" => {
             let goal = Goal {
+                phases: Vec::new(),
+                knowledge: Vec::new(),
+                design_synthesis_at: None,
                 id: value(args, "--id").unwrap_or_else(|| generated_id("goal")),
                 title: required(args, "--title")?,
                 owner_agent_id: required(args, "--owner")?,
@@ -674,6 +677,10 @@ fn task_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     match args[0].as_str() {
         "create" => {
             let task = Task {
+                design_md: None,
+                phase_id: None,
+                superseded_by_knowledge_id: None,
+                workflow_step_ids: Vec::new(),
                 id: value(args, "--id").unwrap_or_else(|| generated_id("task")),
                 goal_id: value(args, "--goal"),
                 parent_task_id: value(args, "--parent"),
@@ -1205,6 +1212,9 @@ fn autonomy_decide_value(store: &HarnessStore, args: &[String]) -> CliResult<ser
     if disposition == "accept" {
         if let Some(goal_id) = value(args, "--create-goal") {
             let goal = Goal {
+                phases: Vec::new(),
+                knowledge: Vec::new(),
+                design_synthesis_at: None,
                 id: goal_id,
                 title: required(args, "--goal-title")?,
                 owner_agent_id: lead.clone(),
@@ -1236,6 +1246,10 @@ fn autonomy_decide_value(store: &HarnessStore, args: &[String]) -> CliResult<ser
             let assignee = value(args, "--assignee");
             let reviewer = value(args, "--reviewer");
             let task = Task {
+                design_md: None,
+                phase_id: None,
+                superseded_by_knowledge_id: None,
+                workflow_step_ids: Vec::new(),
                 id: next_task_id,
                 goal_id: next_goal_id.clone(),
                 parent_task_id: Some(source_task.id.clone()),
@@ -3270,6 +3284,9 @@ fn create_goal_value(
     body: &serde_json::Value,
 ) -> CliResult<serde_json::Value> {
     let goal = Goal {
+        phases: Vec::new(),
+        knowledge: Vec::new(),
+        design_synthesis_at: None,
         id: json_string(body, "id").unwrap_or_else(|| generated_id("goal")),
         title: required_json_string(body, "title")?,
         owner_agent_id: required_json_string(body, "owner")
@@ -3300,6 +3317,10 @@ fn create_task_value(
     body: &serde_json::Value,
 ) -> CliResult<serde_json::Value> {
     let task = Task {
+        design_md: None,
+        phase_id: None,
+        superseded_by_knowledge_id: None,
+        workflow_step_ids: Vec::new(),
         id: json_string(body, "id").unwrap_or_else(|| generated_id("task")),
         goal_id: json_string(body, "goal"),
         parent_task_id: json_string(body, "parent"),
@@ -4111,6 +4132,8 @@ fn build_terminal_step(
         _ => now,
     };
     WorkflowStep {
+        task_id: None,
+        verdict_outcome: None,
         id: step_id,
         run_id: run_id.to_string(),
         phase: result.phase.clone(),
@@ -4142,6 +4165,8 @@ fn workflow_real_agent_step(
     let session_id = generated_id("session");
     let started_at = now_string();
     let running = WorkflowStep {
+        task_id: None,
+        verdict_outcome: None,
         id: step_id.clone(),
         run_id: run_id.to_string(),
         phase: spec.phase.clone(),
@@ -12633,6 +12658,7 @@ fn parse_task_status(value: &str) -> CliResult<TaskStatus> {
         "blocked" => Ok(TaskStatus::Blocked),
         "review" => Ok(TaskStatus::Review),
         "done" => Ok(TaskStatus::Done),
+        "superseded" => Ok(TaskStatus::Superseded),
         "archived" => Ok(TaskStatus::Archived),
         other => Err(CliError::Usage(format!("unknown task status: {other}"))),
     }
@@ -12670,6 +12696,7 @@ fn status_label(status: &TaskStatus) -> &'static str {
         TaskStatus::Blocked => "blocked",
         TaskStatus::Review => "review",
         TaskStatus::Done => "done",
+        TaskStatus::Superseded => "superseded",
         TaskStatus::Archived => "archived",
     }
 }
@@ -14711,6 +14738,8 @@ mod workflow_runtime_tests {
             .expect("append run");
         store
             .append_workflow_step(&WorkflowStep {
+                task_id: None,
+                verdict_outcome: None,
                 id: format!("{id}-s"),
                 run_id: id.into(),
                 phase: "work".into(),
@@ -14807,6 +14836,8 @@ mod workflow_runtime_tests {
         // A still-open step under it must be closed to Failed by the reaper too.
         store
             .append_workflow_step(&WorkflowStep {
+                task_id: None,
+                verdict_outcome: None,
                 id: "wfstep-dead".into(),
                 run_id: "wfrun-dead".into(),
                 phase: "scan".into(),
@@ -15076,6 +15107,8 @@ mod workflow_runtime_tests {
     fn workflow_get_output_returns_full_reply_and_falls_back_to_summary() {
         let store = temp_store("get-output");
         let mk_step = |id: &str, label: &str, sid: &str, summary: &str| WorkflowStep {
+            task_id: None,
+            verdict_outcome: None,
             id: id.into(),
             run_id: "wfrun-go".into(),
             phase: "p".into(),
@@ -15753,6 +15786,8 @@ agent("a NEW second leaf that changes the ordinal alignment")
             let step_id = generated_id("wfstep");
             let started_at = format!("unix-ms:{}", 1_000 + spec.label.len());
             let running = WorkflowStep {
+                task_id: None,
+                verdict_outcome: None,
                 id: step_id.clone(),
                 run_id: run_id.clone(),
                 phase: spec.phase.clone(),
@@ -18337,6 +18372,9 @@ mod tests {
 
     fn make_goal(id: &str) -> Goal {
         Goal {
+            phases: Vec::new(),
+            knowledge: Vec::new(),
+            design_synthesis_at: None,
             id: id.into(),
             title: "Goal".into(),
             owner_agent_id: "leader".into(),
@@ -18360,6 +18398,10 @@ mod tests {
 
     fn make_task(id: &str, goal_id: &str) -> Task {
         Task {
+            design_md: None,
+            phase_id: None,
+            superseded_by_knowledge_id: None,
+            workflow_step_ids: Vec::new(),
             id: id.into(),
             goal_id: Some(goal_id.into()),
             parent_task_id: None,

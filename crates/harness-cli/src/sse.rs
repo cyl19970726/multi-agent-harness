@@ -419,6 +419,8 @@ mod tests {
             result: None,
             started_at: "unix-ms:1".into(),
             ended_at: None,
+            task_id: None,
+            verdict_outcome: None,
         }
     }
 

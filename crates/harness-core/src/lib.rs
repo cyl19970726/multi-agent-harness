@@ -84,6 +84,96 @@ pub struct Exploration {
     pub created_at: String,
 }
 
+// ---------------------------------------------------------------------------
+// Knowledge-driven phased planning (goal-planning-model, Stage S1a — model only).
+// A Goal carries agent-planned, SEQUENTIAL `phases[]` (each owning a task subgraph
+// referenced by `Task.phase_id`) and an append-only `knowledge[]` ledger (the truth,
+// with provenance) that `design_md` becomes a synthesis view of. All additive +
+// `#[serde(default)]` so old goals/tasks still deserialize. Gates/compiler/
+// orchestrator are later stages; this is just the data model.
+// ---------------------------------------------------------------------------
+
+/// Status of one agent-planned phase. Phases run sequentially; a phase must reach
+/// `Passed` (its verdict) before the next begins.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum GoalPhaseStatus {
+    #[default]
+    NotStarted,
+    InProgress,
+    Passed,
+    Failed,
+    Blocked,
+}
+
+/// One agent-planned phase of a goal. It owns a task subgraph (the tasks whose
+/// `phase_id == this.id`), and its `acceptance` is the verdict gate before the next
+/// phase. Phases replace the fixed `GoalStage` enum as the source of truth for
+/// "where is this goal" (the legacy `stage` becomes a derived projection — that
+/// rewrite is Stage S1b).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GoalPhase {
+    pub id: String,
+    pub name: String,
+    pub intent: String,
+    pub status: GoalPhaseStatus,
+    /// Markdown gate condition for this phase (the verdict it must pass).
+    #[serde(default)]
+    pub acceptance: Option<String>,
+    /// The `Decision` recording this phase's verdict, once gated.
+    #[serde(default)]
+    pub verdict_decision_id: Option<String>,
+    pub created_at: String,
+    #[serde(default)]
+    pub started_at: Option<String>,
+    #[serde(default)]
+    pub ended_at: Option<String>,
+}
+
+/// Where a `Knowledge` entry came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum KnowledgeSource {
+    #[default]
+    Exploration,
+    Task,
+    Decision,
+    Evidence,
+}
+
+/// One append-only learning in a goal's knowledge ledger — the durable truth that
+/// `design_md` is synthesized from. Carries provenance (`phase_id`/`task_id`/author)
+/// so "which task changed the plan, when, by whom" is always answerable.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Knowledge {
+    pub id: String,
+    pub goal_id: String,
+    #[serde(default)]
+    pub phase_id: Option<String>,
+    #[serde(default)]
+    pub task_id: Option<String>,
+    pub author: String,
+    pub timestamp: String,
+    pub notes_md: String,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub source: KnowledgeSource,
+    #[serde(default)]
+    pub superseded_by_knowledge_id: Option<String>,
+    pub created_at: String,
+}
+
+/// A workflow step's verdict outcome, distinct from its run status: a step that
+/// completed but returned `verdict(false)` is a `CleanFail` (drives replan/advance
+/// decisions), versus a crash which the step's own `Failed` status carries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VerdictOutcome {
+    Pass,
+    CleanFail,
+}
+
 /// Shared git/worktree context for a Goal or Task (ADR 0019). All fields
 /// optional; additive — old rows that omit it deserialize as `None`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -144,6 +234,17 @@ pub struct Goal {
     /// When `stage` last changed.
     #[serde(default)]
     pub stage_changed_at: Option<String>,
+    /// Agent-planned, SEQUENTIAL phases (goal-planning-model). Empty for legacy
+    /// goals, which run as a single implicit phase. The source of truth for goal
+    /// progress once non-empty; `stage` becomes a derived projection (S1b).
+    #[serde(default)]
+    pub phases: Vec<GoalPhase>,
+    /// Append-only knowledge ledger (the truth `design_md` is synthesized from).
+    #[serde(default)]
+    pub knowledge: Vec<Knowledge>,
+    /// When `design_md` was last (re)synthesized from `knowledge[]`.
+    #[serde(default)]
+    pub design_synthesis_at: Option<String>,
 }
 
 impl Goal {
@@ -637,6 +738,9 @@ pub enum TaskStatus {
     Blocked,
     Review,
     Done,
+    /// Abandoned because a knowledge finding changed the plan (goal-planning-model).
+    /// The task is kept (never deleted) with `superseded_by_knowledge_id` set.
+    Superseded,
     Archived,
 }
 
@@ -672,6 +776,20 @@ pub struct Task {
     pub description: Option<String>,
     #[serde(default)]
     pub git_metadata: Option<GitMetadata>,
+    /// Full per-task design (goal-planning-model): a grounded SLICE of the goal's
+    /// design for this task. `description` stays the simple/short version.
+    #[serde(default)]
+    pub design_md: Option<String>,
+    /// The `GoalPhase.id` this task belongs to (goal-planning-model); `None` for
+    /// legacy tasks not yet placed in a phase.
+    #[serde(default)]
+    pub phase_id: Option<String>,
+    /// When `status == Superseded`, the `Knowledge.id` whose finding killed it.
+    #[serde(default)]
+    pub superseded_by_knowledge_id: Option<String>,
+    /// The `WorkflowStep`s that executed this task (reverse link; goal-planning-model).
+    #[serde(default)]
+    pub workflow_step_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1706,6 +1824,14 @@ pub struct WorkflowStep {
     pub started_at: String,
     #[serde(default)]
     pub ended_at: Option<String>,
+    /// The `Task` this step executed (goal-planning-model: the phase compiler stamps
+    /// each step with its task id so outcomes flow back to `Task.status`).
+    #[serde(default)]
+    pub task_id: Option<String>,
+    /// Whether the step's `verdict()` passed or cleanly failed — distinct from a
+    /// crash (carried by `status`). Drives the orchestrator's advance/replan choice.
+    #[serde(default)]
+    pub verdict_outcome: Option<VerdictOutcome>,
 }
 
 impl Validate for WorkflowRun {
@@ -1762,6 +1888,10 @@ mod tests {
     #[test]
     fn task_round_trips_json() {
         let task = Task {
+            design_md: None,
+            phase_id: None,
+            superseded_by_knowledge_id: None,
+            workflow_step_ids: Vec::new(),
             id: "task-1".to_string(),
             goal_id: Some("goal-1".to_string()),
             parent_task_id: None,
@@ -1802,6 +1932,9 @@ mod tests {
     #[test]
     fn goal_round_trips_json() {
         let goal = Goal {
+            phases: Vec::new(),
+            knowledge: Vec::new(),
+            design_synthesis_at: None,
             id: "goal-1".to_string(),
             title: "Self-host MVP".to_string(),
             owner_agent_id: "leader-1".to_string(),
@@ -1841,6 +1974,9 @@ mod tests {
 
     fn goal_in_stage(stage: GoalStage) -> Goal {
         Goal {
+            phases: Vec::new(),
+            knowledge: Vec::new(),
+            design_synthesis_at: None,
             id: "g".into(),
             title: "t".into(),
             owner_agent_id: "lead".into(),
@@ -1873,6 +2009,135 @@ mod tests {
         assert!(g.design_md.is_none());
         assert!(g.explorations.is_empty());
         assert!(g.skill_refs.is_empty());
+        // goal-planning-model (S1a): legacy rows default the new planning fields.
+        assert!(g.phases.is_empty());
+        assert!(g.knowledge.is_empty());
+        assert!(g.design_synthesis_at.is_none());
+    }
+
+    #[test]
+    fn goal_phase_and_knowledge_round_trip_snake_case() {
+        let phase = GoalPhase {
+            id: "phase-explore".into(),
+            name: "Explore".into(),
+            intent: "ground the problem space".into(),
+            status: GoalPhaseStatus::InProgress,
+            acceptance: Some("design written".into()),
+            verdict_decision_id: None,
+            created_at: "unix-ms:1".into(),
+            started_at: Some("unix-ms:2".into()),
+            ended_at: None,
+        };
+        let pj = serde_json::to_string(&phase).expect("ser phase");
+        assert!(
+            pj.contains("\"status\":\"in_progress\""),
+            "snake_case status: {pj}"
+        );
+        assert_eq!(
+            serde_json::from_str::<GoalPhase>(&pj).expect("de phase"),
+            phase
+        );
+
+        let k = Knowledge {
+            id: "k1".into(),
+            goal_id: "g".into(),
+            phase_id: Some("phase-explore".into()),
+            task_id: Some("t1".into()),
+            author: "lead".into(),
+            timestamp: "unix-ms:3".into(),
+            notes_md: "approach X is unviable because Y".into(),
+            tags: vec!["risk".into()],
+            source: KnowledgeSource::Task,
+            superseded_by_knowledge_id: None,
+            created_at: "unix-ms:3".into(),
+        };
+        let kj = serde_json::to_string(&k).expect("ser knowledge");
+        assert!(
+            kj.contains("\"source\":\"task\""),
+            "snake_case source: {kj}"
+        );
+        assert_eq!(
+            serde_json::from_str::<Knowledge>(&kj).expect("de knowledge"),
+            k
+        );
+    }
+
+    #[test]
+    fn goal_with_phases_and_knowledge_round_trips() {
+        let mut g = goal_in_stage(GoalStage::Working);
+        g.phases = vec![GoalPhase {
+            id: "p1".into(),
+            name: "Design".into(),
+            intent: "i".into(),
+            status: GoalPhaseStatus::Passed,
+            acceptance: None,
+            verdict_decision_id: None,
+            created_at: "unix-ms:1".into(),
+            started_at: None,
+            ended_at: None,
+        }];
+        g.knowledge = vec![Knowledge {
+            id: "k1".into(),
+            goal_id: "g".into(),
+            phase_id: Some("p1".into()),
+            task_id: None,
+            author: "lead".into(),
+            timestamp: "unix-ms:1".into(),
+            notes_md: "n".into(),
+            tags: Vec::new(),
+            source: KnowledgeSource::Exploration,
+            superseded_by_knowledge_id: None,
+            created_at: "unix-ms:1".into(),
+        }];
+        g.design_synthesis_at = Some("unix-ms:2".into());
+        let j = serde_json::to_string(&g).expect("ser goal");
+        assert_eq!(serde_json::from_str::<Goal>(&j).expect("de goal"), g);
+    }
+
+    #[test]
+    fn task_superseded_and_planning_fields_round_trip_and_legacy_defaults() {
+        // A legacy task (no planning fields) defaults them.
+        let legacy = r#"{"id":"t","goal_id":null,"parent_task_id":null,"title":"x","objective":"o",
+            "owner_agent_id":"lead","assignee_agent_id":null,"reviewer_agent_id":null,
+            "status":"planned","depends_on_task_ids":[],"workspace_ref":null,"branch_ref":null,
+            "pr_ref":null,"owned_paths":[],"acceptance_criteria":[],
+            "created_at":"unix-ms:1","updated_at":"unix-ms:1"}"#;
+        let mut t: Task = serde_json::from_str(legacy).expect("de legacy task");
+        assert!(
+            t.design_md.is_none()
+                && t.phase_id.is_none()
+                && t.superseded_by_knowledge_id.is_none()
+                && t.workflow_step_ids.is_empty()
+        );
+        // Superseded + the new fields round-trip.
+        t.status = TaskStatus::Superseded;
+        t.phase_id = Some("p1".into());
+        t.design_md = Some("task design slice".into());
+        t.superseded_by_knowledge_id = Some("k1".into());
+        t.workflow_step_ids = vec!["step-1".into()];
+        let j = serde_json::to_string(&t).expect("ser task");
+        let back: Task = serde_json::from_str(&j).expect("de task");
+        assert_eq!(back, t);
+        assert_eq!(back.status, TaskStatus::Superseded);
+    }
+
+    #[test]
+    fn workflow_step_task_id_and_verdict_outcome_round_trip_and_legacy_defaults() {
+        let legacy = r#"{"id":"s","run_id":"r","phase":"p","label":"l",
+            "status":"running","started_at":"unix-ms:1"}"#;
+        let mut s: WorkflowStep = serde_json::from_str(legacy).expect("de legacy step");
+        assert!(s.task_id.is_none() && s.verdict_outcome.is_none());
+        s.task_id = Some("t1".into());
+        s.verdict_outcome = Some(VerdictOutcome::CleanFail);
+        let j = serde_json::to_string(&s).expect("ser step");
+        assert!(
+            j.contains("\"verdict_outcome\":\"clean_fail\""),
+            "snake_case verdict_outcome: {j}"
+        );
+        assert_eq!(
+            serde_json::from_str::<WorkflowStep>(&j).expect("de step"),
+            s
+        );
     }
 
     #[test]
