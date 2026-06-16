@@ -1,15 +1,15 @@
 //! Server-Sent Events (SSE) streaming for real-time harness events
+use std::collections::HashMap;
 use std::fs;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::net::TcpStream;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
 use crossbeam::channel::{bounded, Receiver, Sender};
 use harness_core::{AgentEvent, Message, ProviderSession, WorkflowRun, WorkflowStep};
-use harness_store::HarnessStore;
 
 /// An event frame sent to SSE clients (WP2: added WorkflowRun and WorkflowStep)
 #[derive(Clone, Debug)]
@@ -40,39 +40,45 @@ pub enum SseEventFrame {
     ProviderTurnEventNormalized(serde_json::Value),
 }
 
-/// Manages SSE client subscriptions and broadcasts
+/// Manages SSE client subscriptions and broadcasts, keyed by project id
+/// (goal-multi-project P6). Each project has its own list of client senders, so a
+/// frame appended to project A's store is only delivered to clients subscribed to A
+/// — project B never sees it. A subscriber to an unknown project simply receives no
+/// frames (the watcher only broadcasts ids it knows about), which is harmless.
 pub struct SseManager {
-    // All connected client senders. Drop a sender to unsubscribe a client.
-    clients: Arc<Mutex<Vec<Sender<SseEventFrame>>>>,
+    // project_id → connected client senders. Drop a sender to unsubscribe a client.
+    clients: Arc<Mutex<HashMap<String, Vec<Sender<SseEventFrame>>>>>,
 }
 
 impl SseManager {
     pub fn new() -> Self {
         Self {
-            clients: Arc::new(Mutex::new(Vec::new())),
+            clients: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
-    /// Subscribe a new client to the event stream
-    pub fn subscribe(&self) -> Receiver<SseEventFrame> {
+    /// Subscribe a new client to a single project's event stream.
+    pub fn subscribe(&self, project_id: &str) -> Receiver<SseEventFrame> {
         let (tx, rx) = bounded(100); // Buffered channel
         let mut clients = self.clients.lock().unwrap();
-        clients.push(tx);
+        clients.entry(project_id.to_string()).or_default().push(tx);
         rx
     }
 
-    /// Broadcast an event to all connected clients
-    pub fn broadcast(&self, frame: SseEventFrame) {
+    /// Broadcast an event to the clients subscribed to a single project.
+    pub fn broadcast(&self, project_id: &str, frame: SseEventFrame) {
         let mut clients = self.clients.lock().unwrap();
-        // Remove clients whose receivers are dropped
-        clients.retain(|tx| tx.try_send(frame.clone()).is_ok());
+        if let Some(senders) = clients.get_mut(project_id) {
+            // Remove clients whose receivers are dropped.
+            senders.retain(|tx| tx.try_send(frame.clone()).is_ok());
+        }
     }
 
-    /// Return number of currently connected clients (for debugging)
+    /// Return number of currently connected clients for a project (for debugging).
     #[allow(dead_code)]
-    pub fn client_count(&self) -> usize {
+    pub fn client_count(&self, project_id: &str) -> usize {
         let clients = self.clients.lock().unwrap();
-        clients.len()
+        clients.get(project_id).map(|v| v.len()).unwrap_or(0)
     }
 }
 
@@ -84,162 +90,196 @@ impl Clone for SseManager {
     }
 }
 
-/// Start a background watcher thread that monitors jsonl files for appends
-/// and broadcasts new records to all SSE clients. WP2: added workflow_runs.jsonl
-/// and workflow_steps.jsonl.
-pub fn start_sse_watcher<N>(
-    store: &HarnessStore,
-    manager: SseManager,
-    normalize: N,
-) -> std::io::Result<()>
-where
-    N: Fn(&str, &serde_json::Value) -> Vec<serde_json::Value> + Send + 'static,
-{
-    let store_root = store.root().to_path_buf();
+/// A live-turn-event normalizer, scoped to one project's store (so the provider
+/// session lookup hits the right ledger). Boxed so each project can carry its own.
+pub type Normalizer = Box<dyn Fn(&str, &serde_json::Value) -> Vec<serde_json::Value> + Send>;
 
+/// Start a background watcher thread that monitors each project's jsonl files for
+/// appends and broadcasts new records to that project's SSE clients only
+/// (goal-multi-project P6). One thread polls every watched project serially; the
+/// `consumed_offsets` map is keyed by `(project_id, filename)` so identical
+/// filenames across projects are tracked independently and never cross streams.
+///
+/// `projects` maps project id → store root. `normalizers` maps project id → its
+/// live-turn-event normalizer; a project without one still streams raw frames.
+pub fn start_sse_watcher(
+    projects: HashMap<String, PathBuf>,
+    manager: SseManager,
+    normalizers: HashMap<String, Normalizer>,
+) -> std::io::Result<()> {
     thread::spawn(move || {
-        // Track, per file, the byte offset through the last *complete*
+        // Track, per (project_id, file), the byte offset through the last *complete*
         // (newline-terminated) line we have already broadcast. A torn trailing
-        // fragment (a row still mid-write by the store) leaves the offset short
-        // of EOF so it is re-read and emitted exactly once on a later poll,
-        // rather than being parsed-as-garbage-and-dropped.
-        let mut consumed_offsets: std::collections::HashMap<String, u64> =
-            std::collections::HashMap::new();
+        // fragment (a row still mid-write by the store) leaves the offset short of
+        // EOF so it is re-read and emitted exactly once on a later poll, rather than
+        // being parsed-as-garbage-and-dropped. Keying by project id keeps two
+        // projects with the same filename (e.g. both have `messages.jsonl`)
+        // completely independent.
+        let mut consumed_offsets: HashMap<(String, String), u64> = HashMap::new();
 
         // Seed offsets at current EOF so we only stream rows appended after the
         // watcher starts (the initial snapshot covers pre-existing rows).
-        for filename in &[
-            "agent_events.jsonl",
-            "messages.jsonl",
-            "provider_sessions.jsonl",
-            "workflow_runs.jsonl",
-            "workflow_steps.jsonl",
-            "provider_turn_events.jsonl",
-        ] {
-            let path = store_root.join(filename);
-            if let Ok(metadata) = fs::metadata(&path) {
-                consumed_offsets.insert(filename.to_string(), metadata.len());
+        for (project_id, store_root) in &projects {
+            for filename in WATCHED_FILES {
+                let path = store_root.join(filename);
+                if let Ok(metadata) = fs::metadata(&path) {
+                    consumed_offsets
+                        .insert((project_id.clone(), filename.to_string()), metadata.len());
+                }
             }
         }
 
         // Poll for new appends at a low floor (~150ms) so the operator sees
-        // near-real-time updates. Each poll only opens files that grew, reads
-        // the new byte range, and sleeps otherwise — CPU stays negligible.
+        // near-real-time updates. Each poll only opens files that grew, reads the
+        // new byte range, and sleeps otherwise — CPU stays negligible.
         loop {
             thread::sleep(POLL_INTERVAL);
-
-            // Check agent_events.jsonl
-            check_and_broadcast_appends(
-                &store_root,
-                "agent_events.jsonl",
-                &mut consumed_offsets,
-                |line| {
-                    if let Ok(event) = serde_json::from_str::<AgentEvent>(line) {
-                        vec![SseEventFrame::AgentEvent(event)]
-                    } else {
-                        Vec::new()
-                    }
-                },
-                &manager,
-            );
-
-            // Check messages.jsonl
-            check_and_broadcast_appends(
-                &store_root,
-                "messages.jsonl",
-                &mut consumed_offsets,
-                |line| {
-                    if let Ok(msg) = serde_json::from_str::<Message>(line) {
-                        vec![SseEventFrame::Message(msg)]
-                    } else {
-                        Vec::new()
-                    }
-                },
-                &manager,
-            );
-
-            // Check provider_sessions.jsonl
-            check_and_broadcast_appends(
-                &store_root,
-                "provider_sessions.jsonl",
-                &mut consumed_offsets,
-                |line| {
-                    if let Ok(session) = serde_json::from_str::<ProviderSession>(line) {
-                        vec![SseEventFrame::ProviderSession(session)]
-                    } else {
-                        Vec::new()
-                    }
-                },
-                &manager,
-            );
-
-            // Check workflow_runs.jsonl (WP2)
-            check_and_broadcast_appends(
-                &store_root,
-                "workflow_runs.jsonl",
-                &mut consumed_offsets,
-                |line| {
-                    if let Ok(run) = serde_json::from_str::<WorkflowRun>(line) {
-                        vec![SseEventFrame::WorkflowRun(run)]
-                    } else {
-                        Vec::new()
-                    }
-                },
-                &manager,
-            );
-
-            // Check workflow_steps.jsonl (WP2)
-            check_and_broadcast_appends(
-                &store_root,
-                "workflow_steps.jsonl",
-                &mut consumed_offsets,
-                |line| {
-                    if let Ok(step) = serde_json::from_str::<WorkflowStep>(line) {
-                        vec![SseEventFrame::WorkflowStep(step)]
-                    } else {
-                        Vec::new()
-                    }
-                },
-                &manager,
-            );
-
-            // Check provider_turn_events.jsonl (Stage B): each line is a raw
-            // {session_id, event} teed during a provider delivery; broadcast it
-            // so the agent TUI streams live without polling.
-            check_and_broadcast_appends(
-                &store_root,
-                "provider_turn_events.jsonl",
-                &mut consumed_offsets,
-                |line| {
-                    let Ok(envelope) = serde_json::from_str::<serde_json::Value>(line) else {
-                        return Vec::new();
-                    };
-
-                    let mut frames = vec![SseEventFrame::ProviderTurnEvent(envelope.clone())];
-                    if let Some(session_id) = envelope
-                        .get("session_id")
-                        .and_then(|value| value.as_str())
-                        .filter(|value| !value.is_empty())
-                    {
-                        let raw = &envelope["event"];
-                        let normalized = normalize(session_id, raw);
-                        if !normalized.is_empty() {
-                            frames.push(SseEventFrame::ProviderTurnEventNormalized(
-                                serde_json::json!({
-                                    "session_id": session_id,
-                                    "events": normalized,
-                                }),
-                            ));
-                        }
-                    }
-                    frames
-                },
-                &manager,
-            );
+            for (project_id, store_root) in &projects {
+                let normalize = normalizers.get(project_id);
+                poll_project(
+                    project_id,
+                    store_root,
+                    &mut consumed_offsets,
+                    normalize,
+                    &manager,
+                );
+            }
         }
     });
 
     Ok(())
+}
+
+/// The JSONL files the watcher tails in every project store.
+const WATCHED_FILES: &[&str] = &[
+    "agent_events.jsonl",
+    "messages.jsonl",
+    "provider_sessions.jsonl",
+    "workflow_runs.jsonl",
+    "workflow_steps.jsonl",
+    "provider_turn_events.jsonl",
+];
+
+/// Poll one project's ledgers once and broadcast any new rows to that project's
+/// channel only.
+fn poll_project(
+    project_id: &str,
+    store_root: &Path,
+    consumed_offsets: &mut HashMap<(String, String), u64>,
+    normalize: Option<&Normalizer>,
+    manager: &SseManager,
+) {
+    check_and_broadcast_appends(
+        project_id,
+        store_root,
+        "agent_events.jsonl",
+        consumed_offsets,
+        |line| {
+            if let Ok(event) = serde_json::from_str::<AgentEvent>(line) {
+                vec![SseEventFrame::AgentEvent(event)]
+            } else {
+                Vec::new()
+            }
+        },
+        manager,
+    );
+
+    check_and_broadcast_appends(
+        project_id,
+        store_root,
+        "messages.jsonl",
+        consumed_offsets,
+        |line| {
+            if let Ok(msg) = serde_json::from_str::<Message>(line) {
+                vec![SseEventFrame::Message(msg)]
+            } else {
+                Vec::new()
+            }
+        },
+        manager,
+    );
+
+    check_and_broadcast_appends(
+        project_id,
+        store_root,
+        "provider_sessions.jsonl",
+        consumed_offsets,
+        |line| {
+            if let Ok(session) = serde_json::from_str::<ProviderSession>(line) {
+                vec![SseEventFrame::ProviderSession(session)]
+            } else {
+                Vec::new()
+            }
+        },
+        manager,
+    );
+
+    check_and_broadcast_appends(
+        project_id,
+        store_root,
+        "workflow_runs.jsonl",
+        consumed_offsets,
+        |line| {
+            if let Ok(run) = serde_json::from_str::<WorkflowRun>(line) {
+                vec![SseEventFrame::WorkflowRun(run)]
+            } else {
+                Vec::new()
+            }
+        },
+        manager,
+    );
+
+    check_and_broadcast_appends(
+        project_id,
+        store_root,
+        "workflow_steps.jsonl",
+        consumed_offsets,
+        |line| {
+            if let Ok(step) = serde_json::from_str::<WorkflowStep>(line) {
+                vec![SseEventFrame::WorkflowStep(step)]
+            } else {
+                Vec::new()
+            }
+        },
+        manager,
+    );
+
+    // provider_turn_events.jsonl (Stage B): each line is a raw {session_id, event}
+    // teed during a provider delivery; broadcast it so the agent TUI streams live
+    // without polling. Normalized companion frames use this project's normalizer.
+    check_and_broadcast_appends(
+        project_id,
+        store_root,
+        "provider_turn_events.jsonl",
+        consumed_offsets,
+        |line| {
+            let Ok(envelope) = serde_json::from_str::<serde_json::Value>(line) else {
+                return Vec::new();
+            };
+
+            let mut frames = vec![SseEventFrame::ProviderTurnEvent(envelope.clone())];
+            if let (Some(normalize), Some(session_id)) = (
+                normalize,
+                envelope
+                    .get("session_id")
+                    .and_then(|value| value.as_str())
+                    .filter(|value| !value.is_empty()),
+            ) {
+                let raw = &envelope["event"];
+                let normalized = normalize(session_id, raw);
+                if !normalized.is_empty() {
+                    frames.push(SseEventFrame::ProviderTurnEventNormalized(
+                        serde_json::json!({
+                            "session_id": session_id,
+                            "events": normalized,
+                        }),
+                    ));
+                }
+            }
+            frames
+        },
+        manager,
+    );
 }
 
 /// SSE watcher poll interval. Lowered from the original 500ms floor so the
@@ -249,9 +289,10 @@ where
 const POLL_INTERVAL: Duration = Duration::from_millis(150);
 
 fn check_and_broadcast_appends<F>(
+    project_id: &str,
     store_root: &Path,
     filename: &str,
-    consumed_offsets: &mut std::collections::HashMap<String, u64>,
+    consumed_offsets: &mut HashMap<(String, String), u64>,
     parse_line: F,
     manager: &SseManager,
 ) where
@@ -263,7 +304,8 @@ fn check_and_broadcast_appends<F>(
     };
 
     let current_size = metadata.len();
-    let consumed = consumed_offsets.get(filename).copied().unwrap_or(0);
+    let key = (project_id.to_string(), filename.to_string());
+    let consumed = consumed_offsets.get(&key).copied().unwrap_or(0);
 
     if current_size <= consumed {
         return;
@@ -305,12 +347,12 @@ fn check_and_broadcast_appends<F>(
             continue;
         }
         for frame in parse_line(trimmed) {
-            manager.broadcast(frame);
+            manager.broadcast(project_id, frame);
         }
     }
 
     // Advance only past the complete lines we just consumed.
-    consumed_offsets.insert(filename.to_string(), consumed + (last_newline as u64) + 1);
+    consumed_offsets.insert(key, consumed + (last_newline as u64) + 1);
 }
 
 /// Write an SSE response header
@@ -358,6 +400,10 @@ mod tests {
     };
 
     use super::*;
+
+    /// A fixed project id used by the single-project unit tests below; the
+    /// multi-project leakage coverage lives in tests/serve_sse_projects.rs.
+    const TEST_PID: &str = "_test";
 
     fn unique_dir(tag: &str) -> std::path::PathBuf {
         std::env::temp_dir().join(format!(
@@ -458,8 +504,8 @@ mod tests {
         let path = root.join("messages.jsonl");
 
         let manager = SseManager::new();
-        let rx = manager.subscribe();
-        let mut offsets: HashMap<String, u64> = HashMap::new();
+        let rx = manager.subscribe(TEST_PID);
+        let mut offsets: HashMap<(String, String), u64> = HashMap::new();
 
         // Two full rows as the store would write them: compact JSON + '\n'.
         let row_a = serde_json::to_string(&test_message("message-a")).expect("ser a");
@@ -482,6 +528,7 @@ mod tests {
         // Poll 1: row_a delivered, row_b fragment buffered (offset not advanced
         // past it).
         check_and_broadcast_appends(
+            TEST_PID,
             &root,
             "messages.jsonl",
             &mut offsets,
@@ -491,6 +538,7 @@ mod tests {
 
         // Poll 1.5: nothing new on disk, the torn fragment must NOT be emitted.
         check_and_broadcast_appends(
+            TEST_PID,
             &root,
             "messages.jsonl",
             &mut offsets,
@@ -504,6 +552,7 @@ mod tests {
 
         // Poll 2: row_b now complete and delivered exactly once.
         check_and_broadcast_appends(
+            TEST_PID,
             &root,
             "messages.jsonl",
             &mut offsets,
@@ -513,6 +562,7 @@ mod tests {
 
         // Poll 3: idempotent — no re-delivery.
         check_and_broadcast_appends(
+            TEST_PID,
             &root,
             "messages.jsonl",
             &mut offsets,
@@ -546,8 +596,8 @@ mod tests {
         let path = root.join("messages.jsonl");
 
         let manager = SseManager::new();
-        let rx = manager.subscribe();
-        let mut offsets: HashMap<String, u64> = HashMap::new();
+        let rx = manager.subscribe(TEST_PID);
+        let mut offsets: HashMap<(String, String), u64> = HashMap::new();
 
         let row = serde_json::to_string(&test_message("message-once")).expect("ser");
         let mut file = OpenOptions::new()
@@ -560,6 +610,7 @@ mod tests {
         file.flush().expect("flush");
 
         check_and_broadcast_appends(
+            TEST_PID,
             &root,
             "messages.jsonl",
             &mut offsets,
@@ -567,6 +618,7 @@ mod tests {
             &manager,
         );
         check_and_broadcast_appends(
+            TEST_PID,
             &root,
             "messages.jsonl",
             &mut offsets,
@@ -595,13 +647,14 @@ mod tests {
         let path = root.join("messages.jsonl");
 
         let manager = SseManager::new();
-        let rx = manager.subscribe();
-        let mut offsets: HashMap<String, u64> = HashMap::new();
+        let rx = manager.subscribe(TEST_PID);
+        let mut offsets: HashMap<(String, String), u64> = HashMap::new();
 
         let row = serde_json::to_string(&test_message("message-valid")).expect("ser");
         std::fs::write(&path, format!("{row}\nnot-json\n")).expect("write rows");
 
         check_and_broadcast_appends(
+            TEST_PID,
             &root,
             "messages.jsonl",
             &mut offsets,
@@ -631,8 +684,8 @@ mod tests {
         let path = root.join("provider_turn_events.jsonl");
 
         let manager = SseManager::new();
-        let rx = manager.subscribe();
-        let mut offsets: HashMap<String, u64> = HashMap::new();
+        let rx = manager.subscribe(TEST_PID);
+        let mut offsets: HashMap<(String, String), u64> = HashMap::new();
 
         std::fs::write(
             &path,
@@ -641,6 +694,7 @@ mod tests {
         .expect("write row");
 
         check_and_broadcast_appends(
+            TEST_PID,
             &root,
             "provider_turn_events.jsonl",
             &mut offsets,
@@ -681,8 +735,8 @@ mod tests {
         let step_path = root.join("workflow_steps.jsonl");
 
         let manager = SseManager::new();
-        let rx = manager.subscribe();
-        let mut offsets: HashMap<String, u64> = HashMap::new();
+        let rx = manager.subscribe(TEST_PID);
+        let mut offsets: HashMap<(String, String), u64> = HashMap::new();
 
         // Write a workflow run and a step
         let run = test_workflow_run("run-1");
@@ -712,6 +766,7 @@ mod tests {
 
         // Poll both files
         check_and_broadcast_appends(
+            TEST_PID,
             &root,
             "workflow_runs.jsonl",
             &mut offsets,
@@ -719,6 +774,7 @@ mod tests {
             &manager,
         );
         check_and_broadcast_appends(
+            TEST_PID,
             &root,
             "workflow_steps.jsonl",
             &mut offsets,
@@ -746,5 +802,81 @@ mod tests {
         assert_eq!(step_count, 1, "workflow step broadcast exactly once");
 
         std::fs::remove_dir_all(&root).expect("cleanup");
+    }
+
+    /// A frame broadcast to project A must reach A's subscriber and NOT B's, and
+    /// the offset map keys by (project, filename) so two projects with the same
+    /// filename are independent (multi-project P6 leakage guard).
+    #[test]
+    fn broadcast_is_isolated_per_project() {
+        let manager = SseManager::new();
+        let rx_a = manager.subscribe("proj-a");
+        let rx_b = manager.subscribe("proj-b");
+
+        manager.broadcast("proj-a", SseEventFrame::Message(test_message("only-a")));
+
+        // A receives it.
+        match rx_a.try_recv() {
+            Ok(SseEventFrame::Message(m)) => assert_eq!(m.id, "only-a"),
+            other => panic!("project A should receive its own frame, got {other:?}"),
+        }
+        // B receives nothing.
+        assert!(
+            rx_b.try_recv().is_err(),
+            "project B must not see project A's frame"
+        );
+        assert_eq!(manager.client_count("proj-a"), 1);
+        assert_eq!(manager.client_count("proj-b"), 1);
+    }
+
+    /// Identical filenames across two project stores are tracked independently:
+    /// appending to A's `messages.jsonl` advances only A's offset and broadcasts
+    /// only to A.
+    #[test]
+    fn offsets_and_broadcasts_independent_across_projects() {
+        let root_a = unique_dir("iso-a");
+        let root_b = unique_dir("iso-b");
+        std::fs::create_dir_all(&root_a).expect("a");
+        std::fs::create_dir_all(&root_b).expect("b");
+
+        let manager = SseManager::new();
+        let rx_a = manager.subscribe("proj-a");
+        let rx_b = manager.subscribe("proj-b");
+        let mut offsets: HashMap<(String, String), u64> = HashMap::new();
+
+        // Write a row only into project A's messages.jsonl.
+        let row = serde_json::to_string(&test_message("a-row")).expect("ser");
+        std::fs::write(root_a.join("messages.jsonl"), format!("{row}\n")).expect("write a");
+
+        check_and_broadcast_appends(
+            "proj-a",
+            &root_a,
+            "messages.jsonl",
+            &mut offsets,
+            message_frame,
+            &manager,
+        );
+        // Project B has no such file → no-op, no offset entry.
+        check_and_broadcast_appends(
+            "proj-b",
+            &root_b,
+            "messages.jsonl",
+            &mut offsets,
+            message_frame,
+            &manager,
+        );
+
+        match rx_a.try_recv() {
+            Ok(SseEventFrame::Message(m)) => assert_eq!(m.id, "a-row"),
+            other => panic!("A should receive its row, got {other:?}"),
+        }
+        assert!(rx_b.try_recv().is_err(), "B must not see A's row");
+
+        // A's offset advanced; B's is absent (no file to read).
+        assert!(offsets.contains_key(&("proj-a".to_string(), "messages.jsonl".to_string())));
+        assert!(!offsets.contains_key(&("proj-b".to_string(), "messages.jsonl".to_string())));
+
+        std::fs::remove_dir_all(&root_a).expect("cleanup a");
+        std::fs::remove_dir_all(&root_b).expect("cleanup b");
     }
 }

@@ -405,7 +405,7 @@ fn run() -> CliResult<()> {
         "codex" => codex_command(&store, &args[1..])?,
         "workflow" => workflow_command(&store, &args[1..])?,
         "hook" => hook_command(&store, &args[1..])?,
-        "serve" => serve_command(&store, &args[1..])?,
+        "serve" => serve_command(&store, &resolved, &args[1..])?,
         #[cfg(unix)]
         "daemon" => daemon_command(&store, &args[1..])?,
         command => return Err(CliError::Usage(format!("unknown command: {command}"))),
@@ -3801,6 +3801,7 @@ fn codex_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
 
 fn handle_sse_stream(
     store: &HarnessStore,
+    project_id: &str,
     mut stream: TcpStream,
     sse_manager: sse::SseManager,
 ) -> CliResult<()> {
@@ -3827,8 +3828,9 @@ fn handle_sse_stream(
     });
     sse::write_sse_frame(&mut stream, "snapshot", &snapshot_json)?;
 
-    // Subscribe to the SSE channel
-    let rx = sse_manager.subscribe();
+    // Subscribe to the SSE channel for THIS project only, so frames from another
+    // project never leak into this client's stream (multi-project P6).
+    let rx = sse_manager.subscribe(project_id);
     let mut last_keepalive = std::time::Instant::now();
 
     // Wait for events and stream them to the client
@@ -3920,9 +3922,105 @@ fn handle_sse_stream(
     Ok(())
 }
 
-fn serve_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+/// The project routing context for a live `serve` (goal-multi-project P6).
+///
+/// `serve` is single-store *by default* (back-compat: a raw `--store`/`HARNESS_ROOT`
+/// override has no project identity, so `harness_home` is `None` and only the
+/// `default_*` project exists). When a `ProjectContext` backs the store, the server
+/// can enumerate the registry and route `?project=<id>` to a per-project store while
+/// the active/`_global` project remains the default for old clients.
+#[derive(Clone)]
+struct ServeProjects {
+    /// `~/.harness` — `None` only when serve was started with a raw
+    /// `--store`/`HARNESS_ROOT` override (no registry to consult).
+    harness_home: Option<PathBuf>,
+    /// The id of the project `serve` started for (the active/`_global` project, or a
+    /// synthetic id in raw-override mode). Used as the default when no `?project`.
+    default_id: String,
+    /// The store resolved at startup — the default project's store.
+    default_store: HarnessStore,
+}
+
+impl ServeProjects {
+    /// Build from the store resolved in `run()` plus its `ResolvedStore` record.
+    fn from_resolved(store: &HarnessStore, resolved: &ResolvedStore) -> Self {
+        // A project identity only exists when resolution went through the registry /
+        // global path (not a raw `--store`/`HARNESS_ROOT` override).
+        let (harness_home, default_id) = match &resolved.context {
+            Some(ctx) => (project::harness_home().ok(), ctx.id.clone()),
+            None => (None, "_store".to_string()),
+        };
+        Self {
+            harness_home,
+            default_id,
+            default_store: store.clone(),
+        }
+    }
+
+    /// Resolve a `?project=<id>` query value to `(id, store)`. An absent or unknown
+    /// id (or raw-override mode) falls back to the default project so old clients —
+    /// and clients asking for a project this serve does not know — keep working.
+    fn store_for(&self, project: Option<&str>) -> (String, HarnessStore) {
+        if let (Some(home), Some(id)) = (&self.harness_home, project) {
+            if !id.is_empty() && id != self.default_id {
+                if let Ok(Some(ctx)) = project::context_for_id(home, id) {
+                    return (ctx.id, HarnessStore::new(ctx.store_root));
+                }
+            }
+        }
+        (self.default_id.clone(), self.default_store.clone())
+    }
+
+    /// The currently-active project id, read live so a `POST /v1/projects/switch`
+    /// (or a CLI `project switch`) is reflected by `GET /v1/projects/current`
+    /// without restarting serve. Falls back to the startup default.
+    fn current_id(&self) -> String {
+        if let Some(home) = &self.harness_home {
+            if let Ok(Some(id)) = project::active_project_id(home) {
+                return id;
+            }
+        }
+        self.default_id.clone()
+    }
+
+    /// Enumerate known projects for `GET /v1/projects`. In raw-override mode there is
+    /// no registry, so only the served store is reported (as the synthetic default).
+    fn list(&self) -> Vec<ProjectContext> {
+        match &self.harness_home {
+            Some(home) => project::list_projects(home).unwrap_or_default(),
+            None => vec![ProjectContext {
+                id: self.default_id.clone(),
+                project_root: self.default_store.root().to_path_buf(),
+                store_root: self.default_store.root().to_path_buf(),
+                kind: ProjectKind::Repo,
+                is_git_repo: false,
+            }],
+        }
+    }
+
+    /// Map of project-id → store root for the SSE watcher to multiplex over. Always
+    /// includes the default project. In registry mode it covers every known project
+    /// so a client subscribing to any of them sees its frames.
+    fn watch_map(&self) -> std::collections::HashMap<String, PathBuf> {
+        let mut map = std::collections::HashMap::new();
+        map.insert(
+            self.default_id.clone(),
+            self.default_store.root().to_path_buf(),
+        );
+        for ctx in self.list() {
+            map.entry(ctx.id).or_insert(ctx.store_root);
+        }
+        map
+    }
+}
+
+fn serve_command(store: &HarnessStore, resolved: &ResolvedStore, args: &[String]) -> CliResult<()> {
     let addr = value(args, "--addr").unwrap_or_else(|| "127.0.0.1:8787".into());
     let once = has_flag(args, "--once");
+    // Tests can keep the transient live turn-event tee instead of truncating it on
+    // startup (per-project truncation drops in-flight events for ALL projects at
+    // once — see Risks). Production serve always truncates.
+    let no_truncate = has_flag(args, "--no-truncate");
     let listener = TcpListener::bind(&addr)?;
     println!("serving harness API on http://{addr}");
     // Show WHICH store this serve reads — the #1 confusion in issue #89 item 3 was
@@ -3934,66 +4032,95 @@ fn serve_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
         .to_string();
     println!("store: {store_display}  (override with --store <path> or HARNESS_ROOT)");
 
+    let projects = ServeProjects::from_resolved(store, resolved);
+    let watch_map = projects.watch_map();
+    println!(
+        "default project: {} ({} project(s) watched)",
+        projects.default_id,
+        watch_map.len()
+    );
+
     let sse_manager = sse::SseManager::new();
 
     // Truncate the transient live turn-event tee (Stage B) on startup so it does
     // not grow unbounded across serve runs; the watcher seeds at EOF and the
-    // per-session NDJSON remains the durable source for catch-up.
-    let _ = fs::write(store.root().join("provider_turn_events.jsonl"), b"");
-
-    let normalize_store = store.clone();
-    let provider_cache = Mutex::new(HashMap::<String, String>::new());
-    let next_seq_cache = Mutex::new(HashMap::<String, u64>::new());
-    let normalize = move |session_id: &str, raw: &serde_json::Value| -> Vec<serde_json::Value> {
-        let provider = {
-            let Ok(mut cache) = provider_cache.lock() else {
-                return Vec::new();
-            };
-            if let Some(provider) = cache.get(session_id).cloned() {
-                provider
-            } else {
-                let session = match latest_provider_session(&normalize_store, session_id) {
-                    Ok(Some(session)) => session,
-                    Ok(None) | Err(_) => return Vec::new(),
-                };
-                let provider = session.provider;
-                cache.insert(session_id.to_string(), provider.clone());
-                provider
-            }
-        };
-
-        let next_seq = {
-            let Ok(cache) = next_seq_cache.lock() else {
-                return Vec::new();
-            };
-            cache.get(session_id).copied().unwrap_or(0)
-        };
-        let events = normalize_live_turn_event(&provider, session_id, raw, next_seq);
-        if events.is_empty() {
-            return Vec::new();
+    // per-session NDJSON remains the durable source for catch-up. This is done
+    // PER PROJECT now — restarting serve drops in-flight live events for every
+    // watched project at once (documented disruption, P6 Risks). `--no-truncate`
+    // lets tests preserve pre-seeded rows.
+    if !no_truncate {
+        for store_root in watch_map.values() {
+            let _ = fs::write(store_root.join("provider_turn_events.jsonl"), b"");
         }
+    }
 
-        let Ok(mut cache) = next_seq_cache.lock() else {
-            return Vec::new();
-        };
-        cache.insert(session_id.to_string(), next_seq + events.len() as u64);
+    // The live-turn-event normalizer is project-scoped: it must look up the
+    // provider session in the SAME store the event came from, so the per-project
+    // watcher passes the project's store root to its normalizer.
+    let make_normalize = |normalize_store: HarnessStore| {
+        let provider_cache = Mutex::new(HashMap::<String, String>::new());
+        let next_seq_cache = Mutex::new(HashMap::<String, u64>::new());
+        move |session_id: &str, raw: &serde_json::Value| -> Vec<serde_json::Value> {
+            let provider = {
+                let Ok(mut cache) = provider_cache.lock() else {
+                    return Vec::new();
+                };
+                if let Some(provider) = cache.get(session_id).cloned() {
+                    provider
+                } else {
+                    let session = match latest_provider_session(&normalize_store, session_id) {
+                        Ok(Some(session)) => session,
+                        Ok(None) | Err(_) => return Vec::new(),
+                    };
+                    let provider = session.provider;
+                    cache.insert(session_id.to_string(), provider.clone());
+                    provider
+                }
+            };
 
-        events
-            .into_iter()
-            .filter_map(|event| serde_json::to_value(event).ok())
-            .collect()
+            let next_seq = {
+                let Ok(cache) = next_seq_cache.lock() else {
+                    return Vec::new();
+                };
+                cache.get(session_id).copied().unwrap_or(0)
+            };
+            let events = normalize_live_turn_event(&provider, session_id, raw, next_seq);
+            if events.is_empty() {
+                return Vec::new();
+            }
+
+            let Ok(mut cache) = next_seq_cache.lock() else {
+                return Vec::new();
+            };
+            cache.insert(session_id.to_string(), next_seq + events.len() as u64);
+
+            events
+                .into_iter()
+                .filter_map(|event| serde_json::to_value(event).ok())
+                .collect()
+        }
     };
 
-    // Start the SSE watcher thread
-    sse::start_sse_watcher(store, sse_manager.clone(), normalize).map_err(CliError::Io)?;
+    // Start ONE project-multiplexed SSE watcher: per-project offsets + per-project
+    // subscriber channels, so a client subscribed to project A never sees B.
+    let normalizers: std::collections::HashMap<String, sse::Normalizer> = watch_map
+        .iter()
+        .map(|(id, root)| {
+            let normalize = make_normalize(HarnessStore::new(root.clone()));
+            (id.clone(), Box::new(normalize) as sse::Normalizer)
+        })
+        .collect();
+    sse::start_sse_watcher(watch_map.clone(), sse_manager.clone(), normalizers)
+        .map_err(CliError::Io)?;
 
-    // Start the abandoned-run reaper: periodically flip `Running` runs whose
-    // driver process has died (or legacy runs past the stale window) to `Failed`,
-    // so the dashboard never shows a phantom-running workflow after a driver is
-    // killed/crashes. The terminal rows it appends are tailed and broadcast by
-    // the SSE watcher above, so a live dashboard updates without a refetch.
-    {
-        let reaper_store = store.clone();
+    // Start the abandoned-run reaper PER WATCHED PROJECT: periodically flip
+    // `Running` runs whose driver process has died (or legacy runs past the stale
+    // window) to `Failed`, so the dashboard never shows a phantom-running workflow
+    // after a driver is killed/crashes. The terminal rows it appends are tailed and
+    // broadcast by the SSE watcher above, so a live dashboard updates without a
+    // refetch.
+    for store_root in watch_map.values() {
+        let reaper_store = HarnessStore::new(store_root.clone());
         std::thread::spawn(move || loop {
             std::thread::sleep(REAP_POLL_INTERVAL);
             let _ = reap_stale_workflow_runs(&reaper_store);
@@ -4013,7 +4140,7 @@ fn serve_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
 
         if once {
             // Single-shot mode (tests): handle inline for deterministic ordering.
-            if let Err(error) = handle_http_connection(store, stream, sse_manager.clone()) {
+            if let Err(error) = handle_http_connection(&projects, stream, sse_manager.clone()) {
                 eprintln!("serve: connection error: {error}");
             }
             break;
@@ -4025,10 +4152,10 @@ fn serve_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
         // must still be served while a stream is open. Per-connection errors
         // (most commonly a broken pipe when a client disconnects mid-write) are
         // logged and contained to that thread instead of aborting the loop.
-        let conn_store = store.clone();
+        let conn_projects = projects.clone();
         let conn_manager = sse_manager.clone();
         std::thread::spawn(move || {
-            if let Err(error) = handle_http_connection(&conn_store, stream, conn_manager) {
+            if let Err(error) = handle_http_connection(&conn_projects, stream, conn_manager) {
                 eprintln!("serve: connection error: {error}");
             }
         });
@@ -4102,7 +4229,7 @@ fn daemon_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
 }
 
 fn handle_http_connection(
-    store: &HarnessStore,
+    projects: &ServeProjects,
     mut stream: TcpStream,
     sse_manager: sse::SseManager,
 ) -> CliResult<()> {
@@ -4113,6 +4240,11 @@ fn handle_http_connection(
     let method = parts.next().unwrap_or_default();
     let path = parts.next().unwrap_or_default().to_string();
     let path_only = path.split('?').next().unwrap_or_default().to_string();
+    // `?project=<id>` selects which project store this request reads/streams.
+    // Absent or unknown → the active/default project (back-compat for old clients).
+    let project_param = query_param(&path, "project");
+    let (project_id, store_owned) = projects.store_for(project_param.as_deref());
+    let store = &store_owned;
     let mut content_length = 0usize;
     loop {
         let mut line = String::new();
@@ -4155,9 +4287,43 @@ fn handle_http_connection(
             "/v1/snapshot" | "/v1/dashboard/snapshot" => {
                 write_http_json(&mut stream, "200 OK", &dashboard_snapshot(store)?)?
             }
+            // GET /v1/projects — enumerate known projects (registry + on-disk stores
+            // + reserved `_global`) for the dashboard picker. `current` marks the
+            // active project (multi-project P6 / project-api task).
+            "/v1/projects" => {
+                let current = projects.current_id();
+                let list: Vec<serde_json::Value> = projects
+                    .list()
+                    .into_iter()
+                    .map(|ctx| project_context_json(&ctx, &current))
+                    .collect();
+                write_http_json(
+                    &mut stream,
+                    "200 OK",
+                    &serde_json::json!({"projects": list, "current": current}),
+                )?
+            }
+            // GET /v1/projects/current — the active project id + its context. Read
+            // live so a `switch` (API or CLI) is reflected without a serve restart.
+            "/v1/projects/current" => {
+                let current = projects.current_id();
+                let (id, current_store) = projects.store_for(Some(&current));
+                let ctx = projects.list().into_iter().find(|c| c.id == id);
+                let context_json = ctx.map(|c| project_context_json(&c, &current));
+                write_http_json(
+                    &mut stream,
+                    "200 OK",
+                    &serde_json::json!({
+                        "current": id,
+                        "store_root": current_store.root().display().to_string(),
+                        "project": context_json,
+                    }),
+                )?
+            }
             "/v1/events" => {
-                // Handle SSE endpoint
-                handle_sse_stream(store, stream, sse_manager)?
+                // Handle SSE endpoint, scoped to the requested project channel so a
+                // client subscribed to project A never receives project B frames.
+                handle_sse_stream(store, &project_id, stream, sse_manager)?
             }
             "/v1/docs" => match read_allowed_doc(&path) {
                 Ok((doc_path, content)) => write_http_json(
@@ -4369,6 +4535,31 @@ fn handle_http_connection(
             }
         }
     };
+    // POST /v1/projects/switch — flip the active project in the registry +
+    // `ACTIVE_PROJECT` marker so CLI-spawned workers and a live serve converge on
+    // the same central store (multi-project P6 #89 invariant). This is a serve-level
+    // routing action (not a store mutation), so it is handled before the generic
+    // store-action dispatch. The response's snapshot is the NEW active project's.
+    if path_only == "/v1/projects/switch" {
+        match handle_project_switch(projects, &body_json) {
+            Ok((id, switch_store)) => write_http_json(
+                &mut stream,
+                "200 OK",
+                &serde_json::json!({
+                    "ok": true,
+                    "result": {"current": id},
+                    "snapshot": dashboard_snapshot(&switch_store)?,
+                }),
+            )?,
+            Err(error) => write_http_json(
+                &mut stream,
+                "400 Bad Request",
+                &serde_json::json!({"ok": false, "error": error.to_string()}),
+            )?,
+        }
+        return Ok(());
+    }
+
     match handle_http_action(store, &path_only, &body_json) {
         Ok(response) => write_http_json(
             &mut stream,
@@ -4382,6 +4573,55 @@ fn handle_http_connection(
         )?,
     }
     Ok(())
+}
+
+/// Apply a `POST /v1/projects/switch {project: <id>}` request: switch the active
+/// project atomically and return the new `(id, store)`. In raw-override mode (no
+/// `harness_home`) there is no registry to switch, so it is rejected.
+fn handle_project_switch(
+    projects: &ServeProjects,
+    body: &serde_json::Value,
+) -> CliResult<(String, HarnessStore)> {
+    let id = json_string(body, "project")
+        .or_else(|| json_string(body, "id"))
+        .or_else(|| json_string(body, "project_id"))
+        .ok_or_else(|| CliError::Usage("missing `project` id to switch to".to_string()))?;
+    let home = projects.harness_home.as_ref().ok_or_else(|| {
+        CliError::Usage(
+            "serve is running with a raw --store/HARNESS_ROOT override; project switch is unavailable"
+                .to_string(),
+        )
+    })?;
+    let ctx = project::switch_current_project(home, &id, &now_string()).map_err(project_err)?;
+    Ok((ctx.id.clone(), HarnessStore::new(ctx.store_root)))
+}
+
+/// Render a [`ProjectContext`] as the JSON the dashboard picker consumes, marking
+/// whether it is the currently-active project.
+fn project_context_json(ctx: &ProjectContext, current: &str) -> serde_json::Value {
+    serde_json::json!({
+        "id": ctx.id,
+        "project_root": ctx.project_root.display().to_string(),
+        "store_root": ctx.store_root.display().to_string(),
+        "kind": ctx.kind,
+        "is_git_repo": ctx.is_git_repo,
+        "is_current": ctx.id == current,
+    })
+}
+
+/// Extract a query-string parameter value from a request target like
+/// `/v1/snapshot?project=foo&x=1`. Returns the raw (un-decoded) value; project ids
+/// are restricted to `[A-Za-z0-9._-]` so no percent-decoding is needed.
+fn query_param(target: &str, key: &str) -> Option<String> {
+    let query = target.split('?').nth(1)?;
+    for pair in query.split('&') {
+        if let Some((k, v)) = pair.split_once('=') {
+            if k == key {
+                return Some(v.to_string());
+            }
+        }
+    }
+    None
 }
 
 fn handle_http_action(
@@ -21699,7 +21939,7 @@ mod sse_tests {
     #[test]
     fn test_sse_manager_broadcast_to_subscriber() {
         let manager = sse::SseManager::new();
-        let rx = manager.subscribe();
+        let rx = manager.subscribe("_test");
 
         let event = sse::SseEventFrame::AgentEvent(AgentEvent {
             id: "evt-test".into(),
@@ -21716,7 +21956,7 @@ mod sse_tests {
             created_at: "2025-01-01T00:00:00Z".into(),
         });
 
-        manager.broadcast(event.clone());
+        manager.broadcast("_test", event.clone());
 
         // Verify the event is received
         match rx.recv_timeout(std::time::Duration::from_secs(1)) {
@@ -21734,8 +21974,8 @@ mod sse_tests {
     #[test]
     fn test_sse_manager_multiple_subscribers() {
         let manager = sse::SseManager::new();
-        let rx1 = manager.subscribe();
-        let rx2 = manager.subscribe();
+        let rx1 = manager.subscribe("_test");
+        let rx2 = manager.subscribe("_test");
 
         let event = sse::SseEventFrame::AgentEvent(AgentEvent {
             id: "evt-multi".into(),
@@ -21752,7 +21992,7 @@ mod sse_tests {
             created_at: "2025-01-01T00:00:00Z".into(),
         });
 
-        manager.broadcast(event);
+        manager.broadcast("_test", event);
 
         // Both subscribers should receive the event
         let _ = rx1
@@ -21787,14 +22027,27 @@ mod sse_tests {
         let serve_store = store.clone();
         std::thread::spawn(move || {
             let sse_manager = sse::SseManager::new();
-            sse::start_sse_watcher(&serve_store, sse_manager.clone(), |_, _| Vec::new())
-                .expect("watcher");
+            // Single-project serve mode (no registry): default project routes to the
+            // served store, watcher multiplexes over just that one.
+            let projects = ServeProjects {
+                harness_home: None,
+                default_id: "_test".to_string(),
+                default_store: serve_store.clone(),
+            };
+            let mut watch_map = std::collections::HashMap::new();
+            watch_map.insert("_test".to_string(), serve_store.root().to_path_buf());
+            sse::start_sse_watcher(
+                watch_map,
+                sse_manager.clone(),
+                std::collections::HashMap::new(),
+            )
+            .expect("watcher");
             for stream in listener.incoming() {
                 let Ok(stream) = stream else { continue };
-                let conn_store = serve_store.clone();
+                let conn_projects = projects.clone();
                 let conn_manager = sse_manager.clone();
                 std::thread::spawn(move || {
-                    let _ = handle_http_connection(&conn_store, stream, conn_manager);
+                    let _ = handle_http_connection(&conn_projects, stream, conn_manager);
                 });
             }
         });

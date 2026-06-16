@@ -33,6 +33,7 @@ TMP="$(mktemp -d)"
 STORE="$TMP/store"
 SERVE_PID=""
 SSE_PID=""
+MP_SERVE_PID=""
 
 PASS=0
 FAIL=0
@@ -45,6 +46,7 @@ section() { echo; echo "== $1 =="; }
 cleanup() {
   [ -n "$SSE_PID" ] && kill "$SSE_PID" 2>/dev/null
   [ -n "$SERVE_PID" ] && kill "$SERVE_PID" 2>/dev/null
+  [ -n "$MP_SERVE_PID" ] && kill "$MP_SERVE_PID" 2>/dev/null
   rm -rf "$TMP"
 }
 trap cleanup EXIT
@@ -73,7 +75,9 @@ for t in \
   codex_normalize_command_execution_with_output_emits_call_and_result \
   claude_normalize_user_tool_results_expand_in_order_and_retain_raw \
   historical_normalized_events_normalize_durable_trace_and_report_retained \
-  one_line_can_broadcast_multiple_frames ; do
+  one_line_can_broadcast_multiple_frames \
+  broadcast_is_isolated_per_project \
+  offsets_and_broadcasts_independent_across_projects ; do
   grep -q "test .*$t ... ok" "$TMP/test.log" && ok "unit: $t" || bad "unit: $t did not run/pass"
 done
 
@@ -135,6 +139,71 @@ else
   H goal run-phases pm --dry-run >"$TMP/pm_run2.json" 2>/dev/null
   [ "$(check_json "$TMP/pm_run2.json" "d.get('ran')==[] and d.get('skipped')==['p1']")" = "1" ] \
     && ok "S5 resume skips already-passed phase" || bad "S5 resume skip"
+fi
+
+# ---------------------------------------------------------------------------
+section "Multi-project serve API + #89 convergence (goal-multi-project, no codex)"
+# Isolated HOME/HARNESS_HOME so this never touches the developer's real ~/.harness.
+# Proves: GET /v1/projects lists both projects + _global; POST /v1/projects/switch
+# flips the active project; a CLI from a DIFFERENT cwd then resolves the SAME
+# central store (~/.harness/projects/<id>), preserving the #89 sibling-convergence
+# invariant across a project switch.
+cargo build -p harness-cli >/dev/null 2>&1
+if [ ! -x "$HARNESS" ]; then
+  bad "build harness-cli for multi-project checks"
+else
+  MPHOME="$TMP/mp-home"
+  MPHH="$MPHOME/.harness"
+  mkdir -p "$MPHH"
+  MPPORT="${VERIFY_MP_PORT:-8797}"
+  # Drive harness against the isolated home; clear inherited store overrides.
+  MH() { env HOME="$MPHOME" HARNESS_HOME="$MPHH" HARNESS_ROOT= HARNESS_PROJECT= "$HARNESS" "$@"; }
+  ROOT_A="$MPHOME/repo-a"; ROOT_B="$MPHOME/repo-b"
+  mkdir -p "$ROOT_A" "$ROOT_B"
+  ( cd "$ROOT_A" && MH init >/dev/null 2>&1 )
+  ( cd "$ROOT_B" && MH init >/dev/null 2>&1 )  # repo-b is active after init
+  ID_A="$(python3 -c "import json;
+reg=json.load(open('$MPHH/projects/registry.json'))
+print(next(p['id'] for p in reg['projects'] if p['path'].endswith('repo-a')))" 2>/dev/null)"
+  ID_B="$(python3 -c "import json;print(json.load(open('$MPHH/projects/registry.json'))['current_project_id'])" 2>/dev/null)"
+  if [ -z "$ID_A" ] || [ -z "$ID_B" ] || [ "$ID_A" = "$ID_B" ]; then
+    bad "MP setup: two distinct projects registered"
+  else
+    ok "MP setup: two distinct projects registered ($ID_A, $ID_B)"
+    # Start serve from repo-a's cwd against the isolated home.
+    ( cd "$ROOT_A" && env HOME="$MPHOME" HARNESS_HOME="$MPHH" HARNESS_ROOT= HARNESS_PROJECT= \
+      "$HARNESS" serve --addr "127.0.0.1:$MPPORT" --no-truncate >"$TMP/mp-serve.log" 2>&1 ) &
+    MP_SERVE_PID=$!
+    UP=0
+    for _ in $(seq 1 50); do
+      curl -fs "http://127.0.0.1:$MPPORT/health" >/dev/null 2>&1 && { UP=1; break; }
+      sleep 0.2
+    done
+    if [ $UP -ne 1 ]; then
+      bad "MP serve did not come up (see $TMP/mp-serve.log)"
+    else
+      ok "MP serve up on :$MPPORT"
+      # GET /v1/projects lists both + _global.
+      curl -fs "http://127.0.0.1:$MPPORT/v1/projects" >"$TMP/mp-projects.json" 2>/dev/null
+      [ "$(check_json "$TMP/mp-projects.json" "set(['$ID_A','$ID_B','_global']).issubset({p['id'] for p in d['projects']})")" = "1" ] \
+        && ok "MP GET /v1/projects lists both projects + _global" || bad "MP /v1/projects enumeration"
+      # POST switch to A.
+      curl -fs -X POST "http://127.0.0.1:$MPPORT/v1/projects/switch" \
+        -H 'Content-Type: application/json' -d "{\"project\":\"$ID_A\"}" >"$TMP/mp-switch.json" 2>/dev/null
+      [ "$(check_json "$TMP/mp-switch.json" "d.get('ok') is True and d['result']['current']=='$ID_A'")" = "1" ] \
+        && ok "MP POST /v1/projects/switch -> A" || bad "MP switch"
+      # CLI from an UNRELATED cwd converges on A's central store.
+      MPELSE="$MPHOME/elsewhere/deep"; mkdir -p "$MPELSE"
+      MPSRC="$( cd "$MPELSE" && env HOME="$MPHOME" HARNESS_HOME="$MPHH" HARNESS_ROOT= HARNESS_PROJECT= \
+        "$HARNESS" --store-source goal list 2>&1 | sed -n 's/.*store-source:.*root=//p' )"
+      case "$MPSRC" in
+        *"/projects/$ID_A") ok "MP #89 convergence: CLI from other cwd -> A central store" ;;
+        *) bad "MP #89 convergence: CLI resolved '$MPSRC' (expected .../projects/$ID_A)" ;;
+      esac
+    fi
+    [ -n "$MP_SERVE_PID" ] && kill "$MP_SERVE_PID" 2>/dev/null
+    MP_SERVE_PID=""
+  fi
 fi
 
 # ---------------------------------------------------------------------------
