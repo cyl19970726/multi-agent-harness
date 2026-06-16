@@ -688,15 +688,179 @@ fn sync_goal_stage(store: &HarnessStore, goal: &mut Goal) -> CliResult<()> {
 type PhaseRunFn<'a> =
     dyn Fn(&str, &str, Option<&str>) -> CliResult<(String, workflow::WorkflowOutcome)> + 'a;
 
+/// The injectable phase REVISER: given the goal, the failed phase, its current
+/// live (non-superseded) tasks, and the failure captured as `Knowledge`, return
+/// the structured revision `{supersede:[task-id...], new_tasks:[{...}]}`. The CLI
+/// passes a runner that compiles + runs a one-shot reviser worker (honoring
+/// `--dry-run`); tests pass a mock returning the revision object directly.
+type PhaseReviseFn<'a> = dyn Fn(&Goal, &harness_core::GoalPhase, &[&Task], &Knowledge) -> CliResult<serde_json::Value>
+    + 'a;
+
+/// Append an orchestrator-authored `Knowledge` entry summarizing a phase failure
+/// (which phase, the workflow run id, and the failing/blocked task labels from the
+/// outcome), persist it onto the goal, and return its id. Uses the SAME append +
+/// persist pattern as `goal knowledge-add`, with `source = Task` and the phase id
+/// set for provenance.
+fn append_failure_knowledge(
+    store: &HarnessStore,
+    goal: &mut Goal,
+    phase_id: &str,
+    workflow_run_id: &str,
+    outcome: &workflow::WorkflowOutcome,
+) -> CliResult<String> {
+    let failing: Vec<&str> = outcome
+        .steps
+        .iter()
+        .filter(|s| !s.ok)
+        .map(|s| s.label.as_str())
+        .collect();
+    let failing_md = if failing.is_empty() {
+        // The phase failed its verdict without any individual task step failing
+        // (e.g. the verdict leaf itself returned `pass=false`).
+        "the phase verdict did not pass (no individual task step reported failure)".to_string()
+    } else {
+        format!("failing/blocked tasks: {}", failing.join(", "))
+    };
+    let now = now_string();
+    let knowledge = Knowledge {
+        id: generated_id("knowledge"),
+        goal_id: goal.id.clone(),
+        phase_id: Some(phase_id.to_string()),
+        task_id: None,
+        author: "orchestrator".to_string(),
+        timestamp: now.clone(),
+        notes_md: format!(
+            "Phase `{phase_id}` failed its verdict during `goal run-phases` \
+             (workflow run `{workflow_run_id}`): {failing_md}."
+        ),
+        tags: Vec::new(),
+        source: KnowledgeSource::Task,
+        superseded_by_knowledge_id: None,
+        created_at: now.clone(),
+    };
+    let knowledge_id = knowledge.id.clone();
+    goal.knowledge.push(knowledge);
+    goal.updated_at = now;
+    store.append_goal(goal)?;
+    Ok(knowledge_id)
+}
+
+/// Apply a reviser's structured revision to a phase's task graph: mark each
+/// `supersede` id `Superseded` with `superseded_by_knowledge_id = knowledge_id`,
+/// and append each `new_tasks` entry as a `Planned` task scoped to this phase.
+/// Returns `(superseded_ids, new_task_ids)`. A revision that supersedes nothing
+/// AND adds nothing is "no actionable replan" — both vectors come back empty, and
+/// the caller stops the loop rather than churning.
+fn apply_phase_revision(
+    store: &HarnessStore,
+    goal: &Goal,
+    phase_id: &str,
+    revision: &serde_json::Value,
+    knowledge_id: &str,
+) -> CliResult<(Vec<String>, Vec<String>)> {
+    // The structured revision lands under `final_output.result.revision` (the
+    // schema's single top-level key). In --dry-run the mock makes `revision` a
+    // STRING, which yields an empty revision — handled by the `as_object` guards.
+    let rev = revision.get("revision").unwrap_or(revision);
+
+    let mut superseded = Vec::new();
+    let supersede_ids: std::collections::HashSet<String> = rev
+        .get("supersede")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|e| e.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    if !supersede_ids.is_empty() {
+        let tasks = latest_tasks(store)?;
+        for mut task in tasks.into_values() {
+            if task.goal_id.as_deref() != Some(goal.id.as_str())
+                || task.phase_id.as_deref() != Some(phase_id)
+                || task.status == TaskStatus::Superseded
+                || !supersede_ids.contains(&task.id)
+            {
+                continue;
+            }
+            task.status = TaskStatus::Superseded;
+            task.superseded_by_knowledge_id = Some(knowledge_id.to_string());
+            task.updated_at = now_string();
+            store.append_task(&task)?;
+            superseded.push(task.id.clone());
+        }
+    }
+
+    let mut new_task_ids = Vec::new();
+    let new_tasks = rev.get("new_tasks").and_then(|t| t.as_array());
+    if let Some(new_tasks) = new_tasks {
+        let now = now_string();
+        let mut existing: std::collections::HashSet<String> =
+            latest_tasks(store)?.into_keys().collect();
+        for (idx, t) in new_tasks.iter().enumerate() {
+            let task_id =
+                json_str_nonempty(t, "id").unwrap_or_else(|| format!("{phase_id}-r{}", idx + 1));
+            if existing.contains(&task_id) {
+                // Never duplicate an existing task id (idempotent re-revise).
+                continue;
+            }
+            let title = json_str_nonempty(t, "title").unwrap_or_else(|| format!("Task {task_id}"));
+            let task = Task {
+                id: task_id.clone(),
+                goal_id: Some(goal.id.clone()),
+                parent_task_id: None,
+                title: title.clone(),
+                objective: title,
+                owner_agent_id: goal.owner_agent_id.clone(),
+                assignee_agent_id: None,
+                reviewer_agent_id: None,
+                status: TaskStatus::Planned,
+                depends_on_task_ids: json_str_list(t, "depends_on"),
+                workspace_ref: None,
+                branch_ref: None,
+                pr_ref: None,
+                owned_paths: json_str_list(t, "owned_paths"),
+                acceptance_criteria: json_str_list(t, "acceptance"),
+                created_at: now.clone(),
+                updated_at: now.clone(),
+                phase: None,
+                scope_refs: Vec::new(),
+                requires_human_approval: false,
+                verdict_decision_id: None,
+                description: None,
+                git_metadata: None,
+                design_md: json_str_nonempty(t, "design_md"),
+                phase_id: Some(phase_id.to_string()),
+                superseded_by_knowledge_id: None,
+                workflow_step_ids: Vec::new(),
+            };
+            store.append_task(&task)?;
+            existing.insert(task_id.clone());
+            new_task_ids.push(task_id);
+        }
+    }
+
+    Ok((superseded, new_task_ids))
+}
+
 /// Sequence a goal's phases: gate each on its verdict before the next, write each
 /// phase's task outcomes back, advance the goal's derived stage, and persist a
 /// durable [`GoalOrchestrationRun`] checkpoint. Already-`Passed` phases are
-/// skipped (the resume primitive). `run_phase` is injectable so the sequencing /
-/// gating / checkpoint logic is testable without real workers.
+/// skipped (the resume primitive). When a phase does NOT pass, the failure is
+/// captured as `Knowledge` and — if retries remain — `revise_phase` revises the
+/// phase's task graph (supersede + new tasks), and the SAME phase recompiles +
+/// reruns, up to `max_phase_retries` times. `run_phase` and `revise_phase` are
+/// injectable so the sequencing / gating / replan / checkpoint logic is testable
+/// without real workers.
 fn orchestrate_goal_phases(
     store: &HarnessStore,
     goal_id: &str,
     run_phase: &PhaseRunFn<'_>,
+    revise_phase: &PhaseReviseFn<'_>,
+    max_phase_retries: u32,
 ) -> CliResult<serde_json::Value> {
     let mut goal = goal_load(store, goal_id)?;
     if goal.phases.is_empty() {
@@ -775,54 +939,120 @@ fn orchestrate_goal_phases(
         goal.updated_at = now_string();
         store.append_goal(&goal)?;
 
-        let phase = goal.phases[idx].clone();
-        let goal_tasks: Vec<Task> = store
-            .tasks()?
-            .into_iter()
-            .filter(|t| t.goal_id.as_deref() == Some(goal.id.as_str()))
-            .collect();
-        let script =
-            compile_phase_to_starlark(&goal, &phase, &goal_tasks).map_err(CliError::Usage)?;
-        let hash = content_hash_hex16(&script);
-        let dir = store.root().join("compiled");
-        std::fs::create_dir_all(&dir)?;
-        let compiled_path = dir.join(format!(
-            "{}__{}__{}.star",
-            slug_for_filename(&goal.id),
-            slug_for_filename(&phase_id),
-            hash
-        ));
-        std::fs::write(&compiled_path, &script)?;
+        // The replan loop: run the phase; on a non-pass, capture the failure as
+        // knowledge and — while retries remain — ask the reviser to revise the
+        // task graph, then recompile + rerun the SAME phase. Each attempt after
+        // the first consumes one retry from the budget. `resume_from` reuses the
+        // PREVIOUS attempt's succeeded leaves on a same-script re-run (intra-phase
+        // resume); after a revision the recompiled script differs, so we run fresh.
+        let mut resume_from = resume_from;
+        let mut retries_left = max_phase_retries;
+        let passed;
+        loop {
+            let phase = goal.phases[idx].clone();
+            let goal_tasks: Vec<Task> = store
+                .tasks()?
+                .into_iter()
+                .filter(|t| t.goal_id.as_deref() == Some(goal.id.as_str()))
+                .collect();
+            let script =
+                compile_phase_to_starlark(&goal, &phase, &goal_tasks).map_err(CliError::Usage)?;
+            let hash = content_hash_hex16(&script);
+            let dir = store.root().join("compiled");
+            std::fs::create_dir_all(&dir)?;
+            let compiled_path = dir.join(format!(
+                "{}__{}__{}.star",
+                slug_for_filename(&goal.id),
+                slug_for_filename(&phase_id),
+                hash
+            ));
+            std::fs::write(&compiled_path, &script)?;
 
-        let started_at = now_string();
-        let (run_id, outcome) = run_phase(
-            &script,
-            &format!("phase-{phase_id}"),
-            resume_from.as_deref(),
-        )?;
-        let passed = outcome.status == WorkflowRunStatus::Completed;
+            let started_at = now_string();
+            let (run_id, outcome) = run_phase(
+                &script,
+                &format!("phase-{phase_id}"),
+                resume_from.as_deref(),
+            )?;
+            let attempt_passed = outcome.status == WorkflowRunStatus::Completed;
 
-        write_back_phase_tasks(store, &goal, &phase_id, &outcome)?;
+            write_back_phase_tasks(store, &goal, &phase_id, &outcome)?;
 
-        goal.phases[idx].status = if passed {
-            GoalPhaseStatus::Passed
-        } else {
-            GoalPhaseStatus::Failed
-        };
-        goal.phases[idx].ended_at = Some(now_string());
-        goal.updated_at = now_string();
-        store.append_goal(&goal)?;
+            goal.phases[idx].status = if attempt_passed {
+                GoalPhaseStatus::Passed
+            } else {
+                GoalPhaseStatus::Failed
+            };
+            goal.phases[idx].ended_at = Some(now_string());
+            goal.updated_at = now_string();
+            store.append_goal(&goal)?;
 
-        orch.phase_runs.push(OrchestrationPhaseRun {
-            phase_id: phase_id.clone(),
-            workflow_run_id: Some(run_id),
-            compiled_path: Some(compiled_path.display().to_string()),
-            passed,
-            started_at,
-            ended_at: Some(now_string()),
-        });
-        orch.updated_at = now_string();
-        ran.push(serde_json::json!({ "phase": phase_id, "passed": passed }));
+            orch.phase_runs.push(OrchestrationPhaseRun {
+                phase_id: phase_id.clone(),
+                workflow_run_id: Some(run_id.clone()),
+                compiled_path: Some(compiled_path.display().to_string()),
+                passed: attempt_passed,
+                started_at,
+                ended_at: Some(now_string()),
+            });
+            orch.updated_at = now_string();
+            ran.push(serde_json::json!({ "phase": phase_id, "passed": attempt_passed }));
+            store.append_goal_orchestration_run(&orch)?;
+
+            if attempt_passed {
+                passed = true;
+                break;
+            }
+
+            // The phase did not pass. Capture the finding as knowledge regardless
+            // of whether we will retry (it is the durable truth of what failed).
+            let knowledge_id =
+                append_failure_knowledge(store, &mut goal, &phase_id, &run_id, &outcome)?;
+
+            if retries_left == 0 {
+                passed = false;
+                break;
+            }
+
+            // Retries remain: ask the reviser to revise this phase's task graph.
+            let phase = goal.phases[idx].clone();
+            let knowledge = goal
+                .knowledge
+                .iter()
+                .find(|k| k.id == knowledge_id)
+                .cloned()
+                .expect("the knowledge entry just appended must be present");
+            let live_tasks: Vec<Task> = store
+                .tasks()?
+                .into_iter()
+                .filter(|t| {
+                    t.goal_id.as_deref() == Some(goal.id.as_str())
+                        && t.phase_id.as_deref() == Some(phase_id.as_str())
+                        && t.status != TaskStatus::Superseded
+                })
+                .collect();
+            let live_refs: Vec<&Task> = live_tasks.iter().collect();
+            let revision = revise_phase(&goal, &phase, &live_refs, &knowledge)?;
+            let (superseded, new_task_ids) =
+                apply_phase_revision(store, &goal, &phase_id, &revision, &knowledge_id)?;
+
+            // A revision that supersedes nothing AND adds nothing is "no actionable
+            // replan" — do NOT loop forever. Count this attempt against the cap and
+            // stop (the phase stays Failed).
+            if superseded.is_empty() && new_task_ids.is_empty() {
+                passed = false;
+                break;
+            }
+
+            // The task graph changed → recompile + rerun fresh (the new script
+            // differs from the prior run, so no leaf replay applies).
+            retries_left -= 1;
+            resume_from = None;
+            goal.phases[idx].status = GoalPhaseStatus::InProgress;
+            goal.phases[idx].ended_at = None;
+            goal.updated_at = now_string();
+            store.append_goal(&goal)?;
+        }
 
         if !passed {
             orch.status = OrchestrationStatus::Failed;
@@ -838,7 +1068,6 @@ fn orchestrate_goal_phases(
                 "skipped": skipped,
             }));
         }
-        store.append_goal_orchestration_run(&orch)?;
     }
 
     orch.status = OrchestrationStatus::Completed;
@@ -1256,6 +1485,11 @@ fn goal_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
             // so the flag is an explicit, auditable opt-in rather than a behavior
             // toggle — running with or without it is equivalent today.
             let _resume = has_flag(args, "--resume");
+            // How many times a failing phase may be revised + re-run before the
+            // orchestration gives up (the replan-loop cap). Default 1.
+            let max_phase_retries = value(args, "--max-phase-retries")
+                .and_then(|v| v.parse::<u32>().ok())
+                .unwrap_or(1);
             let options = WorkflowDeliveryOptions {
                 dry_run: has_flag(args, "--dry-run"),
                 start_runtime: has_flag(args, "--start-runtime"),
@@ -1271,7 +1505,41 @@ fn goal_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
             let run_phase = |script: &str, name: &str, resume_from: Option<&str>| {
                 run_phase_compiled_script(store, script, name, &options, resume_from)
             };
-            let report = orchestrate_goal_phases(store, &goal_id, &run_phase)?;
+            // The real reviser: compile a one-shot reviser worker and run it
+            // through the SAME real-driver path (honors --dry-run, where the mock
+            // yields a degenerate empty revision the loop treats as "no replan").
+            let revise_phase = |goal: &Goal,
+                                phase: &harness_core::GoalPhase,
+                                live_tasks: &[&Task],
+                                knowledge: &Knowledge|
+             -> CliResult<serde_json::Value> {
+                let script = harness_core::compile_reviser_script(
+                    goal,
+                    phase,
+                    live_tasks,
+                    &knowledge.notes_md,
+                );
+                let (_run_id, outcome) = run_phase_compiled_script(
+                    store,
+                    &script,
+                    &format!("revise-{}-{}", goal.id, phase.id),
+                    &options,
+                    None,
+                )?;
+                Ok(outcome
+                    .final_output
+                    .as_ref()
+                    .and_then(|fo| fo.get("result"))
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null))
+            };
+            let report = orchestrate_goal_phases(
+                store,
+                &goal_id,
+                &run_phase,
+                &revise_phase,
+                max_phase_retries,
+            )?;
             print_json(&report)?;
             if report.get("status").and_then(|s| s.as_str()) == Some("failed") {
                 let phase = report
@@ -19271,6 +19539,71 @@ mod tests {
         assert!(labels.iter().any(|l| l.starts_with("verdict-")));
     }
 
+    #[test]
+    fn compiled_reviser_script_runs_under_the_real_starlark_engine() {
+        // The reviser script the CLI generates on a phase failure must be valid
+        // Starlark: it parses, runs ONE schema-mode worker, and surfaces the
+        // worker's structured reply under `final_output`. A mock driver synthesizes
+        // the structured object the way the dry-run path does.
+        let mut goal = make_goal("goal-revise");
+        let phase = harness_core::GoalPhase {
+            id: "p1".into(),
+            name: "Build".into(),
+            intent: "wire it up".into(),
+            status: harness_core::GoalPhaseStatus::Failed,
+            acceptance: Some("It compiles and tests pass.".into()),
+            verdict_decision_id: None,
+            created_at: "unix-ms:1".into(),
+            started_at: None,
+            ended_at: None,
+        };
+        goal.phases = vec![phase.clone()];
+        let mut t = make_task("t-bad", "goal-revise");
+        t.phase_id = Some("p1".into());
+        t.owned_paths = vec!["crates/a".into()];
+        let live_refs: Vec<&Task> = vec![&t];
+        let script = harness_core::compile_reviser_script(
+            &goal,
+            &phase,
+            &live_refs,
+            "phase p1 failed: t-bad blocked",
+        );
+
+        let driver = |spec: &workflow::AgentStepSpec| -> workflow::StepResult {
+            let structured = spec.schema.as_ref().map(|_| {
+                serde_json::json!({
+                    "revision": { "supersede": ["t-bad"], "new_tasks": [] }
+                })
+            });
+            workflow::StepResult {
+                phase: spec.phase.clone(),
+                label: spec.label.clone(),
+                provider: spec.provider.clone(),
+                isolation: spec.isolation.clone(),
+                ok: true,
+                provider_session_id: None,
+                output_summary: "ok".into(),
+                step_id: None,
+                started_at: None,
+                details: None,
+                structured,
+                ordinal: None,
+            }
+        };
+        let outcome =
+            harness_workflow::starlark_front::run_starlark(&script, "revise-p1", None, &driver)
+                .expect("generated reviser script must parse and run")
+                .outcome;
+        assert_eq!(outcome.status, WorkflowRunStatus::Completed);
+        let result = outcome
+            .final_output
+            .as_ref()
+            .and_then(|fo| fo.get("result"))
+            .and_then(|r| r.get("revision"))
+            .expect("the reviser run must surface the structured revision");
+        assert_eq!(result["supersede"][0], "t-bad");
+    }
+
     fn orch_phase(id: &str) -> harness_core::GoalPhase {
         harness_core::GoalPhase {
             id: id.into(),
@@ -19324,6 +19657,19 @@ mod tests {
         )
     }
 
+    /// A reviser that never proposes anything (empty revision) — the loop treats
+    /// it as "no actionable replan" and stops. Used by tests that assert the
+    /// pre-replan fail-fast behavior is preserved (paired with `max_phase_retries`
+    /// = 0, which never invokes the reviser at all).
+    fn noop_reviser(
+        _goal: &Goal,
+        _phase: &harness_core::GoalPhase,
+        _live_tasks: &[&Task],
+        _knowledge: &Knowledge,
+    ) -> CliResult<serde_json::Value> {
+        Ok(serde_json::json!({ "revision": { "supersede": [], "new_tasks": [] } }))
+    }
+
     #[test]
     fn orchestrate_runs_phases_sequentially_gates_and_advances() {
         let root = std::env::temp_dir().join(format!("harness-orch-{}", generated_id("ok")));
@@ -19350,7 +19696,8 @@ mod tests {
          -> CliResult<(String, workflow::WorkflowOutcome)> {
             Ok(mock_outcome(&store, name, WorkflowRunStatus::Completed))
         };
-        let report = orchestrate_goal_phases(&store, "g-orch", &run_phase).expect("orchestrate");
+        let report = orchestrate_goal_phases(&store, "g-orch", &run_phase, &noop_reviser, 0)
+            .expect("orchestrate");
         assert_eq!(report["status"], "completed");
         assert_eq!(report["stage"], "verified");
 
@@ -19396,7 +19743,8 @@ mod tests {
             };
             Ok(mock_outcome(&store, name, status))
         };
-        let report = orchestrate_goal_phases(&store, "g-fail", &run_phase).expect("orchestrate");
+        let report = orchestrate_goal_phases(&store, "g-fail", &run_phase, &noop_reviser, 0)
+            .expect("orchestrate");
         assert_eq!(report["status"], "failed");
         assert_eq!(report["failed_phase"], "p1");
 
@@ -19437,8 +19785,8 @@ mod tests {
             };
             Ok(mock_outcome(&store, name, status))
         };
-        let report =
-            orchestrate_goal_phases(&store, "g-resume", &first).expect("first orchestrate");
+        let report = orchestrate_goal_phases(&store, "g-resume", &first, &noop_reviser, 0)
+            .expect("first orchestrate");
         assert_eq!(report["status"], "failed");
         assert_eq!(report["failed_phase"], "p2");
         let goal_after_first = goal_load(&store, "g-resume").unwrap();
@@ -19457,8 +19805,8 @@ mod tests {
                 .push((name.to_string(), resume_from.map(str::to_string)));
             Ok(mock_outcome(&store, name, WorkflowRunStatus::Completed))
         };
-        let report =
-            orchestrate_goal_phases(&store, "g-resume", &second).expect("second orchestrate");
+        let report = orchestrate_goal_phases(&store, "g-resume", &second, &noop_reviser, 0)
+            .expect("second orchestrate");
         assert_eq!(report["status"], "completed");
 
         let invocations = seen.into_inner();
@@ -19492,6 +19840,218 @@ mod tests {
             .phases
             .iter()
             .all(|p| p.status == GoalPhaseStatus::Passed));
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn orchestrate_replans_a_failing_phase_then_passes_within_the_cap() {
+        use std::cell::RefCell;
+        let root = std::env::temp_dir().join(format!("harness-orch-{}", generated_id("replan")));
+        let store = HarnessStore::new(&root);
+        store.init().expect("init");
+        let mut goal = make_goal("g-replan");
+        goal.phases = vec![orch_phase("p1")];
+        persist_new_goal(&store, &goal).unwrap();
+        let mut t = make_task("t-bad", "g-replan");
+        t.phase_id = Some("p1".into());
+        t.owned_paths = vec!["x".into()];
+        persist_new_task(&store, &t).unwrap();
+
+        // The phase fails on attempt 1, then passes on attempt 2 (after the
+        // reviser swaps the task graph). The counter drives that transition.
+        let attempts: RefCell<u32> = RefCell::new(0);
+        let run_phase = |_script: &str,
+                         name: &str,
+                         _resume_from: Option<&str>|
+         -> CliResult<(String, workflow::WorkflowOutcome)> {
+            let mut n = attempts.borrow_mut();
+            *n += 1;
+            let status = if *n == 1 {
+                WorkflowRunStatus::Failed
+            } else {
+                WorkflowRunStatus::Completed
+            };
+            Ok(mock_outcome(&store, name, status))
+        };
+        // The reviser supersedes the failing task and appends a replacement.
+        let revised: RefCell<u32> = RefCell::new(0);
+        let revise_phase = |_goal: &Goal,
+                            _phase: &harness_core::GoalPhase,
+                            live_tasks: &[&Task],
+                            _knowledge: &Knowledge|
+         -> CliResult<serde_json::Value> {
+            *revised.borrow_mut() += 1;
+            // It is handed the LIVE (non-superseded) tasks of the failed phase.
+            assert!(
+                live_tasks.iter().any(|t| t.id == "t-bad"),
+                "reviser must see the live failing task, got {:?}",
+                live_tasks.iter().map(|t| &t.id).collect::<Vec<_>>()
+            );
+            Ok(serde_json::json!({
+                "revision": {
+                    "supersede": ["t-bad"],
+                    "new_tasks": [{
+                        "id": "t-fixed",
+                        "title": "Fixed approach",
+                        "owned_paths": ["x"],
+                        "acceptance": ["the fix lands"]
+                    }]
+                }
+            }))
+        };
+
+        let report = orchestrate_goal_phases(&store, "g-replan", &run_phase, &revise_phase, 1)
+            .expect("orchestrate");
+        assert_eq!(
+            report["status"], "completed",
+            "phase should pass within the cap"
+        );
+        assert_eq!(*attempts.borrow(), 2, "the phase should run exactly twice");
+        assert_eq!(*revised.borrow(), 1, "the reviser should run exactly once");
+
+        // The failing task is now Superseded, linked to the failure knowledge.
+        let tasks = latest_tasks(&store).unwrap();
+        let bad = &tasks["t-bad"];
+        assert_eq!(bad.status, TaskStatus::Superseded);
+        let knowledge_id = bad
+            .superseded_by_knowledge_id
+            .clone()
+            .expect("superseded task must point at the failure knowledge");
+
+        // The replacement task exists, scoped to the phase, and (because the
+        // re-run passed) was executed → Done. It was appended as Planned by the
+        // revision and then ran on attempt 2.
+        let fixed = &tasks["t-fixed"];
+        assert_eq!(fixed.phase_id.as_deref(), Some("p1"));
+        assert_eq!(fixed.status, TaskStatus::Done);
+
+        // A Knowledge entry was appended by the orchestrator, source=Task, with the
+        // phase id set and the failing task named — and it is the one the
+        // superseded task points at.
+        let g = goal_load(&store, "g-replan").unwrap();
+        let k = g
+            .knowledge
+            .iter()
+            .find(|k| k.id == knowledge_id)
+            .expect("the failure knowledge must be on the goal");
+        assert_eq!(k.source, KnowledgeSource::Task);
+        assert_eq!(k.phase_id.as_deref(), Some("p1"));
+        assert_eq!(k.author, "orchestrator");
+        assert!(
+            k.notes_md.contains("t-bad"),
+            "the knowledge should name the failing task: {}",
+            k.notes_md
+        );
+
+        // The phase ended Passed; the orchestration completed.
+        assert_eq!(g.phases[0].status, GoalPhaseStatus::Passed);
+        let orch = store.goal_orchestration_runs().unwrap();
+        assert_eq!(orch.last().unwrap().status, OrchestrationStatus::Completed);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn orchestrate_replan_stops_when_the_cap_is_exhausted() {
+        use std::cell::RefCell;
+        let root = std::env::temp_dir().join(format!("harness-orch-{}", generated_id("cap")));
+        let store = HarnessStore::new(&root);
+        store.init().expect("init");
+        let mut goal = make_goal("g-cap");
+        goal.phases = vec![orch_phase("p1")];
+        persist_new_goal(&store, &goal).unwrap();
+        let mut t = make_task("t1", "g-cap");
+        t.phase_id = Some("p1".into());
+        t.owned_paths = vec!["x".into()];
+        persist_new_task(&store, &t).unwrap();
+
+        // The phase ALWAYS fails; the reviser always produces an actionable revision
+        // (a fresh task each time). With a cap of 2, the phase should run 3 times
+        // (initial + 2 retries), revise twice, then stop Failed.
+        let attempts: RefCell<u32> = RefCell::new(0);
+        let run_phase = |_script: &str,
+                         name: &str,
+                         _resume_from: Option<&str>|
+         -> CliResult<(String, workflow::WorkflowOutcome)> {
+            *attempts.borrow_mut() += 1;
+            Ok(mock_outcome(&store, name, WorkflowRunStatus::Failed))
+        };
+        let revised: RefCell<u32> = RefCell::new(0);
+        let revise_phase = |_goal: &Goal,
+                            _phase: &harness_core::GoalPhase,
+                            _live_tasks: &[&Task],
+                            _knowledge: &Knowledge|
+         -> CliResult<serde_json::Value> {
+            let mut n = revised.borrow_mut();
+            *n += 1;
+            let new_id = format!("t-r{n}");
+            Ok(serde_json::json!({
+                "revision": {
+                    "supersede": [],
+                    "new_tasks": [{ "id": new_id, "title": "retry task", "owned_paths": ["y"] }]
+                }
+            }))
+        };
+
+        let report = orchestrate_goal_phases(&store, "g-cap", &run_phase, &revise_phase, 2)
+            .expect("orchestrate");
+        assert_eq!(report["status"], "failed");
+        assert_eq!(report["failed_phase"], "p1");
+        assert_eq!(*attempts.borrow(), 3, "initial run + 2 retries");
+        assert_eq!(
+            *revised.borrow(),
+            2,
+            "reviser runs once per retry within the cap"
+        );
+
+        let g = goal_load(&store, "g-cap").unwrap();
+        assert_eq!(g.phases[0].status, GoalPhaseStatus::Failed);
+        // One failure-knowledge entry was appended per failed attempt.
+        assert_eq!(
+            g.knowledge.len(),
+            3,
+            "a failure knowledge entry per attempt"
+        );
+        let orch = store.goal_orchestration_runs().unwrap();
+        assert_eq!(orch.last().unwrap().status, OrchestrationStatus::Failed);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn orchestrate_replan_stops_on_no_actionable_revision() {
+        let root = std::env::temp_dir().join(format!("harness-orch-{}", generated_id("noop")));
+        let store = HarnessStore::new(&root);
+        store.init().expect("init");
+        let mut goal = make_goal("g-noop");
+        goal.phases = vec![orch_phase("p1")];
+        persist_new_goal(&store, &goal).unwrap();
+        let mut t = make_task("t1", "g-noop");
+        t.phase_id = Some("p1".into());
+        t.owned_paths = vec!["x".into()];
+        persist_new_task(&store, &t).unwrap();
+
+        // The phase always fails; a generous cap is offered, but the reviser returns
+        // an EMPTY revision — the loop must NOT spin forever: it counts the empty
+        // revision against the cap and stops after exactly ONE run.
+        let attempts = std::cell::RefCell::new(0u32);
+        let run_phase = |_script: &str,
+                         name: &str,
+                         _resume_from: Option<&str>|
+         -> CliResult<(String, workflow::WorkflowOutcome)> {
+            *attempts.borrow_mut() += 1;
+            Ok(mock_outcome(&store, name, WorkflowRunStatus::Failed))
+        };
+        let report = orchestrate_goal_phases(&store, "g-noop", &run_phase, &noop_reviser, 5)
+            .expect("orchestrate");
+        assert_eq!(report["status"], "failed");
+        assert_eq!(
+            *attempts.borrow(),
+            1,
+            "an empty revision must stop the loop after one run, not churn the cap"
+        );
+        let g = goal_load(&store, "g-noop").unwrap();
+        assert_eq!(g.phases[0].status, GoalPhaseStatus::Failed);
+        // The failure was still captured as knowledge even when no replan happened.
+        assert_eq!(g.knowledge.len(), 1);
         std::fs::remove_dir_all(&root).ok();
     }
 
