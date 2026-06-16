@@ -522,14 +522,53 @@ fn phase_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
 
 /// Run ONE compiled phase script with the real provider driver, journal each
 /// step + finalize the run, and return `(run_id, outcome)` so the orchestrator
-/// can gate on the verdict. Mirrors the `workflow run-script` core but is the
-/// orchestrator's own entry (no resume/args plumbing — the goal owns the loop).
+/// can gate on the verdict. Mirrors the `workflow run-script` core. When
+/// `resume_from` is `Some(prior_run_id)` (a re-entered phase), the succeeded
+/// leaves of that prior phase run are reused via a replay map — so a killed /
+/// failed phase does not re-spend tokens on already-done task steps. `None` runs
+/// the phase fresh.
 fn run_phase_compiled_script(
     store: &HarnessStore,
     script: &str,
     name: &str,
     options: &WorkflowDeliveryOptions,
+    resume_from: Option<&str>,
 ) -> CliResult<(String, workflow::WorkflowOutcome)> {
+    // Optional intra-phase resume: reuse the prior phase run's succeeded leaves.
+    // Guard exactly as `workflow run-script --resume` does — the prior run must
+    // exist and have snapshotted the IDENTICAL script, else the deterministic
+    // leaf ordinals would misalign against a different program.
+    let replay = match resume_from {
+        Some(prior_run_id) => {
+            let prior = latest_workflow_runs_in_append_order(store)?
+                .into_iter()
+                .find(|r| r.id == prior_run_id)
+                .ok_or_else(|| {
+                    CliError::Usage(format!("cannot resume {prior_run_id}: no such run"))
+                })?;
+            let prior_script = prior
+                .spec
+                .as_ref()
+                .and_then(|s| s.get("script"))
+                .and_then(|v| v.as_str());
+            match prior_script {
+                Some(prev) if prev == script => {}
+                Some(_) => {
+                    return Err(CliError::Usage(format!(
+                        "cannot resume {prior_run_id}: the script changed since that run"
+                    )))
+                }
+                None => {
+                    return Err(CliError::Usage(format!(
+                        "cannot resume {prior_run_id}: that run has no snapshotted script"
+                    )))
+                }
+            }
+            Some(build_replay_map(store, prior_run_id)?)
+        }
+        None => None,
+    };
+
     let _ = reap_stale_workflow_runs(store);
     let run_id = generated_id("wfrun");
     let initiated_by = std::env::var("HARNESS_AGENT_MEMBER_ID")
@@ -549,9 +588,15 @@ fn run_phase_compiled_script(
         final_output: None,
         initiated_by: Some(initiated_by),
         design_intent: None,
-        spec: Some(serde_json::json!({
-            "lang": "starlark", "script": script, "orchestrated": true,
-        })),
+        spec: Some(match resume_from {
+            Some(prior) => serde_json::json!({
+                "lang": "starlark", "script": script, "orchestrated": true,
+                "resumed_from": prior,
+            }),
+            None => serde_json::json!({
+                "lang": "starlark", "script": script, "orchestrated": true,
+            }),
+        }),
         trace_retention: options.trace_retention.clone(),
         host_pid: Some(std::process::id()),
         dry_run: options.dry_run,
@@ -569,7 +614,7 @@ fn run_phase_compiled_script(
             None,
             &driver,
             options.max_budget_usd,
-            None,
+            replay,
         )
         .map_err(|error| CliError::Usage(error.to_string()))?
     };
@@ -635,9 +680,13 @@ fn sync_goal_stage(store: &HarnessStore, goal: &mut Goal) -> CliResult<()> {
     Ok(())
 }
 
-/// The injectable phase runner: `(script, name) -> (run_id, outcome)`. The CLI
-/// passes the real provider runner; tests pass a mock.
-type PhaseRunFn<'a> = dyn Fn(&str, &str) -> CliResult<(String, workflow::WorkflowOutcome)> + 'a;
+/// The injectable phase runner: `(script, name, resume_from) -> (run_id,
+/// outcome)`. `resume_from` is `Some(prior_run_id)` when the orchestrator is
+/// re-entering a phase that already has a prior workflow run, so its succeeded
+/// leaves can be reused; `None` runs the phase fresh. The CLI passes the real
+/// provider runner; tests pass a mock.
+type PhaseRunFn<'a> =
+    dyn Fn(&str, &str, Option<&str>) -> CliResult<(String, workflow::WorkflowOutcome)> + 'a;
 
 /// Sequence a goal's phases: gate each on its verdict before the next, write each
 /// phase's task outcomes back, advance the goal's derived stage, and persist a
@@ -656,11 +705,22 @@ fn orchestrate_goal_phases(
         )));
     }
 
-    // Reuse an in-flight checkpoint for this goal (resume), else start a fresh one.
-    let mut orch = store
+    // Snapshot this goal's prior orchestration history (append-ordered) BEFORE we
+    // mutate state. The intra-phase resume lookup falls back to it so a phase can
+    // be resumed even when the previous orchestration ended `Failed` (which marks
+    // the old checkpoint non-`Running`, so a fresh checkpoint is started below).
+    let prior_runs: Vec<GoalOrchestrationRun> = store
         .goal_orchestration_runs()?
         .into_iter()
-        .rfind(|o| o.goal_id == goal_id && o.status == OrchestrationStatus::Running)
+        .filter(|o| o.goal_id == goal_id)
+        .collect();
+
+    // Reuse an in-flight checkpoint for this goal (resume), else start a fresh one.
+    let mut orch = prior_runs
+        .iter()
+        .rev()
+        .find(|o| o.status == OrchestrationStatus::Running)
+        .cloned()
         .unwrap_or_else(|| GoalOrchestrationRun {
             id: generated_id("goalrun"),
             goal_id: goal_id.to_string(),
@@ -678,6 +738,35 @@ fn orchestrate_goal_phases(
             skipped.push(phase_id);
             continue;
         }
+
+        // Intra-phase resume: a phase being RE-RUN (its persisted status is
+        // already `InProgress` or `Failed`) whose checkpoint carries a prior
+        // workflow run reuses that run's succeeded leaves, so completed in-phase
+        // task steps are not re-spent. A first-time phase resumes from nothing.
+        // Look in the current (possibly reused `Running`) checkpoint first, then
+        // fall back to the goal's prior orchestration history — the latter covers
+        // re-entry after a `Failed` run, whose old checkpoint is non-`Running`.
+        let resume_from = if matches!(
+            goal.phases[idx].status,
+            GoalPhaseStatus::InProgress | GoalPhaseStatus::Failed
+        ) {
+            orch.phase_runs
+                .iter()
+                .rev()
+                .find(|r| r.phase_id == phase_id)
+                .and_then(|r| r.workflow_run_id.clone())
+                .or_else(|| {
+                    prior_runs.iter().rev().find_map(|o| {
+                        o.phase_runs
+                            .iter()
+                            .rev()
+                            .find(|r| r.phase_id == phase_id)
+                            .and_then(|r| r.workflow_run_id.clone())
+                    })
+                })
+        } else {
+            None
+        };
 
         goal.phases[idx].status = GoalPhaseStatus::InProgress;
         if goal.phases[idx].started_at.is_none() {
@@ -706,7 +795,11 @@ fn orchestrate_goal_phases(
         std::fs::write(&compiled_path, &script)?;
 
         let started_at = now_string();
-        let (run_id, outcome) = run_phase(&script, &format!("phase-{phase_id}"))?;
+        let (run_id, outcome) = run_phase(
+            &script,
+            &format!("phase-{phase_id}"),
+            resume_from.as_deref(),
+        )?;
         let passed = outcome.status == WorkflowRunStatus::Completed;
 
         write_back_phase_tasks(store, &goal, &phase_id, &outcome)?;
@@ -934,6 +1027,13 @@ fn goal_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
                     "--trace must be 'durable' or 'live', got '{trace_retention}'"
                 )));
             }
+            // `--resume` documents the intent to re-enter the existing `Running`
+            // checkpoint and reuse completed work. The orchestrator already
+            // reuses a `Running` checkpoint unconditionally (phase-level resume)
+            // and reuses a re-run phase's succeeded leaves (intra-phase resume),
+            // so the flag is an explicit, auditable opt-in rather than a behavior
+            // toggle — running with or without it is equivalent today.
+            let _resume = has_flag(args, "--resume");
             let options = WorkflowDeliveryOptions {
                 dry_run: has_flag(args, "--dry-run"),
                 start_runtime: has_flag(args, "--start-runtime"),
@@ -946,8 +1046,9 @@ fn goal_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
                 trace_retention,
                 progress: has_flag(args, "--progress"),
             };
-            let run_phase =
-                |script: &str, name: &str| run_phase_compiled_script(store, script, name, &options);
+            let run_phase = |script: &str, name: &str, resume_from: Option<&str>| {
+                run_phase_compiled_script(store, script, name, &options, resume_from)
+            };
             let report = orchestrate_goal_phases(store, &goal_id, &run_phase)?;
             print_json(&report)?;
             if report.get("status").and_then(|s| s.as_str()) == Some("failed") {
@@ -19020,10 +19121,12 @@ mod tests {
             persist_new_task(&store, &t).unwrap();
         }
 
-        let run_phase =
-            |_script: &str, name: &str| -> CliResult<(String, workflow::WorkflowOutcome)> {
-                Ok(mock_outcome(&store, name, WorkflowRunStatus::Completed))
-            };
+        let run_phase = |_script: &str,
+                         name: &str,
+                         _resume_from: Option<&str>|
+         -> CliResult<(String, workflow::WorkflowOutcome)> {
+            Ok(mock_outcome(&store, name, WorkflowRunStatus::Completed))
+        };
         let report = orchestrate_goal_phases(&store, "g-orch", &run_phase).expect("orchestrate");
         assert_eq!(report["status"], "completed");
         assert_eq!(report["stage"], "verified");
@@ -19058,16 +19161,18 @@ mod tests {
             t.owned_paths = vec![id.into()];
             persist_new_task(&store, &t).unwrap();
         }
-        let run_phase =
-            |_script: &str, name: &str| -> CliResult<(String, workflow::WorkflowOutcome)> {
-                // Phase p1 fails its verdict; p2 must never run.
-                let status = if name.contains("p1") {
-                    WorkflowRunStatus::Failed
-                } else {
-                    WorkflowRunStatus::Completed
-                };
-                Ok(mock_outcome(&store, name, status))
+        let run_phase = |_script: &str,
+                         name: &str,
+                         _resume_from: Option<&str>|
+         -> CliResult<(String, workflow::WorkflowOutcome)> {
+            // Phase p1 fails its verdict; p2 must never run.
+            let status = if name.contains("p1") {
+                WorkflowRunStatus::Failed
+            } else {
+                WorkflowRunStatus::Completed
             };
+            Ok(mock_outcome(&store, name, status))
+        };
         let report = orchestrate_goal_phases(&store, "g-fail", &run_phase).expect("orchestrate");
         assert_eq!(report["status"], "failed");
         assert_eq!(report["failed_phase"], "p1");
@@ -19078,6 +19183,92 @@ mod tests {
         assert_eq!(goal2.phases[1].status, GoalPhaseStatus::NotStarted);
         let orch = store.goal_orchestration_runs().unwrap();
         assert_eq!(orch.last().unwrap().status, OrchestrationStatus::Failed);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn orchestrate_resume_skips_passed_and_resumes_failed_phase() {
+        use std::cell::RefCell;
+        let root = std::env::temp_dir().join(format!("harness-orch-{}", generated_id("resume")));
+        let store = HarnessStore::new(&root);
+        store.init().expect("init");
+        let mut goal = make_goal("g-resume");
+        goal.phases = vec![orch_phase("p1"), orch_phase("p2")];
+        persist_new_goal(&store, &goal).unwrap();
+        for (id, phase) in [("t1", "p1"), ("t2", "p2")] {
+            let mut t = make_task(id, "g-resume");
+            t.phase_id = Some(phase.into());
+            t.owned_paths = vec![id.into()];
+            persist_new_task(&store, &t).unwrap();
+        }
+
+        // First run: p1 passes its verdict, p2 fails — orchestration stops at p2.
+        let first = |_script: &str,
+                     name: &str,
+                     _resume_from: Option<&str>|
+         -> CliResult<(String, workflow::WorkflowOutcome)> {
+            let status = if name.contains("p2") {
+                WorkflowRunStatus::Failed
+            } else {
+                WorkflowRunStatus::Completed
+            };
+            Ok(mock_outcome(&store, name, status))
+        };
+        let report =
+            orchestrate_goal_phases(&store, "g-resume", &first).expect("first orchestrate");
+        assert_eq!(report["status"], "failed");
+        assert_eq!(report["failed_phase"], "p2");
+        let goal_after_first = goal_load(&store, "g-resume").unwrap();
+        assert_eq!(goal_after_first.phases[0].status, GoalPhaseStatus::Passed);
+        assert_eq!(goal_after_first.phases[1].status, GoalPhaseStatus::Failed);
+
+        // Second run: record what each phase invocation received as `resume_from`.
+        // A `Passed` phase must be skipped (never invoked); the `Failed` phase must
+        // be retried with `resume_from = Some(prior workflow_run_id)`.
+        let seen: RefCell<Vec<(String, Option<String>)>> = RefCell::new(Vec::new());
+        let second = |_script: &str,
+                      name: &str,
+                      resume_from: Option<&str>|
+         -> CliResult<(String, workflow::WorkflowOutcome)> {
+            seen.borrow_mut()
+                .push((name.to_string(), resume_from.map(str::to_string)));
+            Ok(mock_outcome(&store, name, WorkflowRunStatus::Completed))
+        };
+        let report =
+            orchestrate_goal_phases(&store, "g-resume", &second).expect("second orchestrate");
+        assert_eq!(report["status"], "completed");
+
+        let invocations = seen.into_inner();
+        // The passed phase p1 was skipped entirely — only p2 was (re-)invoked.
+        assert_eq!(
+            invocations.len(),
+            1,
+            "only the failed phase should re-run, got {invocations:?}"
+        );
+        let (name, resume_from) = &invocations[0];
+        assert!(
+            name.contains("p2"),
+            "the re-run phase must be p2, got {name}"
+        );
+        assert_eq!(
+            resume_from.as_deref(),
+            Some("wfrun-mock"),
+            "the re-entered failed phase must resume from its prior workflow run"
+        );
+
+        // p1 stayed Passed and was reported as skipped; both phases now Passed.
+        let skipped: Vec<String> = report["skipped"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(skipped, vec!["p1".to_string()]);
+        let goal_final = goal_load(&store, "g-resume").unwrap();
+        assert!(goal_final
+            .phases
+            .iter()
+            .all(|p| p.status == GoalPhaseStatus::Passed));
         std::fs::remove_dir_all(&root).ok();
     }
 
