@@ -20,7 +20,7 @@ use harness_core::{
     MessageDeliveryStatus, MessageKind, MessageTerminalSource, OrchestrationPhaseRun,
     OrchestrationStatus, Proposal, ProposalStatus, ProviderChildThread, ProviderChildThreadStatus,
     ProviderSession, ProviderSessionStatus, Review, ReviewVerdict, SenderKind, Task, TaskStatus,
-    Vision, WorkflowRun, WorkflowRunStatus, WorkflowStep, WorkflowStepStatus,
+    VerdictOutcome, Vision, WorkflowRun, WorkflowRunStatus, WorkflowStep, WorkflowStepStatus,
 };
 use harness_store::{HarnessStore, MessageDeliveryClaimResult};
 use thiserror::Error;
@@ -668,6 +668,48 @@ fn write_back_phase_tasks(
     Ok(())
 }
 
+/// Link a finished phase run's journaled `WorkflowStep`s back to their `Task`s and
+/// stamp the verdict step's outcome (the structured Task<->Step link, acceptance
+/// #1). A compiled task step carries `label == task.id`; the acceptance judge step
+/// is labelled `verdict-<phase_id>`. Re-appends each updated step (latest-wins).
+fn link_workflow_steps_to_tasks(
+    store: &HarnessStore,
+    run_id: &str,
+    phase_id: &str,
+    phase_task_ids: &std::collections::HashSet<String>,
+    phase_passed: bool,
+) -> CliResult<()> {
+    use std::collections::BTreeMap;
+    // Latest-wins projection of this run's steps (the driver re-appends a
+    // terminal row over the running row).
+    let mut latest: BTreeMap<String, WorkflowStep> = BTreeMap::new();
+    for step in store.workflow_steps()? {
+        if step.run_id == run_id {
+            latest.insert(step.id.clone(), step);
+        }
+    }
+    let verdict_label = format!("verdict-{phase_id}");
+    for mut step in latest.into_values() {
+        let mut changed = false;
+        if phase_task_ids.contains(&step.label) && step.task_id.as_deref() != Some(&step.label) {
+            step.task_id = Some(step.label.clone());
+            changed = true;
+        }
+        if step.label == verdict_label && step.verdict_outcome.is_none() {
+            step.verdict_outcome = Some(if phase_passed {
+                VerdictOutcome::Pass
+            } else {
+                VerdictOutcome::CleanFail
+            });
+            changed = true;
+        }
+        if changed {
+            store.append_workflow_step(&step)?;
+        }
+    }
+    Ok(())
+}
+
 /// Re-project the goal's legacy `stage` from its phases (the derived stage) and
 /// persist. Keeps `to_status` / kanban consumers correct for phase-driven goals.
 fn sync_goal_stage(store: &HarnessStore, goal: &mut Goal) -> CliResult<()> {
@@ -986,6 +1028,42 @@ fn orchestrate_goal_phases(
                 && outcome.steps.iter().all(|s| s.ok);
 
             write_back_phase_tasks(store, &goal, &phase_id, &outcome)?;
+
+            // Link each journaled step back to its Task + stamp the verdict step's
+            // outcome (acceptance #1: the structured Task<->Step link).
+            let phase_task_ids: std::collections::HashSet<String> = goal_tasks
+                .iter()
+                .filter(|t| t.phase_id.as_deref() == Some(phase_id.as_str()))
+                .map(|t| t.id.clone())
+                .collect();
+            link_workflow_steps_to_tasks(
+                store,
+                &run_id,
+                &phase_id,
+                &phase_task_ids,
+                attempt_passed,
+            )?;
+
+            // Record the phase verdict as a Decision and point the phase at it
+            // (acceptance #4: Decision(decision_kind=phase_verdict) +
+            // GoalPhase.verdict_decision_id).
+            let verdict_decision = Decision {
+                id: generated_id("decision"),
+                task_id: goal.id.clone(),
+                decision: format!(
+                    "phase {phase_id} verdict: {}",
+                    if attempt_passed { "pass" } else { "clean_fail" }
+                ),
+                rationale: outcome.summary.clone(),
+                evidence_ids: Vec::new(),
+                created_at: now_string(),
+                decision_kind: Some("phase_verdict".to_string()),
+                goal_id: Some(goal.id.clone()),
+                is_waiver: false,
+                follow_up_task_id: None,
+            };
+            store.append_decision(&verdict_decision)?;
+            goal.phases[idx].verdict_decision_id = Some(verdict_decision.id.clone());
 
             goal.phases[idx].status = if attempt_passed {
                 GoalPhaseStatus::Passed
@@ -19904,6 +19982,52 @@ mod tests {
         let last = orch.last().unwrap();
         assert_eq!(last.status, OrchestrationStatus::Completed);
         assert_eq!(last.phase_runs.len(), 2);
+        // Acceptance #4: each phase gate records a phase_verdict Decision and the
+        // phase points at it.
+        let goal_final = goal_load(&store, "g-orch").unwrap();
+        assert!(goal_final
+            .phases
+            .iter()
+            .all(|p| p.verdict_decision_id.is_some()));
+        let decisions = store.decisions().unwrap();
+        let verdicts: Vec<_> = decisions
+            .iter()
+            .filter(|d| d.decision_kind.as_deref() == Some("phase_verdict"))
+            .collect();
+        assert_eq!(verdicts.len(), 2, "one phase_verdict decision per phase");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn link_workflow_steps_to_tasks_sets_task_id_and_verdict_outcome() {
+        let root = std::env::temp_dir().join(format!("harness-link-{}", generated_id("l")));
+        let store = HarnessStore::new(&root);
+        store.init().expect("init");
+        // Journal a task step (label == task id) + the verdict judge step.
+        for (id, label) in [("s-t1", "t1"), ("s-v", "verdict-p1")] {
+            store
+                .append_workflow_step(&WorkflowStep {
+                    task_id: None,
+                    verdict_outcome: None,
+                    id: id.into(),
+                    run_id: "wfrun-x".into(),
+                    phase: "p1".into(),
+                    label: label.into(),
+                    provider_session_id: None,
+                    status: WorkflowStepStatus::Completed,
+                    output_summary: Some("ok".into()),
+                    result: None,
+                    started_at: "unix-ms:1".into(),
+                    ended_at: Some("unix-ms:2".into()),
+                })
+                .unwrap();
+        }
+        let task_ids: std::collections::HashSet<String> = ["t1".to_string()].into_iter().collect();
+        link_workflow_steps_to_tasks(&store, "wfrun-x", "p1", &task_ids, true).unwrap();
+        let steps = store.workflow_steps().unwrap();
+        let latest = |id: &str| steps.iter().rev().find(|s| s.id == id).unwrap().clone();
+        assert_eq!(latest("s-t1").task_id.as_deref(), Some("t1"));
+        assert_eq!(latest("s-v").verdict_outcome, Some(VerdictOutcome::Pass));
         std::fs::remove_dir_all(&root).ok();
     }
 
