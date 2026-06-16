@@ -25,6 +25,7 @@ use harness_core::{
 use harness_store::{HarnessStore, MessageDeliveryClaimResult};
 use thiserror::Error;
 
+mod project;
 mod resident;
 #[cfg(unix)]
 mod resident_daemon;
@@ -52,36 +53,201 @@ fn main() {
     }
 }
 
-/// Resolve the harness store root with clear precedence so commands run from
-/// different working directories converge on ONE store (issue #89 item 3).
-/// Precedence: explicit `--store <path>` (stripped from `args` so subcommands
-/// don't see it), then `HARNESS_ROOT` env (back-compat), then the nearest
-/// existing `.harness` walking up from the cwd (like git finds `.git`), then
-/// `./.harness` (the historical default).
+/// How the active store root was chosen — surfaced via the `--store-source` debug
+/// flag and used to keep back-compat behavior auditable (goal-multi-project P1/P7).
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum StoreSource {
+    /// `--store <path>` override (deprecated, kept for tests/back-compat).
+    StoreFlag,
+    /// `HARNESS_ROOT` env override (deprecated, kept for tests/back-compat).
+    HarnessRootEnv,
+    /// `--project <id|path>` explicit selector.
+    ProjectFlag,
+    /// `HARNESS_PROJECT` env selector.
+    ProjectEnv,
+    /// Registry `current_project_id` / `ACTIVE_PROJECT` marker.
+    RegistryCurrent,
+    /// Legacy cwd walk-up to the nearest existing `.harness/` (deprecation-warned).
+    CwdWalkUp,
+    /// Reserved GLOBAL project (`$HOME`), auto-created on first use.
+    GlobalDefault,
+}
+
+/// The resolved store root plus a record of *how* it was chosen and whether a
+/// `ProjectContext` backs it (None for the raw `--store`/`HARNESS_ROOT`/walk-up
+/// overrides, which point at an arbitrary path with no project identity).
+struct ResolvedStore {
+    root: PathBuf,
+    source: StoreSource,
+    context: Option<harness_core::ProjectContext>,
+}
+
+/// Resolve the harness store root, preserving today's behavior while routing
+/// through project identity when a project is explicitly selected/active.
 ///
-/// Without this, `serve` (reads `<serve cwd>/.harness`) and `run-script` (writes
-/// `<run-script cwd>/.harness`) silently used different stores → an empty dashboard.
-fn resolve_store_root(args: &mut Vec<String>) -> PathBuf {
+/// Precedence (goal-multi-project P1):
+/// 1. `--store <path>`            — deprecated override (stripped from `args`).
+/// 2. `HARNESS_ROOT` env          — deprecated override.
+/// 3. `--project <id|path>`       — explicit project selector (stripped).
+/// 4. `HARNESS_PROJECT` env       — project selector.
+/// 5. registry `current_project_id` / `ACTIVE_PROJECT` — the convergence point
+///    that replaces "shared cwd" for the #89 invariant (`serve` + `run-script`
+///    resolve the SAME central store regardless of cwd).
+/// 6. legacy cwd walk-up to the nearest existing `.harness/` — deprecation-warned
+///    fallback so existing repos keep working for a release or two (#89 item 3).
+/// 7. `_global` — the reserved `$HOME` project, auto-created on first use.
+///
+/// `init` is special-cased so it never adopts an ancestor's `.harness` via the
+/// walk-up; its routing lives in [`init_routed`].
+///
+/// IMPORTANT back-compat: when NONE of the project signals (3/4/5) and NO
+/// override (1/2) apply, the result is the SAME directory today's code would have
+/// used (walk-up → otherwise the GLOBAL store), so existing serve + run-script
+/// flows keep converging on one store.
+fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> ResolvedStore {
+    // 1. --store override (deprecated, but still wins for tests/back-compat).
     if let Some(path) = take_flag_value(args, "--store") {
-        return PathBuf::from(path);
+        warn_deprecated_override("--store", "harness project switch");
+        return ResolvedStore {
+            root: PathBuf::from(path),
+            source: StoreSource::StoreFlag,
+            context: None,
+        };
     }
+    // 2. HARNESS_ROOT env override (deprecated).
     if let Ok(root) = env::var("HARNESS_ROOT") {
         if !root.is_empty() {
-            return PathBuf::from(root);
+            warn_deprecated_override("HARNESS_ROOT", "harness project switch");
+            return ResolvedStore {
+                root: PathBuf::from(root),
+                source: StoreSource::HarnessRootEnv,
+                context: None,
+            };
         }
     }
-    // `init` MATERIALIZES a store and must not adopt an ancestor's — it always
-    // targets `./.harness` (or the explicit `--store`/`HARNESS_ROOT` handled
-    // above). Every other command walks up to the nearest existing `.harness` so
-    // sibling processes (serve + run-script) converge on one store.
-    if args.first().map(String::as_str) != Some("init") {
+
+    let harness_home = match project::harness_home() {
+        Ok(h) => h,
+        // No HOME: fall back to the historical `./.harness` so we never panic.
+        Err(_) => {
+            return ResolvedStore {
+                root: PathBuf::from(".harness"),
+                source: StoreSource::CwdWalkUp,
+                context: None,
+            };
+        }
+    };
+
+    // 3/4. Explicit project selector by id or path: `--project` then
+    // `HARNESS_PROJECT`. The source records which signal won.
+    let (project_selector, selector_source) = match take_flag_value(args, "--project") {
+        Some(v) => (Some(v), StoreSource::ProjectFlag),
+        None => match env::var("HARNESS_PROJECT").ok().filter(|s| !s.is_empty()) {
+            Some(v) => (Some(v), StoreSource::ProjectEnv),
+            None => (None, StoreSource::ProjectFlag),
+        },
+    };
+    if let Some(selector) = project_selector {
+        if let Some(ctx) = resolve_project_selector(&harness_home, &selector) {
+            return ResolvedStore {
+                root: ctx.store_root.clone(),
+                source: selector_source,
+                context: Some(ctx),
+            };
+        }
+    }
+
+    // 5. Registry current project (the cwd-independent convergence point).
+    if let Ok(Some(id)) = project::active_project_id(&harness_home) {
+        if let Ok(Some(ctx)) = project::context_for_id(&harness_home, &id) {
+            return ResolvedStore {
+                root: ctx.store_root.clone(),
+                source: StoreSource::RegistryCurrent,
+                context: Some(ctx),
+            };
+        }
+    }
+
+    // 6. Legacy cwd walk-up to the nearest existing `.harness/` (back-compat).
+    // `init` never walks up — it materializes a fresh store (see `init_routed`).
+    if command != Some("init") {
         if let Ok(cwd) = env::current_dir() {
             if let Some(found) = discover_harness_from(&cwd) {
-                return found;
+                warn_deprecated_override(
+                    "cwd .harness walk-up",
+                    "harness init / harness project switch",
+                );
+                return ResolvedStore {
+                    root: found,
+                    source: StoreSource::CwdWalkUp,
+                    context: None,
+                };
             }
         }
     }
-    PathBuf::from(".harness")
+
+    // 7. Reserved GLOBAL project, auto-created on first use.
+    if let Ok(ctx) = project::global_context(&harness_home) {
+        return ResolvedStore {
+            root: ctx.store_root.clone(),
+            source: StoreSource::GlobalDefault,
+            context: Some(ctx),
+        };
+    }
+
+    // Absolute last resort (no HOME / global failed): historical default.
+    ResolvedStore {
+        root: PathBuf::from(".harness"),
+        source: StoreSource::CwdWalkUp,
+        context: None,
+    }
+}
+
+/// Resolve a `--project`/`HARNESS_PROJECT` selector that may be a registered id OR
+/// a path to a project root. Returns `None` if it cannot be resolved (caller then
+/// continues down the precedence chain).
+fn resolve_project_selector(
+    harness_home: &Path,
+    selector: &str,
+) -> Option<harness_core::ProjectContext> {
+    // First: treat as a known id (registry / metadata / reserved `_global`).
+    if let Ok(Some(ctx)) = project::context_for_id(harness_home, selector) {
+        return Some(ctx);
+    }
+    // Otherwise: treat as a path to a project root and derive its identity.
+    let candidate = Path::new(selector);
+    if candidate.exists() {
+        let canonical = project::canonicalize_best_effort(candidate);
+        // Prefer a registered entry pinned to this canonical path (keeps a pinned
+        // store_root even if path→id derivation later changes).
+        if let Ok(registry) = project::ProjectRegistry::load(harness_home) {
+            if let Some(entry) = registry.find_by_path(&canonical) {
+                if let Ok(Some(ctx)) = project::context_for_id(harness_home, &entry.id) {
+                    return Some(ctx);
+                }
+            }
+        }
+        if let Ok(ctx) = project::context_for_root(candidate, harness_home) {
+            return Some(ctx);
+        }
+    }
+    None
+}
+
+/// Emit a one-line deprecation warning for a legacy store-selection mechanism,
+/// pointing at the supported replacement. Routed to stderr so it never corrupts
+/// JSON stdout.
+fn warn_deprecated_override(what: &str, replacement: &str) {
+    eprintln!("warning: {what} is deprecated for store selection; prefer `{replacement}`");
+}
+
+/// Back-compat shim: callers that only need the store root keep working. New code
+/// should use [`resolve_store`] to also get the `StoreSource`/`ProjectContext`.
+/// Only used by tests today; `run()` calls [`resolve_store`] directly.
+#[cfg(test)]
+fn resolve_store_root(args: &mut Vec<String>) -> PathBuf {
+    let command = args.first().cloned();
+    resolve_store(args, command.as_deref()).root
 }
 
 /// Walk up from `start` returning the first existing `<dir>/.harness` directory,
@@ -112,23 +278,107 @@ fn take_flag_value(args: &mut Vec<String>, flag: &str) -> Option<String> {
     }
 }
 
+/// Remove a boolean `--flag` from `args`, returning whether it was present.
+fn take_flag(args: &mut Vec<String>, flag: &str) -> bool {
+    if let Some(pos) = args.iter().position(|a| a == flag) {
+        args.remove(pos);
+        true
+    } else {
+        false
+    }
+}
+
+/// `harness init` routing (goal-multi-project init-routing task).
+///
+/// Instead of blindly materializing `./.harness`, `init` registers the SELECTED
+/// project in the centralized registry and creates its store under
+/// `~/.harness/projects/<id>/`, writing `metadata.json` to pin identity and the
+/// `ACTIVE_PROJECT` marker so subsequent commands converge.
+///
+/// Which project is initialized:
+/// - `--store`/`HARNESS_ROOT` override → that raw path is materialized exactly as
+///   before (no registry entry), so compatibility tests keep passing.
+/// - `--project <id|path>`             → the explicitly selected project root.
+/// - otherwise                         → the CURRENT DIRECTORY (the dir the user
+///   ran `init` in), NOT `_global` and NOT an ancestor's local `.harness`. This
+///   preserves the historical "init targets here" intent while routing the store
+///   centrally. The key invariant — never silently adopt an ancestor's local
+///   `.harness` as the canonical store — holds because `resolve_store` skips the
+///   cwd walk-up for `init`.
+fn init_routed(store: &HarnessStore, resolved: &ResolvedStore) -> CliResult<()> {
+    // Override path (`--store`/`HARNESS_ROOT`): historical raw-path behavior.
+    if matches!(
+        resolved.source,
+        StoreSource::StoreFlag | StoreSource::HarnessRootEnv
+    ) {
+        store.init()?;
+        println!("initialized {}", store.root().display());
+        return Ok(());
+    }
+
+    let harness_home = project::harness_home().map_err(project_err)?;
+    // An explicit `--project`/`HARNESS_PROJECT` selector pins the root via the
+    // resolved context; otherwise `init` materializes the CURRENT directory as a
+    // project (never the GLOBAL default, never an ancestor's `.harness`).
+    let project_root = match resolved.source {
+        StoreSource::ProjectFlag | StoreSource::ProjectEnv => resolved
+            .context
+            .as_ref()
+            .map(|c| c.project_root.clone())
+            .unwrap_or_else(|| env::current_dir().unwrap_or_else(|_| PathBuf::from("."))),
+        _ => env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+    };
+    let ctx = project::register_and_activate(&harness_home, &project_root, &now_string())
+        .map_err(project_err)?;
+    let registered = HarnessStore::new(ctx.store_root.clone());
+    registered.init()?;
+    println!(
+        "initialized project {} store {} (root {})",
+        ctx.id,
+        ctx.store_root.display(),
+        ctx.project_root.display()
+    );
+    Ok(())
+}
+
+/// Map a `project::ProjectError` onto `CliError` at the command boundary.
+fn project_err(e: project::ProjectError) -> CliError {
+    match e {
+        project::ProjectError::Io(io) => CliError::Io(io),
+        project::ProjectError::Json(j) => CliError::Json(j),
+        project::ProjectError::NoHome => {
+            CliError::Usage("could not determine home directory".to_string())
+        }
+    }
+}
+
 fn run() -> CliResult<()> {
     let mut args: Vec<String> = env::args().skip(1).collect();
-    // Resolve the store root FIRST (strips a global `--store <path>` from args so
-    // the subcommand parsers never see it), so `serve` and `run-script` started
-    // from different working directories can be pointed at ONE store (issue #89
-    // item 3).
-    let store_root = resolve_store_root(&mut args);
+    // Optional debug flag: print which store was chosen and why (P7 "no silent
+    // fallback"). Stripped before resolution so subcommands never see it.
+    let store_source_debug = take_flag(&mut args, "--store-source");
+    // Resolve the store root FIRST (strips a global `--store`/`--project` from
+    // `args` so the subcommand parsers never see them). `serve` and `run-script`
+    // started from different working directories converge on ONE store via the
+    // registry's current project (issue #89 item 3, now project-routed).
+    let command = args.first().cloned();
+    let resolved = resolve_store(&mut args, command.as_deref());
+    if store_source_debug {
+        eprintln!(
+            "store-source: {:?} root={}",
+            resolved.source,
+            resolved.root.display()
+        );
+    }
     if args.is_empty() || args[0] == "help" || args[0] == "--help" {
         print_help();
         return Ok(());
     }
 
-    let store = HarnessStore::new(store_root);
+    let store = HarnessStore::new(resolved.root.clone());
     match args[0].as_str() {
         "init" => {
-            store.init()?;
-            println!("initialized {}", store.root().display());
+            init_routed(&store, &resolved)?;
         }
         "agent" => agent_command(&store, &args[1..])?,
         "team" => team_command(&store, &args[1..])?,
@@ -13961,9 +14211,12 @@ fn print_help() {
   daemon stop
 
 global:
-  --store <path>   store root for any command (else $HARNESS_ROOT, else the
-                   nearest ancestor .harness, else ./.harness). Point `serve`
-                   and `workflow run-script` at the SAME store.
+  --project <id|path>  select a project; its store is ~/.harness/projects/<id>/.
+                   (else $HARNESS_PROJECT, else the registry's current project,
+                   else the legacy ancestor-.harness walk-up, else _global).
+  --store <path>   DEPRECATED override: raw store root for any command (else
+                   $HARNESS_ROOT). Prefer `harness init` / a project selector.
+  --store-source   debug: print which store was chosen and why, then continue.
   --timeout-ms <ms> workflow worker idle timeout (default 900000 = 15 min);
                    a worker is killed only after this long with NO output."
     );
