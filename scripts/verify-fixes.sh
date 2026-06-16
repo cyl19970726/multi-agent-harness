@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Real regression verification for the Issue #107 Gap 5 (canonical event model)
-# and Issue #139 (workflow ergonomics + codex reliability) fixes. Prints a
-# PASS/FAIL matrix and exits nonzero on any failed check.
+# Real regression verification for the Issue #107 Gap 5 (canonical event model),
+# Issue #139 (workflow ergonomics + codex reliability), and the goal-planning-model
+# (knowledge-driven phased planning S1-S8) fixes. Prints a PASS/FAIL matrix and
+# exits nonzero on any failed check.
 #
 #   scripts/verify-fixes.sh            # deterministic tier: fmt/clippy/test + dashboard build
 #   scripts/verify-fixes.sh --real     # + live tier: REAL codex workflow, serve,
@@ -81,6 +82,60 @@ npx tsc -p apps/agent-dashboard/tsconfig.json --noEmit >/dev/null 2>&1
 
 npx vite build --config apps/agent-dashboard/vite.config.ts --outDir "$TMP/web" --emptyOutDir >/dev/null 2>&1
 [ $? -eq 0 ] && ok "dashboard vite build" || bad "dashboard vite build"
+
+# ---------------------------------------------------------------------------
+section "Planning-model loop (goal-planning-model S1-S8, --dry-run, no codex)"
+cargo build -p harness-cli >/dev/null 2>&1
+if [ ! -x "$HARNESS" ]; then
+  bad "build harness-cli for planning checks"
+else
+  PM="$TMP/pm"
+  H() { "$HARNESS" --store "$PM" "$@"; }
+  H goal create --id pm --title "verify planning" --owner lead --priority p1 >/dev/null 2>&1
+  # S2: the design_md-requires-knowledge gate fires on an empty ledger.
+  if H goal design-synthesize --goal pm >/dev/null 2>&1; then
+    bad "S2 gate: design-synthesize should reject an empty knowledge ledger"
+  else
+    ok "S2 gate: design-synthesize rejects empty knowledge"
+  fi
+  # S2: knowledge-add -> design-synthesize regenerates design_md from the ledger.
+  H goal knowledge-add --goal pm --author lead --tag arch \
+    --notes "codegen-to-Starlark beats a native DAG executor" >/dev/null 2>&1
+  H goal design-synthesize --goal pm >"$TMP/pm_syn.json" 2>/dev/null
+  [ "$(check_json "$TMP/pm_syn.json" "d.get('design_synthesis_at') is not None and 'Design' in (d.get('design_md') or '')")" = "1" ] \
+    && ok "S2 design-synthesize from knowledge" || bad "S2 design-synthesize"
+  # S3: phase + tasks -> deterministic .star with parallel() + verdict().
+  H goal phase-add --goal pm --phase-id p1 --name Build \
+    --intent "two disjoint crates build in parallel then verify" \
+    --acceptance "compiles and smoke passes" >/dev/null 2>&1
+  H task create --id pk1 --goal pm --title A --objective a --owner lead --phase-id p1 --owned-path crates/a >/dev/null 2>&1
+  H task create --id pk2 --goal pm --title B --objective b --owner lead --phase-id p1 --owned-path crates/b >/dev/null 2>&1
+  H phase compile pm --phase p1 >"$TMP/pm_c.json" 2>/dev/null
+  CPATH="$(python3 -c "import json;print(json.load(open('$TMP/pm_c.json'))['path'])" 2>/dev/null)"
+  { [ -n "$CPATH" ] && grep -q 'parallel(\[' "$CPATH"; } && ok "S3 compile -> parallel() for disjoint tasks" || bad "S3 compile parallel()"
+  { [ -n "$CPATH" ] && grep -q 'verdict(' "$CPATH"; } && ok "S3 compile -> verdict() gate" || bad "S3 compile verdict()"
+  CH1="$(python3 -c "import json;print(json.load(open('$TMP/pm_c.json'))['hash'])" 2>/dev/null)"
+  H phase compile pm --phase p1 >"$TMP/pm_c2.json" 2>/dev/null
+  CH2="$(python3 -c "import json;print(json.load(open('$TMP/pm_c2.json'))['hash'])" 2>/dev/null)"
+  [ -n "$CH1" ] && [ "$CH1" = "$CH2" ] && ok "S3 compile deterministic (identical content hash)" || bad "S3 determinism"
+  # S4/S8: run-phases dry-run -> gate -> advance -> checkpoint + verdict decision + step link.
+  H goal run-phases pm --dry-run >"$TMP/pm_run.json" 2>/dev/null
+  [ "$(check_json "$TMP/pm_run.json" "d.get('status')=='completed' and d.get('stage')=='verified'")" = "1" ] \
+    && ok "S4 run-phases (dry-run) -> completed + stage verified" || bad "S4 run-phases"
+  H goal show --goal pm >"$TMP/pm_goal.json" 2>/dev/null
+  [ "$(check_json "$TMP/pm_goal.json" "bool(d['phases']) and all(p['status']=='passed' and p.get('verdict_decision_id') for p in d['phases'])")" = "1" ] \
+    && ok "S8 phases passed + verdict_decision_id set" || bad "S8 verdict_decision_id"
+  [ -f "$PM/goal_orchestration_runs.jsonl" ] && ok "S4 orchestration checkpoint persisted" || bad "S4 checkpoint"
+  [ "$(check_json "$PM/decisions.jsonl" "True" 2>/dev/null || echo 0)" = "1" ] || true
+  grep -q '"decision_kind":"phase_verdict"' "$PM/decisions.jsonl" 2>/dev/null \
+    && ok "S8 phase_verdict Decision recorded" || bad "S8 phase_verdict Decision"
+  python3 -c "import json;ss=[json.loads(l) for l in open('$PM/workflow_steps.jsonl')];import sys;sys.exit(0 if any(s.get('task_id') for s in ss) and any(s.get('verdict_outcome') for s in ss) else 1)" 2>/dev/null \
+    && ok "S8 WorkflowStep.task_id + verdict_outcome populated" || bad "S8 WorkflowStep link"
+  # S5: a re-run skips the already-passed phase (resume primitive).
+  H goal run-phases pm --dry-run >"$TMP/pm_run2.json" 2>/dev/null
+  [ "$(check_json "$TMP/pm_run2.json" "d.get('ran')==[] and d.get('skipped')==['p1']")" = "1" ] \
+    && ok "S5 resume skips already-passed phase" || bad "S5 resume skip"
+fi
 
 # ---------------------------------------------------------------------------
 if [ $REAL -eq 1 ]; then
@@ -178,6 +233,25 @@ print(best)" 2>/dev/null)"
         skip "B — could not create a codex agent"
       fi
     fi
+
+    # P3: the planning-model LIVE loop — plan -> compile -> run a real codex
+    # worker in a worktree -> gate -> advance the goal. This is the goal-level
+    # acceptance ("accepted only when the full loop runs live").
+    PML="$TMP/pml"; mkdir -p "$PML"
+    HL() { "$HARNESS" --store "$PML" "$@"; }
+    HL goal create --id live --title "live planning loop" --owner lead --priority p1 >/dev/null 2>&1
+    HL goal phase-add --goal live --phase-id p1 --name Build \
+      --intent "create a marker file proving the live planning loop ran" >/dev/null 2>&1
+    HL task create --id mk --goal live --title "make marker" \
+      --objective "create the marker file" --owner lead --phase-id p1 --owned-path verify_marker.txt \
+      --design "Create a file named verify_marker.txt at the repo root whose only line is PLANNING_LIVE_OK." >/dev/null 2>&1
+    HL goal run-phases live --timeout-ms 300000 >"$TMP/pml_run.json" 2>"$TMP/pml.log"
+    [ "$(check_json "$TMP/pml_run.json" "d.get('status')=='completed' and d.get('stage')=='verified'")" = "1" ] \
+      && ok "P3 planning live loop completed (real codex run-phases)" || bad "P3 planning live loop (see $TMP/pml.log)"
+    [ -f "$PML/goal_orchestration_runs.jsonl" ] \
+      && ok "P3 live orchestration checkpoint persisted" || bad "P3 live checkpoint"
+    grep -q '"workflow_name":"phase-p1"' "$PML/workflow_runs.jsonl" 2>/dev/null \
+      && ok "P3 phase compiled + dispatched a real workflow run" || bad "P3 phase workflow run"
   fi
 else
   section "Live checks"
