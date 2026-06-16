@@ -1207,6 +1207,31 @@ fn json_str_list(v: &serde_json::Value, key: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// Read a field as free text whether the worker returned a STRING or a LIST of
+/// strings (planners often emit `acceptance` as a bulleted array). A list is
+/// joined newline-separated; empty/absent → None.
+fn json_text_or_list(v: &serde_json::Value, key: &str) -> Option<String> {
+    if let Some(s) = json_str_nonempty(v, key) {
+        return Some(s);
+    }
+    let joined = json_str_list(v, key).join("\n");
+    (!joined.trim().is_empty()).then_some(joined)
+}
+
+/// Coerce a value that a flat-schema worker may return EITHER as a JSON array
+/// OR as a JSON-encoded string (codex commonly stringifies a nested array under a
+/// `"key":"<shape>"` hint) into an owned array of values.
+fn json_array_or_parsed(structured: &serde_json::Value, key: &str) -> Vec<serde_json::Value> {
+    match structured.get(key) {
+        Some(serde_json::Value::Array(arr)) => arr.clone(),
+        Some(serde_json::Value::String(s)) => serde_json::from_str::<serde_json::Value>(s)
+            .ok()
+            .and_then(|v| v.as_array().cloned())
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    }
+}
+
 /// The result of `plan_into_goal`: which phase/task ids were created (and which
 /// existing ids were skipped), so the command can report idempotent re-runs.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -1234,12 +1259,14 @@ fn plan_into_goal(
     owner: &str,
 ) -> CliResult<PlanResult> {
     let mut result = PlanResult::default();
-    let phases = match structured.get("phases").and_then(|p| p.as_array()) {
-        Some(arr) if !arr.is_empty() => arr,
-        // Missing / mock-string / empty `phases` → nothing to plan. Degrade
-        // gracefully (the dry-run mock lands here).
-        _ => return Ok(result),
-    };
+    // `phases` may arrive as a real array OR as a JSON-encoded string (codex
+    // stringifies the nested array under the flat schema hint). The dry-run mock
+    // returns a plain placeholder string that parses to nothing → degrade.
+    let phases = json_array_or_parsed(structured, "phases");
+    if phases.is_empty() {
+        return Ok(result);
+    }
+    let phases = &phases;
 
     let now = now_string();
     for (p_idx, p) in phases.iter().enumerate() {
@@ -1255,7 +1282,7 @@ fn plan_into_goal(
                 intent: json_str_nonempty(p, "intent")
                     .unwrap_or_else(|| format!("Execute phase {phase_id}.")),
                 status: harness_core::GoalPhaseStatus::NotStarted,
-                acceptance: json_str_nonempty(p, "acceptance"),
+                acceptance: json_text_or_list(p, "acceptance"),
                 verdict_decision_id: None,
                 created_at: now.clone(),
                 started_at: None,
@@ -1271,8 +1298,8 @@ fn plan_into_goal(
             .into_keys()
             .chain(result.tasks_created.iter().cloned())
             .collect();
-        let tasks = p.get("tasks").and_then(|t| t.as_array());
-        for (t_idx, t) in tasks.into_iter().flatten().enumerate() {
+        let tasks = json_array_or_parsed(p, "tasks");
+        for (t_idx, t) in tasks.iter().enumerate() {
             let task_id =
                 json_str_nonempty(t, "id").unwrap_or_else(|| format!("{phase_id}-t{}", t_idx + 1));
             if existing_task_ids.contains(&task_id) {
@@ -20484,6 +20511,45 @@ mod tests {
             "disjoint-path build tasks should compile to a parallel group:\n{script}"
         );
 
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn plan_into_goal_tolerates_stringified_phases_and_list_acceptance() {
+        // Regression: codex (flat-schema hint) returns `phases` as a JSON-ENCODED
+        // STRING, and a phase's `acceptance` as a LIST. Found by dogfooding the
+        // planner on goal-multi-project, which planned nothing until this fix.
+        let root = std::env::temp_dir().join(format!("harness-plan-{}", generated_id("str")));
+        let store = HarnessStore::new(&root);
+        store.init().expect("init");
+        let mut goal = make_goal("g-str");
+        persist_new_goal(&store, &goal).unwrap();
+
+        let phases_str = serde_json::json!([
+            {
+                "id": "p1",
+                "name": "Build",
+                "intent": "wire it",
+                "acceptance": ["compiles", "tests pass"],   // a LIST, not a string
+                "tasks": [
+                    { "id": "t1", "title": "A", "owned_paths": ["crates/a"] }
+                ]
+            }
+        ])
+        .to_string();
+        // `phases` is the stringified array (exactly what codex returned live).
+        let structured = serde_json::json!({ "phases": phases_str });
+
+        let result = plan_into_goal(&store, &mut goal, &structured, "leader").expect("plan");
+        assert_eq!(result.phases_added, vec!["p1"]);
+        assert_eq!(result.tasks_created, vec!["t1"]);
+        let g = goal_load(&store, "g-str").unwrap();
+        // The list acceptance was joined into the phase's acceptance text.
+        let acc = g.phases[0].acceptance.as_deref().unwrap_or("");
+        assert!(
+            acc.contains("compiles") && acc.contains("tests pass"),
+            "acc: {acc}"
+        );
         std::fs::remove_dir_all(&root).ok();
     }
 
