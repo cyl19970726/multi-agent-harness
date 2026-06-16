@@ -484,9 +484,11 @@ fn phase_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
                     CliError::Usage(format!("goal `{goal_id}` has no phase `{phase_id}`"))
                 })?;
             // Compile from THIS goal's tasks (a phase id is only unique per goal).
-            let goal_tasks: Vec<Task> = store
-                .tasks()?
-                .into_iter()
+            // Latest-wins (NOT the raw append log): write_back re-appends each
+            // task per status change, so the raw log holds stale duplicate rows
+            // that would be compiled twice.
+            let goal_tasks: Vec<Task> = latest_tasks(store)?
+                .into_values()
                 .filter(|t| t.goal_id.as_deref() == Some(goal.id.as_str()))
                 .collect();
             let script =
@@ -950,9 +952,11 @@ fn orchestrate_goal_phases(
         let passed;
         loop {
             let phase = goal.phases[idx].clone();
-            let goal_tasks: Vec<Task> = store
-                .tasks()?
-                .into_iter()
+            // Latest-wins (NOT the raw append log): write_back re-appends each
+            // task per status change, so the raw log holds stale duplicate rows
+            // that would be compiled twice.
+            let goal_tasks: Vec<Task> = latest_tasks(store)?
+                .into_values()
                 .filter(|t| t.goal_id.as_deref() == Some(goal.id.as_str()))
                 .collect();
             let script =
@@ -974,7 +978,12 @@ fn orchestrate_goal_phases(
                 &format!("phase-{phase_id}"),
                 resume_from.as_deref(),
             )?;
-            let attempt_passed = outcome.status == WorkflowRunStatus::Completed;
+            // A phase passes only if the run completed AND no task step failed.
+            // The second clause is the gate for phases with no `acceptance`
+            // (no `verdict()` is compiled): a failed task inside a `parallel()`
+            // block leaves the run Completed, so check the steps directly.
+            let attempt_passed = outcome.status == WorkflowRunStatus::Completed
+                && outcome.steps.iter().all(|s| s.ok);
 
             write_back_phase_tasks(store, &goal, &phase_id, &outcome)?;
 
@@ -5322,17 +5331,28 @@ fn try_workflow_real_agent_step(
             "ephemeral {} worker (dry-run) for {}{model_note}{isolation_note} · 校验占位中文输出",
             spec.provider, spec.label,
         );
-        // In schema mode, synthesize a mock structured object (each required key
-        // -> a mock string) so `cargo test` + the acceptance script exercise the
-        // structured path WITHOUT a live provider.
+        // In schema mode, synthesize a mock structured object so `cargo test` +
+        // the acceptance script exercise the structured path WITHOUT a live
+        // provider. Each value is TYPE-CORRECT for the key's flat schema hint
+        // (e.g. a "bool" hint -> `true`), so a compiled phase's verdict gate
+        // (`schema={"pass":"bool",...}` -> `_acc.get("pass") == True`) can pass
+        // under --dry-run instead of always failing on a "mock pass" string.
         let structured = spec.schema.as_ref().map(|schema| {
             let obj: serde_json::Map<String, serde_json::Value> = schema_required_keys(schema)
                 .into_iter()
                 .map(|key| {
-                    (
-                        key.clone(),
-                        serde_json::Value::String(format!("mock {key}")),
-                    )
+                    let value = match schema.get(&key).and_then(|h| h.as_str()) {
+                        Some("bool" | "boolean") => serde_json::Value::Bool(true),
+                        Some("int" | "integer" | "number" | "float") => {
+                            serde_json::Value::Number(0.into())
+                        }
+                        Some("array" | "list") => serde_json::Value::Array(vec![]),
+                        Some("object" | "dict" | "map") => {
+                            serde_json::Value::Object(serde_json::Map::new())
+                        }
+                        _ => serde_json::Value::String(format!("mock {key}")),
+                    };
+                    (key, value)
                 })
                 .collect();
             serde_json::Value::Object(obj)
