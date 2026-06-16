@@ -100,6 +100,62 @@
     "skill_refs": {
       "type": "array",
       "items": { "type": "string", "minLength": 1 }
+    },
+    "design_synthesis_at": { "type": ["string", "null"] },
+    "phases": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "name", "intent", "status", "created_at"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "name": { "type": "string", "minLength": 1 },
+          "intent": { "type": "string", "minLength": 1 },
+          "status": {
+            "type": "string",
+            "enum": [
+              "not_started",
+              "in_progress",
+              "passed",
+              "failed",
+              "blocked"
+            ]
+          },
+          "acceptance": { "type": ["string", "null"] },
+          "verdict_decision_id": { "type": ["string", "null"] },
+          "created_at": { "type": "string", "minLength": 1 },
+          "started_at": { "type": ["string", "null"] },
+          "ended_at": { "type": ["string", "null"] }
+        }
+      }
+    },
+    "knowledge": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "goal_id", "author", "timestamp", "notes_md", "created_at"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "goal_id": { "type": "string", "minLength": 1 },
+          "phase_id": { "type": ["string", "null"] },
+          "task_id": { "type": ["string", "null"] },
+          "author": { "type": "string", "minLength": 1 },
+          "timestamp": { "type": "string", "minLength": 1 },
+          "notes_md": { "type": "string", "minLength": 1 },
+          "tags": {
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 }
+          },
+          "source": {
+            "type": "string",
+            "enum": ["exploration", "task", "decision", "evidence"]
+          },
+          "superseded_by_knowledge_id": { "type": ["string", "null"] },
+          "created_at": { "type": "string", "minLength": 1 }
+        }
+      }
     }
   }
 }

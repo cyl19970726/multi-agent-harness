@@ -248,12 +248,53 @@ pub struct Goal {
 }
 
 impl Goal {
+    /// The goal's effective lifecycle stage.
+    ///
+    /// For a **phase-driven** goal (`phases` non-empty) the stage is DERIVED
+    /// from phase progress — `phases` is the source of truth and the stored
+    /// `stage` field is only a coarse legacy projection. For a **legacy** goal
+    /// (no `phases`) the stored `stage` field IS the truth (back-compat with
+    /// pre-planning rows, which still load and render via the stage bar).
+    ///
+    /// The derivation is intentionally coarse (the per-phase timeline is the
+    /// real view for phase-driven goals); it exists so legacy consumers
+    /// (`to_status`, kanban) keep working:
+    /// - every phase `Passed` → `Verified` (the whole plan, incl. acceptance, is done)
+    /// - any phase started/failed/blocked → `Working` (active)
+    /// - all phases `NotStarted` → `Draft`
+    pub fn effective_stage(&self) -> GoalStage {
+        if self.phases.is_empty() {
+            return self.stage;
+        }
+        if self
+            .phases
+            .iter()
+            .all(|p| p.status == GoalPhaseStatus::Passed)
+        {
+            GoalStage::Verified
+        } else if self
+            .phases
+            .iter()
+            .any(|p| p.status != GoalPhaseStatus::NotStarted)
+        {
+            GoalStage::Working
+        } else {
+            GoalStage::Draft
+        }
+    }
+
     /// Validate a lifecycle transition, returning `Err(reason)` when disallowed.
     /// Forward moves are strictly one stage at a time and may be gated; the only
     /// back-edges are "re-open exploration" (any → `exploring`) and "real
     /// acceptance failed → rework" (`verifying` → `working`).
+    ///
+    /// The `from` stage is the [`Goal::effective_stage`], so a phase-driven goal
+    /// is checked against its derived stage. Substance gates (`design_md` /
+    /// `acceptance_md` non-empty) apply ONLY to legacy goals; a phase-driven
+    /// goal gates on per-phase verdicts (driven by the orchestrator), not the
+    /// global markdown.
     pub fn check_transition(&self, to: GoalStage) -> Result<(), String> {
-        let from = self.stage;
+        let from = self.effective_stage();
         if to == from {
             return Err(format!("goal is already in stage `{}`", from.as_str()));
         }
@@ -273,7 +314,11 @@ impl Goal {
                 to.as_str()
             ));
         }
-        // Forward gates — where substance is enforced.
+        // Phase-driven goals gate on per-phase verdicts, not the global md.
+        if !self.phases.is_empty() {
+            return Ok(());
+        }
+        // Forward gates — where substance is enforced (legacy goals only).
         let blank = |s: &Option<String>| s.as_deref().map(str::trim).unwrap_or("").is_empty();
         match (from, to) {
             (GoalStage::Exploring, GoalStage::Explored) if blank(&self.design_md) => Err(
@@ -2191,6 +2236,65 @@ mod tests {
         assert_eq!(GoalStage::Working.to_status(), GoalStatus::Active);
         assert_eq!(GoalStage::Done.to_status(), GoalStatus::Review);
         assert_eq!(GoalStage::Verified.to_status(), GoalStatus::Done);
+    }
+
+    fn test_phase(id: &str, status: GoalPhaseStatus) -> GoalPhase {
+        GoalPhase {
+            id: id.into(),
+            name: id.into(),
+            intent: "i".into(),
+            status,
+            acceptance: None,
+            verdict_decision_id: None,
+            created_at: "unix-ms:1".into(),
+            started_at: None,
+            ended_at: None,
+        }
+    }
+
+    #[test]
+    fn effective_stage_falls_back_to_stage_field_when_no_phases() {
+        // Legacy goal (no phases) → the stored stage IS the truth.
+        for s in [GoalStage::Draft, GoalStage::Exploring, GoalStage::Working] {
+            assert_eq!(goal_in_stage(s).effective_stage(), s);
+        }
+    }
+
+    #[test]
+    fn effective_stage_derives_from_phases_when_present() {
+        use GoalPhaseStatus::*;
+        // The stored `stage` is deliberately stale to prove phases win.
+        let with = |statuses: &[GoalPhaseStatus]| {
+            let mut g = goal_in_stage(GoalStage::Draft);
+            g.phases = statuses
+                .iter()
+                .enumerate()
+                .map(|(i, s)| test_phase(&format!("p{i}"), *s))
+                .collect();
+            g.effective_stage()
+        };
+        assert_eq!(with(&[NotStarted, NotStarted]), GoalStage::Draft);
+        assert_eq!(with(&[InProgress, NotStarted]), GoalStage::Working);
+        assert_eq!(with(&[Passed, InProgress]), GoalStage::Working);
+        assert_eq!(with(&[Passed, Failed]), GoalStage::Working);
+        assert_eq!(with(&[Blocked]), GoalStage::Working);
+        assert_eq!(with(&[Passed, Passed]), GoalStage::Verified);
+    }
+
+    #[test]
+    fn phase_driven_goal_skips_legacy_md_gates_but_keeps_structural_rules() {
+        // One in-progress phase → effective_stage == Working, with blank md.
+        let mut g = goal_in_stage(GoalStage::Draft);
+        g.design_md = None;
+        g.acceptance_md = None;
+        g.phases = vec![test_phase("p0", GoalPhaseStatus::InProgress)];
+        assert_eq!(g.effective_stage(), GoalStage::Working);
+        // Working → Done is a clean one-step forward; the md gates do NOT fire.
+        assert!(g.check_transition(GoalStage::Done).is_ok());
+        // Structural rules still hold: can't skip two stages at once.
+        assert!(g.check_transition(GoalStage::Verified).is_err());
+        // Back-edge to exploring is still always allowed.
+        assert!(g.check_transition(GoalStage::Exploring).is_ok());
     }
 
     #[test]
