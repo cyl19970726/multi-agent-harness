@@ -10,17 +10,17 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use harness_core::{
-    build_launch_spec, compile_phase_to_starlark, content_hash_hex16, AgentEvent, AgentMember,
-    AgentMemberStatus, AgentProviderConfig, AgentRuntime, AgentRuntimeHealth, AgentRuntimeStatus,
-    AgentTeam, AgentTeamStatus, Decision, EvaluationOutcome, Evidence, Exploration, Gap,
-    GapSeverity, GapStatus, Goal, GoalCase, GoalDesign, GoalEvaluation, GoalOrchestrationRun,
-    GoalPhaseStatus, GoalStage, GoalStatus, HarnessTokenUsage, HarnessToolCall, HarnessToolResult,
-    HarnessTurnEvent, HarnessTurnEventKind, Knowledge, KnowledgeSource, LaunchMcp,
-    LaunchPermission, LaunchSpec, Message, MessageDelivery, MessageDeliveryStatus, MessageKind,
-    MessageTerminalSource, OrchestrationPhaseRun, OrchestrationStatus, Proposal, ProposalStatus,
-    ProviderChildThread, ProviderChildThreadStatus, ProviderSession, ProviderSessionStatus, Review,
-    ReviewVerdict, SenderKind, Task, TaskStatus, Vision, WorkflowRun, WorkflowRunStatus,
-    WorkflowStep, WorkflowStepStatus,
+    build_launch_spec, compile_phase_to_starlark, compile_planner_script, content_hash_hex16,
+    AgentEvent, AgentMember, AgentMemberStatus, AgentProviderConfig, AgentRuntime,
+    AgentRuntimeHealth, AgentRuntimeStatus, AgentTeam, AgentTeamStatus, Decision,
+    EvaluationOutcome, Evidence, Exploration, Gap, GapSeverity, GapStatus, Goal, GoalCase,
+    GoalDesign, GoalEvaluation, GoalOrchestrationRun, GoalPhaseStatus, GoalStage, GoalStatus,
+    HarnessTokenUsage, HarnessToolCall, HarnessToolResult, HarnessTurnEvent, HarnessTurnEventKind,
+    Knowledge, KnowledgeSource, LaunchMcp, LaunchPermission, LaunchSpec, Message, MessageDelivery,
+    MessageDeliveryStatus, MessageKind, MessageTerminalSource, OrchestrationPhaseRun,
+    OrchestrationStatus, Proposal, ProposalStatus, ProviderChildThread, ProviderChildThreadStatus,
+    ProviderSession, ProviderSessionStatus, Review, ReviewVerdict, SenderKind, Task, TaskStatus,
+    Vision, WorkflowRun, WorkflowRunStatus, WorkflowStep, WorkflowStepStatus,
 };
 use harness_store::{HarnessStore, MessageDeliveryClaimResult};
 use thiserror::Error;
@@ -855,10 +855,158 @@ fn orchestrate_goal_phases(
     }))
 }
 
+// ---------------------------------------------------------------------------
+// The PLANNER (`harness goal plan`): decompose a goal's `design_md` (+
+// `acceptance_md`) into agent-planned, sequential `phases[]` and a per-phase task
+// DAG, then persist them. It reuses the EXISTING real-driver execution path: a
+// tiny one-shot Starlark program runs ONE worker (`output(agent(prompt,
+// schema=...))`) through the same engine `goal run-phases` uses, so `--dry-run`
+// works with no real provider. The worker's structured reply is parsed and
+// written back as `GoalPhase`s + `Task`s. Re-running is idempotent-ish — existing
+// phase/task ids are skipped, never duplicated.
+// ---------------------------------------------------------------------------
+
+/// Read a JSON value as a non-empty trimmed string, else `None`.
+fn json_str_nonempty(v: &serde_json::Value, key: &str) -> Option<String> {
+    v.get(key)
+        .and_then(|x| x.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
+/// Read a JSON value as a Vec of trimmed non-empty strings (a missing/`null`/
+/// non-array value yields an empty Vec).
+fn json_str_list(v: &serde_json::Value, key: &str) -> Vec<String> {
+    v.get(key)
+        .and_then(|x| x.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|e| e.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The result of `plan_into_goal`: which phase/task ids were created (and which
+/// existing ids were skipped), so the command can report idempotent re-runs.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct PlanResult {
+    phases_added: Vec<String>,
+    phases_skipped: Vec<String>,
+    tasks_created: Vec<String>,
+    tasks_skipped: Vec<String>,
+}
+
+/// Parse the planner's structured object and PERSIST it onto the goal: append new
+/// phases onto `goal.phases` (skipping ids that already exist) and create `Task`s
+/// (status `Planned`) with `goal_id` / `phase_id` / `design_md` / acceptance /
+/// owned_paths / depends_on. Idempotent-ish: an existing phase or task id is never
+/// duplicated. Returns the created/skipped ids; persists the goal + tasks.
+///
+/// `structured` is the planner run's `final_output.result`. In `--dry-run` it is
+/// the mock object (`{"phases": "mock phases"}`), where `phases` is a STRING — that
+/// (or a missing/empty `phases` array) yields an empty plan, which the caller
+/// reports rather than panicking.
+fn plan_into_goal(
+    store: &HarnessStore,
+    goal: &mut Goal,
+    structured: &serde_json::Value,
+    owner: &str,
+) -> CliResult<PlanResult> {
+    let mut result = PlanResult::default();
+    let phases = match structured.get("phases").and_then(|p| p.as_array()) {
+        Some(arr) if !arr.is_empty() => arr,
+        // Missing / mock-string / empty `phases` → nothing to plan. Degrade
+        // gracefully (the dry-run mock lands here).
+        _ => return Ok(result),
+    };
+
+    let now = now_string();
+    for (p_idx, p) in phases.iter().enumerate() {
+        let phase_id = slug_for_filename(
+            &json_str_nonempty(p, "id").unwrap_or_else(|| format!("phase-{}", p_idx + 1)),
+        );
+        if goal.phases.iter().any(|existing| existing.id == phase_id) {
+            result.phases_skipped.push(phase_id.clone());
+        } else {
+            goal.phases.push(harness_core::GoalPhase {
+                id: phase_id.clone(),
+                name: json_str_nonempty(p, "name").unwrap_or_else(|| phase_id.clone()),
+                intent: json_str_nonempty(p, "intent")
+                    .unwrap_or_else(|| format!("Execute phase {phase_id}.")),
+                status: harness_core::GoalPhaseStatus::NotStarted,
+                acceptance: json_str_nonempty(p, "acceptance"),
+                verdict_decision_id: None,
+                created_at: now.clone(),
+                started_at: None,
+                ended_at: None,
+            });
+            result.phases_added.push(phase_id.clone());
+        }
+
+        // Tasks for this phase (created regardless of whether the phase was new,
+        // so a re-run can backfill tasks onto an existing phase — but never
+        // duplicate a task id).
+        let existing_task_ids: std::collections::HashSet<String> = latest_tasks(store)?
+            .into_keys()
+            .chain(result.tasks_created.iter().cloned())
+            .collect();
+        let tasks = p.get("tasks").and_then(|t| t.as_array());
+        for (t_idx, t) in tasks.into_iter().flatten().enumerate() {
+            let task_id =
+                json_str_nonempty(t, "id").unwrap_or_else(|| format!("{phase_id}-t{}", t_idx + 1));
+            if existing_task_ids.contains(&task_id) {
+                result.tasks_skipped.push(task_id);
+                continue;
+            }
+            let title = json_str_nonempty(t, "title").unwrap_or_else(|| format!("Task {task_id}"));
+            let task = Task {
+                id: task_id.clone(),
+                goal_id: Some(goal.id.clone()),
+                parent_task_id: None,
+                title: title.clone(),
+                objective: title,
+                owner_agent_id: owner.to_string(),
+                assignee_agent_id: None,
+                reviewer_agent_id: None,
+                status: TaskStatus::Planned,
+                depends_on_task_ids: json_str_list(t, "depends_on"),
+                workspace_ref: None,
+                branch_ref: None,
+                pr_ref: None,
+                owned_paths: json_str_list(t, "owned_paths"),
+                acceptance_criteria: json_str_list(t, "acceptance"),
+                created_at: now.clone(),
+                updated_at: now.clone(),
+                phase: None,
+                scope_refs: Vec::new(),
+                requires_human_approval: false,
+                verdict_decision_id: None,
+                description: None,
+                git_metadata: None,
+                design_md: json_str_nonempty(t, "design_md"),
+                phase_id: Some(phase_id.clone()),
+                superseded_by_knowledge_id: None,
+                workflow_step_ids: Vec::new(),
+            };
+            store.append_task(&task)?;
+            result.tasks_created.push(task_id);
+        }
+    }
+
+    goal.updated_at = now_string();
+    store.append_goal(goal)?;
+    Ok(result)
+}
+
 fn goal_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     require_subcommand(
         args,
-        "goal create|list|show|describe-set|design-set|acceptance-set|explore-add|phase-add|knowledge-add|design-synthesize|run-phases|stage|learning-status|evaluate|close",
+        "goal create|list|show|describe-set|design-set|acceptance-set|explore-add|phase-add|knowledge-add|design-synthesize|plan|run-phases|stage|learning-status|evaluate|close",
     )?;
     match args[0].as_str() {
         "create" => {
@@ -1008,6 +1156,80 @@ fn goal_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
             goal.updated_at = now;
             store.append_goal(&goal)?;
             print_json(&goal)?;
+        }
+        "plan" => {
+            let goal_id = args
+                .get(1)
+                .filter(|a| !a.starts_with("--"))
+                .cloned()
+                .or_else(|| value(args, "--goal"))
+                .or_else(|| value(args, "--id"))
+                .ok_or_else(|| {
+                    CliError::Usage("plan needs a goal (`goal plan <goal>` or --goal <id>)".into())
+                })?;
+            let trace_retention = value(args, "--trace").unwrap_or_else(|| "durable".to_string());
+            if trace_retention != "durable" && trace_retention != "live" {
+                return Err(CliError::Usage(format!(
+                    "--trace must be 'durable' or 'live', got '{trace_retention}'"
+                )));
+            }
+            let mut goal = goal_load(store, &goal_id)?;
+            // Run ONE planner worker by GENERATING a tiny one-shot Starlark
+            // program and running it through the SAME real-driver path
+            // `run-phases` uses (honors --dry-run, so tests/CI need no provider).
+            let script = compile_planner_script(&goal);
+            let options = WorkflowDeliveryOptions {
+                dry_run: has_flag(args, "--dry-run"),
+                start_runtime: has_flag(args, "--start-runtime"),
+                timeout_ms: value(args, "--timeout-ms")
+                    .and_then(|v| v.parse::<u64>().ok())
+                    .unwrap_or(900_000),
+                default_model: value(args, "--model"),
+                default_effort: value(args, "--effort"),
+                max_budget_usd: value(args, "--max-budget-usd").and_then(|v| v.parse::<f64>().ok()),
+                trace_retention,
+                progress: has_flag(args, "--progress"),
+            };
+            let (run_id, outcome) = run_phase_compiled_script(
+                store,
+                &script,
+                &format!("plan-{goal_id}"),
+                &options,
+                None,
+            )?;
+            // The planner's structured decomposition lands verbatim under
+            // `final_output.result`. In --dry-run that is the mock object (where
+            // `phases` is a STRING) — `plan_into_goal` degrades to an empty plan.
+            let structured = outcome
+                .final_output
+                .as_ref()
+                .and_then(|fo| fo.get("result"))
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
+            let owner = goal.owner_agent_id.clone();
+            let result = plan_into_goal(store, &mut goal, &structured, &owner)?;
+            let planned_anything =
+                !result.phases_added.is_empty() || !result.tasks_created.is_empty();
+            print_json(&serde_json::json!({
+                "goal": goal.id,
+                "plan_run": run_id,
+                "dry_run": options.dry_run,
+                "planned": planned_anything,
+                "phases_added": result.phases_added,
+                "phases_skipped": result.phases_skipped,
+                "tasks_created": result.tasks_created,
+                "tasks_skipped": result.tasks_skipped,
+                "note": if planned_anything {
+                    serde_json::Value::Null
+                } else {
+                    serde_json::Value::String(
+                        "no phases planned — the planner returned no structured \
+                         decomposition (expected in --dry-run, which produces a mock \
+                         object); run without --dry-run with a real provider to plan"
+                            .into(),
+                    )
+                },
+            }))?;
         }
         "run-phases" => {
             let goal_id = args
@@ -13301,6 +13523,7 @@ fn print_help() {
   member register --name <name> --role <role> [--provider codex|claude] [--capability <cap>] [--worktree <path>] [--permission-profile <profile>] [--runtime-workspace-root <path>]
   member list
   goal create --title <title> --objective <text> --owner <agent> [--success <text>]
+  goal plan <goal> [--dry-run] [--trace durable|live] [--timeout-ms <ms>] [--model <m>] [--effort <e>]
   goal learning-status --id <goal> [--strict] [--require-evaluation] [--allow-waiver] [--waiver-decision <decision>]
   goal list
   task create --title <title> --objective <text> --owner <agent> [--goal <goal>] [--assignee <agent>] [--reviewer <agent>] [--workspace <path>] [--branch <ref>] [--pr <ref>] [--owned-path <path>] [--acceptance <text>]
@@ -19269,6 +19492,222 @@ mod tests {
             .phases
             .iter()
             .all(|p| p.status == GoalPhaseStatus::Passed));
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn plan_into_goal_creates_phases_and_task_dag() {
+        let root = std::env::temp_dir().join(format!("harness-plan-{}", generated_id("ok")));
+        let store = HarnessStore::new(&root);
+        store.init().expect("init");
+        let mut goal = make_goal("g-plan");
+        persist_new_goal(&store, &goal).unwrap();
+
+        // A hand-built planner object: ONE setup phase, then a build phase with two
+        // parallel tasks (disjoint owned_paths, no deps) and a third that depends on
+        // both. Mirrors the shape `compile_planner_script` asks the worker for.
+        let structured = serde_json::json!({
+            "phases": [
+                {
+                    "id": "explore",
+                    "name": "Explore",
+                    "intent": "ground the design",
+                    "acceptance": "the unknowns are resolved",
+                    "tasks": [
+                        {
+                            "id": "read-core",
+                            "title": "Read the core module",
+                            "design_md": "study lib.rs",
+                            "acceptance": ["notes written"],
+                            "owned_paths": ["crates/core"],
+                            "depends_on": []
+                        }
+                    ]
+                },
+                {
+                    "id": "build",
+                    "name": "Build",
+                    "intent": "wire it up",
+                    "acceptance": "it compiles and tests pass",
+                    "tasks": [
+                        {
+                            "id": "impl-a",
+                            "title": "Implement A",
+                            "owned_paths": ["crates/a"],
+                            "acceptance": ["A done"]
+                        },
+                        {
+                            "id": "impl-b",
+                            "title": "Implement B",
+                            "owned_paths": ["crates/b"]
+                        },
+                        {
+                            "id": "integrate",
+                            "title": "Integrate A + B",
+                            "owned_paths": ["crates/app"],
+                            "depends_on": ["impl-a", "impl-b"]
+                        }
+                    ]
+                }
+            ]
+        });
+
+        let result = plan_into_goal(&store, &mut goal, &structured, "leader").expect("plan");
+        assert_eq!(result.phases_added, vec!["explore", "build"]);
+        assert!(result.phases_skipped.is_empty());
+        assert_eq!(
+            result.tasks_created,
+            vec!["read-core", "impl-a", "impl-b", "integrate"]
+        );
+
+        // Phases landed on the goal in order, status NotStarted, acceptance carried.
+        let g = goal_load(&store, "g-plan").unwrap();
+        let phase_ids: Vec<&str> = g.phases.iter().map(|p| p.id.as_str()).collect();
+        assert_eq!(phase_ids, vec!["explore", "build"]);
+        assert!(g
+            .phases
+            .iter()
+            .all(|p| p.status == GoalPhaseStatus::NotStarted));
+        assert_eq!(
+            g.phases[1].acceptance.as_deref(),
+            Some("it compiles and tests pass")
+        );
+
+        // Tasks landed with correct goal_id / phase_id / Planned / owned_paths / deps.
+        let tasks = latest_tasks(&store).unwrap();
+        let integrate = &tasks["integrate"];
+        assert_eq!(integrate.goal_id.as_deref(), Some("g-plan"));
+        assert_eq!(integrate.phase_id.as_deref(), Some("build"));
+        assert_eq!(integrate.status, TaskStatus::Planned);
+        assert_eq!(integrate.owned_paths, vec!["crates/app".to_string()]);
+        assert_eq!(
+            integrate.depends_on_task_ids,
+            vec!["impl-a".to_string(), "impl-b".to_string()]
+        );
+        assert_eq!(
+            tasks["impl-a"].acceptance_criteria,
+            vec!["A done".to_string()]
+        );
+        assert_eq!(
+            tasks["read-core"].design_md.as_deref(),
+            Some("study lib.rs")
+        );
+        // A task with no objective falls back to its title.
+        assert_eq!(tasks["impl-b"].objective, "Implement B");
+
+        // The two disjoint-path, dep-free build tasks compile into a parallel group:
+        // proves the planned DAG feeds the existing compiler as intended.
+        let build_phase = g.phases.iter().find(|p| p.id == "build").unwrap();
+        let goal_tasks: Vec<Task> = store
+            .tasks()
+            .unwrap()
+            .into_iter()
+            .filter(|t| t.goal_id.as_deref() == Some("g-plan"))
+            .collect();
+        let script = compile_phase_to_starlark(&g, build_phase, &goal_tasks).expect("compile");
+        assert!(
+            script.contains("parallel("),
+            "disjoint-path build tasks should compile to a parallel group:\n{script}"
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn plan_into_goal_is_idempotent_on_existing_ids() {
+        let root = std::env::temp_dir().join(format!("harness-plan-{}", generated_id("idem")));
+        let store = HarnessStore::new(&root);
+        store.init().expect("init");
+        let mut goal = make_goal("g-idem");
+        persist_new_goal(&store, &goal).unwrap();
+        let structured = serde_json::json!({
+            "phases": [{
+                "id": "p1", "name": "P1", "intent": "do p1",
+                "tasks": [{ "id": "t1", "title": "T1", "owned_paths": ["x"] }]
+            }]
+        });
+        let first = plan_into_goal(&store, &mut goal, &structured, "leader").expect("first");
+        assert_eq!(first.phases_added, vec!["p1"]);
+        assert_eq!(first.tasks_created, vec!["t1"]);
+
+        // Re-planning with the same object must NOT duplicate: existing ids skipped.
+        let second = plan_into_goal(&store, &mut goal, &structured, "leader").expect("second");
+        assert!(second.phases_added.is_empty());
+        assert!(second.tasks_created.is_empty());
+        assert_eq!(second.phases_skipped, vec!["p1"]);
+        assert_eq!(second.tasks_skipped, vec!["t1"]);
+
+        let g = goal_load(&store, "g-idem").unwrap();
+        assert_eq!(g.phases.len(), 1, "phase must not be duplicated");
+        let t1_rows = store
+            .tasks()
+            .unwrap()
+            .into_iter()
+            .filter(|t| t.id == "t1")
+            .count();
+        // One create only: re-run appended no new task row.
+        assert_eq!(t1_rows, 1, "task must not be duplicated");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn plan_into_goal_degrades_on_mock_or_empty_structured() {
+        let root = std::env::temp_dir().join(format!("harness-plan-{}", generated_id("mock")));
+        let store = HarnessStore::new(&root);
+        store.init().expect("init");
+        let mut goal = make_goal("g-mock");
+        persist_new_goal(&store, &goal).unwrap();
+
+        // The dry-run mock object: `phases` is a STRING, not an array.
+        let mock = serde_json::json!({ "phases": "mock phases" });
+        let r = plan_into_goal(&store, &mut goal, &mock, "leader").expect("mock");
+        assert_eq!(
+            r,
+            PlanResult::default(),
+            "mock structured must plan nothing"
+        );
+
+        // An empty array and an entirely missing key also plan nothing (no panic).
+        for empty in [serde_json::json!({ "phases": [] }), serde_json::json!({})] {
+            let r = plan_into_goal(&store, &mut goal, &empty, "leader").expect("empty");
+            assert!(r.phases_added.is_empty() && r.tasks_created.is_empty());
+        }
+        assert!(goal_load(&store, "g-mock").unwrap().phases.is_empty());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn goal_plan_dry_run_runs_planner_and_creates_nothing() {
+        // End-to-end through `goal plan --dry-run`: the planner script runs under the
+        // real driver's dry-run mock (no provider), the run journals, and because the
+        // mock structured output is degenerate the command plans nothing — degrading
+        // gracefully rather than panicking.
+        let root = std::env::temp_dir().join(format!("harness-plan-{}", generated_id("dry")));
+        let store = HarnessStore::new(&root);
+        store.init().expect("init");
+        let mut goal = make_goal("g-dry");
+        goal.design_md = Some("Key problem: X. Approach: do Y.".into());
+        goal.acceptance_md = Some("Accepted when Y works end to end.".into());
+        persist_new_goal(&store, &goal).unwrap();
+
+        let args: Vec<String> = ["plan", "g-dry", "--dry-run"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        goal_command(&store, &args).expect("goal plan --dry-run");
+
+        // No phases/tasks created (dry-run mock is degenerate); a planner run journaled.
+        let g = goal_load(&store, "g-dry").unwrap();
+        assert!(g.phases.is_empty(), "dry-run must plan nothing");
+        assert!(
+            latest_tasks(&store).unwrap().is_empty(),
+            "dry-run must create no tasks"
+        );
+        let runs = store.workflow_runs().unwrap();
+        assert!(
+            runs.iter().any(|r| r.workflow_name.contains("plan-g-dry")),
+            "a planner workflow run should be journaled"
+        );
         std::fs::remove_dir_all(&root).ok();
     }
 
