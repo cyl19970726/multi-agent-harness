@@ -74,7 +74,9 @@ import {
 } from "@/components/workbench/OperatorForms";
 import {
   goalTone,
+  knowledgeSourceTone,
   memberTone,
+  phaseStatusTone,
   reviewVerdictTone,
   severityTone,
   taskTone,
@@ -86,9 +88,11 @@ import {
   formatDuration,
   memberName,
   parseTs,
+  phaseTaskDag,
   taskTitle,
   tasksBlockedBy,
   taskGitMetadata,
+  type PhaseDagLayer,
   type TimelineItem,
   type WorkbenchModel,
 } from "../model/readModel";
@@ -114,8 +118,11 @@ import type {
   Goal,
   GoalDesign,
   GoalEvaluation,
+  GoalPhase,
+  GoalPhaseStatus,
   GoalStage,
   HarnessTurnEvent,
+  Knowledge,
   Message,
   ProviderChildThread,
   ProviderSession,
@@ -1352,6 +1359,34 @@ export function GoalDocument({ model, onSelectionChange }: SurfaceProps) {
         </DocSection>
       )}
 
+      {(goal.phases?.length ?? 0) > 0 && (
+        <DocSection label="Phases">
+          <div className="rounded-lg border border-border bg-card">
+            <GoalPhasesTimeline
+              phases={goal.phases!}
+              tasks={model.goalTasks}
+              knowledge={goal.knowledge ?? []}
+              onSelectTask={(taskId) =>
+                onSelectionChange({ surface: "tasks", taskId, boardScope: "tasks", boardGoal: goal.id })
+              }
+            />
+          </div>
+        </DocSection>
+      )}
+
+      {(goal.knowledge?.length ?? 0) > 0 && (
+        <DocSection label="Knowledge timeline">
+          <div className="rounded-lg border border-border bg-card">
+            <GoalKnowledgeTimeline
+              knowledge={goal.knowledge!}
+              onSelectTask={(taskId) =>
+                onSelectionChange({ surface: "tasks", taskId, boardScope: "tasks", boardGoal: goal.id })
+              }
+            />
+          </div>
+        </DocSection>
+      )}
+
       <DocSection label="Tasks">
         <div className="rounded-lg border border-border bg-card">
           <GoalTasksJump model={model} onSelectionChange={onSelectionChange} />
@@ -1538,6 +1573,271 @@ function GoalStageBar({ stage }: { stage?: GoalStage }) {
                 )}
               />
             )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Goal phases timeline + per-phase task DAG + knowledge (planning)    */
+/* ------------------------------------------------------------------ */
+
+/** Human label for a GoalPhaseStatus. */
+function phaseStatusLabel(status?: GoalPhaseStatus): string {
+  switch (status) {
+    case "in_progress":
+      return "in progress";
+    case "not_started":
+      return "not started";
+    default:
+      return status ?? "not started";
+  }
+}
+
+/**
+ * The sequential PHASES TIMELINE for a phase-driven goal (goal-planning-model).
+ * Each phase shows its status, intent, acceptance gate, and the per-phase task
+ * DAG (independent + disjoint-owned tasks render as parallel rows; dependent
+ * tasks land in a later layer). Superseded tasks render struck through with the
+ * knowledge that abandoned them. Only shown when `goal.phases` is non-empty;
+ * legacy goals keep the plain stage bar above.
+ */
+function GoalPhasesTimeline({
+  phases,
+  tasks,
+  knowledge,
+  onSelectTask,
+}: {
+  phases: GoalPhase[];
+  tasks: Task[];
+  knowledge: Knowledge[];
+  onSelectTask: (taskId: string) => void;
+}) {
+  return (
+    <div className="space-y-3 p-3">
+      {phases.map((phase, index) => {
+        const layers = phaseTaskDag(phase.id, tasks);
+        const superseded = tasks.filter(
+          (task) => task.phase_id === phase.id && task.status === "superseded",
+        );
+        const last = index === phases.length - 1;
+        return (
+          <div key={phase.id} className="relative pl-6">
+            {/* Sequential connector line down the left edge. */}
+            {!last && (
+              <span className="absolute left-[7px] top-5 bottom-[-0.75rem] w-px bg-border" />
+            )}
+            <span className="absolute left-0 top-1.5">
+              <StatusDot
+                tone={phaseStatusTone(phase.status)}
+                pulse={phase.status === "in_progress"}
+              />
+            </span>
+            <div className="rounded-lg border border-border bg-background/40 p-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="font-mono text-[10px] text-muted-foreground">
+                  {index + 1}
+                </span>
+                <span className="text-[13px] font-semibold text-foreground">{phase.name}</span>
+                <Badge tone={phaseStatusTone(phase.status)}>
+                  {phaseStatusLabel(phase.status)}
+                </Badge>
+                <MonoId>{phase.id}</MonoId>
+              </div>
+              {phase.intent && (
+                <p className="mt-1.5 text-[12px] leading-snug text-foreground/80">{phase.intent}</p>
+              )}
+              {phase.acceptance && (
+                <div className="mt-2 flex items-start gap-1.5 rounded-md border border-border bg-muted/30 px-2 py-1.5">
+                  <CheckCircle2 className="mt-0.5 size-3 shrink-0 text-status-good" />
+                  <span className="text-[11px] text-muted-foreground">
+                    <span className="font-medium text-foreground/70">Gate: </span>
+                    {phase.acceptance}
+                  </span>
+                </div>
+              )}
+              <PhaseTaskDag layers={layers} onSelectTask={onSelectTask} />
+              {superseded.length > 0 && (
+                <SupersededTasks
+                  tasks={superseded}
+                  knowledge={knowledge}
+                  onSelectTask={onSelectTask}
+                />
+              )}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/**
+ * Render a phase's task DAG layer by layer (mirroring the compiler): a layer's
+ * groups stack vertically (they run serially), and a parallel group's tasks sit
+ * side by side. An arrow between layers shows the dependency ordering.
+ */
+function PhaseTaskDag({
+  layers,
+  onSelectTask,
+}: {
+  layers: PhaseDagLayer[];
+  onSelectTask: (taskId: string) => void;
+}) {
+  if (layers.length === 0) {
+    return (
+      <p className="mt-2 text-[11px] text-muted-foreground">No live tasks in this phase.</p>
+    );
+  }
+  return (
+    <div className="mt-2.5 space-y-1.5">
+      {layers.map((layer, index) => (
+        <div key={layer.layer} className="space-y-1.5">
+          {layer.groups.map((group, groupIndex) => (
+            <div
+              key={groupIndex}
+              className={cn(
+                "flex flex-wrap gap-1.5",
+                group.parallel &&
+                  "rounded-md border border-dashed border-border/70 bg-muted/20 p-1.5",
+              )}
+            >
+              {group.parallel && (
+                <span className="self-center pl-0.5 pr-1 text-[9px] font-semibold uppercase tracking-wider text-muted-foreground">
+                  parallel
+                </span>
+              )}
+              {group.tasks.map((task) => (
+                <PhaseTaskChip key={task.id} task={task} onClick={() => onSelectTask(task.id)} />
+              ))}
+            </div>
+          ))}
+          {index < layers.length - 1 && (
+            <div className="flex justify-center py-0.5 text-muted-foreground/50">
+              <ChevronDown className="size-3" />
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** A compact task chip inside the phase DAG (status dot + title + status badge). */
+function PhaseTaskChip({ task, onClick }: { task: Task; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="inline-flex min-w-0 items-center gap-1.5 rounded-md border border-border bg-background/60 px-2 py-1 text-left text-[11px] transition-colors hover:border-input hover:bg-accent/40"
+    >
+      <StatusDot tone={taskTone(task.status)} pulse={task.status === "running"} />
+      <span className="max-w-44 truncate font-medium text-foreground/90">
+        {task.title ?? task.id}
+      </span>
+      <Badge tone={taskTone(task.status)}>{task.status}</Badge>
+    </button>
+  );
+}
+
+/** Superseded tasks: greyed + struck, with the knowledge that abandoned them. */
+function SupersededTasks({
+  tasks,
+  knowledge,
+  onSelectTask,
+}: {
+  tasks: Task[];
+  knowledge: Knowledge[];
+  onSelectTask: (taskId: string) => void;
+}) {
+  return (
+    <div className="mt-2.5 space-y-1">
+      <p className="text-[9px] font-semibold uppercase tracking-wider text-muted-foreground/70">
+        Abandoned
+      </p>
+      {tasks.map((task) => {
+        const k = task.superseded_by_knowledge_id
+          ? knowledge.find((item) => item.id === task.superseded_by_knowledge_id)
+          : undefined;
+        return (
+          <button
+            key={task.id}
+            type="button"
+            onClick={() => onSelectTask(task.id)}
+            className="flex w-full flex-wrap items-center gap-1.5 rounded-md border border-dashed border-border/60 bg-muted/10 px-2 py-1 text-left opacity-60 transition-opacity hover:opacity-90"
+          >
+            <span className="max-w-44 truncate text-[11px] font-medium text-muted-foreground line-through">
+              {task.title ?? task.id}
+            </span>
+            <span className="text-[10px] text-muted-foreground">
+              abandoned by knowledge#{task.superseded_by_knowledge_id ?? "?"}
+            </span>
+            {k && (
+              <span className="max-w-[18rem] truncate text-[10px] italic text-muted-foreground/80">
+                — {k.notes_md}
+              </span>
+            )}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/**
+ * The KNOWLEDGE TIMELINE: the goal's append-only `knowledge[]` ledger, newest
+ * first, each entry showing source, provenance (phase/task), author, and notes.
+ * Superseded entries are dimmed.
+ */
+function GoalKnowledgeTimeline({
+  knowledge,
+  onSelectTask,
+}: {
+  knowledge: Knowledge[];
+  onSelectTask: (taskId: string) => void;
+}) {
+  const ordered = [...knowledge].sort((a, b) =>
+    (b.timestamp ?? b.created_at ?? "").localeCompare(a.timestamp ?? a.created_at ?? ""),
+  );
+  return (
+    <div className="space-y-2 p-3">
+      {ordered.map((entry) => {
+        const superseded = Boolean(entry.superseded_by_knowledge_id);
+        return (
+          <div
+            key={entry.id}
+            className={cn(
+              "rounded-lg border border-border bg-background/40 p-3",
+              superseded && "opacity-60",
+            )}
+          >
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge tone={knowledgeSourceTone(entry.source)}>{entry.source ?? "exploration"}</Badge>
+              <span className="text-[11px] font-medium text-foreground/80">{entry.author}</span>
+              <span className="text-[11px] text-muted-foreground">· {fmtTime(entry.timestamp)}</span>
+              {superseded && <Badge tone="muted">superseded</Badge>}
+            </div>
+            <p className="mt-1.5 text-[13px] leading-snug text-foreground/90">{entry.notes_md}</p>
+            <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+              {entry.phase_id && <MonoId>phase:{entry.phase_id}</MonoId>}
+              {entry.task_id && (
+                <button
+                  type="button"
+                  onClick={() => onSelectTask(entry.task_id!)}
+                  className="inline-flex items-center gap-1 rounded-md border border-border bg-background/50 px-1.5 py-0.5 text-[10px] transition-colors hover:border-input hover:bg-accent/40"
+                >
+                  <Link2 className="size-2.5" />
+                  <MonoId>{entry.task_id}</MonoId>
+                </button>
+              )}
+              {(entry.tags ?? []).map((tag) => (
+                <Badge key={tag} tone="info">
+                  {tag}
+                </Badge>
+              ))}
+            </div>
           </div>
         );
       })}

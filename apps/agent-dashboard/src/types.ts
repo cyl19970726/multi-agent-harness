@@ -1,4 +1,12 @@
-export type TaskStatus = "planned" | "assigned" | "running" | "blocked" | "review" | "done" | "archived";
+export type TaskStatus =
+  | "planned"
+  | "assigned"
+  | "running"
+  | "blocked"
+  | "review"
+  | "done"
+  | "archived"
+  | "superseded";
 /**
  * Goal lifecycle. Product columns are active/blocked/review/done; `complete`
  * (legacy alias folded into `done`) and `archived` stay valid for old rows but
@@ -23,6 +31,59 @@ export interface Exploration {
   author: string;
   round?: number;
   notes_md: string;
+  created_at: string;
+}
+
+/**
+ * Status of one agent-planned phase (mirrors harness-core `GoalPhaseStatus`).
+ * Phases run sequentially; a phase must reach `passed` (its verdict) before the
+ * next begins.
+ */
+export type GoalPhaseStatus =
+  | "not_started"
+  | "in_progress"
+  | "passed"
+  | "failed"
+  | "blocked";
+
+/**
+ * One agent-planned phase of a goal (goal-planning-model; mirrors harness-core
+ * `GoalPhase`). It owns the tasks whose `phase_id == this.id`; `acceptance` is
+ * the verdict gate before the next phase.
+ */
+export interface GoalPhase {
+  id: string;
+  name: string;
+  intent: string;
+  status: GoalPhaseStatus;
+  /** Markdown gate condition (the verdict this phase must pass). */
+  acceptance?: string | null;
+  verdict_decision_id?: string | null;
+  created_at: string;
+  started_at?: string | null;
+  ended_at?: string | null;
+}
+
+/** Where a {@link Knowledge} entry came from (mirrors `KnowledgeSource`). */
+export type KnowledgeSource = "exploration" | "task" | "decision" | "evidence";
+
+/**
+ * One append-only learning in a goal's knowledge ledger (mirrors harness-core
+ * `Knowledge`) — the durable truth `design_md` is synthesized from. Carries
+ * provenance (`phase_id`/`task_id`/author) so "which task changed the plan,
+ * when, by whom" is always answerable.
+ */
+export interface Knowledge {
+  id: string;
+  goal_id: string;
+  phase_id?: string | null;
+  task_id?: string | null;
+  author: string;
+  timestamp: string;
+  notes_md: string;
+  tags?: string[];
+  source?: KnowledgeSource;
+  superseded_by_knowledge_id?: string | null;
   created_at: string;
 }
 export type DeliveryStatus = "queued" | "delivered" | "acknowledged" | "failed";
@@ -64,6 +125,16 @@ export interface Goal {
   explorations?: Exploration[];
   skill_refs?: string[];
   stage_changed_at?: string | null;
+  /**
+   * Agent-planned, SEQUENTIAL phases (goal-planning-model). Empty/absent for
+   * legacy goals, which still render via the legacy stage bar. When non-empty,
+   * the dashboard renders the phases timeline + per-phase task DAG instead.
+   */
+  phases?: GoalPhase[];
+  /** Append-only knowledge ledger (the truth `design_md` is synthesized from). */
+  knowledge?: Knowledge[];
+  /** When `design_md` was last (re)synthesized from `knowledge[]`. */
+  design_synthesis_at?: string | null;
 }
 
 export interface Task {
@@ -91,6 +162,14 @@ export interface Task {
   requires_human_approval?: boolean;
   verdict_decision_id?: string | null;
   git_metadata?: GitMetadata | null;
+  /** Full per-task design (goal-planning-model): a grounded slice of the goal's design. */
+  design_md?: string | null;
+  /** The {@link GoalPhase} id this task belongs to; `null` for legacy/unplaced tasks. */
+  phase_id?: string | null;
+  /** When `status === "superseded"`, the `Knowledge.id` whose finding killed it. */
+  superseded_by_knowledge_id?: string | null;
+  /** The `WorkflowStep`s that executed this task (reverse link). */
+  workflow_step_ids?: string[];
 }
 
 /**

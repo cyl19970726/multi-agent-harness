@@ -16806,6 +16806,176 @@ agent("a NEW second leaf that changes the ordinal alignment")
         assert_eq!(steps.len(), 3);
     }
 
+    /// The dashboard snapshot serializes a phase-driven goal's `phases[]` and
+    /// `knowledge[]` (so the S7 phases-timeline and knowledge-timeline can render),
+    /// and a task's planning fields (`phase_id`, `design_md`,
+    /// `superseded_by_knowledge_id`, `workflow_step_ids`) so the per-phase task DAG
+    /// and superseded rendering have their data. The Goal/Task structs serialize
+    /// via serde, so this guards against an accidental projection that drops them.
+    #[test]
+    fn dashboard_snapshot_exposes_phases_knowledge_and_task_planning_fields() {
+        let store = temp_store("planning");
+        let goal = Goal {
+            id: "goal-plan".into(),
+            title: "Planned goal".into(),
+            owner_agent_id: "leader".into(),
+            status: GoalStatus::Active,
+            priority: "p0".into(),
+            created_at: "unix-ms:1".into(),
+            updated_at: "unix-ms:1".into(),
+            vision_id: None,
+            goal_design_id: None,
+            closed_by_decision_id: None,
+            git_metadata: None,
+            stage: GoalStage::default(),
+            description_md: None,
+            design_md: None,
+            acceptance_md: None,
+            explorations: Vec::new(),
+            skill_refs: Vec::new(),
+            stage_changed_at: None,
+            phases: vec![harness_core::GoalPhase {
+                id: "phase-1".into(),
+                name: "Build".into(),
+                intent: "wire it up".into(),
+                status: harness_core::GoalPhaseStatus::InProgress,
+                acceptance: Some("smoke test passes".into()),
+                verdict_decision_id: None,
+                created_at: "unix-ms:1".into(),
+                started_at: Some("unix-ms:2".into()),
+                ended_at: None,
+            }],
+            knowledge: vec![Knowledge {
+                id: "knowledge-1".into(),
+                goal_id: "goal-plan".into(),
+                phase_id: Some("phase-1".into()),
+                task_id: Some("t-a".into()),
+                author: "worker".into(),
+                timestamp: "unix-ms:3".into(),
+                notes_md: "the orderbook lags".into(),
+                tags: vec!["finding".into()],
+                source: KnowledgeSource::Task,
+                superseded_by_knowledge_id: None,
+                created_at: "unix-ms:3".into(),
+            }],
+            design_synthesis_at: None,
+        };
+        store.append_goal(&goal).expect("append goal");
+
+        let task = Task {
+            id: "t-a".into(),
+            goal_id: Some("goal-plan".into()),
+            parent_task_id: None,
+            title: "Task A".into(),
+            objective: "do A".into(),
+            owner_agent_id: "leader".into(),
+            assignee_agent_id: Some("worker".into()),
+            reviewer_agent_id: None,
+            status: TaskStatus::Assigned,
+            depends_on_task_ids: Vec::new(),
+            workspace_ref: None,
+            branch_ref: None,
+            pr_ref: None,
+            owned_paths: Vec::new(),
+            acceptance_criteria: Vec::new(),
+            created_at: "unix-ms:10".into(),
+            updated_at: "unix-ms:10".into(),
+            phase: None,
+            scope_refs: Vec::new(),
+            requires_human_approval: false,
+            verdict_decision_id: None,
+            description: None,
+            git_metadata: None,
+            design_md: Some("slice of the design for t-a".into()),
+            phase_id: Some("phase-1".into()),
+            superseded_by_knowledge_id: None,
+            workflow_step_ids: vec!["wfstep-1".into()],
+        };
+        store.append_task(&task).expect("append task");
+
+        let superseded = Task {
+            id: "t-b".into(),
+            status: TaskStatus::Superseded,
+            phase_id: Some("phase-1".into()),
+            superseded_by_knowledge_id: Some("knowledge-1".into()),
+            ..task.clone()
+        };
+        store
+            .append_task(&superseded)
+            .expect("append superseded task");
+
+        let snapshot = dashboard_snapshot(&store).expect("snapshot");
+
+        let goals = snapshot
+            .get("goals")
+            .and_then(|v| v.as_array())
+            .expect("goals array");
+        let snap_goal = goals
+            .iter()
+            .find(|g| g.get("id").and_then(|v| v.as_str()) == Some("goal-plan"))
+            .expect("goal-plan present");
+        let phases = snap_goal
+            .get("phases")
+            .and_then(|v| v.as_array())
+            .expect("phases array");
+        assert_eq!(phases.len(), 1);
+        assert_eq!(
+            phases[0].get("status").and_then(|v| v.as_str()),
+            Some("in_progress")
+        );
+        let knowledge = snap_goal
+            .get("knowledge")
+            .and_then(|v| v.as_array())
+            .expect("knowledge array");
+        assert_eq!(knowledge.len(), 1);
+        assert_eq!(
+            knowledge[0].get("source").and_then(|v| v.as_str()),
+            Some("task")
+        );
+        assert_eq!(
+            knowledge[0].get("phase_id").and_then(|v| v.as_str()),
+            Some("phase-1")
+        );
+
+        let tasks = snapshot
+            .get("tasks")
+            .and_then(|v| v.as_array())
+            .expect("tasks array");
+        let snap_task = tasks
+            .iter()
+            .find(|t| t.get("id").and_then(|v| v.as_str()) == Some("t-a"))
+            .expect("t-a present");
+        assert_eq!(
+            snap_task.get("phase_id").and_then(|v| v.as_str()),
+            Some("phase-1")
+        );
+        assert!(snap_task
+            .get("design_md")
+            .and_then(|v| v.as_str())
+            .is_some());
+        assert_eq!(
+            snap_task
+                .get("workflow_step_ids")
+                .and_then(|v| v.as_array())
+                .map(|a| a.len()),
+            Some(1)
+        );
+        let snap_superseded = tasks
+            .iter()
+            .find(|t| t.get("id").and_then(|v| v.as_str()) == Some("t-b"))
+            .expect("t-b present");
+        assert_eq!(
+            snap_superseded.get("status").and_then(|v| v.as_str()),
+            Some("superseded")
+        );
+        assert_eq!(
+            snap_superseded
+                .get("superseded_by_knowledge_id")
+                .and_then(|v| v.as_str()),
+            Some("knowledge-1")
+        );
+    }
+
     /// LIVE PROGRESS contract: when a driver journals a `running` step row at
     /// step start (carrying its `step_id` + real `started_at`), the runtime
     /// REUSES that identity for the terminal row. The append log then holds two
