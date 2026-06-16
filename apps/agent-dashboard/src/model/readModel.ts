@@ -615,6 +615,91 @@ export function tasksBlockedBy(taskId: string, tasks: Task[]): Task[] {
 }
 
 /**
+ * One greedy group inside a DAG layer: tasks with pairwise-disjoint
+ * `owned_paths`. A group with >1 task is a `parallel([...])` (they ran
+ * concurrently); a singleton ran on its own. Mirrors the compiler grouping.
+ */
+export interface PhaseDagGroup {
+  /** True when the group holds more than one task (rendered as parallel). */
+  parallel: boolean;
+  tasks: Task[];
+}
+
+/** One layer of a phase's task DAG: groups that ran before the next layer. */
+export interface PhaseDagLayer {
+  layer: number;
+  groups: PhaseDagGroup[];
+}
+
+/**
+ * Layer a phase's LIVE tasks into the same shape the Starlark compiler emits, so
+ * the dashboard renders the execution plan visually:
+ *  - longest dependency-path layering over IN-PHASE `depends_on_task_ids` (a dep
+ *    pointing outside the phase is ignored, mirroring the compiler);
+ *  - within a layer, a greedy disjoint-`owned_paths` partition — a >1 group is a
+ *    parallel row, a singleton is serial; groups run after one another.
+ * Superseded tasks are excluded (they render separately, struck through).
+ * Tasks are id-sorted so the layout is deterministic, matching the compiler.
+ */
+export function phaseTaskDag(phaseId: string, tasks: Task[]): PhaseDagLayer[] {
+  const live = tasks
+    .filter((task) => task.phase_id === phaseId && task.status !== "superseded")
+    .slice()
+    .sort((a, b) => a.id.localeCompare(b.id));
+  if (live.length === 0) return [];
+
+  const inPhase = new Set(live.map((task) => task.id));
+  const byId = new Map(live.map((task) => [task.id, task]));
+  const layerOf = new Map<string, number>(live.map((task) => [task.id, 0]));
+
+  // Iterative longest-path relaxation; cap passes so a cycle cannot loop forever
+  // (it just settles at the cap, which is fine for a read-only view).
+  const cap = live.length + 1;
+  for (let pass = 0; pass < cap; pass += 1) {
+    let changed = false;
+    for (const task of live) {
+      let want = 0;
+      for (const dep of task.depends_on_task_ids ?? []) {
+        if (inPhase.has(dep)) want = Math.max(want, (layerOf.get(dep) ?? 0) + 1);
+      }
+      if (want !== layerOf.get(task.id)) {
+        layerOf.set(task.id, want);
+        changed = true;
+      }
+    }
+    if (!changed) break;
+  }
+
+  const maxLayer = Math.max(0, ...live.map((task) => layerOf.get(task.id) ?? 0));
+  const layers: PhaseDagLayer[] = [];
+  for (let l = 0; l <= maxLayer; l += 1) {
+    const layerTasks = live.filter((task) => (layerOf.get(task.id) ?? 0) === l);
+    const groups: { paths: Set<string>; tasks: Task[] }[] = [];
+    for (const task of layerTasks) {
+      const paths = new Set(byId.get(task.id)?.owned_paths ?? []);
+      let placed = false;
+      for (const group of groups) {
+        const disjoint = [...paths].every((p) => !group.paths.has(p));
+        if (disjoint) {
+          for (const p of paths) group.paths.add(p);
+          group.tasks.push(task);
+          placed = true;
+          break;
+        }
+      }
+      if (!placed) groups.push({ paths, tasks: [task] });
+    }
+    if (groups.length > 0) {
+      layers.push({
+        layer: l,
+        groups: groups.map((group) => ({ parallel: group.tasks.length > 1, tasks: group.tasks })),
+      });
+    }
+  }
+  return layers;
+}
+
+/**
  * Effective git context for a Task: prefer `git_metadata`, fall back to the flat
  * fields retained for back-compat (ADR 0019).
  */

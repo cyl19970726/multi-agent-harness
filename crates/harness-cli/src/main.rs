@@ -10,16 +10,17 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use harness_core::{
-    build_launch_spec, AgentEvent, AgentMember, AgentMemberStatus, AgentProviderConfig,
-    AgentRuntime, AgentRuntimeHealth, AgentRuntimeStatus, AgentTeam, AgentTeamStatus, Decision,
+    build_launch_spec, compile_phase_to_starlark, compile_planner_script, content_hash_hex16,
+    AgentEvent, AgentMember, AgentMemberStatus, AgentProviderConfig, AgentRuntime,
+    AgentRuntimeHealth, AgentRuntimeStatus, AgentTeam, AgentTeamStatus, Decision,
     EvaluationOutcome, Evidence, Exploration, Gap, GapSeverity, GapStatus, Goal, GoalCase,
-    GoalDesign, GoalEvaluation, GoalStage, GoalStatus, HarnessTokenUsage, HarnessToolCall,
-    HarnessToolResult, HarnessTurnEvent, HarnessTurnEventKind, LaunchMcp, LaunchPermission,
-    LaunchSpec, Message, MessageDelivery, MessageDeliveryStatus, MessageKind,
-    MessageTerminalSource, Proposal, ProposalStatus, ProviderChildThread,
-    ProviderChildThreadStatus, ProviderSession, ProviderSessionStatus, Review, ReviewVerdict,
-    SenderKind, Task, TaskStatus, Vision, WorkflowRun, WorkflowRunStatus, WorkflowStep,
-    WorkflowStepStatus,
+    GoalDesign, GoalEvaluation, GoalOrchestrationRun, GoalPhaseStatus, GoalStage, GoalStatus,
+    HarnessTokenUsage, HarnessToolCall, HarnessToolResult, HarnessTurnEvent, HarnessTurnEventKind,
+    Knowledge, KnowledgeSource, LaunchMcp, LaunchPermission, LaunchSpec, Message, MessageDelivery,
+    MessageDeliveryStatus, MessageKind, MessageTerminalSource, OrchestrationPhaseRun,
+    OrchestrationStatus, Proposal, ProposalStatus, ProviderChildThread, ProviderChildThreadStatus,
+    ProviderSession, ProviderSessionStatus, Review, ReviewVerdict, SenderKind, Task, TaskStatus,
+    VerdictOutcome, Vision, WorkflowRun, WorkflowRunStatus, WorkflowStep, WorkflowStepStatus,
 };
 use harness_store::{HarnessStore, MessageDeliveryClaimResult};
 use thiserror::Error;
@@ -133,6 +134,7 @@ fn run() -> CliResult<()> {
         "team" => team_command(&store, &args[1..])?,
         "member" => member_command(&store, &args[1..])?,
         "goal" => goal_command(&store, &args[1..])?,
+        "phase" => phase_command(&store, &args[1..])?,
         "task" => task_command(&store, &args[1..])?,
         "message" => message_command(&store, &args[1..])?,
         "event" => event_command(&store, &args[1..])?,
@@ -432,14 +434,929 @@ fn parse_goal_stage(s: &str) -> CliResult<GoalStage> {
     })
 }
 
+fn parse_knowledge_source(s: &str) -> CliResult<KnowledgeSource> {
+    serde_json::from_value(serde_json::Value::String(s.to_string())).map_err(|_| {
+        CliError::Usage(format!(
+            "unknown knowledge source `{s}` (exploration|task|decision|evidence)"
+        ))
+    })
+}
+
+/// Keep a goal/phase id filesystem-safe for a compiled-script filename.
+fn slug_for_filename(s: &str) -> String {
+    s.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect()
+}
+
+fn phase_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    require_subcommand(args, "phase compile")?;
+    match args[0].as_str() {
+        "compile" => {
+            // Goal id: a bare positional (`phase compile <goal> --phase x`) or
+            // `--goal`/`--id`.
+            let goal_id = args
+                .get(1)
+                .filter(|a| !a.starts_with("--"))
+                .cloned()
+                .or_else(|| value(args, "--goal"))
+                .or_else(|| value(args, "--id"))
+                .ok_or_else(|| {
+                    CliError::Usage(
+                        "phase compile needs a goal (`phase compile <goal> --phase <id>` \
+                         or --goal <id>)"
+                            .into(),
+                    )
+                })?;
+            let phase_id = required(args, "--phase")?;
+            let goal = goal_load(store, &goal_id)?;
+            let phase = goal
+                .phases
+                .iter()
+                .find(|p| p.id == phase_id)
+                .ok_or_else(|| {
+                    CliError::Usage(format!("goal `{goal_id}` has no phase `{phase_id}`"))
+                })?;
+            // Compile from THIS goal's tasks (a phase id is only unique per goal).
+            // Latest-wins (NOT the raw append log): write_back re-appends each
+            // task per status change, so the raw log holds stale duplicate rows
+            // that would be compiled twice.
+            let goal_tasks: Vec<Task> = latest_tasks(store)?
+                .into_values()
+                .filter(|t| t.goal_id.as_deref() == Some(goal.id.as_str()))
+                .collect();
+            let script =
+                compile_phase_to_starlark(&goal, phase, &goal_tasks).map_err(CliError::Usage)?;
+            let hash = content_hash_hex16(&script);
+            let dir = store.root().join("compiled");
+            std::fs::create_dir_all(&dir)?;
+            let file_name = format!(
+                "{}__{}__{}.star",
+                slug_for_filename(&goal.id),
+                slug_for_filename(&phase_id),
+                hash
+            );
+            let path = dir.join(&file_name);
+            std::fs::write(&path, &script)?;
+            print_json(&serde_json::json!({
+                "goal": goal.id,
+                "phase": phase_id,
+                "hash": hash,
+                "path": path.display().to_string(),
+                "bytes": script.len(),
+                "tasks_compiled": goal_tasks
+                    .iter()
+                    .filter(|t| t.phase_id.as_deref() == Some(phase_id.as_str())
+                        && t.status != TaskStatus::Superseded)
+                    .count(),
+            }))?;
+        }
+        other => return Err(CliError::Usage(format!("unknown phase command: {other}"))),
+    }
+    Ok(())
+}
+
+/// Run ONE compiled phase script with the real provider driver, journal each
+/// step + finalize the run, and return `(run_id, outcome)` so the orchestrator
+/// can gate on the verdict. Mirrors the `workflow run-script` core. When
+/// `resume_from` is `Some(prior_run_id)` (a re-entered phase), the succeeded
+/// leaves of that prior phase run are reused via a replay map — so a killed /
+/// failed phase does not re-spend tokens on already-done task steps. `None` runs
+/// the phase fresh.
+fn run_phase_compiled_script(
+    store: &HarnessStore,
+    script: &str,
+    name: &str,
+    options: &WorkflowDeliveryOptions,
+    resume_from: Option<&str>,
+) -> CliResult<(String, workflow::WorkflowOutcome)> {
+    // Optional intra-phase resume: reuse the prior phase run's succeeded leaves.
+    // Guard exactly as `workflow run-script --resume` does — the prior run must
+    // exist and have snapshotted the IDENTICAL script, else the deterministic
+    // leaf ordinals would misalign against a different program.
+    let replay = match resume_from {
+        Some(prior_run_id) => {
+            let prior = latest_workflow_runs_in_append_order(store)?
+                .into_iter()
+                .find(|r| r.id == prior_run_id)
+                .ok_or_else(|| {
+                    CliError::Usage(format!("cannot resume {prior_run_id}: no such run"))
+                })?;
+            let prior_script = prior
+                .spec
+                .as_ref()
+                .and_then(|s| s.get("script"))
+                .and_then(|v| v.as_str());
+            match prior_script {
+                Some(prev) if prev == script => {}
+                Some(_) => {
+                    return Err(CliError::Usage(format!(
+                        "cannot resume {prior_run_id}: the script changed since that run"
+                    )))
+                }
+                None => {
+                    return Err(CliError::Usage(format!(
+                        "cannot resume {prior_run_id}: that run has no snapshotted script"
+                    )))
+                }
+            }
+            Some(build_replay_map(store, prior_run_id)?)
+        }
+        None => None,
+    };
+
+    let _ = reap_stale_workflow_runs(store);
+    let run_id = generated_id("wfrun");
+    let initiated_by = std::env::var("HARNESS_AGENT_MEMBER_ID")
+        .ok()
+        .filter(|id| !id.is_empty())
+        .unwrap_or_else(|| "operator".to_string());
+    let mut run = WorkflowRun {
+        id: run_id.clone(),
+        workflow_name: name.to_string(),
+        status: WorkflowRunStatus::Running,
+        step_ids: Vec::new(),
+        created_at: now_string(),
+        ended_at: None,
+        summary: None,
+        args: None,
+        agents_spawned: 0,
+        final_output: None,
+        initiated_by: Some(initiated_by),
+        design_intent: None,
+        spec: Some(match resume_from {
+            Some(prior) => serde_json::json!({
+                "lang": "starlark", "script": script, "orchestrated": true,
+                "resumed_from": prior,
+            }),
+            None => serde_json::json!({
+                "lang": "starlark", "script": script, "orchestrated": true,
+            }),
+        }),
+        trace_retention: options.trace_retention.clone(),
+        host_pid: Some(std::process::id()),
+        dry_run: options.dry_run,
+    };
+    store.append_workflow_run(&run)?;
+
+    let started = {
+        let run_id = run_id.clone();
+        let driver = move |step: &workflow::AgentStepSpec| {
+            workflow_real_agent_step(store, &run_id, options, step)
+        };
+        harness_workflow::starlark_front::run_starlark_with_budget(
+            script,
+            name,
+            None,
+            &driver,
+            options.max_budget_usd,
+            replay,
+        )
+        .map_err(|error| CliError::Usage(error.to_string()))?
+    };
+    run.design_intent = Some(started.meta.design_intent.clone());
+    run.workflow_name = started.meta.name.clone();
+    let outcome = started.outcome;
+    journal_workflow_outcome(store, run, &outcome)?;
+    Ok((run_id, outcome))
+}
+
+/// Write a finished phase's per-task outcome back onto each `Task.status`. A
+/// compiled task's step carries `label == task.id`, so we map by label: an `ok`
+/// step → `Done`, a failed step → `Blocked`. Each step id is linked onto the
+/// task's `workflow_step_ids`.
+fn write_back_phase_tasks(
+    store: &HarnessStore,
+    goal: &Goal,
+    phase_id: &str,
+    outcome: &workflow::WorkflowOutcome,
+) -> CliResult<()> {
+    use std::collections::HashMap;
+    let mut by_label: HashMap<&str, &workflow::StepResult> = HashMap::new();
+    for step in &outcome.steps {
+        by_label.insert(step.label.as_str(), step); // last row wins
+    }
+    let tasks = latest_tasks(store)?;
+    for mut task in tasks.into_values() {
+        if task.goal_id.as_deref() != Some(goal.id.as_str())
+            || task.phase_id.as_deref() != Some(phase_id)
+            || task.status == TaskStatus::Superseded
+        {
+            continue;
+        }
+        if let Some(step) = by_label.get(task.id.as_str()) {
+            task.status = if step.ok {
+                TaskStatus::Done
+            } else {
+                TaskStatus::Blocked
+            };
+            if let Some(step_id) = &step.step_id {
+                if !task.workflow_step_ids.contains(step_id) {
+                    task.workflow_step_ids.push(step_id.clone());
+                }
+            }
+            task.updated_at = now_string();
+            store.append_task(&task)?;
+        }
+    }
+    Ok(())
+}
+
+/// Link a finished phase run's journaled `WorkflowStep`s back to their `Task`s and
+/// stamp the verdict step's outcome (the structured Task<->Step link, acceptance
+/// #1). A compiled task step carries `label == task.id`; the acceptance judge step
+/// is labelled `verdict-<phase_id>`. Re-appends each updated step (latest-wins).
+fn link_workflow_steps_to_tasks(
+    store: &HarnessStore,
+    run_id: &str,
+    phase_id: &str,
+    phase_task_ids: &std::collections::HashSet<String>,
+    phase_passed: bool,
+) -> CliResult<()> {
+    use std::collections::BTreeMap;
+    // Latest-wins projection of this run's steps (the driver re-appends a
+    // terminal row over the running row).
+    let mut latest: BTreeMap<String, WorkflowStep> = BTreeMap::new();
+    for step in store.workflow_steps()? {
+        if step.run_id == run_id {
+            latest.insert(step.id.clone(), step);
+        }
+    }
+    let verdict_label = format!("verdict-{phase_id}");
+    for mut step in latest.into_values() {
+        let mut changed = false;
+        if phase_task_ids.contains(&step.label) && step.task_id.as_deref() != Some(&step.label) {
+            step.task_id = Some(step.label.clone());
+            changed = true;
+        }
+        if step.label == verdict_label && step.verdict_outcome.is_none() {
+            step.verdict_outcome = Some(if phase_passed {
+                VerdictOutcome::Pass
+            } else {
+                VerdictOutcome::CleanFail
+            });
+            changed = true;
+        }
+        if changed {
+            store.append_workflow_step(&step)?;
+        }
+    }
+    Ok(())
+}
+
+/// Re-project the goal's legacy `stage` from its phases (the derived stage) and
+/// persist. Keeps `to_status` / kanban consumers correct for phase-driven goals.
+fn sync_goal_stage(store: &HarnessStore, goal: &mut Goal) -> CliResult<()> {
+    let derived = goal.effective_stage();
+    if goal.stage != derived {
+        goal.stage = derived;
+        goal.status = derived.to_status();
+        goal.stage_changed_at = Some(now_string());
+    }
+    goal.updated_at = now_string();
+    store.append_goal(goal)?;
+    Ok(())
+}
+
+/// The injectable phase runner: `(script, name, resume_from) -> (run_id,
+/// outcome)`. `resume_from` is `Some(prior_run_id)` when the orchestrator is
+/// re-entering a phase that already has a prior workflow run, so its succeeded
+/// leaves can be reused; `None` runs the phase fresh. The CLI passes the real
+/// provider runner; tests pass a mock.
+type PhaseRunFn<'a> =
+    dyn Fn(&str, &str, Option<&str>) -> CliResult<(String, workflow::WorkflowOutcome)> + 'a;
+
+/// The injectable phase REVISER: given the goal, the failed phase, its current
+/// live (non-superseded) tasks, and the failure captured as `Knowledge`, return
+/// the structured revision `{supersede:[task-id...], new_tasks:[{...}]}`. The CLI
+/// passes a runner that compiles + runs a one-shot reviser worker (honoring
+/// `--dry-run`); tests pass a mock returning the revision object directly.
+type PhaseReviseFn<'a> = dyn Fn(&Goal, &harness_core::GoalPhase, &[&Task], &Knowledge) -> CliResult<serde_json::Value>
+    + 'a;
+
+/// Append an orchestrator-authored `Knowledge` entry summarizing a phase failure
+/// (which phase, the workflow run id, and the failing/blocked task labels from the
+/// outcome), persist it onto the goal, and return its id. Uses the SAME append +
+/// persist pattern as `goal knowledge-add`, with `source = Task` and the phase id
+/// set for provenance.
+fn append_failure_knowledge(
+    store: &HarnessStore,
+    goal: &mut Goal,
+    phase_id: &str,
+    workflow_run_id: &str,
+    outcome: &workflow::WorkflowOutcome,
+) -> CliResult<String> {
+    let failing: Vec<&str> = outcome
+        .steps
+        .iter()
+        .filter(|s| !s.ok)
+        .map(|s| s.label.as_str())
+        .collect();
+    let failing_md = if failing.is_empty() {
+        // The phase failed its verdict without any individual task step failing
+        // (e.g. the verdict leaf itself returned `pass=false`).
+        "the phase verdict did not pass (no individual task step reported failure)".to_string()
+    } else {
+        format!("failing/blocked tasks: {}", failing.join(", "))
+    };
+    let now = now_string();
+    let knowledge = Knowledge {
+        id: generated_id("knowledge"),
+        goal_id: goal.id.clone(),
+        phase_id: Some(phase_id.to_string()),
+        task_id: None,
+        author: "orchestrator".to_string(),
+        timestamp: now.clone(),
+        notes_md: format!(
+            "Phase `{phase_id}` failed its verdict during `goal run-phases` \
+             (workflow run `{workflow_run_id}`): {failing_md}."
+        ),
+        tags: Vec::new(),
+        source: KnowledgeSource::Task,
+        superseded_by_knowledge_id: None,
+        created_at: now.clone(),
+    };
+    let knowledge_id = knowledge.id.clone();
+    goal.knowledge.push(knowledge);
+    goal.updated_at = now;
+    store.append_goal(goal)?;
+    Ok(knowledge_id)
+}
+
+/// Apply a reviser's structured revision to a phase's task graph: mark each
+/// `supersede` id `Superseded` with `superseded_by_knowledge_id = knowledge_id`,
+/// and append each `new_tasks` entry as a `Planned` task scoped to this phase.
+/// Returns `(superseded_ids, new_task_ids)`. A revision that supersedes nothing
+/// AND adds nothing is "no actionable replan" — both vectors come back empty, and
+/// the caller stops the loop rather than churning.
+fn apply_phase_revision(
+    store: &HarnessStore,
+    goal: &Goal,
+    phase_id: &str,
+    revision: &serde_json::Value,
+    knowledge_id: &str,
+) -> CliResult<(Vec<String>, Vec<String>)> {
+    // The structured revision lands under `final_output.result.revision` (the
+    // schema's single top-level key). In --dry-run the mock makes `revision` a
+    // STRING, which yields an empty revision — handled by the `as_object` guards.
+    let rev = revision.get("revision").unwrap_or(revision);
+
+    let mut superseded = Vec::new();
+    let supersede_ids: std::collections::HashSet<String> = rev
+        .get("supersede")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|e| e.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    if !supersede_ids.is_empty() {
+        let tasks = latest_tasks(store)?;
+        for mut task in tasks.into_values() {
+            if task.goal_id.as_deref() != Some(goal.id.as_str())
+                || task.phase_id.as_deref() != Some(phase_id)
+                || task.status == TaskStatus::Superseded
+                || !supersede_ids.contains(&task.id)
+            {
+                continue;
+            }
+            task.status = TaskStatus::Superseded;
+            task.superseded_by_knowledge_id = Some(knowledge_id.to_string());
+            task.updated_at = now_string();
+            store.append_task(&task)?;
+            superseded.push(task.id.clone());
+        }
+    }
+
+    let mut new_task_ids = Vec::new();
+    let new_tasks = rev.get("new_tasks").and_then(|t| t.as_array());
+    if let Some(new_tasks) = new_tasks {
+        let now = now_string();
+        let mut existing: std::collections::HashSet<String> =
+            latest_tasks(store)?.into_keys().collect();
+        for (idx, t) in new_tasks.iter().enumerate() {
+            let task_id =
+                json_str_nonempty(t, "id").unwrap_or_else(|| format!("{phase_id}-r{}", idx + 1));
+            if existing.contains(&task_id) {
+                // Never duplicate an existing task id (idempotent re-revise).
+                continue;
+            }
+            let title = json_str_nonempty(t, "title").unwrap_or_else(|| format!("Task {task_id}"));
+            let task = Task {
+                id: task_id.clone(),
+                goal_id: Some(goal.id.clone()),
+                parent_task_id: None,
+                title: title.clone(),
+                objective: title,
+                owner_agent_id: goal.owner_agent_id.clone(),
+                assignee_agent_id: None,
+                reviewer_agent_id: None,
+                status: TaskStatus::Planned,
+                depends_on_task_ids: json_str_list(t, "depends_on"),
+                workspace_ref: None,
+                branch_ref: None,
+                pr_ref: None,
+                owned_paths: json_str_list(t, "owned_paths"),
+                acceptance_criteria: json_str_list(t, "acceptance"),
+                created_at: now.clone(),
+                updated_at: now.clone(),
+                phase: None,
+                scope_refs: Vec::new(),
+                requires_human_approval: false,
+                verdict_decision_id: None,
+                description: None,
+                git_metadata: None,
+                design_md: json_str_nonempty(t, "design_md"),
+                phase_id: Some(phase_id.to_string()),
+                superseded_by_knowledge_id: None,
+                workflow_step_ids: Vec::new(),
+            };
+            store.append_task(&task)?;
+            existing.insert(task_id.clone());
+            new_task_ids.push(task_id);
+        }
+    }
+
+    Ok((superseded, new_task_ids))
+}
+
+/// Sequence a goal's phases: gate each on its verdict before the next, write each
+/// phase's task outcomes back, advance the goal's derived stage, and persist a
+/// durable [`GoalOrchestrationRun`] checkpoint. Already-`Passed` phases are
+/// skipped (the resume primitive). When a phase does NOT pass, the failure is
+/// captured as `Knowledge` and — if retries remain — `revise_phase` revises the
+/// phase's task graph (supersede + new tasks), and the SAME phase recompiles +
+/// reruns, up to `max_phase_retries` times. `run_phase` and `revise_phase` are
+/// injectable so the sequencing / gating / replan / checkpoint logic is testable
+/// without real workers.
+fn orchestrate_goal_phases(
+    store: &HarnessStore,
+    goal_id: &str,
+    run_phase: &PhaseRunFn<'_>,
+    revise_phase: &PhaseReviseFn<'_>,
+    max_phase_retries: u32,
+) -> CliResult<serde_json::Value> {
+    let mut goal = goal_load(store, goal_id)?;
+    if goal.phases.is_empty() {
+        return Err(CliError::Usage(format!(
+            "goal `{goal_id}` has no phases to run — plan it first (`goal phase-add` or the planner)"
+        )));
+    }
+
+    // Snapshot this goal's prior orchestration history (append-ordered) BEFORE we
+    // mutate state. The intra-phase resume lookup falls back to it so a phase can
+    // be resumed even when the previous orchestration ended `Failed` (which marks
+    // the old checkpoint non-`Running`, so a fresh checkpoint is started below).
+    let prior_runs: Vec<GoalOrchestrationRun> = store
+        .goal_orchestration_runs()?
+        .into_iter()
+        .filter(|o| o.goal_id == goal_id)
+        .collect();
+
+    // Reuse an in-flight checkpoint for this goal (resume), else start a fresh one.
+    let mut orch = prior_runs
+        .iter()
+        .rev()
+        .find(|o| o.status == OrchestrationStatus::Running)
+        .cloned()
+        .unwrap_or_else(|| GoalOrchestrationRun {
+            id: generated_id("goalrun"),
+            goal_id: goal_id.to_string(),
+            status: OrchestrationStatus::Running,
+            phase_runs: Vec::new(),
+            created_at: now_string(),
+            updated_at: now_string(),
+        });
+
+    let mut ran = Vec::new();
+    let mut skipped = Vec::new();
+    for idx in 0..goal.phases.len() {
+        let phase_id = goal.phases[idx].id.clone();
+        if goal.phases[idx].status == GoalPhaseStatus::Passed {
+            skipped.push(phase_id);
+            continue;
+        }
+
+        // Intra-phase resume: a phase being RE-RUN (its persisted status is
+        // already `InProgress` or `Failed`) whose checkpoint carries a prior
+        // workflow run reuses that run's succeeded leaves, so completed in-phase
+        // task steps are not re-spent. A first-time phase resumes from nothing.
+        // Look in the current (possibly reused `Running`) checkpoint first, then
+        // fall back to the goal's prior orchestration history — the latter covers
+        // re-entry after a `Failed` run, whose old checkpoint is non-`Running`.
+        let resume_from = if matches!(
+            goal.phases[idx].status,
+            GoalPhaseStatus::InProgress | GoalPhaseStatus::Failed
+        ) {
+            orch.phase_runs
+                .iter()
+                .rev()
+                .find(|r| r.phase_id == phase_id)
+                .and_then(|r| r.workflow_run_id.clone())
+                .or_else(|| {
+                    prior_runs.iter().rev().find_map(|o| {
+                        o.phase_runs
+                            .iter()
+                            .rev()
+                            .find(|r| r.phase_id == phase_id)
+                            .and_then(|r| r.workflow_run_id.clone())
+                    })
+                })
+        } else {
+            None
+        };
+
+        goal.phases[idx].status = GoalPhaseStatus::InProgress;
+        if goal.phases[idx].started_at.is_none() {
+            goal.phases[idx].started_at = Some(now_string());
+        }
+        goal.updated_at = now_string();
+        store.append_goal(&goal)?;
+
+        // The replan loop: run the phase; on a non-pass, capture the failure as
+        // knowledge and — while retries remain — ask the reviser to revise the
+        // task graph, then recompile + rerun the SAME phase. Each attempt after
+        // the first consumes one retry from the budget. `resume_from` reuses the
+        // PREVIOUS attempt's succeeded leaves on a same-script re-run (intra-phase
+        // resume); after a revision the recompiled script differs, so we run fresh.
+        let mut resume_from = resume_from;
+        let mut retries_left = max_phase_retries;
+        let passed;
+        loop {
+            let phase = goal.phases[idx].clone();
+            // Latest-wins (NOT the raw append log): write_back re-appends each
+            // task per status change, so the raw log holds stale duplicate rows
+            // that would be compiled twice.
+            let goal_tasks: Vec<Task> = latest_tasks(store)?
+                .into_values()
+                .filter(|t| t.goal_id.as_deref() == Some(goal.id.as_str()))
+                .collect();
+            let script =
+                compile_phase_to_starlark(&goal, &phase, &goal_tasks).map_err(CliError::Usage)?;
+            let hash = content_hash_hex16(&script);
+            let dir = store.root().join("compiled");
+            std::fs::create_dir_all(&dir)?;
+            let compiled_path = dir.join(format!(
+                "{}__{}__{}.star",
+                slug_for_filename(&goal.id),
+                slug_for_filename(&phase_id),
+                hash
+            ));
+            std::fs::write(&compiled_path, &script)?;
+
+            let started_at = now_string();
+            let (run_id, outcome) = run_phase(
+                &script,
+                &format!("phase-{phase_id}"),
+                resume_from.as_deref(),
+            )?;
+            // A phase passes only if the run completed AND no task step failed.
+            // The second clause is the gate for phases with no `acceptance`
+            // (no `verdict()` is compiled): a failed task inside a `parallel()`
+            // block leaves the run Completed, so check the steps directly.
+            let attempt_passed = outcome.status == WorkflowRunStatus::Completed
+                && outcome.steps.iter().all(|s| s.ok);
+
+            write_back_phase_tasks(store, &goal, &phase_id, &outcome)?;
+
+            // Link each journaled step back to its Task + stamp the verdict step's
+            // outcome (acceptance #1: the structured Task<->Step link).
+            let phase_task_ids: std::collections::HashSet<String> = goal_tasks
+                .iter()
+                .filter(|t| t.phase_id.as_deref() == Some(phase_id.as_str()))
+                .map(|t| t.id.clone())
+                .collect();
+            link_workflow_steps_to_tasks(
+                store,
+                &run_id,
+                &phase_id,
+                &phase_task_ids,
+                attempt_passed,
+            )?;
+
+            // Record the phase verdict as a Decision and point the phase at it
+            // (acceptance #4: Decision(decision_kind=phase_verdict) +
+            // GoalPhase.verdict_decision_id).
+            let verdict_decision = Decision {
+                id: generated_id("decision"),
+                task_id: goal.id.clone(),
+                decision: format!(
+                    "phase {phase_id} verdict: {}",
+                    if attempt_passed { "pass" } else { "clean_fail" }
+                ),
+                rationale: outcome.summary.clone(),
+                evidence_ids: Vec::new(),
+                created_at: now_string(),
+                decision_kind: Some("phase_verdict".to_string()),
+                goal_id: Some(goal.id.clone()),
+                is_waiver: false,
+                follow_up_task_id: None,
+            };
+            store.append_decision(&verdict_decision)?;
+            goal.phases[idx].verdict_decision_id = Some(verdict_decision.id.clone());
+
+            goal.phases[idx].status = if attempt_passed {
+                GoalPhaseStatus::Passed
+            } else {
+                GoalPhaseStatus::Failed
+            };
+            goal.phases[idx].ended_at = Some(now_string());
+            goal.updated_at = now_string();
+            store.append_goal(&goal)?;
+
+            orch.phase_runs.push(OrchestrationPhaseRun {
+                phase_id: phase_id.clone(),
+                workflow_run_id: Some(run_id.clone()),
+                compiled_path: Some(compiled_path.display().to_string()),
+                passed: attempt_passed,
+                started_at,
+                ended_at: Some(now_string()),
+            });
+            orch.updated_at = now_string();
+            ran.push(serde_json::json!({ "phase": phase_id, "passed": attempt_passed }));
+            store.append_goal_orchestration_run(&orch)?;
+
+            if attempt_passed {
+                passed = true;
+                break;
+            }
+
+            // The phase did not pass. Capture the finding as knowledge regardless
+            // of whether we will retry (it is the durable truth of what failed).
+            let knowledge_id =
+                append_failure_knowledge(store, &mut goal, &phase_id, &run_id, &outcome)?;
+
+            if retries_left == 0 {
+                passed = false;
+                break;
+            }
+
+            // Retries remain: ask the reviser to revise this phase's task graph.
+            let phase = goal.phases[idx].clone();
+            let knowledge = goal
+                .knowledge
+                .iter()
+                .find(|k| k.id == knowledge_id)
+                .cloned()
+                .expect("the knowledge entry just appended must be present");
+            let live_tasks: Vec<Task> = store
+                .tasks()?
+                .into_iter()
+                .filter(|t| {
+                    t.goal_id.as_deref() == Some(goal.id.as_str())
+                        && t.phase_id.as_deref() == Some(phase_id.as_str())
+                        && t.status != TaskStatus::Superseded
+                })
+                .collect();
+            let live_refs: Vec<&Task> = live_tasks.iter().collect();
+            let revision = revise_phase(&goal, &phase, &live_refs, &knowledge)?;
+            let (superseded, new_task_ids) =
+                apply_phase_revision(store, &goal, &phase_id, &revision, &knowledge_id)?;
+
+            // A revision that supersedes nothing AND adds nothing is "no actionable
+            // replan" — do NOT loop forever. Count this attempt against the cap and
+            // stop (the phase stays Failed).
+            if superseded.is_empty() && new_task_ids.is_empty() {
+                passed = false;
+                break;
+            }
+
+            // The task graph changed → recompile + rerun fresh (the new script
+            // differs from the prior run, so no leaf replay applies).
+            retries_left -= 1;
+            resume_from = None;
+            goal.phases[idx].status = GoalPhaseStatus::InProgress;
+            goal.phases[idx].ended_at = None;
+            goal.updated_at = now_string();
+            store.append_goal(&goal)?;
+        }
+
+        if !passed {
+            orch.status = OrchestrationStatus::Failed;
+            store.append_goal_orchestration_run(&orch)?;
+            sync_goal_stage(store, &mut goal)?;
+            return Ok(serde_json::json!({
+                "orchestration_run": orch.id,
+                "goal": goal.id,
+                "status": "failed",
+                "failed_phase": phase_id,
+                "stage": goal.stage.as_str(),
+                "ran": ran,
+                "skipped": skipped,
+            }));
+        }
+    }
+
+    orch.status = OrchestrationStatus::Completed;
+    orch.updated_at = now_string();
+    store.append_goal_orchestration_run(&orch)?;
+    sync_goal_stage(store, &mut goal)?;
+    Ok(serde_json::json!({
+        "orchestration_run": orch.id,
+        "goal": goal.id,
+        "status": "completed",
+        "stage": goal.stage.as_str(),
+        "ran": ran,
+        "skipped": skipped,
+    }))
+}
+
+// ---------------------------------------------------------------------------
+// The PLANNER (`harness goal plan`): decompose a goal's `design_md` (+
+// `acceptance_md`) into agent-planned, sequential `phases[]` and a per-phase task
+// DAG, then persist them. It reuses the EXISTING real-driver execution path: a
+// tiny one-shot Starlark program runs ONE worker (`output(agent(prompt,
+// schema=...))`) through the same engine `goal run-phases` uses, so `--dry-run`
+// works with no real provider. The worker's structured reply is parsed and
+// written back as `GoalPhase`s + `Task`s. Re-running is idempotent-ish — existing
+// phase/task ids are skipped, never duplicated.
+// ---------------------------------------------------------------------------
+
+/// Read a JSON value as a non-empty trimmed string, else `None`.
+fn json_str_nonempty(v: &serde_json::Value, key: &str) -> Option<String> {
+    v.get(key)
+        .and_then(|x| x.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
+/// Read a JSON value as a Vec of trimmed non-empty strings (a missing/`null`/
+/// non-array value yields an empty Vec).
+fn json_str_list(v: &serde_json::Value, key: &str) -> Vec<String> {
+    v.get(key)
+        .and_then(|x| x.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|e| e.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Read a field as free text whether the worker returned a STRING or a LIST of
+/// strings (planners often emit `acceptance` as a bulleted array). A list is
+/// joined newline-separated; empty/absent → None.
+fn json_text_or_list(v: &serde_json::Value, key: &str) -> Option<String> {
+    if let Some(s) = json_str_nonempty(v, key) {
+        return Some(s);
+    }
+    let joined = json_str_list(v, key).join("\n");
+    (!joined.trim().is_empty()).then_some(joined)
+}
+
+/// Coerce a value that a flat-schema worker may return EITHER as a JSON array
+/// OR as a JSON-encoded string (codex commonly stringifies a nested array under a
+/// `"key":"<shape>"` hint) into an owned array of values.
+fn json_array_or_parsed(structured: &serde_json::Value, key: &str) -> Vec<serde_json::Value> {
+    match structured.get(key) {
+        Some(serde_json::Value::Array(arr)) => arr.clone(),
+        Some(serde_json::Value::String(s)) => serde_json::from_str::<serde_json::Value>(s)
+            .ok()
+            .and_then(|v| v.as_array().cloned())
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    }
+}
+
+/// The result of `plan_into_goal`: which phase/task ids were created (and which
+/// existing ids were skipped), so the command can report idempotent re-runs.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct PlanResult {
+    phases_added: Vec<String>,
+    phases_skipped: Vec<String>,
+    tasks_created: Vec<String>,
+    tasks_skipped: Vec<String>,
+}
+
+/// Parse the planner's structured object and PERSIST it onto the goal: append new
+/// phases onto `goal.phases` (skipping ids that already exist) and create `Task`s
+/// (status `Planned`) with `goal_id` / `phase_id` / `design_md` / acceptance /
+/// owned_paths / depends_on. Idempotent-ish: an existing phase or task id is never
+/// duplicated. Returns the created/skipped ids; persists the goal + tasks.
+///
+/// `structured` is the planner run's `final_output.result`. In `--dry-run` it is
+/// the mock object (`{"phases": "mock phases"}`), where `phases` is a STRING — that
+/// (or a missing/empty `phases` array) yields an empty plan, which the caller
+/// reports rather than panicking.
+fn plan_into_goal(
+    store: &HarnessStore,
+    goal: &mut Goal,
+    structured: &serde_json::Value,
+    owner: &str,
+) -> CliResult<PlanResult> {
+    let mut result = PlanResult::default();
+    // `phases` may arrive as a real array OR as a JSON-encoded string (codex
+    // stringifies the nested array under the flat schema hint). The dry-run mock
+    // returns a plain placeholder string that parses to nothing → degrade.
+    let phases = json_array_or_parsed(structured, "phases");
+    if phases.is_empty() {
+        return Ok(result);
+    }
+    let phases = &phases;
+
+    let now = now_string();
+    for (p_idx, p) in phases.iter().enumerate() {
+        let phase_id = slug_for_filename(
+            &json_str_nonempty(p, "id").unwrap_or_else(|| format!("phase-{}", p_idx + 1)),
+        );
+        if goal.phases.iter().any(|existing| existing.id == phase_id) {
+            result.phases_skipped.push(phase_id.clone());
+        } else {
+            goal.phases.push(harness_core::GoalPhase {
+                id: phase_id.clone(),
+                name: json_str_nonempty(p, "name").unwrap_or_else(|| phase_id.clone()),
+                intent: json_str_nonempty(p, "intent")
+                    .unwrap_or_else(|| format!("Execute phase {phase_id}.")),
+                status: harness_core::GoalPhaseStatus::NotStarted,
+                acceptance: json_text_or_list(p, "acceptance"),
+                verdict_decision_id: None,
+                created_at: now.clone(),
+                started_at: None,
+                ended_at: None,
+            });
+            result.phases_added.push(phase_id.clone());
+        }
+
+        // Tasks for this phase (created regardless of whether the phase was new,
+        // so a re-run can backfill tasks onto an existing phase — but never
+        // duplicate a task id).
+        let existing_task_ids: std::collections::HashSet<String> = latest_tasks(store)?
+            .into_keys()
+            .chain(result.tasks_created.iter().cloned())
+            .collect();
+        let tasks = json_array_or_parsed(p, "tasks");
+        for (t_idx, t) in tasks.iter().enumerate() {
+            let task_id =
+                json_str_nonempty(t, "id").unwrap_or_else(|| format!("{phase_id}-t{}", t_idx + 1));
+            if existing_task_ids.contains(&task_id) {
+                result.tasks_skipped.push(task_id);
+                continue;
+            }
+            let title = json_str_nonempty(t, "title").unwrap_or_else(|| format!("Task {task_id}"));
+            let task = Task {
+                id: task_id.clone(),
+                goal_id: Some(goal.id.clone()),
+                parent_task_id: None,
+                title: title.clone(),
+                objective: title,
+                owner_agent_id: owner.to_string(),
+                assignee_agent_id: None,
+                reviewer_agent_id: None,
+                status: TaskStatus::Planned,
+                depends_on_task_ids: json_str_list(t, "depends_on"),
+                workspace_ref: None,
+                branch_ref: None,
+                pr_ref: None,
+                owned_paths: json_str_list(t, "owned_paths"),
+                acceptance_criteria: json_str_list(t, "acceptance"),
+                created_at: now.clone(),
+                updated_at: now.clone(),
+                phase: None,
+                scope_refs: Vec::new(),
+                requires_human_approval: false,
+                verdict_decision_id: None,
+                description: None,
+                git_metadata: None,
+                design_md: json_str_nonempty(t, "design_md"),
+                phase_id: Some(phase_id.clone()),
+                superseded_by_knowledge_id: None,
+                workflow_step_ids: Vec::new(),
+            };
+            store.append_task(&task)?;
+            result.tasks_created.push(task_id);
+        }
+    }
+
+    goal.updated_at = now_string();
+    store.append_goal(goal)?;
+    Ok(result)
+}
+
 fn goal_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     require_subcommand(
         args,
-        "goal create|list|show|describe-set|design-set|acceptance-set|explore-add|stage|learning-status|evaluate|close",
+        "goal create|list|show|describe-set|design-set|acceptance-set|explore-add|phase-add|knowledge-add|design-synthesize|plan|run-phases|stage|learning-status|evaluate|close",
     )?;
     match args[0].as_str() {
         "create" => {
             let goal = Goal {
+                phases: Vec::new(),
+                knowledge: Vec::new(),
+                design_synthesis_at: None,
                 id: value(args, "--id").unwrap_or_else(|| generated_id("goal")),
                 title: required(args, "--title")?,
                 owner_agent_id: required(args, "--owner")?,
@@ -508,6 +1425,245 @@ fn goal_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
             goal.updated_at = now_string();
             store.append_goal(&goal)?;
             print_json(&goal)?;
+        }
+        "phase-add" => {
+            let id = required(args, "--id").or_else(|_| required(args, "--goal"))?;
+            let mut goal = goal_load(store, &id)?;
+            let phase_id = value(args, "--phase-id").unwrap_or_else(|| generated_id("phase"));
+            if goal.phases.iter().any(|p| p.id == phase_id) {
+                return Err(CliError::Usage(format!(
+                    "goal `{id}` already has a phase `{phase_id}`"
+                )));
+            }
+            let name = required(args, "--name")?;
+            let intent = md_value(args, "intent")?
+                .or_else(|| value(args, "--intent"))
+                .ok_or_else(|| {
+                    CliError::Usage(
+                        "phase-add needs --intent <text> or --intent-file <path>".into(),
+                    )
+                })?;
+            goal.phases.push(harness_core::GoalPhase {
+                id: phase_id,
+                name,
+                intent,
+                status: harness_core::GoalPhaseStatus::NotStarted,
+                acceptance: md_value(args, "acceptance")?,
+                verdict_decision_id: None,
+                created_at: now_string(),
+                started_at: None,
+                ended_at: None,
+            });
+            goal.updated_at = now_string();
+            store.append_goal(&goal)?;
+            print_json(&goal)?;
+        }
+        "knowledge-add" => {
+            let id = required(args, "--id").or_else(|_| required(args, "--goal"))?;
+            let mut goal = goal_load(store, &id)?;
+            let author = required(args, "--author")?;
+            let notes = md_value(args, "notes")?.ok_or_else(|| {
+                CliError::Usage("knowledge-add needs --notes <text> or --notes-file <path>".into())
+            })?;
+            let source = match value(args, "--source").as_deref() {
+                None => KnowledgeSource::Exploration,
+                Some(s) => parse_knowledge_source(s)?,
+            };
+            let now = now_string();
+            let knowledge = Knowledge {
+                id: value(args, "--knowledge-id").unwrap_or_else(|| generated_id("knowledge")),
+                goal_id: goal.id.clone(),
+                phase_id: value(args, "--phase"),
+                task_id: value(args, "--task"),
+                author,
+                timestamp: now.clone(),
+                notes_md: notes,
+                tags: many(args, "--tag"),
+                source,
+                superseded_by_knowledge_id: None,
+                created_at: now.clone(),
+            };
+            goal.knowledge.push(knowledge);
+            goal.updated_at = now;
+            store.append_goal(&goal)?;
+            print_json(&goal)?;
+        }
+        "design-synthesize" => {
+            let id = required(args, "--id").or_else(|_| required(args, "--goal"))?;
+            let mut goal = goal_load(store, &id)?;
+            // The gate ("requires non-empty knowledge") lives in the model.
+            let design = goal.synthesize_design_md().map_err(CliError::Usage)?;
+            let now = now_string();
+            goal.design_md = Some(design);
+            goal.design_synthesis_at = Some(now.clone());
+            goal.updated_at = now;
+            store.append_goal(&goal)?;
+            print_json(&goal)?;
+        }
+        "plan" => {
+            let goal_id = args
+                .get(1)
+                .filter(|a| !a.starts_with("--"))
+                .cloned()
+                .or_else(|| value(args, "--goal"))
+                .or_else(|| value(args, "--id"))
+                .ok_or_else(|| {
+                    CliError::Usage("plan needs a goal (`goal plan <goal>` or --goal <id>)".into())
+                })?;
+            let trace_retention = value(args, "--trace").unwrap_or_else(|| "durable".to_string());
+            if trace_retention != "durable" && trace_retention != "live" {
+                return Err(CliError::Usage(format!(
+                    "--trace must be 'durable' or 'live', got '{trace_retention}'"
+                )));
+            }
+            let mut goal = goal_load(store, &goal_id)?;
+            // Run ONE planner worker by GENERATING a tiny one-shot Starlark
+            // program and running it through the SAME real-driver path
+            // `run-phases` uses (honors --dry-run, so tests/CI need no provider).
+            let script = compile_planner_script(&goal);
+            let options = WorkflowDeliveryOptions {
+                dry_run: has_flag(args, "--dry-run"),
+                start_runtime: has_flag(args, "--start-runtime"),
+                timeout_ms: value(args, "--timeout-ms")
+                    .and_then(|v| v.parse::<u64>().ok())
+                    .unwrap_or(900_000),
+                default_model: value(args, "--model"),
+                default_effort: value(args, "--effort"),
+                max_budget_usd: value(args, "--max-budget-usd").and_then(|v| v.parse::<f64>().ok()),
+                trace_retention,
+                progress: has_flag(args, "--progress"),
+            };
+            let (run_id, outcome) = run_phase_compiled_script(
+                store,
+                &script,
+                &format!("plan-{goal_id}"),
+                &options,
+                None,
+            )?;
+            // The planner's structured decomposition lands verbatim under
+            // `final_output.result`. In --dry-run that is the mock object (where
+            // `phases` is a STRING) — `plan_into_goal` degrades to an empty plan.
+            let structured = outcome
+                .final_output
+                .as_ref()
+                .and_then(|fo| fo.get("result"))
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
+            let owner = goal.owner_agent_id.clone();
+            let result = plan_into_goal(store, &mut goal, &structured, &owner)?;
+            let planned_anything =
+                !result.phases_added.is_empty() || !result.tasks_created.is_empty();
+            print_json(&serde_json::json!({
+                "goal": goal.id,
+                "plan_run": run_id,
+                "dry_run": options.dry_run,
+                "planned": planned_anything,
+                "phases_added": result.phases_added,
+                "phases_skipped": result.phases_skipped,
+                "tasks_created": result.tasks_created,
+                "tasks_skipped": result.tasks_skipped,
+                "note": if planned_anything {
+                    serde_json::Value::Null
+                } else {
+                    serde_json::Value::String(
+                        "no phases planned — the planner returned no structured \
+                         decomposition (expected in --dry-run, which produces a mock \
+                         object); run without --dry-run with a real provider to plan"
+                            .into(),
+                    )
+                },
+            }))?;
+        }
+        "run-phases" => {
+            let goal_id = args
+                .get(1)
+                .filter(|a| !a.starts_with("--"))
+                .cloned()
+                .or_else(|| value(args, "--goal"))
+                .or_else(|| value(args, "--id"))
+                .ok_or_else(|| {
+                    CliError::Usage(
+                        "run-phases needs a goal (`goal run-phases <goal>` or --goal <id>)".into(),
+                    )
+                })?;
+            let trace_retention = value(args, "--trace").unwrap_or_else(|| "durable".to_string());
+            if trace_retention != "durable" && trace_retention != "live" {
+                return Err(CliError::Usage(format!(
+                    "--trace must be 'durable' or 'live', got '{trace_retention}'"
+                )));
+            }
+            // `--resume` documents the intent to re-enter the existing `Running`
+            // checkpoint and reuse completed work. The orchestrator already
+            // reuses a `Running` checkpoint unconditionally (phase-level resume)
+            // and reuses a re-run phase's succeeded leaves (intra-phase resume),
+            // so the flag is an explicit, auditable opt-in rather than a behavior
+            // toggle — running with or without it is equivalent today.
+            let _resume = has_flag(args, "--resume");
+            // How many times a failing phase may be revised + re-run before the
+            // orchestration gives up (the replan-loop cap). Default 1.
+            let max_phase_retries = value(args, "--max-phase-retries")
+                .and_then(|v| v.parse::<u32>().ok())
+                .unwrap_or(1);
+            let options = WorkflowDeliveryOptions {
+                dry_run: has_flag(args, "--dry-run"),
+                start_runtime: has_flag(args, "--start-runtime"),
+                timeout_ms: value(args, "--timeout-ms")
+                    .and_then(|v| v.parse::<u64>().ok())
+                    .unwrap_or(900_000),
+                default_model: value(args, "--model"),
+                default_effort: value(args, "--effort"),
+                max_budget_usd: value(args, "--max-budget-usd").and_then(|v| v.parse::<f64>().ok()),
+                trace_retention,
+                progress: has_flag(args, "--progress"),
+            };
+            let run_phase = |script: &str, name: &str, resume_from: Option<&str>| {
+                run_phase_compiled_script(store, script, name, &options, resume_from)
+            };
+            // The real reviser: compile a one-shot reviser worker and run it
+            // through the SAME real-driver path (honors --dry-run, where the mock
+            // yields a degenerate empty revision the loop treats as "no replan").
+            let revise_phase = |goal: &Goal,
+                                phase: &harness_core::GoalPhase,
+                                live_tasks: &[&Task],
+                                knowledge: &Knowledge|
+             -> CliResult<serde_json::Value> {
+                let script = harness_core::compile_reviser_script(
+                    goal,
+                    phase,
+                    live_tasks,
+                    &knowledge.notes_md,
+                );
+                let (_run_id, outcome) = run_phase_compiled_script(
+                    store,
+                    &script,
+                    &format!("revise-{}-{}", goal.id, phase.id),
+                    &options,
+                    None,
+                )?;
+                Ok(outcome
+                    .final_output
+                    .as_ref()
+                    .and_then(|fo| fo.get("result"))
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null))
+            };
+            let report = orchestrate_goal_phases(
+                store,
+                &goal_id,
+                &run_phase,
+                &revise_phase,
+                max_phase_retries,
+            )?;
+            print_json(&report)?;
+            if report.get("status").and_then(|s| s.as_str()) == Some("failed") {
+                let phase = report
+                    .get("failed_phase")
+                    .and_then(|p| p.as_str())
+                    .unwrap_or("?");
+                return Err(CliError::Usage(format!(
+                    "orchestration stopped: phase `{phase}` did not pass its verdict"
+                )));
+            }
         }
         "stage" => {
             let id = required(args, "--id").or_else(|_| required(args, "--goal"))?;
@@ -674,6 +1830,10 @@ fn task_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     match args[0].as_str() {
         "create" => {
             let task = Task {
+                design_md: md_value(args, "design")?,
+                phase_id: value(args, "--phase-id"),
+                superseded_by_knowledge_id: None,
+                workflow_step_ids: Vec::new(),
                 id: value(args, "--id").unwrap_or_else(|| generated_id("task")),
                 goal_id: value(args, "--goal"),
                 parent_task_id: value(args, "--parent"),
@@ -1205,6 +2365,9 @@ fn autonomy_decide_value(store: &HarnessStore, args: &[String]) -> CliResult<ser
     if disposition == "accept" {
         if let Some(goal_id) = value(args, "--create-goal") {
             let goal = Goal {
+                phases: Vec::new(),
+                knowledge: Vec::new(),
+                design_synthesis_at: None,
                 id: goal_id,
                 title: required(args, "--goal-title")?,
                 owner_agent_id: lead.clone(),
@@ -1236,6 +2399,10 @@ fn autonomy_decide_value(store: &HarnessStore, args: &[String]) -> CliResult<ser
             let assignee = value(args, "--assignee");
             let reviewer = value(args, "--reviewer");
             let task = Task {
+                design_md: None,
+                phase_id: None,
+                superseded_by_knowledge_id: None,
+                workflow_step_ids: Vec::new(),
                 id: next_task_id,
                 goal_id: next_goal_id.clone(),
                 parent_task_id: Some(source_task.id.clone()),
@@ -3270,6 +4437,9 @@ fn create_goal_value(
     body: &serde_json::Value,
 ) -> CliResult<serde_json::Value> {
     let goal = Goal {
+        phases: Vec::new(),
+        knowledge: Vec::new(),
+        design_synthesis_at: None,
         id: json_string(body, "id").unwrap_or_else(|| generated_id("goal")),
         title: required_json_string(body, "title")?,
         owner_agent_id: required_json_string(body, "owner")
@@ -3300,6 +4470,10 @@ fn create_task_value(
     body: &serde_json::Value,
 ) -> CliResult<serde_json::Value> {
     let task = Task {
+        design_md: None,
+        phase_id: None,
+        superseded_by_knowledge_id: None,
+        workflow_step_ids: Vec::new(),
         id: json_string(body, "id").unwrap_or_else(|| generated_id("task")),
         goal_id: json_string(body, "goal"),
         parent_task_id: json_string(body, "parent"),
@@ -4111,6 +5285,8 @@ fn build_terminal_step(
         _ => now,
     };
     WorkflowStep {
+        task_id: None,
+        verdict_outcome: None,
         id: step_id,
         run_id: run_id.to_string(),
         phase: result.phase.clone(),
@@ -4142,6 +5318,8 @@ fn workflow_real_agent_step(
     let session_id = generated_id("session");
     let started_at = now_string();
     let running = WorkflowStep {
+        task_id: None,
+        verdict_outcome: None,
         id: step_id.clone(),
         run_id: run_id.to_string(),
         phase: spec.phase.clone(),
@@ -4258,17 +5436,28 @@ fn try_workflow_real_agent_step(
             "ephemeral {} worker (dry-run) for {}{model_note}{isolation_note} · 校验占位中文输出",
             spec.provider, spec.label,
         );
-        // In schema mode, synthesize a mock structured object (each required key
-        // -> a mock string) so `cargo test` + the acceptance script exercise the
-        // structured path WITHOUT a live provider.
+        // In schema mode, synthesize a mock structured object so `cargo test` +
+        // the acceptance script exercise the structured path WITHOUT a live
+        // provider. Each value is TYPE-CORRECT for the key's flat schema hint
+        // (e.g. a "bool" hint -> `true`), so a compiled phase's verdict gate
+        // (`schema={"pass":"bool",...}` -> `_acc.get("pass") == True`) can pass
+        // under --dry-run instead of always failing on a "mock pass" string.
         let structured = spec.schema.as_ref().map(|schema| {
             let obj: serde_json::Map<String, serde_json::Value> = schema_required_keys(schema)
                 .into_iter()
                 .map(|key| {
-                    (
-                        key.clone(),
-                        serde_json::Value::String(format!("mock {key}")),
-                    )
+                    let value = match schema.get(&key).and_then(|h| h.as_str()) {
+                        Some("bool" | "boolean") => serde_json::Value::Bool(true),
+                        Some("int" | "integer" | "number" | "float") => {
+                            serde_json::Value::Number(0.into())
+                        }
+                        Some("array" | "list") => serde_json::Value::Array(vec![]),
+                        Some("object" | "dict" | "map") => {
+                            serde_json::Value::Object(serde_json::Map::new())
+                        }
+                        _ => serde_json::Value::String(format!("mock {key}")),
+                    };
+                    (key, value)
                 })
                 .collect();
             serde_json::Value::Object(obj)
@@ -12633,6 +13822,7 @@ fn parse_task_status(value: &str) -> CliResult<TaskStatus> {
         "blocked" => Ok(TaskStatus::Blocked),
         "review" => Ok(TaskStatus::Review),
         "done" => Ok(TaskStatus::Done),
+        "superseded" => Ok(TaskStatus::Superseded),
         "archived" => Ok(TaskStatus::Archived),
         other => Err(CliError::Usage(format!("unknown task status: {other}"))),
     }
@@ -12670,6 +13860,7 @@ fn status_label(status: &TaskStatus) -> &'static str {
         TaskStatus::Blocked => "blocked",
         TaskStatus::Review => "review",
         TaskStatus::Done => "done",
+        TaskStatus::Superseded => "superseded",
         TaskStatus::Archived => "archived",
     }
 }
@@ -12725,6 +13916,7 @@ fn print_help() {
   member register --name <name> --role <role> [--provider codex|claude] [--capability <cap>] [--worktree <path>] [--permission-profile <profile>] [--runtime-workspace-root <path>]
   member list
   goal create --title <title> --objective <text> --owner <agent> [--success <text>]
+  goal plan <goal> [--dry-run] [--trace durable|live] [--timeout-ms <ms>] [--model <m>] [--effort <e>]
   goal learning-status --id <goal> [--strict] [--require-evaluation] [--allow-waiver] [--waiver-decision <decision>]
   goal list
   task create --title <title> --objective <text> --owner <agent> [--goal <goal>] [--assignee <agent>] [--reviewer <agent>] [--workspace <path>] [--branch <ref>] [--pr <ref>] [--owned-path <path>] [--acceptance <text>]
@@ -14711,6 +15903,8 @@ mod workflow_runtime_tests {
             .expect("append run");
         store
             .append_workflow_step(&WorkflowStep {
+                task_id: None,
+                verdict_outcome: None,
                 id: format!("{id}-s"),
                 run_id: id.into(),
                 phase: "work".into(),
@@ -14807,6 +16001,8 @@ mod workflow_runtime_tests {
         // A still-open step under it must be closed to Failed by the reaper too.
         store
             .append_workflow_step(&WorkflowStep {
+                task_id: None,
+                verdict_outcome: None,
                 id: "wfstep-dead".into(),
                 run_id: "wfrun-dead".into(),
                 phase: "scan".into(),
@@ -15076,6 +16272,8 @@ mod workflow_runtime_tests {
     fn workflow_get_output_returns_full_reply_and_falls_back_to_summary() {
         let store = temp_store("get-output");
         let mk_step = |id: &str, label: &str, sid: &str, summary: &str| WorkflowStep {
+            task_id: None,
+            verdict_outcome: None,
             id: id.into(),
             run_id: "wfrun-go".into(),
             phase: "p".into(),
@@ -15733,6 +16931,176 @@ agent("a NEW second leaf that changes the ordinal alignment")
         assert_eq!(steps.len(), 3);
     }
 
+    /// The dashboard snapshot serializes a phase-driven goal's `phases[]` and
+    /// `knowledge[]` (so the S7 phases-timeline and knowledge-timeline can render),
+    /// and a task's planning fields (`phase_id`, `design_md`,
+    /// `superseded_by_knowledge_id`, `workflow_step_ids`) so the per-phase task DAG
+    /// and superseded rendering have their data. The Goal/Task structs serialize
+    /// via serde, so this guards against an accidental projection that drops them.
+    #[test]
+    fn dashboard_snapshot_exposes_phases_knowledge_and_task_planning_fields() {
+        let store = temp_store("planning");
+        let goal = Goal {
+            id: "goal-plan".into(),
+            title: "Planned goal".into(),
+            owner_agent_id: "leader".into(),
+            status: GoalStatus::Active,
+            priority: "p0".into(),
+            created_at: "unix-ms:1".into(),
+            updated_at: "unix-ms:1".into(),
+            vision_id: None,
+            goal_design_id: None,
+            closed_by_decision_id: None,
+            git_metadata: None,
+            stage: GoalStage::default(),
+            description_md: None,
+            design_md: None,
+            acceptance_md: None,
+            explorations: Vec::new(),
+            skill_refs: Vec::new(),
+            stage_changed_at: None,
+            phases: vec![harness_core::GoalPhase {
+                id: "phase-1".into(),
+                name: "Build".into(),
+                intent: "wire it up".into(),
+                status: harness_core::GoalPhaseStatus::InProgress,
+                acceptance: Some("smoke test passes".into()),
+                verdict_decision_id: None,
+                created_at: "unix-ms:1".into(),
+                started_at: Some("unix-ms:2".into()),
+                ended_at: None,
+            }],
+            knowledge: vec![Knowledge {
+                id: "knowledge-1".into(),
+                goal_id: "goal-plan".into(),
+                phase_id: Some("phase-1".into()),
+                task_id: Some("t-a".into()),
+                author: "worker".into(),
+                timestamp: "unix-ms:3".into(),
+                notes_md: "the orderbook lags".into(),
+                tags: vec!["finding".into()],
+                source: KnowledgeSource::Task,
+                superseded_by_knowledge_id: None,
+                created_at: "unix-ms:3".into(),
+            }],
+            design_synthesis_at: None,
+        };
+        store.append_goal(&goal).expect("append goal");
+
+        let task = Task {
+            id: "t-a".into(),
+            goal_id: Some("goal-plan".into()),
+            parent_task_id: None,
+            title: "Task A".into(),
+            objective: "do A".into(),
+            owner_agent_id: "leader".into(),
+            assignee_agent_id: Some("worker".into()),
+            reviewer_agent_id: None,
+            status: TaskStatus::Assigned,
+            depends_on_task_ids: Vec::new(),
+            workspace_ref: None,
+            branch_ref: None,
+            pr_ref: None,
+            owned_paths: Vec::new(),
+            acceptance_criteria: Vec::new(),
+            created_at: "unix-ms:10".into(),
+            updated_at: "unix-ms:10".into(),
+            phase: None,
+            scope_refs: Vec::new(),
+            requires_human_approval: false,
+            verdict_decision_id: None,
+            description: None,
+            git_metadata: None,
+            design_md: Some("slice of the design for t-a".into()),
+            phase_id: Some("phase-1".into()),
+            superseded_by_knowledge_id: None,
+            workflow_step_ids: vec!["wfstep-1".into()],
+        };
+        store.append_task(&task).expect("append task");
+
+        let superseded = Task {
+            id: "t-b".into(),
+            status: TaskStatus::Superseded,
+            phase_id: Some("phase-1".into()),
+            superseded_by_knowledge_id: Some("knowledge-1".into()),
+            ..task.clone()
+        };
+        store
+            .append_task(&superseded)
+            .expect("append superseded task");
+
+        let snapshot = dashboard_snapshot(&store).expect("snapshot");
+
+        let goals = snapshot
+            .get("goals")
+            .and_then(|v| v.as_array())
+            .expect("goals array");
+        let snap_goal = goals
+            .iter()
+            .find(|g| g.get("id").and_then(|v| v.as_str()) == Some("goal-plan"))
+            .expect("goal-plan present");
+        let phases = snap_goal
+            .get("phases")
+            .and_then(|v| v.as_array())
+            .expect("phases array");
+        assert_eq!(phases.len(), 1);
+        assert_eq!(
+            phases[0].get("status").and_then(|v| v.as_str()),
+            Some("in_progress")
+        );
+        let knowledge = snap_goal
+            .get("knowledge")
+            .and_then(|v| v.as_array())
+            .expect("knowledge array");
+        assert_eq!(knowledge.len(), 1);
+        assert_eq!(
+            knowledge[0].get("source").and_then(|v| v.as_str()),
+            Some("task")
+        );
+        assert_eq!(
+            knowledge[0].get("phase_id").and_then(|v| v.as_str()),
+            Some("phase-1")
+        );
+
+        let tasks = snapshot
+            .get("tasks")
+            .and_then(|v| v.as_array())
+            .expect("tasks array");
+        let snap_task = tasks
+            .iter()
+            .find(|t| t.get("id").and_then(|v| v.as_str()) == Some("t-a"))
+            .expect("t-a present");
+        assert_eq!(
+            snap_task.get("phase_id").and_then(|v| v.as_str()),
+            Some("phase-1")
+        );
+        assert!(snap_task
+            .get("design_md")
+            .and_then(|v| v.as_str())
+            .is_some());
+        assert_eq!(
+            snap_task
+                .get("workflow_step_ids")
+                .and_then(|v| v.as_array())
+                .map(|a| a.len()),
+            Some(1)
+        );
+        let snap_superseded = tasks
+            .iter()
+            .find(|t| t.get("id").and_then(|v| v.as_str()) == Some("t-b"))
+            .expect("t-b present");
+        assert_eq!(
+            snap_superseded.get("status").and_then(|v| v.as_str()),
+            Some("superseded")
+        );
+        assert_eq!(
+            snap_superseded
+                .get("superseded_by_knowledge_id")
+                .and_then(|v| v.as_str()),
+            Some("knowledge-1")
+        );
+    }
+
     /// LIVE PROGRESS contract: when a driver journals a `running` step row at
     /// step start (carrying its `step_id` + real `started_at`), the runtime
     /// REUSES that identity for the terminal row. The append log then holds two
@@ -15753,6 +17121,8 @@ agent("a NEW second leaf that changes the ordinal alignment")
             let step_id = generated_id("wfstep");
             let started_at = format!("unix-ms:{}", 1_000 + spec.label.len());
             let running = WorkflowStep {
+                task_id: None,
+                verdict_outcome: None,
                 id: step_id.clone(),
                 run_id: run_id.clone(),
                 phase: spec.phase.clone(),
@@ -18337,6 +19707,9 @@ mod tests {
 
     fn make_goal(id: &str) -> Goal {
         Goal {
+            phases: Vec::new(),
+            knowledge: Vec::new(),
+            design_synthesis_at: None,
             id: id.into(),
             title: "Goal".into(),
             owner_agent_id: "leader".into(),
@@ -18360,6 +19733,10 @@ mod tests {
 
     fn make_task(id: &str, goal_id: &str) -> Task {
         Task {
+            design_md: None,
+            phase_id: None,
+            superseded_by_knowledge_id: None,
+            workflow_step_ids: Vec::new(),
             id: id.into(),
             goal_id: Some(goal_id.into()),
             parent_task_id: None,
@@ -18384,6 +19761,894 @@ mod tests {
             description: None,
             git_metadata: None,
         }
+    }
+
+    #[test]
+    fn compiled_phase_script_runs_under_the_real_starlark_engine() {
+        use std::sync::Mutex;
+        let mut goal = make_goal("goal-compile");
+        goal.phases = vec![harness_core::GoalPhase {
+            id: "phase-1".into(),
+            name: "Build".into(),
+            intent: "wire it up end to end".into(),
+            status: harness_core::GoalPhaseStatus::InProgress,
+            acceptance: Some("It compiles and the smoke test passes.".into()),
+            verdict_decision_id: None,
+            created_at: "unix-ms:1".into(),
+            started_at: None,
+            ended_at: None,
+        }];
+        let mut a = make_task("t-a", "goal-compile");
+        a.phase_id = Some("phase-1".into());
+        a.owned_paths = vec!["crates/a".into()];
+        let mut b = make_task("t-b", "goal-compile");
+        b.phase_id = Some("phase-1".into());
+        b.owned_paths = vec!["crates/b".into()];
+        let mut c = make_task("t-c", "goal-compile");
+        c.phase_id = Some("phase-1".into());
+        c.owned_paths = vec!["crates/c".into()];
+        c.depends_on_task_ids = vec!["t-a".into(), "t-b".into()];
+        let tasks = vec![a, b, c];
+
+        let script =
+            compile_phase_to_starlark(&goal, &goal.phases[0], &tasks).expect("compile phase");
+
+        // Run the GENERATED script through the real Starlark engine with a mock
+        // driver — proves it parses, dispatches every task, and the verdict gate
+        // evaluates (no real workers spawned).
+        let seen = Mutex::new(Vec::<String>::new());
+        let driver = |spec: &workflow::AgentStepSpec| -> workflow::StepResult {
+            seen.lock().unwrap().push(spec.label.clone());
+            let structured = if spec.label.starts_with("verdict-") {
+                Some(serde_json::json!({ "pass": true, "reason": "ok" }))
+            } else {
+                None
+            };
+            workflow::StepResult {
+                phase: spec.phase.clone(),
+                label: spec.label.clone(),
+                provider: spec.provider.clone(),
+                isolation: spec.isolation.clone(),
+                ok: true,
+                provider_session_id: None,
+                output_summary: "ok".into(),
+                step_id: None,
+                started_at: None,
+                details: None,
+                structured,
+                ordinal: None,
+            }
+        };
+        let outcome =
+            harness_workflow::starlark_front::run_starlark(&script, "phase-1", None, &driver)
+                .expect("generated script must parse and run")
+                .outcome;
+        assert_eq!(outcome.status, WorkflowRunStatus::Completed);
+        let labels = seen.into_inner().unwrap();
+        for want in ["t-a", "t-b", "t-c"] {
+            assert!(
+                labels.contains(&want.to_string()),
+                "missing {want} in {labels:?}"
+            );
+        }
+        assert!(labels.iter().any(|l| l.starts_with("verdict-")));
+    }
+
+    #[test]
+    fn compiled_reviser_script_runs_under_the_real_starlark_engine() {
+        // The reviser script the CLI generates on a phase failure must be valid
+        // Starlark: it parses, runs ONE schema-mode worker, and surfaces the
+        // worker's structured reply under `final_output`. A mock driver synthesizes
+        // the structured object the way the dry-run path does.
+        let mut goal = make_goal("goal-revise");
+        let phase = harness_core::GoalPhase {
+            id: "p1".into(),
+            name: "Build".into(),
+            intent: "wire it up".into(),
+            status: harness_core::GoalPhaseStatus::Failed,
+            acceptance: Some("It compiles and tests pass.".into()),
+            verdict_decision_id: None,
+            created_at: "unix-ms:1".into(),
+            started_at: None,
+            ended_at: None,
+        };
+        goal.phases = vec![phase.clone()];
+        let mut t = make_task("t-bad", "goal-revise");
+        t.phase_id = Some("p1".into());
+        t.owned_paths = vec!["crates/a".into()];
+        let live_refs: Vec<&Task> = vec![&t];
+        let script = harness_core::compile_reviser_script(
+            &goal,
+            &phase,
+            &live_refs,
+            "phase p1 failed: t-bad blocked",
+        );
+
+        let driver = |spec: &workflow::AgentStepSpec| -> workflow::StepResult {
+            let structured = spec.schema.as_ref().map(|_| {
+                serde_json::json!({
+                    "revision": { "supersede": ["t-bad"], "new_tasks": [] }
+                })
+            });
+            workflow::StepResult {
+                phase: spec.phase.clone(),
+                label: spec.label.clone(),
+                provider: spec.provider.clone(),
+                isolation: spec.isolation.clone(),
+                ok: true,
+                provider_session_id: None,
+                output_summary: "ok".into(),
+                step_id: None,
+                started_at: None,
+                details: None,
+                structured,
+                ordinal: None,
+            }
+        };
+        let outcome =
+            harness_workflow::starlark_front::run_starlark(&script, "revise-p1", None, &driver)
+                .expect("generated reviser script must parse and run")
+                .outcome;
+        assert_eq!(outcome.status, WorkflowRunStatus::Completed);
+        let result = outcome
+            .final_output
+            .as_ref()
+            .and_then(|fo| fo.get("result"))
+            .and_then(|r| r.get("revision"))
+            .expect("the reviser run must surface the structured revision");
+        assert_eq!(result["supersede"][0], "t-bad");
+    }
+
+    fn orch_phase(id: &str) -> harness_core::GoalPhase {
+        harness_core::GoalPhase {
+            id: id.into(),
+            name: id.into(),
+            intent: format!("do {id}"),
+            status: GoalPhaseStatus::NotStarted,
+            acceptance: None,
+            verdict_decision_id: None,
+            created_at: "unix-ms:1".into(),
+            started_at: None,
+            ended_at: None,
+        }
+    }
+
+    fn mock_outcome(
+        store: &HarnessStore,
+        name: &str,
+        status: WorkflowRunStatus,
+    ) -> (String, workflow::WorkflowOutcome) {
+        let phase_id = name.strip_prefix("phase-").unwrap_or(name).to_string();
+        let ok = status == WorkflowRunStatus::Completed;
+        let steps: Vec<workflow::StepResult> = store
+            .tasks()
+            .unwrap()
+            .into_iter()
+            .filter(|t| t.phase_id.as_deref() == Some(phase_id.as_str()))
+            .map(|t| workflow::StepResult {
+                phase: phase_id.clone(),
+                label: t.id.clone(),
+                provider: "codex".into(),
+                isolation: None,
+                ok,
+                provider_session_id: None,
+                output_summary: "ok".into(),
+                step_id: Some(format!("wfstep-{}", t.id)),
+                started_at: None,
+                details: None,
+                structured: None,
+                ordinal: None,
+            })
+            .collect();
+        (
+            "wfrun-mock".into(),
+            workflow::WorkflowOutcome {
+                steps,
+                status,
+                summary: "mock".into(),
+                agents_spawned: 0,
+                final_output: None,
+            },
+        )
+    }
+
+    /// A reviser that never proposes anything (empty revision) — the loop treats
+    /// it as "no actionable replan" and stops. Used by tests that assert the
+    /// pre-replan fail-fast behavior is preserved (paired with `max_phase_retries`
+    /// = 0, which never invokes the reviser at all).
+    fn noop_reviser(
+        _goal: &Goal,
+        _phase: &harness_core::GoalPhase,
+        _live_tasks: &[&Task],
+        _knowledge: &Knowledge,
+    ) -> CliResult<serde_json::Value> {
+        Ok(serde_json::json!({ "revision": { "supersede": [], "new_tasks": [] } }))
+    }
+
+    #[test]
+    fn orchestrate_runs_phases_sequentially_gates_and_advances() {
+        let root = std::env::temp_dir().join(format!("harness-orch-{}", generated_id("ok")));
+        let store = HarnessStore::new(&root);
+        store.init().expect("init");
+        let mut goal = make_goal("g-orch");
+        goal.phases = vec![orch_phase("p1"), orch_phase("p2")];
+        persist_new_goal(&store, &goal).unwrap();
+        for (id, phase, deps, paths) in [
+            ("t1", "p1", vec![], vec!["a"]),
+            ("t2", "p1", vec![], vec!["b"]),
+            ("t3", "p2", vec!["t1", "t2"], vec!["c"]),
+        ] {
+            let mut t = make_task(id, "g-orch");
+            t.phase_id = Some(phase.into());
+            t.depends_on_task_ids = deps.into_iter().map(String::from).collect();
+            t.owned_paths = paths.into_iter().map(String::from).collect();
+            persist_new_task(&store, &t).unwrap();
+        }
+
+        let run_phase = |_script: &str,
+                         name: &str,
+                         _resume_from: Option<&str>|
+         -> CliResult<(String, workflow::WorkflowOutcome)> {
+            Ok(mock_outcome(&store, name, WorkflowRunStatus::Completed))
+        };
+        let report = orchestrate_goal_phases(&store, "g-orch", &run_phase, &noop_reviser, 0)
+            .expect("orchestrate");
+        assert_eq!(report["status"], "completed");
+        assert_eq!(report["stage"], "verified");
+
+        let goal2 = goal_load(&store, "g-orch").unwrap();
+        assert!(goal2
+            .phases
+            .iter()
+            .all(|p| p.status == GoalPhaseStatus::Passed));
+        let tasks = latest_tasks(&store).unwrap();
+        for id in ["t1", "t2", "t3"] {
+            assert_eq!(tasks[id].status, TaskStatus::Done, "{id} should be Done");
+        }
+        let orch = store.goal_orchestration_runs().unwrap();
+        let last = orch.last().unwrap();
+        assert_eq!(last.status, OrchestrationStatus::Completed);
+        assert_eq!(last.phase_runs.len(), 2);
+        // Acceptance #4: each phase gate records a phase_verdict Decision and the
+        // phase points at it.
+        let goal_final = goal_load(&store, "g-orch").unwrap();
+        assert!(goal_final
+            .phases
+            .iter()
+            .all(|p| p.verdict_decision_id.is_some()));
+        let decisions = store.decisions().unwrap();
+        let verdicts: Vec<_> = decisions
+            .iter()
+            .filter(|d| d.decision_kind.as_deref() == Some("phase_verdict"))
+            .collect();
+        assert_eq!(verdicts.len(), 2, "one phase_verdict decision per phase");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn link_workflow_steps_to_tasks_sets_task_id_and_verdict_outcome() {
+        let root = std::env::temp_dir().join(format!("harness-link-{}", generated_id("l")));
+        let store = HarnessStore::new(&root);
+        store.init().expect("init");
+        // Journal a task step (label == task id) + the verdict judge step.
+        for (id, label) in [("s-t1", "t1"), ("s-v", "verdict-p1")] {
+            store
+                .append_workflow_step(&WorkflowStep {
+                    task_id: None,
+                    verdict_outcome: None,
+                    id: id.into(),
+                    run_id: "wfrun-x".into(),
+                    phase: "p1".into(),
+                    label: label.into(),
+                    provider_session_id: None,
+                    status: WorkflowStepStatus::Completed,
+                    output_summary: Some("ok".into()),
+                    result: None,
+                    started_at: "unix-ms:1".into(),
+                    ended_at: Some("unix-ms:2".into()),
+                })
+                .unwrap();
+        }
+        let task_ids: std::collections::HashSet<String> = ["t1".to_string()].into_iter().collect();
+        link_workflow_steps_to_tasks(&store, "wfrun-x", "p1", &task_ids, true).unwrap();
+        let steps = store.workflow_steps().unwrap();
+        let latest = |id: &str| steps.iter().rev().find(|s| s.id == id).unwrap().clone();
+        assert_eq!(latest("s-t1").task_id.as_deref(), Some("t1"));
+        assert_eq!(latest("s-v").verdict_outcome, Some(VerdictOutcome::Pass));
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn orchestrate_stops_at_failing_phase_and_does_not_run_later_phases() {
+        let root = std::env::temp_dir().join(format!("harness-orch-{}", generated_id("fail")));
+        let store = HarnessStore::new(&root);
+        store.init().expect("init");
+        let mut goal = make_goal("g-fail");
+        goal.phases = vec![orch_phase("p1"), orch_phase("p2")];
+        persist_new_goal(&store, &goal).unwrap();
+        for (id, phase) in [("t1", "p1"), ("t2", "p2")] {
+            let mut t = make_task(id, "g-fail");
+            t.phase_id = Some(phase.into());
+            t.owned_paths = vec![id.into()];
+            persist_new_task(&store, &t).unwrap();
+        }
+        let run_phase = |_script: &str,
+                         name: &str,
+                         _resume_from: Option<&str>|
+         -> CliResult<(String, workflow::WorkflowOutcome)> {
+            // Phase p1 fails its verdict; p2 must never run.
+            let status = if name.contains("p1") {
+                WorkflowRunStatus::Failed
+            } else {
+                WorkflowRunStatus::Completed
+            };
+            Ok(mock_outcome(&store, name, status))
+        };
+        let report = orchestrate_goal_phases(&store, "g-fail", &run_phase, &noop_reviser, 0)
+            .expect("orchestrate");
+        assert_eq!(report["status"], "failed");
+        assert_eq!(report["failed_phase"], "p1");
+
+        let goal2 = goal_load(&store, "g-fail").unwrap();
+        assert_eq!(goal2.phases[0].status, GoalPhaseStatus::Failed);
+        // p2 was never started.
+        assert_eq!(goal2.phases[1].status, GoalPhaseStatus::NotStarted);
+        let orch = store.goal_orchestration_runs().unwrap();
+        assert_eq!(orch.last().unwrap().status, OrchestrationStatus::Failed);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn orchestrate_resume_skips_passed_and_resumes_failed_phase() {
+        use std::cell::RefCell;
+        let root = std::env::temp_dir().join(format!("harness-orch-{}", generated_id("resume")));
+        let store = HarnessStore::new(&root);
+        store.init().expect("init");
+        let mut goal = make_goal("g-resume");
+        goal.phases = vec![orch_phase("p1"), orch_phase("p2")];
+        persist_new_goal(&store, &goal).unwrap();
+        for (id, phase) in [("t1", "p1"), ("t2", "p2")] {
+            let mut t = make_task(id, "g-resume");
+            t.phase_id = Some(phase.into());
+            t.owned_paths = vec![id.into()];
+            persist_new_task(&store, &t).unwrap();
+        }
+
+        // First run: p1 passes its verdict, p2 fails — orchestration stops at p2.
+        let first = |_script: &str,
+                     name: &str,
+                     _resume_from: Option<&str>|
+         -> CliResult<(String, workflow::WorkflowOutcome)> {
+            let status = if name.contains("p2") {
+                WorkflowRunStatus::Failed
+            } else {
+                WorkflowRunStatus::Completed
+            };
+            Ok(mock_outcome(&store, name, status))
+        };
+        let report = orchestrate_goal_phases(&store, "g-resume", &first, &noop_reviser, 0)
+            .expect("first orchestrate");
+        assert_eq!(report["status"], "failed");
+        assert_eq!(report["failed_phase"], "p2");
+        let goal_after_first = goal_load(&store, "g-resume").unwrap();
+        assert_eq!(goal_after_first.phases[0].status, GoalPhaseStatus::Passed);
+        assert_eq!(goal_after_first.phases[1].status, GoalPhaseStatus::Failed);
+
+        // Second run: record what each phase invocation received as `resume_from`.
+        // A `Passed` phase must be skipped (never invoked); the `Failed` phase must
+        // be retried with `resume_from = Some(prior workflow_run_id)`.
+        let seen: RefCell<Vec<(String, Option<String>)>> = RefCell::new(Vec::new());
+        let second = |_script: &str,
+                      name: &str,
+                      resume_from: Option<&str>|
+         -> CliResult<(String, workflow::WorkflowOutcome)> {
+            seen.borrow_mut()
+                .push((name.to_string(), resume_from.map(str::to_string)));
+            Ok(mock_outcome(&store, name, WorkflowRunStatus::Completed))
+        };
+        let report = orchestrate_goal_phases(&store, "g-resume", &second, &noop_reviser, 0)
+            .expect("second orchestrate");
+        assert_eq!(report["status"], "completed");
+
+        let invocations = seen.into_inner();
+        // The passed phase p1 was skipped entirely — only p2 was (re-)invoked.
+        assert_eq!(
+            invocations.len(),
+            1,
+            "only the failed phase should re-run, got {invocations:?}"
+        );
+        let (name, resume_from) = &invocations[0];
+        assert!(
+            name.contains("p2"),
+            "the re-run phase must be p2, got {name}"
+        );
+        assert_eq!(
+            resume_from.as_deref(),
+            Some("wfrun-mock"),
+            "the re-entered failed phase must resume from its prior workflow run"
+        );
+
+        // p1 stayed Passed and was reported as skipped; both phases now Passed.
+        let skipped: Vec<String> = report["skipped"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(skipped, vec!["p1".to_string()]);
+        let goal_final = goal_load(&store, "g-resume").unwrap();
+        assert!(goal_final
+            .phases
+            .iter()
+            .all(|p| p.status == GoalPhaseStatus::Passed));
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn orchestrate_replans_a_failing_phase_then_passes_within_the_cap() {
+        use std::cell::RefCell;
+        let root = std::env::temp_dir().join(format!("harness-orch-{}", generated_id("replan")));
+        let store = HarnessStore::new(&root);
+        store.init().expect("init");
+        let mut goal = make_goal("g-replan");
+        goal.phases = vec![orch_phase("p1")];
+        persist_new_goal(&store, &goal).unwrap();
+        let mut t = make_task("t-bad", "g-replan");
+        t.phase_id = Some("p1".into());
+        t.owned_paths = vec!["x".into()];
+        persist_new_task(&store, &t).unwrap();
+
+        // The phase fails on attempt 1, then passes on attempt 2 (after the
+        // reviser swaps the task graph). The counter drives that transition.
+        let attempts: RefCell<u32> = RefCell::new(0);
+        let run_phase = |_script: &str,
+                         name: &str,
+                         _resume_from: Option<&str>|
+         -> CliResult<(String, workflow::WorkflowOutcome)> {
+            let mut n = attempts.borrow_mut();
+            *n += 1;
+            let status = if *n == 1 {
+                WorkflowRunStatus::Failed
+            } else {
+                WorkflowRunStatus::Completed
+            };
+            Ok(mock_outcome(&store, name, status))
+        };
+        // The reviser supersedes the failing task and appends a replacement.
+        let revised: RefCell<u32> = RefCell::new(0);
+        let revise_phase = |_goal: &Goal,
+                            _phase: &harness_core::GoalPhase,
+                            live_tasks: &[&Task],
+                            _knowledge: &Knowledge|
+         -> CliResult<serde_json::Value> {
+            *revised.borrow_mut() += 1;
+            // It is handed the LIVE (non-superseded) tasks of the failed phase.
+            assert!(
+                live_tasks.iter().any(|t| t.id == "t-bad"),
+                "reviser must see the live failing task, got {:?}",
+                live_tasks.iter().map(|t| &t.id).collect::<Vec<_>>()
+            );
+            Ok(serde_json::json!({
+                "revision": {
+                    "supersede": ["t-bad"],
+                    "new_tasks": [{
+                        "id": "t-fixed",
+                        "title": "Fixed approach",
+                        "owned_paths": ["x"],
+                        "acceptance": ["the fix lands"]
+                    }]
+                }
+            }))
+        };
+
+        let report = orchestrate_goal_phases(&store, "g-replan", &run_phase, &revise_phase, 1)
+            .expect("orchestrate");
+        assert_eq!(
+            report["status"], "completed",
+            "phase should pass within the cap"
+        );
+        assert_eq!(*attempts.borrow(), 2, "the phase should run exactly twice");
+        assert_eq!(*revised.borrow(), 1, "the reviser should run exactly once");
+
+        // The failing task is now Superseded, linked to the failure knowledge.
+        let tasks = latest_tasks(&store).unwrap();
+        let bad = &tasks["t-bad"];
+        assert_eq!(bad.status, TaskStatus::Superseded);
+        let knowledge_id = bad
+            .superseded_by_knowledge_id
+            .clone()
+            .expect("superseded task must point at the failure knowledge");
+
+        // The replacement task exists, scoped to the phase, and (because the
+        // re-run passed) was executed → Done. It was appended as Planned by the
+        // revision and then ran on attempt 2.
+        let fixed = &tasks["t-fixed"];
+        assert_eq!(fixed.phase_id.as_deref(), Some("p1"));
+        assert_eq!(fixed.status, TaskStatus::Done);
+
+        // A Knowledge entry was appended by the orchestrator, source=Task, with the
+        // phase id set and the failing task named — and it is the one the
+        // superseded task points at.
+        let g = goal_load(&store, "g-replan").unwrap();
+        let k = g
+            .knowledge
+            .iter()
+            .find(|k| k.id == knowledge_id)
+            .expect("the failure knowledge must be on the goal");
+        assert_eq!(k.source, KnowledgeSource::Task);
+        assert_eq!(k.phase_id.as_deref(), Some("p1"));
+        assert_eq!(k.author, "orchestrator");
+        assert!(
+            k.notes_md.contains("t-bad"),
+            "the knowledge should name the failing task: {}",
+            k.notes_md
+        );
+
+        // The phase ended Passed; the orchestration completed.
+        assert_eq!(g.phases[0].status, GoalPhaseStatus::Passed);
+        let orch = store.goal_orchestration_runs().unwrap();
+        assert_eq!(orch.last().unwrap().status, OrchestrationStatus::Completed);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn orchestrate_replan_stops_when_the_cap_is_exhausted() {
+        use std::cell::RefCell;
+        let root = std::env::temp_dir().join(format!("harness-orch-{}", generated_id("cap")));
+        let store = HarnessStore::new(&root);
+        store.init().expect("init");
+        let mut goal = make_goal("g-cap");
+        goal.phases = vec![orch_phase("p1")];
+        persist_new_goal(&store, &goal).unwrap();
+        let mut t = make_task("t1", "g-cap");
+        t.phase_id = Some("p1".into());
+        t.owned_paths = vec!["x".into()];
+        persist_new_task(&store, &t).unwrap();
+
+        // The phase ALWAYS fails; the reviser always produces an actionable revision
+        // (a fresh task each time). With a cap of 2, the phase should run 3 times
+        // (initial + 2 retries), revise twice, then stop Failed.
+        let attempts: RefCell<u32> = RefCell::new(0);
+        let run_phase = |_script: &str,
+                         name: &str,
+                         _resume_from: Option<&str>|
+         -> CliResult<(String, workflow::WorkflowOutcome)> {
+            *attempts.borrow_mut() += 1;
+            Ok(mock_outcome(&store, name, WorkflowRunStatus::Failed))
+        };
+        let revised: RefCell<u32> = RefCell::new(0);
+        let revise_phase = |_goal: &Goal,
+                            _phase: &harness_core::GoalPhase,
+                            _live_tasks: &[&Task],
+                            _knowledge: &Knowledge|
+         -> CliResult<serde_json::Value> {
+            let mut n = revised.borrow_mut();
+            *n += 1;
+            let new_id = format!("t-r{n}");
+            Ok(serde_json::json!({
+                "revision": {
+                    "supersede": [],
+                    "new_tasks": [{ "id": new_id, "title": "retry task", "owned_paths": ["y"] }]
+                }
+            }))
+        };
+
+        let report = orchestrate_goal_phases(&store, "g-cap", &run_phase, &revise_phase, 2)
+            .expect("orchestrate");
+        assert_eq!(report["status"], "failed");
+        assert_eq!(report["failed_phase"], "p1");
+        assert_eq!(*attempts.borrow(), 3, "initial run + 2 retries");
+        assert_eq!(
+            *revised.borrow(),
+            2,
+            "reviser runs once per retry within the cap"
+        );
+
+        let g = goal_load(&store, "g-cap").unwrap();
+        assert_eq!(g.phases[0].status, GoalPhaseStatus::Failed);
+        // One failure-knowledge entry was appended per failed attempt.
+        assert_eq!(
+            g.knowledge.len(),
+            3,
+            "a failure knowledge entry per attempt"
+        );
+        let orch = store.goal_orchestration_runs().unwrap();
+        assert_eq!(orch.last().unwrap().status, OrchestrationStatus::Failed);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn orchestrate_replan_stops_on_no_actionable_revision() {
+        let root = std::env::temp_dir().join(format!("harness-orch-{}", generated_id("noop")));
+        let store = HarnessStore::new(&root);
+        store.init().expect("init");
+        let mut goal = make_goal("g-noop");
+        goal.phases = vec![orch_phase("p1")];
+        persist_new_goal(&store, &goal).unwrap();
+        let mut t = make_task("t1", "g-noop");
+        t.phase_id = Some("p1".into());
+        t.owned_paths = vec!["x".into()];
+        persist_new_task(&store, &t).unwrap();
+
+        // The phase always fails; a generous cap is offered, but the reviser returns
+        // an EMPTY revision — the loop must NOT spin forever: it counts the empty
+        // revision against the cap and stops after exactly ONE run.
+        let attempts = std::cell::RefCell::new(0u32);
+        let run_phase = |_script: &str,
+                         name: &str,
+                         _resume_from: Option<&str>|
+         -> CliResult<(String, workflow::WorkflowOutcome)> {
+            *attempts.borrow_mut() += 1;
+            Ok(mock_outcome(&store, name, WorkflowRunStatus::Failed))
+        };
+        let report = orchestrate_goal_phases(&store, "g-noop", &run_phase, &noop_reviser, 5)
+            .expect("orchestrate");
+        assert_eq!(report["status"], "failed");
+        assert_eq!(
+            *attempts.borrow(),
+            1,
+            "an empty revision must stop the loop after one run, not churn the cap"
+        );
+        let g = goal_load(&store, "g-noop").unwrap();
+        assert_eq!(g.phases[0].status, GoalPhaseStatus::Failed);
+        // The failure was still captured as knowledge even when no replan happened.
+        assert_eq!(g.knowledge.len(), 1);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn plan_into_goal_creates_phases_and_task_dag() {
+        let root = std::env::temp_dir().join(format!("harness-plan-{}", generated_id("ok")));
+        let store = HarnessStore::new(&root);
+        store.init().expect("init");
+        let mut goal = make_goal("g-plan");
+        persist_new_goal(&store, &goal).unwrap();
+
+        // A hand-built planner object: ONE setup phase, then a build phase with two
+        // parallel tasks (disjoint owned_paths, no deps) and a third that depends on
+        // both. Mirrors the shape `compile_planner_script` asks the worker for.
+        let structured = serde_json::json!({
+            "phases": [
+                {
+                    "id": "explore",
+                    "name": "Explore",
+                    "intent": "ground the design",
+                    "acceptance": "the unknowns are resolved",
+                    "tasks": [
+                        {
+                            "id": "read-core",
+                            "title": "Read the core module",
+                            "design_md": "study lib.rs",
+                            "acceptance": ["notes written"],
+                            "owned_paths": ["crates/core"],
+                            "depends_on": []
+                        }
+                    ]
+                },
+                {
+                    "id": "build",
+                    "name": "Build",
+                    "intent": "wire it up",
+                    "acceptance": "it compiles and tests pass",
+                    "tasks": [
+                        {
+                            "id": "impl-a",
+                            "title": "Implement A",
+                            "owned_paths": ["crates/a"],
+                            "acceptance": ["A done"]
+                        },
+                        {
+                            "id": "impl-b",
+                            "title": "Implement B",
+                            "owned_paths": ["crates/b"]
+                        },
+                        {
+                            "id": "integrate",
+                            "title": "Integrate A + B",
+                            "owned_paths": ["crates/app"],
+                            "depends_on": ["impl-a", "impl-b"]
+                        }
+                    ]
+                }
+            ]
+        });
+
+        let result = plan_into_goal(&store, &mut goal, &structured, "leader").expect("plan");
+        assert_eq!(result.phases_added, vec!["explore", "build"]);
+        assert!(result.phases_skipped.is_empty());
+        assert_eq!(
+            result.tasks_created,
+            vec!["read-core", "impl-a", "impl-b", "integrate"]
+        );
+
+        // Phases landed on the goal in order, status NotStarted, acceptance carried.
+        let g = goal_load(&store, "g-plan").unwrap();
+        let phase_ids: Vec<&str> = g.phases.iter().map(|p| p.id.as_str()).collect();
+        assert_eq!(phase_ids, vec!["explore", "build"]);
+        assert!(g
+            .phases
+            .iter()
+            .all(|p| p.status == GoalPhaseStatus::NotStarted));
+        assert_eq!(
+            g.phases[1].acceptance.as_deref(),
+            Some("it compiles and tests pass")
+        );
+
+        // Tasks landed with correct goal_id / phase_id / Planned / owned_paths / deps.
+        let tasks = latest_tasks(&store).unwrap();
+        let integrate = &tasks["integrate"];
+        assert_eq!(integrate.goal_id.as_deref(), Some("g-plan"));
+        assert_eq!(integrate.phase_id.as_deref(), Some("build"));
+        assert_eq!(integrate.status, TaskStatus::Planned);
+        assert_eq!(integrate.owned_paths, vec!["crates/app".to_string()]);
+        assert_eq!(
+            integrate.depends_on_task_ids,
+            vec!["impl-a".to_string(), "impl-b".to_string()]
+        );
+        assert_eq!(
+            tasks["impl-a"].acceptance_criteria,
+            vec!["A done".to_string()]
+        );
+        assert_eq!(
+            tasks["read-core"].design_md.as_deref(),
+            Some("study lib.rs")
+        );
+        // A task with no objective falls back to its title.
+        assert_eq!(tasks["impl-b"].objective, "Implement B");
+
+        // The two disjoint-path, dep-free build tasks compile into a parallel group:
+        // proves the planned DAG feeds the existing compiler as intended.
+        let build_phase = g.phases.iter().find(|p| p.id == "build").unwrap();
+        let goal_tasks: Vec<Task> = store
+            .tasks()
+            .unwrap()
+            .into_iter()
+            .filter(|t| t.goal_id.as_deref() == Some("g-plan"))
+            .collect();
+        let script = compile_phase_to_starlark(&g, build_phase, &goal_tasks).expect("compile");
+        assert!(
+            script.contains("parallel("),
+            "disjoint-path build tasks should compile to a parallel group:\n{script}"
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn plan_into_goal_tolerates_stringified_phases_and_list_acceptance() {
+        // Regression: codex (flat-schema hint) returns `phases` as a JSON-ENCODED
+        // STRING, and a phase's `acceptance` as a LIST. Found by dogfooding the
+        // planner on goal-multi-project, which planned nothing until this fix.
+        let root = std::env::temp_dir().join(format!("harness-plan-{}", generated_id("str")));
+        let store = HarnessStore::new(&root);
+        store.init().expect("init");
+        let mut goal = make_goal("g-str");
+        persist_new_goal(&store, &goal).unwrap();
+
+        let phases_str = serde_json::json!([
+            {
+                "id": "p1",
+                "name": "Build",
+                "intent": "wire it",
+                "acceptance": ["compiles", "tests pass"],   // a LIST, not a string
+                "tasks": [
+                    { "id": "t1", "title": "A", "owned_paths": ["crates/a"] }
+                ]
+            }
+        ])
+        .to_string();
+        // `phases` is the stringified array (exactly what codex returned live).
+        let structured = serde_json::json!({ "phases": phases_str });
+
+        let result = plan_into_goal(&store, &mut goal, &structured, "leader").expect("plan");
+        assert_eq!(result.phases_added, vec!["p1"]);
+        assert_eq!(result.tasks_created, vec!["t1"]);
+        let g = goal_load(&store, "g-str").unwrap();
+        // The list acceptance was joined into the phase's acceptance text.
+        let acc = g.phases[0].acceptance.as_deref().unwrap_or("");
+        assert!(
+            acc.contains("compiles") && acc.contains("tests pass"),
+            "acc: {acc}"
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn plan_into_goal_is_idempotent_on_existing_ids() {
+        let root = std::env::temp_dir().join(format!("harness-plan-{}", generated_id("idem")));
+        let store = HarnessStore::new(&root);
+        store.init().expect("init");
+        let mut goal = make_goal("g-idem");
+        persist_new_goal(&store, &goal).unwrap();
+        let structured = serde_json::json!({
+            "phases": [{
+                "id": "p1", "name": "P1", "intent": "do p1",
+                "tasks": [{ "id": "t1", "title": "T1", "owned_paths": ["x"] }]
+            }]
+        });
+        let first = plan_into_goal(&store, &mut goal, &structured, "leader").expect("first");
+        assert_eq!(first.phases_added, vec!["p1"]);
+        assert_eq!(first.tasks_created, vec!["t1"]);
+
+        // Re-planning with the same object must NOT duplicate: existing ids skipped.
+        let second = plan_into_goal(&store, &mut goal, &structured, "leader").expect("second");
+        assert!(second.phases_added.is_empty());
+        assert!(second.tasks_created.is_empty());
+        assert_eq!(second.phases_skipped, vec!["p1"]);
+        assert_eq!(second.tasks_skipped, vec!["t1"]);
+
+        let g = goal_load(&store, "g-idem").unwrap();
+        assert_eq!(g.phases.len(), 1, "phase must not be duplicated");
+        let t1_rows = store
+            .tasks()
+            .unwrap()
+            .into_iter()
+            .filter(|t| t.id == "t1")
+            .count();
+        // One create only: re-run appended no new task row.
+        assert_eq!(t1_rows, 1, "task must not be duplicated");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn plan_into_goal_degrades_on_mock_or_empty_structured() {
+        let root = std::env::temp_dir().join(format!("harness-plan-{}", generated_id("mock")));
+        let store = HarnessStore::new(&root);
+        store.init().expect("init");
+        let mut goal = make_goal("g-mock");
+        persist_new_goal(&store, &goal).unwrap();
+
+        // The dry-run mock object: `phases` is a STRING, not an array.
+        let mock = serde_json::json!({ "phases": "mock phases" });
+        let r = plan_into_goal(&store, &mut goal, &mock, "leader").expect("mock");
+        assert_eq!(
+            r,
+            PlanResult::default(),
+            "mock structured must plan nothing"
+        );
+
+        // An empty array and an entirely missing key also plan nothing (no panic).
+        for empty in [serde_json::json!({ "phases": [] }), serde_json::json!({})] {
+            let r = plan_into_goal(&store, &mut goal, &empty, "leader").expect("empty");
+            assert!(r.phases_added.is_empty() && r.tasks_created.is_empty());
+        }
+        assert!(goal_load(&store, "g-mock").unwrap().phases.is_empty());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn goal_plan_dry_run_runs_planner_and_creates_nothing() {
+        // End-to-end through `goal plan --dry-run`: the planner script runs under the
+        // real driver's dry-run mock (no provider), the run journals, and because the
+        // mock structured output is degenerate the command plans nothing — degrading
+        // gracefully rather than panicking.
+        let root = std::env::temp_dir().join(format!("harness-plan-{}", generated_id("dry")));
+        let store = HarnessStore::new(&root);
+        store.init().expect("init");
+        let mut goal = make_goal("g-dry");
+        goal.design_md = Some("Key problem: X. Approach: do Y.".into());
+        goal.acceptance_md = Some("Accepted when Y works end to end.".into());
+        persist_new_goal(&store, &goal).unwrap();
+
+        let args: Vec<String> = ["plan", "g-dry", "--dry-run"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        goal_command(&store, &args).expect("goal plan --dry-run");
+
+        // No phases/tasks created (dry-run mock is degenerate); a planner run journaled.
+        let g = goal_load(&store, "g-dry").unwrap();
+        assert!(g.phases.is_empty(), "dry-run must plan nothing");
+        assert!(
+            latest_tasks(&store).unwrap().is_empty(),
+            "dry-run must create no tasks"
+        );
+        let runs = store.workflow_runs().unwrap();
+        assert!(
+            runs.iter().any(|r| r.workflow_name.contains("plan-g-dry")),
+            "a planner workflow run should be journaled"
+        );
+        std::fs::remove_dir_all(&root).ok();
     }
 
     fn make_member(id: &str) -> AgentMember {

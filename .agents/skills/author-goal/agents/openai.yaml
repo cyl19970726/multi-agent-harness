@@ -1,4 +1,4 @@
 interface:
   display_name: "Author Goal"
-  short_description: "Write a markdown-first Goal and move it through its gated lifecycle."
-  default_prompt: "Author or advance a Goal: write description / design (key problems FIRST, grounded in file:line) / real acceptance, run multi-agent exploration, and transition draft → exploring → explored → working → done → verifying → verified through the gates the harness CLI enforces."
+  short_description: "Write a markdown-first Goal, accumulate a knowledge ledger, and run it via the manual lifecycle or the phased model."
+  default_prompt: "Author or advance a Goal: write description / design (key problems FIRST, grounded in file:line) / real acceptance, capture findings as an append-only knowledge[] ledger, and run multi-agent exploration. Drive it EITHER through the manual gated lifecycle (draft → exploring → explored → working → done → verifying → verified) OR, for a planned multi-worker build, the knowledge-driven phased model: knowledge-add → design-synthesize → plan (phases + a per-phase task DAG, see author-planner) → goal run-phases (sequential, verdict-gated, with replan + resume)."

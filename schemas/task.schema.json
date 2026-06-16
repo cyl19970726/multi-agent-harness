@@ -54,7 +54,16 @@
     },
     "status": {
       "type": "string",
-      "enum": ["planned", "assigned", "running", "blocked", "review", "done", "archived"]
+      "enum": [
+        "planned",
+        "assigned",
+        "running",
+        "blocked",
+        "review",
+        "done",
+        "superseded",
+        "archived"
+      ]
     },
     "depends_on_task_ids": {
       "type": "array",
@@ -128,6 +137,13 @@
           "items": { "type": "string", "minLength": 1 }
         }
       }
+    },
+    "design_md": { "type": ["string", "null"] },
+    "phase_id": { "type": ["string", "null"] },
+    "superseded_by_knowledge_id": { "type": ["string", "null"] },
+    "workflow_step_ids": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
     }
   }
 }

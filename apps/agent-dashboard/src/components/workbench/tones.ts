@@ -54,6 +54,40 @@ export function goalTone(status?: string | null): StatusTone {
   }
 }
 
+/** Map a GoalPhase.status to a status tone (goal-planning-model). */
+export function phaseStatusTone(status?: string | null): StatusTone {
+  switch ((status ?? "").toLowerCase()) {
+    case "in_progress":
+      return "running";
+    case "passed":
+      return "good";
+    case "failed":
+      return "bad";
+    case "blocked":
+      return "bad";
+    case "not_started":
+      return "idle";
+    default:
+      return "idle";
+  }
+}
+
+/** Map a Knowledge.source to a status tone (goal-planning-model). */
+export function knowledgeSourceTone(source?: string | null): StatusTone {
+  switch ((source ?? "").toLowerCase()) {
+    case "task":
+      return "running";
+    case "decision":
+      return "decision";
+    case "evidence":
+      return "good";
+    case "exploration":
+      return "info";
+    default:
+      return "info";
+  }
+}
+
 /** Map a Review.verdict (open enum) to a status tone. */
 export function reviewVerdictTone(verdict?: string | null): StatusTone {
   switch ((verdict ?? "").toLowerCase()) {
