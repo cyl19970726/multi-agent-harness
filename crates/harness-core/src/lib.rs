@@ -336,6 +336,105 @@ impl Goal {
             _ => Ok(()),
         }
     }
+
+    /// Deterministically assemble a `design_md` view from the knowledge ledger,
+    /// grouped by phase. `design_md` is a RE-SYNTHESIZABLE projection of
+    /// `knowledge` (the truth): the body is a pure function of `knowledge` +
+    /// `phases` (no timestamps), so identical input yields identical output —
+    /// the synthesis *time* is recorded separately in `design_synthesis_at`.
+    ///
+    /// Superseded entries are kept (struck through with their abandoning
+    /// knowledge id) so the design carries the full provenance trail. Returns
+    /// `Err` when there is no knowledge to synthesize from — this is the
+    /// "design_md requires non-empty knowledge" gate.
+    pub fn synthesize_design_md(&self) -> Result<String, String> {
+        if self.knowledge.is_empty() {
+            return Err(
+                "cannot synthesize design_md: the goal has no knowledge entries yet — \
+                 capture findings with `goal knowledge-add` first"
+                    .to_string(),
+            );
+        }
+        let live = self
+            .knowledge
+            .iter()
+            .filter(|k| k.superseded_by_knowledge_id.is_none())
+            .count();
+        let mut out = String::new();
+        out.push_str(&format!("# Design — {}\n\n", self.title));
+        out.push_str(&format!(
+            "_Synthesized from {} knowledge entr{} ({live} live). \
+             This is a derived view of the goal's knowledge ledger._\n",
+            self.knowledge.len(),
+            if self.knowledge.len() == 1 {
+                "y"
+            } else {
+                "ies"
+            },
+        ));
+
+        let render = |out: &mut String, k: &Knowledge| {
+            out.push_str(&format!("\n### knowledge#{} · {}", k.id, k.source.as_str()));
+            if let Some(task) = &k.task_id {
+                out.push_str(&format!(" · task#{task}"));
+            }
+            out.push_str(&format!(" · by {}", k.author));
+            if let Some(sup) = &k.superseded_by_knowledge_id {
+                out.push_str(&format!(" · ⚠️ superseded by knowledge#{sup}"));
+            }
+            if !k.tags.is_empty() {
+                out.push_str(&format!(" · [{}]", k.tags.join(", ")));
+            }
+            out.push('\n');
+            out.push_str(k.notes_md.trim_end());
+            out.push('\n');
+        };
+
+        // One section per phase (in plan order), then an "Unscoped" catch-all
+        // for knowledge with no/unknown phase. Within a section insertion order
+        // is preserved (the ledger is append-only → chronological).
+        for phase in &self.phases {
+            let entries: Vec<&Knowledge> = self
+                .knowledge
+                .iter()
+                .filter(|k| k.phase_id.as_deref() == Some(phase.id.as_str()))
+                .collect();
+            if entries.is_empty() {
+                continue;
+            }
+            out.push_str(&format!("\n## Phase: {} ({})\n", phase.name, phase.id));
+            for k in entries {
+                render(&mut out, k);
+            }
+        }
+        let phase_ids: Vec<&str> = self.phases.iter().map(|p| p.id.as_str()).collect();
+        let unscoped: Vec<&Knowledge> = self
+            .knowledge
+            .iter()
+            .filter(|k| match &k.phase_id {
+                None => true,
+                Some(id) => !phase_ids.contains(&id.as_str()),
+            })
+            .collect();
+        if !unscoped.is_empty() {
+            out.push_str("\n## Unscoped\n");
+            for k in unscoped {
+                render(&mut out, k);
+            }
+        }
+        Ok(out)
+    }
+}
+
+impl KnowledgeSource {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            KnowledgeSource::Exploration => "exploration",
+            KnowledgeSource::Task => "task",
+            KnowledgeSource::Decision => "decision",
+            KnowledgeSource::Evidence => "evidence",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2295,6 +2394,71 @@ mod tests {
         assert!(g.check_transition(GoalStage::Verified).is_err());
         // Back-edge to exploring is still always allowed.
         assert!(g.check_transition(GoalStage::Exploring).is_ok());
+    }
+
+    fn test_knowledge(id: &str, phase_id: Option<&str>, superseded: Option<&str>) -> Knowledge {
+        Knowledge {
+            id: id.into(),
+            goal_id: "g".into(),
+            phase_id: phase_id.map(Into::into),
+            task_id: Some(format!("task-{id}")),
+            author: "explorer".into(),
+            timestamp: "unix-ms:1".into(),
+            notes_md: format!("finding {id}"),
+            tags: vec!["risk".into()],
+            source: KnowledgeSource::Exploration,
+            superseded_by_knowledge_id: superseded.map(Into::into),
+            created_at: "unix-ms:1".into(),
+        }
+    }
+
+    #[test]
+    fn synthesize_design_md_rejects_empty_knowledge() {
+        let g = goal_in_stage(GoalStage::Working);
+        assert!(g.knowledge.is_empty());
+        assert!(g.synthesize_design_md().is_err());
+    }
+
+    #[test]
+    fn synthesize_design_md_is_deterministic_and_groups_by_phase() {
+        let mut g = goal_in_stage(GoalStage::Working);
+        g.phases = vec![
+            test_phase("phase-a", GoalPhaseStatus::Passed),
+            test_phase("phase-b", GoalPhaseStatus::InProgress),
+        ];
+        g.knowledge = vec![
+            test_knowledge("k1", Some("phase-a"), None),
+            test_knowledge("k2", Some("phase-b"), None),
+        ];
+        let first = g.synthesize_design_md().expect("synthesize");
+        let second = g.synthesize_design_md().expect("synthesize again");
+        // Pure function of knowledge + phases → byte-identical (no timestamps).
+        assert_eq!(first, second);
+        assert!(first.contains("## Phase: phase-a (phase-a)"));
+        assert!(first.contains("## Phase: phase-b (phase-b)"));
+        assert!(first.contains("knowledge#k1"));
+        assert!(first.contains("task#task-k1"));
+        assert!(first.contains("finding k2"));
+        // phase-a precedes phase-b (plan order).
+        assert!(first.find("phase-a").unwrap() < first.find("phase-b").unwrap());
+    }
+
+    #[test]
+    fn synthesize_design_md_marks_superseded_and_buckets_unscoped() {
+        let mut g = goal_in_stage(GoalStage::Working);
+        g.phases = vec![test_phase("phase-a", GoalPhaseStatus::InProgress)];
+        g.knowledge = vec![
+            test_knowledge("k1", Some("phase-a"), Some("k3")),
+            test_knowledge("k2", None, None),
+            test_knowledge("k3", Some("unknown-phase"), None),
+        ];
+        let md = g.synthesize_design_md().expect("synthesize");
+        assert!(md.contains("superseded by knowledge#k3"));
+        // k2 (no phase) and k3 (unknown phase) both fall under Unscoped.
+        assert!(md.contains("## Unscoped"));
+        let unscoped = &md[md.find("## Unscoped").unwrap()..];
+        assert!(unscoped.contains("knowledge#k2"));
+        assert!(unscoped.contains("knowledge#k3"));
     }
 
     #[test]

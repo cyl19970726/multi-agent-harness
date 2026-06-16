@@ -14,9 +14,9 @@ use harness_core::{
     AgentRuntime, AgentRuntimeHealth, AgentRuntimeStatus, AgentTeam, AgentTeamStatus, Decision,
     EvaluationOutcome, Evidence, Exploration, Gap, GapSeverity, GapStatus, Goal, GoalCase,
     GoalDesign, GoalEvaluation, GoalStage, GoalStatus, HarnessTokenUsage, HarnessToolCall,
-    HarnessToolResult, HarnessTurnEvent, HarnessTurnEventKind, LaunchMcp, LaunchPermission,
-    LaunchSpec, Message, MessageDelivery, MessageDeliveryStatus, MessageKind,
-    MessageTerminalSource, Proposal, ProposalStatus, ProviderChildThread,
+    HarnessToolResult, HarnessTurnEvent, HarnessTurnEventKind, Knowledge, KnowledgeSource,
+    LaunchMcp, LaunchPermission, LaunchSpec, Message, MessageDelivery, MessageDeliveryStatus,
+    MessageKind, MessageTerminalSource, Proposal, ProposalStatus, ProviderChildThread,
     ProviderChildThreadStatus, ProviderSession, ProviderSessionStatus, Review, ReviewVerdict,
     SenderKind, Task, TaskStatus, Vision, WorkflowRun, WorkflowRunStatus, WorkflowStep,
     WorkflowStepStatus,
@@ -432,10 +432,18 @@ fn parse_goal_stage(s: &str) -> CliResult<GoalStage> {
     })
 }
 
+fn parse_knowledge_source(s: &str) -> CliResult<KnowledgeSource> {
+    serde_json::from_value(serde_json::Value::String(s.to_string())).map_err(|_| {
+        CliError::Usage(format!(
+            "unknown knowledge source `{s}` (exploration|task|decision|evidence)"
+        ))
+    })
+}
+
 fn goal_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     require_subcommand(
         args,
-        "goal create|list|show|describe-set|design-set|acceptance-set|explore-add|stage|learning-status|evaluate|close",
+        "goal create|list|show|describe-set|design-set|acceptance-set|explore-add|knowledge-add|design-synthesize|stage|learning-status|evaluate|close",
     )?;
     match args[0].as_str() {
         "create" => {
@@ -509,6 +517,48 @@ fn goal_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
                 created_at: now_string(),
             });
             goal.updated_at = now_string();
+            store.append_goal(&goal)?;
+            print_json(&goal)?;
+        }
+        "knowledge-add" => {
+            let id = required(args, "--id").or_else(|_| required(args, "--goal"))?;
+            let mut goal = goal_load(store, &id)?;
+            let author = required(args, "--author")?;
+            let notes = md_value(args, "notes")?.ok_or_else(|| {
+                CliError::Usage("knowledge-add needs --notes <text> or --notes-file <path>".into())
+            })?;
+            let source = match value(args, "--source").as_deref() {
+                None => KnowledgeSource::Exploration,
+                Some(s) => parse_knowledge_source(s)?,
+            };
+            let now = now_string();
+            let knowledge = Knowledge {
+                id: value(args, "--knowledge-id").unwrap_or_else(|| generated_id("knowledge")),
+                goal_id: goal.id.clone(),
+                phase_id: value(args, "--phase"),
+                task_id: value(args, "--task"),
+                author,
+                timestamp: now.clone(),
+                notes_md: notes,
+                tags: many(args, "--tag"),
+                source,
+                superseded_by_knowledge_id: None,
+                created_at: now.clone(),
+            };
+            goal.knowledge.push(knowledge);
+            goal.updated_at = now;
+            store.append_goal(&goal)?;
+            print_json(&goal)?;
+        }
+        "design-synthesize" => {
+            let id = required(args, "--id").or_else(|_| required(args, "--goal"))?;
+            let mut goal = goal_load(store, &id)?;
+            // The gate ("requires non-empty knowledge") lives in the model.
+            let design = goal.synthesize_design_md().map_err(CliError::Usage)?;
+            let now = now_string();
+            goal.design_md = Some(design);
+            goal.design_synthesis_at = Some(now.clone());
+            goal.updated_at = now;
             store.append_goal(&goal)?;
             print_json(&goal)?;
         }
