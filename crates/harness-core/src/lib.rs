@@ -437,6 +437,227 @@ impl KnowledgeSource {
     }
 }
 
+/// Render a Rust string as a Starlark string literal. JSON string escaping
+/// (quotes, backslashes, control chars) is a valid subset of Starlark's, so a
+/// serde_json-encoded string drops straight into generated Starlark.
+fn star_str(s: &str) -> String {
+    serde_json::to_string(s).unwrap_or_else(|_| "\"\"".to_string())
+}
+
+/// Compile one phase's task DAG into a deterministic Starlark workflow program
+/// (the codegen-to-Starlark execution model — the `.star` is a derived, throwaway
+/// view; the task graph is the truth).
+///
+/// Task selection: the phase's LIVE tasks (`task.phase_id == phase.id`, excluding
+/// `Superseded`). Dependencies pointing outside this set are ignored — cross-phase
+/// ordering is the orchestrator's job, not the compiler's.
+///
+/// Shape:
+/// - tasks are layered by longest dependency path; layer N runs before layer N+1;
+/// - within a layer (no intra-layer deps), tasks are greedily partitioned into
+///   groups with pairwise-disjoint `owned_paths`. A group with >1 task →
+///   `parallel([...])`; a singleton → `agent(...)`. Groups run serially (they were
+///   split only because their paths overlap);
+/// - a task with non-empty `owned_paths` is WRITABLE → `writable=True,
+///   isolation="worktree"` (so concurrent writers never collide on disk);
+/// - a non-empty `phase.acceptance` compiles to a judge `agent(schema=…)` plus a
+///   `verdict(...)` so the phase has a hard gate.
+///
+/// The output is a pure function of (goal id/title, phase, tasks) with no
+/// timestamps or randomness, so an identical DAG yields a byte-identical script
+/// (hence a stable content hash).
+pub fn compile_phase_to_starlark(
+    goal: &Goal,
+    phase: &GoalPhase,
+    all_tasks: &[Task],
+) -> Result<String, String> {
+    use std::collections::{HashMap, HashSet};
+
+    let mut tasks: Vec<&Task> = all_tasks
+        .iter()
+        .filter(|t| t.phase_id.as_deref() == Some(phase.id.as_str()))
+        .filter(|t| t.status != TaskStatus::Superseded)
+        .collect();
+    tasks.sort_by(|a, b| a.id.cmp(&b.id));
+    if tasks.is_empty() {
+        return Err(format!(
+            "phase `{}` has no live tasks to compile — add tasks with phase_id = \"{}\" \
+             (superseded tasks are skipped)",
+            phase.id, phase.id
+        ));
+    }
+
+    // Longest-path layering over in-phase deps (iterative relaxation; a cycle
+    // never converges, so cap the passes and report it).
+    let mut layer: HashMap<&str, usize> = tasks.iter().map(|t| (t.id.as_str(), 0usize)).collect();
+    let cap = tasks.len() + 1;
+    let mut changed = true;
+    let mut passes = 0;
+    while changed {
+        changed = false;
+        passes += 1;
+        if passes > cap {
+            return Err(format!(
+                "dependency cycle among phase `{}` tasks — cannot compile",
+                phase.id
+            ));
+        }
+        for t in &tasks {
+            let mut want = 0;
+            for dep in &t.depends_on_task_ids {
+                if let Some(dl) = layer.get(dep.as_str()) {
+                    want = want.max(dl + 1);
+                }
+            }
+            if want != layer[t.id.as_str()] {
+                layer.insert(t.id.as_str(), want);
+                changed = true;
+            }
+        }
+    }
+    let max_layer = tasks
+        .iter()
+        .map(|t| layer[t.id.as_str()])
+        .max()
+        .unwrap_or(0);
+
+    let prompt_of = |t: &Task| -> String {
+        let body = t
+            .design_md
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| {
+                if t.objective.trim().is_empty() {
+                    t.title.clone()
+                } else {
+                    t.objective.clone()
+                }
+            });
+        let mut p = format!("Task {}: {}\n\n{}", t.id, t.title, body);
+        if !t.acceptance_criteria.is_empty() {
+            p.push_str("\n\nAcceptance criteria:");
+            for c in &t.acceptance_criteria {
+                p.push_str(&format!("\n- {c}"));
+            }
+        }
+        if !t.owned_paths.is_empty() {
+            p.push_str(&format!(
+                "\n\nYou own (and may write) these paths: {}.",
+                t.owned_paths.join(", ")
+            ));
+        }
+        p
+    };
+
+    let agent_call = |t: &Task| -> String {
+        let mut c = format!("\nagent(\n    {}", star_str(&prompt_of(t)));
+        c.push_str(",\n    provider=\"codex\"");
+        c.push_str(&format!(",\n    label={}", star_str(&t.id)));
+        c.push_str(&format!(",\n    phase={}", star_str(&phase.id)));
+        if !t.owned_paths.is_empty() {
+            c.push_str(",\n    writable=True");
+            c.push_str(",\n    isolation=\"worktree\"");
+        }
+        c.push_str(",\n)\n");
+        c
+    };
+    let spec_dict = |t: &Task| -> String {
+        let mut d = format!("    {{\n        \"prompt\": {}", star_str(&prompt_of(t)));
+        d.push_str(",\n        \"provider\": \"codex\"");
+        d.push_str(&format!(",\n        \"label\": {}", star_str(&t.id)));
+        d.push_str(&format!(",\n        \"phase\": {}", star_str(&phase.id)));
+        if !t.owned_paths.is_empty() {
+            d.push_str(",\n        \"writable\": True");
+            d.push_str(",\n        \"isolation\": \"worktree\"");
+        }
+        d.push_str("\n    }");
+        d
+    };
+
+    let intent = if phase.intent.trim().is_empty() {
+        format!("Execute phase {} of goal {}.", phase.id, goal.id)
+    } else {
+        phase.intent.trim().to_string()
+    };
+    let design_intent = format!(
+        "Compiled task DAG for goal {} phase {} ({}): {} \
+         Auto-generated by `harness phase compile` — do not edit by hand; \
+         recompile from the task graph instead.",
+        goal.id, phase.id, phase.name, intent
+    );
+
+    let mut s = String::new();
+    s.push_str(&format!(
+        "workflow(\n    {},\n    {},\n)\n",
+        star_str(&format!("phase-{}", phase.id)),
+        star_str(&design_intent)
+    ));
+
+    for l in 0..=max_layer {
+        let layer_tasks: Vec<&Task> = tasks
+            .iter()
+            .copied()
+            .filter(|t| layer[t.id.as_str()] == l)
+            .collect();
+        // Greedy disjoint-`owned_paths` partition (id order → deterministic).
+        let mut groups: Vec<(HashSet<String>, Vec<&Task>)> = Vec::new();
+        for t in &layer_tasks {
+            let paths: HashSet<String> = t.owned_paths.iter().cloned().collect();
+            let mut placed = false;
+            for g in groups.iter_mut() {
+                if g.0.is_disjoint(&paths) {
+                    g.0.extend(paths.iter().cloned());
+                    g.1.push(t);
+                    placed = true;
+                    break;
+                }
+            }
+            if !placed {
+                groups.push((paths, vec![t]));
+            }
+        }
+        for (_, members) in &groups {
+            if members.len() == 1 {
+                s.push_str(&agent_call(members[0]));
+            } else {
+                s.push_str("\nparallel([\n");
+                let specs: Vec<String> = members.iter().map(|t| spec_dict(t)).collect();
+                s.push_str(&specs.join(",\n"));
+                s.push_str("\n])\n");
+            }
+        }
+    }
+
+    if let Some(acc) = phase
+        .acceptance
+        .as_deref()
+        .map(str::trim)
+        .filter(|a| !a.is_empty())
+    {
+        let judge_prompt = format!(
+            "Acceptance check for phase {} ({}) of goal {}.\n\nCriterion:\n{}\n\n\
+             Review the work this phase's tasks produced and decide whether the criterion \
+             is FULLY met. Set pass=true only if it holds; otherwise pass=false with the gap.",
+            phase.id, phase.name, goal.id, acc
+        );
+        s.push_str(&format!(
+            "\n_acc = agent(\n    {},\n    provider=\"codex\",\n    label={},\n    phase={},\n    \
+             schema={{\"pass\": \"bool\", \"reason\": \"string\"}},\n)\n",
+            star_str(&judge_prompt),
+            star_str(&format!("verdict-{}", phase.id)),
+            star_str(&phase.id),
+        ));
+        s.push_str(
+            "verdict(bool(_acc) and _acc.get(\"pass\") == True, \
+             _acc.get(\"reason\") if _acc else \"acceptance judge returned no structured verdict\")\n",
+        );
+    }
+
+    Ok(s)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentMemberStatus {
@@ -1082,6 +1303,12 @@ fn fnv1a_hex16(bytes: &[u8]) -> String {
         hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     }
     format!("{hash:016x}")
+}
+
+/// A stable 16-hex content hash of a string (FNV-1a, dependency-free). Used to
+/// name compiled phase workflows so an identical DAG → identical filename.
+pub fn content_hash_hex16(s: &str) -> String {
+    fnv1a_hex16(s.as_bytes())
 }
 
 /// Make one path segment filesystem-safe for use inside a project-id slug:
@@ -2441,6 +2668,113 @@ mod tests {
         assert!(first.contains("finding k2"));
         // phase-a precedes phase-b (plan order).
         assert!(first.find("phase-a").unwrap() < first.find("phase-b").unwrap());
+    }
+
+    fn compile_task(id: &str, phase_id: &str, deps: &[&str], owned: &[&str]) -> Task {
+        Task {
+            id: id.into(),
+            goal_id: Some("g".into()),
+            parent_task_id: None,
+            title: format!("title {id}"),
+            objective: format!("objective {id}"),
+            owner_agent_id: "lead".into(),
+            assignee_agent_id: None,
+            reviewer_agent_id: None,
+            status: TaskStatus::Planned,
+            depends_on_task_ids: deps.iter().map(|s| s.to_string()).collect(),
+            workspace_ref: None,
+            branch_ref: None,
+            pr_ref: None,
+            owned_paths: owned.iter().map(|s| s.to_string()).collect(),
+            acceptance_criteria: Vec::new(),
+            created_at: "unix-ms:1".into(),
+            updated_at: "unix-ms:1".into(),
+            phase: None,
+            scope_refs: Vec::new(),
+            requires_human_approval: false,
+            verdict_decision_id: None,
+            description: None,
+            git_metadata: None,
+            design_md: Some(format!("design for {id}")),
+            phase_id: Some(phase_id.into()),
+            superseded_by_knowledge_id: None,
+            workflow_step_ids: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn compile_phase_parallelizes_disjoint_and_serializes_chain_and_emits_verdict() {
+        let goal = goal_in_stage(GoalStage::Working);
+        let mut phase = test_phase("phase-1", GoalPhaseStatus::InProgress);
+        phase.acceptance = Some("All wiring compiles and the smoke test passes.".into());
+        let tasks = vec![
+            // Layer 0: two independent writers with disjoint paths → parallel().
+            compile_task("t-a", "phase-1", &[], &["crates/a"]),
+            compile_task("t-b", "phase-1", &[], &["crates/b"]),
+            // Layer 1: depends on both → serial agent() after the parallel block.
+            compile_task("t-c", "phase-1", &["t-a", "t-b"], &["crates/c"]),
+            // Different phase / superseded → excluded.
+            compile_task("t-other", "phase-2", &[], &["x"]),
+        ];
+        let mut superseded = compile_task("t-dead", "phase-1", &[], &["crates/a"]);
+        superseded.status = TaskStatus::Superseded;
+        let mut all = tasks;
+        all.push(superseded);
+
+        let script = compile_phase_to_starlark(&goal, &phase, &all).expect("compile");
+        // Header + auto-generated marker.
+        assert!(script.starts_with("workflow(\n    \"phase-phase-1\""));
+        assert!(script.contains("Auto-generated by `harness phase compile`"));
+        // Layer 0 → one parallel() block carrying both disjoint writers.
+        assert!(script.contains("parallel(["));
+        assert!(script.contains("\"label\": \"t-a\""));
+        assert!(script.contains("\"label\": \"t-b\""));
+        // Writers are isolated.
+        assert!(script.contains("\"isolation\": \"worktree\""));
+        assert!(script.contains("\"writable\": True"));
+        // Layer 1 → a serial agent() AFTER the parallel block.
+        let par = script.find("parallel([").unwrap();
+        let tc = script.find("label=\"t-c\"").expect("t-c agent call");
+        assert!(
+            par < tc,
+            "the dependent task must come after the parallel layer"
+        );
+        // Excluded tasks are absent.
+        assert!(!script.contains("t-other"));
+        assert!(!script.contains("t-dead"));
+        // Acceptance → judge agent + verdict gate.
+        assert!(script.contains("label=\"verdict-phase-1\""));
+        assert!(script.contains("\"pass\": \"bool\""));
+        assert!(script.contains("verdict(bool(_acc)"));
+    }
+
+    #[test]
+    fn compile_phase_is_deterministic_for_identical_dag() {
+        let goal = goal_in_stage(GoalStage::Working);
+        let phase = test_phase("p", GoalPhaseStatus::InProgress);
+        let all = vec![
+            compile_task("t2", "p", &["t1"], &["b"]),
+            compile_task("t1", "p", &[], &["a"]),
+        ];
+        let first = compile_phase_to_starlark(&goal, &phase, &all).expect("compile");
+        // Input order shuffled — output must be byte-identical (sorted by id).
+        let shuffled = vec![all[1].clone(), all[0].clone()];
+        let second = compile_phase_to_starlark(&goal, &phase, &shuffled).expect("compile");
+        assert_eq!(first, second);
+        assert_eq!(content_hash_hex16(&first), content_hash_hex16(&second));
+    }
+
+    #[test]
+    fn compile_phase_errors_on_empty_and_on_cycle() {
+        let goal = goal_in_stage(GoalStage::Working);
+        let phase = test_phase("p", GoalPhaseStatus::InProgress);
+        assert!(compile_phase_to_starlark(&goal, &phase, &[]).is_err());
+        let cyclic = vec![
+            compile_task("t1", "p", &["t2"], &["a"]),
+            compile_task("t2", "p", &["t1"], &["b"]),
+        ];
+        let err = compile_phase_to_starlark(&goal, &phase, &cyclic).unwrap_err();
+        assert!(err.contains("cycle"), "got: {err}");
     }
 
     #[test]

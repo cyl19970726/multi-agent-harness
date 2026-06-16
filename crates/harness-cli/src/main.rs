@@ -10,16 +10,16 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use harness_core::{
-    build_launch_spec, AgentEvent, AgentMember, AgentMemberStatus, AgentProviderConfig,
-    AgentRuntime, AgentRuntimeHealth, AgentRuntimeStatus, AgentTeam, AgentTeamStatus, Decision,
-    EvaluationOutcome, Evidence, Exploration, Gap, GapSeverity, GapStatus, Goal, GoalCase,
-    GoalDesign, GoalEvaluation, GoalStage, GoalStatus, HarnessTokenUsage, HarnessToolCall,
-    HarnessToolResult, HarnessTurnEvent, HarnessTurnEventKind, Knowledge, KnowledgeSource,
-    LaunchMcp, LaunchPermission, LaunchSpec, Message, MessageDelivery, MessageDeliveryStatus,
-    MessageKind, MessageTerminalSource, Proposal, ProposalStatus, ProviderChildThread,
-    ProviderChildThreadStatus, ProviderSession, ProviderSessionStatus, Review, ReviewVerdict,
-    SenderKind, Task, TaskStatus, Vision, WorkflowRun, WorkflowRunStatus, WorkflowStep,
-    WorkflowStepStatus,
+    build_launch_spec, compile_phase_to_starlark, content_hash_hex16, AgentEvent, AgentMember,
+    AgentMemberStatus, AgentProviderConfig, AgentRuntime, AgentRuntimeHealth, AgentRuntimeStatus,
+    AgentTeam, AgentTeamStatus, Decision, EvaluationOutcome, Evidence, Exploration, Gap,
+    GapSeverity, GapStatus, Goal, GoalCase, GoalDesign, GoalEvaluation, GoalStage, GoalStatus,
+    HarnessTokenUsage, HarnessToolCall, HarnessToolResult, HarnessTurnEvent, HarnessTurnEventKind,
+    Knowledge, KnowledgeSource, LaunchMcp, LaunchPermission, LaunchSpec, Message, MessageDelivery,
+    MessageDeliveryStatus, MessageKind, MessageTerminalSource, Proposal, ProposalStatus,
+    ProviderChildThread, ProviderChildThreadStatus, ProviderSession, ProviderSessionStatus, Review,
+    ReviewVerdict, SenderKind, Task, TaskStatus, Vision, WorkflowRun, WorkflowRunStatus,
+    WorkflowStep, WorkflowStepStatus,
 };
 use harness_store::{HarnessStore, MessageDeliveryClaimResult};
 use thiserror::Error;
@@ -133,6 +133,7 @@ fn run() -> CliResult<()> {
         "team" => team_command(&store, &args[1..])?,
         "member" => member_command(&store, &args[1..])?,
         "goal" => goal_command(&store, &args[1..])?,
+        "phase" => phase_command(&store, &args[1..])?,
         "task" => task_command(&store, &args[1..])?,
         "message" => message_command(&store, &args[1..])?,
         "event" => event_command(&store, &args[1..])?,
@@ -440,10 +441,88 @@ fn parse_knowledge_source(s: &str) -> CliResult<KnowledgeSource> {
     })
 }
 
+/// Keep a goal/phase id filesystem-safe for a compiled-script filename.
+fn slug_for_filename(s: &str) -> String {
+    s.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect()
+}
+
+fn phase_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    require_subcommand(args, "phase compile")?;
+    match args[0].as_str() {
+        "compile" => {
+            // Goal id: a bare positional (`phase compile <goal> --phase x`) or
+            // `--goal`/`--id`.
+            let goal_id = args
+                .get(1)
+                .filter(|a| !a.starts_with("--"))
+                .cloned()
+                .or_else(|| value(args, "--goal"))
+                .or_else(|| value(args, "--id"))
+                .ok_or_else(|| {
+                    CliError::Usage(
+                        "phase compile needs a goal (`phase compile <goal> --phase <id>` \
+                         or --goal <id>)"
+                            .into(),
+                    )
+                })?;
+            let phase_id = required(args, "--phase")?;
+            let goal = goal_load(store, &goal_id)?;
+            let phase = goal
+                .phases
+                .iter()
+                .find(|p| p.id == phase_id)
+                .ok_or_else(|| {
+                    CliError::Usage(format!("goal `{goal_id}` has no phase `{phase_id}`"))
+                })?;
+            // Compile from THIS goal's tasks (a phase id is only unique per goal).
+            let goal_tasks: Vec<Task> = store
+                .tasks()?
+                .into_iter()
+                .filter(|t| t.goal_id.as_deref() == Some(goal.id.as_str()))
+                .collect();
+            let script =
+                compile_phase_to_starlark(&goal, phase, &goal_tasks).map_err(CliError::Usage)?;
+            let hash = content_hash_hex16(&script);
+            let dir = store.root().join("compiled");
+            std::fs::create_dir_all(&dir)?;
+            let file_name = format!(
+                "{}__{}__{}.star",
+                slug_for_filename(&goal.id),
+                slug_for_filename(&phase_id),
+                hash
+            );
+            let path = dir.join(&file_name);
+            std::fs::write(&path, &script)?;
+            print_json(&serde_json::json!({
+                "goal": goal.id,
+                "phase": phase_id,
+                "hash": hash,
+                "path": path.display().to_string(),
+                "bytes": script.len(),
+                "tasks_compiled": goal_tasks
+                    .iter()
+                    .filter(|t| t.phase_id.as_deref() == Some(phase_id.as_str())
+                        && t.status != TaskStatus::Superseded)
+                    .count(),
+            }))?;
+        }
+        other => return Err(CliError::Usage(format!("unknown phase command: {other}"))),
+    }
+    Ok(())
+}
+
 fn goal_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     require_subcommand(
         args,
-        "goal create|list|show|describe-set|design-set|acceptance-set|explore-add|knowledge-add|design-synthesize|stage|learning-status|evaluate|close",
+        "goal create|list|show|describe-set|design-set|acceptance-set|explore-add|phase-add|knowledge-add|design-synthesize|stage|learning-status|evaluate|close",
     )?;
     match args[0].as_str() {
         "create" => {
@@ -515,6 +594,38 @@ fn goal_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
                 round,
                 notes_md: notes,
                 created_at: now_string(),
+            });
+            goal.updated_at = now_string();
+            store.append_goal(&goal)?;
+            print_json(&goal)?;
+        }
+        "phase-add" => {
+            let id = required(args, "--id").or_else(|_| required(args, "--goal"))?;
+            let mut goal = goal_load(store, &id)?;
+            let phase_id = value(args, "--phase-id").unwrap_or_else(|| generated_id("phase"));
+            if goal.phases.iter().any(|p| p.id == phase_id) {
+                return Err(CliError::Usage(format!(
+                    "goal `{id}` already has a phase `{phase_id}`"
+                )));
+            }
+            let name = required(args, "--name")?;
+            let intent = md_value(args, "intent")?
+                .or_else(|| value(args, "--intent"))
+                .ok_or_else(|| {
+                    CliError::Usage(
+                        "phase-add needs --intent <text> or --intent-file <path>".into(),
+                    )
+                })?;
+            goal.phases.push(harness_core::GoalPhase {
+                id: phase_id,
+                name,
+                intent,
+                status: harness_core::GoalPhaseStatus::NotStarted,
+                acceptance: md_value(args, "acceptance")?,
+                verdict_decision_id: None,
+                created_at: now_string(),
+                started_at: None,
+                ended_at: None,
             });
             goal.updated_at = now_string();
             store.append_goal(&goal)?;
@@ -727,8 +838,8 @@ fn task_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     match args[0].as_str() {
         "create" => {
             let task = Task {
-                design_md: None,
-                phase_id: None,
+                design_md: md_value(args, "design")?,
+                phase_id: value(args, "--phase-id"),
                 superseded_by_knowledge_id: None,
                 workflow_step_ids: Vec::new(),
                 id: value(args, "--id").unwrap_or_else(|| generated_id("task")),
@@ -18476,6 +18587,77 @@ mod tests {
             description: None,
             git_metadata: None,
         }
+    }
+
+    #[test]
+    fn compiled_phase_script_runs_under_the_real_starlark_engine() {
+        use std::sync::Mutex;
+        let mut goal = make_goal("goal-compile");
+        goal.phases = vec![harness_core::GoalPhase {
+            id: "phase-1".into(),
+            name: "Build".into(),
+            intent: "wire it up end to end".into(),
+            status: harness_core::GoalPhaseStatus::InProgress,
+            acceptance: Some("It compiles and the smoke test passes.".into()),
+            verdict_decision_id: None,
+            created_at: "unix-ms:1".into(),
+            started_at: None,
+            ended_at: None,
+        }];
+        let mut a = make_task("t-a", "goal-compile");
+        a.phase_id = Some("phase-1".into());
+        a.owned_paths = vec!["crates/a".into()];
+        let mut b = make_task("t-b", "goal-compile");
+        b.phase_id = Some("phase-1".into());
+        b.owned_paths = vec!["crates/b".into()];
+        let mut c = make_task("t-c", "goal-compile");
+        c.phase_id = Some("phase-1".into());
+        c.owned_paths = vec!["crates/c".into()];
+        c.depends_on_task_ids = vec!["t-a".into(), "t-b".into()];
+        let tasks = vec![a, b, c];
+
+        let script =
+            compile_phase_to_starlark(&goal, &goal.phases[0], &tasks).expect("compile phase");
+
+        // Run the GENERATED script through the real Starlark engine with a mock
+        // driver — proves it parses, dispatches every task, and the verdict gate
+        // evaluates (no real workers spawned).
+        let seen = Mutex::new(Vec::<String>::new());
+        let driver = |spec: &workflow::AgentStepSpec| -> workflow::StepResult {
+            seen.lock().unwrap().push(spec.label.clone());
+            let structured = if spec.label.starts_with("verdict-") {
+                Some(serde_json::json!({ "pass": true, "reason": "ok" }))
+            } else {
+                None
+            };
+            workflow::StepResult {
+                phase: spec.phase.clone(),
+                label: spec.label.clone(),
+                provider: spec.provider.clone(),
+                isolation: spec.isolation.clone(),
+                ok: true,
+                provider_session_id: None,
+                output_summary: "ok".into(),
+                step_id: None,
+                started_at: None,
+                details: None,
+                structured,
+                ordinal: None,
+            }
+        };
+        let outcome =
+            harness_workflow::starlark_front::run_starlark(&script, "phase-1", None, &driver)
+                .expect("generated script must parse and run")
+                .outcome;
+        assert_eq!(outcome.status, WorkflowRunStatus::Completed);
+        let labels = seen.into_inner().unwrap();
+        for want in ["t-a", "t-b", "t-c"] {
+            assert!(
+                labels.contains(&want.to_string()),
+                "missing {want} in {labels:?}"
+            );
+        }
+        assert!(labels.iter().any(|l| l.starts_with("verdict-")));
     }
 
     fn make_member(id: &str) -> AgentMember {
