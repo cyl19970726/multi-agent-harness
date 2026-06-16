@@ -104,12 +104,33 @@ harness phase compile <goal> --phase <phase-id>
 
 # Run the whole plan: sequence phases, gate each on its verdict, advance the goal
 harness goal run-phases <goal> [--dry-run]
+harness goal run-phases <goal> --resume               # don't re-spend done work
+harness goal run-phases <goal> --max-phase-retries 2  # replan budget per phase
 ```
 
 `run-phases` walks `phases[]` in order, compiles each phase's live tasks, runs it,
 and only advances past a phase when its acceptance verdict passes — the sequential
 rule, enforced. See [[author-workflow]] for the Starlark runtime the compiled
 phase runs on, and [[author-goal]] for getting a goal to `explored` first.
+
+### Gating, replan, and resume (what the orchestrator does)
+
+- **Gate.** A phase passes only if its run completed AND every task step is ok (and,
+  if the phase has an `acceptance`, the compiled `verdict()` returned true). On a
+  pass the goal records a `Decision(decision_kind=phase_verdict)`, points
+  `GoalPhase.verdict_decision_id` at it, writes each task → `Done`, and links each
+  `WorkflowStep` back to its task (`task_id` + `verdict_outcome`).
+- **Replan.** On a failure with retries left, the orchestrator appends a `Knowledge`
+  entry for the finding, asks the planner to **revise** this phase's task graph
+  (dead tasks → `TaskStatus::Superseded` + `superseded_by_knowledge_id`; new tasks
+  appended), recompiles, and reruns — capped by `--max-phase-retries`. This is why
+  tasks are *living*: they are superseded, never deleted, so the trail survives.
+- **Resume.** `--resume` re-enters from the durable `GoalOrchestrationRun`
+  checkpoint: already-passed phases are skipped, and within a re-run phase the prior
+  run's succeeded leaves are replayed (no re-spend). A kill mid-run is safe.
+
+So the planner's output is not a one-shot script — it is a **living task graph** the
+orchestrator edits (via replan) as execution surfaces new knowledge.
 
 ## Anti-patterns (reject these)
 

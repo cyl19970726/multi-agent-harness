@@ -1,6 +1,6 @@
 ---
 name: author-goal
-description: "Use when creating or advancing a Goal in this harness: write the three markdown sections (description / design with key-problems-first / real acceptance), run multi-agent exploration, and move the goal through its lifecycle (draft → exploring → explored → working → done → verifying → verified) with the gates the CLI enforces."
+description: "Use when creating or advancing a Goal in this harness: write the markdown sections (description / design / real acceptance), accumulate a knowledge ledger, run multi-agent exploration, and move the goal through its lifecycle. Covers BOTH the manual gated lifecycle (draft → exploring → explored → working → done → verifying → verified) and the knowledge-driven PHASED model (append-only knowledge[] + agent-planned sequential phases[] + a per-phase task graph, executed by `goal run-phases`). To decompose an explored goal into phases + a task DAG, hand off to [[author-planner]]."
 ---
 
 # Author Goal
@@ -20,13 +20,21 @@ goal. Do not fill sections to look complete — fill them because you explored.
 | --- | --- | --- |
 | `description_md` | draft | What this goal is and WHY. The seed. Short is fine. |
 | `explorations[]` | exploring | Raw notes from each explorer / round (multi-agent, multi-round). |
-| `design_md` | explored | **Key problems FIRST**, then the Big Picture / Overview (how the architecture changes), then the approach. The substantial doc. |
+| `knowledge[]` | any | **Append-only ledger of findings** (the TRUTH), each with provenance: `phase_id` / `task_id` / `author` / `timestamp` / `tags` / `source`. Fed by exploration AND task execution. |
+| `design_md` | explored | **Key problems FIRST**, then the Big Picture / Overview, then the approach. Either hand-written, or **re-synthesized from `knowledge[]`** via `design-synthesize` (stamps `design_synthesis_at`). |
 | `acceptance_md` | before working | The REAL acceptance: criteria + scenario + how to verify *for real*. |
+| `phases[]` | when planning | Agent-planned, **sequential** checkpoints; each owns a task DAG (see [[author-planner]]). Optional — a simple goal needs none. |
 | `skill_refs[]` | any | Domain skills needed to DO the work (NOT this skill). |
-| `stage` | — | Lifecycle position (see below). |
+| `stage` | — | Lifecycle position. **Derived from `phases[]` when present** (the stored field is a legacy projection); the stored value is the truth only for goals with no phases. |
 
 `design_md` absorbs what the old GoalDesign split across scenario / non-goals /
 required-infra / evidence-plan / acceptance-gates. Write it as prose, not slots.
+
+**Two ways to run a goal.** A *simple* goal uses the **manual lifecycle** below
+(you drive the stages by hand). A goal that needs a planned, gated, multi-worker
+build uses the **phased model** (`knowledge[]` → `phases[]` → `goal run-phases`,
+see "Knowledge-driven phased execution" near the end). They share the same Goal —
+phases are additive, and `stage` is derived once a goal has them.
 
 ## The lifecycle
 
@@ -93,6 +101,35 @@ understood, go back: `harness goal stage --id <goal> --to exploring`.
 Promote a key problem to a tracked `gap` (and later a `task`) when it becomes
 actionable — but it lives in `design_md` first, as narrative, not as empty slots.
 
+#### Two ways to fill `design_md`
+- **Hand-written** (`design-set --md-file`): you author the prose directly. The
+  manual escape hatch; always available.
+- **Synthesized from the knowledge ledger** (`design-synthesize`): if you have been
+  capturing findings as `knowledge[]` (below), regenerate `design_md` as a derived,
+  re-synthesizable view grouped by phase. This is preferred for the phased model,
+  where `knowledge[]` is the truth and `design_md` is a projection of it. The
+  synthesis is deterministic and **refuses to run on an empty ledger** (capture
+  knowledge first).
+
+### The knowledge ledger (knowledge[]) — the durable truth
+Findings are not only prose in `design_md`; capture each as an **append-only**
+`Knowledge` entry with provenance. The ledger is fed by BOTH exploration and task
+execution (a task that learns something appends to it), and it is what
+`design-synthesize` rebuilds `design_md` from — so a finding is never lost when the
+design is re-written.
+
+```bash
+harness goal knowledge-add --goal <goal> --author <who> \
+    --notes-file finding.md --tag architecture --tag risk \
+    --source exploration            # exploration|task|decision|evidence
+    # --phase <phase-id> --task <task-id>  to attach provenance
+
+harness goal design-synthesize --goal <goal>   # knowledge[] → design_md (+ stamp)
+```
+
+Use `--source task --task <id>` when a task's execution surfaced the finding;
+abandoned approaches stay in the ledger (a later entry can supersede a task).
+
 ### acceptance_md (before working) — REAL acceptance
 Write this at the `explored → working` gate. It must describe how the goal is
 verified *for real*, not a synthetic check. Example: "integrating Kimi Code is
@@ -138,6 +175,52 @@ harness goal show --id <goal>
 become a newline, so headings/lists render as one mangled blob. Inline is only ever
 safe for a single short line with no newlines.
 
+## Knowledge-driven phased execution (the planned path)
+
+Beyond the manual lifecycle, a goal can carry an **agent-planned plan** and be run
+by the orchestrator. The model: `knowledge[]` is the truth, `design_md` is a
+re-synthesizable view of it, and `phases[]` (sequential) each own a **task DAG**.
+The full loop:
+
+```bash
+# 1. Capture findings + (re)synthesize the design from them
+harness goal knowledge-add --goal <goal> --author <who> --notes-file f.md --tag x
+harness goal design-synthesize --goal <goal>
+
+# 2. Plan: decompose design_md → phases + a per-phase task DAG (see author-planner)
+harness goal plan <goal>                    # agent-driven; --dry-run plans nothing
+#   or hand-author:
+harness goal phase-add --goal <goal> --phase-id p1 --name "Build" \
+    --intent "…" --acceptance "…"
+harness task create --goal <goal> --phase-id p1 --title "…" --objective "…" \
+    --owner <who> --owned-path crates/x --design-file slice.md --depends-on <task>
+
+# 3. Inspect the compiled Starlark for one phase (derived, throwaway view)
+harness phase compile <goal> --phase p1
+
+# 4. Run the plan: phases SEQUENTIALLY, each gated on its verdict before the next;
+#    each task's outcome is written back to Task.status; the goal's derived stage
+#    advances; a durable checkpoint is persisted.
+harness goal run-phases <goal>              # --dry-run for the mock-worker path
+harness goal run-phases <goal> --resume     # re-enter without re-spending done work
+harness goal run-phases <goal> --max-phase-retries 2   # replan loop on failure
+```
+
+What `run-phases` does per phase: compile the phase's live tasks → a `.star`
+(disjoint-`owned_paths` no-dep tasks → `parallel()`, writable tasks → worktree
+isolation, phase `acceptance` → a `verdict()` gate), run it on the workflow
+runtime, and **only advance when the verdict passes**. On a failure with retries
+left it **replans**: appends a `Knowledge` entry for the finding, asks the planner
+to revise (supersede dead tasks → `TaskStatus::Superseded` + new ones), recompiles,
+and reruns — capped by `--max-phase-retries`.
+
+A **simple goal needs none of this** — one phase, or just the manual lifecycle.
+Reach for phases when the work is a real multi-step, multi-worker build that
+benefits from gated checkpoints and a living task graph. The decomposition rules
+(sequential phases; parallel-iff-disjoint within a phase; each task a mini-goal)
+live in [[author-planner]]; the Starlark runtime each phase compiles to is
+[[author-workflow]].
+
 ## Anti-patterns (reject these)
 
 - **Form over substance.** Sections filled to look complete while the design never
@@ -150,3 +233,11 @@ safe for a single short line with no newlines.
   in the real network." Write the acceptance you would actually trust.
 - **One-shot exploration.** Stopping at one pass when parts are still thin.
   Re-open exploration; it is cheap and the back-edge exists for this.
+- **Losing findings to a design rewrite.** Discoveries that live only in `design_md`
+  prose vanish when it is re-synthesized. Capture them as `knowledge[]` (the truth);
+  let `design-synthesize` rebuild the prose from the ledger.
+- **Phases for a one-step goal.** Don't build a task DAG + `run-phases` for work that
+  is a single change. Use the manual lifecycle; reach for phases only when gated,
+  multi-worker checkpoints earn their keep (the rules are in [[author-planner]]).
+- **Editing the compiled `.star` by hand.** It is a derived, throwaway view of the
+  task graph; change the tasks and recompile, never the `.star`.
