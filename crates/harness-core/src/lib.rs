@@ -106,6 +106,69 @@ pub enum GoalPhaseStatus {
     Blocked,
 }
 
+/// The class of an artifact a phase or task declares it will produce
+/// (goal-phase-artifacts). The default `Code` matches today's implicit behavior
+/// where a phase's deliverable is a code diff. Serialized snake_case so the wire
+/// form reads `design_doc`, `test_report`, `migration_doc`, `registered_doc`, etc.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ArtifactKind {
+    DesignDoc,
+    Adr,
+    #[default]
+    Code,
+    TestReport,
+    MigrationDoc,
+    RegisteredDoc,
+    Screenshot,
+    Other,
+}
+
+fn default_artifact_required() -> bool {
+    true
+}
+
+/// One declared deliverable of a phase or task (goal-phase-artifacts). Makes
+/// artifacts first-class and declarative so the verdict gate can VERIFY a phase
+/// produced what it promised, instead of only checking the worker didn't crash.
+/// All-optional except `id`/`kind`/`purpose`; `required` defaults to TRUE so a
+/// declared output is enforced unless explicitly marked optional. An empty
+/// `outputs[]` reproduces today's behavior verbatim (the legacy `design_md` is the
+/// implicit `design_doc`, the `acceptance` string the implicit gate).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArtifactSpec {
+    /// Stable handle for this artifact within its phase/task.
+    pub id: String,
+    /// What kind of artifact this is (gate/render hint).
+    #[serde(default)]
+    pub kind: ArtifactKind,
+    /// Where the artifact lands (repo-relative path; glob ok). When present and
+    /// `required`, the gate asserts it exists & is non-empty in the worktree diff.
+    #[serde(default)]
+    pub path: Option<String>,
+    /// Why this artifact exists — the human/agent-readable intent.
+    pub purpose: String,
+    /// Whether the gate must enforce this artifact. Defaults to TRUE.
+    #[serde(default = "default_artifact_required")]
+    pub required: bool,
+    /// Optional per-artifact acceptance criterion (a finer gate than its presence).
+    #[serde(default)]
+    pub acceptance: Option<String>,
+}
+
+impl Default for ArtifactSpec {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            kind: ArtifactKind::default(),
+            path: None,
+            purpose: String::new(),
+            required: default_artifact_required(),
+            acceptance: None,
+        }
+    }
+}
+
 /// One agent-planned phase of a goal. It owns a task subgraph (the tasks whose
 /// `phase_id == this.id`), and its `acceptance` is the verdict gate before the next
 /// phase. Phases replace the fixed `GoalStage` enum as the source of truth for
@@ -128,6 +191,11 @@ pub struct GoalPhase {
     pub started_at: Option<String>,
     #[serde(default)]
     pub ended_at: Option<String>,
+    /// Artifacts this phase declares it will produce (goal-phase-artifacts). Empty
+    /// reproduces today's behavior (the implicit `design_doc` + `acceptance` gate);
+    /// non-empty makes the verdict gate enforce each `required` artifact's presence.
+    #[serde(default)]
+    pub outputs: Vec<ArtifactSpec>,
 }
 
 /// Where a `Knowledge` entry came from.
@@ -1389,6 +1457,10 @@ pub struct Task {
     /// The `WorkflowStep`s that executed this task (reverse link; goal-planning-model).
     #[serde(default)]
     pub workflow_step_ids: Vec<String>,
+    /// Artifacts this task declares it will produce (goal-phase-artifacts). Empty
+    /// reproduces today's behavior (the implicit `design_md` doc + acceptance gate).
+    #[serde(default)]
+    pub outputs: Vec<ArtifactSpec>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2525,6 +2597,7 @@ mod tests {
                 owned_paths: vec!["crates/harness-core".to_string()],
                 ..Default::default()
             }),
+            outputs: Vec::new(),
         };
 
         let json = serde_json::to_string(&task).expect("serialize task");
@@ -2632,6 +2705,7 @@ mod tests {
             created_at: "unix-ms:1".into(),
             started_at: Some("unix-ms:2".into()),
             ended_at: None,
+            outputs: Vec::new(),
         };
         let pj = serde_json::to_string(&phase).expect("ser phase");
         assert!(
@@ -2680,6 +2754,7 @@ mod tests {
             created_at: "unix-ms:1".into(),
             started_at: None,
             ended_at: None,
+            outputs: Vec::new(),
         }];
         g.knowledge = vec![Knowledge {
             id: "k1".into(),
@@ -2713,6 +2788,8 @@ mod tests {
                 && t.phase_id.is_none()
                 && t.superseded_by_knowledge_id.is_none()
                 && t.workflow_step_ids.is_empty()
+                // goal-phase-artifacts: a legacy task with no `outputs` key defaults empty.
+                && t.outputs.is_empty()
         );
         // Superseded + the new fields round-trip.
         t.status = TaskStatus::Superseded;
@@ -2724,6 +2801,111 @@ mod tests {
         let back: Task = serde_json::from_str(&j).expect("de task");
         assert_eq!(back, t);
         assert_eq!(back.status, TaskStatus::Superseded);
+    }
+
+    #[test]
+    fn artifact_spec_and_kind_round_trip_snake_case_and_required_defaults_true() {
+        // ArtifactKind serializes snake_case (the multi-word kinds are the bar).
+        assert_eq!(
+            serde_json::to_string(&ArtifactKind::DesignDoc).unwrap(),
+            "\"design_doc\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ArtifactKind::TestReport).unwrap(),
+            "\"test_report\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ArtifactKind::MigrationDoc).unwrap(),
+            "\"migration_doc\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ArtifactKind::RegisteredDoc).unwrap(),
+            "\"registered_doc\""
+        );
+        // Default kind is Code.
+        assert_eq!(ArtifactKind::default(), ArtifactKind::Code);
+        assert_eq!(
+            serde_json::from_str::<ArtifactKind>("\"adr\"").unwrap(),
+            ArtifactKind::Adr
+        );
+
+        // A fully-specified spec round-trips.
+        let spec = ArtifactSpec {
+            id: "report".into(),
+            kind: ArtifactKind::TestReport,
+            path: Some("reports/r.md".into()),
+            purpose: "the live-acceptance evidence".into(),
+            required: false,
+            acceptance: Some("contains a PASS line".into()),
+        };
+        let j = serde_json::to_string(&spec).expect("ser spec");
+        assert_eq!(
+            serde_json::from_str::<ArtifactSpec>(&j).expect("de spec"),
+            spec
+        );
+
+        // A minimal spec (no kind/path/required/acceptance keys) defaults: kind=Code,
+        // path=None, required=TRUE, acceptance=None.
+        let minimal: ArtifactSpec =
+            serde_json::from_str(r#"{"id":"a","purpose":"p"}"#).expect("de minimal spec");
+        assert_eq!(minimal.kind, ArtifactKind::Code);
+        assert!(minimal.path.is_none());
+        assert!(minimal.required, "required must default to true");
+        assert!(minimal.acceptance.is_none());
+        // And `Default` agrees on the required=true invariant.
+        assert!(ArtifactSpec::default().required);
+    }
+
+    #[test]
+    fn phase_and_task_outputs_round_trip_and_legacy_defaults_empty() {
+        let outputs = vec![
+            ArtifactSpec {
+                id: "design".into(),
+                kind: ArtifactKind::DesignDoc,
+                path: Some("docs/design.md".into()),
+                purpose: "the phase design".into(),
+                required: true,
+                acceptance: None,
+            },
+            ArtifactSpec {
+                id: "shot".into(),
+                kind: ArtifactKind::Screenshot,
+                path: None,
+                purpose: "dashboard picker proof".into(),
+                required: false,
+                acceptance: None,
+            },
+        ];
+
+        // GoalPhase with non-empty outputs round-trips.
+        let mut phase = test_phase("p-out", GoalPhaseStatus::InProgress);
+        phase.outputs = outputs.clone();
+        let pj = serde_json::to_string(&phase).expect("ser phase");
+        assert_eq!(
+            serde_json::from_str::<GoalPhase>(&pj).expect("de phase"),
+            phase
+        );
+
+        // Task with non-empty outputs round-trips.
+        let mut task = compile_task("t-out", "p-out", &[], &["crates/x"]);
+        task.outputs = outputs;
+        let tj = serde_json::to_string(&task).expect("ser task");
+        assert_eq!(serde_json::from_str::<Task>(&tj).expect("de task"), task);
+
+        // A legacy GoalPhase JSON WITHOUT the `outputs` key defaults to empty.
+        let legacy_phase = r#"{"id":"p","name":"P","intent":"i","status":"not_started",
+            "created_at":"unix-ms:1"}"#;
+        let p: GoalPhase = serde_json::from_str(legacy_phase).expect("de legacy phase");
+        assert!(p.outputs.is_empty());
+
+        // A legacy Task JSON WITHOUT the `outputs` key defaults to empty.
+        let legacy_task = r#"{"id":"t","goal_id":null,"parent_task_id":null,"title":"x",
+            "objective":"o","owner_agent_id":"lead","assignee_agent_id":null,
+            "reviewer_agent_id":null,"status":"planned","depends_on_task_ids":[],
+            "workspace_ref":null,"branch_ref":null,"pr_ref":null,"owned_paths":[],
+            "acceptance_criteria":[],"created_at":"unix-ms:1","updated_at":"unix-ms:1"}"#;
+        let lt: Task = serde_json::from_str(legacy_task).expect("de legacy task");
+        assert!(lt.outputs.is_empty());
     }
 
     #[test]
@@ -2843,6 +3025,7 @@ mod tests {
             created_at: "unix-ms:1".into(),
             started_at: None,
             ended_at: None,
+            outputs: Vec::new(),
         }
     }
 
@@ -2967,6 +3150,7 @@ mod tests {
             phase_id: Some(phase_id.into()),
             superseded_by_knowledge_id: None,
             workflow_step_ids: Vec::new(),
+            outputs: Vec::new(),
         }
     }
 

@@ -1555,6 +1555,7 @@ fn apply_phase_revision(
                 phase_id: Some(phase_id.to_string()),
                 superseded_by_knowledge_id: None,
                 workflow_step_ids: Vec::new(),
+                outputs: Vec::new(),
             };
             store.append_task(&task)?;
             existing.insert(task_id.clone());
@@ -1962,6 +1963,7 @@ fn plan_into_goal(
                 created_at: now.clone(),
                 started_at: None,
                 ended_at: None,
+                outputs: Vec::new(),
             });
             result.phases_added.push(phase_id.clone());
         }
@@ -2010,6 +2012,7 @@ fn plan_into_goal(
                 phase_id: Some(phase_id.clone()),
                 superseded_by_knowledge_id: None,
                 workflow_step_ids: Vec::new(),
+                outputs: Vec::new(),
             };
             store.append_task(&task)?;
             result.tasks_created.push(task_id);
@@ -2128,6 +2131,7 @@ fn goal_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
                 created_at: now_string(),
                 started_at: None,
                 ended_at: None,
+                outputs: Vec::new(),
             });
             goal.updated_at = now_string();
             store.append_goal(&goal)?;
@@ -2534,6 +2538,7 @@ fn task_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
                 verdict_decision_id: value(args, "--verdict-decision"),
                 description: value(args, "--description"),
                 git_metadata: None,
+                outputs: Vec::new(),
             };
             persist_new_task(store, &task)?;
             print_json(&task)?;
@@ -3107,6 +3112,7 @@ fn autonomy_decide_value(store: &HarnessStore, args: &[String]) -> CliResult<ser
                 verdict_decision_id: None,
                 description: value(args, "--task-description"),
                 git_metadata: None,
+                outputs: Vec::new(),
             };
             // Write a TYPED GoalDesign (graduated object) rather than an untyped
             // Evidence(source_type=goal_design): the next-round goal is designed
@@ -5419,6 +5425,7 @@ fn create_task_value(
         verdict_decision_id: json_string(body, "verdict_decision"),
         description: json_string(body, "description"),
         git_metadata: None,
+        outputs: Vec::new(),
     };
     persist_new_task(store, &task)?;
     Ok(serde_json::to_value(task)?)
@@ -18290,6 +18297,7 @@ agent("a NEW second leaf that changes the ordinal alignment")
                 created_at: "unix-ms:1".into(),
                 started_at: Some("unix-ms:2".into()),
                 ended_at: None,
+                outputs: Vec::new(),
             }],
             knowledge: vec![Knowledge {
                 id: "knowledge-1".into(),
@@ -18336,6 +18344,7 @@ agent("a NEW second leaf that changes the ordinal alignment")
             phase_id: Some("phase-1".into()),
             superseded_by_knowledge_id: None,
             workflow_step_ids: vec!["wfstep-1".into()],
+            outputs: Vec::new(),
         };
         store.append_task(&task).expect("append task");
 
@@ -21089,6 +21098,7 @@ mod tests {
             verdict_decision_id: None,
             description: None,
             git_metadata: None,
+            outputs: Vec::new(),
         }
     }
 
@@ -21106,6 +21116,7 @@ mod tests {
             created_at: "unix-ms:1".into(),
             started_at: None,
             ended_at: None,
+            outputs: Vec::new(),
         }];
         let mut a = make_task("t-a", "goal-compile");
         a.phase_id = Some("phase-1".into());
@@ -21180,6 +21191,7 @@ mod tests {
             created_at: "unix-ms:1".into(),
             started_at: None,
             ended_at: None,
+            outputs: Vec::new(),
         };
         goal.phases = vec![phase.clone()];
         let mut t = make_task("t-bad", "goal-revise");
@@ -21239,6 +21251,7 @@ mod tests {
             created_at: "unix-ms:1".into(),
             started_at: None,
             ended_at: None,
+            outputs: Vec::new(),
         }
     }
 
