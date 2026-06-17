@@ -1797,6 +1797,13 @@ fn git_in(repo_root: &Path, args: &[&str]) -> CliResult<String> {
 /// that fails to apply cleanly is a phase failure (`Err`) with an actionable
 /// message — we never `--force` / `-3` auto-merge (the disjoint invariant means a
 /// real conflict signals an upstream bug, not something to paper over).
+///
+/// Safety on the user's real project tree: landing REFUSES to start unless the
+/// repo index + working tree are clean (`git status --porcelain` empty), since the
+/// pathspec-less commit would otherwise sweep unrelated pre-staged work into the
+/// phase commit; and on a mid-sequence apply failure it `git reset --hard`s back to
+/// the pre-landing HEAD so a failed landing leaves the tree exactly as it found it
+/// (no orphaned staged files for a later phase to absorb).
 fn land_phase_diffs(
     phase_id: &str,
     outcome: &workflow::WorkflowOutcome,
@@ -1825,6 +1832,29 @@ fn land_phase_diffs(
         )));
     }
 
+    // Landing must START from a clean index + working tree. `git commit` (below) has
+    // no pathspec, so it would sweep ANY pre-staged/unrelated work into the
+    // "phase landed" commit and silently entangle it with phase output. Refuse up
+    // front with an actionable message rather than mislabel a developer's own
+    // changes. This also makes the post-apply state knowable for rollback below.
+    let status = git_in(repo_root, &["status", "--porcelain"])?;
+    if !status.trim().is_empty() {
+        return Err(CliError::Usage(format!(
+            "phase '{phase_id}' is ready to LAND, but {} has uncommitted changes \
+             (staged or in the working tree):\n{}\nlanding would sweep them into the \
+             phase commit. Commit, stash, or discard them, then re-run \
+             `harness goal run-phases`.",
+            repo_root.display(),
+            status.trim()
+        )));
+    }
+
+    // The exact HEAD we started from: a clean `git reset --hard <head>` restores the
+    // repo to this state if any diff fails to apply midway (partial-apply rollback).
+    let head_before = git_in(repo_root, &["rev-parse", "HEAD"])?
+        .trim()
+        .to_string();
+
     // Apply each diff onto the working tree (index + worktree). `git apply --index`
     // keeps the index in sync so the single commit below captures every landed file
     // (including brand-new ones). No `-3` / `--force`: a clean apply is REQUIRED.
@@ -1843,18 +1873,30 @@ fn land_phase_diffs(
         }
         let out = child.wait_with_output()?;
         if !out.status.success() {
+            let apply_err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+            // Roll back any diffs already applied this run so a failed landing leaves
+            // the tree EXACTLY as it found it (clean @ head_before) — otherwise the
+            // orphaned staged files would be swept into a LATER phase's landing
+            // commit on the next run-phases invocation.
+            let rollback = git_in(repo_root, &["reset", "--hard", &head_before]);
+            let rollback_note = match rollback {
+                Ok(_) => String::new(),
+                Err(e) => format!(" (WARNING: rollback to {head_before} also failed: {e})"),
+            };
             return Err(CliError::Usage(format!(
                 "phase '{phase_id}' could not LAND a writable task's diff onto {} \
-                 (git apply failed): {}. Parallel tasks must own disjoint paths; a \
-                 genuine apply conflict is a phase failure, not auto-merged.",
+                 (git apply failed): {apply_err}. Parallel tasks must own disjoint \
+                 paths; a genuine apply conflict is a phase failure, not \
+                 auto-merged.{rollback_note}",
                 repo_root.display(),
-                String::from_utf8_lossy(&out.stderr).trim()
             )));
         }
     }
 
     // ONE commit for the whole phase's landed work. `git apply --index` already
-    // staged everything; commit it. `--no-verify` is intentionally NOT used.
+    // staged everything; the clean-tree guard above guarantees NOTHING else is
+    // staged, so the pathspec-less commit captures only this phase's landed files.
+    // `--no-verify` is intentionally NOT used.
     git_in(
         repo_root,
         &[
@@ -22471,6 +22513,163 @@ mod tests {
         );
 
         std::fs::remove_dir_all(&root).ok();
+        std::fs::remove_dir_all(&repo_root).ok();
+    }
+
+    /// Build a phase outcome carrying explicit per-step new-file diffs (one diff per
+    /// `(label, path)`), so landing tests can exercise multi-diff sequences with
+    /// distinct paths (unlike `mock_outcome_with_diff`, which emits one path).
+    fn outcome_with_diffs(phase_id: &str, steps: &[(&str, &str)]) -> workflow::WorkflowOutcome {
+        let new_file_diff = |p: &str| {
+            format!(
+                "diff --git a/{p} b/{p}\n\
+                 new file mode 100644\n\
+                 index 0000000..abc1234\n\
+                 --- /dev/null\n\
+                 +++ b/{p}\n\
+                 @@ -0,0 +1,1 @@\n\
+                 +produced content\n",
+            )
+        };
+        let results = steps
+            .iter()
+            .map(|(label, path)| workflow::StepResult {
+                phase: phase_id.to_string(),
+                label: (*label).to_string(),
+                provider: "codex".into(),
+                isolation: Some("worktree".into()),
+                ok: true,
+                provider_session_id: None,
+                output_summary: "ok".into(),
+                step_id: Some(format!("wfstep-{label}")),
+                started_at: None,
+                details: Some(serde_json::json!({ "worktree_diff": new_file_diff(path) })),
+                structured: None,
+                ordinal: None,
+            })
+            .collect();
+        workflow::WorkflowOutcome {
+            steps: results,
+            status: WorkflowRunStatus::Completed,
+            summary: "mock".into(),
+            agents_spawned: 0,
+            final_output: None,
+        }
+    }
+
+    // l2-landing review fix #1a: landing REFUSES to start when the repo has
+    // uncommitted/pre-staged work, so the pathspec-less commit can't sweep a
+    // developer's unrelated changes into the "phase landed" commit.
+    #[test]
+    fn land_phase_diffs_refuses_when_repo_tree_is_dirty() {
+        let repo_root =
+            std::env::temp_dir().join(format!("harness-landdirty-{}", generated_id("dirty")));
+        init_git_repo(&repo_root);
+        let head_before = git_out(&repo_root, &["rev-parse", "HEAD"]);
+
+        // A developer's unrelated work, already `git add`-ed (pre-staged).
+        std::fs::write(repo_root.join("unrelated.txt"), "my own work\n").unwrap();
+        let _ = Command::new("git")
+            .arg("-C")
+            .arg(&repo_root)
+            .args(["add", "unrelated.txt"])
+            .output();
+
+        let outcome = outcome_with_diffs("p1", &[("t1", "src/new.rs")]);
+        let res = land_phase_diffs("p1", &outcome, &repo_root);
+
+        // Landing is refused with an actionable message; nothing is committed and
+        // the developer's pre-staged file is left untouched (still staged, uncommitted).
+        let err = res.expect_err("dirty tree must refuse landing");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("uncommitted changes") && msg.contains("unrelated.txt"),
+            "error must name the dirty state actionably: {msg}"
+        );
+        assert_eq!(
+            git_out(&repo_root, &["rev-parse", "HEAD"]),
+            head_before,
+            "no landing commit may be made over a dirty tree"
+        );
+        // The phase's own file was never created/landed.
+        assert!(
+            !repo_root.join("src/new.rs").exists(),
+            "phase work must not be applied when landing is refused"
+        );
+        // The developer's pre-staged work is intact.
+        assert_eq!(
+            std::fs::read_to_string(repo_root.join("unrelated.txt")).unwrap(),
+            "my own work\n"
+        );
+
+        std::fs::remove_dir_all(&repo_root).ok();
+    }
+
+    // l2-landing review fix #1b: a mid-sequence apply failure rolls back the diffs
+    // already applied this run, so a failed landing leaves the tree EXACTLY as it
+    // found it — no orphaned staged files for a LATER successful landing to absorb.
+    #[test]
+    fn land_phase_diffs_rolls_back_partial_apply_leaving_no_orphan() {
+        let repo_root =
+            std::env::temp_dir().join(format!("harness-landroll-{}", generated_id("roll")));
+        init_git_repo(&repo_root);
+        let head_before = git_out(&repo_root, &["rev-parse", "HEAD"]);
+
+        // Two writable steps: the FIRST diff (a.txt) applies; the SECOND (collide.txt)
+        // is a "new file" diff for a path that already exists committed → apply fails.
+        std::fs::write(repo_root.join("collide.txt"), "already here\n").unwrap();
+        let _ = Command::new("git")
+            .arg("-C")
+            .arg(&repo_root)
+            .args(["add", "collide.txt"])
+            .output();
+        let _ = Command::new("git")
+            .arg("-C")
+            .arg(&repo_root)
+            .args(["commit", "-m", "pre-existing collide.txt"])
+            .output();
+        let head_after_seed = git_out(&repo_root, &["rev-parse", "HEAD"]);
+
+        let outcome = outcome_with_diffs("p1", &[("t1", "a.txt"), ("t2", "collide.txt")]);
+        let res = land_phase_diffs("p1", &outcome, &repo_root);
+        assert!(res.is_err(), "second diff must fail to apply");
+        assert!(
+            res.unwrap_err().to_string().contains("could not LAND"),
+            "actionable landing-failure message expected"
+        );
+
+        // Rollback restored the tree to the seed HEAD: no commit, clean status, and
+        // CRUCIALLY a.txt (the successfully-applied first diff) is NOT left orphaned
+        // in the index/worktree.
+        assert_eq!(git_out(&repo_root, &["rev-parse", "HEAD"]), head_after_seed);
+        assert!(
+            git_out(&repo_root, &["status", "--porcelain"]).is_empty(),
+            "tree must be clean after rollback (status: {})",
+            git_out(&repo_root, &["status", "--porcelain"])
+        );
+        assert!(
+            !repo_root.join("a.txt").exists(),
+            "the partially-applied first diff must be rolled back"
+        );
+        assert_ne!(head_after_seed, head_before, "sanity: seed added a commit");
+
+        // A SUBSEQUENT successful landing of a different phase must NOT absorb any
+        // orphan from the failed run — it commits ONLY its own file.
+        let next = outcome_with_diffs("p2", &[("t3", "b.txt")]);
+        let sha = land_phase_diffs("p2", &next, &repo_root)
+            .expect("clean follow-up landing")
+            .expect("a writable phase lands a commit");
+        let files = git_out(
+            &repo_root,
+            &["show", "--name-only", "--pretty=format:", &sha],
+        );
+        let landed: Vec<&str> = files.lines().filter(|l| !l.is_empty()).collect();
+        assert_eq!(
+            landed,
+            vec!["b.txt"],
+            "the follow-up commit must contain ONLY its own file, no orphan"
+        );
+
         std::fs::remove_dir_all(&repo_root).ok();
     }
 
