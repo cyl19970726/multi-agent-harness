@@ -4,6 +4,7 @@ import type {
   DocRegistryEntry,
   HarnessTurnEvent,
   Message,
+  Project,
   ProviderSession,
   WorkflowDef,
   WorkflowRun,
@@ -22,16 +23,91 @@ export function normalizeBaseUrl(baseUrl: string): string {
   return baseUrl.trim().replace(/\/$/, "");
 }
 
-export async function fetchSnapshot(baseUrl: string): Promise<DashboardSnapshot> {
+/**
+ * Append `?project=<id>` to a `/v1/...` path so a single serve can multiplex
+ * many project stores (goal-multi-project P6). An absent/empty id yields the
+ * bare path, which the backend resolves to the active/`_global` project — old
+ * clients (and the picker before a project is chosen) keep working unchanged.
+ * Project ids are restricted to `[A-Za-z0-9._-]`, so no percent-encoding is
+ * needed to match the backend's `query_param` parser.
+ */
+function withProject(path: string, project?: string | null): string {
+  const id = project?.trim();
+  if (!id) return path;
+  const sep = path.includes("?") ? "&" : "?";
+  return `${path}${sep}project=${encodeURIComponent(id)}`;
+}
+
+export async function fetchSnapshot(
+  baseUrl: string,
+  project?: string | null,
+): Promise<DashboardSnapshot> {
   const normalized = normalizeBaseUrl(baseUrl);
   if (!normalized) {
     throw new Error("Harness API URL is required");
   }
-  const response = await fetch(`${normalized}/v1/snapshot`);
+  const response = await fetch(`${normalized}${withProject("/v1/snapshot", project)}`);
   if (!response.ok) {
     throw new Error(`HTTP ${response.status}`);
   }
   return (await response.json()) as DashboardSnapshot;
+}
+
+/**
+ * Enumerate known projects via `GET /v1/projects` (registry + on-disk stores +
+ * reserved `_global`). The response also names the currently-active project so
+ * the picker can default to it. In raw `--store`/`HARNESS_ROOT` override mode the
+ * backend reports only the served store as a synthetic default. Throws on
+ * missing source / HTTP error.
+ */
+export async function fetchProjects(
+  baseUrl: string,
+): Promise<{ projects: Project[]; current: string }> {
+  const normalized = normalizeBaseUrl(baseUrl);
+  if (!normalized) {
+    throw new Error("Harness API URL is required");
+  }
+  const response = await fetch(`${normalized}/v1/projects`);
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}`);
+  }
+  const data = (await response.json()) as { projects?: Project[]; current?: string };
+  return { projects: data.projects ?? [], current: data.current ?? "" };
+}
+
+/**
+ * Fetch the active project id via `GET /v1/projects/current`. Read live so a
+ * `switch` (API or CLI) is reflected without a serve restart.
+ */
+export async function fetchCurrentProject(
+  baseUrl: string,
+): Promise<{ current: string; store_root?: string; project?: Project | null }> {
+  const normalized = normalizeBaseUrl(baseUrl);
+  if (!normalized) {
+    throw new Error("Harness API URL is required");
+  }
+  const response = await fetch(`${normalized}/v1/projects/current`);
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}`);
+  }
+  return (await response.json()) as {
+    current: string;
+    store_root?: string;
+    project?: Project | null;
+  };
+}
+
+/**
+ * Flip the active project via `POST /v1/projects/switch {project}` so a live
+ * serve AND CLI-spawned workers converge on the same central store (#89
+ * invariant). The response carries the NEW active project's snapshot, returned
+ * here so the caller can swap the read model without a second fetch.
+ */
+export async function switchProject(
+  baseUrl: string,
+  project: string,
+): Promise<ActionResponse> {
+  return postAction(baseUrl, "/v1/projects/switch", { project });
 }
 
 /**
@@ -121,12 +197,18 @@ export interface EventStreamHandlers {
  * Parsing is defensive: a malformed `data:` payload is dropped (logged) rather
  * than tearing the stream down, so one bad line never blocks live updates.
  */
-export function openEventStream(baseUrl: string, handlers: EventStreamHandlers): () => void {
+export function openEventStream(
+  baseUrl: string,
+  handlers: EventStreamHandlers,
+  project?: string | null,
+): () => void {
   const normalized = normalizeBaseUrl(baseUrl);
   if (!normalized) {
     throw new Error("Harness API URL is required");
   }
-  const source = new EventSource(`${normalized}/v1/events`);
+  // Scope the SSE channel to the selected project so a client subscribed to
+  // project A never receives project B frames (P6 per-project broadcast).
+  const source = new EventSource(`${normalized}${withProject("/v1/events", project)}`);
 
   const parse = <T,>(event: MessageEvent): T | null => {
     try {

@@ -1,13 +1,15 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   applyFrame,
+  fetchProjects,
   fetchSnapshot,
   fetchWorkflowDefs,
   postAction,
+  switchProject as switchProjectApi,
   type SseFrame,
 } from "../api";
 import { buildWorkbenchModel } from "../model/readModel";
-import type { DashboardSnapshot, WorkflowDef } from "../types";
+import type { DashboardSnapshot, Project, WorkflowDef } from "../types";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import {
   defaultSelection,
@@ -32,6 +34,47 @@ function apiFromLocation(): string {
     return apiDefault;
   }
 }
+/**
+ * localStorage key for the last-selected project id (goal-multi-project P6), so a
+ * reload returns to the same project even without a `?project=` deep link.
+ */
+const projectStorageKey = "harness.selectedProjectId";
+/**
+ * Seed the selected project from the URL (`?project=<id>`) first — a deep link
+ * wins — then the last choice persisted in localStorage. Returns "" when neither
+ * is set, in which case the App adopts the backend's active project once the
+ * project list loads. Tolerant of a missing/blocked Storage/URL (SSR, privacy).
+ */
+function projectFromLocation(): string {
+  try {
+    const fromUrl = new URLSearchParams(window.location.search).get("project");
+    if (fromUrl && fromUrl.trim()) return fromUrl.trim();
+  } catch {
+    // fall through to localStorage
+  }
+  try {
+    const stored = window.localStorage.getItem(projectStorageKey);
+    return stored && stored.trim() ? stored.trim() : "";
+  } catch {
+    return "";
+  }
+}
+/** Mirror the selected project into the URL (`?project=<id>`) without a reload so
+ * the address bar is shareable; an empty id removes the param. */
+function syncProjectToLocation(project: string): void {
+  try {
+    const url = new URL(window.location.href);
+    if (project) {
+      url.searchParams.set("project", project);
+    } else {
+      url.searchParams.delete("project");
+    }
+    window.history.replaceState(null, "", url.toString());
+  } catch {
+    // best-effort; the in-memory state remains correct
+  }
+}
+
 /** Canonical "snapshot came from the live harness" marker; gates write actions. */
 const liveSource = "live";
 const offlineLabel = "not connected";
@@ -49,6 +92,11 @@ const pollIntervalMs = 5000;
 
 export function App() {
   const [apiUrl, setApiUrl] = useState(apiFromLocation);
+  // Selected project (goal-multi-project P6). Seeded from URL/localStorage; "" until
+  // a project is chosen or the active project is adopted from the loaded list. All
+  // snapshot/SSE fetches are scoped to it so the view shows exactly one project.
+  const [selectedProjectId, setSelectedProjectId] = useState<string>(projectFromLocation);
+  const [projects, setProjects] = useState<Project[]>([]);
   const [snapshot, setSnapshot] = useState<DashboardSnapshot>(emptySnapshot);
   // The registered workflow catalog (GET /v1/workflows) is run-independent and
   // lives outside the snapshot, so it is fetched alongside the snapshot.
@@ -88,7 +136,7 @@ export function App() {
     let cancelled = false;
     void (async () => {
       try {
-        const next = await fetchSnapshot(apiDefault);
+        const next = await fetchSnapshot(apiDefault, selectedProjectId);
         if (!cancelled) {
           setSnapshot(next);
           setSource(liveSource);
@@ -116,7 +164,7 @@ export function App() {
     const id = window.setInterval(() => {
       void (async () => {
         try {
-          const next = await fetchSnapshot(apiUrl);
+          const next = await fetchSnapshot(apiUrl, selectedProjectId);
           setSnapshot(next);
           setSource(liveSource);
         } catch {
@@ -125,7 +173,77 @@ export function App() {
       })();
     }, 4000);
     return () => window.clearInterval(id);
+  }, [source, apiUrl, selectedProjectId]);
+
+  // Load the project list (goal-multi-project P6) once a live source is up, and
+  // re-load on apiUrl change (a different serve has a different registry). If no
+  // project is selected yet (no URL/localStorage seed), adopt the backend's
+  // active project so the picker and the scoped fetches agree from the start.
+  useEffect(() => {
+    if (source !== liveSource) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const { projects: list, current } = await fetchProjects(apiUrl);
+        if (cancelled) return;
+        setProjects(list);
+        if (!selectedProjectId && current) {
+          setSelectedProjectId(current);
+          syncProjectToLocation(current);
+        }
+      } catch {
+        // Single-store / old backend without /v1/projects: leave the picker empty
+        // and keep the default (unscoped) snapshot — no behavior change.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [source, apiUrl]);
+
+  // Persist + mirror the selected project so a reload (localStorage) or a shared
+  // link (URL) returns to it.
+  useEffect(() => {
+    try {
+      if (selectedProjectId) {
+        window.localStorage.setItem(projectStorageKey, selectedProjectId);
+      }
+    } catch {
+      // private mode / blocked storage: in-memory selection still works
+    }
+    syncProjectToLocation(selectedProjectId);
+  }, [selectedProjectId]);
+
+  // Switch the active project: clear the stale snapshot so the previous project's
+  // data is never shown as current, flip the active project server-side (so
+  // CLI-spawned workers converge too), then adopt the returned snapshot. The SSE
+  // stream re-opens automatically — useEventStream depends on `project`, so the
+  // OLD channel is torn down before the NEW one opens (acceptance: no A frames
+  // while subscribed to B).
+  const handleSelectProject = useCallback(
+    (projectId: string) => {
+      if (projectId === selectedProjectId) return;
+      setSelectedProjectId(projectId);
+      // Drop stale data immediately so the previous project's snapshot is never
+      // shown as the new one's while the switch round-trips.
+      setSnapshot(emptySnapshot);
+      if (source !== liveSource) return;
+      void (async () => {
+        try {
+          const response = await switchProjectApi(apiUrl, projectId);
+          if (response.snapshot) {
+            setSnapshot(response.snapshot);
+          } else {
+            setSnapshot(await fetchSnapshot(apiUrl, projectId));
+          }
+          setSourceError(null);
+        } catch (error) {
+          setSourceError(error instanceof Error ? error.message : String(error));
+        }
+      })();
+    },
+    [apiUrl, source, selectedProjectId],
+  );
 
   const model = useMemo(
     () => buildWorkbenchModel(snapshot, selection, workflowDefs),
@@ -139,7 +257,7 @@ export function App() {
     setIsLoading(true);
     setSourceError(null);
     try {
-      const next = await fetchSnapshot(apiUrl);
+      const next = await fetchSnapshot(apiUrl, selectedProjectId);
       setSnapshot(next);
       setSource(liveSource);
       try {
@@ -163,14 +281,14 @@ export function App() {
   const handleSseConnect = useCallback(() => {
     void (async () => {
       try {
-        const next = await fetchSnapshot(apiUrl);
+        const next = await fetchSnapshot(apiUrl, selectedProjectId);
         setSnapshot(next);
         setSourceError(null);
       } catch (error) {
         setSourceError(error instanceof Error ? error.message : String(error));
       }
     })();
-  }, [apiUrl]);
+  }, [apiUrl, selectedProjectId]);
 
   // SSE delta: merge the frame into the in-memory snapshot (append/replace by
   // id, latest-wins) so the read model and Member action stream update WITHOUT
@@ -185,6 +303,7 @@ export function App() {
   const sseMode = useEventStream({
     enabled: isLive,
     baseUrl: apiUrl,
+    project: selectedProjectId,
     onConnect: handleSseConnect,
     onFrame: handleSseFrame,
   });
@@ -203,7 +322,7 @@ export function App() {
     const id = window.setInterval(() => {
       void (async () => {
         try {
-          const next = await fetchSnapshot(apiUrl);
+          const next = await fetchSnapshot(apiUrl, selectedProjectId);
           if (!cancelled) {
             setSnapshot(next);
             setSourceError(null);
@@ -219,7 +338,7 @@ export function App() {
       cancelled = true;
       window.clearInterval(id);
     };
-  }, [shouldPoll, apiUrl]);
+  }, [shouldPoll, apiUrl, selectedProjectId]);
 
   // Returns whether the action succeeded so callers that chain actions (e.g. the
   // composer's queue-then-deliver) can stop on failure instead of clobbering the
@@ -256,6 +375,9 @@ export function App() {
         apiUrl={apiUrl}
         isLoading={isLoading}
         model={model}
+        projects={projects}
+        selectedProjectId={selectedProjectId}
+        onSelectProject={handleSelectProject}
         onApiUrlChange={setApiUrl}
         onRefresh={refreshLive}
         onSelectionChange={setSelection}

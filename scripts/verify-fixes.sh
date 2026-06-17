@@ -200,6 +200,23 @@ print(next(p['id'] for p in reg['projects'] if p['path'].endswith('repo-a')))" 2
         *"/projects/$ID_A") ok "MP #89 convergence: CLI from other cwd -> A central store" ;;
         *) bad "MP #89 convergence: CLI resolved '$MPSRC' (expected .../projects/$ID_A)" ;;
       esac
+
+      # Dashboard project picker (goal-multi-project P6, dashboard-browser-check):
+      # against the SAME live serve, prove SSE channel isolation (a client
+      # subscribed to B never sees a live event appended to A, but DOES see B's),
+      # which is the guarantee the picker relies on when it re-points the stream on
+      # switch. The Playwright UI leg degrades to SKIP when Playwright is absent.
+      STORE_A="$MPHH/projects/$ID_A"
+      STORE_B="$MPHH/projects/$ID_B"
+      if node "$REPO_ROOT/apps/agent-dashboard/tests/project-picker-check.mjs" \
+        --base "http://127.0.0.1:$MPPORT" \
+        --project-a "$ID_A" --store-a "$STORE_A" \
+        --project-b "$ID_B" --store-b "$STORE_B" \
+        >"$TMP/mp-picker.log" 2>&1; then
+        ok "MP dashboard picker checks (SSE isolation A/B; see $TMP/mp-picker.log)"
+      else
+        bad "MP dashboard picker checks (see $TMP/mp-picker.log)"
+      fi
     fi
     [ -n "$MP_SERVE_PID" ] && kill "$MP_SERVE_PID" 2>/dev/null
     MP_SERVE_PID=""
