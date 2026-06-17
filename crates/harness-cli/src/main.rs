@@ -1464,6 +1464,92 @@ fn append_failure_knowledge(
     Ok(knowledge_id)
 }
 
+/// Reconcile a phase's status to reality for work that shipped out-of-band
+/// (goal-phase-landing). Sets the phase's `status` to the operator-asserted
+/// verdict, records `landed_commit` on the `GoalPhase`, appends a `decision`
+/// `Knowledge` entry (provenance = phase id, author = the operator), and SYNCS
+/// the goal's derived stage via [`sync_goal_stage`] so the dashboard reads the
+/// truth. Returns the appended knowledge id. Pure store/model mutation — no
+/// provider/worktree side effects — so it is directly unit-testable.
+#[allow(clippy::too_many_arguments)]
+fn reconcile_phase(
+    store: &HarnessStore,
+    goal: &mut Goal,
+    phase_id: &str,
+    to: GoalPhaseStatus,
+    landed_commit: Option<String>,
+    author: &str,
+    note_md: Option<&str>,
+) -> CliResult<String> {
+    let idx = goal
+        .phases
+        .iter()
+        .position(|p| p.id == phase_id)
+        .ok_or_else(|| {
+            CliError::Usage(format!("phase not found on goal `{}`: {phase_id}", goal.id))
+        })?;
+
+    let now = now_string();
+    goal.phases[idx].status = to;
+    // A reconciled pass/fail is terminal for the phase; stamp `ended_at` if unset
+    // so the timeline reads as resolved. `landed_commit` records where the work
+    // actually shipped (a PR-merge sha, typically) — only meaningful on a pass.
+    if goal.phases[idx].ended_at.is_none() {
+        goal.phases[idx].ended_at = Some(now.clone());
+    }
+    if landed_commit.is_some() {
+        goal.phases[idx].landed_commit = landed_commit.clone();
+    }
+
+    // Append a `decision`-sourced Knowledge entry recording the manual reconcile,
+    // with the phase id for provenance (mirrors `append_failure_knowledge`).
+    let commit_md = landed_commit
+        .as_deref()
+        .map(|c| format!(" landed_commit=`{c}`."))
+        .unwrap_or_default();
+    let extra_md = note_md
+        .map(|n| format!("\n\n{}", n.trim()))
+        .unwrap_or_default();
+    let knowledge = Knowledge {
+        id: generated_id("knowledge"),
+        goal_id: goal.id.clone(),
+        phase_id: Some(phase_id.to_string()),
+        task_id: None,
+        author: author.to_string(),
+        timestamp: now.clone(),
+        notes_md: format!(
+            "Phase `{phase_id}` reconciled to `{}` by `{author}` (work shipped \
+             out-of-band).{commit_md}{extra_md}",
+            to_phase_status_str(to)
+        ),
+        tags: vec!["reconcile".to_string()],
+        source: KnowledgeSource::Decision,
+        superseded_by_knowledge_id: None,
+        created_at: now.clone(),
+    };
+    let knowledge_id = knowledge.id.clone();
+    goal.knowledge.push(knowledge);
+    goal.updated_at = now;
+
+    // Persist the phase/knowledge mutation, then sync the derived stage (which
+    // re-appends the goal with the advanced `stage`/`status`).
+    store.append_goal(goal)?;
+    sync_goal_stage(store, goal)?;
+    Ok(knowledge_id)
+}
+
+/// snake_case label for a phase status (matches the serde wire form), for human
+/// messages where we don't want to round-trip through JSON.
+fn to_phase_status_str(s: GoalPhaseStatus) -> &'static str {
+    match s {
+        GoalPhaseStatus::NotStarted => "not_started",
+        GoalPhaseStatus::InProgress => "in_progress",
+        GoalPhaseStatus::Passed => "passed",
+        GoalPhaseStatus::Failed => "failed",
+        GoalPhaseStatus::Blocked => "blocked",
+    }
+}
+
 /// Apply a reviser's structured revision to a phase's task graph: mark each
 /// `supersede` id `Superseded` with `superseded_by_knowledge_id = knowledge_id`,
 /// and append each `new_tasks` entry as a `Planned` task scoped to this phase.
@@ -1880,6 +1966,9 @@ fn orchestrate_goal_phases(
                 passed: attempt_passed,
                 started_at,
                 ended_at: Some(now_string()),
+                // L2 (durable landing) records the landed commit here; L1 leaves
+                // it unset so the field is back-compat for run-phases today.
+                landed_commit: None,
             });
             orch.updated_at = now_string();
             ran.push(serde_json::json!({ "phase": phase_id, "passed": attempt_passed }));
@@ -2115,6 +2204,7 @@ fn plan_into_goal(
                 started_at: None,
                 ended_at: None,
                 outputs: parse_outputs(p, "outputs"),
+                landed_commit: None,
             });
             result.phases_added.push(phase_id.clone());
         }
@@ -2178,7 +2268,7 @@ fn plan_into_goal(
 fn goal_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     require_subcommand(
         args,
-        "goal create|list|show|describe-set|design-set|acceptance-set|explore-add|phase-add|knowledge-add|design-synthesize|plan|run-phases|stage|learning-status|evaluate|close",
+        "goal create|list|show|describe-set|design-set|acceptance-set|explore-add|phase-add|knowledge-add|design-synthesize|reconcile-phase|plan|run-phases|stage|learning-status|evaluate|close",
     )?;
     match args[0].as_str() {
         "create" => {
@@ -2283,6 +2373,7 @@ fn goal_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
                 started_at: None,
                 ended_at: None,
                 outputs: parse_output_flags(args)?,
+                landed_commit: None,
             });
             goal.updated_at = now_string();
             store.append_goal(&goal)?;
@@ -2329,6 +2420,43 @@ fn goal_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
             goal.updated_at = now;
             store.append_goal(&goal)?;
             print_json(&goal)?;
+        }
+        "reconcile-phase" => {
+            // True up a phase's status to reality when its work shipped
+            // out-of-band (e.g. via a PR-merge), without re-running it.
+            let goal_id = required(args, "--goal").or_else(|_| required(args, "--id"))?;
+            let phase_id = required(args, "--phase")?;
+            let to = match required(args, "--to")?.as_str() {
+                "passed" => GoalPhaseStatus::Passed,
+                "failed" => GoalPhaseStatus::Failed,
+                other => {
+                    return Err(CliError::Usage(format!(
+                        "--to must be `passed` or `failed`, got `{other}`"
+                    )))
+                }
+            };
+            let landed_commit = value(args, "--landed-commit");
+            let note_md = md_value(args, "note")?;
+            // Default the author to "operator" (human-triggered CLI), overridable.
+            let author = value(args, "--author").unwrap_or_else(|| "operator".to_string());
+            let mut goal = goal_load(store, &goal_id)?;
+            let knowledge_id = reconcile_phase(
+                store,
+                &mut goal,
+                &phase_id,
+                to,
+                landed_commit,
+                &author,
+                note_md.as_deref(),
+            )?;
+            print_json(&serde_json::json!({
+                "goal": goal.id,
+                "phase": phase_id,
+                "status": to_phase_status_str(to),
+                "landed_commit": value(args, "--landed-commit"),
+                "knowledge_id": knowledge_id,
+                "effective_stage": goal.effective_stage().as_str(),
+            }))?;
         }
         "plan" => {
             let goal_id = args
@@ -15238,6 +15366,7 @@ fn print_help() {
   member list
   goal create --title <title> --objective <text> --owner <agent> [--success <text>]
   goal plan <goal> [--dry-run] [--trace durable|live] [--timeout-ms <ms>] [--model <m>] [--effort <e>]
+  goal reconcile-phase --goal <goal> --phase <id> --to passed|failed [--landed-commit <sha>] [--note-file <md>] [--author <name>]
   goal learning-status --id <goal> [--strict] [--require-evaluation] [--allow-waiver] [--waiver-decision <decision>]
   goal list
   task create --title <title> --objective <text> --owner <agent> [--goal <goal>] [--assignee <agent>] [--reviewer <agent>] [--workspace <path>] [--branch <ref>] [--pr <ref>] [--owned-path <path>] [--acceptance <text>]
@@ -18527,6 +18656,7 @@ agent("a NEW second leaf that changes the ordinal alignment")
                 started_at: Some("unix-ms:2".into()),
                 ended_at: None,
                 outputs: Vec::new(),
+                landed_commit: None,
             }],
             knowledge: vec![Knowledge {
                 id: "knowledge-1".into(),
@@ -21346,6 +21476,7 @@ mod tests {
             started_at: None,
             ended_at: None,
             outputs: Vec::new(),
+            landed_commit: None,
         }];
         let mut a = make_task("t-a", "goal-compile");
         a.phase_id = Some("phase-1".into());
@@ -21421,6 +21552,7 @@ mod tests {
             started_at: None,
             ended_at: None,
             outputs: Vec::new(),
+            landed_commit: None,
         };
         goal.phases = vec![phase.clone()];
         let mut t = make_task("t-bad", "goal-revise");
@@ -21481,6 +21613,7 @@ mod tests {
             started_at: None,
             ended_at: None,
             outputs: Vec::new(),
+            landed_commit: None,
         }
     }
 
@@ -21593,6 +21726,85 @@ mod tests {
             .filter(|d| d.decision_kind.as_deref() == Some("phase_verdict"))
             .collect();
         assert_eq!(verdicts.len(), 2, "one phase_verdict decision per phase");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    // goal-phase-landing L1: reconciling a phase to reality (out-of-band work)
+    // sets its status + landed_commit, appends a `decision` Knowledge entry with
+    // provenance, and advances the goal's derived/effective stage.
+    #[test]
+    fn reconcile_phase_sets_status_landed_commit_knowledge_and_syncs_stage() {
+        let root = std::env::temp_dir().join(format!("harness-reconcile-{}", generated_id("rec")));
+        let store = HarnessStore::new(&root);
+        store.init().expect("init");
+        let mut goal = make_goal("g-rec");
+        goal.phases = vec![orch_phase("p1"), orch_phase("p2")];
+        persist_new_goal(&store, &goal).unwrap();
+        // A phase-driven goal with all-NotStarted phases derives `Draft`.
+        assert_eq!(
+            goal_load(&store, "g-rec").unwrap().effective_stage(),
+            GoalStage::Draft
+        );
+
+        // Reconcile p1 to passed with a landed commit + a note.
+        let mut goal = goal_load(&store, "g-rec").unwrap();
+        let kid = reconcile_phase(
+            &store,
+            &mut goal,
+            "p1",
+            GoalPhaseStatus::Passed,
+            Some("8b81471".into()),
+            "operator",
+            Some("shipped via PR #147"),
+        )
+        .expect("reconcile p1");
+
+        // One reconciled phase started/passed → effective stage is `Working`.
+        let after_p1 = goal_load(&store, "g-rec").unwrap();
+        let p1 = after_p1.phases.iter().find(|p| p.id == "p1").unwrap();
+        assert_eq!(p1.status, GoalPhaseStatus::Passed);
+        assert_eq!(p1.landed_commit.as_deref(), Some("8b81471"));
+        assert!(p1.ended_at.is_some(), "reconcile stamps ended_at");
+        assert_eq!(after_p1.effective_stage(), GoalStage::Working);
+        assert_eq!(after_p1.stage, GoalStage::Working, "sync persists stage");
+        // The reconcile appended a `decision`-sourced Knowledge entry w/ provenance.
+        let k = after_p1.knowledge.iter().find(|k| k.id == kid).unwrap();
+        assert_eq!(k.source, KnowledgeSource::Decision);
+        assert_eq!(k.phase_id.as_deref(), Some("p1"));
+        assert_eq!(k.author, "operator");
+        assert!(k.notes_md.contains("8b81471"));
+        assert!(k.notes_md.contains("shipped via PR #147"));
+
+        // Reconcile p2 to passed too → all phases passed → derived `Verified`.
+        let mut goal = goal_load(&store, "g-rec").unwrap();
+        reconcile_phase(
+            &store,
+            &mut goal,
+            "p2",
+            GoalPhaseStatus::Passed,
+            Some("8b81471".into()),
+            "operator",
+            None,
+        )
+        .expect("reconcile p2");
+        let final_goal = goal_load(&store, "g-rec").unwrap();
+        assert_eq!(final_goal.effective_stage(), GoalStage::Verified);
+        assert_eq!(final_goal.stage, GoalStage::Verified);
+        assert_eq!(final_goal.status, GoalStatus::Done);
+
+        // An unknown phase id is a clear error (no partial mutation needed).
+        let mut goal = goal_load(&store, "g-rec").unwrap();
+        assert!(reconcile_phase(
+            &store,
+            &mut goal,
+            "nope",
+            GoalPhaseStatus::Passed,
+            None,
+            "operator",
+            None,
+        )
+        .is_err());
+
         std::fs::remove_dir_all(&root).ok();
     }
 

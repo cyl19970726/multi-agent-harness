@@ -196,6 +196,12 @@ pub struct GoalPhase {
     /// non-empty makes the verdict gate enforce each `required` artifact's presence.
     #[serde(default)]
     pub outputs: Vec<ArtifactSpec>,
+    /// The commit that landed this phase's writable work onto the goal's branch
+    /// (goal-phase-landing). Set by `run-phases` when a passing phase applies its
+    /// worktree diff, or by `goal reconcile-phase` for out-of-band work. `None`
+    /// for read-only phases and legacy rows. Additive + back-compat.
+    #[serde(default)]
+    pub landed_commit: Option<String>,
 }
 
 /// Where a `Knowledge` entry came from.
@@ -266,6 +272,11 @@ pub struct OrchestrationPhaseRun {
     pub started_at: String,
     #[serde(default)]
     pub ended_at: Option<String>,
+    /// The commit that landed this phase's writable work onto the goal's branch
+    /// (goal-phase-landing). Set when a passing phase applies its worktree diff;
+    /// `None` for read-only / not-yet-landed phases and legacy rows. Additive.
+    #[serde(default)]
+    pub landed_commit: Option<String>,
 }
 
 /// The durable checkpoint for `harness goal run-phases`: it sequences a goal's
@@ -2783,6 +2794,7 @@ mod tests {
             started_at: Some("unix-ms:2".into()),
             ended_at: None,
             outputs: Vec::new(),
+            landed_commit: None,
         };
         let pj = serde_json::to_string(&phase).expect("ser phase");
         assert!(
@@ -2832,6 +2844,7 @@ mod tests {
             started_at: None,
             ended_at: None,
             outputs: Vec::new(),
+            landed_commit: None,
         }];
         g.knowledge = vec![Knowledge {
             id: "k1".into(),
@@ -2998,6 +3011,7 @@ mod tests {
                 passed: false,
                 started_at: "unix-ms:1".into(),
                 ended_at: Some("unix-ms:2".into()),
+                landed_commit: None,
             }],
             created_at: "unix-ms:1".into(),
             updated_at: "unix-ms:2".into(),
@@ -3017,6 +3031,47 @@ mod tests {
         let d: GoalOrchestrationRun = serde_json::from_str(legacy).expect("de legacy");
         assert_eq!(d.status, OrchestrationStatus::Running);
         assert!(d.phase_runs.is_empty());
+    }
+
+    #[test]
+    fn landed_commit_round_trips_and_legacy_defaults_to_none() {
+        // goal-phase-landing: the new `landed_commit` field round-trips when set
+        // and defaults to `None` for old rows written before the field existed.
+        // -- GoalPhase --
+        let mut phase = test_phase("p1", GoalPhaseStatus::Passed);
+        phase.landed_commit = Some("8b81471".into());
+        let pj = serde_json::to_string(&phase).expect("ser phase");
+        assert!(pj.contains("\"landed_commit\":\"8b81471\""), "{pj}");
+        assert_eq!(
+            serde_json::from_str::<GoalPhase>(&pj).expect("de phase"),
+            phase
+        );
+        // A legacy phase JSON WITHOUT the `landed_commit` key defaults to None.
+        let legacy_phase = r#"{"id":"p","name":"n","intent":"i","status":"passed",
+            "created_at":"unix-ms:1"}"#;
+        let lp: GoalPhase = serde_json::from_str(legacy_phase).expect("de legacy phase");
+        assert_eq!(lp.landed_commit, None);
+
+        // -- OrchestrationPhaseRun --
+        let run = OrchestrationPhaseRun {
+            phase_id: "p1".into(),
+            workflow_run_id: None,
+            compiled_path: None,
+            passed: true,
+            started_at: "unix-ms:1".into(),
+            ended_at: None,
+            landed_commit: Some("deadbeef".into()),
+        };
+        let rj = serde_json::to_string(&run).expect("ser run");
+        assert!(rj.contains("\"landed_commit\":\"deadbeef\""), "{rj}");
+        assert_eq!(
+            serde_json::from_str::<OrchestrationPhaseRun>(&rj).expect("de run"),
+            run
+        );
+        // A legacy phase-run JSON WITHOUT the key defaults to None.
+        let legacy_run = r#"{"phase_id":"p","passed":true,"started_at":"unix-ms:1"}"#;
+        let lr: OrchestrationPhaseRun = serde_json::from_str(legacy_run).expect("de legacy run");
+        assert_eq!(lr.landed_commit, None);
     }
 
     #[test]
@@ -3103,6 +3158,7 @@ mod tests {
             started_at: None,
             ended_at: None,
             outputs: Vec::new(),
+            landed_commit: None,
         }
     }
 
