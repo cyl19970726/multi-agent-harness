@@ -319,6 +319,57 @@ pub fn switch_current_project(
     Ok(ctx)
 }
 
+/// Outcome of [`remove_project`]: whether the registry actually changed and whether
+/// the removed project was the active one (so the caller can warn / re-point).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoveOutcome {
+    pub removed: bool,
+    pub was_current: bool,
+}
+
+/// Unregister a project from the registry by id (the centralized STORE on disk is
+/// left untouched — removal is a registry-pointer operation, not a destructive
+/// delete, so history is never silently lost).
+///
+/// Refuses to remove the reserved `_global` project (it is always derivable and
+/// serves as the default fallback). If the removed project was current, the
+/// `current_project_id` + `ACTIVE_PROJECT` marker are cleared so resolution falls
+/// back to the legacy walk-up / `_global` rather than stranding on a now-unknown id.
+pub fn remove_project(harness_home: &Path, id: &str) -> ProjectResult<RemoveOutcome> {
+    if id == GLOBAL_PROJECT_ID {
+        return Err(ProjectError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "the reserved `_global` project cannot be removed".to_string(),
+        )));
+    }
+    let mut registry = ProjectRegistry::load(harness_home)?;
+    let before = registry.projects.len();
+    registry.projects.retain(|p| p.id != id);
+    let removed = registry.projects.len() != before;
+    let was_current = registry.current_project_id.as_deref() == Some(id);
+    if was_current {
+        registry.current_project_id = None;
+    }
+    registry.save(harness_home)?;
+    if was_current {
+        clear_active_project(harness_home)?;
+    }
+    Ok(RemoveOutcome {
+        removed,
+        was_current,
+    })
+}
+
+/// Clear the `ACTIVE_PROJECT` marker (delete it). Used when the current project is
+/// removed, so the next resolution falls through to the legacy walk-up / `_global`.
+pub fn clear_active_project(harness_home: &Path) -> ProjectResult<()> {
+    match std::fs::remove_file(active_project_path(harness_home)) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(ProjectError::Io(e)),
+    }
+}
+
 /// Write `<store_root>/metadata.json` pinning the project's identity. Creates the
 /// store dir if it does not exist yet.
 pub fn write_metadata(ctx: &ProjectContext, migrated_from: Option<PathBuf>) -> ProjectResult<()> {
@@ -341,6 +392,43 @@ pub fn read_metadata(store_root: &Path) -> ProjectResult<Option<ProjectMetadata>
     let path = store_root.join("metadata.json");
     match std::fs::read_to_string(&path) {
         Ok(text) => Ok(Some(serde_json::from_str(&text)?)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(ProjectError::Io(e)),
+    }
+}
+
+/// Filename of the marker dropped in an OLD repo-local `.harness/` store once it
+/// has been migrated to the centralized store. Its content is the absolute central
+/// `store_root` path. Resolution ignores any local store carrying this marker
+/// (goal-multi-project P7 / dual-read-logging), so a migrated repo never serves
+/// stale rows.
+pub const MIGRATED_MARKER_FILE: &str = "MIGRATED_TO_CENTRAL";
+
+/// Write the `MIGRATED_TO_CENTRAL` marker into an old local `.harness/` store,
+/// recording the absolute central store root it was migrated into.
+pub fn write_migrated_marker(local_store: &Path, central_store: &Path) -> ProjectResult<()> {
+    std::fs::create_dir_all(local_store)?;
+    std::fs::write(
+        local_store.join(MIGRATED_MARKER_FILE),
+        format!("{}\n", central_store.display()),
+    )?;
+    Ok(())
+}
+
+/// Read the `MIGRATED_TO_CENTRAL` marker from a local store, if present. Returns the
+/// central store path the local store points to (trimmed). `None` means the store is
+/// not marked migrated.
+pub fn read_migrated_marker(local_store: &Path) -> ProjectResult<Option<PathBuf>> {
+    match std::fs::read_to_string(local_store.join(MIGRATED_MARKER_FILE)) {
+        Ok(text) => {
+            let trimmed = text.trim();
+            Ok(if trimmed.is_empty() {
+                // Marked but pointer-less: still "migrated", just no target known.
+                Some(PathBuf::new())
+            } else {
+                Some(PathBuf::from(trimmed))
+            })
+        }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(ProjectError::Io(e)),
     }

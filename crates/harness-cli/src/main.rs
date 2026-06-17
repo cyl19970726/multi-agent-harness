@@ -171,18 +171,65 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> ResolvedStore
 
     // 6. Legacy cwd walk-up to the nearest existing `.harness/` (back-compat).
     // `init` never walks up — it materializes a fresh store (see `init_routed`).
+    //
+    // DUAL-READ (goal-multi-project P7): central (steps 3/4/5) was absent, so we may
+    // fall back to a repo-local store — but ONLY if it has not been migrated. A local
+    // store carrying a `MIGRATED_TO_CENTRAL` marker is redirected to the central
+    // store it points to (never serving stale rows), and the choice is always logged.
     if command != Some("init") {
         if let Ok(cwd) = env::current_dir() {
             if let Some(found) = discover_harness_from(&cwd) {
-                warn_deprecated_override(
-                    "cwd .harness walk-up",
-                    "harness init / harness project switch",
-                );
-                return ResolvedStore {
-                    root: found,
-                    source: StoreSource::CwdWalkUp,
-                    context: None,
-                };
+                match project::read_migrated_marker(&found) {
+                    Ok(Some(target)) if !target.as_os_str().is_empty() => {
+                        // Migrated: prefer the central store the marker points to.
+                        eprintln!(
+                            "store-source: local store {} is migrated; reading central store {}",
+                            found.display(),
+                            target.display()
+                        );
+                        let context = project::read_metadata(&target).ok().flatten().map(|meta| {
+                            harness_core::ProjectContext {
+                                id: meta.project_id,
+                                project_root: meta.canonical_path,
+                                store_root: target.clone(),
+                                kind: meta.kind,
+                                is_git_repo: meta.is_git_repo,
+                            }
+                        });
+                        return ResolvedStore {
+                            root: target,
+                            source: StoreSource::RegistryCurrent,
+                            context,
+                        };
+                    }
+                    Ok(Some(_)) => {
+                        // Marked migrated but pointer-less: ignore the local store and
+                        // fall through to the GLOBAL default rather than serve it.
+                        eprintln!(
+                            "store-source: local store {} is marked migrated (no target); \
+                             skipping it and using the global project",
+                            found.display()
+                        );
+                    }
+                    _ => {
+                        // Unmigrated local store: keep working, but warn it is a
+                        // back-compat fallback (no central project selected).
+                        eprintln!(
+                            "warning: using repo-local store {} (no central project selected); \
+                             run `harness project migrate` to centralize it",
+                            found.display()
+                        );
+                        warn_deprecated_override(
+                            "cwd .harness walk-up",
+                            "harness init / harness project switch",
+                        );
+                        return ResolvedStore {
+                            root: found,
+                            source: StoreSource::CwdWalkUp,
+                            context: None,
+                        };
+                    }
+                }
             }
         }
     }
@@ -353,6 +400,365 @@ fn project_err(e: project::ProjectError) -> CliError {
     }
 }
 
+/// `harness project <subcommand>` — inspect and manage the centralized project
+/// registry that backs multi-project store routing (goal-multi-project P1/P7).
+///
+/// Subcommands share the same `project` resolver/registry code used by `serve` and
+/// `resolve_store`, so a `switch` here is the SAME convergence point a live `serve`
+/// reads (#89 invariant). All subcommands operate on `~/.harness` (honoring the
+/// `HARNESS_HOME` test hook); they never touch a raw `--store`/`HARNESS_ROOT`
+/// store, which has no project identity to manage.
+fn project_command(args: &[String]) -> CliResult<()> {
+    require_subcommand(args, "project add|list|current|switch|remove|show|migrate")?;
+    let harness_home = project::harness_home().map_err(project_err)?;
+    match args[0].as_str() {
+        "add" => project_add(&harness_home, &args[1..]),
+        "list" => project_list(&harness_home),
+        "current" => project_current(&harness_home),
+        "switch" => project_switch_cmd(&harness_home, &args[1..]),
+        "remove" => project_remove(&harness_home, &args[1..]),
+        "show" => project_show(&harness_home, &args[1..]),
+        "migrate" => project_migrate(&harness_home, &args[1..]),
+        other => Err(CliError::Usage(format!("unknown project command: {other}"))),
+    }
+}
+
+/// `harness project add [<path>] [--switch]` — register a project root (defaulting
+/// to the current directory) WITHOUT changing the active project, unless `--switch`
+/// is passed. Materializes the central store + `metadata.json` and a registry entry.
+fn project_add(harness_home: &Path, args: &[String]) -> CliResult<()> {
+    let switch = has_flag(args, "--switch");
+    // First non-flag positional is an optional explicit project root.
+    let path = args.iter().find(|a| !a.starts_with("--")).cloned();
+    let project_root = match path {
+        Some(p) => PathBuf::from(p),
+        None => env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+    };
+    let now = now_string();
+    // `register_and_activate` materializes store + metadata + registry entry and
+    // marks current. When `--switch` is NOT requested we restore the previously
+    // active project so `add` is non-disruptive (inspectable before a switch).
+    let prev_active = project::active_project_id(harness_home).map_err(project_err)?;
+    let ctx =
+        project::register_and_activate(harness_home, &project_root, &now).map_err(project_err)?;
+    if !switch {
+        match prev_active {
+            Some(prev) if prev != ctx.id => {
+                project::switch_current_project(harness_home, &prev, &now).map_err(project_err)?;
+            }
+            None => {
+                // There was no active project before; clear the pointer so `add`
+                // alone never silently flips the default away from local/_global.
+                let mut registry =
+                    project::ProjectRegistry::load(harness_home).map_err(project_err)?;
+                registry.current_project_id = None;
+                registry.save(harness_home).map_err(project_err)?;
+                project::clear_active_project(harness_home).map_err(project_err)?;
+            }
+            _ => {}
+        }
+    }
+    let current = project::active_project_id(harness_home)
+        .map_err(project_err)?
+        .unwrap_or_default();
+    print_json(&project_context_json(&ctx, &current))
+}
+
+/// `harness project list` — enumerate every known project (registry + on-disk
+/// stores + the reserved `_global`), marking the current one.
+fn project_list(harness_home: &Path) -> CliResult<()> {
+    let current = project::active_project_id(harness_home)
+        .map_err(project_err)?
+        .unwrap_or_default();
+    let projects = project::list_projects(harness_home).map_err(project_err)?;
+    let json: Vec<serde_json::Value> = projects
+        .iter()
+        .map(|c| project_context_json(c, &current))
+        .collect();
+    print_json(&json)
+}
+
+/// `harness project current` — print the currently-active project context (the
+/// convergence point `serve` + CLI workers resolve), or a `null`-id placeholder if
+/// none has been selected yet.
+fn project_current(harness_home: &Path) -> CliResult<()> {
+    match project::active_project_id(harness_home).map_err(project_err)? {
+        Some(id) => match project::context_for_id(harness_home, &id).map_err(project_err)? {
+            Some(ctx) => print_json(&project_context_json(&ctx, &id)),
+            None => print_json(&serde_json::json!({ "id": id, "is_current": true })),
+        },
+        None => print_json(&serde_json::json!({
+            "id": serde_json::Value::Null,
+            "is_current": false,
+        })),
+    }
+}
+
+/// `harness project switch <id|path>` — flip the active project, updating BOTH the
+/// registry `current_project_id` and the `ACTIVE_PROJECT` marker so the next CLI
+/// invocation and a live `serve` converge on the same central store.
+fn project_switch_cmd(harness_home: &Path, args: &[String]) -> CliResult<()> {
+    let selector = args
+        .first()
+        .filter(|a| !a.starts_with("--"))
+        .cloned()
+        .ok_or_else(|| CliError::Usage("usage: harness project switch <id|path>".to_string()))?;
+    // Accept either a registered id / `_global`, or a path to a project root.
+    let id = match project::context_for_id(harness_home, &selector).map_err(project_err)? {
+        Some(ctx) => ctx.id,
+        None => match resolve_project_selector(harness_home, &selector) {
+            Some(ctx) => {
+                // A path that is not yet registered: register it first so the switch
+                // never strands the pointer on an unknown id.
+                project::register_and_activate(harness_home, &ctx.project_root, &now_string())
+                    .map_err(project_err)?;
+                ctx.id
+            }
+            None => {
+                return Err(CliError::Usage(format!(
+                    "unknown project: {selector} (not a registered id, path, or `_global`)"
+                )))
+            }
+        },
+    };
+    let ctx =
+        project::switch_current_project(harness_home, &id, &now_string()).map_err(project_err)?;
+    print_json(&project_context_json(&ctx, &ctx.id))
+}
+
+/// `harness project remove <id> [--force]` — unregister a project (the on-disk
+/// central store is left intact; this is a pointer operation). The reserved
+/// `_global` cannot be removed. Removing the CURRENT project requires `--force` and
+/// clears the active pointer so resolution falls back safely.
+fn project_remove(harness_home: &Path, args: &[String]) -> CliResult<()> {
+    let force = has_flag(args, "--force");
+    let id = args
+        .iter()
+        .find(|a| !a.starts_with("--"))
+        .cloned()
+        .ok_or_else(|| {
+            CliError::Usage("usage: harness project remove <id> [--force]".to_string())
+        })?;
+    let current = project::active_project_id(harness_home).map_err(project_err)?;
+    if current.as_deref() == Some(id.as_str()) && !force {
+        return Err(CliError::Usage(format!(
+            "`{id}` is the current project; switch away first or pass --force to remove it"
+        )));
+    }
+    let outcome = project::remove_project(harness_home, &id).map_err(project_err)?;
+    if !outcome.removed {
+        return Err(CliError::Usage(format!(
+            "no registered project with id `{id}`"
+        )));
+    }
+    if outcome.was_current {
+        eprintln!(
+            "note: removed the active project `{id}`; no project is selected now \
+             (resolution falls back to the legacy walk-up / `_global`)"
+        );
+    }
+    print_json(&serde_json::json!({
+        "removed": id,
+        "was_current": outcome.was_current,
+    }))
+}
+
+/// `harness project show <id|path>` — print one project's resolved context. With no
+/// argument, shows the current project (alias for `current`).
+fn project_show(harness_home: &Path, args: &[String]) -> CliResult<()> {
+    let selector = args.iter().find(|a| !a.starts_with("--")).cloned();
+    let current = project::active_project_id(harness_home)
+        .map_err(project_err)?
+        .unwrap_or_default();
+    let ctx = match selector {
+        None => return project_current(harness_home),
+        Some(sel) => match project::context_for_id(harness_home, &sel).map_err(project_err)? {
+            Some(ctx) => ctx,
+            None => resolve_project_selector(harness_home, &sel)
+                .ok_or_else(|| CliError::Usage(format!("unknown project: {sel}")))?,
+        },
+    };
+    print_json(&project_context_json(&ctx, &current))
+}
+
+/// Subdirectories of a store that hold non-JSONL payloads and must be copied
+/// wholesale during migration (provider session logs, prompts, runtime files).
+const STORE_PAYLOAD_DIRS: &[&str] = &["provider-sessions", "prompts", "runtimes"];
+
+/// `harness project migrate [<local-store>] [--switch]` — move an existing
+/// repo-local `.harness/` store into the centralized per-project store
+/// (goal-multi-project P7 / project-migrate task).
+///
+/// Steps: compute the project's canonical id from the repo root (the local store's
+/// PARENT dir), copy every `*.jsonl` ledger + the payload dirs into
+/// `~/.harness/projects/<id>/`, write `metadata.json` with `migrated_from`, and drop
+/// a `MIGRATED_TO_CENTRAL` marker in the old store pointing at the central one.
+///
+/// Idempotent / fail-safe: if the local store is ALREADY marked migrated it reports
+/// success without recopying; if the central store already has ledger rows it
+/// refuses (to avoid clobbering newer central data) unless `--force` is given.
+fn project_migrate(harness_home: &Path, args: &[String]) -> CliResult<()> {
+    let force = has_flag(args, "--force");
+    let switch = has_flag(args, "--switch");
+
+    // Resolve the local store dir: explicit positional, else the cwd's `.harness`.
+    let positional = args.iter().find(|a| !a.starts_with("--")).cloned();
+    let local_store = match positional {
+        Some(p) => PathBuf::from(p),
+        None => env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join(".harness"),
+    };
+    if !local_store.is_dir() {
+        return Err(CliError::Usage(format!(
+            "no local store to migrate at {} (pass a path or run from a repo with ./.harness)",
+            local_store.display()
+        )));
+    }
+
+    // Already migrated? Report idempotently rather than recopying.
+    if let Some(target) = project::read_migrated_marker(&local_store).map_err(project_err)? {
+        println!(
+            "already migrated: {} → {}",
+            local_store.display(),
+            target.display()
+        );
+        return Ok(());
+    }
+
+    // The project ROOT is the local store's parent (the repo dir), not the store
+    // itself, so the id matches what `init`/`switch` would derive for that repo.
+    let project_root = local_store
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| local_store.clone());
+    let ctx = project::context_for_root(&project_root, harness_home).map_err(project_err)?;
+
+    // Refuse to clobber a central store that already holds ledger data, unless
+    // forced. A central store that only has metadata.json (freshly created) is fine.
+    if central_store_has_ledger_rows(&ctx.store_root) && !force {
+        return Err(CliError::Usage(format!(
+            "central store {} already has data; refusing to overwrite (pass --force to merge-copy)",
+            ctx.store_root.display()
+        )));
+    }
+
+    let before = count_store_records(&local_store)?;
+    std::fs::create_dir_all(&ctx.store_root)?;
+    let copied = copy_store_contents(&local_store, &ctx.store_root)?;
+    let after = count_store_records(&ctx.store_root)?;
+
+    // Register the project, then pin identity in the central store with a
+    // `migrated_from` breadcrumb. The metadata write comes AFTER
+    // `register_and_activate` (which itself writes a `migrated_from`-less
+    // metadata.json) so the breadcrumb is the one that survives.
+    let now = now_string();
+    let prev_active = project::active_project_id(harness_home).map_err(project_err)?;
+    project::register_and_activate(harness_home, &project_root, &now).map_err(project_err)?;
+    project::write_metadata(&ctx, Some(local_store.clone())).map_err(project_err)?;
+    if !switch {
+        // Non-disruptive by default: restore the previously active project (or clear
+        // if none) so a bare `migrate` does not silently flip the active project.
+        match prev_active {
+            Some(prev) if prev != ctx.id => {
+                project::switch_current_project(harness_home, &prev, &now).map_err(project_err)?;
+            }
+            None => {
+                let mut registry =
+                    project::ProjectRegistry::load(harness_home).map_err(project_err)?;
+                registry.current_project_id = None;
+                registry.save(harness_home).map_err(project_err)?;
+                project::clear_active_project(harness_home).map_err(project_err)?;
+            }
+            _ => {}
+        }
+    }
+    project::write_migrated_marker(&local_store, &ctx.store_root).map_err(project_err)?;
+
+    print_json(&serde_json::json!({
+        "migrated": true,
+        "project_id": ctx.id,
+        "from": local_store.display().to_string(),
+        "to": ctx.store_root.display().to_string(),
+        "files_copied": copied,
+        "records_before": before,
+        "records_after": after,
+        "switched": switch,
+    }))
+}
+
+/// Whether a central store already holds any `*.jsonl` ledger rows (used to guard
+/// `migrate` against clobbering newer central data). A bare `metadata.json` does not
+/// count as data.
+fn central_store_has_ledger_rows(store_root: &Path) -> bool {
+    count_store_records(store_root)
+        .map(|n| n > 0)
+        .unwrap_or(false)
+}
+
+/// Count total non-empty lines across every `*.jsonl` file in a store dir (the
+/// record-count metric `migrate` reports before/after). Missing dir → 0.
+fn count_store_records(store_root: &Path) -> CliResult<u64> {
+    let mut total = 0u64;
+    let read_dir = match std::fs::read_dir(store_root) {
+        Ok(rd) => rd,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(e) => return Err(CliError::Io(e)),
+    };
+    for entry in read_dir.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) == Some("jsonl") {
+            let text = std::fs::read_to_string(&path)?;
+            total += text.lines().filter(|l| !l.trim().is_empty()).count() as u64;
+        }
+    }
+    Ok(total)
+}
+
+/// Copy every `*.jsonl` ledger and each payload dir (`provider-sessions/`,
+/// `prompts/`, `runtimes/`) from `src` into `dst`, preserving filenames. Returns the
+/// number of top-level entries copied. Existing destination files are overwritten
+/// (merge-copy under `--force`); missing source payload dirs are skipped.
+fn copy_store_contents(src: &Path, dst: &Path) -> CliResult<u64> {
+    let mut copied = 0u64;
+    // 1. JSONL ledgers (flat files at the store root).
+    for entry in std::fs::read_dir(src)?.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) == Some("jsonl") {
+            if let Some(name) = path.file_name() {
+                std::fs::copy(&path, dst.join(name))?;
+                copied += 1;
+            }
+        }
+    }
+    // 2. Payload directories (recursive).
+    for dir in STORE_PAYLOAD_DIRS {
+        let from = src.join(dir);
+        if from.is_dir() {
+            copy_dir_recursive(&from, &dst.join(dir))?;
+            copied += 1;
+        }
+    }
+    Ok(copied)
+}
+
+/// Recursively copy a directory tree (files + subdirs), creating `dst` as needed.
+fn copy_dir_recursive(src: &Path, dst: &Path) -> CliResult<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)?.flatten() {
+        let path = entry.path();
+        let target = dst.join(entry.file_name());
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
+            copy_dir_recursive(&path, &target)?;
+        } else if file_type.is_file() {
+            std::fs::copy(&path, &target)?;
+        }
+        // Symlinks in a store are not expected; skip them rather than following.
+    }
+    Ok(())
+}
+
 fn run() -> CliResult<()> {
     let mut args: Vec<String> = env::args().skip(1).collect();
     // Optional debug flag: print which store was chosen and why (P7 "no silent
@@ -381,6 +787,7 @@ fn run() -> CliResult<()> {
         "init" => {
             init_routed(&store, &resolved)?;
         }
+        "project" => project_command(&args[1..])?,
         "agent" => agent_command(&store, &args[1..])?,
         "team" => team_command(&store, &args[1..])?,
         "member" => member_command(&store, &args[1..])?,
@@ -14547,6 +14954,13 @@ fn print_help() {
     println!(
         "harness commands:
   init
+  project add [<path>] [--switch]              register a project (default: cwd) in the central registry
+  project list                                 list known projects (registry + on-disk + _global), marking current
+  project current                              show the active project (the serve/CLI convergence point)
+  project switch <id|path>                     flip the active project (updates registry + ACTIVE_PROJECT)
+  project remove <id> [--force]                unregister a project (store kept; --force to drop the current one)
+  project show [<id|path>]                      show one project's context (default: current)
+  project migrate [<local-store>] [--switch]   move a repo-local .harness into ~/.harness/projects/<id>/
   agent create --name <name> --role <role> [--description <text>] [--provider codex|claude] [--team <team>] [--skill <skill>] [--prompt <text>] [--prompt-ref <path>] [--worktree <path>] [--permission-profile <profile>] [--runtime-workspace-root <path>] [--approval-policy <policy>] [--sandbox-policy <policy>] [--service-tier <tier>] [--collaboration-mode <mode>] [--effort <e>] [--output-schema-file <path>] [--provider-agent-path <path>] [--provider-agent-nickname <name>] [--provider-agent-role <role>] [--start]
   agent list
   agent start --id <agent>
