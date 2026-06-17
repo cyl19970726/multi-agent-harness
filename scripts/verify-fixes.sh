@@ -33,6 +33,7 @@ TMP="$(mktemp -d)"
 STORE="$TMP/store"
 SERVE_PID=""
 SSE_PID=""
+MP_SERVE_PID=""
 
 PASS=0
 FAIL=0
@@ -42,9 +43,21 @@ bad()  { echo "  FAIL  $1"; FAIL=$((FAIL + 1)); }
 skip() { echo "  SKIP  $1"; SKIP=$((SKIP + 1)); }
 section() { echo; echo "== $1 =="; }
 
+# Free a port held by a serve we started, by pid AND by listener (belt-and-
+# suspenders: a serve started behind a subshell can outlive its $!).
+free_serve_port() {
+  local pid="$1" port="$2"
+  [ -n "$pid" ] && kill "$pid" 2>/dev/null
+  if [ -n "$port" ] && command -v lsof >/dev/null 2>&1; then
+    for lp in $(lsof -nP -iTCP:"$port" -sTCP:LISTEN -t 2>/dev/null); do
+      kill "$lp" 2>/dev/null
+    done
+  fi
+}
 cleanup() {
   [ -n "$SSE_PID" ] && kill "$SSE_PID" 2>/dev/null
-  [ -n "$SERVE_PID" ] && kill "$SERVE_PID" 2>/dev/null
+  free_serve_port "$SERVE_PID" "${PORT:-}"
+  free_serve_port "$MP_SERVE_PID" "${MPPORT:-}"
   rm -rf "$TMP"
 }
 trap cleanup EXIT
@@ -73,8 +86,31 @@ for t in \
   codex_normalize_command_execution_with_output_emits_call_and_result \
   claude_normalize_user_tool_results_expand_in_order_and_retain_raw \
   historical_normalized_events_normalize_durable_trace_and_report_retained \
-  one_line_can_broadcast_multiple_frames ; do
+  one_line_can_broadcast_multiple_frames \
+  broadcast_is_isolated_per_project \
+  offsets_and_broadcasts_independent_across_projects ; do
   grep -q "test .*$t ... ok" "$TMP/test.log" && ok "unit: $t" || bad "unit: $t did not run/pass"
+done
+# goal-multi-project deterministic regression coverage — one representative test
+# per dimension MUST run in the workspace test command (the suite runs against
+# temp harness homes/project roots, never the real ~/.harness). A rename that
+# silently drops a dimension's coverage fails the gate here. The "[dim]" tag makes
+# a failure name the project dimension involved.
+for pair in \
+  "project-id:project_id_for_path_outside_home_is_stable_hash" \
+  "registry:init_writes_registry_metadata_and_active_marker" \
+  "resolution-precedence:project_flag_selects_by_id" \
+  "resolution-precedence:legacy_cwd_walk_up_is_warned_fallback" \
+  "workflow-cwd:writable_node_roots_worktree_at_project_root_not_harness_cwd" \
+  "persistent-cwd:codex_delivery_without_worktree_runs_in_project_root_not_harness_cwd" \
+  "persistent-cwd:claude_delivery_sees_the_selected_projects_claude_md_marker" \
+  "serve-api:snapshot_with_project_param_reads_that_store_only" \
+  "sse-isolation:sse_streams_are_isolated_per_project" \
+  "dashboard-switch:serve_and_cli_from_different_cwds_converge_after_switch" \
+  "global-policy:global_writable_node_fails_with_actionable_non_git_message" \
+  "migration:migrate_preserves_records_and_payloads_and_marks_old_store" ; do
+  dim="${pair%%:*}"; t="${pair#*:}"
+  grep -q "test .*$t ... ok" "$TMP/test.log" && ok "mp[$dim]: $t" || bad "mp[$dim]: $t did not run/pass"
 done
 
 npx tsc -p apps/agent-dashboard/tsconfig.json --noEmit >/dev/null 2>&1
@@ -135,6 +171,222 @@ else
   H goal run-phases pm --dry-run >"$TMP/pm_run2.json" 2>/dev/null
   [ "$(check_json "$TMP/pm_run2.json" "d.get('ran')==[] and d.get('skipped')==['p1']")" = "1" ] \
     && ok "S5 resume skips already-passed phase" || bad "S5 resume skip"
+fi
+
+# ---------------------------------------------------------------------------
+section "Multi-project serve API + #89 convergence (goal-multi-project, no codex)"
+# Isolated HOME/HARNESS_HOME so this never touches the developer's real ~/.harness.
+# Deterministic, no codex/claude: fake provider shims (scripts/multi-project-demo/
+# fake-provider.sh) intercept the bare-name spawns and record the cwd they ran in.
+# Proves, against ONE serve for the whole scenario:
+#   * GET /v1/projects lists both projects + _global; POST /v1/projects/switch
+#     flips the active project; a CLI from a DIFFERENT cwd then resolves the SAME
+#     central store (~/.harness/projects/<id>), preserving the #89 sibling-
+#     convergence invariant across a project switch;
+#   * a writable WORKFLOW leaf in project A roots its worktree under A and reads
+#     A's AGENTS.md marker "alpha" (not the harness process cwd);
+#   * a persistent MEMBER delivery in project B runs in B's project_root and reads
+#     B's AGENTS.md marker "beta";
+#   * the GLOBAL `_global` (~/, non-git) project runs read-only nodes but rejects
+#     writable/worktree nodes with an actionable message;
+#   * migrating a legacy repo-local `.harness` into the central store preserves
+#     every record + payload and marks (does not delete) the old store.
+# shellcheck disable=SC1091
+. "$REPO_ROOT/scripts/multi-project-demo/fake-provider.sh"
+cargo build -p harness-cli >/dev/null 2>&1
+if [ ! -x "$HARNESS" ]; then
+  bad "build harness-cli for multi-project checks"
+else
+  MPHOME="$TMP/mp-home"
+  MPHH="$MPHOME/.harness"
+  mkdir -p "$MPHH"
+  MPPORT="${VERIFY_MP_PORT:-8797}"
+  # Avoid a busy port: a stale serve on $MPPORT would answer our curls from ITS
+  # store, cascading into confusing wrong-project failures. Step to the next free
+  # port (bounded) so the demo is self-healing across back-to-back runs.
+  port_busy() { command -v lsof >/dev/null 2>&1 && lsof -nP -iTCP:"$1" -sTCP:LISTEN >/dev/null 2>&1; }
+  for _ in $(seq 1 20); do port_busy "$MPPORT" && MPPORT=$((MPPORT + 1)) || break; done
+  # Fake provider shims on PATH so workflow/member spawns never touch real codex.
+  MPBIN="$TMP/mp-fakebin"
+  MP_CWD="$TMP/mp-provider-cwd.txt"
+  MP_MARKER="$TMP/mp-provider-marker.txt"
+  install_fake_providers "$MPBIN" "$MP_CWD" "$MP_MARKER"
+  # Drive harness against the isolated home; clear inherited store overrides.
+  MH() { env HOME="$MPHOME" HARNESS_HOME="$MPHH" HARNESS_ROOT= HARNESS_PROJECT= "$HARNESS" "$@"; }
+  # As MH, but with the fake providers ahead of any real ones on PATH.
+  MHP() { env HOME="$MPHOME" HARNESS_HOME="$MPHH" HARNESS_ROOT= HARNESS_PROJECT= PATH="$MPBIN:$PATH" "$HARNESS" "$@"; }
+  ROOT_A="$MPHOME/repo-a"; ROOT_B="$MPHOME/repo-b"
+  mkdir -p "$ROOT_A" "$ROOT_B"
+  # Unique per-project AGENTS.md markers prove the worker read the SELECTED
+  # project's tree. A is a git repo so a writable leaf can isolate a worktree
+  # there (and HEAD carries AGENTS.md into the checkout the worker reads).
+  printf 'PROJECT-A-AGENTS-alpha\n' >"$ROOT_A/AGENTS.md"
+  printf 'PROJECT-B-AGENTS-beta\n'  >"$ROOT_B/AGENTS.md"
+  ( cd "$ROOT_A" && git init -q && git config user.email v@v.v && git config user.name v \
+      && git add -A && git commit -qm init ) >/dev/null 2>&1
+  ( cd "$ROOT_A" && MH init >/dev/null 2>&1 )
+  ( cd "$ROOT_B" && MH init >/dev/null 2>&1 )  # repo-b is active after init
+  ID_A="$(python3 -c "import json;
+reg=json.load(open('$MPHH/projects/registry.json'))
+print(next(p['id'] for p in reg['projects'] if p['path'].endswith('repo-a')))" 2>/dev/null)"
+  ID_B="$(python3 -c "import json;print(json.load(open('$MPHH/projects/registry.json'))['current_project_id'])" 2>/dev/null)"
+  if [ -z "$ID_A" ] || [ -z "$ID_B" ] || [ "$ID_A" = "$ID_B" ]; then
+    bad "MP setup: two distinct projects registered"
+  else
+    ok "MP setup: two distinct projects registered ($ID_A, $ID_B)"
+    # Start serve from repo-a's cwd against the isolated home. `exec` replaces the
+    # shell with the serve process so $! is the REAL serve pid (a `( cd && ... ) &`
+    # subshell would leave $! pointing at the subshell, leaking the serve child on
+    # teardown and holding the port for the next run).
+    env HOME="$MPHOME" HARNESS_HOME="$MPHH" HARNESS_ROOT= HARNESS_PROJECT= \
+      bash -c "cd '$ROOT_A' && exec '$HARNESS' serve --addr '127.0.0.1:$MPPORT' --no-truncate" \
+      >"$TMP/mp-serve.log" 2>&1 &
+    MP_SERVE_PID=$!
+    UP=0
+    for _ in $(seq 1 50); do
+      curl -fs "http://127.0.0.1:$MPPORT/health" >/dev/null 2>&1 && { UP=1; break; }
+      sleep 0.2
+    done
+    if [ $UP -ne 1 ]; then
+      bad "MP serve did not come up (see $TMP/mp-serve.log)"
+    else
+      ok "MP serve up on :$MPPORT"
+      # GET /v1/projects lists both + _global.
+      curl -fs "http://127.0.0.1:$MPPORT/v1/projects" >"$TMP/mp-projects.json" 2>/dev/null
+      [ "$(check_json "$TMP/mp-projects.json" "set(['$ID_A','$ID_B','_global']).issubset({p['id'] for p in d['projects']})")" = "1" ] \
+        && ok "MP GET /v1/projects lists both projects + _global" || bad "MP /v1/projects enumeration"
+      # POST switch to A.
+      curl -fs -X POST "http://127.0.0.1:$MPPORT/v1/projects/switch" \
+        -H 'Content-Type: application/json' -d "{\"project\":\"$ID_A\"}" >"$TMP/mp-switch.json" 2>/dev/null
+      [ "$(check_json "$TMP/mp-switch.json" "d.get('ok') is True and d['result']['current']=='$ID_A'")" = "1" ] \
+        && ok "MP POST /v1/projects/switch -> A" || bad "MP switch"
+      # CLI from an UNRELATED cwd converges on A's central store.
+      MPELSE="$MPHOME/elsewhere/deep"; mkdir -p "$MPELSE"
+      MPSRC="$( cd "$MPELSE" && env HOME="$MPHOME" HARNESS_HOME="$MPHH" HARNESS_ROOT= HARNESS_PROJECT= \
+        "$HARNESS" --store-source goal list 2>&1 | sed -n 's/.*store-source:.*root=//p' )"
+      case "$MPSRC" in
+        *"/projects/$ID_A") ok "MP #89 convergence: CLI from other cwd -> A central store" ;;
+        *) bad "MP #89 convergence: CLI resolved '$MPSRC' (expected .../projects/$ID_A)" ;;
+      esac
+
+      # Dashboard project picker (goal-multi-project P6, dashboard-browser-check):
+      # against the SAME live serve, prove SSE channel isolation (a client
+      # subscribed to B never sees a live event appended to A, but DOES see B's),
+      # which is the guarantee the picker relies on when it re-points the stream on
+      # switch. The Playwright UI leg degrades to SKIP when Playwright is absent.
+      STORE_A="$MPHH/projects/$ID_A"
+      STORE_B="$MPHH/projects/$ID_B"
+      if node "$REPO_ROOT/apps/agent-dashboard/tests/project-picker-check.mjs" \
+        --base "http://127.0.0.1:$MPPORT" \
+        --project-a "$ID_A" --store-a "$STORE_A" \
+        --project-b "$ID_B" --store-b "$STORE_B" \
+        >"$TMP/mp-picker.log" 2>&1; then
+        ok "MP dashboard picker checks (SSE isolation A/B; see $TMP/mp-picker.log)"
+      else
+        bad "MP dashboard picker checks (see $TMP/mp-picker.log)"
+      fi
+
+      # --- Workflow leaf in A (cwd-routing, P3/P4) --------------------------
+      # A writable leaf run --project A from a cwd that is NOT A: its worktree
+      # roots UNDER A, the fake claude is spawned there, records its cwd, and
+      # reads A's AGENTS.md "alpha". This is the deterministic stand-in for the
+      # operator's live-codex leaf — same routing, no provider.
+      : >"$MP_CWD"; : >"$MP_MARKER"
+      ( cd "$MPELSE" && env HOME="$MPHOME" HARNESS_HOME="$MPHH" HARNESS_ROOT= HARNESS_PROJECT= \
+        PATH="$MPBIN:$PATH" "$HARNESS" --project "$ROOT_A" workflow run-script \
+        "$REPO_ROOT/scripts/multi-project-demo/leaf-writable.star" --timeout-ms 15000 \
+        >"$TMP/mp-leaf.json" 2>"$TMP/mp-leaf.err" )
+      LEAF_CWD="$(cat "$MP_CWD" 2>/dev/null)"
+      LEAF_MARKER="$(cat "$MP_MARKER" 2>/dev/null)"
+      ROOT_A_REAL="$( cd "$ROOT_A" && pwd -P )"
+      case "$LEAF_CWD" in
+        "$ROOT_A_REAL"/*|"$ROOT_A_REAL") ok "MP workflow leaf in A ran under A ($LEAF_CWD)" ;;
+        *) bad "MP workflow leaf cwd '$LEAF_CWD' is not under A ($ROOT_A_REAL)" ;;
+      esac
+      [ "$LEAF_MARKER" = "PROJECT-A-AGENTS-alpha" ] \
+        && ok "MP workflow leaf read A's AGENTS.md marker alpha" \
+        || bad "MP workflow leaf read marker '$LEAF_MARKER' (expected alpha)"
+
+      # --- Persistent member delivery in B (cwd-routing, P3) -----------------
+      # A persistent codex member delivered --project B (from a cwd that is NOT B)
+      # runs in B's project_root: the fake codex records B's root and reads B's
+      # AGENTS.md "beta". Delivery may report failure (the shim is not a real
+      # turn) — the cwd + marker are recorded regardless, which is what we assert.
+      : >"$MP_CWD"; : >"$MP_MARKER"
+      MEMB="$( cd "$MPELSE" && env HOME="$MPHOME" HARNESS_HOME="$MPHH" HARNESS_ROOT= HARNESS_PROJECT= \
+        PATH="$MPBIN:$PATH" "$HARNESS" --project "$ROOT_B" agent create --name mp-worker \
+        --role worker --provider codex 2>/dev/null | python3 -c 'import sys,json;print(json.load(sys.stdin).get("id",""))' 2>/dev/null )"
+      if [ -z "$MEMB" ]; then
+        bad "MP could not create a codex member in B"
+      else
+        ( cd "$MPELSE" && env HOME="$MPHOME" HARNESS_HOME="$MPHH" HARNESS_ROOT= HARNESS_PROJECT= \
+          PATH="$MPBIN:$PATH" "$HARNESS" --project "$ROOT_B" agent send --to "$MEMB" --from lead \
+          --content "report your cwd" >/dev/null 2>&1 )
+        ( cd "$MPELSE" && env HOME="$MPHOME" HARNESS_HOME="$MPHH" HARNESS_ROOT= HARNESS_PROJECT= \
+          PATH="$MPBIN:$PATH" "$HARNESS" --project "$ROOT_B" agent deliver --agent "$MEMB" \
+          --start-runtime --timeout-ms 8000 >/dev/null 2>&1 )
+        DELIV_CWD="$(cat "$MP_CWD" 2>/dev/null)"
+        DELIV_MARKER="$(cat "$MP_MARKER" 2>/dev/null)"
+        ROOT_B_REAL="$( cd "$ROOT_B" && pwd -P )"
+        [ "$DELIV_CWD" = "$ROOT_B_REAL" ] \
+          && ok "MP member delivery in B ran in B's project_root ($DELIV_CWD)" \
+          || bad "MP member delivery cwd '$DELIV_CWD' != B project_root ($ROOT_B_REAL)"
+        [ "$DELIV_MARKER" = "PROJECT-B-AGENTS-beta" ] \
+          && ok "MP member delivery read B's AGENTS.md marker beta" \
+          || bad "MP member delivery read marker '$DELIV_MARKER' (expected beta)"
+      fi
+    fi
+    free_serve_port "$MP_SERVE_PID" "$MPPORT"
+    MP_SERVE_PID=""
+  fi
+
+  # --- GLOBAL (~/, non-git) project policy (P5) -------------------------------
+  # The reserved `_global` project is rooted at HOME (not a git repo). Read-only
+  # nodes run; writable/worktree nodes are rejected with an actionable message.
+  ( cd "$MPHOME" && MH --project _global init >/dev/null 2>&1 )
+  cat >"$TMP/mp-global-write.star" <<'STAR'
+workflow("mp-global-write", "a writable node against the non-git global project must fail loud")
+phase("edit")
+agent("edit", provider = "claude", writable = True, label = "editor")
+STAR
+  ( cd "$TMP" && MHP --project _global workflow run-script "$TMP/mp-global-write.star" \
+    --timeout-ms 8000 >"$TMP/mp-global-write.json" 2>/dev/null )
+  [ "$(check_json "$TMP/mp-global-write.json" "d['steps'][0]['status']=='failed' and 'not a git repository' in (d['steps'][0].get('output_summary') or '') and '_global' in (d['steps'][0].get('output_summary') or '')")" = "1" ] \
+    && ok "MP _global writable node fails loud (non-git, actionable)" || bad "MP _global writable policy"
+  cat >"$TMP/mp-global-read.star" <<'STAR'
+workflow("mp-global-read", "a read-only node against the non-git global project runs")
+phase("scan")
+agent("read and report", provider = "claude", label = "reader")
+STAR
+  ( cd "$TMP" && MHP --project _global workflow run-script "$TMP/mp-global-read.star" \
+    --dry-run >"$TMP/mp-global-read.json" 2>/dev/null )
+  [ "$(check_json "$TMP/mp-global-read.json" "d['run']['status']=='completed' and d['steps'][0]['status']=='completed'")" = "1" ] \
+    && ok "MP _global read-only node runs successfully" || bad "MP _global read-only node"
+
+  # --- Migration of a legacy repo-local .harness (P7) -------------------------
+  # Seed a repo with a repo-local .harness store, migrate it, and prove every
+  # record + payload is copied to the central store with NO data loss, and the old
+  # store is MARKED (not deleted). All under the isolated home.
+  MPLEG="$MPHOME/legacy-repo"; mkdir -p "$MPLEG/.harness/provider-sessions/sess-x"
+  printf '%s\n' '{"id":"g-legacy","title":"legacy goal"}'   >"$MPLEG/.harness/goals.jsonl"
+  printf '%s\n' '{"id":"m-legacy","name":"legacy member"}'  >"$MPLEG/.harness/members.jsonl"
+  printf 'legacy-payload\n' >"$MPLEG/.harness/provider-sessions/sess-x/codex.json"
+  ( cd "$MPLEG" && MH project migrate >"$TMP/mp-migrate.json" 2>/dev/null )
+  MIG_OK="$(check_json "$TMP/mp-migrate.json" "d.get('migrated') is True and d['records_after']==d['records_before'] and d['records_before']>=2")"
+  MIG_ID="$(python3 -c "import json;print(json.load(open('$TMP/mp-migrate.json'))['project_id'])" 2>/dev/null)"
+  MIG_DST="$MPHH/projects/$MIG_ID"
+  if [ "$MIG_OK" = "1" ]; then
+    ok "MP migrate preserved record count (no data loss; records_after==records_before)"
+  else
+    bad "MP migrate record-count preservation (see $TMP/mp-migrate.json)"
+  fi
+  { [ -s "$MIG_DST/goals.jsonl" ] && [ -s "$MIG_DST/members.jsonl" ] \
+    && [ "$(cat "$MIG_DST/provider-sessions/sess-x/codex.json" 2>/dev/null)" = "legacy-payload" ]; } \
+    && ok "MP migrate copied ledgers + provider-session payload to central store" \
+    || bad "MP migrate central-store contents incomplete"
+  { [ -s "$MPLEG/.harness/MIGRATED_TO_CENTRAL" ] && [ -s "$MPLEG/.harness/goals.jsonl" ]; } \
+    && ok "MP migrate marked (did not delete) the old local store" \
+    || bad "MP migrate old-store marker/retention"
 fi
 
 # ---------------------------------------------------------------------------

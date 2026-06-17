@@ -62,6 +62,12 @@ pnpm acceptance:skill-install            # local checks (no network)
 pnpm acceptance:skill-install --remote   # + the anonymous curl|bash install path
 ```
 
+One `serve` / dashboard can manage many projects (each with its own
+goals/tasks/runs in a centralized store under `~/.harness/projects/<id>/`) plus a
+reserved GLOBAL `~/` project. Register with `harness init`, switch with
+`harness project switch <id|path>`, migrate a legacy repo-local `.harness` with
+`harness project migrate`. See **[docs/multi-project.md](docs/multi-project.md)**.
+
 ## Repository Layout
 
 | Path | Purpose |
@@ -90,6 +96,7 @@ pnpm acceptance:skill-install --remote   # + the anonymous curl|bash install pat
 - [Agent Dashboard Frontend Architecture](docs/dashboard/frontend-architecture.md)
 - [Agent Dashboard Runbook](docs/dashboard/runbook.md)
 - [Git / PR Workflow](docs/workflow-git-pr.md)
+- [Multi-Project Harness](docs/multi-project.md)
 - [Provider Integrations](docs/integration/README.md)
 - [Goal Learning Loop](docs/goal-learning-loop.md)
 - [Codex Integration](docs/integration/codex.md)

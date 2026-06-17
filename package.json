@@ -21,7 +21,9 @@
     "acceptance:mvp:live": "node scripts/acceptance-mvp.mjs --live-codex",
     "acceptance:autonomous-team": "node scripts/acceptance-autonomous-team.mjs",
     "acceptance:workflow-starlark": "node scripts/acceptance-workflow-starlark.mjs",
-    "acceptance:skill-install": "bash scripts/acceptance-skill-install.sh"
+    "acceptance:skill-install": "bash scripts/acceptance-skill-install.sh",
+    "test:multi-project": "cargo test -p harness-core project -- --nocapture && cargo test -p harness-cli --test project_registry --test project_resolution --test init_project --test workflow_cwd --test workflow_project_options --test global_project_workflow --test delivery_project_context --test codex_delivery_cwd --test claude_delivery_cwd --test serve_projects_api --test serve_sse_projects --test project_convergence --test project_cli --test project_migrate --test store_source",
+    "acceptance:multi-project": "bash scripts/verify-fixes.sh"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.0",

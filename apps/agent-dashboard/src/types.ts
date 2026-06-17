@@ -101,6 +101,21 @@ export interface GitMetadata {
   commit?: string | null;
   owned_paths?: string[];
 }
+/**
+ * One project in the multi-project control plane (goal-multi-project P6). The
+ * backend `GET /v1/projects` enumerates the registry + on-disk stores + the
+ * reserved `_global` project; each entry mirrors the Rust `ProjectContext` plus
+ * an `is_current` marker. `kind` is `"global"` only for the reserved `~/` store.
+ */
+export interface Project {
+  id: string;
+  project_root: string;
+  store_root: string;
+  kind: "repo" | "global";
+  is_git_repo: boolean;
+  is_current: boolean;
+}
+
 export type MessageKind = "message" | "task" | "report";
 export type SenderKind = "agent" | "operator" | "system";
 export type ProviderSessionStatus = "queued" | "running" | "succeeded" | "failed" | "canceled" | "stale";

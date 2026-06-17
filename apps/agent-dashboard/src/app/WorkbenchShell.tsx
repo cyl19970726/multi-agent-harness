@@ -3,8 +3,11 @@ import {
   BookOpen,
   Bot,
   Bug,
+  ChevronDown,
   Clock,
+  FolderGit2,
   GitBranch,
+  Globe,
   Inbox,
   Pause,
   Play,
@@ -38,6 +41,7 @@ import { Avatar } from "@/components/workbench/Avatar";
 import { memberTone, taskTone, timelineTone } from "@/components/workbench/tones";
 
 import type { WorkbenchModel } from "../model/readModel";
+import type { Project } from "../types";
 import {
   AgentDetail,
   AgentsList,
@@ -56,6 +60,13 @@ interface WorkbenchShellProps {
   apiUrl: string;
   isLoading: boolean;
   model: WorkbenchModel;
+  /** Known projects for the header picker (goal-multi-project P6); empty for a
+   * single-store / pre-multi-project backend, which hides the picker. */
+  projects: Project[];
+  /** The currently-selected project id ("" before one is chosen/adopted). */
+  selectedProjectId: string;
+  /** Switch the active project: re-points the scoped snapshot + SSE stream. */
+  onSelectProject: (projectId: string) => void;
   onApiUrlChange: (value: string) => void;
   onRefresh: () => void;
   onSelectionChange: (selection: SelectionState) => void;
@@ -94,6 +105,9 @@ export function WorkbenchShell({
   apiUrl,
   isLoading,
   model,
+  projects,
+  selectedProjectId,
+  onSelectProject,
   onApiUrlChange,
   onRefresh,
   onSelectionChange,
@@ -124,6 +138,9 @@ export function WorkbenchShell({
         currentSurface={surfaceLabel(selection.surface)}
         isLoading={isLoading}
         model={model}
+        projects={projects}
+        selectedProjectId={selectedProjectId}
+        onSelectProject={onSelectProject}
         onApiUrlChange={onApiUrlChange}
         onRefresh={onRefresh}
         sourceError={sourceError}
@@ -215,6 +232,9 @@ function TopBar({
   currentSurface,
   isLoading,
   model,
+  projects,
+  selectedProjectId,
+  onSelectProject,
   onApiUrlChange,
   onRefresh,
   sourceError,
@@ -258,6 +278,11 @@ function TopBar({
             </span>
           </div>
         </div>
+        <ProjectPicker
+          projects={projects}
+          selectedProjectId={selectedProjectId}
+          onSelectProject={onSelectProject}
+        />
       </div>
 
       <div className="mx-2 hidden flex-1 justify-center md:flex">
@@ -346,6 +371,55 @@ function TopBar({
       </div>
     </header>
   );
+}
+
+/**
+ * Compact project picker in the TopBar (goal-multi-project P6). A native
+ * `<select>` styled to match the other TopBar controls — switching re-points the
+ * scoped snapshot + SSE stream (handled by the App). Renders nothing when there
+ * are 0–1 projects (a single-store / pre-multi-project backend), so the picker
+ * never appears where it would be meaningless. The `_global` (`kind: "global"`)
+ * project gets a globe icon; repo projects a git-folder icon.
+ */
+function ProjectPicker({
+  projects,
+  selectedProjectId,
+  onSelectProject,
+}: {
+  projects: Project[];
+  selectedProjectId: string;
+  onSelectProject: (projectId: string) => void;
+}) {
+  if (projects.length <= 1) return null;
+  const selected = projects.find((p) => p.id === selectedProjectId);
+  const isGlobal = selected?.kind === "global";
+  return (
+    <label className="relative ml-1 hidden items-center sm:flex" title="Active project">
+      <span className="pointer-events-none absolute left-2 text-muted-foreground">
+        {isGlobal ? <Globe className="size-3.5" /> : <FolderGit2 className="size-3.5" />}
+      </span>
+      <select
+        aria-label="Active project"
+        value={selectedProjectId}
+        onChange={(event) => onSelectProject(event.target.value)}
+        className="h-8 max-w-[180px] appearance-none truncate rounded-md border border-border bg-background/50 pl-7 pr-7 text-[11px] text-foreground outline-none transition-colors hover:border-input focus:border-ring"
+      >
+        {projects.map((project) => (
+          <option key={project.id} value={project.id}>
+            {projectLabel(project)}
+          </option>
+        ))}
+      </select>
+      <ChevronDown className="pointer-events-none absolute right-2 size-3.5 text-muted-foreground" />
+    </label>
+  );
+}
+
+/** Human label for a project option: the reserved `_global` reads "Global (~)";
+ * every other project shows its id (the slug / content-hash). */
+function projectLabel(project: Project): string {
+  if (project.kind === "global" || project.id === "_global") return "Global (~)";
+  return project.id;
 }
 
 /** Beyond this age the snapshot is considered stale and the chip turns amber. */

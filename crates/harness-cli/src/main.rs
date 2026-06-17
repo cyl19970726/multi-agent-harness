@@ -18,13 +18,15 @@ use harness_core::{
     HarnessTokenUsage, HarnessToolCall, HarnessToolResult, HarnessTurnEvent, HarnessTurnEventKind,
     Knowledge, KnowledgeSource, LaunchMcp, LaunchPermission, LaunchSpec, Message, MessageDelivery,
     MessageDeliveryStatus, MessageKind, MessageTerminalSource, OrchestrationPhaseRun,
-    OrchestrationStatus, Proposal, ProposalStatus, ProviderChildThread, ProviderChildThreadStatus,
-    ProviderSession, ProviderSessionStatus, Review, ReviewVerdict, SenderKind, Task, TaskStatus,
-    VerdictOutcome, Vision, WorkflowRun, WorkflowRunStatus, WorkflowStep, WorkflowStepStatus,
+    OrchestrationStatus, ProjectContext, ProjectKind, Proposal, ProposalStatus,
+    ProviderChildThread, ProviderChildThreadStatus, ProviderSession, ProviderSessionStatus, Review,
+    ReviewVerdict, SenderKind, Task, TaskStatus, VerdictOutcome, Vision, WorkflowRun,
+    WorkflowRunStatus, WorkflowStep, WorkflowStepStatus,
 };
 use harness_store::{HarnessStore, MessageDeliveryClaimResult};
 use thiserror::Error;
 
+mod project;
 mod resident;
 #[cfg(unix)]
 mod resident_daemon;
@@ -52,36 +54,265 @@ fn main() {
     }
 }
 
-/// Resolve the harness store root with clear precedence so commands run from
-/// different working directories converge on ONE store (issue #89 item 3).
-/// Precedence: explicit `--store <path>` (stripped from `args` so subcommands
-/// don't see it), then `HARNESS_ROOT` env (back-compat), then the nearest
-/// existing `.harness` walking up from the cwd (like git finds `.git`), then
-/// `./.harness` (the historical default).
+/// How the active store root was chosen — surfaced via the `--store-source` debug
+/// flag and used to keep back-compat behavior auditable (goal-multi-project P1/P7).
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum StoreSource {
+    /// `--store <path>` override (deprecated, kept for tests/back-compat).
+    StoreFlag,
+    /// `HARNESS_ROOT` env override (deprecated, kept for tests/back-compat).
+    HarnessRootEnv,
+    /// `--project <id|path>` explicit selector.
+    ProjectFlag,
+    /// `HARNESS_PROJECT` env selector.
+    ProjectEnv,
+    /// Registry `current_project_id` / `ACTIVE_PROJECT` marker.
+    RegistryCurrent,
+    /// Legacy cwd walk-up to the nearest existing `.harness/` (deprecation-warned).
+    CwdWalkUp,
+    /// Reserved GLOBAL project (`$HOME`), auto-created on first use.
+    GlobalDefault,
+}
+
+/// The resolved store root plus a record of *how* it was chosen and whether a
+/// `ProjectContext` backs it (None for the raw `--store`/`HARNESS_ROOT`/walk-up
+/// overrides, which point at an arbitrary path with no project identity).
+struct ResolvedStore {
+    root: PathBuf,
+    source: StoreSource,
+    context: Option<harness_core::ProjectContext>,
+}
+
+/// Resolve the harness store root, preserving today's behavior while routing
+/// through project identity when a project is explicitly selected/active.
 ///
-/// Without this, `serve` (reads `<serve cwd>/.harness`) and `run-script` (writes
-/// `<run-script cwd>/.harness`) silently used different stores → an empty dashboard.
-fn resolve_store_root(args: &mut Vec<String>) -> PathBuf {
+/// Precedence (goal-multi-project P1):
+/// 1. `--store <path>`            — deprecated override (stripped from `args`).
+/// 2. `HARNESS_ROOT` env          — deprecated override.
+/// 3. `--project <id|path>`       — explicit project selector (stripped).
+/// 4. `HARNESS_PROJECT` env       — project selector.
+/// 5. registry `current_project_id` / `ACTIVE_PROJECT` — the convergence point
+///    that replaces "shared cwd" for the #89 invariant (`serve` + `run-script`
+///    resolve the SAME central store regardless of cwd).
+/// 6. legacy cwd walk-up to the nearest existing `.harness/` — deprecation-warned
+///    fallback so existing repos keep working for a release or two (#89 item 3).
+/// 7. `_global` — the reserved `$HOME` project, auto-created on first use.
+///
+/// `init` is special-cased so it never adopts an ancestor's `.harness` via the
+/// walk-up; its routing lives in [`init_routed`].
+///
+/// IMPORTANT back-compat: when NONE of the project signals (3/4/5) and NO
+/// override (1/2) apply, the result is the SAME directory today's code would have
+/// used (walk-up → otherwise the GLOBAL store), so existing serve + run-script
+/// flows keep converging on one store.
+fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> ResolvedStore {
+    // 1. --store override (deprecated, but still wins for tests/back-compat).
     if let Some(path) = take_flag_value(args, "--store") {
-        return PathBuf::from(path);
+        warn_deprecated_override("--store", "harness project switch");
+        return ResolvedStore {
+            root: PathBuf::from(path),
+            source: StoreSource::StoreFlag,
+            context: None,
+        };
     }
+    // 2. HARNESS_ROOT env override (deprecated).
     if let Ok(root) = env::var("HARNESS_ROOT") {
         if !root.is_empty() {
-            return PathBuf::from(root);
+            warn_deprecated_override("HARNESS_ROOT", "harness project switch");
+            return ResolvedStore {
+                root: PathBuf::from(root),
+                source: StoreSource::HarnessRootEnv,
+                context: None,
+            };
         }
     }
-    // `init` MATERIALIZES a store and must not adopt an ancestor's — it always
-    // targets `./.harness` (or the explicit `--store`/`HARNESS_ROOT` handled
-    // above). Every other command walks up to the nearest existing `.harness` so
-    // sibling processes (serve + run-script) converge on one store.
-    if args.first().map(String::as_str) != Some("init") {
+
+    let harness_home = match project::harness_home() {
+        Ok(h) => h,
+        // No HOME: fall back to the historical `./.harness` so we never panic.
+        Err(_) => {
+            return ResolvedStore {
+                root: PathBuf::from(".harness"),
+                source: StoreSource::CwdWalkUp,
+                context: None,
+            };
+        }
+    };
+
+    // 3/4. Explicit project selector by id or path: `--project` then
+    // `HARNESS_PROJECT`. The source records which signal won.
+    let (project_selector, selector_source) = match take_flag_value(args, "--project") {
+        Some(v) => (Some(v), StoreSource::ProjectFlag),
+        None => match env::var("HARNESS_PROJECT").ok().filter(|s| !s.is_empty()) {
+            Some(v) => (Some(v), StoreSource::ProjectEnv),
+            None => (None, StoreSource::ProjectFlag),
+        },
+    };
+    if let Some(selector) = project_selector {
+        if let Some(ctx) = resolve_project_selector(&harness_home, &selector) {
+            return ResolvedStore {
+                root: ctx.store_root.clone(),
+                source: selector_source,
+                context: Some(ctx),
+            };
+        }
+    }
+
+    // 5. Legacy cwd walk-up to the nearest existing `.harness/` (back-compat).
+    // A PRESENT repo-local `.harness` WINS over the registry-current project
+    // (rung 6): this restores the design's stated invariant that, absent an
+    // explicit project signal, resolution lands on the SAME store today's code
+    // would use — so standing inside a legacy repo never silently shadows its
+    // local goals/tasks with an unrelated active project. (`init` never walks up
+    // — it materializes a fresh store, see `init_routed`.)
+    //
+    // DUAL-READ (goal-multi-project P7): central (steps 3/4/5) was absent, so we may
+    // fall back to a repo-local store — but ONLY if it has not been migrated. A local
+    // store carrying a `MIGRATED_TO_CENTRAL` marker is redirected to the central
+    // store it points to (never serving stale rows), and the choice is always logged.
+    if command != Some("init") {
         if let Ok(cwd) = env::current_dir() {
-            if let Some(found) = discover_harness_from(&cwd) {
-                return found;
+            // A walked-up `.harness` that IS the central harness home (e.g.
+            // `~/.harness`, which holds `projects/` + `registry.json`) is the
+            // container for project stores, NOT a legacy repo-local store — skip it
+            // so resolution falls through to the registry-current project (issue #89
+            // convergence holds for cwds inside the home tree).
+            let found = discover_harness_from(&cwd).filter(|p| {
+                project::canonicalize_best_effort(p)
+                    != project::canonicalize_best_effort(&harness_home)
+            });
+            if let Some(found) = found {
+                match project::read_migrated_marker(&found) {
+                    Ok(Some(target)) if !target.as_os_str().is_empty() => {
+                        // Migrated: prefer the central store the marker points to.
+                        eprintln!(
+                            "store-source: local store {} is migrated; reading central store {}",
+                            found.display(),
+                            target.display()
+                        );
+                        let context = project::read_metadata(&target).ok().flatten().map(|meta| {
+                            harness_core::ProjectContext {
+                                id: meta.project_id,
+                                project_root: meta.canonical_path,
+                                store_root: target.clone(),
+                                kind: meta.kind,
+                                is_git_repo: meta.is_git_repo,
+                            }
+                        });
+                        return ResolvedStore {
+                            root: target,
+                            source: StoreSource::RegistryCurrent,
+                            context,
+                        };
+                    }
+                    Ok(Some(_)) => {
+                        // Marked migrated but pointer-less: ignore the local store and
+                        // fall through to registry-current / the GLOBAL default
+                        // rather than serve it.
+                        eprintln!(
+                            "store-source: local store {} is marked migrated (no target); \
+                             skipping it for the active/global project",
+                            found.display()
+                        );
+                    }
+                    _ => {
+                        // Unmigrated local store: keep working, but warn it is a
+                        // back-compat fallback (no central project selected).
+                        eprintln!(
+                            "warning: using repo-local store {} (no central project selected); \
+                             run `harness project migrate` to centralize it",
+                            found.display()
+                        );
+                        warn_deprecated_override(
+                            "cwd .harness walk-up",
+                            "harness init / harness project switch",
+                        );
+                        return ResolvedStore {
+                            root: found,
+                            source: StoreSource::CwdWalkUp,
+                            context: None,
+                        };
+                    }
+                }
             }
         }
     }
-    PathBuf::from(".harness")
+
+    // 6. Registry current project (the cwd-independent convergence point) — the
+    // resolver for project roots with NO repo-local `.harness` (e.g. a centrally
+    // `init`ed project) and the cross-cwd convergence point (issue #89).
+    if let Ok(Some(id)) = project::active_project_id(&harness_home) {
+        if let Ok(Some(ctx)) = project::context_for_id(&harness_home, &id) {
+            return ResolvedStore {
+                root: ctx.store_root.clone(),
+                source: StoreSource::RegistryCurrent,
+                context: Some(ctx),
+            };
+        }
+    }
+
+    // 7. Reserved GLOBAL project, auto-created on first use.
+    if let Ok(ctx) = project::global_context(&harness_home) {
+        return ResolvedStore {
+            root: ctx.store_root.clone(),
+            source: StoreSource::GlobalDefault,
+            context: Some(ctx),
+        };
+    }
+
+    // Absolute last resort (no HOME / global failed): historical default.
+    ResolvedStore {
+        root: PathBuf::from(".harness"),
+        source: StoreSource::CwdWalkUp,
+        context: None,
+    }
+}
+
+/// Resolve a `--project`/`HARNESS_PROJECT` selector that may be a registered id OR
+/// a path to a project root. Returns `None` if it cannot be resolved (caller then
+/// continues down the precedence chain).
+fn resolve_project_selector(
+    harness_home: &Path,
+    selector: &str,
+) -> Option<harness_core::ProjectContext> {
+    // First: treat as a known id (registry / metadata / reserved `_global`).
+    if let Ok(Some(ctx)) = project::context_for_id(harness_home, selector) {
+        return Some(ctx);
+    }
+    // Otherwise: treat as a path to a project root and derive its identity.
+    let candidate = Path::new(selector);
+    if candidate.exists() {
+        let canonical = project::canonicalize_best_effort(candidate);
+        // Prefer a registered entry pinned to this canonical path (keeps a pinned
+        // store_root even if path→id derivation later changes).
+        if let Ok(registry) = project::ProjectRegistry::load(harness_home) {
+            if let Some(entry) = registry.find_by_path(&canonical) {
+                if let Ok(Some(ctx)) = project::context_for_id(harness_home, &entry.id) {
+                    return Some(ctx);
+                }
+            }
+        }
+        if let Ok(ctx) = project::context_for_root(candidate, harness_home) {
+            return Some(ctx);
+        }
+    }
+    None
+}
+
+/// Emit a one-line deprecation warning for a legacy store-selection mechanism,
+/// pointing at the supported replacement. Routed to stderr so it never corrupts
+/// JSON stdout.
+fn warn_deprecated_override(what: &str, replacement: &str) {
+    eprintln!("warning: {what} is deprecated for store selection; prefer `{replacement}`");
+}
+
+/// Back-compat shim: callers that only need the store root keep working. New code
+/// should use [`resolve_store`] to also get the `StoreSource`/`ProjectContext`.
+/// Only used by tests today; `run()` calls [`resolve_store`] directly.
+#[cfg(test)]
+fn resolve_store_root(args: &mut Vec<String>) -> PathBuf {
+    let command = args.first().cloned();
+    resolve_store(args, command.as_deref()).root
 }
 
 /// Walk up from `start` returning the first existing `<dir>/.harness` directory,
@@ -112,24 +343,468 @@ fn take_flag_value(args: &mut Vec<String>, flag: &str) -> Option<String> {
     }
 }
 
+/// Remove a boolean `--flag` from `args`, returning whether it was present.
+fn take_flag(args: &mut Vec<String>, flag: &str) -> bool {
+    if let Some(pos) = args.iter().position(|a| a == flag) {
+        args.remove(pos);
+        true
+    } else {
+        false
+    }
+}
+
+/// `harness init` routing (goal-multi-project init-routing task).
+///
+/// Instead of blindly materializing `./.harness`, `init` registers the SELECTED
+/// project in the centralized registry and creates its store under
+/// `~/.harness/projects/<id>/`, writing `metadata.json` to pin identity and the
+/// `ACTIVE_PROJECT` marker so subsequent commands converge.
+///
+/// Which project is initialized:
+/// - `--store`/`HARNESS_ROOT` override → that raw path is materialized exactly as
+///   before (no registry entry), so compatibility tests keep passing.
+/// - `--project <id|path>`             → the explicitly selected project root.
+/// - otherwise                         → the CURRENT DIRECTORY (the dir the user
+///   ran `init` in), NOT `_global` and NOT an ancestor's local `.harness`. This
+///   preserves the historical "init targets here" intent while routing the store
+///   centrally. The key invariant — never silently adopt an ancestor's local
+///   `.harness` as the canonical store — holds because `resolve_store` skips the
+///   cwd walk-up for `init`.
+fn init_routed(store: &HarnessStore, resolved: &ResolvedStore) -> CliResult<()> {
+    // Override path (`--store`/`HARNESS_ROOT`): historical raw-path behavior.
+    if matches!(
+        resolved.source,
+        StoreSource::StoreFlag | StoreSource::HarnessRootEnv
+    ) {
+        store.init()?;
+        println!("initialized {}", store.root().display());
+        return Ok(());
+    }
+
+    let harness_home = project::harness_home().map_err(project_err)?;
+    // An explicit `--project`/`HARNESS_PROJECT` selector pins the root via the
+    // resolved context; otherwise `init` materializes the CURRENT directory as a
+    // project (never the GLOBAL default, never an ancestor's `.harness`).
+    let project_root = match resolved.source {
+        StoreSource::ProjectFlag | StoreSource::ProjectEnv => resolved
+            .context
+            .as_ref()
+            .map(|c| c.project_root.clone())
+            .unwrap_or_else(|| env::current_dir().unwrap_or_else(|_| PathBuf::from("."))),
+        _ => env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+    };
+    let ctx = project::register_and_activate(&harness_home, &project_root, &now_string())
+        .map_err(project_err)?;
+    let registered = HarnessStore::new(ctx.store_root.clone());
+    registered.init()?;
+    println!(
+        "initialized project {} store {} (root {})",
+        ctx.id,
+        ctx.store_root.display(),
+        ctx.project_root.display()
+    );
+    Ok(())
+}
+
+/// Map a `project::ProjectError` onto `CliError` at the command boundary.
+fn project_err(e: project::ProjectError) -> CliError {
+    match e {
+        project::ProjectError::Io(io) => CliError::Io(io),
+        project::ProjectError::Json(j) => CliError::Json(j),
+        project::ProjectError::NoHome => {
+            CliError::Usage("could not determine home directory".to_string())
+        }
+    }
+}
+
+/// `harness project <subcommand>` — inspect and manage the centralized project
+/// registry that backs multi-project store routing (goal-multi-project P1/P7).
+///
+/// Subcommands share the same `project` resolver/registry code used by `serve` and
+/// `resolve_store`, so a `switch` here is the SAME convergence point a live `serve`
+/// reads (#89 invariant). All subcommands operate on `~/.harness` (honoring the
+/// `HARNESS_HOME` test hook); they never touch a raw `--store`/`HARNESS_ROOT`
+/// store, which has no project identity to manage.
+fn project_command(args: &[String]) -> CliResult<()> {
+    require_subcommand(args, "project add|list|current|switch|remove|show|migrate")?;
+    let harness_home = project::harness_home().map_err(project_err)?;
+    match args[0].as_str() {
+        "add" => project_add(&harness_home, &args[1..]),
+        "list" => project_list(&harness_home),
+        "current" => project_current(&harness_home),
+        "switch" => project_switch_cmd(&harness_home, &args[1..]),
+        "remove" => project_remove(&harness_home, &args[1..]),
+        "show" => project_show(&harness_home, &args[1..]),
+        "migrate" => project_migrate(&harness_home, &args[1..]),
+        other => Err(CliError::Usage(format!("unknown project command: {other}"))),
+    }
+}
+
+/// `harness project add [<path>] [--switch]` — register a project root (defaulting
+/// to the current directory) WITHOUT changing the active project, unless `--switch`
+/// is passed. Materializes the central store + `metadata.json` and a registry entry.
+fn project_add(harness_home: &Path, args: &[String]) -> CliResult<()> {
+    let switch = has_flag(args, "--switch");
+    // First non-flag positional is an optional explicit project root.
+    let path = args.iter().find(|a| !a.starts_with("--")).cloned();
+    let project_root = match path {
+        Some(p) => PathBuf::from(p),
+        None => env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+    };
+    let now = now_string();
+    // `register_and_activate` materializes store + metadata + registry entry and
+    // marks current. When `--switch` is NOT requested we restore the previously
+    // active project so `add` is non-disruptive (inspectable before a switch).
+    let prev_active = project::active_project_id(harness_home).map_err(project_err)?;
+    let ctx =
+        project::register_and_activate(harness_home, &project_root, &now).map_err(project_err)?;
+    if !switch {
+        match prev_active {
+            Some(prev) if prev != ctx.id => {
+                project::switch_current_project(harness_home, &prev, &now).map_err(project_err)?;
+            }
+            None => {
+                // There was no active project before; clear the pointer so `add`
+                // alone never silently flips the default away from local/_global.
+                let mut registry =
+                    project::ProjectRegistry::load(harness_home).map_err(project_err)?;
+                registry.current_project_id = None;
+                registry.save(harness_home).map_err(project_err)?;
+                project::clear_active_project(harness_home).map_err(project_err)?;
+            }
+            _ => {}
+        }
+    }
+    let current = project::active_project_id(harness_home)
+        .map_err(project_err)?
+        .unwrap_or_default();
+    print_json(&project_context_json(&ctx, &current))
+}
+
+/// `harness project list` — enumerate every known project (registry + on-disk
+/// stores + the reserved `_global`), marking the current one.
+fn project_list(harness_home: &Path) -> CliResult<()> {
+    let current = project::active_project_id(harness_home)
+        .map_err(project_err)?
+        .unwrap_or_default();
+    let projects = project::list_projects(harness_home).map_err(project_err)?;
+    let json: Vec<serde_json::Value> = projects
+        .iter()
+        .map(|c| project_context_json(c, &current))
+        .collect();
+    print_json(&json)
+}
+
+/// `harness project current` — print the currently-active project context (the
+/// convergence point `serve` + CLI workers resolve), or a `null`-id placeholder if
+/// none has been selected yet.
+fn project_current(harness_home: &Path) -> CliResult<()> {
+    match project::active_project_id(harness_home).map_err(project_err)? {
+        Some(id) => match project::context_for_id(harness_home, &id).map_err(project_err)? {
+            Some(ctx) => print_json(&project_context_json(&ctx, &id)),
+            None => print_json(&serde_json::json!({ "id": id, "is_current": true })),
+        },
+        None => print_json(&serde_json::json!({
+            "id": serde_json::Value::Null,
+            "is_current": false,
+        })),
+    }
+}
+
+/// `harness project switch <id|path>` — flip the active project, updating BOTH the
+/// registry `current_project_id` and the `ACTIVE_PROJECT` marker so the next CLI
+/// invocation and a live `serve` converge on the same central store.
+fn project_switch_cmd(harness_home: &Path, args: &[String]) -> CliResult<()> {
+    let selector = args
+        .first()
+        .filter(|a| !a.starts_with("--"))
+        .cloned()
+        .ok_or_else(|| CliError::Usage("usage: harness project switch <id|path>".to_string()))?;
+    // Accept either a registered id / `_global`, or a path to a project root.
+    let id = match project::context_for_id(harness_home, &selector).map_err(project_err)? {
+        Some(ctx) => ctx.id,
+        None => match resolve_project_selector(harness_home, &selector) {
+            Some(ctx) => {
+                // A path that is not yet registered: register it first so the switch
+                // never strands the pointer on an unknown id.
+                project::register_and_activate(harness_home, &ctx.project_root, &now_string())
+                    .map_err(project_err)?;
+                ctx.id
+            }
+            None => {
+                return Err(CliError::Usage(format!(
+                    "unknown project: {selector} (not a registered id, path, or `_global`)"
+                )))
+            }
+        },
+    };
+    let ctx =
+        project::switch_current_project(harness_home, &id, &now_string()).map_err(project_err)?;
+    print_json(&project_context_json(&ctx, &ctx.id))
+}
+
+/// `harness project remove <id> [--force]` — unregister a project (the on-disk
+/// central store is left intact; this is a pointer operation). The reserved
+/// `_global` cannot be removed. Removing the CURRENT project requires `--force` and
+/// clears the active pointer so resolution falls back safely.
+fn project_remove(harness_home: &Path, args: &[String]) -> CliResult<()> {
+    let force = has_flag(args, "--force");
+    let id = args
+        .iter()
+        .find(|a| !a.starts_with("--"))
+        .cloned()
+        .ok_or_else(|| {
+            CliError::Usage("usage: harness project remove <id> [--force]".to_string())
+        })?;
+    let current = project::active_project_id(harness_home).map_err(project_err)?;
+    if current.as_deref() == Some(id.as_str()) && !force {
+        return Err(CliError::Usage(format!(
+            "`{id}` is the current project; switch away first or pass --force to remove it"
+        )));
+    }
+    let outcome = project::remove_project(harness_home, &id).map_err(project_err)?;
+    if !outcome.removed {
+        return Err(CliError::Usage(format!(
+            "no registered project with id `{id}`"
+        )));
+    }
+    if outcome.was_current {
+        eprintln!(
+            "note: removed the active project `{id}`; no project is selected now \
+             (resolution falls back to the legacy walk-up / `_global`)"
+        );
+    }
+    print_json(&serde_json::json!({
+        "removed": id,
+        "was_current": outcome.was_current,
+    }))
+}
+
+/// `harness project show <id|path>` — print one project's resolved context. With no
+/// argument, shows the current project (alias for `current`).
+fn project_show(harness_home: &Path, args: &[String]) -> CliResult<()> {
+    let selector = args.iter().find(|a| !a.starts_with("--")).cloned();
+    let current = project::active_project_id(harness_home)
+        .map_err(project_err)?
+        .unwrap_or_default();
+    let ctx = match selector {
+        None => return project_current(harness_home),
+        Some(sel) => match project::context_for_id(harness_home, &sel).map_err(project_err)? {
+            Some(ctx) => ctx,
+            None => resolve_project_selector(harness_home, &sel)
+                .ok_or_else(|| CliError::Usage(format!("unknown project: {sel}")))?,
+        },
+    };
+    print_json(&project_context_json(&ctx, &current))
+}
+
+/// Subdirectories of a store that hold non-JSONL payloads and must be copied
+/// wholesale during migration (provider session logs, prompts, runtime files).
+const STORE_PAYLOAD_DIRS: &[&str] = &["provider-sessions", "prompts", "runtimes"];
+
+/// `harness project migrate [<local-store>] [--switch]` — move an existing
+/// repo-local `.harness/` store into the centralized per-project store
+/// (goal-multi-project P7 / project-migrate task).
+///
+/// Steps: compute the project's canonical id from the repo root (the local store's
+/// PARENT dir), copy every `*.jsonl` ledger + the payload dirs into
+/// `~/.harness/projects/<id>/`, write `metadata.json` with `migrated_from`, and drop
+/// a `MIGRATED_TO_CENTRAL` marker in the old store pointing at the central one.
+///
+/// Idempotent / fail-safe: if the local store is ALREADY marked migrated it reports
+/// success without recopying; if the central store already has ledger rows it
+/// refuses (to avoid clobbering newer central data) unless `--force` is given.
+fn project_migrate(harness_home: &Path, args: &[String]) -> CliResult<()> {
+    let force = has_flag(args, "--force");
+    let switch = has_flag(args, "--switch");
+
+    // Resolve the local store dir: explicit positional, else the cwd's `.harness`.
+    let positional = args.iter().find(|a| !a.starts_with("--")).cloned();
+    let local_store = match positional {
+        Some(p) => PathBuf::from(p),
+        None => env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join(".harness"),
+    };
+    if !local_store.is_dir() {
+        return Err(CliError::Usage(format!(
+            "no local store to migrate at {} (pass a path or run from a repo with ./.harness)",
+            local_store.display()
+        )));
+    }
+
+    // Already migrated? Report idempotently rather than recopying.
+    if let Some(target) = project::read_migrated_marker(&local_store).map_err(project_err)? {
+        println!(
+            "already migrated: {} → {}",
+            local_store.display(),
+            target.display()
+        );
+        return Ok(());
+    }
+
+    // The project ROOT is the local store's parent (the repo dir), not the store
+    // itself, so the id matches what `init`/`switch` would derive for that repo.
+    let project_root = local_store
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| local_store.clone());
+    let ctx = project::context_for_root(&project_root, harness_home).map_err(project_err)?;
+
+    // Refuse to clobber a central store that already holds ledger data, unless
+    // forced. A central store that only has metadata.json (freshly created) is fine.
+    if central_store_has_ledger_rows(&ctx.store_root) && !force {
+        return Err(CliError::Usage(format!(
+            "central store {} already has data; refusing to overwrite (pass --force to merge-copy)",
+            ctx.store_root.display()
+        )));
+    }
+
+    let before = count_store_records(&local_store)?;
+    std::fs::create_dir_all(&ctx.store_root)?;
+    let copied = copy_store_contents(&local_store, &ctx.store_root)?;
+    let after = count_store_records(&ctx.store_root)?;
+
+    // Register the project, then pin identity in the central store with a
+    // `migrated_from` breadcrumb. The metadata write comes AFTER
+    // `register_and_activate` (which itself writes a `migrated_from`-less
+    // metadata.json) so the breadcrumb is the one that survives.
+    let now = now_string();
+    let prev_active = project::active_project_id(harness_home).map_err(project_err)?;
+    project::register_and_activate(harness_home, &project_root, &now).map_err(project_err)?;
+    project::write_metadata(&ctx, Some(local_store.clone())).map_err(project_err)?;
+    if !switch {
+        // Non-disruptive by default: restore the previously active project (or clear
+        // if none) so a bare `migrate` does not silently flip the active project.
+        match prev_active {
+            Some(prev) if prev != ctx.id => {
+                project::switch_current_project(harness_home, &prev, &now).map_err(project_err)?;
+            }
+            None => {
+                let mut registry =
+                    project::ProjectRegistry::load(harness_home).map_err(project_err)?;
+                registry.current_project_id = None;
+                registry.save(harness_home).map_err(project_err)?;
+                project::clear_active_project(harness_home).map_err(project_err)?;
+            }
+            _ => {}
+        }
+    }
+    project::write_migrated_marker(&local_store, &ctx.store_root).map_err(project_err)?;
+
+    print_json(&serde_json::json!({
+        "migrated": true,
+        "project_id": ctx.id,
+        "from": local_store.display().to_string(),
+        "to": ctx.store_root.display().to_string(),
+        "files_copied": copied,
+        "records_before": before,
+        "records_after": after,
+        "switched": switch,
+    }))
+}
+
+/// Whether a central store already holds any `*.jsonl` ledger rows (used to guard
+/// `migrate` against clobbering newer central data). A bare `metadata.json` does not
+/// count as data.
+fn central_store_has_ledger_rows(store_root: &Path) -> bool {
+    count_store_records(store_root)
+        .map(|n| n > 0)
+        .unwrap_or(false)
+}
+
+/// Count total non-empty lines across every `*.jsonl` file in a store dir (the
+/// record-count metric `migrate` reports before/after). Missing dir → 0.
+fn count_store_records(store_root: &Path) -> CliResult<u64> {
+    let mut total = 0u64;
+    let read_dir = match std::fs::read_dir(store_root) {
+        Ok(rd) => rd,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(e) => return Err(CliError::Io(e)),
+    };
+    for entry in read_dir.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) == Some("jsonl") {
+            let text = std::fs::read_to_string(&path)?;
+            total += text.lines().filter(|l| !l.trim().is_empty()).count() as u64;
+        }
+    }
+    Ok(total)
+}
+
+/// Copy every `*.jsonl` ledger and each payload dir (`provider-sessions/`,
+/// `prompts/`, `runtimes/`) from `src` into `dst`, preserving filenames. Returns the
+/// number of top-level entries copied. Existing destination files are overwritten
+/// (merge-copy under `--force`); missing source payload dirs are skipped.
+fn copy_store_contents(src: &Path, dst: &Path) -> CliResult<u64> {
+    let mut copied = 0u64;
+    // 1. JSONL ledgers (flat files at the store root).
+    for entry in std::fs::read_dir(src)?.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) == Some("jsonl") {
+            if let Some(name) = path.file_name() {
+                std::fs::copy(&path, dst.join(name))?;
+                copied += 1;
+            }
+        }
+    }
+    // 2. Payload directories (recursive).
+    for dir in STORE_PAYLOAD_DIRS {
+        let from = src.join(dir);
+        if from.is_dir() {
+            copy_dir_recursive(&from, &dst.join(dir))?;
+            copied += 1;
+        }
+    }
+    Ok(copied)
+}
+
+/// Recursively copy a directory tree (files + subdirs), creating `dst` as needed.
+fn copy_dir_recursive(src: &Path, dst: &Path) -> CliResult<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)?.flatten() {
+        let path = entry.path();
+        let target = dst.join(entry.file_name());
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
+            copy_dir_recursive(&path, &target)?;
+        } else if file_type.is_file() {
+            std::fs::copy(&path, &target)?;
+        }
+        // Symlinks in a store are not expected; skip them rather than following.
+    }
+    Ok(())
+}
+
 fn run() -> CliResult<()> {
     let mut args: Vec<String> = env::args().skip(1).collect();
-    // Resolve the store root FIRST (strips a global `--store <path>` from args so
-    // the subcommand parsers never see it), so `serve` and `run-script` started
-    // from different working directories can be pointed at ONE store (issue #89
-    // item 3).
-    let store_root = resolve_store_root(&mut args);
+    // Optional debug flag: print which store was chosen and why (P7 "no silent
+    // fallback"). Stripped before resolution so subcommands never see it.
+    let store_source_debug = take_flag(&mut args, "--store-source");
+    // Resolve the store root FIRST (strips a global `--store`/`--project` from
+    // `args` so the subcommand parsers never see them). `serve` and `run-script`
+    // started from different working directories converge on ONE store via the
+    // registry's current project (issue #89 item 3, now project-routed).
+    let command = args.first().cloned();
+    let resolved = resolve_store(&mut args, command.as_deref());
+    if store_source_debug {
+        eprintln!(
+            "store-source: {:?} root={}",
+            resolved.source,
+            resolved.root.display()
+        );
+    }
     if args.is_empty() || args[0] == "help" || args[0] == "--help" {
         print_help();
         return Ok(());
     }
 
-    let store = HarnessStore::new(store_root);
+    let store = HarnessStore::new(resolved.root.clone());
     match args[0].as_str() {
         "init" => {
-            store.init()?;
-            println!("initialized {}", store.root().display());
+            init_routed(&store, &resolved)?;
         }
+        "project" => project_command(&args[1..])?,
         "agent" => agent_command(&store, &args[1..])?,
         "team" => team_command(&store, &args[1..])?,
         "member" => member_command(&store, &args[1..])?,
@@ -154,7 +829,7 @@ fn run() -> CliResult<()> {
         "codex" => codex_command(&store, &args[1..])?,
         "workflow" => workflow_command(&store, &args[1..])?,
         "hook" => hook_command(&store, &args[1..])?,
-        "serve" => serve_command(&store, &args[1..])?,
+        "serve" => serve_command(&store, &resolved, &args[1..])?,
         #[cfg(unix)]
         "daemon" => daemon_command(&store, &args[1..])?,
         command => return Err(CliError::Usage(format!("unknown command: {command}"))),
@@ -1532,6 +2207,7 @@ fn goal_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
                 max_budget_usd: value(args, "--max-budget-usd").and_then(|v| v.parse::<f64>().ok()),
                 trace_retention,
                 progress: has_flag(args, "--progress"),
+                project: workflow_project_context(store),
             };
             let (run_id, outcome) = run_phase_compiled_script(
                 store,
@@ -1615,6 +2291,7 @@ fn goal_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
                 max_budget_usd: value(args, "--max-budget-usd").and_then(|v| v.parse::<f64>().ok()),
                 trace_retention,
                 progress: has_flag(args, "--progress"),
+                project: workflow_project_context(store),
             };
             let run_phase = |script: &str, name: &str, resume_from: Option<&str>| {
                 run_phase_compiled_script(store, script, name, &options, resume_from)
@@ -3548,6 +4225,7 @@ fn codex_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
 
 fn handle_sse_stream(
     store: &HarnessStore,
+    project_id: &str,
     mut stream: TcpStream,
     sse_manager: sse::SseManager,
 ) -> CliResult<()> {
@@ -3574,8 +4252,9 @@ fn handle_sse_stream(
     });
     sse::write_sse_frame(&mut stream, "snapshot", &snapshot_json)?;
 
-    // Subscribe to the SSE channel
-    let rx = sse_manager.subscribe();
+    // Subscribe to the SSE channel for THIS project only, so frames from another
+    // project never leak into this client's stream (multi-project P6).
+    let rx = sse_manager.subscribe(project_id);
     let mut last_keepalive = std::time::Instant::now();
 
     // Wait for events and stream them to the client
@@ -3667,9 +4346,105 @@ fn handle_sse_stream(
     Ok(())
 }
 
-fn serve_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+/// The project routing context for a live `serve` (goal-multi-project P6).
+///
+/// `serve` is single-store *by default* (back-compat: a raw `--store`/`HARNESS_ROOT`
+/// override has no project identity, so `harness_home` is `None` and only the
+/// `default_*` project exists). When a `ProjectContext` backs the store, the server
+/// can enumerate the registry and route `?project=<id>` to a per-project store while
+/// the active/`_global` project remains the default for old clients.
+#[derive(Clone)]
+struct ServeProjects {
+    /// `~/.harness` — `None` only when serve was started with a raw
+    /// `--store`/`HARNESS_ROOT` override (no registry to consult).
+    harness_home: Option<PathBuf>,
+    /// The id of the project `serve` started for (the active/`_global` project, or a
+    /// synthetic id in raw-override mode). Used as the default when no `?project`.
+    default_id: String,
+    /// The store resolved at startup — the default project's store.
+    default_store: HarnessStore,
+}
+
+impl ServeProjects {
+    /// Build from the store resolved in `run()` plus its `ResolvedStore` record.
+    fn from_resolved(store: &HarnessStore, resolved: &ResolvedStore) -> Self {
+        // A project identity only exists when resolution went through the registry /
+        // global path (not a raw `--store`/`HARNESS_ROOT` override).
+        let (harness_home, default_id) = match &resolved.context {
+            Some(ctx) => (project::harness_home().ok(), ctx.id.clone()),
+            None => (None, "_store".to_string()),
+        };
+        Self {
+            harness_home,
+            default_id,
+            default_store: store.clone(),
+        }
+    }
+
+    /// Resolve a `?project=<id>` query value to `(id, store)`. An absent or unknown
+    /// id (or raw-override mode) falls back to the default project so old clients —
+    /// and clients asking for a project this serve does not know — keep working.
+    fn store_for(&self, project: Option<&str>) -> (String, HarnessStore) {
+        if let (Some(home), Some(id)) = (&self.harness_home, project) {
+            if !id.is_empty() && id != self.default_id {
+                if let Ok(Some(ctx)) = project::context_for_id(home, id) {
+                    return (ctx.id, HarnessStore::new(ctx.store_root));
+                }
+            }
+        }
+        (self.default_id.clone(), self.default_store.clone())
+    }
+
+    /// The currently-active project id, read live so a `POST /v1/projects/switch`
+    /// (or a CLI `project switch`) is reflected by `GET /v1/projects/current`
+    /// without restarting serve. Falls back to the startup default.
+    fn current_id(&self) -> String {
+        if let Some(home) = &self.harness_home {
+            if let Ok(Some(id)) = project::active_project_id(home) {
+                return id;
+            }
+        }
+        self.default_id.clone()
+    }
+
+    /// Enumerate known projects for `GET /v1/projects`. In raw-override mode there is
+    /// no registry, so only the served store is reported (as the synthetic default).
+    fn list(&self) -> Vec<ProjectContext> {
+        match &self.harness_home {
+            Some(home) => project::list_projects(home).unwrap_or_default(),
+            None => vec![ProjectContext {
+                id: self.default_id.clone(),
+                project_root: self.default_store.root().to_path_buf(),
+                store_root: self.default_store.root().to_path_buf(),
+                kind: ProjectKind::Repo,
+                is_git_repo: false,
+            }],
+        }
+    }
+
+    /// Map of project-id → store root for the SSE watcher to multiplex over. Always
+    /// includes the default project. In registry mode it covers every known project
+    /// so a client subscribing to any of them sees its frames.
+    fn watch_map(&self) -> std::collections::HashMap<String, PathBuf> {
+        let mut map = std::collections::HashMap::new();
+        map.insert(
+            self.default_id.clone(),
+            self.default_store.root().to_path_buf(),
+        );
+        for ctx in self.list() {
+            map.entry(ctx.id).or_insert(ctx.store_root);
+        }
+        map
+    }
+}
+
+fn serve_command(store: &HarnessStore, resolved: &ResolvedStore, args: &[String]) -> CliResult<()> {
     let addr = value(args, "--addr").unwrap_or_else(|| "127.0.0.1:8787".into());
     let once = has_flag(args, "--once");
+    // Tests can keep the transient live turn-event tee instead of truncating it on
+    // startup (per-project truncation drops in-flight events for ALL projects at
+    // once — see Risks). Production serve always truncates.
+    let no_truncate = has_flag(args, "--no-truncate");
     let listener = TcpListener::bind(&addr)?;
     println!("serving harness API on http://{addr}");
     // Show WHICH store this serve reads — the #1 confusion in issue #89 item 3 was
@@ -3681,66 +4456,95 @@ fn serve_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
         .to_string();
     println!("store: {store_display}  (override with --store <path> or HARNESS_ROOT)");
 
+    let projects = ServeProjects::from_resolved(store, resolved);
+    let watch_map = projects.watch_map();
+    println!(
+        "default project: {} ({} project(s) watched)",
+        projects.default_id,
+        watch_map.len()
+    );
+
     let sse_manager = sse::SseManager::new();
 
     // Truncate the transient live turn-event tee (Stage B) on startup so it does
     // not grow unbounded across serve runs; the watcher seeds at EOF and the
-    // per-session NDJSON remains the durable source for catch-up.
-    let _ = fs::write(store.root().join("provider_turn_events.jsonl"), b"");
-
-    let normalize_store = store.clone();
-    let provider_cache = Mutex::new(HashMap::<String, String>::new());
-    let next_seq_cache = Mutex::new(HashMap::<String, u64>::new());
-    let normalize = move |session_id: &str, raw: &serde_json::Value| -> Vec<serde_json::Value> {
-        let provider = {
-            let Ok(mut cache) = provider_cache.lock() else {
-                return Vec::new();
-            };
-            if let Some(provider) = cache.get(session_id).cloned() {
-                provider
-            } else {
-                let session = match latest_provider_session(&normalize_store, session_id) {
-                    Ok(Some(session)) => session,
-                    Ok(None) | Err(_) => return Vec::new(),
-                };
-                let provider = session.provider;
-                cache.insert(session_id.to_string(), provider.clone());
-                provider
-            }
-        };
-
-        let next_seq = {
-            let Ok(cache) = next_seq_cache.lock() else {
-                return Vec::new();
-            };
-            cache.get(session_id).copied().unwrap_or(0)
-        };
-        let events = normalize_live_turn_event(&provider, session_id, raw, next_seq);
-        if events.is_empty() {
-            return Vec::new();
+    // per-session NDJSON remains the durable source for catch-up. This is done
+    // PER PROJECT now — restarting serve drops in-flight live events for every
+    // watched project at once (documented disruption, P6 Risks). `--no-truncate`
+    // lets tests preserve pre-seeded rows.
+    if !no_truncate {
+        for store_root in watch_map.values() {
+            let _ = fs::write(store_root.join("provider_turn_events.jsonl"), b"");
         }
+    }
 
-        let Ok(mut cache) = next_seq_cache.lock() else {
-            return Vec::new();
-        };
-        cache.insert(session_id.to_string(), next_seq + events.len() as u64);
+    // The live-turn-event normalizer is project-scoped: it must look up the
+    // provider session in the SAME store the event came from, so the per-project
+    // watcher passes the project's store root to its normalizer.
+    let make_normalize = |normalize_store: HarnessStore| {
+        let provider_cache = Mutex::new(HashMap::<String, String>::new());
+        let next_seq_cache = Mutex::new(HashMap::<String, u64>::new());
+        move |session_id: &str, raw: &serde_json::Value| -> Vec<serde_json::Value> {
+            let provider = {
+                let Ok(mut cache) = provider_cache.lock() else {
+                    return Vec::new();
+                };
+                if let Some(provider) = cache.get(session_id).cloned() {
+                    provider
+                } else {
+                    let session = match latest_provider_session(&normalize_store, session_id) {
+                        Ok(Some(session)) => session,
+                        Ok(None) | Err(_) => return Vec::new(),
+                    };
+                    let provider = session.provider;
+                    cache.insert(session_id.to_string(), provider.clone());
+                    provider
+                }
+            };
 
-        events
-            .into_iter()
-            .filter_map(|event| serde_json::to_value(event).ok())
-            .collect()
+            let next_seq = {
+                let Ok(cache) = next_seq_cache.lock() else {
+                    return Vec::new();
+                };
+                cache.get(session_id).copied().unwrap_or(0)
+            };
+            let events = normalize_live_turn_event(&provider, session_id, raw, next_seq);
+            if events.is_empty() {
+                return Vec::new();
+            }
+
+            let Ok(mut cache) = next_seq_cache.lock() else {
+                return Vec::new();
+            };
+            cache.insert(session_id.to_string(), next_seq + events.len() as u64);
+
+            events
+                .into_iter()
+                .filter_map(|event| serde_json::to_value(event).ok())
+                .collect()
+        }
     };
 
-    // Start the SSE watcher thread
-    sse::start_sse_watcher(store, sse_manager.clone(), normalize).map_err(CliError::Io)?;
+    // Start ONE project-multiplexed SSE watcher: per-project offsets + per-project
+    // subscriber channels, so a client subscribed to project A never sees B.
+    let normalizers: std::collections::HashMap<String, sse::Normalizer> = watch_map
+        .iter()
+        .map(|(id, root)| {
+            let normalize = make_normalize(HarnessStore::new(root.clone()));
+            (id.clone(), Box::new(normalize) as sse::Normalizer)
+        })
+        .collect();
+    sse::start_sse_watcher(watch_map.clone(), sse_manager.clone(), normalizers)
+        .map_err(CliError::Io)?;
 
-    // Start the abandoned-run reaper: periodically flip `Running` runs whose
-    // driver process has died (or legacy runs past the stale window) to `Failed`,
-    // so the dashboard never shows a phantom-running workflow after a driver is
-    // killed/crashes. The terminal rows it appends are tailed and broadcast by
-    // the SSE watcher above, so a live dashboard updates without a refetch.
-    {
-        let reaper_store = store.clone();
+    // Start the abandoned-run reaper PER WATCHED PROJECT: periodically flip
+    // `Running` runs whose driver process has died (or legacy runs past the stale
+    // window) to `Failed`, so the dashboard never shows a phantom-running workflow
+    // after a driver is killed/crashes. The terminal rows it appends are tailed and
+    // broadcast by the SSE watcher above, so a live dashboard updates without a
+    // refetch.
+    for store_root in watch_map.values() {
+        let reaper_store = HarnessStore::new(store_root.clone());
         std::thread::spawn(move || loop {
             std::thread::sleep(REAP_POLL_INTERVAL);
             let _ = reap_stale_workflow_runs(&reaper_store);
@@ -3760,7 +4564,7 @@ fn serve_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
 
         if once {
             // Single-shot mode (tests): handle inline for deterministic ordering.
-            if let Err(error) = handle_http_connection(store, stream, sse_manager.clone()) {
+            if let Err(error) = handle_http_connection(&projects, stream, sse_manager.clone()) {
                 eprintln!("serve: connection error: {error}");
             }
             break;
@@ -3772,10 +4576,10 @@ fn serve_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
         // must still be served while a stream is open. Per-connection errors
         // (most commonly a broken pipe when a client disconnects mid-write) are
         // logged and contained to that thread instead of aborting the loop.
-        let conn_store = store.clone();
+        let conn_projects = projects.clone();
         let conn_manager = sse_manager.clone();
         std::thread::spawn(move || {
-            if let Err(error) = handle_http_connection(&conn_store, stream, conn_manager) {
+            if let Err(error) = handle_http_connection(&conn_projects, stream, conn_manager) {
                 eprintln!("serve: connection error: {error}");
             }
         });
@@ -3849,7 +4653,7 @@ fn daemon_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
 }
 
 fn handle_http_connection(
-    store: &HarnessStore,
+    projects: &ServeProjects,
     mut stream: TcpStream,
     sse_manager: sse::SseManager,
 ) -> CliResult<()> {
@@ -3860,6 +4664,11 @@ fn handle_http_connection(
     let method = parts.next().unwrap_or_default();
     let path = parts.next().unwrap_or_default().to_string();
     let path_only = path.split('?').next().unwrap_or_default().to_string();
+    // `?project=<id>` selects which project store this request reads/streams.
+    // Absent or unknown → the active/default project (back-compat for old clients).
+    let project_param = query_param(&path, "project");
+    let (project_id, store_owned) = projects.store_for(project_param.as_deref());
+    let store = &store_owned;
     let mut content_length = 0usize;
     loop {
         let mut line = String::new();
@@ -3902,9 +4711,43 @@ fn handle_http_connection(
             "/v1/snapshot" | "/v1/dashboard/snapshot" => {
                 write_http_json(&mut stream, "200 OK", &dashboard_snapshot(store)?)?
             }
+            // GET /v1/projects — enumerate known projects (registry + on-disk stores
+            // + reserved `_global`) for the dashboard picker. `current` marks the
+            // active project (multi-project P6 / project-api task).
+            "/v1/projects" => {
+                let current = projects.current_id();
+                let list: Vec<serde_json::Value> = projects
+                    .list()
+                    .into_iter()
+                    .map(|ctx| project_context_json(&ctx, &current))
+                    .collect();
+                write_http_json(
+                    &mut stream,
+                    "200 OK",
+                    &serde_json::json!({"projects": list, "current": current}),
+                )?
+            }
+            // GET /v1/projects/current — the active project id + its context. Read
+            // live so a `switch` (API or CLI) is reflected without a serve restart.
+            "/v1/projects/current" => {
+                let current = projects.current_id();
+                let (id, current_store) = projects.store_for(Some(&current));
+                let ctx = projects.list().into_iter().find(|c| c.id == id);
+                let context_json = ctx.map(|c| project_context_json(&c, &current));
+                write_http_json(
+                    &mut stream,
+                    "200 OK",
+                    &serde_json::json!({
+                        "current": id,
+                        "store_root": current_store.root().display().to_string(),
+                        "project": context_json,
+                    }),
+                )?
+            }
             "/v1/events" => {
-                // Handle SSE endpoint
-                handle_sse_stream(store, stream, sse_manager)?
+                // Handle SSE endpoint, scoped to the requested project channel so a
+                // client subscribed to project A never receives project B frames.
+                handle_sse_stream(store, &project_id, stream, sse_manager)?
             }
             "/v1/docs" => match read_allowed_doc(&path) {
                 Ok((doc_path, content)) => write_http_json(
@@ -4116,6 +4959,31 @@ fn handle_http_connection(
             }
         }
     };
+    // POST /v1/projects/switch — flip the active project in the registry +
+    // `ACTIVE_PROJECT` marker so CLI-spawned workers and a live serve converge on
+    // the same central store (multi-project P6 #89 invariant). This is a serve-level
+    // routing action (not a store mutation), so it is handled before the generic
+    // store-action dispatch. The response's snapshot is the NEW active project's.
+    if path_only == "/v1/projects/switch" {
+        match handle_project_switch(projects, &body_json) {
+            Ok((id, switch_store)) => write_http_json(
+                &mut stream,
+                "200 OK",
+                &serde_json::json!({
+                    "ok": true,
+                    "result": {"current": id},
+                    "snapshot": dashboard_snapshot(&switch_store)?,
+                }),
+            )?,
+            Err(error) => write_http_json(
+                &mut stream,
+                "400 Bad Request",
+                &serde_json::json!({"ok": false, "error": error.to_string()}),
+            )?,
+        }
+        return Ok(());
+    }
+
     match handle_http_action(store, &path_only, &body_json) {
         Ok(response) => write_http_json(
             &mut stream,
@@ -4129,6 +4997,55 @@ fn handle_http_connection(
         )?,
     }
     Ok(())
+}
+
+/// Apply a `POST /v1/projects/switch {project: <id>}` request: switch the active
+/// project atomically and return the new `(id, store)`. In raw-override mode (no
+/// `harness_home`) there is no registry to switch, so it is rejected.
+fn handle_project_switch(
+    projects: &ServeProjects,
+    body: &serde_json::Value,
+) -> CliResult<(String, HarnessStore)> {
+    let id = json_string(body, "project")
+        .or_else(|| json_string(body, "id"))
+        .or_else(|| json_string(body, "project_id"))
+        .ok_or_else(|| CliError::Usage("missing `project` id to switch to".to_string()))?;
+    let home = projects.harness_home.as_ref().ok_or_else(|| {
+        CliError::Usage(
+            "serve is running with a raw --store/HARNESS_ROOT override; project switch is unavailable"
+                .to_string(),
+        )
+    })?;
+    let ctx = project::switch_current_project(home, &id, &now_string()).map_err(project_err)?;
+    Ok((ctx.id.clone(), HarnessStore::new(ctx.store_root)))
+}
+
+/// Render a [`ProjectContext`] as the JSON the dashboard picker consumes, marking
+/// whether it is the currently-active project.
+fn project_context_json(ctx: &ProjectContext, current: &str) -> serde_json::Value {
+    serde_json::json!({
+        "id": ctx.id,
+        "project_root": ctx.project_root.display().to_string(),
+        "store_root": ctx.store_root.display().to_string(),
+        "kind": ctx.kind,
+        "is_git_repo": ctx.is_git_repo,
+        "is_current": ctx.id == current,
+    })
+}
+
+/// Extract a query-string parameter value from a request target like
+/// `/v1/snapshot?project=foo&x=1`. Returns the raw (un-decoded) value; project ids
+/// are restricted to `[A-Za-z0-9._-]` so no percent-decoding is needed.
+fn query_param(target: &str, key: &str) -> Option<String> {
+    let query = target.split('?').nth(1)?;
+    for pair in query.split('&') {
+        if let Some((k, v)) = pair.split_once('=') {
+            if k == key {
+                return Some(v.to_string());
+            }
+        }
+    }
+    None
 }
 
 fn handle_http_action(
@@ -5225,6 +6142,13 @@ struct WorkflowDeliveryOptions {
     /// quiet callers and stdout-parsers are unaffected. Stderr is the conventional
     /// progress stream; stdout stays a single parseable JSON document.
     progress: bool,
+    /// The project this run executes against (goal-multi-project P3/P4). Its
+    /// `project_root` — NOT the harness process cwd — is the worker's shared cwd and
+    /// the base for git worktrees; its `store_root` is where the JSONL ledgers live.
+    /// `is_git_repo` / `kind` drive the GLOBAL / non-git policy. The two roots are
+    /// deliberately split so the centralized store can live off the repo while
+    /// worktrees + CLAUDE.md stay pinned to the project tree.
+    project: ProjectContext,
 }
 
 /// Emit one compact NDJSON progress event to STDERR (used when `--progress` is on).
@@ -5623,11 +6547,74 @@ fn sanitize_worktree_slug(label: &str) -> String {
     }
 }
 
+/// Derive the [`ProjectContext`] a workflow run executes against, from the store
+/// it writes to (goal-multi-project P3/P4). The centralized store self-describes
+/// its project via `<store_root>/metadata.json` (`canonical_path` = the project
+/// root), so we read that to recover the project root WITHOUT threading the
+/// resolved context through every command signature.
+///
+/// BACK-COMPAT: a store with no `metadata.json` — a raw `--store <path>` /
+/// `HARNESS_ROOT` / legacy cwd-walk-up store — has no pinned project identity, so
+/// we fall back to TODAY'S behavior exactly: `project_root` = the harness process
+/// cwd (what `workflow_repo_root()` returned before), `store_root` = the store
+/// root, git-ness probed live. This keeps existing serve + run-script flows
+/// unchanged: a project only overrides the cwd when it was explicitly selected.
+fn workflow_project_context(store: &HarnessStore) -> ProjectContext {
+    let store_root = store.root().to_path_buf();
+    if let Ok(Some(meta)) = project::read_metadata(&store_root) {
+        return ProjectContext {
+            id: meta.project_id,
+            project_root: meta.canonical_path,
+            store_root,
+            kind: meta.kind,
+            is_git_repo: meta.is_git_repo,
+        };
+    }
+    // No pinned identity → preserve the historical cwd-as-repo-root behavior.
+    let project_root = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let is_git_repo = is_git_repo(&project_root);
+    ProjectContext {
+        id: harness_core::GLOBAL_PROJECT_ID.to_string(),
+        project_root,
+        store_root,
+        kind: ProjectKind::Repo,
+        is_git_repo,
+    }
+}
+
 /// Resolve the repo root the worktrees are created under. The shared default
-/// workspace is the current working directory (the repo cwd); worktrees live in
-/// the gitignored `.harness/worktrees/` beneath it.
-fn workflow_repo_root() -> PathBuf {
-    env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+/// workspace is the run's project root (where CLAUDE.md / AGENTS.md / memory live
+/// and the git repo is); worktrees live in the gitignored `.harness/worktrees/`
+/// beneath it. This is the run's `project.project_root` — NOT the harness process
+/// cwd, which a long-running `serve` never `cd`s after a project switch (P3).
+fn workflow_repo_root(project: &ProjectContext) -> PathBuf {
+    project.project_root.clone()
+}
+
+/// Resolve the cwd a PERSISTENT provider delivery (codex / claude) runs from
+/// (goal-multi-project P3, Stage 3). Precedence:
+///   1. `member.worktree_ref` — an explicitly pinned workspace always wins.
+///   2. `project.project_root` — the SELECTED project's root, so the worker reads
+///      the right `CLAUDE.md` / `AGENTS.md` / `.claude/` even when a long-running
+///      `serve` switched projects and never `cd`d.
+///   3. `env::current_dir()` — last-resort compatibility fallback (a raw
+///      `--store`/`HARNESS_ROOT` store with no pinned identity degrades to today's
+///      behavior; see `workflow_project_context`).
+///
+/// Returns a display string (the `Command::current_dir` callers already pass a
+/// string) defaulting to `"."` only if even the process cwd is unreadable.
+fn delivery_worker_cwd(member: &AgentMember, project: &ProjectContext) -> String {
+    if let Some(worktree) = member.worktree_ref.clone() {
+        return worktree;
+    }
+    let project_root = project.project_root.as_path();
+    if !project_root.as_os_str().is_empty() {
+        return project_root.display().to_string();
+    }
+    env::current_dir()
+        .ok()
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|| ".".to_string())
 }
 
 /// Whether `path` is inside a git work tree — `git -C <path> rev-parse
@@ -5660,7 +6647,13 @@ fn spawn_ephemeral_worker(
     run_id: &str,
     session_id: &str,
 ) -> CliResult<workflow::StepResult> {
-    let repo_root = workflow_repo_root();
+    // The worker's shared cwd + worktree base is the PROJECT ROOT (the git repo
+    // where CLAUDE.md / AGENTS.md / memory live), NOT the harness process cwd and
+    // NOT the centralized store_root (goal-multi-project P3/P4). A long-running
+    // `serve` never `cd`s after a project switch, so reading process cwd here would
+    // run the worker in the wrong tree.
+    let project = &options.project;
+    let repo_root = workflow_repo_root(project);
 
     // Opt-in isolation: harness-owned throwaway worktree, else the shared cwd.
     // The guard (when present) cleans up on every exit path via Drop.
@@ -5668,6 +6661,27 @@ fn spawn_ephemeral_worker(
     // an editing worker runs in a throwaway worktree so its writes land in a
     // discardable checkout (captured as the step diff), never the live repo.
     let isolate = spec.isolation.as_deref() == Some("worktree") || spec.writable;
+
+    // GLOBAL / non-git policy (P5): an isolated/writable node needs a git worktree,
+    // which cannot exist in a non-git project (the reserved `_global` `~/` project,
+    // or any non-repo root). Fail LOUD with the same actionable message the
+    // `is_git_repo` gate in `WorktreeGuard::create` uses (#89 item 5) — surfaced
+    // here BEFORE the worktree attempt so the project id / kind is named. Read-only
+    // `isolation=none` nodes are unaffected and run in the shared project root.
+    if isolate && !project.is_git_repo {
+        return Err(CliError::Usage(format!(
+            "node '{}' needs an isolated git worktree (it is writable, or sets \
+             isolation=\"worktree\"), but project '{}' ({}) is not a git repository. \
+             Run this step READ-ONLY (drop writable / isolation=\"none\") and retrieve \
+             its output with `harness workflow get-output <run_id> --step {}`, or run \
+             the workflow against a git-backed project.",
+            spec.label,
+            project.id,
+            repo_root.display(),
+            spec.label,
+        )));
+    }
+
     let guard = if isolate {
         Some(WorktreeGuard::create(
             &repo_root,
@@ -5804,7 +6818,10 @@ fn spawn_ephemeral_worker(
     let schema_failed = spec.schema.is_some() && structured.is_none();
 
     // Collect the worktree diff as the node's evidence (isolation path only). We
-    // read it BEFORE the guard drops (which removes the worktree).
+    // read it BEFORE the guard drops (which removes the worktree). Non-git /
+    // GLOBAL projects never reach the isolation path (the policy gate above rejects
+    // a writable/isolated node there), so diff evidence is necessarily skipped for
+    // them — read-only `_global` nodes simply carry no diff (P5, documented).
     let diff = if isolate {
         ephemeral_worktree_diff(&cwd)
     } else {
@@ -7179,7 +8196,10 @@ fn workflow_get_output_value(
 }
 
 fn workflow_gc_worktrees(store: &HarnessStore) -> CliResult<serde_json::Value> {
-    let repo_root = workflow_repo_root();
+    // Worktrees live under the PROJECT ROOT (not the centralized store, not the
+    // harness process cwd), so GC them there too (goal-multi-project P4). The git
+    // commands tolerate a missing/moved project_root by failing soft (empty output).
+    let repo_root = workflow_repo_root(&workflow_project_context(store));
     let repo = repo_root.display().to_string();
 
     // Prune dangling administrative entries first.
@@ -7428,6 +8448,7 @@ fn workflow_run_value(store: &HarnessStore, args: &[String]) -> CliResult<serde_
         // Registry runs always retain their trace durably.
         trace_retention: "durable".to_string(),
         progress: has_flag(args, "--progress"),
+        project: workflow_project_context(store),
     };
 
     // The run id is minted up front so the driver can journal each step's
@@ -7629,6 +8650,7 @@ fn workflow_run_script_value(
         max_budget_usd: value(args, "--max-budget-usd").and_then(|v| v.parse::<f64>().ok()),
         trace_retention: trace_retention.clone(),
         progress: has_flag(args, "--progress"),
+        project: workflow_project_context(store),
     };
 
     // Who initiated the run: an explicit `--initiated-by <id>`, else the
@@ -7818,6 +8840,13 @@ fn deliver_agent_messages_value(
         start_runtime,
         timeout_ms,
     } = options;
+    // The SELECTED project for this delivery (goal-multi-project P3, Stage 3). The
+    // centralized store self-describes its project via `metadata.json`, so we
+    // recover it the SAME way workflows do (`workflow_project_context`) instead of
+    // threading a resolved context through every command/API delivery entry point.
+    // A raw `--store`/`HARNESS_ROOT`/walk-up store with no pinned identity degrades
+    // to today's cwd-as-project-root behavior, preserving back-compat.
+    let project = workflow_project_context(store);
     let mut member = latest_member(store, &agent_id)?;
     ensure_member_accepts_delivery(&member)?;
     let mut runtime = match member.provider_runtime_id.as_deref() {
@@ -8032,6 +9061,7 @@ fn deliver_agent_messages_value(
                     &claimed_message,
                     &delivery_id,
                     timeout_ms,
+                    &project,
                 )?
             }
         };
@@ -11370,6 +12400,13 @@ trait ProviderAdapter: Sync {
     fn start_runtime(&self, store: &HarnessStore, member: &AgentMember) -> CliResult<AgentRuntime>;
 
     /// Run a single message delivery against this provider's persistent runtime.
+    ///
+    /// `project` is the selected [`ProjectContext`] (goal-multi-project P3): the
+    /// worker's cwd derives from `project.project_root` when the member is not
+    /// pinned to a specific `worktree_ref`, so a long-running `serve` that switched
+    /// projects (and never `cd`d) still spawns the worker in the right tree where
+    /// its `CLAUDE.md` / `AGENTS.md` live.
+    #[allow(clippy::too_many_arguments)]
     fn run_delivery(
         &self,
         store: &HarnessStore,
@@ -11378,6 +12415,7 @@ trait ProviderAdapter: Sync {
         message: &Message,
         delivery_id: &str,
         timeout_ms: u64,
+        project: &ProjectContext,
     ) -> CliResult<DeliveryOutcome>;
 
     fn spawn_ephemeral(&self, ctx: &EphemeralSpawnContext<'_>) -> CliResult<EphemeralSpawn>;
@@ -11607,6 +12645,7 @@ impl ProviderAdapter for CodexAdapter {
         start_codex_exec_runtime(store, member)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn run_delivery(
         &self,
         store: &HarnessStore,
@@ -11615,8 +12654,17 @@ impl ProviderAdapter for CodexAdapter {
         message: &Message,
         delivery_id: &str,
         timeout_ms: u64,
+        project: &ProjectContext,
     ) -> CliResult<DeliveryOutcome> {
-        run_codex_exec_delivery(store, member, runtime, message, delivery_id, timeout_ms)
+        run_codex_exec_delivery(
+            store,
+            member,
+            runtime,
+            message,
+            delivery_id,
+            timeout_ms,
+            project,
+        )
     }
 
     fn record_hook_event(&self, store: &HarnessStore, args: &[String]) -> CliResult<()> {
@@ -12086,6 +13134,7 @@ impl ProviderAdapter for ClaudeAdapter {
         start_claude_runtime(store, member)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn run_delivery(
         &self,
         store: &HarnessStore,
@@ -12094,8 +13143,17 @@ impl ProviderAdapter for ClaudeAdapter {
         message: &Message,
         delivery_id: &str,
         timeout_ms: u64,
+        project: &ProjectContext,
     ) -> CliResult<DeliveryOutcome> {
-        run_claude_delivery(store, member, runtime, message, delivery_id, timeout_ms)
+        run_claude_delivery(
+            store,
+            member,
+            runtime,
+            message,
+            delivery_id,
+            timeout_ms,
+            project,
+        )
     }
 
     fn ingest_ephemeral_trace(
@@ -12671,6 +13729,7 @@ fn run_codex_exec_process(
     message: &Message,
     delivery_id: &str,
     timeout_ms: u64,
+    project: &ProjectContext,
 ) -> CliResult<CodexExecDeliveryRun> {
     // Build the command: `codex exec --json <prompt>`
     // The LaunchSpec is composed from the member/message; the exec arg is the message_content.
@@ -12684,11 +13743,10 @@ fn run_codex_exec_process(
     );
 
     let developer_instructions = provider_developer_instructions(member);
-    let cwd = member.worktree_ref.clone().or_else(|| {
-        env::current_dir()
-            .ok()
-            .map(|path| path.display().to_string())
-    });
+    // cwd precedence (P3, Stage 3): member.worktree_ref → selected
+    // project.project_root → process cwd. Codex discovers AGENTS.md from its cwd,
+    // so a `serve` that switched projects must still spawn here in the project root.
+    let cwd = delivery_worker_cwd(member, project);
 
     // Build LaunchSpec from member and message
     let spec = build_launch_spec(member, message);
@@ -12732,7 +13790,7 @@ fn run_codex_exec_process(
         }
     }
 
-    cmd.current_dir(cwd.clone().unwrap_or_else(|| ".".into()));
+    cmd.current_dir(&cwd);
 
     let run = run_ndjson_child(
         cmd,
@@ -12903,6 +13961,7 @@ fn record_exec_delivery_session(
 }
 
 /// This is the exec-stream variant of run_codex_app_server_exchange.
+#[allow(clippy::too_many_arguments)]
 fn run_codex_exec_delivery(
     store: &HarnessStore,
     member: &AgentMember,
@@ -12910,6 +13969,7 @@ fn run_codex_exec_delivery(
     message: &Message,
     delivery_id: &str,
     timeout_ms: u64,
+    project: &ProjectContext,
 ) -> CliResult<DeliveryOutcome> {
     let session_dir = store.root().join("provider-sessions").join(delivery_id);
     fs::create_dir_all(&session_dir)?;
@@ -12920,8 +13980,14 @@ fn run_codex_exec_delivery(
     let spec = build_launch_spec(member, message);
     let resume_id = spec.resume.clone();
 
-    let (process_success, events, raw_events, stderr_log) =
-        run_codex_exec_process(&session_dir, member, message, delivery_id, timeout_ms)?;
+    let (process_success, events, raw_events, stderr_log) = run_codex_exec_process(
+        &session_dir,
+        member,
+        message,
+        delivery_id,
+        timeout_ms,
+        project,
+    )?;
     let (tokens, cost_usd, model) = codex_delivery_telemetry(&raw_events, &spec);
 
     // The event NDJSON is the live file run_codex_exec_process already wrote
@@ -13009,6 +14075,7 @@ fn run_codex_exec_delivery(
 }
 
 /// Run a single message delivery against the member's runtime, routed by provider.
+#[allow(clippy::too_many_arguments)]
 fn run_provider_delivery(
     store: &HarnessStore,
     member: &AgentMember,
@@ -13016,11 +14083,18 @@ fn run_provider_delivery(
     message: &Message,
     delivery_id: &str,
     timeout_ms: u64,
+    project: &ProjectContext,
 ) -> CliResult<DeliveryOutcome> {
     match provider_adapter(&member.provider) {
-        Some(adapter) => {
-            adapter.run_delivery(store, member, runtime, message, delivery_id, timeout_ms)
-        }
+        Some(adapter) => adapter.run_delivery(
+            store,
+            member,
+            runtime,
+            message,
+            delivery_id,
+            timeout_ms,
+            project,
+        ),
         None => Err(unknown_provider_error(&member.provider, "delivery")),
     }
 }
@@ -13131,6 +14205,7 @@ fn start_claude_runtime(store: &HarnessStore, member: &AgentMember) -> CliResult
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_claude_delivery(
     store: &HarnessStore,
     member: &AgentMember,
@@ -13138,6 +14213,7 @@ fn run_claude_delivery(
     message: &Message,
     delivery_id: &str,
     timeout_ms: u64,
+    project: &ProjectContext,
 ) -> CliResult<DeliveryOutcome> {
     let session_dir = store.root().join("provider-sessions").join(delivery_id);
     fs::create_dir_all(&session_dir)?;
@@ -13154,9 +14230,9 @@ fn run_claude_delivery(
     // path runs unchanged.
     let resident = env::var("HARNESS_CLAUDE_RESIDENT").as_deref() == Ok("1");
     let (process_success, events, raw_events, session_id, stderr_log) = if resident {
-        run_claude_resident_delivery_real(&session_dir, member, message, timeout_ms)?
+        run_claude_resident_delivery_real(&session_dir, member, message, timeout_ms, project)?
     } else {
-        run_claude_exec_delivery_real(&session_dir, member, message, timeout_ms)?
+        run_claude_exec_delivery_real(&session_dir, member, message, timeout_ms, project)?
     };
     let (tokens, cost_usd, model, raw_structured) = claude_delivery_telemetry(&raw_events);
 
@@ -13295,6 +14371,7 @@ fn run_claude_exec_delivery_real(
     member: &AgentMember,
     message: &Message,
     timeout_ms: u64,
+    project: &ProjectContext,
 ) -> CliResult<ClaudeDeliveryRun> {
     // Build the message content envelope (harness context).
     let message_content = format!(
@@ -13309,12 +14386,11 @@ fn run_claude_exec_delivery_real(
     // Compose system prompt (developer instructions from member prompt_ref).
     let system_prompt = provider_developer_instructions(member);
 
-    // Determine CWD from member or current directory.
-    let cwd = member.worktree_ref.clone().or_else(|| {
-        env::current_dir()
-            .ok()
-            .map(|path| path.display().to_string())
-    });
+    // cwd precedence (P3, Stage 3): member.worktree_ref → selected
+    // project.project_root → process cwd. Claude Code discovers CLAUDE.md /
+    // .claude/ (and keys per-project memory) from its cwd, so a `serve` that
+    // switched projects must still spawn here in the selected project root.
+    let cwd = delivery_worker_cwd(member, project);
 
     // Build LaunchSpec from member and message
     let spec = build_launch_spec(member, message);
@@ -13369,8 +14445,7 @@ fn run_claude_exec_delivery_real(
     }
 
     // Add working directory.
-    let cwd_str = cwd.unwrap_or_else(|| ".".to_string());
-    cmd.current_dir(&cwd_str);
+    cmd.current_dir(&cwd);
 
     let delivery_id = session_dir
         .file_name()
@@ -13422,18 +14497,16 @@ fn apply_claude_output_schema_arg(cmd: &mut Command, spec: &LaunchSpec) {
 /// Build a [`resident::ResidentConfig`] from the same launch inputs the default
 /// path uses, so the resident invocation surface matches `claude -p` flag for
 /// flag (only `-p <prompt>` becomes `--input-format stream-json`).
-fn build_resident_config(member: &AgentMember, message: &Message) -> resident::ResidentConfig {
+fn build_resident_config(
+    member: &AgentMember,
+    message: &Message,
+    project: &ProjectContext,
+) -> resident::ResidentConfig {
     let spec = build_launch_spec(member, message);
     let system_prompt = provider_developer_instructions(member);
-    let cwd = member
-        .worktree_ref
-        .clone()
-        .or_else(|| {
-            env::current_dir()
-                .ok()
-                .map(|path| path.display().to_string())
-        })
-        .unwrap_or_else(|| ".".to_string());
+    // Same cwd precedence as the default Claude path (P3, Stage 3):
+    // member.worktree_ref → selected project.project_root → process cwd.
+    let cwd = delivery_worker_cwd(member, project);
 
     let mcp_config_path = write_temp_mcp_config(spec.mcp.as_ref()).ok().flatten();
 
@@ -13483,6 +14556,7 @@ fn run_claude_resident_delivery_real(
     member: &AgentMember,
     message: &Message,
     timeout_ms: u64,
+    project: &ProjectContext,
 ) -> CliResult<ClaudeDeliveryRun> {
     let message_content = format!(
         "Harness message envelope:\nmessage_id: {}\nkind: task\ntask_id: {}\nfrom_agent_id: {}\nto_agent_id: {}\nchannel: -\ncontent:\n{}",
@@ -13493,7 +14567,7 @@ fn run_claude_resident_delivery_real(
         message.content
     );
 
-    let config = build_resident_config(member, message);
+    let config = build_resident_config(member, message, project);
     let stderr_path = session_dir.join("claude.stderr");
     let timeout = Duration::from_millis(timeout_ms.max(1));
 
@@ -13897,6 +14971,13 @@ fn print_help() {
     println!(
         "harness commands:
   init
+  project add [<path>] [--switch]              register a project (default: cwd) in the central registry
+  project list                                 list known projects (registry + on-disk + _global), marking current
+  project current                              show the active project (the serve/CLI convergence point)
+  project switch <id|path>                     flip the active project (updates registry + ACTIVE_PROJECT)
+  project remove <id> [--force]                unregister a project (store kept; --force to drop the current one)
+  project show [<id|path>]                      show one project's context (default: current)
+  project migrate [<local-store>] [--switch]   move a repo-local .harness into ~/.harness/projects/<id>/
   agent create --name <name> --role <role> [--description <text>] [--provider codex|claude] [--team <team>] [--skill <skill>] [--prompt <text>] [--prompt-ref <path>] [--worktree <path>] [--permission-profile <profile>] [--runtime-workspace-root <path>] [--approval-policy <policy>] [--sandbox-policy <policy>] [--service-tier <tier>] [--collaboration-mode <mode>] [--effort <e>] [--output-schema-file <path>] [--provider-agent-path <path>] [--provider-agent-nickname <name>] [--provider-agent-role <role>] [--start]
   agent list
   agent start --id <agent>
@@ -13961,9 +15042,12 @@ fn print_help() {
   daemon stop
 
 global:
-  --store <path>   store root for any command (else $HARNESS_ROOT, else the
-                   nearest ancestor .harness, else ./.harness). Point `serve`
-                   and `workflow run-script` at the SAME store.
+  --project <id|path>  select a project; its store is ~/.harness/projects/<id>/.
+                   (else $HARNESS_PROJECT, else the registry's current project,
+                   else the legacy ancestor-.harness walk-up, else _global).
+  --store <path>   DEPRECATED override: raw store root for any command (else
+                   $HARNESS_ROOT). Prefer `harness init` / a project selector.
+  --store-source   debug: print which store was chosen and why, then continue.
   --timeout-ms <ms> workflow worker idle timeout (default 900000 = 15 min);
                    a worker is killed only after this long with NO output."
     );
@@ -13979,6 +15063,23 @@ mod workflow_runtime_tests {
         let store = HarnessStore::new(&root);
         store.init().expect("init store");
         store
+    }
+
+    /// A throwaway [`ProjectContext`] for tests that build a `WorkflowDeliveryOptions`
+    /// directly (goal-multi-project): `project_root` is a fresh temp dir distinct
+    /// from the store, so worker-cwd assertions are unambiguous. Not a git repo by
+    /// default; pass `is_git_repo` per the case under test.
+    fn temp_project_context(tag: &str, is_git_repo: bool) -> ProjectContext {
+        let project_root =
+            std::env::temp_dir().join(format!("harness-wf-proj-{}", generated_id(tag)));
+        std::fs::create_dir_all(&project_root).expect("mk project root");
+        ProjectContext {
+            id: "_global".to_string(),
+            store_root: project_root.join(".store"),
+            project_root,
+            kind: ProjectKind::Repo,
+            is_git_repo,
+        }
     }
 
     fn launch_spec_with_model_effort(model: Option<&str>, effort: Option<&str>) -> LaunchSpec {
@@ -14803,6 +15904,7 @@ mod workflow_runtime_tests {
             max_budget_usd: None,
             trace_retention: "durable".into(),
             progress: false,
+            project: temp_project_context("eff", false),
         };
         let mut spec = workflow::AgentStepSpec {
             phase: "p".into(),
@@ -16083,6 +17185,7 @@ mod workflow_runtime_tests {
             max_budget_usd: None,
             trace_retention: "durable".into(),
             progress: false,
+            project: temp_project_context("live", false),
         };
         let spec = workflow::AgentStepSpec {
             phase: "scan".into(),
@@ -16383,6 +17486,220 @@ mod workflow_runtime_tests {
             "offers both fixes (git init / read-only + get-output): {msg}"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ---- goal-multi-project: workflow-cwd phase ---------------------------------
+
+    /// A throwaway spec for the cwd/worktree/policy tests below.
+    fn cwd_test_spec(
+        label: &str,
+        writable: bool,
+        isolation: Option<&str>,
+    ) -> workflow::AgentStepSpec {
+        workflow::AgentStepSpec {
+            phase: "p".into(),
+            label: label.into(),
+            provider: "claude".into(),
+            model: None,
+            effort: None,
+            fallback_model: None,
+            image: Vec::new(),
+            add_dir: Vec::new(),
+            isolation: isolation.map(str::to_string),
+            prompt: "noop".into(),
+            schema: None,
+            writable,
+            ordinal: Some(0),
+        }
+    }
+
+    #[test]
+    fn workflow_repo_root_is_project_root_not_process_cwd() {
+        // worktree-root-split: the worker's shared cwd + worktree base is the
+        // PROJECT ROOT (a long-running `serve` never `cd`s), NOT `env::current_dir`.
+        let project_root =
+            std::env::temp_dir().join(format!("harness-projroot-{}", generated_id("pr")));
+        std::fs::create_dir_all(&project_root).expect("mk project root");
+        let ctx = ProjectContext {
+            id: "demo".into(),
+            project_root: project_root.clone(),
+            store_root: std::env::temp_dir().join("some-central-store"),
+            kind: ProjectKind::Repo,
+            is_git_repo: true,
+        };
+        let resolved = workflow_repo_root(&ctx);
+        assert_eq!(resolved, project_root, "repo root must be project_root");
+        assert_ne!(
+            resolved,
+            env::current_dir().unwrap(),
+            "must NOT fall back to the harness process cwd"
+        );
+        let _ = std::fs::remove_dir_all(&project_root);
+    }
+
+    #[test]
+    fn workflow_project_context_falls_back_to_cwd_without_metadata() {
+        // BACK-COMPAT: a store with no metadata.json (a raw --store / HARNESS_ROOT /
+        // walk-up store) has no pinned identity, so the project_root degrades to the
+        // harness process cwd exactly as before, and store_root is the store root.
+        let store = temp_store("nometa");
+        let ctx = workflow_project_context(&store);
+        assert_eq!(
+            ctx.project_root,
+            env::current_dir().unwrap(),
+            "no metadata → cwd is the project root (today's behavior)"
+        );
+        assert_eq!(ctx.store_root, store.root());
+    }
+
+    #[test]
+    fn workflow_project_context_reads_pinned_metadata() {
+        // A central store self-describes its project via metadata.json; the workflow
+        // recovers the real project_root from it (NOT the process cwd).
+        let store = temp_store("withmeta");
+        let project_root =
+            std::env::temp_dir().join(format!("harness-pinned-{}", generated_id("pin")));
+        std::fs::create_dir_all(&project_root).expect("mk pinned root");
+        let pinned = ProjectContext {
+            id: "pinned-proj".into(),
+            project_root: project_root.clone(),
+            store_root: store.root().to_path_buf(),
+            kind: ProjectKind::Repo,
+            is_git_repo: false,
+        };
+        project::write_metadata(&pinned, None).expect("write metadata");
+
+        let ctx = workflow_project_context(&store);
+        assert_eq!(ctx.id, "pinned-proj");
+        assert_eq!(ctx.project_root, project_root);
+        assert_eq!(ctx.store_root, store.root());
+        assert!(!ctx.is_git_repo);
+        let _ = std::fs::remove_dir_all(&project_root);
+    }
+
+    #[test]
+    fn spawn_writable_node_in_non_git_project_fails_loud() {
+        // global-workflow-policy: a writable / isolation="worktree" node in a non-git
+        // project (the reserved `_global` ~/ project) is rejected BEFORE any provider
+        // spawn with an actionable message naming the project and offering the fix.
+        let store = temp_store("nongit-writable");
+        let project_root =
+            std::env::temp_dir().join(format!("harness-global-{}", generated_id("g")));
+        std::fs::create_dir_all(&project_root).expect("mk global root");
+        let options = WorkflowDeliveryOptions {
+            dry_run: false,
+            start_runtime: false,
+            timeout_ms: 1_000,
+            default_model: None,
+            default_effort: None,
+            max_budget_usd: None,
+            trace_retention: "durable".into(),
+            progress: false,
+            project: ProjectContext {
+                id: harness_core::GLOBAL_PROJECT_ID.into(),
+                project_root: project_root.clone(),
+                store_root: store.root().to_path_buf(),
+                kind: ProjectKind::Global,
+                is_git_repo: false,
+            },
+        };
+        let spec = cwd_test_spec("writer", true, None);
+        let err = spawn_ephemeral_worker(&store, &options, &spec, "wfrun-ng", "session-ng-0")
+            .expect_err("writable node in a non-git project must fail loud");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("not a git repository"),
+            "names the cause: {msg}"
+        );
+        assert!(
+            msg.contains(harness_core::GLOBAL_PROJECT_ID),
+            "names the offending project id: {msg}"
+        );
+        assert!(
+            msg.contains("get-output") && msg.contains("isolation"),
+            "offers the read-only fix: {msg}"
+        );
+        let _ = std::fs::remove_dir_all(&project_root);
+    }
+
+    #[test]
+    fn spawn_isolation_worktree_node_in_non_git_project_also_fails_loud() {
+        // The same gate must fire for an explicit isolation="worktree" node even when
+        // it is not `writable` — both need a git worktree that a non-git project lacks.
+        let store = temp_store("nongit-iso");
+        let project_root =
+            std::env::temp_dir().join(format!("harness-globaliso-{}", generated_id("gi")));
+        std::fs::create_dir_all(&project_root).expect("mk global iso root");
+        let options = WorkflowDeliveryOptions {
+            dry_run: false,
+            start_runtime: false,
+            timeout_ms: 1_000,
+            default_model: None,
+            default_effort: None,
+            max_budget_usd: None,
+            trace_retention: "durable".into(),
+            progress: false,
+            project: ProjectContext {
+                id: harness_core::GLOBAL_PROJECT_ID.into(),
+                project_root: project_root.clone(),
+                store_root: store.root().to_path_buf(),
+                kind: ProjectKind::Global,
+                is_git_repo: false,
+            },
+        };
+        let spec = cwd_test_spec("iso", false, Some("worktree"));
+        let err = spawn_ephemeral_worker(&store, &options, &spec, "wfrun-gi", "session-gi-0")
+            .expect_err("isolation=worktree in a non-git project must fail loud");
+        assert!(
+            err.to_string().contains("not a git repository"),
+            "names the cause: {err}"
+        );
+        let _ = std::fs::remove_dir_all(&project_root);
+    }
+
+    #[test]
+    fn writable_worktree_path_is_under_project_root() {
+        // worktree-root-split: a writable leaf's git worktree lives under
+        // <project_root>/.harness/worktrees/... — pinned to the repo, NOT the
+        // centralized store and NOT the harness process cwd. We init a real git repo
+        // as the project root, create the worktree directly, and assert its path.
+        let project_root =
+            std::env::temp_dir().join(format!("harness-gitproj-{}", generated_id("gp")));
+        std::fs::create_dir_all(&project_root).expect("mk git project root");
+        // Minimal git repo with one commit so `worktree add HEAD` works.
+        let git = |args: &[&str]| {
+            Command::new("git")
+                .arg("-C")
+                .arg(&project_root)
+                .args(args)
+                .output()
+                .expect("git")
+        };
+        assert!(git(&["init"]).status.success(), "git init");
+        let _ = git(&["config", "user.email", "t@t"]);
+        let _ = git(&["config", "user.name", "t"]);
+        std::fs::write(project_root.join("README"), "x").expect("seed file");
+        let _ = git(&["add", "-A"]);
+        assert!(
+            git(&["commit", "-m", "init"]).status.success(),
+            "git commit"
+        );
+
+        let guard = WorktreeGuard::create(&project_root, "wfrun-gp", "writer", "session-gp-0")
+            .expect("worktree create in a git project");
+        assert!(
+            guard.path.starts_with(&project_root),
+            "worktree must live under the project root: {:?}",
+            guard.path
+        );
+        assert!(
+            guard.path.to_string_lossy().contains(".harness/worktrees/"),
+            "worktree path must be the gitignored .harness/worktrees/ dir: {:?}",
+            guard.path
+        );
+        assert!(guard.path.is_dir(), "worktree dir was actually created");
+        drop(guard);
+        let _ = std::fs::remove_dir_all(&project_root);
     }
 
     #[test]
@@ -17387,6 +18704,13 @@ mod tests {
         // succeed; if absent, it fails with a spawn error. Both cases prove
         // routing to claude (provider path is correct). The test is about
         // routing, not binary availability in the test environment.
+        let project = ProjectContext {
+            id: harness_core::GLOBAL_PROJECT_ID.into(),
+            project_root: root.clone(),
+            store_root: store.root().to_path_buf(),
+            kind: ProjectKind::Repo,
+            is_git_repo: false,
+        };
         let result = run_provider_delivery(
             &store,
             &member,
@@ -17394,6 +18718,7 @@ mod tests {
             &message,
             "delivery-claude",
             100, // Short timeout; no claude binary in test env
+            &project,
         );
 
         match result {
@@ -21045,7 +22370,7 @@ mod sse_tests {
     #[test]
     fn test_sse_manager_broadcast_to_subscriber() {
         let manager = sse::SseManager::new();
-        let rx = manager.subscribe();
+        let rx = manager.subscribe("_test");
 
         let event = sse::SseEventFrame::AgentEvent(AgentEvent {
             id: "evt-test".into(),
@@ -21062,7 +22387,7 @@ mod sse_tests {
             created_at: "2025-01-01T00:00:00Z".into(),
         });
 
-        manager.broadcast(event.clone());
+        manager.broadcast("_test", event.clone());
 
         // Verify the event is received
         match rx.recv_timeout(std::time::Duration::from_secs(1)) {
@@ -21080,8 +22405,8 @@ mod sse_tests {
     #[test]
     fn test_sse_manager_multiple_subscribers() {
         let manager = sse::SseManager::new();
-        let rx1 = manager.subscribe();
-        let rx2 = manager.subscribe();
+        let rx1 = manager.subscribe("_test");
+        let rx2 = manager.subscribe("_test");
 
         let event = sse::SseEventFrame::AgentEvent(AgentEvent {
             id: "evt-multi".into(),
@@ -21098,7 +22423,7 @@ mod sse_tests {
             created_at: "2025-01-01T00:00:00Z".into(),
         });
 
-        manager.broadcast(event);
+        manager.broadcast("_test", event);
 
         // Both subscribers should receive the event
         let _ = rx1
@@ -21133,14 +22458,27 @@ mod sse_tests {
         let serve_store = store.clone();
         std::thread::spawn(move || {
             let sse_manager = sse::SseManager::new();
-            sse::start_sse_watcher(&serve_store, sse_manager.clone(), |_, _| Vec::new())
-                .expect("watcher");
+            // Single-project serve mode (no registry): default project routes to the
+            // served store, watcher multiplexes over just that one.
+            let projects = ServeProjects {
+                harness_home: None,
+                default_id: "_test".to_string(),
+                default_store: serve_store.clone(),
+            };
+            let mut watch_map = std::collections::HashMap::new();
+            watch_map.insert("_test".to_string(), serve_store.root().to_path_buf());
+            sse::start_sse_watcher(
+                watch_map,
+                sse_manager.clone(),
+                std::collections::HashMap::new(),
+            )
+            .expect("watcher");
             for stream in listener.incoming() {
                 let Ok(stream) = stream else { continue };
-                let conn_store = serve_store.clone();
+                let conn_projects = projects.clone();
                 let conn_manager = sse_manager.clone();
                 std::thread::spawn(move || {
-                    let _ = handle_http_connection(&conn_store, stream, conn_manager);
+                    let _ = handle_http_connection(&conn_projects, stream, conn_manager);
                 });
             }
         });
