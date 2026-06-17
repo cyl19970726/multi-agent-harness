@@ -88,6 +88,26 @@ export function knowledgeSourceTone(source?: string | null): StatusTone {
   }
 }
 
+/** Map an ArtifactKind to a status tone (goal-phase-artifacts). */
+export function artifactKindTone(kind?: string | null): StatusTone {
+  switch ((kind ?? "code").toLowerCase()) {
+    case "code":
+      return "running";
+    case "test_report":
+      return "good";
+    case "design_doc":
+    case "adr":
+    case "migration_doc":
+      return "info";
+    case "registered_doc":
+      return "decision";
+    case "screenshot":
+      return "warn";
+    default:
+      return "idle";
+  }
+}
+
 /** Map a Review.verdict (open enum) to a status tone. */
 export function reviewVerdictTone(verdict?: string | null): StatusTone {
   switch ((verdict ?? "").toLowerCase()) {

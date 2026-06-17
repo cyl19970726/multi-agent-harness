@@ -47,6 +47,47 @@ export type GoalPhaseStatus =
   | "blocked";
 
 /**
+ * Kind of a declared artifact (goal-phase-artifacts; mirrors harness-core
+ * `ArtifactKind`, serde snake_case). `code` is the default and matches today's
+ * implicit behavior (a code diff). The multi-word kinds are the bar — they read
+ * `design_doc`, `test_report`, `migration_doc`, `registered_doc` on the wire.
+ */
+export type ArtifactKind =
+  | "design_doc"
+  | "adr"
+  | "code"
+  | "test_report"
+  | "migration_doc"
+  | "registered_doc"
+  | "screenshot"
+  | "other";
+
+/**
+ * One declared deliverable of a phase or task (goal-phase-artifacts; mirrors
+ * harness-core `ArtifactSpec`). Makes artifacts first-class and declarative so
+ * the verdict gate can VERIFY a phase produced what it promised. `required`
+ * defaults to TRUE on the wire; an empty `outputs[]` reproduces today's behavior
+ * (the legacy `design_md` is the implicit `design_doc`, `acceptance` the gate).
+ */
+export interface ArtifactSpec {
+  /** Stable handle for this artifact within its phase/task. */
+  id: string;
+  /** What kind of artifact this is (gate/render hint). Defaults to `code`. */
+  kind?: ArtifactKind;
+  /**
+   * Where the artifact lands (repo-relative path; glob ok). When present and
+   * `required`, the gate asserts it exists & is non-empty in the worktree diff.
+   */
+  path?: string | null;
+  /** Why this artifact exists — the human/agent-readable intent. */
+  purpose: string;
+  /** Whether the gate must enforce this artifact. Defaults to TRUE. */
+  required?: boolean;
+  /** Optional per-artifact acceptance criterion (a finer gate than presence). */
+  acceptance?: string | null;
+}
+
+/**
  * One agent-planned phase of a goal (goal-planning-model; mirrors harness-core
  * `GoalPhase`). It owns the tasks whose `phase_id == this.id`; `acceptance` is
  * the verdict gate before the next phase.
@@ -62,6 +103,12 @@ export interface GoalPhase {
   created_at: string;
   started_at?: string | null;
   ended_at?: string | null;
+  /**
+   * Artifacts this phase declares it will produce (goal-phase-artifacts). Empty
+   * reproduces today's behavior; non-empty makes the verdict gate enforce each
+   * `required` artifact's presence.
+   */
+  outputs?: ArtifactSpec[];
 }
 
 /** Where a {@link Knowledge} entry came from (mirrors `KnowledgeSource`). */
@@ -185,6 +232,11 @@ export interface Task {
   superseded_by_knowledge_id?: string | null;
   /** The `WorkflowStep`s that executed this task (reverse link). */
   workflow_step_ids?: string[];
+  /**
+   * Artifacts this task declares it will produce (goal-phase-artifacts). Empty
+   * reproduces today's behavior (the implicit `design_md` doc + acceptance gate).
+   */
+  outputs?: ArtifactSpec[];
 }
 
 /**
