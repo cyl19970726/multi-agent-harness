@@ -109,6 +109,12 @@ export interface GoalPhase {
    * `required` artifact's presence.
    */
   outputs?: ArtifactSpec[];
+  /**
+   * The commit that landed this phase's writable work onto the goal's branch
+   * (goal-phase-landing). Set by `run-phases` on a passing phase or by
+   * `goal reconcile-phase` for out-of-band work; absent for read-only / legacy.
+   */
+  landed_commit?: string | null;
 }
 
 /** Where a {@link Knowledge} entry came from (mirrors `KnowledgeSource`). */

@@ -14,6 +14,7 @@ import {
   FileText,
   Gavel,
   GitBranch,
+  GitCommitHorizontal,
   Inbox,
   Link2,
   ListChecks,
@@ -521,9 +522,9 @@ function GoalCard({
         </span>
         <Badge tone={goalTone(goal.status)}>{goal.status ?? "active"}</Badge>
       </div>
-      {goal.stage && (
-        <p className="mt-1 text-[11px] font-medium text-muted-foreground">stage: {goal.stage}</p>
-      )}
+      <p className="mt-1 text-[11px] font-medium text-muted-foreground">
+        stage: {effectiveStage(goal)}
+      </p>
       <div className="mt-2 inline-flex items-center gap-1 text-[11px] text-muted-foreground">
         <ClipboardList className="size-3" /> {tasks.length} tasks
       </div>
@@ -1312,7 +1313,7 @@ export function GoalDocument({ model, onSelectionChange }: SurfaceProps) {
             { label: "Updated", value: fmtTime(goal.updated_at) },
           ]}
         />
-        <GoalStageBar stage={goal.stage} />
+        <GoalStageBar stage={effectiveStage(goal)} />
       </header>
 
       {goal.description_md && (
@@ -1544,6 +1545,21 @@ const GOAL_STAGES: { stage: GoalStage; phase: string }[] = [
   { stage: "verified", phase: "accept" },
 ];
 
+/**
+ * The goal's EFFECTIVE lifecycle stage (goal-phase-landing) — mirrors the Rust
+ * `Goal::effective_stage()`. For a phase-driven goal (`phases` non-empty) the
+ * stage is DERIVED from phase progress so the bar reflects reality instead of a
+ * stale raw `stage` (e.g. all-passed phases → `verified`, not a leftover
+ * `working`). For a legacy goal (no phases) the stored `stage` IS the truth.
+ */
+function effectiveStage(goal: Goal): GoalStage {
+  const phases = goal.phases ?? [];
+  if (phases.length === 0) return goal.stage ?? "draft";
+  if (phases.every((p) => p.status === "passed")) return "verified";
+  if (phases.some((p) => p.status !== "not_started")) return "working";
+  return "draft";
+}
+
 /** Horizontal stage-flow bar: past stages muted-done, current highlighted, future faint. */
 function GoalStageBar({ stage }: { stage?: GoalStage }) {
   const current = stage ?? "draft";
@@ -1760,6 +1776,15 @@ function GoalPhasesTimeline({
                   <span className="text-[11px] text-muted-foreground">
                     <span className="font-medium text-foreground/70">Gate: </span>
                     {phase.acceptance}
+                  </span>
+                </div>
+              )}
+              {phase.landed_commit && (
+                <div className="mt-2 inline-flex items-center gap-1.5 rounded-md border border-border bg-muted/30 px-2 py-1">
+                  <GitCommitHorizontal className="size-3 shrink-0 text-status-good" />
+                  <span className="text-[11px] text-muted-foreground">
+                    <span className="font-medium text-foreground/70">Landed: </span>
+                    <span className="font-mono">{phase.landed_commit}</span>
                   </span>
                 </div>
               )}
