@@ -106,6 +106,69 @@ pub enum GoalPhaseStatus {
     Blocked,
 }
 
+/// The class of an artifact a phase or task declares it will produce
+/// (goal-phase-artifacts). The default `Code` matches today's implicit behavior
+/// where a phase's deliverable is a code diff. Serialized snake_case so the wire
+/// form reads `design_doc`, `test_report`, `migration_doc`, `registered_doc`, etc.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ArtifactKind {
+    DesignDoc,
+    Adr,
+    #[default]
+    Code,
+    TestReport,
+    MigrationDoc,
+    RegisteredDoc,
+    Screenshot,
+    Other,
+}
+
+fn default_artifact_required() -> bool {
+    true
+}
+
+/// One declared deliverable of a phase or task (goal-phase-artifacts). Makes
+/// artifacts first-class and declarative so the verdict gate can VERIFY a phase
+/// produced what it promised, instead of only checking the worker didn't crash.
+/// All-optional except `id`/`kind`/`purpose`; `required` defaults to TRUE so a
+/// declared output is enforced unless explicitly marked optional. An empty
+/// `outputs[]` reproduces today's behavior verbatim (the legacy `design_md` is the
+/// implicit `design_doc`, the `acceptance` string the implicit gate).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArtifactSpec {
+    /// Stable handle for this artifact within its phase/task.
+    pub id: String,
+    /// What kind of artifact this is (gate/render hint).
+    #[serde(default)]
+    pub kind: ArtifactKind,
+    /// Where the artifact lands (repo-relative path; glob ok). When present and
+    /// `required`, the gate asserts it exists & is non-empty in the worktree diff.
+    #[serde(default)]
+    pub path: Option<String>,
+    /// Why this artifact exists — the human/agent-readable intent.
+    pub purpose: String,
+    /// Whether the gate must enforce this artifact. Defaults to TRUE.
+    #[serde(default = "default_artifact_required")]
+    pub required: bool,
+    /// Optional per-artifact acceptance criterion (a finer gate than its presence).
+    #[serde(default)]
+    pub acceptance: Option<String>,
+}
+
+impl Default for ArtifactSpec {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            kind: ArtifactKind::default(),
+            path: None,
+            purpose: String::new(),
+            required: default_artifact_required(),
+            acceptance: None,
+        }
+    }
+}
+
 /// One agent-planned phase of a goal. It owns a task subgraph (the tasks whose
 /// `phase_id == this.id`), and its `acceptance` is the verdict gate before the next
 /// phase. Phases replace the fixed `GoalStage` enum as the source of truth for
@@ -128,6 +191,11 @@ pub struct GoalPhase {
     pub started_at: Option<String>,
     #[serde(default)]
     pub ended_at: Option<String>,
+    /// Artifacts this phase declares it will produce (goal-phase-artifacts). Empty
+    /// reproduces today's behavior (the implicit `design_doc` + `acceptance` gate);
+    /// non-empty makes the verdict gate enforce each `required` artifact's presence.
+    #[serde(default)]
+    pub outputs: Vec<ArtifactSpec>,
 }
 
 /// Where a `Knowledge` entry came from.
@@ -590,6 +658,27 @@ pub fn compile_phase_to_starlark(
                 t.owned_paths.join(", ")
             ));
         }
+        if !t.outputs.is_empty() {
+            p.push_str("\n\nRequired artifacts you MUST produce:");
+            for o in &t.outputs {
+                let path = o
+                    .path
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or("(no path declared)");
+                let req = if o.required { "required" } else { "optional" };
+                p.push_str(&format!("\n- {path} — {} ({req})", o.purpose));
+                if let Some(acc) = o
+                    .acceptance
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                {
+                    p.push_str(&format!(" [acceptance: {acc}]"));
+                }
+            }
+        }
         p
     };
 
@@ -678,11 +767,55 @@ pub fn compile_phase_to_starlark(
         .map(str::trim)
         .filter(|a| !a.is_empty())
     {
+        // Surface the declared manifest (phase + task `outputs`) to the judge so
+        // the LLM verdict sees the PROMISED deliverables, not just the prose
+        // criterion (goal-phase-artifacts). A deterministic gate already enforces
+        // each `required` artifact's presence in the orchestrator; this gives the
+        // judge the same list so it can reason about partial/empty work. Empty
+        // outputs append nothing — the prompt is byte-identical to today.
+        let render_specs = |label: &str, specs: &[ArtifactSpec], out: &mut String| {
+            if specs.is_empty() {
+                return;
+            }
+            out.push_str(&format!("\n\n{label}"));
+            for o in specs {
+                let path = o
+                    .path
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or("(no path declared)");
+                let req = if o.required { "required" } else { "optional" };
+                out.push_str(&format!("\n- {path} — {} ({req})", o.purpose));
+                if let Some(acc) = o
+                    .acceptance
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                {
+                    out.push_str(&format!(" [acceptance: {acc}]"));
+                }
+            }
+        };
+        let mut manifest = String::new();
+        render_specs(
+            "Declared phase deliverables:",
+            &phase.outputs,
+            &mut manifest,
+        );
+        for t in &tasks {
+            render_specs(
+                &format!("Declared deliverables for task {}:", t.id),
+                &t.outputs,
+                &mut manifest,
+            );
+        }
         let judge_prompt = format!(
-            "Acceptance check for phase {} ({}) of goal {}.\n\nCriterion:\n{}\n\n\
+            "Acceptance check for phase {} ({}) of goal {}.\n\nCriterion:\n{}{}\n\n\
              Review the work this phase's tasks produced and decide whether the criterion \
-             is FULLY met. Set pass=true only if it holds; otherwise pass=false with the gap.",
-            phase.id, phase.name, goal.id, acc
+             is FULLY met (including that every required deliverable above was actually \
+             produced). Set pass=true only if it holds; otherwise pass=false with the gap.",
+            phase.id, phase.name, goal.id, acc, manifest
         );
         s.push_str(&format!(
             "\n_acc = agent(\n    {},\n    provider=\"codex\",\n    label={},\n    phase={},\n    \
@@ -707,9 +840,10 @@ pub fn compile_phase_to_starlark(
 /// the convention `compile_phase_to_starlark`'s judge schema uses.
 pub fn planner_schema() -> serde_json::Value {
     serde_json::json!({
-        "phases": "list of {id, name, intent, acceptance, tasks:[{id, title, \
-                   design_md, acceptance:[string], owned_paths:[string], \
-                   depends_on:[task-id]}]}",
+        "phases": "list of {id, name, intent, acceptance, outputs:[{id, kind, path, \
+                   purpose, required, acceptance}], tasks:[{id, title, design_md, \
+                   acceptance:[string], owned_paths:[string], depends_on:[task-id], \
+                   outputs:[{id, kind, path, purpose, required, acceptance}]}]}",
     })
 }
 
@@ -740,6 +874,14 @@ pub fn planner_prompt(goal: &Goal) -> String {
          - Each task is a mini-goal: give it a concrete `design_md` (a grounded \
          slice of the goal's design), an `acceptance` list, and the `owned_paths` \
          it may write.\n\
+         - Declare each phase's and task's deliverables in `outputs` — a list of \
+         {{id, kind, path, purpose, required, acceptance}}. `kind` is one of \
+         design_doc/adr/code/test_report/migration_doc/registered_doc/screenshot/other \
+         (default code); `path` is the repo-relative file (glob ok) the artifact lands \
+         at; `required` defaults to true and the verdict gate ENFORCES that each \
+         required artifact with a `path` exists and is non-empty. Leave `outputs` empty \
+         to keep today's default (the diff is the implicit deliverable, the acceptance \
+         string the implicit gate).\n\
          - Within a phase, two tasks run in PARALLEL iff their `owned_paths` are \
          disjoint AND neither depends on the other. Use `depends_on` (task ids in \
          the SAME phase) for ordering; keep owned_paths disjoint where you want \
@@ -798,8 +940,8 @@ pub fn compile_planner_script(goal: &Goal) -> String {
 pub fn reviser_schema() -> serde_json::Value {
     serde_json::json!({
         "revision": "{supersede:[task-id], new_tasks:[{id, title, design_md, \
-                     acceptance:[string], owned_paths:[string], \
-                     depends_on:[task-id]}]}",
+                     acceptance:[string], owned_paths:[string], depends_on:[task-id], \
+                     outputs:[{id, kind, path, purpose, required, acceptance}]}]}",
     })
 }
 
@@ -849,7 +991,10 @@ pub fn reviser_prompt(
          be retired (they are kept for audit, struck through).\n\
          - `new_tasks`: replacement tasks that address the finding. Each is a mini-goal \
          with a concrete `design_md`, an `acceptance` list, and the `owned_paths` it \
-         may write. Use `depends_on` (ids in THIS phase) for ordering; keep owned_paths \
+         may write. Declare each task's deliverables in `outputs` ({{id, kind, path, \
+         purpose, required, acceptance}}) — the verdict gate enforces that each required \
+         artifact with a `path` exists and is non-empty; leave it empty for today's \
+         default. Use `depends_on` (ids in THIS phase) for ordering; keep owned_paths \
          disjoint where you want parallelism.\n\
          - Use short, stable, kebab-case ids that do not collide with existing task ids.\n\
          - If nothing actionable can be revised, return an empty `supersede` and empty \
@@ -1389,6 +1534,10 @@ pub struct Task {
     /// The `WorkflowStep`s that executed this task (reverse link; goal-planning-model).
     #[serde(default)]
     pub workflow_step_ids: Vec<String>,
+    /// Artifacts this task declares it will produce (goal-phase-artifacts). Empty
+    /// reproduces today's behavior (the implicit `design_md` doc + acceptance gate).
+    #[serde(default)]
+    pub outputs: Vec<ArtifactSpec>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2525,6 +2674,7 @@ mod tests {
                 owned_paths: vec!["crates/harness-core".to_string()],
                 ..Default::default()
             }),
+            outputs: Vec::new(),
         };
 
         let json = serde_json::to_string(&task).expect("serialize task");
@@ -2632,6 +2782,7 @@ mod tests {
             created_at: "unix-ms:1".into(),
             started_at: Some("unix-ms:2".into()),
             ended_at: None,
+            outputs: Vec::new(),
         };
         let pj = serde_json::to_string(&phase).expect("ser phase");
         assert!(
@@ -2680,6 +2831,7 @@ mod tests {
             created_at: "unix-ms:1".into(),
             started_at: None,
             ended_at: None,
+            outputs: Vec::new(),
         }];
         g.knowledge = vec![Knowledge {
             id: "k1".into(),
@@ -2713,6 +2865,8 @@ mod tests {
                 && t.phase_id.is_none()
                 && t.superseded_by_knowledge_id.is_none()
                 && t.workflow_step_ids.is_empty()
+                // goal-phase-artifacts: a legacy task with no `outputs` key defaults empty.
+                && t.outputs.is_empty()
         );
         // Superseded + the new fields round-trip.
         t.status = TaskStatus::Superseded;
@@ -2724,6 +2878,111 @@ mod tests {
         let back: Task = serde_json::from_str(&j).expect("de task");
         assert_eq!(back, t);
         assert_eq!(back.status, TaskStatus::Superseded);
+    }
+
+    #[test]
+    fn artifact_spec_and_kind_round_trip_snake_case_and_required_defaults_true() {
+        // ArtifactKind serializes snake_case (the multi-word kinds are the bar).
+        assert_eq!(
+            serde_json::to_string(&ArtifactKind::DesignDoc).unwrap(),
+            "\"design_doc\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ArtifactKind::TestReport).unwrap(),
+            "\"test_report\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ArtifactKind::MigrationDoc).unwrap(),
+            "\"migration_doc\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ArtifactKind::RegisteredDoc).unwrap(),
+            "\"registered_doc\""
+        );
+        // Default kind is Code.
+        assert_eq!(ArtifactKind::default(), ArtifactKind::Code);
+        assert_eq!(
+            serde_json::from_str::<ArtifactKind>("\"adr\"").unwrap(),
+            ArtifactKind::Adr
+        );
+
+        // A fully-specified spec round-trips.
+        let spec = ArtifactSpec {
+            id: "report".into(),
+            kind: ArtifactKind::TestReport,
+            path: Some("reports/r.md".into()),
+            purpose: "the live-acceptance evidence".into(),
+            required: false,
+            acceptance: Some("contains a PASS line".into()),
+        };
+        let j = serde_json::to_string(&spec).expect("ser spec");
+        assert_eq!(
+            serde_json::from_str::<ArtifactSpec>(&j).expect("de spec"),
+            spec
+        );
+
+        // A minimal spec (no kind/path/required/acceptance keys) defaults: kind=Code,
+        // path=None, required=TRUE, acceptance=None.
+        let minimal: ArtifactSpec =
+            serde_json::from_str(r#"{"id":"a","purpose":"p"}"#).expect("de minimal spec");
+        assert_eq!(minimal.kind, ArtifactKind::Code);
+        assert!(minimal.path.is_none());
+        assert!(minimal.required, "required must default to true");
+        assert!(minimal.acceptance.is_none());
+        // And `Default` agrees on the required=true invariant.
+        assert!(ArtifactSpec::default().required);
+    }
+
+    #[test]
+    fn phase_and_task_outputs_round_trip_and_legacy_defaults_empty() {
+        let outputs = vec![
+            ArtifactSpec {
+                id: "design".into(),
+                kind: ArtifactKind::DesignDoc,
+                path: Some("docs/design.md".into()),
+                purpose: "the phase design".into(),
+                required: true,
+                acceptance: None,
+            },
+            ArtifactSpec {
+                id: "shot".into(),
+                kind: ArtifactKind::Screenshot,
+                path: None,
+                purpose: "dashboard picker proof".into(),
+                required: false,
+                acceptance: None,
+            },
+        ];
+
+        // GoalPhase with non-empty outputs round-trips.
+        let mut phase = test_phase("p-out", GoalPhaseStatus::InProgress);
+        phase.outputs = outputs.clone();
+        let pj = serde_json::to_string(&phase).expect("ser phase");
+        assert_eq!(
+            serde_json::from_str::<GoalPhase>(&pj).expect("de phase"),
+            phase
+        );
+
+        // Task with non-empty outputs round-trips.
+        let mut task = compile_task("t-out", "p-out", &[], &["crates/x"]);
+        task.outputs = outputs;
+        let tj = serde_json::to_string(&task).expect("ser task");
+        assert_eq!(serde_json::from_str::<Task>(&tj).expect("de task"), task);
+
+        // A legacy GoalPhase JSON WITHOUT the `outputs` key defaults to empty.
+        let legacy_phase = r#"{"id":"p","name":"P","intent":"i","status":"not_started",
+            "created_at":"unix-ms:1"}"#;
+        let p: GoalPhase = serde_json::from_str(legacy_phase).expect("de legacy phase");
+        assert!(p.outputs.is_empty());
+
+        // A legacy Task JSON WITHOUT the `outputs` key defaults to empty.
+        let legacy_task = r#"{"id":"t","goal_id":null,"parent_task_id":null,"title":"x",
+            "objective":"o","owner_agent_id":"lead","assignee_agent_id":null,
+            "reviewer_agent_id":null,"status":"planned","depends_on_task_ids":[],
+            "workspace_ref":null,"branch_ref":null,"pr_ref":null,"owned_paths":[],
+            "acceptance_criteria":[],"created_at":"unix-ms:1","updated_at":"unix-ms:1"}"#;
+        let lt: Task = serde_json::from_str(legacy_task).expect("de legacy task");
+        assert!(lt.outputs.is_empty());
     }
 
     #[test]
@@ -2843,6 +3102,7 @@ mod tests {
             created_at: "unix-ms:1".into(),
             started_at: None,
             ended_at: None,
+            outputs: Vec::new(),
         }
     }
 
@@ -2967,6 +3227,7 @@ mod tests {
             phase_id: Some(phase_id.into()),
             superseded_by_knowledge_id: None,
             workflow_step_ids: Vec::new(),
+            outputs: Vec::new(),
         }
     }
 
@@ -3043,6 +3304,125 @@ mod tests {
         ];
         let err = compile_phase_to_starlark(&goal, &phase, &cyclic).unwrap_err();
         assert!(err.contains("cycle"), "got: {err}");
+    }
+
+    #[test]
+    fn compile_phase_injects_required_artifacts_block_for_tasks_with_outputs() {
+        let goal = goal_in_stage(GoalStage::Working);
+        let phase = test_phase("p", GoalPhaseStatus::InProgress);
+        // A task that declares outputs (one required, one optional) — its compiled
+        // worker prompt must list each artifact's path + purpose + required/optional.
+        let mut with_outputs = compile_task("t-doc", "p", &[], &["docs"]);
+        with_outputs.outputs = vec![
+            ArtifactSpec {
+                id: "report".into(),
+                kind: ArtifactKind::TestReport,
+                path: Some("docs/report.md".into()),
+                purpose: "the e2e test report".into(),
+                required: true,
+                acceptance: Some("covers the gate path".into()),
+            },
+            ArtifactSpec {
+                id: "shot".into(),
+                kind: ArtifactKind::Screenshot,
+                path: Some("docs/shot.png".into()),
+                purpose: "dashboard screenshot".into(),
+                required: false,
+                acceptance: None,
+            },
+        ];
+        // A second task with NO outputs must get no artifact block (today's default).
+        let no_outputs = compile_task("t-code", "p", &[], &["crates/x"]);
+        let all = vec![with_outputs, no_outputs];
+
+        let script = compile_phase_to_starlark(&goal, &phase, &all).expect("compile");
+        assert!(
+            script.contains("Required artifacts you MUST produce:"),
+            "the artifact block header must appear"
+        );
+        assert!(script.contains("docs/report.md — the e2e test report (required)"));
+        assert!(script.contains("[acceptance: covers the gate path]"));
+        assert!(script.contains("docs/shot.png — dashboard screenshot (optional)"));
+        // The task without outputs must not carry an artifact block of its own;
+        // the header appears exactly once (only for t-doc).
+        assert_eq!(
+            script
+                .matches("Required artifacts you MUST produce:")
+                .count(),
+            1,
+            "only the task that declared outputs gets the block"
+        );
+    }
+
+    #[test]
+    fn compile_phase_judge_prompt_carries_declared_manifest() {
+        // goal-phase-artifacts s3-gate: the verdict judge must SEE the declared
+        // deliverables (phase + task `outputs`), not just the prose criterion, so
+        // the LLM can reason about whether every promised artifact was produced.
+        let goal = goal_in_stage(GoalStage::Working);
+        let mut phase = test_phase("p", GoalPhaseStatus::InProgress);
+        phase.acceptance = Some("Everything works end to end.".into());
+        phase.outputs = vec![ArtifactSpec {
+            id: "adr".into(),
+            kind: ArtifactKind::Adr,
+            path: Some("docs/adr/0024.md".into()),
+            purpose: "the architecture decision".into(),
+            required: true,
+            acceptance: None,
+        }];
+        let mut t = compile_task("t-doc", "p", &[], &["docs"]);
+        t.outputs = vec![ArtifactSpec {
+            id: "report".into(),
+            kind: ArtifactKind::TestReport,
+            path: Some("docs/report.md".into()),
+            purpose: "the e2e test report".into(),
+            required: true,
+            acceptance: None,
+        }];
+        let script = compile_phase_to_starlark(&goal, &phase, &[t]).expect("compile");
+
+        // The judge agent's prompt (it carries the criterion) must also carry the
+        // phase- and task-level deliverable lists.
+        assert!(script.contains("Declared phase deliverables:"));
+        assert!(script.contains("docs/adr/0024.md — the architecture decision (required)"));
+        assert!(script.contains("Declared deliverables for task t-doc:"));
+        assert!(script.contains("docs/report.md — the e2e test report (required)"));
+    }
+
+    #[test]
+    fn compile_phase_judge_prompt_unchanged_when_no_outputs() {
+        // Back-compat: with empty outputs, the judge prompt appends NOTHING — it
+        // is byte-identical to a phase whose acceptance is the only gate input.
+        let goal = goal_in_stage(GoalStage::Working);
+        let mut phase = test_phase("p", GoalPhaseStatus::InProgress);
+        phase.acceptance = Some("It compiles.".into());
+        let t = compile_task("t1", "p", &[], &["a"]);
+        let script = compile_phase_to_starlark(&goal, &phase, &[t]).expect("compile");
+        assert!(!script.contains("Declared phase deliverables:"));
+        assert!(!script.contains("Declared deliverables for task"));
+    }
+
+    #[test]
+    fn planner_and_reviser_schemas_and_prompts_advertise_outputs() {
+        // The autonomous planner/reviser can only author a manifest if `outputs`
+        // is in the schema shape hint and mentioned in the prompt.
+        let planner = serde_json::to_string(&planner_schema()).unwrap();
+        assert!(
+            planner.contains("outputs"),
+            "planner schema must list outputs"
+        );
+        let reviser = serde_json::to_string(&reviser_schema()).unwrap();
+        assert!(
+            reviser.contains("outputs"),
+            "reviser schema must list outputs"
+        );
+
+        let goal = goal_in_stage(GoalStage::Working);
+        assert!(planner_prompt(&goal).contains("outputs"));
+
+        let phase = test_phase("p", GoalPhaseStatus::InProgress);
+        let prompt = reviser_prompt(&goal, &phase, &[], "the gate found no report");
+        assert!(prompt.contains("outputs"));
     }
 
     #[test]

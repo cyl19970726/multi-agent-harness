@@ -18,6 +18,7 @@ import {
   Link2,
   ListChecks,
   MessageSquare,
+  Package,
   RefreshCw,
   Scale,
   Send,
@@ -73,6 +74,7 @@ import {
   TextInput,
 } from "@/components/workbench/OperatorForms";
 import {
+  artifactKindTone,
   goalTone,
   knowledgeSourceTone,
   memberTone,
@@ -112,6 +114,7 @@ import type {
   AgentMember,
   AgentProviderConfig,
   AgentStats,
+  ArtifactSpec,
   DeliveryStatus,
   DocRegistryEntry,
   Exploration,
@@ -130,6 +133,7 @@ import type {
   RuntimeHealth,
   Task,
   Vision,
+  WorkflowStep,
   WorkflowWarning,
 } from "../types";
 import type { AgentTab, SelectionState, TaskTab } from "../app/selection";
@@ -1366,6 +1370,7 @@ export function GoalDocument({ model, onSelectionChange }: SurfaceProps) {
               phases={goal.phases!}
               tasks={model.goalTasks}
               knowledge={goal.knowledge ?? []}
+              workflowSteps={model.snapshot.workflow_steps ?? []}
               onSelectTask={(taskId) =>
                 onSelectionChange({ surface: "tasks", taskId, boardScope: "tasks", boardGoal: goal.id })
               }
@@ -1581,6 +1586,98 @@ function GoalStageBar({ stage }: { stage?: GoalStage }) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Declared artifacts (goal-phase-artifacts): per-phase / per-task     */
+/* deliverables checklist + a present indicator derived from worktree  */
+/* diffs (mirrors the deterministic gate: path appears in the diff).   */
+/* ------------------------------------------------------------------ */
+
+/** Human label for an ArtifactKind (goal-phase-artifacts). */
+function artifactKindLabel(kind?: ArtifactSpec["kind"]): string {
+  return (kind ?? "code").replace(/_/g, " ");
+}
+
+/**
+ * Whether a declared artifact's `path` appears in any of the supplied worktree
+ * diff texts (the same signal the deterministic gate checks). Returns:
+ *   true  — the path's basename was found in a diff (produced),
+ *   false — diffs exist but the path is absent (not produced yet),
+ *   undefined — no diff captured, so presence is NOT derivable (render "—").
+ */
+function artifactPresence(path: string | null | undefined, diffs: string[]): boolean | undefined {
+  if (!path || diffs.length === 0) return undefined;
+  // Match on the basename so a glob (`docs/*.md`) or a repo-relative path both
+  // hit the `+++ b/<path>` lines that a unified diff carries.
+  const base = path.replace(/[*?].*$/, "").replace(/\/+$/, "");
+  const needle = base.split("/").filter(Boolean).pop() ?? base;
+  if (!needle) return undefined;
+  return diffs.some((diff) => diff.includes(needle));
+}
+
+/** Concatenated worktree-diff texts captured for a task's workflow steps. */
+function taskWorktreeDiffs(task: Task, steps: WorkflowStep[]): string[] {
+  const ids = new Set(task.workflow_step_ids ?? []);
+  if (ids.size === 0) return [];
+  return steps
+    .filter((step) => ids.has(step.id))
+    .map((step) => step.result?.worktree_diff ?? "")
+    .filter((diff) => diff.length > 0);
+}
+
+/**
+ * A declared-deliverables checklist (goal-phase-artifacts). Each row shows the
+ * artifact kind, its path, a required/optional marker, and the purpose; when
+ * worktree diffs are available a present/absent dot (else "—") mirrors the gate.
+ */
+function Deliverables({ outputs, diffs }: { outputs: ArtifactSpec[]; diffs: string[] }) {
+  if (outputs.length === 0) return null;
+  return (
+    <div className="mt-2 space-y-1.5 rounded-md border border-border bg-muted/20 px-2 py-1.5">
+      <p className="flex items-center gap-1.5 text-[9px] font-semibold uppercase tracking-wider text-muted-foreground">
+        <Package className="size-3" /> Deliverables ({outputs.length})
+      </p>
+      {outputs.map((spec) => {
+        const present = artifactPresence(spec.path, diffs);
+        return (
+          <div key={spec.id} className="flex flex-wrap items-center gap-1.5 text-[11px]">
+            {present === undefined ? (
+              <span
+                className="w-2 shrink-0 text-center text-muted-foreground/60"
+                title="presence not derivable (no captured diff)"
+              >
+                —
+              </span>
+            ) : (
+              <StatusDot
+                tone={present ? "good" : "bad"}
+                className="shrink-0"
+              />
+            )}
+            <Badge tone={artifactKindTone(spec.kind)}>{artifactKindLabel(spec.kind)}</Badge>
+            {spec.path ? (
+              <MonoId>{spec.path}</MonoId>
+            ) : (
+              <span className="text-muted-foreground/70 italic">no path</span>
+            )}
+            {spec.required === false ? (
+              <span className="text-[9px] uppercase tracking-wide text-muted-foreground/60">
+                optional
+              </span>
+            ) : (
+              <span className="text-[9px] font-semibold uppercase tracking-wide text-status-warn/80">
+                required
+              </span>
+            )}
+            {spec.purpose && (
+              <span className="min-w-0 text-muted-foreground">— {spec.purpose}</span>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
 /* Goal phases timeline + per-phase task DAG + knowledge (planning)    */
 /* ------------------------------------------------------------------ */
 
@@ -1608,11 +1705,13 @@ function GoalPhasesTimeline({
   phases,
   tasks,
   knowledge,
+  workflowSteps,
   onSelectTask,
 }: {
   phases: GoalPhase[];
   tasks: Task[];
   knowledge: Knowledge[];
+  workflowSteps: WorkflowStep[];
   onSelectTask: (taskId: string) => void;
 }) {
   return (
@@ -1622,6 +1721,12 @@ function GoalPhasesTimeline({
         const superseded = tasks.filter(
           (task) => task.phase_id === phase.id && task.status === "superseded",
         );
+        // Presence of a phase's declared artifacts is derived from the worktree
+        // diffs of every step across the phase's tasks (the same signal the gate
+        // checks). Absent any diff, presence renders as "—" (not derivable).
+        const phaseDiffs = tasks
+          .filter((task) => task.phase_id === phase.id)
+          .flatMap((task) => taskWorktreeDiffs(task, workflowSteps));
         const last = index === phases.length - 1;
         return (
           <div key={phase.id} className="relative pl-6">
@@ -1657,6 +1762,9 @@ function GoalPhasesTimeline({
                     {phase.acceptance}
                   </span>
                 </div>
+              )}
+              {(phase.outputs?.length ?? 0) > 0 && (
+                <Deliverables outputs={phase.outputs!} diffs={phaseDiffs} />
               )}
               <PhaseTaskDag layers={layers} onSelectTask={onSelectTask} />
               {superseded.length > 0 && (
@@ -2225,6 +2333,14 @@ export function TaskDocument({
         </DocSection>
       )}
 
+      {task.design_md && (
+        <DocSection label="Design">
+          <div className="rounded-lg border border-border bg-card p-4">
+            <Markdown source={task.design_md} />
+          </div>
+        </DocSection>
+      )}
+
       <DocSection
         label="Acceptance criteria"
         action={
@@ -2240,6 +2356,18 @@ export function TaskDocument({
           />
         </div>
       </DocSection>
+
+      {(task.outputs?.length ?? 0) > 0 && (
+        <DocSection
+          label="Declared artifacts"
+          action={<Badge tone="info">{task.outputs!.length}</Badge>}
+        >
+          <Deliverables
+            outputs={task.outputs!}
+            diffs={taskWorktreeDiffs(task, model.snapshot.workflow_steps ?? [])}
+          />
+        </DocSection>
+      )}
 
         </TabsContent>
 
