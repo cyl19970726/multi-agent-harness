@@ -171,6 +171,41 @@ else
   H goal run-phases pm --dry-run >"$TMP/pm_run2.json" 2>/dev/null
   [ "$(check_json "$TMP/pm_run2.json" "d.get('ran')==[] and d.get('skipped')==['p1']")" = "1" ] \
     && ok "S5 resume skips already-passed phase" || bad "S5 resume skip"
+
+  # goal-phase-artifacts s3-gate: the deterministic REQUIRED-ARTIFACT gate.
+  # A phase whose task declares a `required` output the (dry-run mock) worker
+  # never produces must FAIL — today, with no manifest, it would PASS. The same
+  # phase PASSES when the declared path points at a file that exists & is
+  # non-empty (here a real committed repo file, since the dry-run worker writes
+  # no diff and the process cwd is the repo root = the gate's working-tree root).
+  PART="$TMP/part"
+  HA() { "$HARNESS" --store "$PART" "$@"; }
+  HA goal create --id art --title "verify artifacts" --owner lead --priority p1 >/dev/null 2>&1
+  HA goal knowledge-add --goal art --author lead --tag arch --notes "gate enforces declared outputs" >/dev/null 2>&1
+  HA goal design-synthesize --goal art >/dev/null 2>&1
+  # Phase 1: a required output that is NEVER produced -> the gate must FAIL it.
+  HA goal phase-add --goal art --phase-id p1 --name Build \
+    --intent "produce the promised report" --acceptance "report exists" \
+    --output "id=report,kind=test_report,path=docs/never-produced-by-dryrun.md,purpose=the report,required=true" >/dev/null 2>&1
+  HA task create --id ak1 --goal art --title A --objective a --owner lead --phase-id p1 --owned-path crates/a \
+    --output "id=report,kind=test_report,path=docs/never-produced-by-dryrun.md,purpose=the report,required=true" >/dev/null 2>&1
+  HA goal run-phases art --dry-run >"$TMP/art_fail.json" 2>/dev/null
+  [ "$(check_json "$TMP/art_fail.json" "d.get('status')=='failed' and d.get('failed_phase')=='p1'")" = "1" ] \
+    && ok "s3-gate: phase FAILS when a required artifact is absent" || bad "s3-gate absent-artifact should fail"
+  # The verdict rationale names the missing artifact.
+  grep -q 'docs/never-produced-by-dryrun.md' "$PART/decisions.jsonl" 2>/dev/null \
+    && ok "s3-gate: verdict rationale names the missing artifact" || bad "s3-gate missing-artifact rationale"
+  # Phase 2 (fresh goal): a required output whose path EXISTS in the repo root
+  # (the gate's working-tree fallback) -> the same gate PASSES.
+  HA goal create --id art2 --title "verify artifacts present" --owner lead --priority p1 >/dev/null 2>&1
+  HA goal phase-add --goal art2 --phase-id p1 --name Build \
+    --intent "deliver a file that already exists" --acceptance "file exists" \
+    --output "id=manifest,kind=code,path=Cargo.toml,purpose=workspace manifest,required=true" >/dev/null 2>&1
+  HA task create --id ak2 --goal art2 --title B --objective b --owner lead --phase-id p1 --owned-path crates/b \
+    --output "id=manifest,kind=code,path=Cargo.toml,purpose=workspace manifest,required=true" >/dev/null 2>&1
+  HA goal run-phases art2 --dry-run >"$TMP/art_pass.json" 2>/dev/null
+  [ "$(check_json "$TMP/art_pass.json" "d.get('status')=='completed'")" = "1" ] \
+    && ok "s3-gate: phase PASSES when the required artifact is present" || bad "s3-gate present-artifact should pass"
 fi
 
 # ---------------------------------------------------------------------------

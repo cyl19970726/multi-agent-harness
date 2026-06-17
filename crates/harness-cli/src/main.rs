@@ -1566,6 +1566,104 @@ fn apply_phase_revision(
     Ok((superseded, new_task_ids))
 }
 
+/// Decide whether a `git diff` blob produced a NON-EMPTY created/modified file at
+/// the given repo-relative `path` (goal-phase-artifacts gate). A standard
+/// `git diff` lists each touched file as a `diff --git a/<p> b/<p>` header
+/// followed by `+++ b/<p>` and one or more `+`-prefixed content lines (an EMPTY
+/// new file has the header but no `+` content). We scan for the file's `+++ b/`
+/// (or `+++ <path>`) marker, then require at least one added content line before
+/// the next file header — so a touched-but-empty file does NOT count.
+fn diff_has_nonempty_file(diff: &str, path: &str) -> bool {
+    let target_b = format!("+++ b/{path}");
+    let target_plain = format!("+++ {path}");
+    let mut in_target = false;
+    for line in diff.lines() {
+        if line.starts_with("diff --git ") || line.starts_with("--- ") {
+            // A new file section begins; reset unless THIS header is our target's
+            // `+++` (handled below).
+            in_target = false;
+        }
+        if line.starts_with("+++ ") {
+            in_target = line == target_b || line == target_plain;
+            continue;
+        }
+        if in_target
+            && line.starts_with('+')
+            && !line.starts_with("+++")
+            && !line[1..].trim().is_empty()
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// Does the captured phase evidence (worker `worktree_diff`s) and/or the repo
+/// working tree show a non-empty file at `path`? The diff is authoritative for the
+/// isolated worktree path (writes never land in `repo_root`); the working-tree
+/// fallback covers the shared-cwd path where writes ARE in `repo_root`.
+fn artifact_path_satisfied(
+    path: &str,
+    outcome: &workflow::WorkflowOutcome,
+    repo_root: &Path,
+) -> bool {
+    let in_diff = outcome.steps.iter().any(|s| {
+        s.details
+            .as_ref()
+            .and_then(|d| d.get("worktree_diff"))
+            .and_then(|v| v.as_str())
+            .map(|diff| diff_has_nonempty_file(diff, path))
+            .unwrap_or(false)
+    });
+    if in_diff {
+        return true;
+    }
+    let abs = repo_root.join(path);
+    std::fs::metadata(&abs)
+        .map(|m| m.is_file() && m.len() > 0)
+        .unwrap_or(false)
+}
+
+/// The deterministic REQUIRED-ARTIFACT gate (goal-phase-artifacts). For every
+/// `required` [`ArtifactSpec`] with a non-empty `path` declared by the phase OR by
+/// one of its live tasks, assert the artifact was produced — present & non-empty
+/// in the phase run's evidence (a worker `worktree_diff`) or the repo working
+/// tree. Back-compat: a phase/task with no `outputs` (or no required+path specs)
+/// yields an EMPTY requirement set, so the gate is VACUOUSLY satisfied (today's
+/// behavior verbatim). Returns the list of unmet artifact paths (empty == passed).
+fn unmet_required_artifacts(
+    phase: &harness_core::GoalPhase,
+    phase_tasks: &[Task],
+    outcome: &workflow::WorkflowOutcome,
+    repo_root: &Path,
+) -> Vec<String> {
+    let required_paths = |specs: &[ArtifactSpec]| -> Vec<String> {
+        specs
+            .iter()
+            .filter(|s| s.required)
+            .filter_map(|s| {
+                s.path
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|p| !p.is_empty())
+                    .map(str::to_string)
+            })
+            .collect::<Vec<_>>()
+    };
+
+    let mut wanted: Vec<String> = required_paths(&phase.outputs);
+    for t in phase_tasks {
+        wanted.extend(required_paths(&t.outputs));
+    }
+    wanted.sort();
+    wanted.dedup();
+
+    wanted
+        .into_iter()
+        .filter(|p| !artifact_path_satisfied(p, outcome, repo_root))
+        .collect()
+}
+
 /// Sequence a goal's phases: gate each on its verdict before the next, write each
 /// phase's task outcomes back, advance the goal's derived stage, and persist a
 /// durable [`GoalOrchestrationRun`] checkpoint. Already-`Passed` phases are
@@ -1581,6 +1679,7 @@ fn orchestrate_goal_phases(
     run_phase: &PhaseRunFn<'_>,
     revise_phase: &PhaseReviseFn<'_>,
     max_phase_retries: u32,
+    repo_root: &Path,
 ) -> CliResult<serde_json::Value> {
     let mut goal = goal_load(store, goal_id)?;
     if goal.phases.is_empty() {
@@ -1696,12 +1795,27 @@ fn orchestrate_goal_phases(
                 &format!("phase-{phase_id}"),
                 resume_from.as_deref(),
             )?;
-            // A phase passes only if the run completed AND no task step failed.
-            // The second clause is the gate for phases with no `acceptance`
-            // (no `verdict()` is compiled): a failed task inside a `parallel()`
-            // block leaves the run Completed, so check the steps directly.
+            // A phase passes only if the run completed AND no task step failed AND
+            // every declared REQUIRED artifact was produced. The second clause is
+            // the gate for phases with no `acceptance` (no `verdict()` is
+            // compiled): a failed task inside a `parallel()` block leaves the run
+            // Completed, so check the steps directly. The third clause
+            // (goal-phase-artifacts) is the deterministic required-artifact gate:
+            // for each `required` ArtifactSpec with a `path` declared by the phase
+            // or its live tasks, assert the file exists & is non-empty in the run's
+            // evidence (a worker `worktree_diff`) or the repo working tree — BEFORE
+            // any LLM judge. A phase/task with no `outputs` yields an empty
+            // requirement set, so this clause is vacuously true (today's behavior).
+            let phase_live_tasks: Vec<Task> = goal_tasks
+                .iter()
+                .filter(|t| t.phase_id.as_deref() == Some(phase_id.as_str()))
+                .filter(|t| t.status != TaskStatus::Superseded)
+                .cloned()
+                .collect();
+            let unmet = unmet_required_artifacts(&phase, &phase_live_tasks, &outcome, repo_root);
             let attempt_passed = outcome.status == WorkflowRunStatus::Completed
-                && outcome.steps.iter().all(|s| s.ok);
+                && outcome.steps.iter().all(|s| s.ok)
+                && unmet.is_empty();
 
             write_back_phase_tasks(store, &goal, &phase_id, &outcome)?;
 
@@ -1723,6 +1837,15 @@ fn orchestrate_goal_phases(
             // Record the phase verdict as a Decision and point the phase at it
             // (acceptance #4: Decision(decision_kind=phase_verdict) +
             // GoalPhase.verdict_decision_id).
+            let rationale = if !attempt_passed && !unmet.is_empty() {
+                format!(
+                    "{}\n\nMissing required artifacts (not produced or empty): {}",
+                    outcome.summary,
+                    unmet.join(", ")
+                )
+            } else {
+                outcome.summary.clone()
+            };
             let verdict_decision = Decision {
                 id: generated_id("decision"),
                 task_id: goal.id.clone(),
@@ -1730,7 +1853,7 @@ fn orchestrate_goal_phases(
                     "phase {phase_id} verdict: {}",
                     if attempt_passed { "pass" } else { "clean_fail" }
                 ),
-                rationale: outcome.summary.clone(),
+                rationale,
                 evidence_ids: Vec::new(),
                 created_at: now_string(),
                 decision_kind: Some("phase_verdict".to_string()),
@@ -2159,7 +2282,7 @@ fn goal_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
                 created_at: now_string(),
                 started_at: None,
                 ended_at: None,
-                outputs: Vec::new(),
+                outputs: parse_output_flags(args)?,
             });
             goal.updated_at = now_string();
             store.append_goal(&goal)?;
@@ -2356,12 +2479,14 @@ fn goal_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
                     .cloned()
                     .unwrap_or(serde_json::Value::Null))
             };
+            let repo_root = options.project.project_root.clone();
             let report = orchestrate_goal_phases(
                 store,
                 &goal_id,
                 &run_phase,
                 &revise_phase,
                 max_phase_retries,
+                &repo_root,
             )?;
             print_json(&report)?;
             if report.get("status").and_then(|s| s.as_str()) == Some("failed") {
@@ -2566,7 +2691,7 @@ fn task_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
                 verdict_decision_id: value(args, "--verdict-decision"),
                 description: value(args, "--description"),
                 git_metadata: None,
-                outputs: Vec::new(),
+                outputs: parse_output_flags(args)?,
             };
             persist_new_task(store, &task)?;
             print_json(&task)?;
@@ -14838,6 +14963,82 @@ fn has_flag(args: &[String], name: &str) -> bool {
     args.iter().any(|arg| arg == name)
 }
 
+/// Parse an `ArtifactKind` from its snake_case wire name (goal-phase-artifacts).
+fn parse_artifact_kind(s: &str) -> CliResult<ArtifactKind> {
+    match s {
+        "design_doc" => Ok(ArtifactKind::DesignDoc),
+        "adr" => Ok(ArtifactKind::Adr),
+        "code" => Ok(ArtifactKind::Code),
+        "test_report" => Ok(ArtifactKind::TestReport),
+        "migration_doc" => Ok(ArtifactKind::MigrationDoc),
+        "registered_doc" => Ok(ArtifactKind::RegisteredDoc),
+        "screenshot" => Ok(ArtifactKind::Screenshot),
+        "other" => Ok(ArtifactKind::Other),
+        other => Err(CliError::Usage(format!(
+            "unknown artifact kind `{other}` (expected one of design_doc/adr/code/\
+             test_report/migration_doc/registered_doc/screenshot/other)"
+        ))),
+    }
+}
+
+/// Parse repeatable `--output` flags into [`ArtifactSpec`]s (goal-phase-artifacts).
+/// Each value is a comma-separated `key=value` list: `id` (required), `path`,
+/// `kind` (default `code`), `purpose`, `required` (`true`/`false`, default true),
+/// `acceptance`. Lets the CLI author a manifest the verdict gate enforces, beside
+/// the autonomous planner path. Empty (no `--output` flags) → `vec![]` (today's
+/// default). Commas/equals inside values are not supported (declare such paths via
+/// the planner JSON path instead).
+fn parse_output_flags(args: &[String]) -> CliResult<Vec<ArtifactSpec>> {
+    many(args, "--output")
+        .iter()
+        .map(|raw| {
+            let mut spec = ArtifactSpec::default();
+            for field in raw.split(',') {
+                let field = field.trim();
+                if field.is_empty() {
+                    continue;
+                }
+                let (key, val) = field.split_once('=').ok_or_else(|| {
+                    CliError::Usage(format!(
+                        "--output field `{field}` must be key=value (in `{raw}`)"
+                    ))
+                })?;
+                let val = val.trim();
+                match key.trim() {
+                    "id" => spec.id = val.to_string(),
+                    "path" => spec.path = Some(val.to_string()),
+                    "kind" => spec.kind = parse_artifact_kind(val)?,
+                    "purpose" => spec.purpose = val.to_string(),
+                    "required" => {
+                        spec.required = match val {
+                            "true" => true,
+                            "false" => false,
+                            other => {
+                                return Err(CliError::Usage(format!(
+                                    "--output required must be true|false, got `{other}`"
+                                )))
+                            }
+                        }
+                    }
+                    "acceptance" => spec.acceptance = Some(val.to_string()),
+                    other => {
+                        return Err(CliError::Usage(format!(
+                            "unknown --output field `{other}` (expected id/path/kind/\
+                             purpose/required/acceptance)"
+                        )))
+                    }
+                }
+            }
+            if spec.id.trim().is_empty() {
+                return Err(CliError::Usage(format!(
+                    "--output `{raw}` needs an `id=...` field"
+                )));
+            }
+            Ok(spec)
+        })
+        .collect()
+}
+
 fn parse_message_kind(value: &str) -> CliResult<MessageKind> {
     match value {
         "message" => Ok(MessageKind::Message),
@@ -21361,7 +21562,7 @@ mod tests {
          -> CliResult<(String, workflow::WorkflowOutcome)> {
             Ok(mock_outcome(&store, name, WorkflowRunStatus::Completed))
         };
-        let report = orchestrate_goal_phases(&store, "g-orch", &run_phase, &noop_reviser, 0)
+        let report = orchestrate_goal_phases(&store, "g-orch", &run_phase, &noop_reviser, 0, &root)
             .expect("orchestrate");
         assert_eq!(report["status"], "completed");
         assert_eq!(report["stage"], "verified");
@@ -21392,6 +21593,308 @@ mod tests {
             .filter(|d| d.decision_kind.as_deref() == Some("phase_verdict"))
             .collect();
         assert_eq!(verdicts.len(), 2, "one phase_verdict decision per phase");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    // goal-phase-artifacts s3-gate: unit-level checks of the diff scanner.
+    #[test]
+    fn diff_scanner_detects_nonempty_created_or_modified_files() {
+        // A created file with content → satisfied.
+        let created = "diff --git a/docs/report.md b/docs/report.md\n\
+             new file mode 100644\n\
+             index 0000000..e69de29\n\
+             --- /dev/null\n\
+             +++ b/docs/report.md\n\
+             @@ -0,0 +1,2 @@\n\
+             +# Report\n\
+             +body line\n";
+        assert!(diff_has_nonempty_file(created, "docs/report.md"));
+        // A different file is NOT matched.
+        assert!(!diff_has_nonempty_file(created, "docs/other.md"));
+        // A touched-but-EMPTY new file (header, no `+` content) → NOT satisfied.
+        let empty = "diff --git a/empty.txt b/empty.txt\n\
+             new file mode 100644\n\
+             index 0000000..e69de29\n\
+             --- /dev/null\n\
+             +++ b/empty.txt\n";
+        assert!(!diff_has_nonempty_file(empty, "empty.txt"));
+        // A modified file with an added line → satisfied.
+        let modified = "diff --git a/src/lib.rs b/src/lib.rs\n\
+             index 1111111..2222222 100644\n\
+             --- a/src/lib.rs\n\
+             +++ b/src/lib.rs\n\
+             @@ -1,1 +1,2 @@\n\
+              existing\n\
+             +added\n";
+        assert!(diff_has_nonempty_file(modified, "src/lib.rs"));
+    }
+
+    #[test]
+    fn parse_output_flags_authors_artifact_specs() {
+        // No flags → empty (today's default).
+        assert!(parse_output_flags(&[]).unwrap().is_empty());
+        // A full spec + a minimal one (defaults: kind=code, required=true).
+        let args: Vec<String> = [
+            "--output",
+            "id=report,kind=test_report,path=docs/r.md,purpose=the report,required=true,acceptance=covers gate",
+            "--output",
+            "id=code",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let specs = parse_output_flags(&args).unwrap();
+        assert_eq!(specs.len(), 2);
+        assert_eq!(specs[0].id, "report");
+        assert_eq!(specs[0].kind, ArtifactKind::TestReport);
+        assert_eq!(specs[0].path.as_deref(), Some("docs/r.md"));
+        assert!(specs[0].required);
+        assert_eq!(specs[0].acceptance.as_deref(), Some("covers gate"));
+        assert_eq!(specs[1].id, "code");
+        assert_eq!(specs[1].kind, ArtifactKind::Code);
+        assert!(specs[1].required);
+        assert!(specs[1].path.is_none());
+        // required=false is honored.
+        let opt = parse_output_flags(&[
+            "--output".into(),
+            "id=shot,path=docs/s.png,required=false".into(),
+        ])
+        .unwrap();
+        assert!(!opt[0].required);
+        // Missing id is an error.
+        assert!(parse_output_flags(&["--output".into(), "path=x".into()]).is_err());
+        // Unknown kind is an error.
+        assert!(parse_output_flags(&["--output".into(), "id=a,kind=bogus".into()]).is_err());
+    }
+
+    /// Like `mock_outcome` but attaches a `worktree_diff` carrying ONE created
+    /// non-empty file at `produced_path` to each task step's `details` — so the
+    /// gate sees evidence the artifact was produced.
+    fn mock_outcome_with_diff(
+        store: &HarnessStore,
+        name: &str,
+        produced_path: &str,
+    ) -> (String, workflow::WorkflowOutcome) {
+        let phase_id = name.strip_prefix("phase-").unwrap_or(name).to_string();
+        let diff = format!(
+            "diff --git a/{p} b/{p}\n\
+             new file mode 100644\n\
+             index 0000000..abc1234\n\
+             --- /dev/null\n\
+             +++ b/{p}\n\
+             @@ -0,0 +1,1 @@\n\
+             +produced content\n",
+            p = produced_path
+        );
+        let steps: Vec<workflow::StepResult> = store
+            .tasks()
+            .unwrap()
+            .into_iter()
+            .filter(|t| t.phase_id.as_deref() == Some(phase_id.as_str()))
+            .map(|t| workflow::StepResult {
+                phase: phase_id.clone(),
+                label: t.id.clone(),
+                provider: "codex".into(),
+                isolation: Some("worktree".into()),
+                ok: true,
+                provider_session_id: None,
+                output_summary: "ok".into(),
+                step_id: Some(format!("wfstep-{}", t.id)),
+                started_at: None,
+                details: Some(serde_json::json!({ "worktree_diff": diff })),
+                structured: None,
+                ordinal: None,
+            })
+            .collect();
+        (
+            "wfrun-mock".into(),
+            workflow::WorkflowOutcome {
+                steps,
+                status: WorkflowRunStatus::Completed,
+                summary: "mock".into(),
+                agents_spawned: 0,
+                final_output: None,
+            },
+        )
+    }
+
+    #[test]
+    fn orchestrate_gate_fails_phase_when_required_artifact_is_absent() {
+        let root = std::env::temp_dir().join(format!("harness-art-{}", generated_id("absent")));
+        let store = HarnessStore::new(&root);
+        store.init().expect("init");
+        let mut goal = make_goal("g-art-absent");
+        goal.phases = vec![orch_phase("p1")];
+        persist_new_goal(&store, &goal).unwrap();
+        // The task declares a REQUIRED output the worker never produces.
+        let mut t = make_task("t1", "g-art-absent");
+        t.phase_id = Some("p1".into());
+        t.outputs = vec![ArtifactSpec {
+            id: "report".into(),
+            kind: ArtifactKind::TestReport,
+            path: Some("docs/never-made.md".into()),
+            purpose: "the promised report".into(),
+            required: true,
+            acceptance: None,
+        }];
+        persist_new_task(&store, &t).unwrap();
+
+        // The worker "succeeds" (Completed, all steps ok) but produces a DIFFERENT
+        // file — today this would pass; the artifact gate must FAIL it.
+        let run_phase = |_script: &str,
+                         name: &str,
+                         _resume_from: Option<&str>|
+         -> CliResult<(String, workflow::WorkflowOutcome)> {
+            Ok(mock_outcome_with_diff(
+                &store,
+                name,
+                "docs/something-else.md",
+            ))
+        };
+        // The store root is an empty dir → no working-tree fallback hit either.
+        let report =
+            orchestrate_goal_phases(&store, "g-art-absent", &run_phase, &noop_reviser, 0, &root)
+                .expect("orchestrate");
+        assert_eq!(report["status"], "failed");
+        assert_eq!(report["failed_phase"], "p1");
+        let goal2 = goal_load(&store, "g-art-absent").unwrap();
+        assert_eq!(goal2.phases[0].status, GoalPhaseStatus::Failed);
+        // The verdict rationale names the missing artifact.
+        let decisions = store.decisions().unwrap();
+        let verdict = decisions
+            .iter()
+            .rev()
+            .find(|d| d.decision_kind.as_deref() == Some("phase_verdict"))
+            .expect("a phase_verdict decision");
+        assert!(
+            verdict.rationale.contains("docs/never-made.md"),
+            "rationale should name the missing artifact: {}",
+            verdict.rationale
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn orchestrate_gate_passes_phase_when_required_artifact_is_present() {
+        let root = std::env::temp_dir().join(format!("harness-art-{}", generated_id("present")));
+        let store = HarnessStore::new(&root);
+        store.init().expect("init");
+        let mut goal = make_goal("g-art-present");
+        goal.phases = vec![orch_phase("p1")];
+        persist_new_goal(&store, &goal).unwrap();
+        // Same phase, same required output — but now the worker produces it.
+        let mut t = make_task("t1", "g-art-present");
+        t.phase_id = Some("p1".into());
+        t.outputs = vec![ArtifactSpec {
+            id: "report".into(),
+            kind: ArtifactKind::TestReport,
+            path: Some("docs/report.md".into()),
+            purpose: "the promised report".into(),
+            required: true,
+            acceptance: None,
+        }];
+        persist_new_task(&store, &t).unwrap();
+
+        let run_phase = |_script: &str,
+                         name: &str,
+                         _resume_from: Option<&str>|
+         -> CliResult<(String, workflow::WorkflowOutcome)> {
+            Ok(mock_outcome_with_diff(&store, name, "docs/report.md"))
+        };
+        let report =
+            orchestrate_goal_phases(&store, "g-art-present", &run_phase, &noop_reviser, 0, &root)
+                .expect("orchestrate");
+        assert_eq!(report["status"], "completed");
+        let goal2 = goal_load(&store, "g-art-present").unwrap();
+        assert_eq!(goal2.phases[0].status, GoalPhaseStatus::Passed);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn orchestrate_gate_passes_when_required_artifact_present_in_working_tree() {
+        // The shared-cwd path: the worker writes into the repo working tree (no
+        // worktree diff). The gate's working-tree fallback must still see it.
+        let root = std::env::temp_dir().join(format!("harness-art-{}", generated_id("wt")));
+        let store = HarnessStore::new(&root);
+        store.init().expect("init");
+        let repo_root = std::env::temp_dir().join(format!("harness-repo-{}", generated_id("wt")));
+        std::fs::create_dir_all(repo_root.join("docs")).unwrap();
+        std::fs::write(repo_root.join("docs/report.md"), "real content").unwrap();
+
+        let mut goal = make_goal("g-art-wt");
+        goal.phases = vec![orch_phase("p1")];
+        persist_new_goal(&store, &goal).unwrap();
+        let mut t = make_task("t1", "g-art-wt");
+        t.phase_id = Some("p1".into());
+        t.outputs = vec![ArtifactSpec {
+            id: "report".into(),
+            kind: ArtifactKind::TestReport,
+            path: Some("docs/report.md".into()),
+            purpose: "the promised report".into(),
+            required: true,
+            acceptance: None,
+        }];
+        persist_new_task(&store, &t).unwrap();
+
+        // The worker emits NO diff (details None), so only the working-tree
+        // fallback (rooted at `repo_root`) can satisfy the requirement.
+        let run_phase = |_script: &str,
+                         name: &str,
+                         _resume_from: Option<&str>|
+         -> CliResult<(String, workflow::WorkflowOutcome)> {
+            Ok(mock_outcome(&store, name, WorkflowRunStatus::Completed))
+        };
+        let report =
+            orchestrate_goal_phases(&store, "g-art-wt", &run_phase, &noop_reviser, 0, &repo_root)
+                .expect("orchestrate");
+        assert_eq!(report["status"], "completed");
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::remove_dir_all(&repo_root).ok();
+    }
+
+    #[test]
+    fn orchestrate_gate_ignores_optional_and_pathless_artifacts() {
+        // An OPTIONAL artifact and a REQUIRED-but-pathless artifact are never
+        // enforced — the gate stays vacuously true (back-compat for declared-but-
+        // unenforceable manifests).
+        let root = std::env::temp_dir().join(format!("harness-art-{}", generated_id("opt")));
+        let store = HarnessStore::new(&root);
+        store.init().expect("init");
+        let mut goal = make_goal("g-art-opt");
+        goal.phases = vec![orch_phase("p1")];
+        persist_new_goal(&store, &goal).unwrap();
+        let mut t = make_task("t1", "g-art-opt");
+        t.phase_id = Some("p1".into());
+        t.outputs = vec![
+            ArtifactSpec {
+                id: "optional-screenshot".into(),
+                kind: ArtifactKind::Screenshot,
+                path: Some("docs/never.png".into()),
+                purpose: "nice to have".into(),
+                required: false,
+                acceptance: None,
+            },
+            ArtifactSpec {
+                id: "pathless".into(),
+                kind: ArtifactKind::Code,
+                path: None,
+                purpose: "the diff itself".into(),
+                required: true,
+                acceptance: None,
+            },
+        ];
+        persist_new_task(&store, &t).unwrap();
+
+        let run_phase = |_script: &str,
+                         name: &str,
+                         _resume_from: Option<&str>|
+         -> CliResult<(String, workflow::WorkflowOutcome)> {
+            Ok(mock_outcome(&store, name, WorkflowRunStatus::Completed))
+        };
+        let report =
+            orchestrate_goal_phases(&store, "g-art-opt", &run_phase, &noop_reviser, 0, &root)
+                .expect("orchestrate");
+        assert_eq!(report["status"], "completed");
         std::fs::remove_dir_all(&root).ok();
     }
 
@@ -21454,7 +21957,7 @@ mod tests {
             };
             Ok(mock_outcome(&store, name, status))
         };
-        let report = orchestrate_goal_phases(&store, "g-fail", &run_phase, &noop_reviser, 0)
+        let report = orchestrate_goal_phases(&store, "g-fail", &run_phase, &noop_reviser, 0, &root)
             .expect("orchestrate");
         assert_eq!(report["status"], "failed");
         assert_eq!(report["failed_phase"], "p1");
@@ -21496,7 +21999,7 @@ mod tests {
             };
             Ok(mock_outcome(&store, name, status))
         };
-        let report = orchestrate_goal_phases(&store, "g-resume", &first, &noop_reviser, 0)
+        let report = orchestrate_goal_phases(&store, "g-resume", &first, &noop_reviser, 0, &root)
             .expect("first orchestrate");
         assert_eq!(report["status"], "failed");
         assert_eq!(report["failed_phase"], "p2");
@@ -21516,7 +22019,7 @@ mod tests {
                 .push((name.to_string(), resume_from.map(str::to_string)));
             Ok(mock_outcome(&store, name, WorkflowRunStatus::Completed))
         };
-        let report = orchestrate_goal_phases(&store, "g-resume", &second, &noop_reviser, 0)
+        let report = orchestrate_goal_phases(&store, "g-resume", &second, &noop_reviser, 0, &root)
             .expect("second orchestrate");
         assert_eq!(report["status"], "completed");
 
@@ -21611,8 +22114,9 @@ mod tests {
             }))
         };
 
-        let report = orchestrate_goal_phases(&store, "g-replan", &run_phase, &revise_phase, 1)
-            .expect("orchestrate");
+        let report =
+            orchestrate_goal_phases(&store, "g-replan", &run_phase, &revise_phase, 1, &root)
+                .expect("orchestrate");
         assert_eq!(
             report["status"], "completed",
             "phase should pass within the cap"
@@ -21703,7 +22207,7 @@ mod tests {
             }))
         };
 
-        let report = orchestrate_goal_phases(&store, "g-cap", &run_phase, &revise_phase, 2)
+        let report = orchestrate_goal_phases(&store, "g-cap", &run_phase, &revise_phase, 2, &root)
             .expect("orchestrate");
         assert_eq!(report["status"], "failed");
         assert_eq!(report["failed_phase"], "p1");
@@ -21751,7 +22255,7 @@ mod tests {
             *attempts.borrow_mut() += 1;
             Ok(mock_outcome(&store, name, WorkflowRunStatus::Failed))
         };
-        let report = orchestrate_goal_phases(&store, "g-noop", &run_phase, &noop_reviser, 5)
+        let report = orchestrate_goal_phases(&store, "g-noop", &run_phase, &noop_reviser, 5, &root)
             .expect("orchestrate");
         assert_eq!(report["status"], "failed");
         assert_eq!(

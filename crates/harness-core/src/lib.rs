@@ -767,11 +767,55 @@ pub fn compile_phase_to_starlark(
         .map(str::trim)
         .filter(|a| !a.is_empty())
     {
+        // Surface the declared manifest (phase + task `outputs`) to the judge so
+        // the LLM verdict sees the PROMISED deliverables, not just the prose
+        // criterion (goal-phase-artifacts). A deterministic gate already enforces
+        // each `required` artifact's presence in the orchestrator; this gives the
+        // judge the same list so it can reason about partial/empty work. Empty
+        // outputs append nothing — the prompt is byte-identical to today.
+        let render_specs = |label: &str, specs: &[ArtifactSpec], out: &mut String| {
+            if specs.is_empty() {
+                return;
+            }
+            out.push_str(&format!("\n\n{label}"));
+            for o in specs {
+                let path = o
+                    .path
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or("(no path declared)");
+                let req = if o.required { "required" } else { "optional" };
+                out.push_str(&format!("\n- {path} — {} ({req})", o.purpose));
+                if let Some(acc) = o
+                    .acceptance
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                {
+                    out.push_str(&format!(" [acceptance: {acc}]"));
+                }
+            }
+        };
+        let mut manifest = String::new();
+        render_specs(
+            "Declared phase deliverables:",
+            &phase.outputs,
+            &mut manifest,
+        );
+        for t in &tasks {
+            render_specs(
+                &format!("Declared deliverables for task {}:", t.id),
+                &t.outputs,
+                &mut manifest,
+            );
+        }
         let judge_prompt = format!(
-            "Acceptance check for phase {} ({}) of goal {}.\n\nCriterion:\n{}\n\n\
+            "Acceptance check for phase {} ({}) of goal {}.\n\nCriterion:\n{}{}\n\n\
              Review the work this phase's tasks produced and decide whether the criterion \
-             is FULLY met. Set pass=true only if it holds; otherwise pass=false with the gap.",
-            phase.id, phase.name, goal.id, acc
+             is FULLY met (including that every required deliverable above was actually \
+             produced). Set pass=true only if it holds; otherwise pass=false with the gap.",
+            phase.id, phase.name, goal.id, acc, manifest
         );
         s.push_str(&format!(
             "\n_acc = agent(\n    {},\n    provider=\"codex\",\n    label={},\n    phase={},\n    \
@@ -3308,6 +3352,54 @@ mod tests {
             1,
             "only the task that declared outputs gets the block"
         );
+    }
+
+    #[test]
+    fn compile_phase_judge_prompt_carries_declared_manifest() {
+        // goal-phase-artifacts s3-gate: the verdict judge must SEE the declared
+        // deliverables (phase + task `outputs`), not just the prose criterion, so
+        // the LLM can reason about whether every promised artifact was produced.
+        let goal = goal_in_stage(GoalStage::Working);
+        let mut phase = test_phase("p", GoalPhaseStatus::InProgress);
+        phase.acceptance = Some("Everything works end to end.".into());
+        phase.outputs = vec![ArtifactSpec {
+            id: "adr".into(),
+            kind: ArtifactKind::Adr,
+            path: Some("docs/adr/0024.md".into()),
+            purpose: "the architecture decision".into(),
+            required: true,
+            acceptance: None,
+        }];
+        let mut t = compile_task("t-doc", "p", &[], &["docs"]);
+        t.outputs = vec![ArtifactSpec {
+            id: "report".into(),
+            kind: ArtifactKind::TestReport,
+            path: Some("docs/report.md".into()),
+            purpose: "the e2e test report".into(),
+            required: true,
+            acceptance: None,
+        }];
+        let script = compile_phase_to_starlark(&goal, &phase, &[t]).expect("compile");
+
+        // The judge agent's prompt (it carries the criterion) must also carry the
+        // phase- and task-level deliverable lists.
+        assert!(script.contains("Declared phase deliverables:"));
+        assert!(script.contains("docs/adr/0024.md — the architecture decision (required)"));
+        assert!(script.contains("Declared deliverables for task t-doc:"));
+        assert!(script.contains("docs/report.md — the e2e test report (required)"));
+    }
+
+    #[test]
+    fn compile_phase_judge_prompt_unchanged_when_no_outputs() {
+        // Back-compat: with empty outputs, the judge prompt appends NOTHING — it
+        // is byte-identical to a phase whose acceptance is the only gate input.
+        let goal = goal_in_stage(GoalStage::Working);
+        let mut phase = test_phase("p", GoalPhaseStatus::InProgress);
+        phase.acceptance = Some("It compiles.".into());
+        let t = compile_task("t1", "p", &[], &["a"]);
+        let script = compile_phase_to_starlark(&goal, &phase, &[t]).expect("compile");
+        assert!(!script.contains("Declared phase deliverables:"));
+        assert!(!script.contains("Declared deliverables for task"));
     }
 
     #[test]
