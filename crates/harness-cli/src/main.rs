@@ -1750,6 +1750,125 @@ fn unmet_required_artifacts(
         .collect()
 }
 
+/// The full diff a writable task step produced in its (now-dropped) worktree, for
+/// durable landing (goal-phase-landing). Prefers the uncapped `landing_diff` the
+/// runtime stores when the displayed `worktree_diff` was truncated; otherwise the
+/// `worktree_diff` itself is the full diff (it was under the cap). An empty/blank
+/// diff yields `None` (a read-only step or a no-op writable step lands nothing).
+fn step_landing_diff(step: &workflow::StepResult) -> Option<String> {
+    let details = step.details.as_ref()?;
+    let diff = details
+        .get("landing_diff")
+        .and_then(|v| v.as_str())
+        .or_else(|| details.get("worktree_diff").and_then(|v| v.as_str()))?;
+    if diff.trim().is_empty() {
+        None
+    } else {
+        Some(diff.to_string())
+    }
+}
+
+/// Run `git -C <repo> <args...>`, returning Ok(stdout) or an actionable Usage error
+/// carrying stderr. Used by the landing path so each git failure names what failed.
+fn git_in(repo_root: &Path, args: &[&str]) -> CliResult<String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args(args)
+        .output()?;
+    if !output.status.success() {
+        return Err(CliError::Usage(format!(
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+/// Land a PASSED phase's writable work onto the orchestrator's working branch
+/// (goal-phase-landing). For each writable task step that produced a worktree diff
+/// (in deterministic order — by leaf `ordinal`, then journaled order), `git apply`
+/// the diff onto `repo_root`'s working tree, then make ONE commit
+/// `"phase <phase_id> landed (run-phases)"`. Parallel tasks have DISJOINT
+/// `owned_paths` (the compiler invariant), so their diffs touch disjoint files and
+/// apply conflict-free. Returns the new commit sha, or `Ok(None)` when the phase
+/// produced NO writable diffs (a read-only phase lands + commits nothing). A diff
+/// that fails to apply cleanly is a phase failure (`Err`) with an actionable
+/// message — we never `--force` / `-3` auto-merge (the disjoint invariant means a
+/// real conflict signals an upstream bug, not something to paper over).
+fn land_phase_diffs(
+    phase_id: &str,
+    outcome: &workflow::WorkflowOutcome,
+    repo_root: &Path,
+) -> CliResult<Option<String>> {
+    // Collect diffs in a deterministic order: a leaf's `ordinal` (assigned by the
+    // Starlark front-end in issue order) when present, else the journaled index.
+    let mut diffs: Vec<(u64, usize, String)> = Vec::new();
+    for (idx, step) in outcome.steps.iter().enumerate() {
+        if let Some(diff) = step_landing_diff(step) {
+            diffs.push((step.ordinal.unwrap_or(idx as u64), idx, diff));
+        }
+    }
+    if diffs.is_empty() {
+        // A read-only phase (no writable diffs) lands + commits nothing.
+        return Ok(None);
+    }
+    diffs.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+
+    if !is_git_repo(repo_root) {
+        return Err(CliError::Usage(format!(
+            "phase '{phase_id}' produced writable work to land, but {} is not a git \
+             repository — run `harness goal run-phases` from a git repo so passing \
+             phases can land their work onto the branch.",
+            repo_root.display()
+        )));
+    }
+
+    // Apply each diff onto the working tree (index + worktree). `git apply --index`
+    // keeps the index in sync so the single commit below captures every landed file
+    // (including brand-new ones). No `-3` / `--force`: a clean apply is REQUIRED.
+    for (_, _, diff) in &diffs {
+        let mut child = Command::new("git")
+            .arg("-C")
+            .arg(repo_root)
+            .args(["apply", "--index", "--whitespace=nowarn", "-"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()?;
+        if let Some(mut stdin) = child.stdin.take() {
+            use std::io::Write;
+            stdin.write_all(diff.as_bytes())?;
+        }
+        let out = child.wait_with_output()?;
+        if !out.status.success() {
+            return Err(CliError::Usage(format!(
+                "phase '{phase_id}' could not LAND a writable task's diff onto {} \
+                 (git apply failed): {}. Parallel tasks must own disjoint paths; a \
+                 genuine apply conflict is a phase failure, not auto-merged.",
+                repo_root.display(),
+                String::from_utf8_lossy(&out.stderr).trim()
+            )));
+        }
+    }
+
+    // ONE commit for the whole phase's landed work. `git apply --index` already
+    // staged everything; commit it. `--no-verify` is intentionally NOT used.
+    git_in(
+        repo_root,
+        &[
+            "commit",
+            "-m",
+            &format!("phase {phase_id} landed (run-phases)"),
+        ],
+    )?;
+    let sha = git_in(repo_root, &["rev-parse", "HEAD"])?
+        .trim()
+        .to_string();
+    Ok(Some(sha))
+}
+
 /// Sequence a goal's phases: gate each on its verdict before the next, write each
 /// phase's task outcomes back, advance the goal's derived stage, and persist a
 /// durable [`GoalOrchestrationRun`] checkpoint. Already-`Passed` phases are
@@ -1899,11 +2018,30 @@ fn orchestrate_goal_phases(
                 .cloned()
                 .collect();
             let unmet = unmet_required_artifacts(&phase, &phase_live_tasks, &outcome, repo_root);
-            let attempt_passed = outcome.status == WorkflowRunStatus::Completed
+            let gate_passed = outcome.status == WorkflowRunStatus::Completed
                 && outcome.steps.iter().all(|s| s.ok)
                 && unmet.is_empty();
 
             write_back_phase_tasks(store, &goal, &phase_id, &outcome)?;
+
+            // Durable landing (goal-phase-landing): a phase that cleared the gate
+            // LANDS its writable tasks' work onto the orchestrator branch — apply
+            // each worktree diff + ONE commit `phase <id> landed (run-phases)`. A
+            // read-only phase lands nothing (`landed_commit` stays None). A diff
+            // that fails to apply cleanly DEMOTES the pass to a clean failure (the
+            // existing failure path then captures it as knowledge / replans), with
+            // an actionable message — we never force-merge. Sequential phases build
+            // on this because the next phase's worktrees branch from the updated
+            // HEAD that now includes this landing commit.
+            let mut landed_commit: Option<String> = None;
+            let mut landing_error: Option<String> = None;
+            if gate_passed {
+                match land_phase_diffs(&phase_id, &outcome, repo_root) {
+                    Ok(sha) => landed_commit = sha,
+                    Err(err) => landing_error = Some(err.to_string()),
+                }
+            }
+            let attempt_passed = gate_passed && landing_error.is_none();
 
             // Link each journaled step back to its Task + stamp the verdict step's
             // outcome (acceptance #1: the structured Task<->Step link).
@@ -1923,7 +2061,9 @@ fn orchestrate_goal_phases(
             // Record the phase verdict as a Decision and point the phase at it
             // (acceptance #4: Decision(decision_kind=phase_verdict) +
             // GoalPhase.verdict_decision_id).
-            let rationale = if !attempt_passed && !unmet.is_empty() {
+            let rationale = if let Some(err) = &landing_error {
+                format!("{}\n\nLanding failed: {}", outcome.summary, err)
+            } else if !attempt_passed && !unmet.is_empty() {
                 format!(
                     "{}\n\nMissing required artifacts (not produced or empty): {}",
                     outcome.summary,
@@ -1956,6 +2096,9 @@ fn orchestrate_goal_phases(
                 GoalPhaseStatus::Failed
             };
             goal.phases[idx].ended_at = Some(now_string());
+            // Record where this phase's writable work landed (None for a read-only
+            // phase or a non-pass). Mirrored onto the OrchestrationPhaseRun below.
+            goal.phases[idx].landed_commit = landed_commit.clone();
             goal.updated_at = now_string();
             store.append_goal(&goal)?;
 
@@ -1966,9 +2109,9 @@ fn orchestrate_goal_phases(
                 passed: attempt_passed,
                 started_at,
                 ended_at: Some(now_string()),
-                // L2 (durable landing) records the landed commit here; L1 leaves
-                // it unset so the field is back-compat for run-phases today.
-                landed_commit: None,
+                // L2 (durable landing): the commit a passing phase landed onto the
+                // branch; None for read-only / non-passing phases.
+                landed_commit: landed_commit.clone(),
             });
             orch.updated_at = now_string();
             ran.push(serde_json::json!({ "phase": phase_id, "passed": attempt_passed }));
@@ -7442,6 +7585,18 @@ fn build_step_details(
             "worktree_diff_truncated".into(),
             serde_json::Value::Bool(truncated),
         );
+        // The FULL, uncapped diff for durable landing (goal-phase-landing): when a
+        // phase passes, `orchestrate_goal_phases` applies this onto the branch.
+        // `worktree_diff` above is CAPPED for dashboard display, so a truncated diff
+        // would fail to apply (and falsely fail a passing phase); landing reads this
+        // uncapped copy and falls back to `worktree_diff` only when absent (e.g. an
+        // old run / a mock that carries only `worktree_diff`).
+        if truncated {
+            map.insert(
+                "landing_diff".into(),
+                serde_json::Value::String(diff.to_string()),
+            );
+        }
     }
 
     if !spawn.warnings.is_empty() {
@@ -21617,6 +21772,40 @@ mod tests {
         }
     }
 
+    /// Init a real git repo at `dir` with one seed commit so `git apply` + commit
+    /// (the durable-landing path) and `git worktree add HEAD` both work in tests.
+    fn init_git_repo(dir: &Path) {
+        std::fs::create_dir_all(dir).expect("mk git repo dir");
+        let git = |args: &[&str]| {
+            Command::new("git")
+                .arg("-C")
+                .arg(dir)
+                .args(args)
+                .output()
+                .expect("git")
+        };
+        assert!(git(&["init"]).status.success(), "git init");
+        let _ = git(&["config", "user.email", "t@t"]);
+        let _ = git(&["config", "user.name", "t"]);
+        std::fs::write(dir.join("README"), "seed").expect("seed file");
+        let _ = git(&["add", "-A"]);
+        assert!(
+            git(&["commit", "-m", "seed"]).status.success(),
+            "git commit"
+        );
+    }
+
+    /// `git -C <dir> <args...>` stdout, trimmed (test helper).
+    fn git_out(dir: &Path, args: &[&str]) -> String {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .output()
+            .expect("git");
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
     fn mock_outcome(
         store: &HarnessStore,
         name: &str,
@@ -22007,19 +22196,43 @@ mod tests {
         }];
         persist_new_task(&store, &t).unwrap();
 
+        // The orchestrator branch is a real git repo so the passing phase can LAND
+        // its writable diff (goal-phase-landing) — this also exercises the artifact
+        // gate's in-diff evidence path.
+        let repo_root =
+            std::env::temp_dir().join(format!("harness-repo-{}", generated_id("present")));
+        init_git_repo(&repo_root);
+
         let run_phase = |_script: &str,
                          name: &str,
                          _resume_from: Option<&str>|
          -> CliResult<(String, workflow::WorkflowOutcome)> {
             Ok(mock_outcome_with_diff(&store, name, "docs/report.md"))
         };
-        let report =
-            orchestrate_goal_phases(&store, "g-art-present", &run_phase, &noop_reviser, 0, &root)
-                .expect("orchestrate");
+        let report = orchestrate_goal_phases(
+            &store,
+            "g-art-present",
+            &run_phase,
+            &noop_reviser,
+            0,
+            &repo_root,
+        )
+        .expect("orchestrate");
         assert_eq!(report["status"], "completed");
         let goal2 = goal_load(&store, "g-art-present").unwrap();
         assert_eq!(goal2.phases[0].status, GoalPhaseStatus::Passed);
+        // The diff landed: the file is committed on the branch and the phase records
+        // its landed_commit.
+        assert!(
+            repo_root.join("docs/report.md").is_file(),
+            "landed file must be present in the working tree"
+        );
+        assert!(
+            goal2.phases[0].landed_commit.is_some(),
+            "a passing phase that produced a diff must record a landed_commit"
+        );
         std::fs::remove_dir_all(&root).ok();
+        std::fs::remove_dir_all(&repo_root).ok();
     }
 
     #[test]
@@ -22060,6 +22273,203 @@ mod tests {
             orchestrate_goal_phases(&store, "g-art-wt", &run_phase, &noop_reviser, 0, &repo_root)
                 .expect("orchestrate");
         assert_eq!(report["status"], "completed");
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::remove_dir_all(&repo_root).ok();
+    }
+
+    // ---- goal-phase-landing (L2): durable landing in run-phases ---------------
+
+    #[test]
+    fn orchestrate_lands_writable_phase_diff_and_records_landed_commit() {
+        // A passing phase whose writable task carries a worktree_diff that CREATES a
+        // file → after the phase passes, the file is committed on the branch and the
+        // phase + the orchestration-phase-run both record the landing commit sha.
+        let root = std::env::temp_dir().join(format!("harness-land-{}", generated_id("ok")));
+        let store = HarnessStore::new(&root);
+        store.init().expect("init");
+        let repo_root =
+            std::env::temp_dir().join(format!("harness-landrepo-{}", generated_id("ok")));
+        init_git_repo(&repo_root);
+        let head_before = git_out(&repo_root, &["rev-parse", "HEAD"]);
+
+        let mut goal = make_goal("g-land");
+        goal.phases = vec![orch_phase("p1")];
+        persist_new_goal(&store, &goal).unwrap();
+        let mut t = make_task("t1", "g-land");
+        t.phase_id = Some("p1".into());
+        persist_new_task(&store, &t).unwrap();
+
+        // The mock step's details carry a worktree_diff creating src/new.rs.
+        let run_phase = |_script: &str,
+                         name: &str,
+                         _resume_from: Option<&str>|
+         -> CliResult<(String, workflow::WorkflowOutcome)> {
+            Ok(mock_outcome_with_diff(&store, name, "src/new.rs"))
+        };
+        let report =
+            orchestrate_goal_phases(&store, "g-land", &run_phase, &noop_reviser, 0, &repo_root)
+                .expect("orchestrate");
+        assert_eq!(report["status"], "completed");
+
+        // The file is committed AND present in the working tree.
+        let landed = repo_root.join("src/new.rs");
+        assert!(landed.is_file(), "landed file must exist on disk");
+        assert_eq!(
+            std::fs::read_to_string(&landed).unwrap().trim(),
+            "produced content"
+        );
+        // Exactly ONE new commit, with the canonical landing message.
+        let head_after = git_out(&repo_root, &["rev-parse", "HEAD"]);
+        assert_ne!(
+            head_after, head_before,
+            "a landing commit must have been made"
+        );
+        let subject = git_out(&repo_root, &["log", "-1", "--pretty=%s"]);
+        assert_eq!(subject, "phase p1 landed (run-phases)");
+        let count_before = git_out(&repo_root, &["rev-list", "--count", &head_before]);
+        let count_after = git_out(&repo_root, &["rev-list", "--count", "HEAD"]);
+        assert_eq!(
+            count_after.parse::<u64>().unwrap(),
+            count_before.parse::<u64>().unwrap() + 1,
+            "landing must add exactly one commit"
+        );
+
+        // landed_commit recorded on the phase AND the orchestration-phase-run.
+        let goal2 = goal_load(&store, "g-land").unwrap();
+        assert_eq!(
+            goal2.phases[0].landed_commit.as_deref(),
+            Some(head_after.as_str())
+        );
+        let orch = store
+            .goal_orchestration_runs()
+            .unwrap()
+            .into_iter()
+            .rev()
+            .find(|o| o.goal_id == "g-land")
+            .unwrap();
+        let pr = orch
+            .phase_runs
+            .iter()
+            .rev()
+            .find(|r| r.phase_id == "p1")
+            .unwrap();
+        assert_eq!(pr.landed_commit.as_deref(), Some(head_after.as_str()));
+
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::remove_dir_all(&repo_root).ok();
+    }
+
+    #[test]
+    fn orchestrate_readonly_phase_lands_nothing() {
+        // A phase whose steps carry NO worktree diff (read-only) lands + commits
+        // nothing and records no landed_commit — even with a real git branch.
+        let root = std::env::temp_dir().join(format!("harness-land-{}", generated_id("ro")));
+        let store = HarnessStore::new(&root);
+        store.init().expect("init");
+        let repo_root =
+            std::env::temp_dir().join(format!("harness-landrepo-{}", generated_id("ro")));
+        init_git_repo(&repo_root);
+        let head_before = git_out(&repo_root, &["rev-parse", "HEAD"]);
+
+        let mut goal = make_goal("g-ro");
+        goal.phases = vec![orch_phase("p1")];
+        persist_new_goal(&store, &goal).unwrap();
+        let mut t = make_task("t1", "g-ro");
+        t.phase_id = Some("p1".into());
+        persist_new_task(&store, &t).unwrap();
+
+        let run_phase = |_script: &str,
+                         name: &str,
+                         _resume_from: Option<&str>|
+         -> CliResult<(String, workflow::WorkflowOutcome)> {
+            Ok(mock_outcome(&store, name, WorkflowRunStatus::Completed))
+        };
+        let report =
+            orchestrate_goal_phases(&store, "g-ro", &run_phase, &noop_reviser, 0, &repo_root)
+                .expect("orchestrate");
+        assert_eq!(report["status"], "completed");
+
+        // No new commit; no landed_commit recorded.
+        assert_eq!(git_out(&repo_root, &["rev-parse", "HEAD"]), head_before);
+        let goal2 = goal_load(&store, "g-ro").unwrap();
+        assert_eq!(goal2.phases[0].status, GoalPhaseStatus::Passed);
+        assert_eq!(goal2.phases[0].landed_commit, None);
+
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::remove_dir_all(&repo_root).ok();
+    }
+
+    #[test]
+    fn orchestrate_fails_phase_when_diff_cannot_be_applied() {
+        // A diff that cannot apply cleanly (it claims to ADD a file that already
+        // exists with different content) FAILS the phase with an actionable message
+        // — no force, no auto-merge.
+        let root = std::env::temp_dir().join(format!("harness-land-{}", generated_id("conflict")));
+        let store = HarnessStore::new(&root);
+        store.init().expect("init");
+        let repo_root =
+            std::env::temp_dir().join(format!("harness-landrepo-{}", generated_id("conflict")));
+        init_git_repo(&repo_root);
+        // Commit a file the incoming "new file" diff will collide with.
+        std::fs::create_dir_all(repo_root.join("src")).unwrap();
+        std::fs::write(repo_root.join("src/new.rs"), "pre-existing\n").unwrap();
+        let _ = Command::new("git")
+            .arg("-C")
+            .arg(&repo_root)
+            .args(["add", "-A"])
+            .output();
+        let _ = Command::new("git")
+            .arg("-C")
+            .arg(&repo_root)
+            .args(["commit", "-m", "collide"])
+            .output();
+        let head_before = git_out(&repo_root, &["rev-parse", "HEAD"]);
+
+        let mut goal = make_goal("g-conflict");
+        goal.phases = vec![orch_phase("p1")];
+        persist_new_goal(&store, &goal).unwrap();
+        let mut t = make_task("t1", "g-conflict");
+        t.phase_id = Some("p1".into());
+        persist_new_task(&store, &t).unwrap();
+
+        // mock_outcome_with_diff emits a "new file" diff for src/new.rs — but the
+        // file already exists, so `git apply` refuses.
+        let run_phase = |_script: &str,
+                         name: &str,
+                         _resume_from: Option<&str>|
+         -> CliResult<(String, workflow::WorkflowOutcome)> {
+            Ok(mock_outcome_with_diff(&store, name, "src/new.rs"))
+        };
+        let report = orchestrate_goal_phases(
+            &store,
+            "g-conflict",
+            &run_phase,
+            &noop_reviser,
+            0,
+            &repo_root,
+        )
+        .expect("orchestrate");
+        assert_eq!(report["status"], "failed");
+        assert_eq!(report["failed_phase"], "p1");
+        // No commit was made and the phase is Failed.
+        assert_eq!(git_out(&repo_root, &["rev-parse", "HEAD"]), head_before);
+        let goal2 = goal_load(&store, "g-conflict").unwrap();
+        assert_eq!(goal2.phases[0].status, GoalPhaseStatus::Failed);
+        assert_eq!(goal2.phases[0].landed_commit, None);
+        // The verdict rationale explains the landing failure actionably.
+        let verdict = store
+            .decisions()
+            .unwrap()
+            .into_iter()
+            .rev()
+            .find(|d| d.decision_kind.as_deref() == Some("phase_verdict"))
+            .expect("a phase_verdict decision");
+        assert!(
+            verdict.rationale.contains("Landing failed"),
+            "rationale must explain the landing failure: {}",
+            verdict.rationale
+        );
+
         std::fs::remove_dir_all(&root).ok();
         std::fs::remove_dir_all(&repo_root).ok();
     }
