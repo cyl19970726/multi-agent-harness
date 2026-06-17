@@ -12,16 +12,16 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use harness_core::{
     build_launch_spec, compile_phase_to_starlark, compile_planner_script, content_hash_hex16,
     AgentEvent, AgentMember, AgentMemberStatus, AgentProviderConfig, AgentRuntime,
-    AgentRuntimeHealth, AgentRuntimeStatus, AgentTeam, AgentTeamStatus, Decision,
-    EvaluationOutcome, Evidence, Exploration, Gap, GapSeverity, GapStatus, Goal, GoalCase,
-    GoalDesign, GoalEvaluation, GoalOrchestrationRun, GoalPhaseStatus, GoalStage, GoalStatus,
-    HarnessTokenUsage, HarnessToolCall, HarnessToolResult, HarnessTurnEvent, HarnessTurnEventKind,
-    Knowledge, KnowledgeSource, LaunchMcp, LaunchPermission, LaunchSpec, Message, MessageDelivery,
-    MessageDeliveryStatus, MessageKind, MessageTerminalSource, OrchestrationPhaseRun,
-    OrchestrationStatus, ProjectContext, ProjectKind, Proposal, ProposalStatus,
-    ProviderChildThread, ProviderChildThreadStatus, ProviderSession, ProviderSessionStatus, Review,
-    ReviewVerdict, SenderKind, Task, TaskStatus, VerdictOutcome, Vision, WorkflowRun,
-    WorkflowRunStatus, WorkflowStep, WorkflowStepStatus,
+    AgentRuntimeHealth, AgentRuntimeStatus, AgentTeam, AgentTeamStatus, ArtifactKind, ArtifactSpec,
+    Decision, EvaluationOutcome, Evidence, Exploration, Gap, GapSeverity, GapStatus, Goal,
+    GoalCase, GoalDesign, GoalEvaluation, GoalOrchestrationRun, GoalPhaseStatus, GoalStage,
+    GoalStatus, HarnessTokenUsage, HarnessToolCall, HarnessToolResult, HarnessTurnEvent,
+    HarnessTurnEventKind, Knowledge, KnowledgeSource, LaunchMcp, LaunchPermission, LaunchSpec,
+    Message, MessageDelivery, MessageDeliveryStatus, MessageKind, MessageTerminalSource,
+    OrchestrationPhaseRun, OrchestrationStatus, ProjectContext, ProjectKind, Proposal,
+    ProposalStatus, ProviderChildThread, ProviderChildThreadStatus, ProviderSession,
+    ProviderSessionStatus, Review, ReviewVerdict, SenderKind, Task, TaskStatus, VerdictOutcome,
+    Vision, WorkflowRun, WorkflowRunStatus, WorkflowStep, WorkflowStepStatus,
 };
 use harness_store::{HarnessStore, MessageDeliveryClaimResult};
 use thiserror::Error;
@@ -1555,7 +1555,7 @@ fn apply_phase_revision(
                 phase_id: Some(phase_id.to_string()),
                 superseded_by_knowledge_id: None,
                 workflow_step_ids: Vec::new(),
-                outputs: Vec::new(),
+                outputs: parse_outputs(t, "outputs"),
             };
             store.append_task(&task)?;
             existing.insert(task_id.clone());
@@ -1908,6 +1908,34 @@ fn json_array_or_parsed(structured: &serde_json::Value, key: &str) -> Vec<serde_
     }
 }
 
+/// Parse a planner JSON value's `outputs` key into a `Vec<ArtifactSpec>`
+/// (goal-phase-artifacts). Tolerates the same stringified-JSON/array forms
+/// `json_array_or_parsed` handles. An absent/empty key yields an empty Vec (today's
+/// default). Each entry's `kind` is parsed leniently (snake_case via serde, falling
+/// back to the `Code` default for unknown values); `required` defaults to TRUE to
+/// match `ArtifactSpec`'s serde default; entries without a usable `id` are skipped.
+fn parse_outputs(v: &serde_json::Value, key: &str) -> Vec<ArtifactSpec> {
+    json_array_or_parsed(v, key)
+        .iter()
+        .filter_map(|o| {
+            let id = json_str_nonempty(o, "id")?;
+            let kind = json_str_nonempty(o, "kind")
+                .and_then(|k| {
+                    serde_json::from_value::<ArtifactKind>(serde_json::Value::String(k)).ok()
+                })
+                .unwrap_or_default();
+            Some(ArtifactSpec {
+                id,
+                kind,
+                path: json_str_nonempty(o, "path"),
+                purpose: json_text_or_list(o, "purpose").unwrap_or_default(),
+                required: json_bool(o, "required").unwrap_or(true),
+                acceptance: json_text_or_list(o, "acceptance"),
+            })
+        })
+        .collect()
+}
+
 /// The result of `plan_into_goal`: which phase/task ids were created (and which
 /// existing ids were skipped), so the command can report idempotent re-runs.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -1963,7 +1991,7 @@ fn plan_into_goal(
                 created_at: now.clone(),
                 started_at: None,
                 ended_at: None,
-                outputs: Vec::new(),
+                outputs: parse_outputs(p, "outputs"),
             });
             result.phases_added.push(phase_id.clone());
         }
@@ -2012,7 +2040,7 @@ fn plan_into_goal(
                 phase_id: Some(phase_id.clone()),
                 superseded_by_knowledge_id: None,
                 workflow_step_ids: Vec::new(),
-                outputs: Vec::new(),
+                outputs: parse_outputs(t, "outputs"),
             };
             store.append_task(&task)?;
             result.tasks_created.push(task_id);
@@ -21852,6 +21880,88 @@ mod tests {
             script.contains("parallel("),
             "disjoint-path build tasks should compile to a parallel group:\n{script}"
         );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn plan_into_goal_maps_phase_and_task_outputs() {
+        // goal-phase-artifacts S2: a planner object that declares `outputs` on a
+        // phase AND a task must persist them as ArtifactSpec (the kind parsed
+        // snake_case, required defaulting to true, paths/purpose/acceptance carried).
+        let root = std::env::temp_dir().join(format!("harness-plan-{}", generated_id("out")));
+        let store = HarnessStore::new(&root);
+        store.init().expect("init");
+        let mut goal = make_goal("g-out");
+        persist_new_goal(&store, &goal).unwrap();
+
+        let structured = serde_json::json!({
+            "phases": [
+                {
+                    "id": "ship",
+                    "name": "Ship",
+                    "intent": "land it",
+                    "acceptance": "the report exists",
+                    "outputs": [
+                        {
+                            "id": "phase-report",
+                            "kind": "test_report",
+                            "path": "docs/e2e.md",
+                            "purpose": "the live e2e report",
+                            "acceptance": "covers the gate"
+                        }
+                    ],
+                    "tasks": [
+                        {
+                            "id": "write-report",
+                            "title": "Write the report",
+                            "owned_paths": ["docs"],
+                            "outputs": [
+                                {
+                                    "id": "report",
+                                    "kind": "test_report",
+                                    "path": "docs/e2e.md",
+                                    "purpose": "the report file",
+                                    "required": true
+                                },
+                                {
+                                    "id": "shot",
+                                    "kind": "screenshot",
+                                    "path": "docs/shot.png",
+                                    "purpose": "a screenshot",
+                                    "required": false
+                                }
+                            ]
+                        }
+                    ]
+                }
+            ]
+        });
+
+        plan_into_goal(&store, &mut goal, &structured, "leader").expect("plan");
+
+        // Phase outputs landed.
+        let g = goal_load(&store, "g-out").unwrap();
+        let phase = g.phases.iter().find(|p| p.id == "ship").unwrap();
+        assert_eq!(phase.outputs.len(), 1);
+        let po = &phase.outputs[0];
+        assert_eq!(po.id, "phase-report");
+        assert_eq!(po.kind, ArtifactKind::TestReport);
+        assert_eq!(po.path.as_deref(), Some("docs/e2e.md"));
+        assert!(po.required, "required must default to true when absent");
+        assert_eq!(po.acceptance.as_deref(), Some("covers the gate"));
+
+        // Task outputs landed (required true + explicit false both preserved).
+        let tasks = latest_tasks(&store).unwrap();
+        let t = &tasks["write-report"];
+        assert_eq!(t.outputs.len(), 2);
+        let report = t.outputs.iter().find(|o| o.id == "report").unwrap();
+        assert_eq!(report.kind, ArtifactKind::TestReport);
+        assert_eq!(report.path.as_deref(), Some("docs/e2e.md"));
+        assert!(report.required);
+        let shot = t.outputs.iter().find(|o| o.id == "shot").unwrap();
+        assert_eq!(shot.kind, ArtifactKind::Screenshot);
+        assert!(!shot.required, "an explicit required:false must be honored");
 
         std::fs::remove_dir_all(&root).ok();
     }

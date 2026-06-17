@@ -658,6 +658,27 @@ pub fn compile_phase_to_starlark(
                 t.owned_paths.join(", ")
             ));
         }
+        if !t.outputs.is_empty() {
+            p.push_str("\n\nRequired artifacts you MUST produce:");
+            for o in &t.outputs {
+                let path = o
+                    .path
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or("(no path declared)");
+                let req = if o.required { "required" } else { "optional" };
+                p.push_str(&format!("\n- {path} — {} ({req})", o.purpose));
+                if let Some(acc) = o
+                    .acceptance
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                {
+                    p.push_str(&format!(" [acceptance: {acc}]"));
+                }
+            }
+        }
         p
     };
 
@@ -775,9 +796,10 @@ pub fn compile_phase_to_starlark(
 /// the convention `compile_phase_to_starlark`'s judge schema uses.
 pub fn planner_schema() -> serde_json::Value {
     serde_json::json!({
-        "phases": "list of {id, name, intent, acceptance, tasks:[{id, title, \
-                   design_md, acceptance:[string], owned_paths:[string], \
-                   depends_on:[task-id]}]}",
+        "phases": "list of {id, name, intent, acceptance, outputs:[{id, kind, path, \
+                   purpose, required, acceptance}], tasks:[{id, title, design_md, \
+                   acceptance:[string], owned_paths:[string], depends_on:[task-id], \
+                   outputs:[{id, kind, path, purpose, required, acceptance}]}]}",
     })
 }
 
@@ -808,6 +830,14 @@ pub fn planner_prompt(goal: &Goal) -> String {
          - Each task is a mini-goal: give it a concrete `design_md` (a grounded \
          slice of the goal's design), an `acceptance` list, and the `owned_paths` \
          it may write.\n\
+         - Declare each phase's and task's deliverables in `outputs` — a list of \
+         {{id, kind, path, purpose, required, acceptance}}. `kind` is one of \
+         design_doc/adr/code/test_report/migration_doc/registered_doc/screenshot/other \
+         (default code); `path` is the repo-relative file (glob ok) the artifact lands \
+         at; `required` defaults to true and the verdict gate ENFORCES that each \
+         required artifact with a `path` exists and is non-empty. Leave `outputs` empty \
+         to keep today's default (the diff is the implicit deliverable, the acceptance \
+         string the implicit gate).\n\
          - Within a phase, two tasks run in PARALLEL iff their `owned_paths` are \
          disjoint AND neither depends on the other. Use `depends_on` (task ids in \
          the SAME phase) for ordering; keep owned_paths disjoint where you want \
@@ -866,8 +896,8 @@ pub fn compile_planner_script(goal: &Goal) -> String {
 pub fn reviser_schema() -> serde_json::Value {
     serde_json::json!({
         "revision": "{supersede:[task-id], new_tasks:[{id, title, design_md, \
-                     acceptance:[string], owned_paths:[string], \
-                     depends_on:[task-id]}]}",
+                     acceptance:[string], owned_paths:[string], depends_on:[task-id], \
+                     outputs:[{id, kind, path, purpose, required, acceptance}]}]}",
     })
 }
 
@@ -917,7 +947,10 @@ pub fn reviser_prompt(
          be retired (they are kept for audit, struck through).\n\
          - `new_tasks`: replacement tasks that address the finding. Each is a mini-goal \
          with a concrete `design_md`, an `acceptance` list, and the `owned_paths` it \
-         may write. Use `depends_on` (ids in THIS phase) for ordering; keep owned_paths \
+         may write. Declare each task's deliverables in `outputs` ({{id, kind, path, \
+         purpose, required, acceptance}}) — the verdict gate enforces that each required \
+         artifact with a `path` exists and is non-empty; leave it empty for today's \
+         default. Use `depends_on` (ids in THIS phase) for ordering; keep owned_paths \
          disjoint where you want parallelism.\n\
          - Use short, stable, kebab-case ids that do not collide with existing task ids.\n\
          - If nothing actionable can be revised, return an empty `supersede` and empty \
@@ -3227,6 +3260,77 @@ mod tests {
         ];
         let err = compile_phase_to_starlark(&goal, &phase, &cyclic).unwrap_err();
         assert!(err.contains("cycle"), "got: {err}");
+    }
+
+    #[test]
+    fn compile_phase_injects_required_artifacts_block_for_tasks_with_outputs() {
+        let goal = goal_in_stage(GoalStage::Working);
+        let phase = test_phase("p", GoalPhaseStatus::InProgress);
+        // A task that declares outputs (one required, one optional) — its compiled
+        // worker prompt must list each artifact's path + purpose + required/optional.
+        let mut with_outputs = compile_task("t-doc", "p", &[], &["docs"]);
+        with_outputs.outputs = vec![
+            ArtifactSpec {
+                id: "report".into(),
+                kind: ArtifactKind::TestReport,
+                path: Some("docs/report.md".into()),
+                purpose: "the e2e test report".into(),
+                required: true,
+                acceptance: Some("covers the gate path".into()),
+            },
+            ArtifactSpec {
+                id: "shot".into(),
+                kind: ArtifactKind::Screenshot,
+                path: Some("docs/shot.png".into()),
+                purpose: "dashboard screenshot".into(),
+                required: false,
+                acceptance: None,
+            },
+        ];
+        // A second task with NO outputs must get no artifact block (today's default).
+        let no_outputs = compile_task("t-code", "p", &[], &["crates/x"]);
+        let all = vec![with_outputs, no_outputs];
+
+        let script = compile_phase_to_starlark(&goal, &phase, &all).expect("compile");
+        assert!(
+            script.contains("Required artifacts you MUST produce:"),
+            "the artifact block header must appear"
+        );
+        assert!(script.contains("docs/report.md — the e2e test report (required)"));
+        assert!(script.contains("[acceptance: covers the gate path]"));
+        assert!(script.contains("docs/shot.png — dashboard screenshot (optional)"));
+        // The task without outputs must not carry an artifact block of its own;
+        // the header appears exactly once (only for t-doc).
+        assert_eq!(
+            script
+                .matches("Required artifacts you MUST produce:")
+                .count(),
+            1,
+            "only the task that declared outputs gets the block"
+        );
+    }
+
+    #[test]
+    fn planner_and_reviser_schemas_and_prompts_advertise_outputs() {
+        // The autonomous planner/reviser can only author a manifest if `outputs`
+        // is in the schema shape hint and mentioned in the prompt.
+        let planner = serde_json::to_string(&planner_schema()).unwrap();
+        assert!(
+            planner.contains("outputs"),
+            "planner schema must list outputs"
+        );
+        let reviser = serde_json::to_string(&reviser_schema()).unwrap();
+        assert!(
+            reviser.contains("outputs"),
+            "reviser schema must list outputs"
+        );
+
+        let goal = goal_in_stage(GoalStage::Working);
+        assert!(planner_prompt(&goal).contains("outputs"));
+
+        let phase = test_phase("p", GoalPhaseStatus::InProgress);
+        let prompt = reviser_prompt(&goal, &phase, &[], "the gate found no report");
+        assert!(prompt.contains("outputs"));
     }
 
     #[test]
