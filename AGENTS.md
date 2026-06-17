@@ -106,6 +106,24 @@ The Lead Agent should use this sequence for every non-trivial change:
 13. At goal close, add `goal_evaluation` evidence and create follow-up tasks or
     a reusable GoalCase when the run teaches a reusable workflow pattern.
 
+## Project Selection (Multi-Project)
+
+One `serve` / dashboard manages many projects. Each has a centralized
+`store_root` (`~/.harness/projects/<id>/`, the JSONL ledgers) and a `project_root`
+(the git repo where `CLAUDE.md` / `AGENTS.md` / worktrees live); a spawned
+worker's cwd derives from `project_root`, not the harness process cwd.
+
+- Select the project explicitly (`--project <id|path>`, `HARNESS_PROJECT`, or
+  `harness project switch`) before spawning workers; do not rely on cwd.
+- `--store` / `HARNESS_ROOT` still win as back-compat overrides but are
+  deprecation-warned — prefer `harness init` / `harness project switch`.
+- The reserved GLOBAL `_global` (`~/`) project is non-git: read-only work runs
+  there, but `writable` / `isolation="worktree"` nodes are rejected with an
+  actionable message (and have no diff evidence).
+- Centralize a legacy repo-local `.harness` with `harness project migrate` (copies
+  with no data loss; marks the old store). Full reference:
+  [docs/multi-project.md](docs/multi-project.md).
+
 ## Required Skills For Lead
 
 The Lead Agent must load `.agents/skills/generic-agent-harness/SKILL.md` before
