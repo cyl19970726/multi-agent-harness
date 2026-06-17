@@ -158,19 +158,13 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> ResolvedStore
         }
     }
 
-    // 5. Registry current project (the cwd-independent convergence point).
-    if let Ok(Some(id)) = project::active_project_id(&harness_home) {
-        if let Ok(Some(ctx)) = project::context_for_id(&harness_home, &id) {
-            return ResolvedStore {
-                root: ctx.store_root.clone(),
-                source: StoreSource::RegistryCurrent,
-                context: Some(ctx),
-            };
-        }
-    }
-
-    // 6. Legacy cwd walk-up to the nearest existing `.harness/` (back-compat).
-    // `init` never walks up — it materializes a fresh store (see `init_routed`).
+    // 5. Legacy cwd walk-up to the nearest existing `.harness/` (back-compat).
+    // A PRESENT repo-local `.harness` WINS over the registry-current project
+    // (rung 6): this restores the design's stated invariant that, absent an
+    // explicit project signal, resolution lands on the SAME store today's code
+    // would use — so standing inside a legacy repo never silently shadows its
+    // local goals/tasks with an unrelated active project. (`init` never walks up
+    // — it materializes a fresh store, see `init_routed`.)
     //
     // DUAL-READ (goal-multi-project P7): central (steps 3/4/5) was absent, so we may
     // fall back to a repo-local store — but ONLY if it has not been migrated. A local
@@ -178,7 +172,16 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> ResolvedStore
     // store it points to (never serving stale rows), and the choice is always logged.
     if command != Some("init") {
         if let Ok(cwd) = env::current_dir() {
-            if let Some(found) = discover_harness_from(&cwd) {
+            // A walked-up `.harness` that IS the central harness home (e.g.
+            // `~/.harness`, which holds `projects/` + `registry.json`) is the
+            // container for project stores, NOT a legacy repo-local store — skip it
+            // so resolution falls through to the registry-current project (issue #89
+            // convergence holds for cwds inside the home tree).
+            let found = discover_harness_from(&cwd).filter(|p| {
+                project::canonicalize_best_effort(p)
+                    != project::canonicalize_best_effort(&harness_home)
+            });
+            if let Some(found) = found {
                 match project::read_migrated_marker(&found) {
                     Ok(Some(target)) if !target.as_os_str().is_empty() => {
                         // Migrated: prefer the central store the marker points to.
@@ -204,10 +207,11 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> ResolvedStore
                     }
                     Ok(Some(_)) => {
                         // Marked migrated but pointer-less: ignore the local store and
-                        // fall through to the GLOBAL default rather than serve it.
+                        // fall through to registry-current / the GLOBAL default
+                        // rather than serve it.
                         eprintln!(
                             "store-source: local store {} is marked migrated (no target); \
-                             skipping it and using the global project",
+                             skipping it for the active/global project",
                             found.display()
                         );
                     }
@@ -231,6 +235,19 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> ResolvedStore
                     }
                 }
             }
+        }
+    }
+
+    // 6. Registry current project (the cwd-independent convergence point) — the
+    // resolver for project roots with NO repo-local `.harness` (e.g. a centrally
+    // `init`ed project) and the cross-cwd convergence point (issue #89).
+    if let Ok(Some(id)) = project::active_project_id(&harness_home) {
+        if let Ok(Some(ctx)) = project::context_for_id(&harness_home, &id) {
+            return ResolvedStore {
+                root: ctx.store_root.clone(),
+                source: StoreSource::RegistryCurrent,
+                context: Some(ctx),
+            };
         }
     }
 

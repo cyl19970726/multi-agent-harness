@@ -79,6 +79,29 @@ fn serve_and_run_script_converge_via_registry() {
 }
 
 #[test]
+fn local_store_wins_over_active_registry_project() {
+    // Regression (review MAJOR): a PRESENT repo-local `.harness` must win over the
+    // registry-current project, so standing inside a legacy repo never silently
+    // shadows its own goals/tasks with an unrelated active project.
+    let home = TempHome::new("res-local-wins");
+    // Activate a central project elsewhere → registry has a current_project_id.
+    let other = home.base().join("other-proj");
+    std::fs::create_dir_all(&other).unwrap();
+    init(&home, &other);
+
+    // A legacy repo carrying its OWN repo-local `.harness`.
+    let repo = home.base().join("legacy-repo");
+    std::fs::create_dir_all(repo.join(".harness")).unwrap();
+
+    let (_o, e) = resolve(&home, &repo, &[], &[]);
+    assert!(
+        e.contains("CwdWalkUp"),
+        "a present local .harness must win over the active project, got: {e}"
+    );
+    assert!(root_of(&e).ends_with(".harness"), "stderr: {e}");
+}
+
+#[test]
 fn store_flag_overrides_and_warns() {
     let home = TempHome::new("res-store-flag");
     let proj = home.base().join("repo");
