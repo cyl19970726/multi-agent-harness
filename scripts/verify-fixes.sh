@@ -88,7 +88,14 @@ for t in \
   historical_normalized_events_normalize_durable_trace_and_report_retained \
   one_line_can_broadcast_multiple_frames \
   broadcast_is_isolated_per_project \
-  offsets_and_broadcasts_independent_across_projects ; do
+  offsets_and_broadcasts_independent_across_projects \
+  reconcile_phase_sets_status_landed_commit_knowledge_and_syncs_stage \
+  landed_commit_round_trips_and_legacy_defaults_to_none \
+  orchestrate_lands_writable_phase_diff_and_records_landed_commit \
+  orchestrate_readonly_phase_lands_nothing \
+  orchestrate_fails_phase_when_diff_cannot_be_applied \
+  land_phase_diffs_refuses_when_repo_tree_is_dirty \
+  land_phase_diffs_rolls_back_partial_apply_leaving_no_orphan ; do
   grep -q "test .*$t ... ok" "$TMP/test.log" && ok "unit: $t" || bad "unit: $t did not run/pass"
 done
 # goal-multi-project deterministic regression coverage — one representative test
@@ -206,6 +213,66 @@ else
   HA goal run-phases art2 --dry-run >"$TMP/art_pass.json" 2>/dev/null
   [ "$(check_json "$TMP/art_pass.json" "d.get('status')=='completed'")" = "1" ] \
     && ok "s3-gate: phase PASSES when the required artifact is present" || bad "s3-gate present-artifact should pass"
+fi
+
+# ---------------------------------------------------------------------------
+section "Phase landing + reconcile (goal-phase-landing, no codex)"
+# Drive the built harness through the L1 reconciliation path (out-of-band work):
+# `goal reconcile-phase` trues a phase's status to reality, stamps landed_commit,
+# appends a decision-sourced Knowledge entry, and SYNCS the goal's derived stage.
+# The L2 durable-landing path (apply each writable diff + one commit, recording
+# landed_commit) needs a real worktree diff a dry-run worker never produces, so it
+# is covered by the unit tests asserted in the "tests that MUST run" list above
+# (orchestrate_lands_writable_phase_diff_and_records_landed_commit et al.) and is
+# additionally exercised end-to-end in the --real tier below.
+cargo build -p harness-cli >/dev/null 2>&1
+if [ ! -x "$HARNESS" ]; then
+  bad "build harness-cli for phase-landing checks"
+else
+  PL="$TMP/pl"
+  HP() { "$HARNESS" --store "$PL" "$@"; }
+  HP goal create --id pl --title "verify landing" --owner lead --priority p1 >/dev/null 2>&1
+  HP goal phase-add --goal pl --phase-id p1 --name Build \
+    --intent "ship A out-of-band" --acceptance "A landed" >/dev/null 2>&1
+  HP goal phase-add --goal pl --phase-id p2 --name Verify \
+    --intent "ship B out-of-band" --acceptance "B landed" >/dev/null 2>&1
+  # Baseline: a phase-driven goal whose phases are all not_started derives `draft`,
+  # NOT the contradictory raw working bar (the lie L1 fixes).
+  HP goal show --goal pl >"$TMP/pl_before.json" 2>/dev/null
+  [ "$(check_json "$TMP/pl_before.json" "bool(d['phases']) and all(p['status']=='not_started' and p.get('landed_commit') is None for p in d['phases'])")" = "1" ] \
+    && ok "reconcile: fresh phase-driven goal starts all not_started/unlanded" || bad "reconcile baseline"
+  # Reconcile p1 -> passed with a landed commit + a note. The command's own JSON
+  # reports the recorded landed_commit AND the freshly-derived effective stage.
+  HP goal reconcile-phase --goal pl --phase p1 --to passed \
+    --landed-commit deadbee1 --note "shipped via PR #999" >"$TMP/pl_rec1.json" 2>/dev/null
+  [ "$(check_json "$TMP/pl_rec1.json" "d.get('status')=='passed' and d.get('landed_commit')=='deadbee1' and d.get('effective_stage')=='working' and d.get('knowledge_id')")" = "1" ] \
+    && ok "reconcile p1 -> passed (landed_commit recorded, derived stage advances to working)" \
+    || bad "reconcile p1 status/landed_commit/effective_stage"
+  # The mutation is durable on the goal: p1 carries status+landed_commit, the
+  # persisted stage synced to the derived `working`, and a `reconcile`-tagged
+  # decision-sourced Knowledge entry with phase provenance was appended.
+  HP goal show --goal pl >"$TMP/pl_mid.json" 2>/dev/null
+  [ "$(check_json "$TMP/pl_mid.json" "next(p for p in d['phases'] if p['id']=='p1')['status']=='passed' and next(p for p in d['phases'] if p['id']=='p1')['landed_commit']=='deadbee1' and d['stage']=='working'")" = "1" ] \
+    && ok "reconcile: phase status + landed_commit persisted; goal stage synced to working" \
+    || bad "reconcile p1 persistence/stage sync"
+  [ "$(check_json "$TMP/pl_mid.json" "any(k.get('phase_id')=='p1' and k.get('source')=='decision' and 'reconcile' in (k.get('tags') or []) and 'deadbee1' in (k.get('notes_md') or '') for k in d.get('knowledge',[]))")" = "1" ] \
+    && ok "reconcile: appended a decision-sourced reconcile Knowledge entry (provenance p1)" \
+    || bad "reconcile p1 knowledge provenance"
+  # Reconcile p2 too -> all phases passed -> derived stage advances to `verified`
+  # and the goal status flips to done (the all-phases-passed terminal).
+  HP goal reconcile-phase --goal pl --phase p2 --to passed \
+    --landed-commit deadbee2 >"$TMP/pl_rec2.json" 2>/dev/null
+  [ "$(check_json "$TMP/pl_rec2.json" "d.get('effective_stage')=='verified'")" = "1" ] \
+    && ok "reconcile p2 -> all passed -> derived stage advances to verified" || bad "reconcile p2 effective_stage"
+  HP goal show --goal pl >"$TMP/pl_final.json" 2>/dev/null
+  [ "$(check_json "$TMP/pl_final.json" "d['stage']=='verified' and d['status']=='done' and all(p['status']=='passed' and p['landed_commit'] for p in d['phases'])")" = "1" ] \
+    && ok "reconcile: goal stage=verified status=done, every phase passed+landed" || bad "reconcile terminal state"
+  # An unknown phase id is rejected (clear error, no mutation, nonzero exit).
+  if HP goal reconcile-phase --goal pl --phase nope --to passed >/dev/null 2>&1; then
+    bad "reconcile: unknown phase id should fail"
+  else
+    ok "reconcile: unknown phase id is rejected"
+  fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -539,6 +606,47 @@ print(best)" 2>/dev/null)"
       && ok "P3 live orchestration checkpoint persisted" || bad "P3 live checkpoint"
     grep -q '"workflow_name":"phase-p1"' "$PML/workflow_runs.jsonl" 2>/dev/null \
       && ok "P3 phase compiled + dispatched a real workflow run" || bad "P3 phase workflow run"
+
+    # P4: goal-phase-landing (L2) DURABLE LANDING e2e. A real run-phases whose
+    # writable task creates a file must LEAVE that file COMMITTED on the branch —
+    # not lost to the dropped worktree. Point harness at a DEDICATED temp git repo
+    # via --project so the landing commit (`phase <id> landed (run-phases)`) lands
+    # THERE, keeping this repo clean. The orchestrator's repo_root is the project
+    # root, so landing applies the writable task's worktree diff + makes one commit
+    # and records landed_commit on the phase.
+    PLR="$TMP/land-store"; mkdir -p "$PLR"
+    PLREPO="$TMP/land-repo"
+    mkdir -p "$PLREPO"
+    ( cd "$PLREPO" && git init -q && git config user.email v@v.v && git config user.name v \
+        && git commit -q --allow-empty -m init ) >/dev/null 2>&1
+    PLREPO_REAL="$( cd "$PLREPO" && pwd -P )"
+    HD() { env HARNESS_ROOT= HARNESS_PROJECT= "$HARNESS" --store "$PLR" --project "$PLREPO" "$@"; }
+    HD goal create --id land --title "live landing" --owner lead --priority p1 >/dev/null 2>&1
+    HD goal phase-add --goal land --phase-id p1 --name Build \
+      --intent "create a committed marker proving durable landing" \
+      --acceptance "landed_durable.txt is committed on the branch" >/dev/null 2>&1
+    HD task create --id ld --goal land --title "make landing marker" \
+      --objective "create the landing marker file" --owner lead --phase-id p1 \
+      --owned-path landed_durable.txt \
+      --design "Create a file named landed_durable.txt at the repo root whose only line is LANDING_DURABLE_OK." >/dev/null 2>&1
+    HD goal run-phases land --timeout-ms 300000 >"$TMP/land_run.json" 2>"$TMP/land.log"
+    [ "$(check_json "$TMP/land_run.json" "d.get('status')=='completed'")" = "1" ] \
+      && ok "P4 durable-landing run-phases completed (real codex)" || bad "P4 durable-landing run-phases (see $TMP/land.log)"
+    # The writable file is COMMITTED on the branch and present in the working tree.
+    if git -C "$PLREPO_REAL" cat-file -e HEAD:landed_durable.txt 2>/dev/null && [ -f "$PLREPO_REAL/landed_durable.txt" ]; then
+      ok "P4 writable file committed on the branch + present in working tree (not lost to worktree)"
+    else
+      bad "P4 landed file missing from HEAD/working tree (see $TMP/land.log)"
+    fi
+    # The HEAD commit IS the canonical per-phase landing commit.
+    LAND_SUBJ="$(git -C "$PLREPO_REAL" log -1 --pretty=%s 2>/dev/null)"
+    [ "$LAND_SUBJ" = "phase p1 landed (run-phases)" ] \
+      && ok "P4 HEAD is the per-phase landing commit" || bad "P4 landing commit subject '$LAND_SUBJ'"
+    # landed_commit was recorded on the phase and equals the landing commit sha.
+    HD goal show --goal land >"$TMP/land_goal.json" 2>/dev/null
+    LAND_HEAD="$(git -C "$PLREPO_REAL" rev-parse HEAD 2>/dev/null)"
+    [ "$(check_json "$TMP/land_goal.json" "next((p for p in d['phases'] if p['id']=='p1'), {}).get('landed_commit')=='$LAND_HEAD'")" = "1" ] \
+      && ok "P4 landed_commit recorded on the phase == landing commit sha" || bad "P4 landed_commit recording"
   fi
 else
   section "Live checks"
