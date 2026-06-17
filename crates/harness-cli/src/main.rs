@@ -4526,16 +4526,20 @@ fn serve_command(store: &HarnessStore, resolved: &ResolvedStore, args: &[String]
     };
 
     // Start ONE project-multiplexed SSE watcher: per-project offsets + per-project
-    // subscriber channels, so a client subscribed to project A never sees B.
-    let normalizers: std::collections::HashMap<String, sse::Normalizer> = watch_map
-        .iter()
-        .map(|(id, root)| {
-            let normalize = make_normalize(HarnessStore::new(root.clone()));
-            (id.clone(), Box::new(normalize) as sse::Normalizer)
-        })
-        .collect();
-    sse::start_sse_watcher(watch_map.clone(), sse_manager.clone(), normalizers)
-        .map_err(CliError::Io)?;
+    // subscriber channels, so a client subscribed to project A never sees B. The
+    // watcher re-scans the registry every poll (via `watch_map()`), so a project
+    // registered after serve starts gets a live `/v1/events` channel without a
+    // restart (#147 follow-up); each project's normalizer is built lazily by the
+    // factory below, scoped to that project's store.
+    let watcher_projects = projects.clone();
+    sse::start_sse_watcher(
+        move || watcher_projects.watch_map(),
+        move |root| {
+            Box::new(make_normalize(HarnessStore::new(root.to_path_buf()))) as sse::Normalizer
+        },
+        sse_manager.clone(),
+    )
+    .map_err(CliError::Io)?;
 
     // Start the abandoned-run reaper PER WATCHED PROJECT: periodically flip
     // `Running` runs whose driver process has died (or legacy runs past the stale
@@ -22465,12 +22469,11 @@ mod sse_tests {
                 default_id: "_test".to_string(),
                 default_store: serve_store.clone(),
             };
-            let mut watch_map = std::collections::HashMap::new();
-            watch_map.insert("_test".to_string(), serve_store.root().to_path_buf());
+            let watcher_projects = projects.clone();
             sse::start_sse_watcher(
-                watch_map,
+                move || watcher_projects.watch_map(),
+                |_root| Box::new(|_: &str, _: &serde_json::Value| Vec::new()) as sse::Normalizer,
                 sse_manager.clone(),
-                std::collections::HashMap::new(),
             )
             .expect("watcher");
             for stream in listener.incoming() {

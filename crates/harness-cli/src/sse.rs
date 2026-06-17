@@ -100,12 +100,24 @@ pub type Normalizer = Box<dyn Fn(&str, &serde_json::Value) -> Vec<serde_json::Va
 /// `consumed_offsets` map is keyed by `(project_id, filename)` so identical
 /// filenames across projects are tracked independently and never cross streams.
 ///
-/// `projects` maps project id → store root. `normalizers` maps project id → its
-/// live-turn-event normalizer; a project without one still streams raw frames.
+/// `rescan` returns the live project-id → store-root map and is called EVERY poll,
+/// not just at startup, so a project created or switched-to after serve starts
+/// (`POST /v1/projects/switch` or a CLI `project add`) gets a live event channel
+/// without a serve restart (goal-multi-project #147 follow-up). `make_normalizer`
+/// builds a project's live-turn-event normalizer lazily on first sight, scoped to
+/// that project's store.
+///
+/// Seeding policy: projects present at startup are seeded at current EOF so only
+/// rows appended after the watcher starts are streamed (the initial snapshot covers
+/// pre-existing rows). A project that appears LATER is intentionally NOT EOF-seeded;
+/// its offsets default to 0 so its freshly-created ledger streams from the first
+/// byte, which makes a row appended right after registration deliverable with no
+/// seed-vs-append race (a post-startup project is newly created, so its history is
+/// empty/small and the full replay is cheap and deduped by id on the client).
 pub fn start_sse_watcher(
-    projects: HashMap<String, PathBuf>,
+    rescan: impl Fn() -> HashMap<String, PathBuf> + Send + 'static,
+    make_normalizer: impl Fn(&Path) -> Normalizer + Send + 'static,
     manager: SseManager,
-    normalizers: HashMap<String, Normalizer>,
 ) -> std::io::Result<()> {
     thread::spawn(move || {
         // Track, per (project_id, file), the byte offset through the last *complete*
@@ -116,17 +128,16 @@ pub fn start_sse_watcher(
         // projects with the same filename (e.g. both have `messages.jsonl`)
         // completely independent.
         let mut consumed_offsets: HashMap<(String, String), u64> = HashMap::new();
+        // project_id → its live-turn-event normalizer, built lazily so a project
+        // registered AFTER serve starts gets one on first sight. Membership also
+        // marks which projects we have already seen (EOF-seeded vs. stream-from-0).
+        let mut normalizers: HashMap<String, Normalizer> = HashMap::new();
 
-        // Seed offsets at current EOF so we only stream rows appended after the
-        // watcher starts (the initial snapshot covers pre-existing rows).
-        for (project_id, store_root) in &projects {
-            for filename in WATCHED_FILES {
-                let path = store_root.join(filename);
-                if let Ok(metadata) = fs::metadata(&path) {
-                    consumed_offsets
-                        .insert((project_id.clone(), filename.to_string()), metadata.len());
-                }
-            }
+        // Seed offsets at current EOF for the projects known at startup so we only
+        // stream rows appended after the watcher starts.
+        for (project_id, store_root) in rescan() {
+            seed_offsets_at_eof(&project_id, &store_root, &mut consumed_offsets);
+            normalizers.insert(project_id, make_normalizer(store_root.as_path()));
         }
 
         // Poll for new appends at a low floor (~150ms) so the operator sees
@@ -134,11 +145,20 @@ pub fn start_sse_watcher(
         // new byte range, and sleeps otherwise — CPU stays negligible.
         loop {
             thread::sleep(POLL_INTERVAL);
-            for (project_id, store_root) in &projects {
-                let normalize = normalizers.get(project_id);
+            // Re-scan the registry live so newly-registered projects join the watch
+            // set mid-run. `store_for` already resolves new projects live for
+            // `/v1/snapshot`; this closes the matching gap for `/v1/events`.
+            for (project_id, store_root) in rescan() {
+                // First sight of a post-startup project: build its normalizer now.
+                // We do NOT EOF-seed it, so its offsets stay 0 and this first poll
+                // streams its (freshly-created, hence small) ledger live.
+                if !normalizers.contains_key(&project_id) {
+                    normalizers.insert(project_id.clone(), make_normalizer(store_root.as_path()));
+                }
+                let normalize = normalizers.get(&project_id);
                 poll_project(
-                    project_id,
-                    store_root,
+                    &project_id,
+                    &store_root,
                     &mut consumed_offsets,
                     normalize,
                     &manager,
@@ -148,6 +168,25 @@ pub fn start_sse_watcher(
     });
 
     Ok(())
+}
+
+/// Seed each watched file's consumed offset at its current EOF so the watcher only
+/// streams rows appended after this point. Files that do not yet exist are skipped
+/// (their offset defaults to 0, so they stream from the first byte once created).
+fn seed_offsets_at_eof(
+    project_id: &str,
+    store_root: &Path,
+    consumed_offsets: &mut HashMap<(String, String), u64>,
+) {
+    for filename in WATCHED_FILES {
+        let path = store_root.join(filename);
+        if let Ok(metadata) = fs::metadata(&path) {
+            consumed_offsets.insert(
+                (project_id.to_string(), filename.to_string()),
+                metadata.len(),
+            );
+        }
+    }
 }
 
 /// The JSONL files the watcher tails in every project store.
