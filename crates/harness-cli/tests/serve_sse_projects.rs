@@ -91,6 +91,39 @@ fn sse_streams_are_isolated_per_project() {
     );
 }
 
+/// A project registered AFTER serve started must still get a live `/v1/events`
+/// channel: the watcher re-scans the registry each poll, discovers the new project,
+/// and broadcasts a freshly-appended row to a client subscribed to it — no serve
+/// restart required (goal-multi-project #147 follow-up). With the old startup-only
+/// `watch_map`, this stream would receive ZERO frames.
+#[test]
+fn newly_registered_project_gets_live_sse_without_restart() {
+    let home = TempHome::new("sse-new-project");
+    let id_a = init_project(&home, "alpha"); // the only project at serve startup
+
+    let serve = ServeHandle::spawn(&home, home.base(), &[]);
+
+    // Register a NEW project after serve is already running. It is not in the
+    // startup watch_map, so it only becomes watchable if serve re-scans the registry.
+    let id_new = init_project(&home, "gamma");
+    assert_ne!(
+        id_new, id_a,
+        "gamma must be a distinct, post-startup project"
+    );
+
+    // Subscribe to the new project's stream, then append a row to its store.
+    let mut sse_new = serve.open_sse(&format!("?project={id_new}"));
+    create_message(&home, &id_new, "msg-gamma", "hello gamma");
+
+    let frames = collect_sse_data(&mut sse_new, Duration::from_secs(6), 1);
+    let ids = message_ids(&frames);
+    assert!(
+        ids.contains(&"msg-gamma".to_string()),
+        "newly-registered project's SSE stream did not receive its live frame \
+         (watcher likely did not re-scan the registry): {ids:?}"
+    );
+}
+
 #[test]
 fn events_without_project_uses_active_default_stream() {
     let home = TempHome::new("sse-default");
