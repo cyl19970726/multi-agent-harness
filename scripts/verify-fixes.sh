@@ -104,7 +104,15 @@ for t in \
   auto_finalize_task_all_done_advances_goal_to_verified \
   auto_finalize_task_partial_stays_working \
   auto_finalize_phase_driven_still_finalizes \
-  finalize_refuses_incomplete_and_force_finalizes_out_of_band ; do
+  finalize_refuses_incomplete_and_force_finalizes_out_of_band \
+  legacy_task_row_with_dead_phase_key_still_loads \
+  validate_task_placement_accepts_a_real_phase_of_this_goal \
+  validate_task_placement_rejects_a_phase_not_in_this_goal \
+  validate_task_placement_rejects_phase_id_with_mismatched_goal \
+  validate_task_placement_accepts_goal_scoped_phaseless_task \
+  create_task_value_round_trips_phase_id_from_body \
+  create_task_value_rejects_phase_id_not_in_goal \
+  create_task_value_accepts_goal_scoped_phaseless_task ; do
   grep -q "test .*$t ... ok" "$TMP/test.log" && ok "unit: $t" || bad "unit: $t did not run/pass"
 done
 # goal-multi-project deterministic regression coverage — one representative test
