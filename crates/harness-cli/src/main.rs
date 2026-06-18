@@ -1750,6 +1750,106 @@ fn unmet_required_artifacts(
         .collect()
 }
 
+/// Read the set of registered doc paths from `<repo_root>/docs/registry.json`
+/// (goal-phase-refinements). The registry is the `agent_harness.docs_registry.v1`
+/// schema: `{ "documents": [{ "path": ... }, ...] }`. Returns `None` when the
+/// registry is absent or unparseable (a registered_doc requirement can't be
+/// satisfied without a registry — the caller treats that as "not registered").
+fn registered_doc_paths(repo_root: &Path) -> Option<std::collections::HashSet<String>> {
+    let raw = std::fs::read_to_string(repo_root.join("docs/registry.json")).ok()?;
+    let json: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    let docs = json.get("documents")?.as_array()?;
+    Some(
+        docs.iter()
+            .filter_map(|d| d.get("path").and_then(|p| p.as_str()))
+            .map(|p| p.trim().to_string())
+            .collect(),
+    )
+}
+
+/// The REGISTERED-DOC gate (goal-phase-refinements). Extends the #149 artifact gate:
+/// for every `required` [`ArtifactSpec`] whose `kind` is `RegisteredDoc` with a
+/// non-empty `path` declared by the phase OR one of its live tasks, assert the path
+/// is registered in `docs/registry.json`. A produced-but-unregistered doc (the
+/// `docs/multi-project.md` gap) FAILS with an actionable message. Back-compat: a
+/// phase/task with no `registered_doc` outputs yields an EMPTY requirement set, so
+/// this gate is vacuously satisfied (today's behavior). Returns actionable messages
+/// for each unregistered required doc (empty == passed).
+fn unmet_registered_docs(
+    phase: &harness_core::GoalPhase,
+    phase_tasks: &[Task],
+    repo_root: &Path,
+) -> Vec<String> {
+    let registered_doc_specs = |specs: &[ArtifactSpec]| -> Vec<String> {
+        specs
+            .iter()
+            .filter(|s| s.required && s.kind == ArtifactKind::RegisteredDoc)
+            .filter_map(|s| {
+                s.path
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|p| !p.is_empty())
+                    .map(str::to_string)
+            })
+            .collect::<Vec<_>>()
+    };
+
+    let mut wanted: Vec<String> = registered_doc_specs(&phase.outputs);
+    for t in phase_tasks {
+        wanted.extend(registered_doc_specs(&t.outputs));
+    }
+    wanted.sort();
+    wanted.dedup();
+    if wanted.is_empty() {
+        return Vec::new();
+    }
+
+    let registry = registered_doc_paths(repo_root).unwrap_or_default();
+    wanted
+        .into_iter()
+        .filter(|p| !registry.contains(p))
+        .map(|p| {
+            format!(
+                "{p} (registered_doc not present in docs/registry.json — add an entry \
+                 with \"path\": \"{p}\")"
+            )
+        })
+        .collect()
+}
+
+/// The CROSS-PHASE INPUTS precondition (goal-phase-refinements). Before a phase
+/// runs, each REQUIRED [`ArtifactSpec`] in `phase.inputs` with a non-empty `path`
+/// must already exist as a non-empty file in the working tree (a prior phase landed
+/// it, goal-phase-landing). A missing required input is a fail-fast at phase start —
+/// instead of surfacing later as a confusing downstream gate failure. Back-compat:
+/// an empty `inputs` yields no requirement (today's behavior). Returns the list of
+/// absent required input paths (empty == precondition satisfied).
+fn missing_required_inputs(phase: &harness_core::GoalPhase, repo_root: &Path) -> Vec<String> {
+    let mut wanted: Vec<String> = phase
+        .inputs
+        .iter()
+        .filter(|s| s.required)
+        .filter_map(|s| {
+            s.path
+                .as_deref()
+                .map(str::trim)
+                .filter(|p| !p.is_empty())
+                .map(str::to_string)
+        })
+        .collect();
+    wanted.sort();
+    wanted.dedup();
+
+    wanted
+        .into_iter()
+        .filter(|p| {
+            !std::fs::metadata(repo_root.join(p))
+                .map(|m| m.is_file() && m.len() > 0)
+                .unwrap_or(false)
+        })
+        .collect()
+}
+
 /// The full diff a writable task step produced in its (now-dropped) worktree, for
 /// durable landing (goal-phase-landing). Prefers the uncapped `landing_diff` the
 /// runtime stores when the displayed `worktree_diff` was truncated; otherwise the
@@ -1969,6 +2069,60 @@ fn orchestrate_goal_phases(
             continue;
         }
 
+        // goal-phase-refinements: cross-phase inputs precondition. A phase that
+        // declares REQUIRED `inputs` must find each input's path present in the
+        // working tree (a prior phase landed it, goal-phase-landing) BEFORE it runs.
+        // A missing required input fails the phase FAST here — instead of surfacing
+        // later as a confusing downstream gate failure. We mark the phase Failed,
+        // record a phase_verdict Decision naming the missing input, fail the
+        // orchestration, and return without spending the worker.
+        let missing_inputs = missing_required_inputs(&goal.phases[idx], repo_root);
+        if !missing_inputs.is_empty() {
+            let detail = missing_inputs
+                .iter()
+                .map(|p| {
+                    format!(
+                        "phase {phase_id}: required input {p} not present \
+                         (expected from a prior phase)"
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("; ");
+            goal.phases[idx].status = GoalPhaseStatus::Failed;
+            goal.phases[idx].started_at.get_or_insert_with(now_string);
+            goal.phases[idx].ended_at = Some(now_string());
+            let verdict_decision = Decision {
+                id: generated_id("decision"),
+                task_id: goal.id.clone(),
+                decision: format!("phase {phase_id} verdict: clean_fail"),
+                rationale: format!("Missing required inputs: {detail}"),
+                evidence_ids: Vec::new(),
+                created_at: now_string(),
+                decision_kind: Some("phase_verdict".to_string()),
+                goal_id: Some(goal.id.clone()),
+                is_waiver: false,
+                follow_up_task_id: None,
+            };
+            store.append_decision(&verdict_decision)?;
+            goal.phases[idx].verdict_decision_id = Some(verdict_decision.id.clone());
+            goal.updated_at = now_string();
+            store.append_goal(&goal)?;
+
+            orch.status = OrchestrationStatus::Failed;
+            orch.updated_at = now_string();
+            store.append_goal_orchestration_run(&orch)?;
+            sync_goal_stage(store, &mut goal)?;
+            return Ok(serde_json::json!({
+                "orchestration_run": orch.id,
+                "goal": goal.id,
+                "status": "failed",
+                "failed_phase": phase_id,
+                "stage": goal.stage.as_str(),
+                "ran": ran,
+                "skipped": skipped,
+            }));
+        }
+
         // Intra-phase resume: a phase being RE-RUN (its persisted status is
         // already `InProgress` or `Failed`) whose checkpoint carries a prior
         // workflow run reuses that run's succeeded leaves, so completed in-phase
@@ -2012,7 +2166,11 @@ fn orchestrate_goal_phases(
         // PREVIOUS attempt's succeeded leaves on a same-script re-run (intra-phase
         // resume); after a revision the recompiled script differs, so we run fresh.
         let mut resume_from = resume_from;
-        let mut retries_left = max_phase_retries;
+        // goal-phase-refinements: a phase's own `retry` overrides the global
+        // `--max-phase-retries`, so an explore phase and a live-demo phase no longer
+        // share one budget. `None` falls back to the global default (today's
+        // behavior).
+        let mut retries_left = goal.phases[idx].retry.unwrap_or(max_phase_retries);
         let passed;
         loop {
             let phase = goal.phases[idx].clone();
@@ -2059,7 +2217,13 @@ fn orchestrate_goal_phases(
                 .filter(|t| t.status != TaskStatus::Superseded)
                 .cloned()
                 .collect();
-            let unmet = unmet_required_artifacts(&phase, &phase_live_tasks, &outcome, repo_root);
+            let mut unmet =
+                unmet_required_artifacts(&phase, &phase_live_tasks, &outcome, repo_root);
+            // goal-phase-refinements: a `registered_doc` output must ALSO be present
+            // in docs/registry.json (extends the #149 path gate). Merge its
+            // actionable messages into the unmet set so the verdict rationale names
+            // every reason the phase did not pass.
+            unmet.extend(unmet_registered_docs(&phase, &phase_live_tasks, repo_root));
             let gate_passed = outcome.status == WorkflowRunStatus::Completed
                 && outcome.steps.iter().all(|s| s.ok)
                 && unmet.is_empty();
@@ -2333,6 +2497,20 @@ fn parse_outputs(v: &serde_json::Value, key: &str) -> Vec<ArtifactSpec> {
         .collect()
 }
 
+/// Parse a planner JSON value's `retry` key into a per-phase retry budget override
+/// (goal-phase-refinements). An absent/non-numeric key yields `None` (the phase
+/// inherits the global `--max-phase-retries`); a tolerated stringified number ("2")
+/// is also accepted, matching the stringified-JSON forms the planner emits.
+fn parse_retry(v: &serde_json::Value) -> Option<u32> {
+    json_u64(v, "retry")
+        .or_else(|| {
+            v.get("retry")
+                .and_then(|r| r.as_str())
+                .and_then(|s| s.trim().parse::<u64>().ok())
+        })
+        .and_then(|n| u32::try_from(n).ok())
+}
+
 /// The result of `plan_into_goal`: which phase/task ids were created (and which
 /// existing ids were skipped), so the command can report idempotent re-runs.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -2389,6 +2567,8 @@ fn plan_into_goal(
                 started_at: None,
                 ended_at: None,
                 outputs: parse_outputs(p, "outputs"),
+                inputs: parse_outputs(p, "inputs"),
+                retry: parse_retry(p),
                 landed_commit: None,
             });
             result.phases_added.push(phase_id.clone());
@@ -2558,6 +2738,16 @@ fn goal_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
                 started_at: None,
                 ended_at: None,
                 outputs: parse_output_flags(args)?,
+                inputs: parse_input_flags(args)?,
+                retry: value(args, "--retry")
+                    .map(|r| {
+                        r.trim().parse::<u32>().map_err(|_| {
+                            CliError::Usage(format!(
+                                "--retry must be a non-negative integer, got `{r}`"
+                            ))
+                        })
+                    })
+                    .transpose()?,
                 landed_commit: None,
             });
             goal.updated_at = now_string();
@@ -15306,15 +15496,14 @@ fn parse_artifact_kind(s: &str) -> CliResult<ArtifactKind> {
     }
 }
 
-/// Parse repeatable `--output` flags into [`ArtifactSpec`]s (goal-phase-artifacts).
-/// Each value is a comma-separated `key=value` list: `id` (required), `path`,
-/// `kind` (default `code`), `purpose`, `required` (`true`/`false`, default true),
-/// `acceptance`. Lets the CLI author a manifest the verdict gate enforces, beside
-/// the autonomous planner path. Empty (no `--output` flags) → `vec![]` (today's
-/// default). Commas/equals inside values are not supported (declare such paths via
-/// the planner JSON path instead).
-fn parse_output_flags(args: &[String]) -> CliResult<Vec<ArtifactSpec>> {
-    many(args, "--output")
+/// Parse repeatable `--output`/`--input` flags into [`ArtifactSpec`]s. Each value
+/// is a comma-separated `key=value` list: `id` (required), `path`, `kind` (default
+/// `code`), `purpose`, `required` (`true`/`false`, default true), `acceptance`.
+/// `flag` names the CLI flag for actionable errors. Empty (no such flags) →
+/// `vec![]` (today's default). Commas/equals inside values are not supported
+/// (declare such paths via the planner JSON path instead).
+fn parse_spec_flags(args: &[String], flag: &str) -> CliResult<Vec<ArtifactSpec>> {
+    many(args, flag)
         .iter()
         .map(|raw| {
             let mut spec = ArtifactSpec::default();
@@ -15325,7 +15514,7 @@ fn parse_output_flags(args: &[String]) -> CliResult<Vec<ArtifactSpec>> {
                 }
                 let (key, val) = field.split_once('=').ok_or_else(|| {
                     CliError::Usage(format!(
-                        "--output field `{field}` must be key=value (in `{raw}`)"
+                        "{flag} field `{field}` must be key=value (in `{raw}`)"
                     ))
                 })?;
                 let val = val.trim();
@@ -15340,7 +15529,7 @@ fn parse_output_flags(args: &[String]) -> CliResult<Vec<ArtifactSpec>> {
                             "false" => false,
                             other => {
                                 return Err(CliError::Usage(format!(
-                                    "--output required must be true|false, got `{other}`"
+                                    "{flag} required must be true|false, got `{other}`"
                                 )))
                             }
                         }
@@ -15348,7 +15537,7 @@ fn parse_output_flags(args: &[String]) -> CliResult<Vec<ArtifactSpec>> {
                     "acceptance" => spec.acceptance = Some(val.to_string()),
                     other => {
                         return Err(CliError::Usage(format!(
-                            "unknown --output field `{other}` (expected id/path/kind/\
+                            "unknown {flag} field `{other}` (expected id/path/kind/\
                              purpose/required/acceptance)"
                         )))
                     }
@@ -15356,12 +15545,25 @@ fn parse_output_flags(args: &[String]) -> CliResult<Vec<ArtifactSpec>> {
             }
             if spec.id.trim().is_empty() {
                 return Err(CliError::Usage(format!(
-                    "--output `{raw}` needs an `id=...` field"
+                    "{flag} `{raw}` needs an `id=...` field"
                 )));
             }
             Ok(spec)
         })
         .collect()
+}
+
+/// Parse repeatable `--output` flags into [`ArtifactSpec`]s (goal-phase-artifacts):
+/// the artifacts a phase declares it will PRODUCE, which the verdict gate enforces.
+fn parse_output_flags(args: &[String]) -> CliResult<Vec<ArtifactSpec>> {
+    parse_spec_flags(args, "--output")
+}
+
+/// Parse repeatable `--input` flags into [`ArtifactSpec`]s (goal-phase-refinements):
+/// the artifacts a phase REQUIRES a prior phase to have landed, asserted as a
+/// precondition before the phase runs.
+fn parse_input_flags(args: &[String]) -> CliResult<Vec<ArtifactSpec>> {
+    parse_spec_flags(args, "--input")
 }
 
 fn parse_message_kind(value: &str) -> CliResult<MessageKind> {
@@ -18853,6 +19055,8 @@ agent("a NEW second leaf that changes the ordinal alignment")
                 started_at: Some("unix-ms:2".into()),
                 ended_at: None,
                 outputs: Vec::new(),
+                inputs: Vec::new(),
+                retry: None,
                 landed_commit: None,
             }],
             knowledge: vec![Knowledge {
@@ -21673,6 +21877,8 @@ mod tests {
             started_at: None,
             ended_at: None,
             outputs: Vec::new(),
+            inputs: Vec::new(),
+            retry: None,
             landed_commit: None,
         }];
         let mut a = make_task("t-a", "goal-compile");
@@ -21749,6 +21955,8 @@ mod tests {
             started_at: None,
             ended_at: None,
             outputs: Vec::new(),
+            inputs: Vec::new(),
+            retry: None,
             landed_commit: None,
         };
         goal.phases = vec![phase.clone()];
@@ -21810,6 +22018,8 @@ mod tests {
             started_at: None,
             ended_at: None,
             outputs: Vec::new(),
+            inputs: Vec::new(),
+            retry: None,
             landed_commit: None,
         }
     }
@@ -22110,6 +22320,31 @@ mod tests {
         assert!(parse_output_flags(&["--output".into(), "id=a,kind=bogus".into()]).is_err());
     }
 
+    #[test]
+    fn parse_input_flags_and_retry_author_phase_preconditions() {
+        // goal-phase-refinements: `--input` reuses the spec flag parser, and the
+        // planner JSON `retry` key parses into a per-phase budget override.
+        assert!(parse_input_flags(&[]).unwrap().is_empty());
+        let inputs = parse_input_flags(&[
+            "--input".into(),
+            "id=prior,path=docs/p.md,purpose=from a prior phase".into(),
+        ])
+        .unwrap();
+        assert_eq!(inputs.len(), 1);
+        assert_eq!(inputs[0].id, "prior");
+        assert_eq!(inputs[0].path.as_deref(), Some("docs/p.md"));
+        assert!(inputs[0].required, "inputs default to required");
+        // A missing id is still an error (shared with --output), naming --input.
+        let err = parse_input_flags(&["--input".into(), "path=x".into()]).unwrap_err();
+        assert!(err.to_string().contains("--input"), "{err}");
+
+        // retry: numeric and stringified forms parse; absent/garbage → None.
+        assert_eq!(parse_retry(&serde_json::json!({ "retry": 2 })), Some(2));
+        assert_eq!(parse_retry(&serde_json::json!({ "retry": "3" })), Some(3));
+        assert_eq!(parse_retry(&serde_json::json!({})), None);
+        assert_eq!(parse_retry(&serde_json::json!({ "retry": "x" })), None);
+    }
+
     /// Like `mock_outcome` but attaches a `worktree_diff` carrying ONE created
     /// non-empty file at `produced_path` to each task step's `details` — so the
     /// gate sees evidence the artifact was produced.
@@ -22315,6 +22550,339 @@ mod tests {
             orchestrate_goal_phases(&store, "g-art-wt", &run_phase, &noop_reviser, 0, &repo_root)
                 .expect("orchestrate");
         assert_eq!(report["status"], "completed");
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::remove_dir_all(&repo_root).ok();
+    }
+
+    // ---- goal-phase-refinements: registered_doc gate, per-phase retry,
+    // ---- cross-phase inputs ----------------------------------------------------
+
+    /// Write a `docs/registry.json` under `repo_root` registering the given paths
+    /// (the `agent_harness.docs_registry.v1` schema the gate reads).
+    fn write_docs_registry(repo_root: &Path, paths: &[&str]) {
+        let docs: Vec<serde_json::Value> = paths
+            .iter()
+            .map(|p| serde_json::json!({ "path": p }))
+            .collect();
+        let registry = serde_json::json!({
+            "schema": "agent_harness.docs_registry.v1",
+            "documents": docs,
+        });
+        std::fs::create_dir_all(repo_root.join("docs")).unwrap();
+        std::fs::write(
+            repo_root.join("docs/registry.json"),
+            serde_json::to_string_pretty(&registry).unwrap(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn orchestrate_gate_fails_phase_when_registered_doc_absent_from_registry() {
+        // The worker PRODUCES the doc (path satisfied) but it is NOT in
+        // docs/registry.json — the registered_doc gate must FAIL the phase
+        // (the docs/multi-project.md gap this closes).
+        let root = std::env::temp_dir().join(format!("harness-rdoc-{}", generated_id("absent")));
+        let store = HarnessStore::new(&root);
+        store.init().expect("init");
+        // repo_root carries a registry that does NOT list the produced doc.
+        let repo_root =
+            std::env::temp_dir().join(format!("harness-rdocrepo-{}", generated_id("absent")));
+        write_docs_registry(&repo_root, &["docs/already-here.md"]);
+
+        let mut goal = make_goal("g-rdoc-absent");
+        goal.phases = vec![orch_phase("p1")];
+        persist_new_goal(&store, &goal).unwrap();
+        let mut t = make_task("t1", "g-rdoc-absent");
+        t.phase_id = Some("p1".into());
+        t.outputs = vec![ArtifactSpec {
+            id: "doc".into(),
+            kind: ArtifactKind::RegisteredDoc,
+            path: Some("docs/new-doc.md".into()),
+            purpose: "a doc that must be registered".into(),
+            required: true,
+            acceptance: None,
+        }];
+        persist_new_task(&store, &t).unwrap();
+
+        // The worker produces docs/new-doc.md (path gate satisfied) — but the
+        // registry does not list it, so the registered_doc gate fails the phase.
+        let run_phase = |_script: &str,
+                         name: &str,
+                         _resume_from: Option<&str>|
+         -> CliResult<(String, workflow::WorkflowOutcome)> {
+            Ok(mock_outcome_with_diff(&store, name, "docs/new-doc.md"))
+        };
+        let report = orchestrate_goal_phases(
+            &store,
+            "g-rdoc-absent",
+            &run_phase,
+            &noop_reviser,
+            0,
+            &repo_root,
+        )
+        .expect("orchestrate");
+        assert_eq!(report["status"], "failed");
+        assert_eq!(report["failed_phase"], "p1");
+        let goal2 = goal_load(&store, "g-rdoc-absent").unwrap();
+        assert_eq!(goal2.phases[0].status, GoalPhaseStatus::Failed);
+        // The verdict rationale points at the registry.
+        let decisions = store.decisions().unwrap();
+        let verdict = decisions
+            .iter()
+            .rev()
+            .find(|d| d.decision_kind.as_deref() == Some("phase_verdict"))
+            .expect("a phase_verdict decision");
+        assert!(
+            verdict.rationale.contains("docs/registry.json")
+                && verdict.rationale.contains("docs/new-doc.md"),
+            "rationale should name the unregistered doc + registry: {}",
+            verdict.rationale
+        );
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::remove_dir_all(&repo_root).ok();
+    }
+
+    #[test]
+    fn orchestrate_gate_passes_phase_when_registered_doc_present_in_registry() {
+        // Same phase + doc, but now the path IS registered in docs/registry.json
+        // — the registered_doc gate passes and the phase advances.
+        let root = std::env::temp_dir().join(format!("harness-rdoc-{}", generated_id("present")));
+        let store = HarnessStore::new(&root);
+        store.init().expect("init");
+        let repo_root =
+            std::env::temp_dir().join(format!("harness-rdocrepo-{}", generated_id("present")));
+        init_git_repo(&repo_root);
+        // Register the doc the worker will produce.
+        write_docs_registry(&repo_root, &["docs/new-doc.md"]);
+        let _ = Command::new("git")
+            .arg("-C")
+            .arg(&repo_root)
+            .args(["add", "-A"])
+            .output();
+        let _ = Command::new("git")
+            .arg("-C")
+            .arg(&repo_root)
+            .args(["commit", "-m", "register doc"])
+            .output();
+
+        let mut goal = make_goal("g-rdoc-present");
+        goal.phases = vec![orch_phase("p1")];
+        persist_new_goal(&store, &goal).unwrap();
+        let mut t = make_task("t1", "g-rdoc-present");
+        t.phase_id = Some("p1".into());
+        t.outputs = vec![ArtifactSpec {
+            id: "doc".into(),
+            kind: ArtifactKind::RegisteredDoc,
+            path: Some("docs/new-doc.md".into()),
+            purpose: "a doc that must be registered".into(),
+            required: true,
+            acceptance: None,
+        }];
+        persist_new_task(&store, &t).unwrap();
+
+        let run_phase = |_script: &str,
+                         name: &str,
+                         _resume_from: Option<&str>|
+         -> CliResult<(String, workflow::WorkflowOutcome)> {
+            Ok(mock_outcome_with_diff(&store, name, "docs/new-doc.md"))
+        };
+        let report = orchestrate_goal_phases(
+            &store,
+            "g-rdoc-present",
+            &run_phase,
+            &noop_reviser,
+            0,
+            &repo_root,
+        )
+        .expect("orchestrate");
+        assert_eq!(report["status"], "completed");
+        let goal2 = goal_load(&store, "g-rdoc-present").unwrap();
+        assert_eq!(goal2.phases[0].status, GoalPhaseStatus::Passed);
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::remove_dir_all(&repo_root).ok();
+    }
+
+    #[test]
+    fn orchestrate_per_phase_retry_overrides_the_global_cap() {
+        use std::cell::RefCell;
+        // The phase carries retry=2 while the global cap is 0. The phase ALWAYS
+        // fails and the reviser always proposes an actionable revision → the phase
+        // must run 3 times (initial + 2 retries) on the strength of its OWN budget,
+        // even though the global cap would have allowed only one run.
+        let root = std::env::temp_dir().join(format!("harness-retry-{}", generated_id("over")));
+        let store = HarnessStore::new(&root);
+        store.init().expect("init");
+        let mut goal = make_goal("g-retry");
+        let mut phase = orch_phase("p1");
+        phase.retry = Some(2);
+        goal.phases = vec![phase];
+        persist_new_goal(&store, &goal).unwrap();
+        let mut t = make_task("t1", "g-retry");
+        t.phase_id = Some("p1".into());
+        t.owned_paths = vec!["x".into()];
+        persist_new_task(&store, &t).unwrap();
+
+        let attempts: RefCell<u32> = RefCell::new(0);
+        let run_phase = |_script: &str,
+                         name: &str,
+                         _resume_from: Option<&str>|
+         -> CliResult<(String, workflow::WorkflowOutcome)> {
+            *attempts.borrow_mut() += 1;
+            Ok(mock_outcome(&store, name, WorkflowRunStatus::Failed))
+        };
+        let revised: RefCell<u32> = RefCell::new(0);
+        let revise_phase = |_goal: &Goal,
+                            _phase: &harness_core::GoalPhase,
+                            _live_tasks: &[&Task],
+                            _knowledge: &Knowledge|
+         -> CliResult<serde_json::Value> {
+            let mut n = revised.borrow_mut();
+            *n += 1;
+            let new_id = format!("t-r{n}");
+            Ok(serde_json::json!({
+                "revision": {
+                    "supersede": [],
+                    "new_tasks": [{ "id": new_id, "title": "retry task", "owned_paths": ["y"] }]
+                }
+            }))
+        };
+
+        // Global cap is 0 — but the phase's retry=2 wins.
+        let report =
+            orchestrate_goal_phases(&store, "g-retry", &run_phase, &revise_phase, 0, &root)
+                .expect("orchestrate");
+        assert_eq!(report["status"], "failed");
+        assert_eq!(
+            *attempts.borrow(),
+            3,
+            "phase.retry=2 grants initial run + 2 retries despite --max-phase-retries=0"
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn orchestrate_fails_fast_when_required_input_is_absent() {
+        // A phase declares a REQUIRED input whose path is absent from the working
+        // tree → the orchestrator fails FAST at phase start with an actionable
+        // message, BEFORE spending the worker.
+        use std::cell::RefCell;
+        let root = std::env::temp_dir().join(format!("harness-input-{}", generated_id("absent")));
+        let store = HarnessStore::new(&root);
+        store.init().expect("init");
+        // repo_root is an empty dir → the required input is not present.
+        let repo_root =
+            std::env::temp_dir().join(format!("harness-inputrepo-{}", generated_id("absent")));
+        std::fs::create_dir_all(&repo_root).unwrap();
+
+        let mut goal = make_goal("g-input-absent");
+        let mut phase = orch_phase("p1");
+        phase.inputs = vec![ArtifactSpec {
+            id: "prior".into(),
+            kind: ArtifactKind::Code,
+            path: Some("docs/from-prior-phase.md".into()),
+            purpose: "must be landed by a prior phase".into(),
+            required: true,
+            acceptance: None,
+        }];
+        goal.phases = vec![phase];
+        persist_new_goal(&store, &goal).unwrap();
+        let mut t = make_task("t1", "g-input-absent");
+        t.phase_id = Some("p1".into());
+        persist_new_task(&store, &t).unwrap();
+
+        let ran_worker: RefCell<bool> = RefCell::new(false);
+        let run_phase = |_script: &str,
+                         name: &str,
+                         _resume_from: Option<&str>|
+         -> CliResult<(String, workflow::WorkflowOutcome)> {
+            *ran_worker.borrow_mut() = true;
+            Ok(mock_outcome(&store, name, WorkflowRunStatus::Completed))
+        };
+        let report = orchestrate_goal_phases(
+            &store,
+            "g-input-absent",
+            &run_phase,
+            &noop_reviser,
+            0,
+            &repo_root,
+        )
+        .expect("orchestrate");
+        assert_eq!(report["status"], "failed");
+        assert_eq!(report["failed_phase"], "p1");
+        assert!(
+            !*ran_worker.borrow(),
+            "the worker must NOT run when a required input is absent (fail fast at start)"
+        );
+        let goal2 = goal_load(&store, "g-input-absent").unwrap();
+        assert_eq!(goal2.phases[0].status, GoalPhaseStatus::Failed);
+        let decisions = store.decisions().unwrap();
+        let verdict = decisions
+            .iter()
+            .rev()
+            .find(|d| d.decision_kind.as_deref() == Some("phase_verdict"))
+            .expect("a phase_verdict decision");
+        assert!(
+            verdict
+                .rationale
+                .contains("required input docs/from-prior-phase.md not present"),
+            "rationale should name the missing input: {}",
+            verdict.rationale
+        );
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::remove_dir_all(&repo_root).ok();
+    }
+
+    #[test]
+    fn orchestrate_proceeds_when_required_input_is_present() {
+        // Same phase, but the required input now EXISTS in the working tree (a prior
+        // phase landed it) → the precondition passes and the phase runs + completes.
+        let root = std::env::temp_dir().join(format!("harness-input-{}", generated_id("present")));
+        let store = HarnessStore::new(&root);
+        store.init().expect("init");
+        let repo_root =
+            std::env::temp_dir().join(format!("harness-inputrepo-{}", generated_id("present")));
+        std::fs::create_dir_all(repo_root.join("docs")).unwrap();
+        // The prior phase's landed artifact is present.
+        std::fs::write(
+            repo_root.join("docs/from-prior-phase.md"),
+            "landed by a prior phase",
+        )
+        .unwrap();
+
+        let mut goal = make_goal("g-input-present");
+        let mut phase = orch_phase("p1");
+        phase.inputs = vec![ArtifactSpec {
+            id: "prior".into(),
+            kind: ArtifactKind::Code,
+            path: Some("docs/from-prior-phase.md".into()),
+            purpose: "must be landed by a prior phase".into(),
+            required: true,
+            acceptance: None,
+        }];
+        goal.phases = vec![phase];
+        persist_new_goal(&store, &goal).unwrap();
+        let mut t = make_task("t1", "g-input-present");
+        t.phase_id = Some("p1".into());
+        persist_new_task(&store, &t).unwrap();
+
+        let run_phase = |_script: &str,
+                         name: &str,
+                         _resume_from: Option<&str>|
+         -> CliResult<(String, workflow::WorkflowOutcome)> {
+            Ok(mock_outcome(&store, name, WorkflowRunStatus::Completed))
+        };
+        let report = orchestrate_goal_phases(
+            &store,
+            "g-input-present",
+            &run_phase,
+            &noop_reviser,
+            0,
+            &repo_root,
+        )
+        .expect("orchestrate");
+        assert_eq!(report["status"], "completed");
+        let goal2 = goal_load(&store, "g-input-present").unwrap();
+        assert_eq!(goal2.phases[0].status, GoalPhaseStatus::Passed);
         std::fs::remove_dir_all(&root).ok();
         std::fs::remove_dir_all(&repo_root).ok();
     }

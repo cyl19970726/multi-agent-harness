@@ -95,7 +95,12 @@ for t in \
   orchestrate_readonly_phase_lands_nothing \
   orchestrate_fails_phase_when_diff_cannot_be_applied \
   land_phase_diffs_refuses_when_repo_tree_is_dirty \
-  land_phase_diffs_rolls_back_partial_apply_leaving_no_orphan ; do
+  land_phase_diffs_rolls_back_partial_apply_leaving_no_orphan \
+  orchestrate_gate_fails_phase_when_registered_doc_absent_from_registry \
+  orchestrate_gate_passes_phase_when_registered_doc_present_in_registry \
+  orchestrate_per_phase_retry_overrides_the_global_cap \
+  orchestrate_fails_fast_when_required_input_is_absent \
+  orchestrate_proceeds_when_required_input_is_present ; do
   grep -q "test .*$t ... ok" "$TMP/test.log" && ok "unit: $t" || bad "unit: $t did not run/pass"
 done
 # goal-multi-project deterministic regression coverage — one representative test
