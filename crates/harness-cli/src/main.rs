@@ -1399,6 +1399,196 @@ fn sync_goal_stage(store: &HarnessStore, goal: &mut Goal) -> CliResult<()> {
     Ok(())
 }
 
+/// Derive a goal's terminal readiness from its constituent work (goal-auto-finalize).
+/// Returns the derived [`GoalStage`] WITHOUT mutating/persisting — the FORWARD-advance
+/// gate lives in [`reconcile_goal_stage`]. Pure over `(goal, tasks)` so it is directly
+/// unit-testable.
+///
+/// - `phases[]` non-empty → `Goal::effective_stage()` (the phase derivation: all
+///   `Passed` → `Verified`; any started → `Working`; …).
+/// - else this goal's non-superseded tasks non-empty → ALL `Done`/`Archived` → `Verified`;
+///   any `Running`/`Review`/`Assigned`/`Blocked`/`Planned` started (i.e. past `Planned`,
+///   or simply present and active) → `Working`; none started → leave the stored stage
+///   (returns `goal.stage`).
+/// - else (no phases, no tasks) → leave the stored stage (out-of-band goal; needs an
+///   explicit `finalize`).
+fn derive_goal_stage(goal: &Goal, tasks: &[Task]) -> GoalStage {
+    if !goal.phases.is_empty() {
+        return goal.effective_stage();
+    }
+    // Task-driven derivation: only this goal's NON-superseded tasks count.
+    let live: Vec<&Task> = tasks
+        .iter()
+        .filter(|t| {
+            t.goal_id.as_deref() == Some(goal.id.as_str()) && t.status != TaskStatus::Superseded
+        })
+        .collect();
+    if live.is_empty() {
+        // No phases and no live tasks → out-of-band; the stored stage is the truth.
+        return goal.stage;
+    }
+    if live
+        .iter()
+        .all(|t| matches!(t.status, TaskStatus::Done | TaskStatus::Archived))
+    {
+        return GoalStage::Verified;
+    }
+    // Any task past the initial `Planned` state means work has actually begun.
+    let any_started = live.iter().any(|t| {
+        matches!(
+            t.status,
+            TaskStatus::Assigned
+                | TaskStatus::Running
+                | TaskStatus::Review
+                | TaskStatus::Blocked
+                | TaskStatus::Done
+                | TaskStatus::Archived
+        )
+    });
+    if any_started {
+        GoalStage::Working
+    } else {
+        // All tasks are still `Planned` → nothing has started; don't fabricate progress.
+        goal.stage
+    }
+}
+
+/// FORWARD-advance a goal's stored `stage` to its derived terminal readiness when its
+/// constituent work has progressed (goal-auto-finalize). The single derivation+sync
+/// seam called on every completion mutation so finishing the last phase/task
+/// auto-finalizes the goal. Returns `true` when it advanced the stored stage.
+///
+/// Forward-only + back-compat:
+/// - Never REGRESSES a stage (only advances when the derived stage is strictly later).
+/// - Never *fabricates* progress for a goal whose work has not actually started:
+///   [`derive_goal_stage`] returns the stored stage verbatim for a goal with no phases
+///   and only not-yet-started (`Planned`) or zero live tasks, so a `draft`/`exploring`/
+///   `explored` goal sitting on merely-planned work is left untouched. A below-`working`
+///   goal advances only when its tasks are genuinely active (`→ working`) or all done
+///   (`→ verified`) — i.e. real work the stored stage hasn't caught up with.
+/// - A goal with neither phases nor live tasks is left unchanged (out-of-band → explicit
+///   `finalize --force`).
+///
+/// On a real advance it persists the goal (stage + projected status + `stage_changed_at`)
+/// and appends a `decision`-sourced [`Knowledge`] entry (author `auto-finalize`) recording
+/// the provenance, mirroring the `reconcile_phase` append pattern.
+fn reconcile_goal_stage(store: &HarnessStore, goal: &mut Goal) -> CliResult<bool> {
+    let tasks: Vec<Task> = latest_tasks(store)?.into_values().collect();
+    let derived = derive_goal_stage(goal, &tasks);
+    let from = goal.stage;
+    // Forward-only: advance only when the derived stage is strictly later than the
+    // stored one. The "no fabricated progress below working" guard lives in
+    // `derive_goal_stage` (it returns the stored stage for not-started / empty work),
+    // so by the time we have a strictly-later derived stage, real work has progressed.
+    if !stage_is_forward(from, derived) {
+        return Ok(false);
+    }
+    let now = now_string();
+    goal.stage = derived;
+    goal.status = derived.to_status();
+    goal.stage_changed_at = Some(now.clone());
+    let knowledge = Knowledge {
+        id: generated_id("knowledge"),
+        goal_id: goal.id.clone(),
+        phase_id: None,
+        task_id: None,
+        author: "auto-finalize".to_string(),
+        timestamp: now.clone(),
+        notes_md: format!(
+            "Goal stage auto-advanced `{}` → `{}` (derived from constituent {}; all \
+             work complete).",
+            from.as_str(),
+            derived.as_str(),
+            if goal.phases.is_empty() {
+                "tasks"
+            } else {
+                "phases"
+            }
+        ),
+        tags: vec!["auto-finalize".to_string()],
+        source: KnowledgeSource::Decision,
+        superseded_by_knowledge_id: None,
+        created_at: now.clone(),
+    };
+    goal.knowledge.push(knowledge);
+    goal.updated_at = now;
+    store.append_goal(goal)?;
+    Ok(true)
+}
+
+/// True when `to` is a strictly-later lifecycle stage than `from` (the forward-only
+/// guard for [`reconcile_goal_stage`]). Mirrors the private `GoalStage::order` ranking
+/// in harness-core; auto-finalize only ever derives `Working`/`Verified`, so an exact
+/// rank table keeps the comparison total and obvious.
+fn stage_rank(s: GoalStage) -> u8 {
+    match s {
+        GoalStage::Draft => 0,
+        GoalStage::Exploring => 1,
+        GoalStage::Explored => 2,
+        GoalStage::Working => 3,
+        GoalStage::Done => 4,
+        GoalStage::Verifying => 5,
+        GoalStage::Verified => 6,
+    }
+}
+
+fn stage_is_forward(from: GoalStage, to: GoalStage) -> bool {
+    stage_rank(to) > stage_rank(from)
+}
+
+/// Force-finalize a goal whose work shipped entirely out-of-band (no phases / no
+/// tasks, e.g. built by an external workflow + a merged PR) — the `--force` path of
+/// `goal finalize` (goal-auto-finalize). Records `landed_commit` (on the goal's
+/// `git_metadata`), appends a `decision`-sourced [`Knowledge`] entry (author
+/// `auto-finalize`, provenance = the operator-asserted out-of-band landing), advances
+/// the stage straight to `verified` (status Done), and persists. Returns the appended
+/// knowledge id. Pure store/model mutation — directly unit-testable.
+fn force_finalize_goal(
+    store: &HarnessStore,
+    goal: &mut Goal,
+    landed_commit: Option<String>,
+    note_md: Option<&str>,
+) -> CliResult<String> {
+    let now = now_string();
+    let from = goal.stage;
+    if let Some(commit) = &landed_commit {
+        let meta = goal.git_metadata.get_or_insert_with(Default::default);
+        meta.commit = Some(commit.clone());
+    }
+    goal.stage = GoalStage::Verified;
+    goal.status = GoalStage::Verified.to_status();
+    goal.stage_changed_at = Some(now.clone());
+    let commit_md = landed_commit
+        .as_deref()
+        .map(|c| format!(" landed_commit=`{c}`."))
+        .unwrap_or_default();
+    let extra_md = note_md
+        .map(|n| format!("\n\n{}", n.trim()))
+        .unwrap_or_default();
+    let knowledge = Knowledge {
+        id: generated_id("knowledge"),
+        goal_id: goal.id.clone(),
+        phase_id: None,
+        task_id: None,
+        author: "auto-finalize".to_string(),
+        timestamp: now.clone(),
+        notes_md: format!(
+            "Goal force-finalized `{}` → `verified` (work shipped out-of-band; no \
+             phases/tasks to derive from).{commit_md}{extra_md}",
+            from.as_str()
+        ),
+        tags: vec!["auto-finalize".to_string(), "force".to_string()],
+        source: KnowledgeSource::Decision,
+        superseded_by_knowledge_id: None,
+        created_at: now.clone(),
+    };
+    let knowledge_id = knowledge.id.clone();
+    goal.knowledge.push(knowledge);
+    goal.updated_at = now;
+    store.append_goal(goal)?;
+    Ok(knowledge_id)
+}
+
 /// The injectable phase runner: `(script, name, resume_from) -> (run_id,
 /// outcome)`. `resume_from` is `Some(prior_run_id)` when the orchestrator is
 /// re-entering a phase that already has a prior workflow run, so its succeeded
@@ -1531,10 +1721,11 @@ fn reconcile_phase(
     goal.knowledge.push(knowledge);
     goal.updated_at = now;
 
-    // Persist the phase/knowledge mutation, then sync the derived stage (which
-    // re-appends the goal with the advanced `stage`/`status`).
+    // Persist the phase/knowledge mutation, then re-derive the goal's stage
+    // (goal-auto-finalize: reconciling the LAST phase to passed advances the goal to
+    // verified). Forward-only; re-appends the goal with the advanced `stage`/`status`.
     store.append_goal(goal)?;
-    sync_goal_stage(store, goal)?;
+    reconcile_goal_stage(store, goal)?;
     Ok(knowledge_id)
 }
 
@@ -2397,7 +2588,11 @@ fn orchestrate_goal_phases(
     orch.status = OrchestrationStatus::Completed;
     orch.updated_at = now_string();
     store.append_goal_orchestration_run(&orch)?;
-    sync_goal_stage(store, &mut goal)?;
+    // goal-auto-finalize: completing the last phase is a completion seam — re-derive
+    // the goal's stage (all phases passed → Verified), forward-only, recording an
+    // `auto-finalize` Knowledge entry on the advance. Subsumes the prior
+    // `sync_goal_stage` call for this (phase-driven) success terminal.
+    reconcile_goal_stage(store, &mut goal)?;
     Ok(serde_json::json!({
         "orchestration_run": orch.id,
         "goal": goal.id,
@@ -2633,7 +2828,7 @@ fn plan_into_goal(
 fn goal_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     require_subcommand(
         args,
-        "goal create|list|show|describe-set|design-set|acceptance-set|explore-add|phase-add|knowledge-add|design-synthesize|reconcile-phase|plan|run-phases|stage|learning-status|evaluate|close",
+        "goal create|list|show|describe-set|design-set|acceptance-set|explore-add|phase-add|knowledge-add|design-synthesize|reconcile-phase|finalize|plan|run-phases|stage|learning-status|evaluate|close",
     )?;
     match args[0].as_str() {
         "create" => {
@@ -2832,6 +3027,67 @@ fn goal_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
                 "knowledge_id": knowledge_id,
                 "effective_stage": goal.effective_stage().as_str(),
             }))?;
+        }
+        "finalize" => {
+            // goal-auto-finalize: one-shot finalize instead of the 4-step stage walk.
+            // Re-derive the goal's stage from its constituent work; if it is
+            // structurally complete (phases all passed, or all tasks done) it advances
+            // to verified. An incomplete goal is REFUSED with an actionable message
+            // UNLESS --force (out-of-band work shipped via an external workflow / merged
+            // PR): --force records the landed commit + a Knowledge entry and advances to
+            // verified.
+            let goal_id = args
+                .get(1)
+                .filter(|a| !a.starts_with("--"))
+                .cloned()
+                .or_else(|| value(args, "--goal"))
+                .or_else(|| value(args, "--id"))
+                .ok_or_else(|| {
+                    CliError::Usage(
+                        "finalize needs a goal (`goal finalize <goal>` or --goal <id>)".into(),
+                    )
+                })?;
+            let force = has_flag(args, "--force");
+            let landed_commit = value(args, "--landed-commit");
+            let note_md = md_value(args, "note")?;
+            let mut goal = goal_load(store, &goal_id)?;
+            let advanced = reconcile_goal_stage(store, &mut goal)?;
+            if goal.stage == GoalStage::Verified {
+                // Structurally complete (or already verified) — the derivation finalized it.
+                print_json(&serde_json::json!({
+                    "goal": goal.id,
+                    "stage": goal.stage.as_str(),
+                    "status": goal.status,
+                    "advanced": advanced,
+                    "forced": false,
+                }))?;
+            } else if force {
+                // Out-of-band finalize: record the landed commit (if any) + a
+                // decision-sourced Knowledge entry, and advance to verified directly.
+                let knowledge_id = force_finalize_goal(
+                    store,
+                    &mut goal,
+                    landed_commit.clone(),
+                    note_md.as_deref(),
+                )?;
+                print_json(&serde_json::json!({
+                    "goal": goal.id,
+                    "stage": goal.stage.as_str(),
+                    "status": goal.status,
+                    "advanced": true,
+                    "forced": true,
+                    "landed_commit": landed_commit,
+                    "knowledge_id": knowledge_id,
+                }))?;
+            } else {
+                return Err(CliError::Usage(format!(
+                    "goal `{goal_id}` is not structurally complete (derived stage `{}`): its \
+                     phases are not all passed and/or its tasks are not all done. Finish the \
+                     remaining work, or pass --force (with --landed-commit <sha> for work that \
+                     shipped out-of-band) to finalize it explicitly.",
+                    goal.stage.as_str()
+                )));
+            }
         }
         "plan" => {
             let goal_id = args
@@ -3218,6 +3474,15 @@ fn task_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
             task.status = parse_task_status(&required(args, "--status")?)?;
             task.updated_at = now_string();
             store.append_task(&task)?;
+            // goal-auto-finalize: a task status change is a completion seam — when the
+            // task belongs to a goal, re-derive that goal's stage so finishing the LAST
+            // task auto-finalizes the goal (forward-only; no-op for goals below working
+            // or with open work).
+            if let Some(goal_id) = task.goal_id.as_deref() {
+                if let Ok(mut goal) = goal_load(store, goal_id) {
+                    reconcile_goal_stage(store, &mut goal)?;
+                }
+            }
             print_json(&task)?;
         }
         "list" => print_json(&latest_tasks(store)?.into_values().collect::<Vec<_>>())?,
@@ -11753,6 +12018,14 @@ fn review_gate(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     task.updated_at = now_string();
     store.append_proposal(&proposal)?;
     store.append_task(&task)?;
+    // goal-auto-finalize: an accepted review flips the task to Done — a completion
+    // seam. When the task belongs to a goal, re-derive the goal's stage so accepting
+    // the LAST task's proposal auto-finalizes the goal (forward-only; no-op otherwise).
+    if let Some(goal_id) = task.goal_id.as_deref() {
+        if let Ok(mut goal) = goal_load(store, goal_id) {
+            reconcile_goal_stage(store, &mut goal)?;
+        }
+    }
     let decision = Decision {
         id: value(args, "--id").unwrap_or_else(|| generated_id("decision")),
         task_id: task_id.clone(),
@@ -22245,6 +22518,207 @@ mod tests {
             None,
         )
         .is_err());
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    // -----------------------------------------------------------------------
+    // goal-auto-finalize: derive goal stage from phases/tasks + auto-sync.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn auto_finalize_task_all_done_advances_goal_to_verified() {
+        let root = std::env::temp_dir().join(format!("harness-af-alldone-{}", generated_id("af")));
+        let store = HarnessStore::new(&root);
+        store.init().expect("init");
+        // A task-driven goal (NO phases) already at `working` with two live tasks.
+        let mut goal = make_goal("g-af1");
+        goal.stage = GoalStage::Working;
+        goal.status = GoalStatus::Active;
+        persist_new_goal(&store, &goal).unwrap();
+        let mut t1 = make_task("t1", "g-af1");
+        t1.status = TaskStatus::Running;
+        store.append_task(&t1).unwrap();
+        let mut t2 = make_task("t2", "g-af1");
+        t2.status = TaskStatus::Done;
+        store.append_task(&t2).unwrap();
+
+        // Last task still running → derives `working`, no advance from `working`.
+        let mut goal = goal_load(&store, "g-af1").unwrap();
+        assert!(!reconcile_goal_stage(&store, &mut goal).unwrap());
+        assert_eq!(
+            goal_load(&store, "g-af1").unwrap().stage,
+            GoalStage::Working
+        );
+
+        // Flip the LAST task to done (via task status path) → ALL done → verified.
+        t1.status = TaskStatus::Done;
+        t1.updated_at = now_string();
+        store.append_task(&t1).unwrap();
+        let mut goal = goal_load(&store, "g-af1").unwrap();
+        assert!(reconcile_goal_stage(&store, &mut goal).unwrap());
+        let after = goal_load(&store, "g-af1").unwrap();
+        assert_eq!(after.stage, GoalStage::Verified);
+        assert_eq!(after.status, GoalStatus::Done);
+        // An `auto-finalize` provenance Knowledge entry was appended (decision source).
+        let k = after
+            .knowledge
+            .iter()
+            .find(|k| k.author == "auto-finalize")
+            .expect("auto-finalize knowledge appended");
+        assert_eq!(k.source, KnowledgeSource::Decision);
+        assert!(k.tags.iter().any(|t| t == "auto-finalize"));
+        assert!(k.phase_id.is_none() && k.task_id.is_none());
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn auto_finalize_task_partial_stays_working() {
+        let root = std::env::temp_dir().join(format!("harness-af-partial-{}", generated_id("af")));
+        let store = HarnessStore::new(&root);
+        store.init().expect("init");
+        // Task-driven goal at `working` with one done + one still open.
+        let mut goal = make_goal("g-af2");
+        goal.stage = GoalStage::Working;
+        goal.status = GoalStatus::Active;
+        persist_new_goal(&store, &goal).unwrap();
+        let mut t1 = make_task("t1", "g-af2");
+        t1.status = TaskStatus::Done;
+        store.append_task(&t1).unwrap();
+        let mut t2 = make_task("t2", "g-af2");
+        t2.status = TaskStatus::Review;
+        store.append_task(&t2).unwrap();
+
+        // derive: some open → working; no forward advance from `working`.
+        let tasks: Vec<Task> = latest_tasks(&store).unwrap().into_values().collect();
+        let goal_now = goal_load(&store, "g-af2").unwrap();
+        assert_eq!(derive_goal_stage(&goal_now, &tasks), GoalStage::Working);
+        let mut goal = goal_load(&store, "g-af2").unwrap();
+        assert!(!reconcile_goal_stage(&store, &mut goal).unwrap());
+        let after = goal_load(&store, "g-af2").unwrap();
+        assert_eq!(after.stage, GoalStage::Working);
+        assert_eq!(after.status, GoalStatus::Active);
+        // No auto-finalize Knowledge churned on a no-op.
+        assert!(!after.knowledge.iter().any(|k| k.author == "auto-finalize"));
+
+        // A superseded task does NOT count: supersede the open one → all live done → verified.
+        t2.status = TaskStatus::Superseded;
+        t2.updated_at = now_string();
+        store.append_task(&t2).unwrap();
+        let mut goal = goal_load(&store, "g-af2").unwrap();
+        assert!(reconcile_goal_stage(&store, &mut goal).unwrap());
+        assert_eq!(
+            goal_load(&store, "g-af2").unwrap().stage,
+            GoalStage::Verified
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn auto_finalize_phase_driven_still_finalizes() {
+        // Regression: a phase-driven goal whose phases all reach `passed` advances
+        // to verified through `reconcile_goal_stage` (the path run-phases /
+        // reconcile-phase now use), exactly as the phase derivation always did.
+        let root = std::env::temp_dir().join(format!("harness-af-phase-{}", generated_id("af")));
+        let store = HarnessStore::new(&root);
+        store.init().expect("init");
+        let mut goal = make_goal("g-af3");
+        goal.phases = vec![orch_phase("p1"), orch_phase("p2")];
+        persist_new_goal(&store, &goal).unwrap();
+
+        // First phase passed, second not → derives `working`.
+        let mut goal = goal_load(&store, "g-af3").unwrap();
+        goal.phases[0].status = GoalPhaseStatus::Passed;
+        store.append_goal(&goal).unwrap();
+        let mut goal = goal_load(&store, "g-af3").unwrap();
+        assert!(reconcile_goal_stage(&store, &mut goal).unwrap());
+        assert_eq!(
+            goal_load(&store, "g-af3").unwrap().stage,
+            GoalStage::Working
+        );
+
+        // Last phase passed → ALL passed → verified (auto-finalize).
+        let mut goal = goal_load(&store, "g-af3").unwrap();
+        goal.phases[1].status = GoalPhaseStatus::Passed;
+        store.append_goal(&goal).unwrap();
+        let mut goal = goal_load(&store, "g-af3").unwrap();
+        assert!(reconcile_goal_stage(&store, &mut goal).unwrap());
+        let after = goal_load(&store, "g-af3").unwrap();
+        assert_eq!(after.stage, GoalStage::Verified);
+        assert_eq!(after.status, GoalStatus::Done);
+
+        // Forward-only: a second reconcile is a no-op (no regression, no churn).
+        let mut goal = goal_load(&store, "g-af3").unwrap();
+        assert!(!reconcile_goal_stage(&store, &mut goal).unwrap());
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn finalize_refuses_incomplete_and_force_finalizes_out_of_band() {
+        let root = std::env::temp_dir().join(format!("harness-af-final-{}", generated_id("af")));
+        let store = HarnessStore::new(&root);
+        store.init().expect("init");
+
+        // (a) An INCOMPLETE task-driven goal: `reconcile_goal_stage` does not reach
+        // verified, so `goal finalize` (no --force) must REFUSE.
+        let mut goal = make_goal("g-af4");
+        goal.stage = GoalStage::Working;
+        goal.status = GoalStatus::Active;
+        persist_new_goal(&store, &goal).unwrap();
+        let mut t1 = make_task("t1", "g-af4");
+        t1.status = TaskStatus::Running;
+        store.append_task(&t1).unwrap();
+        let err = goal_command(&store, &["finalize".into(), "g-af4".into()])
+            .expect_err("finalize must refuse an incomplete goal");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("not structurally complete") && msg.contains("--force"),
+            "actionable refusal message: {msg}"
+        );
+        // Refusal mutated nothing.
+        assert_eq!(
+            goal_load(&store, "g-af4").unwrap().stage,
+            GoalStage::Working
+        );
+
+        // (b) An OUT-OF-BAND goal (no phases, no tasks): finalize without --force
+        // refuses (nothing derivable), but --force --landed-commit finalizes it.
+        let mut oob = make_goal("g-oob");
+        oob.stage = GoalStage::Working;
+        oob.status = GoalStatus::Active;
+        persist_new_goal(&store, &oob).unwrap();
+        assert!(
+            goal_command(&store, &["finalize".into(), "g-oob".into()]).is_err(),
+            "out-of-band goal is not structurally complete without --force"
+        );
+        let mut oob = goal_load(&store, "g-oob").unwrap();
+        let kid = force_finalize_goal(
+            &store,
+            &mut oob,
+            Some("cafef00d".into()),
+            Some("merged PR #9"),
+        )
+        .expect("force finalize");
+        let after = goal_load(&store, "g-oob").unwrap();
+        assert_eq!(after.stage, GoalStage::Verified);
+        assert_eq!(after.status, GoalStatus::Done);
+        // Landed commit recorded on git_metadata + a forced auto-finalize Knowledge.
+        assert_eq!(
+            after.git_metadata.and_then(|m| m.commit).as_deref(),
+            Some("cafef00d")
+        );
+        let k = after
+            .knowledge
+            .iter()
+            .find(|k| k.id == kid)
+            .expect("forced knowledge appended");
+        assert_eq!(k.author, "auto-finalize");
+        assert_eq!(k.source, KnowledgeSource::Decision);
+        assert!(k.tags.iter().any(|t| t == "force"));
+        assert!(k.notes_md.contains("cafef00d") && k.notes_md.contains("merged PR #9"));
 
         std::fs::remove_dir_all(&root).ok();
     }
