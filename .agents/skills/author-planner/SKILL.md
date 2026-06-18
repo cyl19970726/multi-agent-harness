@@ -21,12 +21,13 @@ A goal's plan is two append-only structures on the Goal:
 
 | Structure | What it is |
 | --- | --- |
-| `phases[]` (`GoalPhase`) | The agent-planned, **sequential** checkpoints. A phase must pass its `acceptance` gate (a verdict) before the next begins. |
-| Tasks (`Task` with `phase_id`) | The per-phase DAG. Each task is a mini-goal: `design_md` + `acceptance_criteria` + `owned_paths` + `depends_on_task_ids`. |
+| `phases[]` (`GoalPhase`) | The agent-planned, **sequential** checkpoints. A phase must pass its gate (steps ok + verdict + declared `outputs` present) before the next begins. |
+| Tasks (`Task` with `phase_id`) | The per-phase DAG. Each task is a mini-goal: `design_md` + `acceptance_criteria` + `owned_paths` + `depends_on_task_ids` + `outputs`. |
 
-A **phase** is `{ id, name, intent, acceptance }`. A **task** is `{ id, title,
-design_md, acceptance(list), owned_paths(list), depends_on(list of task ids in the
-SAME phase) }`.
+A **phase** is `{ id, name, intent, acceptance, outputs, inputs, retry }`. A **task**
+is `{ id, title, design_md, acceptance(list), owned_paths(list), depends_on(list of
+task ids in the SAME phase), outputs }`. `phase_id` is the canonical task↔phase join
+key (the goal is implied) — a task's `phase_id` must name a real phase of its goal.
 
 ### The two ordering rules (this is the whole model)
 
@@ -58,6 +59,17 @@ Do not write tasks as one-line chores. A task carries:
   with owned_paths compiles to `writable=True, isolation="worktree"`).
 - **`depends_on`** — task ids IN THE SAME PHASE that must finish first. Cross-phase
   ordering is the phase sequence's job, not a task dep.
+- **`outputs`** — the artifacts this task/phase commits to producing (an
+  `ArtifactSpec` manifest): `{ id, kind, path?, purpose, required, acceptance? }`,
+  `kind` ∈ {design_doc, adr, code, test_report, migration_doc, registered_doc,
+  screenshot, other}. The compiler injects "you MUST produce these" into the worker
+  prompt, and the gate **fails the phase if a `required` output's `path` is absent**
+  (a `registered_doc` must also be in `docs/registry.json`). Empty `outputs` = today's
+  behavior. Declare outputs so a phase can't "pass" having produced nothing.
+
+A **phase** also takes `inputs` (artifacts it requires from a PRIOR phase — checked
+before it runs, fail-fast if missing) and `retry` (per-phase replan budget,
+overriding `--max-phase-retries`).
 
 ## The planner CLI (`harness goal plan`)
 
@@ -115,19 +127,29 @@ phase runs on, and [[author-goal]] for getting a goal to `explored` first.
 
 ### Gating, replan, and resume (what the orchestrator does)
 
-- **Gate.** A phase passes only if its run completed AND every task step is ok (and,
-  if the phase has an `acceptance`, the compiled `verdict()` returned true). On a
-  pass the goal records a `Decision(decision_kind=phase_verdict)`, points
-  `GoalPhase.verdict_decision_id` at it, writes each task → `Done`, and links each
-  `WorkflowStep` back to its task (`task_id` + `verdict_outcome`).
-- **Replan.** On a failure with retries left, the orchestrator appends a `Knowledge`
-  entry for the finding, asks the planner to **revise** this phase's task graph
-  (dead tasks → `TaskStatus::Superseded` + `superseded_by_knowledge_id`; new tasks
-  appended), recompiles, and reruns — capped by `--max-phase-retries`. This is why
-  tasks are *living*: they are superseded, never deleted, so the trail survives.
-- **Resume.** `--resume` re-enters from the durable `GoalOrchestrationRun`
-  checkpoint: already-passed phases are skipped, and within a re-run phase the prior
-  run's succeeded leaves are replayed (no re-spend). A kill mid-run is safe.
+- **Gate.** A phase passes only if its run completed, **every task step is ok**, the
+  compiled `verdict()` returned true (when the phase has an `acceptance`), **AND every
+  `required` declared `output` exists** (a `registered_doc` must also be in
+  `docs/registry.json`). Before a phase runs, its `inputs` preconditions are checked
+  (fail-fast if a required upstream artifact is missing). On a pass the goal records a
+  `Decision(decision_kind=phase_verdict)`, points `GoalPhase.verdict_decision_id` at it,
+  writes each task → `Done`, and links each `WorkflowStep` to its task.
+- **Land.** A passing phase **lands** its writable tasks' worktree diffs onto the branch
+  (a per-phase landing commit + `GoalPhase.landed_commit`; clean-tree guard + rollback,
+  never a force-merge) — so a passing phase leaves durable artifacts, not a dropped
+  worktree. Sequential phases build on the prior phase's landed HEAD.
+- **Replan.** On a failure with retries left (`GoalPhase.retry`, else
+  `--max-phase-retries`), the orchestrator appends a `Knowledge` finding, asks the
+  planner to **revise** this phase's task graph (dead tasks → `TaskStatus::Superseded`
+  + `superseded_by_knowledge_id`; new tasks appended), recompiles, reruns. Tasks are
+  *living*: superseded, never deleted, so the trail survives.
+- **Resume.** `--resume` re-enters from the durable `GoalOrchestrationRun` checkpoint:
+  passed phases are skipped, and a re-run phase replays its prior succeeded leaves (no
+  re-spend). A kill mid-run is safe.
+- **Auto-finalize.** The goal's stage is **derived** from its phases (else tasks) and
+  re-synced on every completion seam — finishing the last phase advances the goal to
+  `verified` (done) with no manual `goal stage`. `goal reconcile-phase` trues up a phase
+  whose work shipped out-of-band; `goal finalize` closes a goal.
 
 So the planner's output is not a one-shot script — it is a **living task graph** the
 orchestrator edits (via replan) as execution surfaces new knowledge.
@@ -146,3 +168,9 @@ orchestrator edits (via replan) as execution surfaces new knowledge.
   ([[author-goal]]), then plan.
 - **Cross-phase task deps.** Using `depends_on` to reach into another phase.
   Ordering across phases is the phase sequence; `depends_on` is intra-phase only.
+- **Outputs-less verify/doc phases.** A phase with no `required` `outputs` can "pass"
+  having produced nothing (the gate only sees steps-ok + verdict). For a phase whose
+  point IS a deliverable (a report, an ADR, a registered doc, a migration runbook),
+  declare it as a `required` output so the gate enforces it.
+- **Stale/loose `phase_id`.** A task whose `phase_id` doesn't name a real phase of its
+  goal is rejected at create — don't hand-set `phase_id` to a phase that isn't there.
