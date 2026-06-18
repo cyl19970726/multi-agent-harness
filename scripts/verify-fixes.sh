@@ -100,7 +100,11 @@ for t in \
   orchestrate_gate_passes_phase_when_registered_doc_present_in_registry \
   orchestrate_per_phase_retry_overrides_the_global_cap \
   orchestrate_fails_fast_when_required_input_is_absent \
-  orchestrate_proceeds_when_required_input_is_present ; do
+  orchestrate_proceeds_when_required_input_is_present \
+  auto_finalize_task_all_done_advances_goal_to_verified \
+  auto_finalize_task_partial_stays_working \
+  auto_finalize_phase_driven_still_finalizes \
+  finalize_refuses_incomplete_and_force_finalizes_out_of_band ; do
   grep -q "test .*$t ... ok" "$TMP/test.log" && ok "unit: $t" || bad "unit: $t did not run/pass"
 done
 # goal-multi-project deterministic regression coverage — one representative test
@@ -278,6 +282,66 @@ else
   else
     ok "reconcile: unknown phase id is rejected"
   fi
+fi
+
+# ---------------------------------------------------------------------------
+section "Auto-finalize on completion (goal-auto-finalize, no codex)"
+# Drive the built harness through the task-driven auto-finalize seam + the explicit
+# `goal finalize` command (refuse-incomplete + --force out-of-band). No codex/serve.
+cargo build -p harness-cli >/dev/null 2>&1
+if [ ! -x "$HARNESS" ]; then
+  bad "build harness-cli for auto-finalize checks"
+else
+  AF="$TMP/af"
+  HF() { "$HARNESS" --store "$AF" "$@"; }
+  # A task-driven goal (NO phases) with two tasks both started.
+  HF goal create --id af --title "verify auto-finalize" --owner lead --priority p1 >/dev/null 2>&1
+  HF task create --id af1 --goal af --title A --objective a --owner lead >/dev/null 2>&1
+  HF task create --id af2 --goal af --title B --objective b --owner lead >/dev/null 2>&1
+  HF task status --id af1 --status running >/dev/null 2>&1
+  HF task status --id af2 --status running >/dev/null 2>&1
+  # Some tasks open → the goal derives `working` (active), not done.
+  HF goal show --goal af >"$TMP/af_mid.json" 2>/dev/null
+  [ "$(check_json "$TMP/af_mid.json" "d['stage']=='working' and d['status']=='active'")" = "1" ] \
+    && ok "task-partial: goal derives working (stays active)" || bad "task-partial working"
+  # Finish the first task → still one open → stays working.
+  HF task status --id af1 --status done >/dev/null 2>&1
+  HF goal show --goal af >"$TMP/af_mid2.json" 2>/dev/null
+  [ "$(check_json "$TMP/af_mid2.json" "d['stage']=='working'")" = "1" ] \
+    && ok "task-partial: one done, one open -> still working" || bad "task-partial one-open"
+  # Finish the LAST task → ALL done → auto-advances to verified (status done) with
+  # an `auto-finalize` provenance Knowledge entry — no manual `goal stage` walk.
+  HF task status --id af2 --status done >/dev/null 2>&1
+  HF goal show --goal af >"$TMP/af_done.json" 2>/dev/null
+  [ "$(check_json "$TMP/af_done.json" "d['stage']=='verified' and d['status']=='done'")" = "1" ] \
+    && ok "task-all-done: last task done -> goal auto-finalizes to verified" || bad "task-all-done verified"
+  [ "$(check_json "$TMP/af_done.json" "any(k.get('author')=='auto-finalize' and k.get('source')=='decision' and 'auto-finalize' in (k.get('tags') or []) for k in d.get('knowledge',[]))")" = "1" ] \
+    && ok "task-all-done: appended an auto-finalize Knowledge entry (provenance)" || bad "auto-finalize knowledge"
+
+  # `goal finalize` on an INCOMPLETE goal REFUSES with an actionable message.
+  HF goal create --id af2g --title "incomplete" --owner lead --priority p1 >/dev/null 2>&1
+  HF task create --id af2t --goal af2g --title C --objective c --owner lead >/dev/null 2>&1
+  HF task status --id af2t --status running >/dev/null 2>&1
+  if HF goal finalize af2g >"$TMP/af_refuse.json" 2>"$TMP/af_refuse.err"; then
+    bad "finalize: incomplete goal should be refused"
+  else
+    grep -q "not structurally complete" "$TMP/af_refuse.err" && grep -q -- "--force" "$TMP/af_refuse.err" \
+      && ok "finalize: refuses incomplete goal with actionable message" || bad "finalize refuse message"
+  fi
+  # `goal finalize --force --landed-commit` on an OUT-OF-BAND goal (no phases/tasks)
+  # finalizes it: records the commit + a Knowledge entry, advances to verified.
+  HF goal create --id afoob --title "out of band" --owner lead --priority p1 >/dev/null 2>&1
+  if HF goal finalize afoob >/dev/null 2>&1; then
+    bad "finalize: out-of-band goal should refuse without --force"
+  else
+    ok "finalize: out-of-band goal refused without --force"
+  fi
+  HF goal finalize afoob --force --landed-commit cafef00d --note "shipped via external workflow" >"$TMP/af_force.json" 2>/dev/null
+  [ "$(check_json "$TMP/af_force.json" "d.get('stage')=='verified' and d.get('forced')==True and d.get('landed_commit')=='cafef00d' and d.get('knowledge_id')")" = "1" ] \
+    && ok "finalize --force: out-of-band goal finalized (commit + knowledge recorded)" || bad "finalize --force"
+  HF goal show --goal afoob >"$TMP/af_force_goal.json" 2>/dev/null
+  [ "$(check_json "$TMP/af_force_goal.json" "d['stage']=='verified' and d['status']=='done' and (d.get('git_metadata') or {}).get('commit')=='cafef00d' and any('force' in (k.get('tags') or []) for k in d.get('knowledge',[]))")" = "1" ] \
+    && ok "finalize --force: persisted verified + landed_commit on git_metadata" || bad "finalize --force persistence"
 fi
 
 # ---------------------------------------------------------------------------
