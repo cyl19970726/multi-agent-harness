@@ -187,39 +187,66 @@ The full loop:
 harness goal knowledge-add --goal <goal> --author <who> --notes-file f.md --tag x
 harness goal design-synthesize --goal <goal>
 
-# 2. Plan: decompose design_md → phases + a per-phase task DAG (see author-planner)
+# 2. Plan: decompose design_md → phases + a per-phase task DAG (see author-planner).
+#    Phases/tasks may DECLARE output artifacts the gate verifies, cross-phase inputs,
+#    and a per-phase retry budget.
 harness goal plan <goal>                    # agent-driven; --dry-run plans nothing
 #   or hand-author:
 harness goal phase-add --goal <goal> --phase-id p1 --name "Build" \
-    --intent "…" --acceptance "…"
+    --intent "…" --acceptance "…" [--output "<spec>"] [--input "<spec>"] [--retry 2]
 harness task create --goal <goal> --phase-id p1 --title "…" --objective "…" \
-    --owner <who> --owned-path crates/x --design-file slice.md --depends-on <task>
+    --owner <who> --owned-path crates/x --design-file slice.md --depends-on <task> \
+    [--output "<spec>"]
 
 # 3. Inspect the compiled Starlark for one phase (derived, throwaway view)
 harness phase compile <goal> --phase p1
 
-# 4. Run the plan: phases SEQUENTIALLY, each gated on its verdict before the next;
-#    each task's outcome is written back to Task.status; the goal's derived stage
-#    advances; a durable checkpoint is persisted.
+# 4. Run the plan: phases SEQUENTIALLY, gated, LANDED on the branch, and the goal
+#    AUTO-FINALIZES — you do NOT hand-walk the stages anymore.
 harness goal run-phases <goal>              # --dry-run for the mock-worker path
 harness goal run-phases <goal> --resume     # re-enter without re-spending done work
 harness goal run-phases <goal> --max-phase-retries 2   # replan loop on failure
+
+# 5. Reconcile / finalize the STATUS (when work shipped out-of-band, e.g. via a PR)
+harness goal reconcile-phase --goal <goal> --phase p1 --to passed --landed-commit <sha>
+harness goal finalize <goal> [--force --landed-commit <sha>]
 ```
 
 What `run-phases` does per phase: compile the phase's live tasks → a `.star`
 (disjoint-`owned_paths` no-dep tasks → `parallel()`, writable tasks → worktree
-isolation, phase `acceptance` → a `verdict()` gate), run it on the workflow
-runtime, and **only advance when the verdict passes**. On a failure with retries
-left it **replans**: appends a `Knowledge` entry for the finding, asks the planner
-to revise (supersede dead tasks → `TaskStatus::Superseded` + new ones), recompiles,
-and reruns — capped by `--max-phase-retries`.
+isolation, phase `acceptance` → a `verdict()` gate), run it, and pass **only if the
+run completed, every task step is ok, AND every `required` declared output artifact
+exists** (the verifying gate). A passing phase then **lands** its writable tasks'
+diffs onto the branch (a per-phase landing commit + `landed_commit`; clean-tree
+guard + rollback, never a force-merge). On a failure with retries left it
+**replans**: appends a `Knowledge` entry, asks the planner to revise (supersede dead
+tasks → `TaskStatus::Superseded` + new ones), recompiles, reruns — capped by the
+phase's `retry` (else `--max-phase-retries`).
+
+**You no longer advance the stage by hand.** A goal's stage is **derived** from its
+constituent work (phases, else tasks) and auto-synced on every completion seam — so
+finishing the last phase/task moves the goal to `verified` (done) on its own. Use
+`goal reconcile-phase` to true up a phase whose work shipped out-of-band (sets status
++ `landed_commit` + a knowledge entry + re-syncs the goal stage), and `goal finalize`
+to close a goal (refuses an incomplete one; `--force --landed-commit` closes a goal
+whose work merged entirely outside `run-phases`).
 
 A **simple goal needs none of this** — one phase, or just the manual lifecycle.
 Reach for phases when the work is a real multi-step, multi-worker build that
-benefits from gated checkpoints and a living task graph. The decomposition rules
-(sequential phases; parallel-iff-disjoint within a phase; each task a mini-goal)
-live in [[author-planner]]; the Starlark runtime each phase compiles to is
-[[author-workflow]].
+benefits from gated checkpoints and a living task graph. The decomposition rules,
+the artifact manifest (`outputs`), cross-phase `inputs`, and per-phase `retry` live
+in [[author-planner]]; the Starlark runtime each phase compiles to is [[author-workflow]].
+
+### The task ↔ phase field model (what changed)
+- **`phase_id` is the canonical join key.** A task belongs to a goal's phase via
+  `task.phase_id` (the goal is implied). The old free-text `Task.phase` is **retired**.
+  `task create --phase-id <id>` (not `--phase`); a task's `phase_id` must name a real
+  phase of its goal (validated at create — a typo is rejected, not a silent orphan).
+- **Three legitimate task shapes:** *phased* (`phase_id` set), *goal-scoped-phaseless*
+  (`goal_id` set, no `phase_id` — shows under the goal's "(no phase)" section), and
+  *loose* (neither).
+- **The dashboard views tasks under Goal → Phase**, each phase offering a **Task Graph**
+  and a **Task Kanban** view of just that phase's tasks (no flat global board).
 
 ## Anti-patterns (reject these)
 
