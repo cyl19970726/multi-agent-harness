@@ -196,6 +196,20 @@ pub struct GoalPhase {
     /// non-empty makes the verdict gate enforce each `required` artifact's presence.
     #[serde(default)]
     pub outputs: Vec<ArtifactSpec>,
+    /// Artifacts a PRIOR phase must have landed for this phase to run
+    /// (goal-phase-refinements). Before running this phase, each REQUIRED input's
+    /// `path` must exist in the working tree, else the phase fails fast at start.
+    /// Reuses [`ArtifactSpec`] (`path`/`purpose`/`required` are what matter). Empty
+    /// reproduces today's behavior (no precondition). Additive + back-compat.
+    #[serde(default)]
+    pub inputs: Vec<ArtifactSpec>,
+    /// Per-phase retry budget override (goal-phase-refinements). When set, this
+    /// phase's replan/rerun budget is this value instead of the global
+    /// `--max-phase-retries`; `None` falls back to the global default. Lets an
+    /// explore phase and a live-demo phase have distinct budgets. Additive +
+    /// back-compat (a legacy row without the key is `None` == today's behavior).
+    #[serde(default)]
+    pub retry: Option<u32>,
     /// The commit that landed this phase's writable work onto the goal's branch
     /// (goal-phase-landing). Set by `run-phases` when a passing phase applies its
     /// worktree diff, or by `goal reconcile-phase` for out-of-band work. `None`
@@ -2794,6 +2808,8 @@ mod tests {
             started_at: Some("unix-ms:2".into()),
             ended_at: None,
             outputs: Vec::new(),
+            inputs: Vec::new(),
+            retry: None,
             landed_commit: None,
         };
         let pj = serde_json::to_string(&phase).expect("ser phase");
@@ -2844,6 +2860,8 @@ mod tests {
             started_at: None,
             ended_at: None,
             outputs: Vec::new(),
+            inputs: Vec::new(),
+            retry: None,
             landed_commit: None,
         }];
         g.knowledge = vec![Knowledge {
@@ -3051,6 +3069,27 @@ mod tests {
             "created_at":"unix-ms:1"}"#;
         let lp: GoalPhase = serde_json::from_str(legacy_phase).expect("de legacy phase");
         assert_eq!(lp.landed_commit, None);
+        // goal-phase-refinements: the new `inputs`/`retry` fields also default on a
+        // legacy row (empty / None == today's behavior), and round-trip when set.
+        assert!(lp.inputs.is_empty());
+        assert_eq!(lp.retry, None);
+        let mut phase = test_phase("p2", GoalPhaseStatus::NotStarted);
+        phase.retry = Some(3);
+        phase.inputs = vec![ArtifactSpec {
+            id: "prior".into(),
+            kind: ArtifactKind::RegisteredDoc,
+            path: Some("docs/prior.md".into()),
+            purpose: "from a prior phase".into(),
+            required: true,
+            acceptance: None,
+        }];
+        let pj = serde_json::to_string(&phase).expect("ser phase");
+        assert!(pj.contains("\"retry\":3"), "{pj}");
+        assert!(pj.contains("docs/prior.md"), "{pj}");
+        assert_eq!(
+            serde_json::from_str::<GoalPhase>(&pj).expect("de phase"),
+            phase
+        );
 
         // -- OrchestrationPhaseRun --
         let run = OrchestrationPhaseRun {
@@ -3158,6 +3197,8 @@ mod tests {
             started_at: None,
             ended_at: None,
             outputs: Vec::new(),
+            inputs: Vec::new(),
+            retry: None,
             landed_commit: None,
         }
     }
