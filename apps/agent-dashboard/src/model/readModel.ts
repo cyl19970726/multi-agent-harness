@@ -700,6 +700,41 @@ export function phaseTaskDag(phaseId: string, tasks: Task[]): PhaseDagLayer[] {
 }
 
 /**
+ * Phase-scoped kanban lanes (goal-task-board-model): the Kanban counterpart to
+ * {@link phaseTaskDag}. Filters to this phase's LIVE tasks (`phase_id===phaseId`
+ * && status!=="superseded") and buckets them by their own `status` into the same
+ * `laneOrder`/`labelStatus` lanes the global board uses — mirroring
+ * `buildLanesLocal`, but scoped to one phase. Returns every lane (empty lanes
+ * included) so the board layout is stable; a nonexistent phase yields all-empty
+ * lanes. Reuses the {@link Lane} interface.
+ */
+export function phaseKanban(phaseId: string, tasks: Task[]): Lane[] {
+  const live = tasks.filter(
+    (task) => task.phase_id === phaseId && task.status !== "superseded",
+  );
+  return laneOrder.map((status) => ({
+    id: status,
+    title: labelStatus(status),
+    tasks: live.filter((task) => task.status === status),
+  }));
+}
+
+/**
+ * The "(no phase)" set for a goal (goal-task-board-model): tasks that belong to
+ * the goal (`goal_id===goalId`) but carry no `phase_id` — the goal-scoped tasks
+ * a phase-driven goal would otherwise hide. Superseded tasks are excluded so the
+ * section mirrors the live phase views. Keeps phaseless-but-goaled work visible.
+ */
+export function phaselessGoalTasks(goalId: string, tasks: Task[]): Task[] {
+  return tasks.filter(
+    (task) =>
+      task.goal_id === goalId &&
+      (task.phase_id == null || task.phase_id === "") &&
+      task.status !== "superseded",
+  );
+}
+
+/**
  * Effective git context for a Task: prefer `git_metadata`, fall back to the flat
  * fields retained for back-compat (ADR 0019).
  */

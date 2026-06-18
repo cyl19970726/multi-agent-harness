@@ -33,6 +33,17 @@ export interface SelectionState {
   agentTab?: AgentTab;
   taskId?: string;
   /**
+   * The phase opened within a goal (Goal -> Phase drill-in), addressed as
+   * `?phase=<id>`. Scopes the per-phase Graph/Kanban view on the Goal document.
+   */
+  phaseId?: string;
+  /**
+   * Which view a phase's task subgraph renders in: "graph" (the DAG, default) or
+   * "kanban" (status lanes). Persisted as `?taskView=` so a chosen view is
+   * shareable. Defaults to "graph".
+   */
+  phaseView?: "graph" | "kanban";
+  /**
    * The doc opened on the Docs surface, addressed by its repo path
    * (e.g. "docs/prd.md"); setting it implies the docs surface.
    */
@@ -41,16 +52,19 @@ export interface SelectionState {
   taskTab?: TaskTab;
   /** The selected workflow run id (opens WorkflowRunDetail on the workflows surface). */
   workflowRunId?: string;
-  mode?: "kanban" | "graph" | "split";
-  /** Unified Work board: which object the board lays out. Defaults to "tasks". */
+  /**
+   * Retained for URL/back-compat (goal-task-board-model retired the flat global
+   * task board). The Work board now shows the Goal collection by default; a
+   * `boardGoal` filter pins it to one legacy goal's task columns. Nothing reads
+   * `boardScope` for view selection anymore.
+   */
   boardScope?: "goals" | "tasks";
-  /** Work board (tasks scope) filter: only show this goal's tasks. */
+  /** Work board filter: pin to one goal's task columns (legacy phaseless fallback). */
   boardGoal?: string;
 }
 
 export const defaultSelection: SelectionState = {
   surface: "agents",
-  mode: "kanban",
   boardScope: "tasks",
 };
 
@@ -103,6 +117,10 @@ export function selectionFromLocation(base: SelectionState): SelectionState {
   if (goal) next.goalId = goal;
   const task = params.get("task");
   if (task) next.taskId = task;
+  const phase = params.get("phase");
+  if (phase) next.phaseId = phase;
+  const taskView = params.get("taskView");
+  if (taskView === "graph" || taskView === "kanban") next.phaseView = taskView;
   // Canonical doc address: ?doc=<path>; setting it implies the docs surface
   // (mirror of the ?agent= / ?workflowRun= rules).
   const doc = params.get("doc");
@@ -148,6 +166,11 @@ export function syncSelectionToLocation(selection: SelectionState): void {
   if (selection.teamId) params.set("team", selection.teamId);
   if (selection.goalId) params.set("goal", selection.goalId);
   if (selection.taskId) params.set("task", selection.taskId);
+  if (selection.phaseId) params.set("phase", selection.phaseId);
+  // Only persist a non-default phase view, and only when a phase is open.
+  if (selection.phaseId && selection.phaseView && selection.phaseView !== "graph") {
+    params.set("taskView", selection.phaseView);
+  }
   if (selection.docPath) params.set("doc", selection.docPath);
   // Only persist a non-default task tab, and only when a task is open.
   if (selection.taskId && selection.taskTab && selection.taskTab !== "overview") {

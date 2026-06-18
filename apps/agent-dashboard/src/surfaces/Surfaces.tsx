@@ -91,10 +91,13 @@ import {
   formatDuration,
   memberName,
   parseTs,
+  phaseKanban,
+  phaselessGoalTasks,
   phaseTaskDag,
   taskTitle,
   tasksBlockedBy,
   taskGitMetadata,
+  type Lane,
   type PhaseDagLayer,
   type TimelineItem,
   type WorkbenchModel,
@@ -371,11 +374,14 @@ function TaskCard({
   onClick,
   readiness,
   goalLabel,
+  phaseLabel,
 }: {
   task: Task;
   onClick: () => void;
   readiness?: Readiness;
   goalLabel?: string;
+  /** The task's phase (name when resolvable, else id), shown as a chip. */
+  phaseLabel?: string;
 }) {
   return (
     <button
@@ -389,6 +395,12 @@ function TaskCard({
           <span className="inline-flex items-center gap-1 truncate text-[10px] text-muted-foreground">
             <Target className="size-2.5" />
             <span className="max-w-28 truncate">{goalLabel}</span>
+          </span>
+        )}
+        {phaseLabel && (
+          <span className="inline-flex items-center gap-1 truncate text-[10px] text-muted-foreground">
+            <Workflow className="size-2.5" />
+            <span className="max-w-28 truncate">{phaseLabel}</span>
           </span>
         )}
         <span className="ml-auto">
@@ -983,7 +995,7 @@ export function VisionOverview({ model, onSelectionChange }: SurfaceProps) {
             onClick={() => onSelectionChange({ surface: "tasks" })}
           >
             <Workflow className="size-3.5" />
-            Open tasks
+            Open Work board
           </Button>
         }
       />
@@ -1217,7 +1229,7 @@ function GoalTasksJump({
           disabled={!goal}
           onClick={() =>
             goal &&
-            onSelectionChange({ surface: "tasks", boardScope: "tasks", boardGoal: goal.id })
+            onSelectionChange({ surface: "tasks", boardGoal: goal.id })
           }
         >
           <Workflow className="size-3.5" />
@@ -1242,7 +1254,15 @@ function GoalTasksJump({
   );
 }
 
-export function GoalDocument({ model, onSelectionChange }: SurfaceProps) {
+export function GoalDocument({
+  model,
+  onSelectionChange,
+  phaseId,
+  phaseView,
+}: SurfaceProps & {
+  phaseId?: string;
+  phaseView?: "graph" | "kanban";
+}) {
   const goal = model.selectedGoal;
   if (!goal) {
     return (
@@ -1372,13 +1392,31 @@ export function GoalDocument({ model, onSelectionChange }: SurfaceProps) {
               tasks={model.goalTasks}
               knowledge={goal.knowledge ?? []}
               workflowSteps={model.snapshot.workflow_steps ?? []}
-              onSelectTask={(taskId) =>
-                onSelectionChange({ surface: "tasks", taskId, boardScope: "tasks", boardGoal: goal.id })
+              selectedPhaseId={phaseId}
+              phaseView={phaseView ?? "graph"}
+              onSelectPhaseView={(pId, view) =>
+                onSelectionChange({ phaseId: pId, phaseView: view })
+              }
+              onSelectTask={(taskId, pId) =>
+                onSelectionChange({ surface: "task", taskId, goalId: goal.id, phaseId: pId })
               }
             />
           </div>
         </DocSection>
       )}
+
+      <PhalessGoalTasksSection
+        goal={goal}
+        tasks={model.goalTasks}
+        phaseView={phaseView ?? "graph"}
+        onSelectPhaseView={(view) =>
+          onSelectionChange({ phaseId: NO_PHASE_KEY, phaseView: view })
+        }
+        showKanban={phaseId === NO_PHASE_KEY && phaseView === "kanban"}
+        onSelectTask={(taskId) =>
+          onSelectionChange({ surface: "task", taskId, goalId: goal.id, phaseId: undefined })
+        }
+      />
 
       {(goal.knowledge?.length ?? 0) > 0 && (
         <DocSection label="Knowledge timeline">
@@ -1386,7 +1424,7 @@ export function GoalDocument({ model, onSelectionChange }: SurfaceProps) {
             <GoalKnowledgeTimeline
               knowledge={goal.knowledge!}
               onSelectTask={(taskId) =>
-                onSelectionChange({ surface: "tasks", taskId, boardScope: "tasks", boardGoal: goal.id })
+                onSelectionChange({ surface: "task", taskId, goalId: goal.id })
               }
             />
           </div>
@@ -1722,18 +1760,29 @@ function GoalPhasesTimeline({
   tasks,
   knowledge,
   workflowSteps,
+  selectedPhaseId,
+  phaseView,
+  onSelectPhaseView,
   onSelectTask,
 }: {
   phases: GoalPhase[];
   tasks: Task[];
   knowledge: Knowledge[];
   workflowSteps: WorkflowStep[];
-  onSelectTask: (taskId: string) => void;
+  /** The phase whose view choice is active (others default to "graph"). */
+  selectedPhaseId?: string;
+  /** The active view for the selected phase. */
+  phaseView: "graph" | "kanban";
+  onSelectPhaseView: (phaseId: string, view: "graph" | "kanban") => void;
+  onSelectTask: (taskId: string, phaseId: string) => void;
 }) {
   return (
     <div className="space-y-3 p-3">
       {phases.map((phase, index) => {
         const layers = phaseTaskDag(phase.id, tasks);
+        // A phase shows Kanban only when it is the selected phase AND the active
+        // view is kanban; every other phase keeps the default Graph (DAG) view.
+        const view = phase.id === selectedPhaseId ? phaseView : "graph";
         const superseded = tasks.filter(
           (task) => task.phase_id === phase.id && task.status === "superseded",
         );
@@ -1766,6 +1815,12 @@ function GoalPhasesTimeline({
                   {phaseStatusLabel(phase.status)}
                 </Badge>
                 <MonoId>{phase.id}</MonoId>
+                <span className="ml-auto">
+                  <PhaseViewToggle
+                    value={view}
+                    onChange={(next) => onSelectPhaseView(phase.id, next)}
+                  />
+                </span>
               </div>
               {phase.intent && (
                 <p className="mt-1.5 text-[12px] leading-snug text-foreground/80">{phase.intent}</p>
@@ -1791,12 +1846,22 @@ function GoalPhasesTimeline({
               {(phase.outputs?.length ?? 0) > 0 && (
                 <Deliverables outputs={phase.outputs!} diffs={phaseDiffs} />
               )}
-              <PhaseTaskDag layers={layers} onSelectTask={onSelectTask} />
+              {view === "kanban" ? (
+                <PhaseKanban
+                  lanes={phaseKanban(phase.id, tasks)}
+                  onSelectTask={(taskId) => onSelectTask(taskId, phase.id)}
+                />
+              ) : (
+                <PhaseTaskDag
+                  layers={layers}
+                  onSelectTask={(taskId) => onSelectTask(taskId, phase.id)}
+                />
+              )}
               {superseded.length > 0 && (
                 <SupersededTasks
                   tasks={superseded}
                   knowledge={knowledge}
-                  onSelectTask={onSelectTask}
+                  onSelectTask={(taskId) => onSelectTask(taskId, phase.id)}
                 />
               )}
             </div>
@@ -1874,6 +1939,167 @@ function PhaseTaskChip({ task, onClick }: { task: Task; onClick: () => void }) {
     </button>
   );
 }
+
+/**
+ * Sentinel `phaseId` for the goal's "(no phase)" section, so its view choice is
+ * URL-addressable alongside real phases (a real phase id can never be this).
+ */
+const NO_PHASE_KEY = "__no_phase__";
+
+/**
+ * The per-phase [ Graph | Kanban ] segmented toggle (goal-task-board-model).
+ * Mirrors the Work board's [ Goals | Tasks ] segmented control so the dashboard
+ * reads consistently. Graph keeps the DAG; Kanban shows phaseKanban() lanes.
+ */
+function PhaseViewToggle({
+  value,
+  onChange,
+}: {
+  value: "graph" | "kanban";
+  onChange: (view: "graph" | "kanban") => void;
+}) {
+  return (
+    <div className="flex items-center gap-1 rounded-md border border-border bg-card p-0.5">
+      {(["graph", "kanban"] as const).map((option) => (
+        <button
+          key={option}
+          type="button"
+          onClick={() => onChange(option)}
+          className={cn(
+            "rounded px-2 py-0.5 text-[10px] font-medium capitalize transition-colors",
+            value === option
+              ? "bg-primary/15 text-primary"
+              : "text-muted-foreground hover:text-foreground",
+          )}
+        >
+          {option}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * Phase-scoped Kanban: the status lanes from {@link phaseKanban}, rendered as a
+ * horizontally-scrollable strip of compact columns. Empty lanes are dropped so a
+ * sparse phase stays readable; an all-empty phase shows a single empty note.
+ */
+function PhaseKanban({
+  lanes,
+  onSelectTask,
+}: {
+  lanes: Lane[];
+  onSelectTask: (taskId: string) => void;
+}) {
+  const populated = lanes.filter((lane) => lane.tasks.length > 0);
+  if (populated.length === 0) {
+    return (
+      <p className="mt-2 text-[11px] text-muted-foreground">No live tasks in this phase.</p>
+    );
+  }
+  return (
+    <div className="mt-2.5 flex gap-2 overflow-x-auto pb-1">
+      {populated.map((lane) => (
+        <div
+          key={lane.id}
+          className="flex w-44 shrink-0 flex-col rounded-md border border-border bg-card/60"
+        >
+          <div className="flex items-center gap-1.5 border-b border-border px-2 py-1.5">
+            <StatusDot tone={taskTone(lane.id)} />
+            <span className="text-[10px] font-semibold capitalize">{lane.title}</span>
+            <span className="ml-auto font-mono text-[10px] text-muted-foreground">
+              {lane.tasks.length}
+            </span>
+          </div>
+          <div className="space-y-1 p-1.5">
+            {lane.tasks.map((task) => (
+              <PhaseTaskChip key={task.id} task={task} onClick={() => onSelectTask(task.id)} />
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * The goal's "(no phase)" section (goal-task-board-model): goal-scoped tasks that
+ * carry no `phase_id`. Shown only when such tasks exist so a fully-phased goal
+ * stays clean. Offers the same Graph/Kanban toggle — Graph lists the tasks as
+ * chips (there is no phase DAG to layer), Kanban buckets them into status lanes.
+ */
+function PhalessGoalTasksSection({
+  goal,
+  tasks,
+  phaseView,
+  showKanban,
+  onSelectPhaseView,
+  onSelectTask,
+}: {
+  goal: Goal;
+  tasks: Task[];
+  phaseView: "graph" | "kanban";
+  showKanban: boolean;
+  onSelectPhaseView: (view: "graph" | "kanban") => void;
+  onSelectTask: (taskId: string) => void;
+}) {
+  const phaseless = phaselessGoalTasks(goal.id, tasks);
+  if (phaseless.length === 0) return null;
+  const view = showKanban ? "kanban" : phaseView === "kanban" ? "graph" : phaseView;
+  return (
+    <DocSection label="(no phase)">
+      <div className="rounded-lg border border-border bg-card p-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-[12px] font-medium text-muted-foreground">
+            Goal-scoped tasks with no phase
+          </span>
+          <span className="font-mono text-[11px] text-muted-foreground">
+            {phaseless.length}
+          </span>
+          <span className="ml-auto">
+            <PhaseViewToggle value={view} onChange={onSelectPhaseView} />
+          </span>
+        </div>
+        {view === "kanban" ? (
+          <PhaseKanban
+            lanes={buildPhaselessLanes(phaseless)}
+            onSelectTask={onSelectTask}
+          />
+        ) : (
+          <div className="mt-2.5 flex flex-wrap gap-1.5">
+            {phaseless.map((task) => (
+              <PhaseTaskChip
+                key={task.id}
+                task={task}
+                onClick={() => onSelectTask(task.id)}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+    </DocSection>
+  );
+}
+
+/** Bucket a phaseless task list into the same status lanes the board uses. */
+function buildPhaselessLanes(tasks: Task[]): Lane[] {
+  return TASK_LANE_ORDER.map((status) => ({
+    id: status,
+    title: status,
+    tasks: tasks.filter((task) => task.status === status),
+  }));
+}
+
+/** Lane order for the phaseless kanban (mirrors readModel's laneOrder). */
+const TASK_LANE_ORDER = [
+  "planned",
+  "assigned",
+  "running",
+  "blocked",
+  "review",
+  "done",
+  "archived",
+] as const;
 
 /** Superseded tasks: greyed + struck, with the knowledge that abandoned them. */
 function SupersededTasks({
@@ -2199,6 +2425,9 @@ export function TaskDocument({
   }
 
   const goal = model.goals.find((g) => g.id === task.goal_id);
+  const phase = task.phase_id
+    ? goal?.phases?.find((p) => p.id === task.phase_id)
+    : undefined;
   const parent = model.tasks.find((t) => t.id === task.parent_task_id);
   const messages = model.messages.filter((message) => message.task_id === task.id);
   const evidence = model.evidence.filter((item) => item.task_id === task.id);
@@ -2246,6 +2475,25 @@ export function TaskDocument({
               >
                 <Target className="size-3" />
                 {goal.title ?? goal.id}
+              </button>
+              <span className="text-border">/</span>
+            </>
+          )}
+          {goal && phase && (
+            <>
+              <button
+                type="button"
+                className="inline-flex items-center gap-1 hover:text-foreground"
+                onClick={() =>
+                  onSelectionChange({
+                    surface: "goal",
+                    goalId: goal.id,
+                    phaseId: phase.id,
+                  })
+                }
+              >
+                <Workflow className="size-3" />
+                {phase.name}
               </button>
               <span className="text-border">/</span>
             </>
@@ -2822,17 +3070,17 @@ function TaskSheet({
 }
 
 /**
- * Unified Work board. A `[ Goals | Tasks ]` switch lays out either the Goal
- * collection (4 columns: active/blocked/review/done) or the Task graph (6
- * columns). Tasks mode supports a goal filter (`boardGoal`). Task cards carry a
- * derived ready/waiting chip distinct from the stored `blocked` column. The
- * per-goal board is just this board pre-filtered via `boardGoal`. Selecting a
- * card opens the Task slide-over (`peekTaskId`) without leaving the board.
+ * The Work board (goal-task-board-model). The PRIMARY rail view is the GOAL
+ * COLLECTION (4 lifecycle columns) — the flat global task board has been retired,
+ * because tasks are now viewed strictly under Goal -> Phase -> [Graph | Kanban].
+ * The only remaining task layout here is the GOAL-SCOPED board (`boardGoal` set),
+ * a fallback for LEGACY phaseless goals, reached from a goal document's "View
+ * tasks". `boardScope` is retained for URL/back-compat but no longer surfaces a
+ * flat all-tasks view. Selecting a task card opens the Task slide-over.
  */
 export function GraphKanban({
   model,
   onSelectionChange,
-  boardScope = "tasks",
   boardGoal,
   peekTaskId,
   actionsEnabled,
@@ -2845,60 +3093,29 @@ export function GraphKanban({
   const peekTask = peekTaskId
     ? model.tasks.find((task) => task.id === peekTaskId)
     : undefined;
-  const goalsMode = boardScope === "goals";
   const goalById = new Map(model.goals.map((goal) => [goal.id, goal]));
+  // A goal filter pins the board to that goal's task columns (the legacy
+  // phaseless fallback). Absent a filter, the board is the goal collection.
   const filterGoal = boardGoal ? goalById.get(boardGoal) : undefined;
+  const scopedMode = Boolean(filterGoal);
   const boardTasks = boardGoal
     ? model.tasks.filter((task) => task.goal_id === boardGoal)
-    : model.tasks;
+    : [];
+  // Phase name lookup for the scoped board's task cards (the goal-scoped fallback
+  // still shows which phase a task belongs to, falling back to the raw id).
+  const phaseNameById = new Map(
+    (filterGoal?.phases ?? []).map((phase) => [phase.id, phase.name]),
+  );
 
   return (
     <div className="space-y-5">
       <SurfaceHeader
-        kicker={goalsMode ? "Goal collection" : "Task graph"}
+        kicker={scopedMode ? "Goal-scoped tasks (legacy)" : "Goal collection"}
         title="Work"
         description={
-          goalsMode
-            ? "Goals by lifecycle. A goal reaches done only after a closeout decision and evaluation — never from task activity alone."
-            : "Tasks by status. The ready / waiting chip is derived from dependencies and is distinct from the blocked column."
-        }
-        actions={
-          <div className="flex items-center gap-2">
-            {!goalsMode && (
-              <select
-                aria-label="Filter tasks by goal"
-                value={boardGoal ?? ""}
-                onChange={(event) =>
-                  onSelectionChange({ boardGoal: event.target.value || undefined })
-                }
-                className="h-8 max-w-44 truncate rounded-md border border-border bg-background/60 px-2 text-xs text-foreground outline-none transition-colors hover:border-input focus:border-ring"
-              >
-                <option value="">All goals</option>
-                {model.goals.map((goal) => (
-                  <option key={goal.id} value={goal.id}>
-                    {goal.title ?? goal.id}
-                  </option>
-                ))}
-              </select>
-            )}
-            <div className="flex items-center gap-1 rounded-md border border-border bg-card p-0.5">
-              {(["goals", "tasks"] as const).map((value) => (
-                <button
-                  key={value}
-                  type="button"
-                  onClick={() => onSelectionChange({ boardScope: value })}
-                  className={cn(
-                    "rounded px-2.5 py-1 text-xs font-medium capitalize transition-colors",
-                    boardScope === value
-                      ? "bg-primary/15 text-primary"
-                      : "text-muted-foreground hover:text-foreground",
-                  )}
-                >
-                  {value}
-                </button>
-              ))}
-            </div>
-          </div>
+          scopedMode
+            ? "Tasks for this goal, by status. This goal-scoped board is the fallback for legacy goals that have no phases; phase-driven goals view tasks under Goal -> Phase -> [Graph | Kanban]."
+            : "Goals by lifecycle. A goal reaches done only after a closeout decision and evaluation — never from task activity alone. Open a goal to see its phases and tasks."
         }
       />
 
@@ -2918,14 +3135,38 @@ export function GraphKanban({
             className="ml-auto inline-flex items-center gap-1 text-muted-foreground hover:text-foreground"
             onClick={() => onSelectionChange({ boardGoal: undefined })}
           >
-            <X className="size-3" /> Clear
+            <X className="size-3" /> Back to goals
           </button>
         </div>
       )}
 
       <div className="flex gap-3 overflow-x-auto pb-2">
-        {goalsMode
-          ? GOAL_COLUMNS.map((status) => {
+        {scopedMode
+          ? TASK_COLUMNS.map((status) => {
+              const tasks = boardTasks.filter((task) => task.status === status);
+              return (
+                <BoardColumn key={status} title={status} tone={taskTone(status)} count={tasks.length}>
+                  {tasks.length ? (
+                    tasks.map((task) => (
+                      <TaskCard
+                        key={task.id}
+                        task={task}
+                        readiness={readinessFor(task, model.taskGraph)}
+                        phaseLabel={
+                          task.phase_id
+                            ? (phaseNameById.get(task.phase_id) ?? task.phase_id)
+                            : undefined
+                        }
+                        onClick={() => onSelectionChange({ taskId: task.id })}
+                      />
+                    ))
+                  ) : (
+                    <p className="px-1 py-3 text-center text-[11px] text-muted-foreground/60">None</p>
+                  )}
+                </BoardColumn>
+              );
+            })
+          : GOAL_COLUMNS.map((status) => {
               const goals = model.goals.filter((goal) => displayGoalStatus(goal) === status);
               return (
                 <BoardColumn key={status} title={status} tone={goalTone(status)} count={goals.length}>
@@ -2936,28 +3177,6 @@ export function GraphKanban({
                         goal={goal}
                         model={model}
                         onSelect={() => onSelectionChange({ goalId: goal.id, surface: "goal" })}
-                      />
-                    ))
-                  ) : (
-                    <p className="px-1 py-3 text-center text-[11px] text-muted-foreground/60">None</p>
-                  )}
-                </BoardColumn>
-              );
-            })
-          : TASK_COLUMNS.map((status) => {
-              const tasks = boardTasks.filter((task) => task.status === status);
-              return (
-                <BoardColumn key={status} title={status} tone={taskTone(status)} count={tasks.length}>
-                  {tasks.length ? (
-                    tasks.map((task) => (
-                      <TaskCard
-                        key={task.id}
-                        task={task}
-                        readiness={readinessFor(task, model.taskGraph)}
-                        goalLabel={
-                          boardGoal ? undefined : goalById.get(task.goal_id ?? "")?.title
-                        }
-                        onClick={() => onSelectionChange({ taskId: task.id })}
                       />
                     ))
                   ) : (
