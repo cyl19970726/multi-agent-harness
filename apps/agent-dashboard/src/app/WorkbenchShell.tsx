@@ -539,14 +539,21 @@ function SurfaceSwitch({
     case "vision":
       return <VisionOverview {...shared} />;
     case "goal":
-      return <GoalDocument {...shared} />;
+      return (
+        <GoalDocument
+          {...shared}
+          phaseId={selection.phaseId}
+          phaseView={selection.phaseView}
+        />
+      );
     case "task":
       return <TaskDocument {...shared} taskTab={selection.taskTab} />;
     case "tasks":
+      // The Work board is the Goal collection; a `boardGoal` filter pins it to
+      // one legacy goal's task columns (the phaseless fallback).
       return (
         <GraphKanban
           {...shared}
-          boardScope={selection.boardScope ?? "tasks"}
           boardGoal={selection.boardGoal}
           peekTaskId={selection.taskId}
         />

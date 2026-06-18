@@ -104,7 +104,15 @@ for t in \
   auto_finalize_task_all_done_advances_goal_to_verified \
   auto_finalize_task_partial_stays_working \
   auto_finalize_phase_driven_still_finalizes \
-  finalize_refuses_incomplete_and_force_finalizes_out_of_band ; do
+  finalize_refuses_incomplete_and_force_finalizes_out_of_band \
+  legacy_task_row_with_dead_phase_key_still_loads \
+  validate_task_placement_accepts_a_real_phase_of_this_goal \
+  validate_task_placement_rejects_a_phase_not_in_this_goal \
+  validate_task_placement_rejects_phase_id_with_mismatched_goal \
+  validate_task_placement_accepts_goal_scoped_phaseless_task \
+  create_task_value_round_trips_phase_id_from_body \
+  create_task_value_rejects_phase_id_not_in_goal \
+  create_task_value_accepts_goal_scoped_phaseless_task ; do
   grep -q "test .*$t ... ok" "$TMP/test.log" && ok "unit: $t" || bad "unit: $t did not run/pass"
 done
 # goal-multi-project deterministic regression coverage — one representative test
@@ -134,6 +142,18 @@ npx tsc -p apps/agent-dashboard/tsconfig.json --noEmit >/dev/null 2>&1
 
 npx vite build --config apps/agent-dashboard/vite.config.ts --outDir "$TMP/web" --emptyOutDir >/dev/null 2>&1
 [ $? -eq 0 ] && ok "dashboard vite build" || bad "dashboard vite build"
+
+# Dashboard phase-board read model (goal-task-board-model S1): the Goal -> Phase ->
+# [Graph | Kanban] restructure rests on phase-scoped read-model helpers. This
+# fixture exercises the REAL phaseKanban / phaseTaskDag / phaselessGoalTasks
+# (transpiled from src/model/readModel.ts) so a regression in the bucketing is
+# caught here, not only in the browser. Self-contained node, no serve/codex.
+if node "$REPO_ROOT/apps/agent-dashboard/tests/phase-board-check.mjs" > "$TMP/phase-board.log" 2>&1; then
+  ok "dashboard phase-board checks (phaseKanban/phaseTaskDag/phaselessGoalTasks; see $TMP/phase-board.log)"
+else
+  bad "dashboard phase-board checks (see $TMP/phase-board.log)"
+  cat "$TMP/phase-board.log"
+fi
 
 # ---------------------------------------------------------------------------
 section "Planning-model loop (goal-planning-model S1-S8, --dry-run, no codex)"

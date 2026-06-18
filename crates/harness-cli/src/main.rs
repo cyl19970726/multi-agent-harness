@@ -1822,7 +1822,6 @@ fn apply_phase_revision(
                 acceptance_criteria: json_str_list(t, "acceptance"),
                 created_at: now.clone(),
                 updated_at: now.clone(),
-                phase: None,
                 scope_refs: Vec::new(),
                 requires_human_approval: false,
                 verdict_decision_id: None,
@@ -1834,6 +1833,11 @@ fn apply_phase_revision(
                 workflow_step_ids: Vec::new(),
                 outputs: parse_outputs(t, "outputs"),
             };
+            // goal-task-board-model: reject a revised task that names a phase
+            // not on this goal (the replan model only ever revises an existing
+            // phase, so this normally passes; it guards a malformed revision).
+            goal.validate_task_placement(&task)
+                .map_err(CliError::Usage)?;
             store.append_task(&task)?;
             existing.insert(task_id.clone());
             new_task_ids.push(task_id);
@@ -2803,7 +2807,6 @@ fn plan_into_goal(
                 acceptance_criteria: json_str_list(t, "acceptance"),
                 created_at: now.clone(),
                 updated_at: now.clone(),
-                phase: None,
                 scope_refs: Vec::new(),
                 requires_human_approval: false,
                 verdict_decision_id: None,
@@ -2815,6 +2818,11 @@ fn plan_into_goal(
                 workflow_step_ids: Vec::new(),
                 outputs: parse_outputs(t, "outputs"),
             };
+            // goal-task-board-model: fail-fast if the planned placement is
+            // inconsistent (the phase was just pushed onto `goal.phases`, so this
+            // normally passes; it guards against a malformed plan).
+            goal.validate_task_placement(&task)
+                .map_err(CliError::Usage)?;
             store.append_task(&task)?;
             result.tasks_created.push(task_id);
         }
@@ -3444,7 +3452,6 @@ fn task_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
                 acceptance_criteria: many(args, "--acceptance"),
                 created_at: now_string(),
                 updated_at: now_string(),
-                phase: value(args, "--phase"),
                 scope_refs: many(args, "--scope-ref"),
                 requires_human_approval: has_flag(args, "--requires-human-approval"),
                 verdict_decision_id: value(args, "--verdict-decision"),
@@ -4027,7 +4034,6 @@ fn autonomy_decide_value(store: &HarnessStore, args: &[String]) -> CliResult<ser
                 acceptance_criteria: many(args, "--acceptance"),
                 created_at: now_string(),
                 updated_at: now_string(),
-                phase: value(args, "--task-phase"),
                 scope_refs: many(args, "--task-scope-ref"),
                 requires_human_approval: has_flag(args, "--task-requires-human-approval"),
                 verdict_decision_id: None,
@@ -6159,6 +6165,26 @@ fn persist_new_goal(store: &HarnessStore, goal: &Goal) -> CliResult<()> {
 
 /// Persist a freshly-built task. Mirrors the `task create` CLI arm.
 fn persist_new_task(store: &HarnessStore, task: &Task) -> CliResult<()> {
+    // goal-task-board-model: a phased task (phase_id Some) must name a real phase
+    // of its own goal. Validate fail-fast at the create seam so a typo'd/stale
+    // phase_id is rejected with an actionable message, not silently orphaned.
+    // Goal-scoped-phaseless (phase_id None) and loose (goal_id None) shapes skip
+    // straight through — `validate_task_placement` is a no-op when phase_id is None,
+    // and we only load the goal when there is a phase_id to check.
+    if task.phase_id.is_some() {
+        if let Some(goal_id) = task.goal_id.as_deref() {
+            let goal = goal_load(store, goal_id)?;
+            goal.validate_task_placement(task)
+                .map_err(CliError::Usage)?;
+        } else {
+            // phase_id set but no goal_id: still invalid. Surface it (an empty Goal
+            // with this id won't match, so validate_task_placement rejects it).
+            return Err(CliError::Usage(format!(
+                "task `{}` has a phase_id but no goal_id: a phased task must name its goal",
+                task.id
+            )));
+        }
+    }
     store.append_task(task)?;
     Ok(())
 }
@@ -6319,7 +6345,10 @@ fn create_task_value(
 ) -> CliResult<serde_json::Value> {
     let task = Task {
         design_md: None,
-        phase_id: None,
+        // goal-task-board-model: read the typed phase_id from the body (the dead
+        // free-text `phase` key is gone). `goal` names the task's goal; `phase_id`
+        // (when set) is validated against that goal's phases[] in persist_new_task.
+        phase_id: json_string(body, "phase_id"),
         superseded_by_knowledge_id: None,
         workflow_step_ids: Vec::new(),
         id: json_string(body, "id").unwrap_or_else(|| generated_id("task")),
@@ -6340,7 +6369,6 @@ fn create_task_value(
         acceptance_criteria: json_string_array(body, "acceptance"),
         created_at: now_string(),
         updated_at: now_string(),
-        phase: json_string(body, "phase"),
         scope_refs: json_string_array(body, "scope_ref"),
         requires_human_approval: json_bool(body, "requires_human_approval").unwrap_or(false),
         verdict_decision_id: json_string(body, "verdict_decision"),
@@ -19367,7 +19395,6 @@ agent("a NEW second leaf that changes the ordinal alignment")
             acceptance_criteria: Vec::new(),
             created_at: "unix-ms:10".into(),
             updated_at: "unix-ms:10".into(),
-            phase: None,
             scope_refs: Vec::new(),
             requires_human_approval: false,
             verdict_decision_id: None,
@@ -22125,7 +22152,6 @@ mod tests {
             acceptance_criteria: Vec::new(),
             created_at: "unix-ms:10".into(),
             updated_at: "unix-ms:10".into(),
-            phase: None,
             scope_refs: Vec::new(),
             requires_human_approval: false,
             verdict_decision_id: None,
@@ -24853,6 +24879,98 @@ mod tests {
             "naming an unknown reviewer must error"
         );
 
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// Build a phase-driven goal with a single phase `p1` and persist it.
+    fn seed_phase_goal(store: &HarnessStore, goal_id: &str, phase_id: &str) {
+        let mut goal = make_goal(goal_id);
+        goal.phases = vec![harness_core::GoalPhase {
+            id: phase_id.into(),
+            name: "Phase 1".into(),
+            intent: "do the work".into(),
+            status: harness_core::GoalPhaseStatus::InProgress,
+            acceptance: None,
+            verdict_decision_id: None,
+            created_at: "unix-ms:1".into(),
+            started_at: None,
+            ended_at: None,
+            outputs: Vec::new(),
+            inputs: Vec::new(),
+            retry: None,
+            landed_commit: None,
+        }];
+        store.append_goal(&goal).expect("append goal");
+    }
+
+    #[test]
+    fn create_task_value_round_trips_phase_id_from_body() {
+        // goal-task-board-model S2: POST /v1/tasks must persist the typed phase_id
+        // from the body (it used to hardcode None and read the dead free-text `phase`).
+        let (store, root) = temp_store("tb-create-phase");
+        seed_phase_goal(&store, "goal-1", "p1");
+        let body = serde_json::json!({
+            "title": "Phased task",
+            "objective": "Belongs to p1",
+            "owner": "lead",
+            "goal": "goal-1",
+            "phase_id": "p1"
+        });
+        let created = create_task_value(&store, &body).expect("phased task creates");
+        assert_eq!(
+            created["phase_id"].as_str(),
+            Some("p1"),
+            "the response must echo the placed phase_id"
+        );
+        let task_id = created["id"].as_str().expect("task id").to_string();
+        let stored = latest_task(&store, &task_id).expect("task reloads from store");
+        assert_eq!(
+            stored.phase_id.as_deref(),
+            Some("p1"),
+            "the persisted task must carry phase_id (round-trip through the store)"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn create_task_value_rejects_phase_id_not_in_goal() {
+        // A task whose phase_id is not a phase of its goal is rejected fail-fast
+        // (validate_task_placement), not silently orphaned.
+        let (store, root) = temp_store("tb-create-bad-phase");
+        seed_phase_goal(&store, "goal-1", "p1");
+        let body = serde_json::json!({
+            "title": "Misplaced task",
+            "objective": "Names a phase that does not exist",
+            "owner": "lead",
+            "goal": "goal-1",
+            "phase_id": "ghost-phase"
+        });
+        let err = create_task_value(&store, &body)
+            .expect_err("a phase_id not in the goal's phases must be rejected");
+        assert!(
+            matches!(err, CliError::Usage(_)),
+            "bad placement must be a Usage error, got: {err:?}"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn create_task_value_accepts_goal_scoped_phaseless_task() {
+        // Back-compat: a task with a goal but no phase_id (goal-scoped) is still
+        // accepted — it renders in the goal's "(no phase)" lane, never dropped.
+        let (store, root) = temp_store("tb-create-phaseless");
+        seed_phase_goal(&store, "goal-1", "p1");
+        let body = serde_json::json!({
+            "title": "Goal-scoped task",
+            "objective": "No phase",
+            "owner": "lead",
+            "goal": "goal-1"
+        });
+        let created = create_task_value(&store, &body).expect("phaseless task creates");
+        assert!(
+            created["phase_id"].is_null(),
+            "a goal-scoped task carries no phase_id"
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 }

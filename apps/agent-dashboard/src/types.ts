@@ -110,6 +110,19 @@ export interface GoalPhase {
    */
   outputs?: ArtifactSpec[];
   /**
+   * Artifacts a PRIOR phase must have landed for this phase to run
+   * (goal-phase-refinements). Reuses {@link ArtifactSpec} (`path`/`purpose`/
+   * `required` are what matter); before running, each REQUIRED input's `path`
+   * must exist or the phase fails fast. Empty reproduces today's behavior.
+   */
+  inputs?: ArtifactSpec[];
+  /**
+   * Per-phase retry budget override (goal-phase-refinements). When set, this
+   * phase's replan/rerun budget is this value instead of the global default;
+   * `null`/absent falls back to the global. Additive + back-compat.
+   */
+  retry?: number | null;
+  /**
    * The commit that landed this phase's writable work onto the goal's branch
    * (goal-phase-landing). Set by `run-phases` on a passing phase or by
    * `goal reconcile-phase` for out-of-band work; absent for read-only / legacy.

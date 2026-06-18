@@ -559,6 +559,53 @@ impl Goal {
         }
         Ok(out)
     }
+
+    /// Referential-integrity check for a task's placement under this goal
+    /// (goal-task-board-model). Call at every task create site so a typo'd or
+    /// stale `phase_id` is rejected with an actionable message instead of
+    /// silently producing an orphan that disappears from every phase view.
+    ///
+    /// When `task.phase_id` is `Some(p)`, this asserts BOTH:
+    /// - `p` names a real phase in `self.phases[]`, AND
+    /// - `task.goal_id == Some(self.id)` (the phase belongs to THIS goal).
+    ///
+    /// A task with `phase_id == None` is always accepted here (the
+    /// goal-scoped-phaseless and loose shapes are legitimate). Callers that have
+    /// a goal in hand should only invoke this when the task names that goal.
+    pub fn validate_task_placement(&self, task: &Task) -> Result<(), String> {
+        let Some(phase_id) = task.phase_id.as_deref() else {
+            return Ok(());
+        };
+        match task.goal_id.as_deref() {
+            Some(goal_id) if goal_id == self.id => {}
+            Some(goal_id) => {
+                return Err(format!(
+                    "task `{}` has phase_id `{}` but goal_id `{}` (expected goal `{}`): a \
+                     phase_id must belong to the task's own goal",
+                    task.id, phase_id, goal_id, self.id
+                ));
+            }
+            None => {
+                return Err(format!(
+                    "task `{}` has phase_id `{}` but no goal_id: a phased task must name its \
+                     goal (goal `{}`)",
+                    task.id, phase_id, self.id
+                ));
+            }
+        }
+        if !self.phases.iter().any(|p| p.id == phase_id) {
+            let known: Vec<&str> = self.phases.iter().map(|p| p.id.as_str()).collect();
+            return Err(format!(
+                "task `{}` names phase_id `{}` which is not a phase of goal `{}` (known \
+                 phases: [{}])",
+                task.id,
+                phase_id,
+                self.id,
+                known.join(", ")
+            ));
+        }
+        Ok(())
+    }
 }
 
 impl KnowledgeSource {
@@ -1513,6 +1560,21 @@ pub enum TaskStatus {
     Archived,
 }
 
+/// A unit of work. A task has exactly one of three legitimate placements
+/// (validated at create time by [`Goal::validate_task_placement`]):
+/// 1. **Phased** — `goal_id == Some(G)` AND `phase_id == Some(P)` where `P`
+///    names a phase in goal `G`'s `phases[]`. The task belongs to that phase's
+///    subgraph and renders under Goal → Phase → [Graph | Kanban].
+/// 2. **Goal-scoped (phaseless)** — `goal_id == Some(G)` AND `phase_id == None`.
+///    Belongs to the goal but no phase; renders in the goal's "(no phase)" lane.
+/// 3. **Loose** — `goal_id == None` (and `phase_id == None`); not under any goal.
+///
+/// `phase_id` is the single, validated join key; `goal_id` is convenient
+/// denormalization (a `phase_id` already implies the goal) that is
+/// consistency-checked against it. The legacy free-text `phase` field was
+/// retired (goal-task-board-model) — it had zero readers and duplicated
+/// `phase_id`; legacy JSONL rows carrying a `"phase"` key still load (no struct
+/// uses `deny_unknown_fields`, so serde ignores it).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Task {
     pub id: String,
@@ -1533,8 +1595,6 @@ pub struct Task {
     pub created_at: String,
     pub updated_at: String,
     #[serde(default)]
-    pub phase: Option<String>,
-    #[serde(default)]
     pub scope_refs: Vec<String>,
     #[serde(default)]
     pub requires_human_approval: bool,
@@ -1550,7 +1610,9 @@ pub struct Task {
     #[serde(default)]
     pub design_md: Option<String>,
     /// The `GoalPhase.id` this task belongs to (goal-planning-model); `None` for
-    /// legacy tasks not yet placed in a phase.
+    /// goal-scoped-phaseless or loose tasks. When `Some`, it MUST name a phase
+    /// in `goal_id`'s `phases[]` (enforced by [`Goal::validate_task_placement`]
+    /// at create sites) — a typo'd `phase_id` is rejected, not silently orphaned.
     #[serde(default)]
     pub phase_id: Option<String>,
     /// When `status == Superseded`, the `Knowledge.id` whose finding killed it.
@@ -2688,7 +2750,6 @@ mod tests {
             acceptance_criteria: vec!["Evidence is attached".to_string()],
             created_at: "2026-05-26T00:00:00Z".to_string(),
             updated_at: "2026-05-26T00:00:00Z".to_string(),
-            phase: Some("design".to_string()),
             scope_refs: vec!["scope-1".to_string()],
             requires_human_approval: true,
             verdict_decision_id: Some("decision-1".to_string()),
@@ -2707,6 +2768,87 @@ mod tests {
 
         assert_eq!(parsed, task);
         assert!(parsed.validate().is_ok());
+    }
+
+    #[test]
+    fn legacy_task_row_with_dead_phase_key_still_loads() {
+        // goal-task-board-model: the free-text `Task.phase` field was retired.
+        // No struct uses `deny_unknown_fields`, so a stored JSONL row that still
+        // carries a `"phase"` key must deserialize fine (serde ignores it) — the
+        // typed `phase_id` is the only join key now.
+        let legacy = r#"{
+            "id":"task-legacy",
+            "goal_id":"goal-1",
+            "parent_task_id":null,
+            "title":"Legacy task",
+            "objective":"From before phase_id existed",
+            "owner_agent_id":"lead",
+            "assignee_agent_id":null,
+            "reviewer_agent_id":null,
+            "status":"planned",
+            "depends_on_task_ids":[],
+            "workspace_ref":null,
+            "branch_ref":null,
+            "pr_ref":null,
+            "owned_paths":[],
+            "acceptance_criteria":[],
+            "created_at":"2026-01-01T00:00:00Z",
+            "updated_at":"2026-01-01T00:00:00Z",
+            "phase":"design",
+            "phase_id":"p1"
+        }"#;
+        let parsed: Task = serde_json::from_str(legacy).expect("legacy row with dead phase loads");
+        assert_eq!(parsed.id, "task-legacy");
+        assert_eq!(parsed.phase_id.as_deref(), Some("p1"));
+    }
+
+    #[test]
+    fn validate_task_placement_accepts_a_real_phase_of_this_goal() {
+        let mut goal = goal_in_stage(GoalStage::Working);
+        goal.phases = vec![test_phase("p1", GoalPhaseStatus::InProgress)];
+        // compile_task builds a task with goal_id == "g" (== goal_in_stage's id).
+        let task = compile_task("t1", "p1", &[], &["crates/a"]);
+        assert!(goal.validate_task_placement(&task).is_ok());
+    }
+
+    #[test]
+    fn validate_task_placement_rejects_a_phase_not_in_this_goal() {
+        let mut goal = goal_in_stage(GoalStage::Working);
+        goal.phases = vec![test_phase("p1", GoalPhaseStatus::InProgress)];
+        let task = compile_task("t1", "typo-phase", &[], &["crates/a"]);
+        let err = goal
+            .validate_task_placement(&task)
+            .expect_err("a phase_id not in the goal must be rejected");
+        assert!(
+            err.contains("typo-phase"),
+            "message names the bad phase: {err}"
+        );
+        assert!(err.contains("p1"), "message lists the known phases: {err}");
+    }
+
+    #[test]
+    fn validate_task_placement_rejects_phase_id_with_mismatched_goal() {
+        let mut goal = goal_in_stage(GoalStage::Working);
+        goal.phases = vec![test_phase("p1", GoalPhaseStatus::InProgress)];
+        let mut task = compile_task("t1", "p1", &[], &["crates/a"]);
+        task.goal_id = Some("some-other-goal".to_string());
+        let err = goal
+            .validate_task_placement(&task)
+            .expect_err("a phased task naming a different goal must be rejected");
+        assert!(
+            err.contains("some-other-goal"),
+            "message names the goal: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_task_placement_accepts_goal_scoped_phaseless_task() {
+        // Shape 2: goal_id set, phase_id None — the explicitly-blessed legacy
+        // state. Always accepted (renders in the goal's "(no phase)" lane).
+        let goal = goal_in_stage(GoalStage::Working);
+        let mut task = compile_task("t1", "p1", &[], &["crates/a"]);
+        task.phase_id = None;
+        assert!(goal.validate_task_placement(&task).is_ok());
     }
 
     #[test]
@@ -3314,7 +3456,6 @@ mod tests {
             acceptance_criteria: Vec::new(),
             created_at: "unix-ms:1".into(),
             updated_at: "unix-ms:1".into(),
-            phase: None,
             scope_refs: Vec::new(),
             requires_human_approval: false,
             verdict_decision_id: None,
