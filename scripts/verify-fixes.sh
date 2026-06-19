@@ -112,7 +112,13 @@ for t in \
   validate_task_placement_accepts_goal_scoped_phaseless_task \
   create_task_value_round_trips_phase_id_from_body \
   create_task_value_rejects_phase_id_not_in_goal \
-  create_task_value_accepts_goal_scoped_phaseless_task ; do
+  create_task_value_accepts_goal_scoped_phaseless_task \
+  compile_phase_emits_task_executor_at_agent_and_parallel_leaves \
+  compile_phase_unset_executor_is_byte_identical_to_codex \
+  planner_schema_and_prompt_advertise_executor \
+  provider_capabilities_codex_matches_doc_table \
+  provider_capabilities_claude_matches_doc_table \
+  provider_adapter_capabilities_return_codex_and_claude_presets ; do
   grep -q "test .*$t ... ok" "$TMP/test.log" && ok "unit: $t" || bad "unit: $t did not run/pass"
 done
 # goal-multi-project deterministic regression coverage — one representative test

@@ -754,9 +754,22 @@ pub fn compile_phase_to_starlark(
         p
     };
 
+    // The provider/executor a task's leaf compiles to. An UNSET `executor`
+    // defaults to "codex" so a legacy task graph compiles byte-identically to the
+    // pre-provider-neutral compiler (goal-provider-neutral). An empty/whitespace
+    // string is treated as unset.
+    let executor_of = |t: &Task| -> String {
+        t.executor
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("codex")
+            .to_string()
+    };
+
     let agent_call = |t: &Task| -> String {
         let mut c = format!("\nagent(\n    {}", star_str(&prompt_of(t)));
-        c.push_str(",\n    provider=\"codex\"");
+        c.push_str(&format!(",\n    provider={}", star_str(&executor_of(t))));
         c.push_str(&format!(",\n    label={}", star_str(&t.id)));
         c.push_str(&format!(",\n    phase={}", star_str(&phase.id)));
         if !t.owned_paths.is_empty() {
@@ -768,7 +781,10 @@ pub fn compile_phase_to_starlark(
     };
     let spec_dict = |t: &Task| -> String {
         let mut d = format!("    {{\n        \"prompt\": {}", star_str(&prompt_of(t)));
-        d.push_str(",\n        \"provider\": \"codex\"");
+        d.push_str(&format!(
+            ",\n        \"provider\": {}",
+            star_str(&executor_of(t))
+        ));
         d.push_str(&format!(",\n        \"label\": {}", star_str(&t.id)));
         d.push_str(&format!(",\n        \"phase\": {}", star_str(&phase.id)));
         if !t.owned_paths.is_empty() {
@@ -915,7 +931,7 @@ pub fn planner_schema() -> serde_json::Value {
         "phases": "list of {id, name, intent, acceptance, outputs:[{id, kind, path, \
                    purpose, required, acceptance}], tasks:[{id, title, design_md, \
                    acceptance:[string], owned_paths:[string], depends_on:[task-id], \
-                   outputs:[{id, kind, path, purpose, required, acceptance}]}]}",
+                   executor, outputs:[{id, kind, path, purpose, required, acceptance}]}]}",
     })
 }
 
@@ -958,7 +974,11 @@ pub fn planner_prompt(goal: &Goal) -> String {
          disjoint AND neither depends on the other. Use `depends_on` (task ids in \
          the SAME phase) for ordering; keep owned_paths disjoint where you want \
          parallelism.\n\
-         - Use short, stable, kebab-case ids for phases and tasks.\n\n\
+         - Use short, stable, kebab-case ids for phases and tasks.\n\
+         - Optionally set a task's `executor` to the provider that should run it \
+         (e.g. \"codex\", \"claude\", \"kimi\"); OMIT it (or leave it empty) to use \
+         the default executor (codex). It is compiled to the task's \
+         `agent(provider=…)` leaf.\n\n\
          ## design_md\n{design}\n\n## acceptance_md\n{acceptance}",
         id = goal.id,
         title = goal.title,
@@ -1625,6 +1645,15 @@ pub struct Task {
     /// reproduces today's behavior (the implicit `design_md` doc + acceptance gate).
     #[serde(default)]
     pub outputs: Vec<ArtifactSpec>,
+    /// Which provider/executor should run this task when the phase is compiled to
+    /// Starlark (goal-provider-neutral). `None` (the default, and what every legacy
+    /// row deserializes to) compiles to `provider="codex"` — byte-identical to the
+    /// pre-executor compiler. `Some("kimi")` emits `provider="kimi"` at the
+    /// task's `agent()` / `parallel()` leaf, which the runtime resolves through the
+    /// provider registry. The phase acceptance JUDGE leaf is unaffected (it stays
+    /// codex).
+    #[serde(default)]
+    pub executor: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2761,6 +2790,7 @@ mod tests {
                 ..Default::default()
             }),
             outputs: Vec::new(),
+            executor: Some("kimi".to_string()),
         };
 
         let json = serde_json::to_string(&task).expect("serialize task");
@@ -3466,6 +3496,7 @@ mod tests {
             superseded_by_knowledge_id: None,
             workflow_step_ids: Vec::new(),
             outputs: Vec::new(),
+            executor: None,
         }
     }
 
@@ -3641,6 +3672,80 @@ mod tests {
     }
 
     #[test]
+    fn compile_phase_emits_task_executor_at_agent_and_parallel_leaves() {
+        // goal-provider-neutral S2: a task's `executor` selects the provider at its
+        // compiled leaf — at a serial `agent()` AND inside a `parallel([...])` spec
+        // dict — while the acceptance judge leaf stays codex.
+        let goal = goal_in_stage(GoalStage::Working);
+        let mut phase = test_phase("phase-1", GoalPhaseStatus::InProgress);
+        phase.acceptance = Some("It works.".into());
+        // Two disjoint writers in layer 0 → a parallel() block.
+        let mut t_par = compile_task("t-par", "phase-1", &[], &["crates/a"]);
+        t_par.executor = Some("kimi".into());
+        let mut t_par2 = compile_task("t-par2", "phase-1", &[], &["crates/b"]);
+        t_par2.executor = Some("kimi".into());
+        // A dependent layer-1 task → a serial agent().
+        let mut t_serial = compile_task("t-serial", "phase-1", &["t-par", "t-par2"], &[]);
+        t_serial.executor = Some("kimi".into());
+        let script =
+            compile_phase_to_starlark(&goal, &phase, &[t_par, t_par2, t_serial]).expect("compile");
+
+        // The serial agent() leaf carries provider="kimi".
+        assert!(
+            script.contains("provider=\"kimi\""),
+            "serial agent() leaf must use the task executor; got:\n{script}"
+        );
+        // The parallel() spec dict carries "provider": "kimi".
+        assert!(
+            script.contains("\"provider\": \"kimi\""),
+            "parallel() spec dict must use the task executor; got:\n{script}"
+        );
+        // The acceptance judge leaf is unaffected — still codex.
+        assert!(
+            script.contains("label=\"verdict-phase-1\""),
+            "judge leaf present"
+        );
+        assert!(
+            script.contains("provider=\"codex\""),
+            "judge leaf stays codex; got:\n{script}"
+        );
+    }
+
+    #[test]
+    fn compile_phase_unset_executor_is_byte_identical_to_codex() {
+        // goal-provider-neutral S2 back-compat: an UNSET (or empty/whitespace)
+        // executor must compile EXACTLY as the pre-executor compiler did —
+        // provider="codex" at every leaf — byte-for-byte.
+        let goal = goal_in_stage(GoalStage::Working);
+        let mut phase = test_phase("phase-1", GoalPhaseStatus::InProgress);
+        phase.acceptance = Some("It works.".into());
+        let tasks = vec![
+            compile_task("t-a", "phase-1", &[], &["crates/a"]),
+            compile_task("t-b", "phase-1", &[], &["crates/b"]),
+            compile_task("t-c", "phase-1", &["t-a", "t-b"], &["crates/c"]),
+        ];
+        // Baseline: every task has executor == None.
+        let baseline = compile_phase_to_starlark(&goal, &phase, &tasks).expect("compile");
+
+        // Same DAG but executor explicitly set to an empty / whitespace string —
+        // treated as unset, so output is identical.
+        let mut blanked = tasks.clone();
+        blanked[0].executor = Some(String::new());
+        blanked[1].executor = Some("   ".into());
+        // task[2] left as None.
+        let blanked_script = compile_phase_to_starlark(&goal, &phase, &blanked).expect("compile");
+
+        assert_eq!(
+            baseline, blanked_script,
+            "unset/empty executor must be byte-identical to the codex default"
+        );
+        // And it really is codex, not some other default.
+        assert!(baseline.contains("provider=\"codex\""));
+        assert!(baseline.contains("\"provider\": \"codex\""));
+        assert!(!baseline.contains("kimi"));
+    }
+
+    #[test]
     fn planner_and_reviser_schemas_and_prompts_advertise_outputs() {
         // The autonomous planner/reviser can only author a manifest if `outputs`
         // is in the schema shape hint and mentioned in the prompt.
@@ -3661,6 +3766,19 @@ mod tests {
         let phase = test_phase("p", GoalPhaseStatus::InProgress);
         let prompt = reviser_prompt(&goal, &phase, &[], "the gate found no report");
         assert!(prompt.contains("outputs"));
+    }
+
+    #[test]
+    fn planner_schema_and_prompt_advertise_executor() {
+        // goal-provider-neutral S2 (nice-to-have): the planner can author a
+        // per-task `executor` only if it is in the schema hint and the prompt.
+        let planner = serde_json::to_string(&planner_schema()).unwrap();
+        assert!(
+            planner.contains("executor"),
+            "planner schema must list executor"
+        );
+        let goal = goal_in_stage(GoalStage::Working);
+        assert!(planner_prompt(&goal).contains("executor"));
     }
 
     #[test]
@@ -4557,6 +4675,8 @@ mod tests {
         assert!(cap.subagents, "Codex supports subagents");
         assert!(cap.mcp, "Codex exec has --config mcp_servers");
         assert!(!cap.hooks, "Codex exec has limited hooks");
+        assert!(cap.schema, "Codex exec has --output-schema");
+        assert!(!cap.cost, "Codex reports token usage only, no USD");
     }
 
     #[test]
@@ -4568,6 +4688,8 @@ mod tests {
         assert!(cap.subagents, "Claude supports subagents");
         assert!(cap.mcp, "Claude has --mcp-config");
         assert!(!cap.hooks, "Claude has no documented hooks");
+        assert!(cap.schema, "Claude has --json-schema");
+        assert!(cap.cost, "Claude reports result.total_cost_usd");
     }
 
     #[test]
@@ -4742,6 +4864,19 @@ pub struct ProviderCapabilities {
     pub mcp: bool,
     /// Platform supports lifecycle hooks.
     pub hooks: bool,
+    /// Platform supports a NATIVE structured-output / JSON-schema flag (codex
+    /// `--output-schema`, claude `--json-schema`). When `false`, schema-mode
+    /// nodes degrade to the prompt-coaxed text-extraction fallback rather than a
+    /// special code path (goal-provider-neutral capability matrix: `schema`).
+    /// Defaults to `false` for providers that don't declare it.
+    #[serde(default)]
+    pub schema: bool,
+    /// Platform reports billed USD in its terminal frame (claude
+    /// `result.total_cost_usd`; codex reports token usage only). When `false`,
+    /// spend degrades to a token-based estimate or `null` (goal-provider-neutral
+    /// capability matrix: `cost`). Defaults to `false`.
+    #[serde(default)]
+    pub cost: bool,
 }
 
 impl ProviderCapabilities {
@@ -4755,6 +4890,8 @@ impl ProviderCapabilities {
             subagents: true,          // observed in Codex
             mcp: true,                // --config mcp_servers.*
             hooks: false,             // limited in exec mode
+            schema: true,             // --output-schema <file>
+            cost: false,              // token usage only, no total_cost_usd
         }
     }
 
@@ -4767,6 +4904,8 @@ impl ProviderCapabilities {
             subagents: true,          // observed in Claude
             mcp: true,                // --mcp-config JSON
             hooks: false,             // not documented
+            schema: true,             // --json-schema → result.structured_output
+            cost: true,               // result.total_cost_usd
         }
     }
 
@@ -4785,6 +4924,8 @@ impl std::fmt::Display for ProviderCapabilities {
             ("subagents", self.subagents),
             ("mcp", self.mcp),
             ("hooks", self.hooks),
+            ("schema", self.schema),
+            ("cost", self.cost),
         ];
         let enabled: Vec<&str> = features
             .iter()

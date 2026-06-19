@@ -19,9 +19,9 @@ use harness_core::{
     HarnessTurnEventKind, Knowledge, KnowledgeSource, LaunchMcp, LaunchPermission, LaunchSpec,
     Message, MessageDelivery, MessageDeliveryStatus, MessageKind, MessageTerminalSource,
     OrchestrationPhaseRun, OrchestrationStatus, ProjectContext, ProjectKind, Proposal,
-    ProposalStatus, ProviderChildThread, ProviderChildThreadStatus, ProviderSession,
-    ProviderSessionStatus, Review, ReviewVerdict, SenderKind, Task, TaskStatus, VerdictOutcome,
-    Vision, WorkflowRun, WorkflowRunStatus, WorkflowStep, WorkflowStepStatus,
+    ProposalStatus, ProviderCapabilities, ProviderChildThread, ProviderChildThreadStatus,
+    ProviderSession, ProviderSessionStatus, Review, ReviewVerdict, SenderKind, Task, TaskStatus,
+    VerdictOutcome, Vision, WorkflowRun, WorkflowRunStatus, WorkflowStep, WorkflowStepStatus,
 };
 use harness_store::{HarnessStore, MessageDeliveryClaimResult};
 use thiserror::Error;
@@ -838,7 +838,7 @@ fn run() -> CliResult<()> {
 }
 
 fn member_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    require_subcommand(args, "member register|list")?;
+    require_subcommand(args, "member register|list|providers")?;
     match args[0].as_str() {
         "register" => {
             let member = build_member_from_args(args, AgentMemberStatus::Idle)?;
@@ -846,6 +846,22 @@ fn member_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
             print_json(&member)?;
         }
         "list" => print_json(&store.members()?)?,
+        // The provider-neutral capability matrix (goal-provider-neutral acceptance
+        // #4): every REGISTERED provider with the capabilities its adapter
+        // declares (streaming / resume / schema / cost / …). Derived from the
+        // registry — adding a provider surfaces here for free.
+        "providers" => {
+            let providers: Vec<serde_json::Value> = provider_registry()
+                .iter()
+                .map(|adapter| {
+                    serde_json::json!({
+                        "provider": adapter.name(),
+                        "capabilities": adapter.capabilities(),
+                    })
+                })
+                .collect();
+            print_json(&providers)?;
+        }
         other => return Err(CliError::Usage(format!("unknown member command: {other}"))),
     }
     Ok(())
@@ -1832,6 +1848,7 @@ fn apply_phase_revision(
                 superseded_by_knowledge_id: None,
                 workflow_step_ids: Vec::new(),
                 outputs: parse_outputs(t, "outputs"),
+                executor: json_str_nonempty(t, "executor"),
             };
             // goal-task-board-model: reject a revised task that names a phase
             // not on this goal (the replan model only ever revises an existing
@@ -2817,6 +2834,7 @@ fn plan_into_goal(
                 superseded_by_knowledge_id: None,
                 workflow_step_ids: Vec::new(),
                 outputs: parse_outputs(t, "outputs"),
+                executor: json_str_nonempty(t, "executor"),
             };
             // goal-task-board-model: fail-fast if the planned placement is
             // inconsistent (the phase was just pushed onto `goal.phases`, so this
@@ -3458,6 +3476,7 @@ fn task_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
                 description: value(args, "--description"),
                 git_metadata: None,
                 outputs: parse_output_flags(args)?,
+                executor: value(args, "--executor"),
             };
             persist_new_task(store, &task)?;
             print_json(&task)?;
@@ -4040,6 +4059,7 @@ fn autonomy_decide_value(store: &HarnessStore, args: &[String]) -> CliResult<ser
                 description: value(args, "--task-description"),
                 git_metadata: None,
                 outputs: Vec::new(),
+                executor: value(args, "--executor"),
             };
             // Write a TYPED GoalDesign (graduated object) rather than an untyped
             // Evidence(source_type=goal_design): the next-round goal is designed
@@ -6375,6 +6395,7 @@ fn create_task_value(
         description: json_string(body, "description"),
         git_metadata: None,
         outputs: Vec::new(),
+        executor: json_string(body, "executor"),
     };
     persist_new_task(store, &task)?;
     Ok(serde_json::to_value(task)?)
@@ -7697,10 +7718,7 @@ fn spawn_ephemeral_worker(
         };
         match provider_adapter(spec.provider.as_str()) {
             Some(adapter) => adapter.spawn_ephemeral(&ctx),
-            None => Err(CliError::Usage(format!(
-                "unknown workflow provider {} (expected codex|claude)",
-                spec.provider
-            ))),
+            None => Err(unknown_provider_error(&spec.provider, "ephemeral worker")),
         }
     };
 
@@ -13320,6 +13338,27 @@ trait ProviderAdapter: Sync {
     /// Canonical provider id as used in `member.provider` and `agent(provider=...)`.
     fn name(&self) -> &'static str;
 
+    /// What this provider's platform can technically support — streaming, resume,
+    /// mid-turn approval, subagents, MCP, hooks, native schema, billed cost
+    /// (goal-provider-neutral). Drives declarative capability degradation: a
+    /// provider that lacks an axis returns `false` and the caller falls back to
+    /// the shared mechanism (text-extract for schema, token-estimate for cost),
+    /// never a per-provider branch. The default is the conservative "exec
+    /// streaming agent with no native schema/cost" posture, which a new provider
+    /// can adopt unchanged; codex/claude override with their real presets.
+    fn capabilities(&self) -> ProviderCapabilities {
+        ProviderCapabilities {
+            streaming: true,
+            resume: true,
+            mid_turn_approval: false,
+            subagents: false,
+            mcp: false,
+            hooks: false,
+            schema: false,
+            cost: false,
+        }
+    }
+
     /// The per-session live NDJSON filename this provider's spawn/delivery writes,
     /// which the ProviderSession `jsonl_ref` points at during a turn.
     fn live_ndjson_file_name(&self) -> &'static str;
@@ -13407,6 +13446,10 @@ struct ClaudeAdapter;
 impl ProviderAdapter for CodexAdapter {
     fn name(&self) -> &'static str {
         "codex"
+    }
+
+    fn capabilities(&self) -> ProviderCapabilities {
+        ProviderCapabilities::codex_exec()
     }
 
     fn live_ndjson_file_name(&self) -> &'static str {
@@ -13881,6 +13924,10 @@ impl ProviderAdapter for CodexAdapter {
 impl ProviderAdapter for ClaudeAdapter {
     fn name(&self) -> &'static str {
         "claude"
+    }
+
+    fn capabilities(&self) -> ProviderCapabilities {
+        ProviderCapabilities::claude_exec()
     }
 
     fn live_ndjson_file_name(&self) -> &'static str {
@@ -16132,6 +16179,38 @@ mod workflow_runtime_tests {
         let store = HarnessStore::new(&root);
         store.init().expect("init store");
         store
+    }
+
+    #[test]
+    fn provider_adapter_capabilities_return_codex_and_claude_presets() {
+        // goal-provider-neutral S1: codex/claude adapters expose their real
+        // capability presets through the trait, and every registered adapter
+        // resolves a non-panicking capability set (default impl covers new
+        // providers).
+        assert_eq!(
+            CodexAdapter.capabilities(),
+            ProviderCapabilities::codex_exec(),
+            "codex adapter must report the codex_exec preset"
+        );
+        assert_eq!(
+            ClaudeAdapter.capabilities(),
+            ProviderCapabilities::claude_exec(),
+            "claude adapter must report the claude_exec preset"
+        );
+        // Resolved through the registry by id, too.
+        let codex = provider_adapter("codex").expect("codex registered");
+        assert_eq!(codex.capabilities(), ProviderCapabilities::codex_exec());
+        let claude = provider_adapter("claude").expect("claude registered");
+        assert_eq!(claude.capabilities(), ProviderCapabilities::claude_exec());
+        // Every registered adapter answers capabilities() without panicking.
+        for adapter in provider_registry() {
+            let caps = adapter.capabilities();
+            assert!(
+                caps.streaming,
+                "{} should support streaming exec",
+                adapter.name()
+            );
+        }
     }
 
     /// A throwaway [`ProjectContext`] for tests that build a `WorkflowDeliveryOptions`
@@ -19405,6 +19484,7 @@ agent("a NEW second leaf that changes the ordinal alignment")
             superseded_by_knowledge_id: None,
             workflow_step_ids: vec!["wfstep-1".into()],
             outputs: Vec::new(),
+            executor: None,
         };
         store.append_task(&task).expect("append task");
 
@@ -22158,6 +22238,7 @@ mod tests {
             description: None,
             git_metadata: None,
             outputs: Vec::new(),
+            executor: None,
         }
     }
 
