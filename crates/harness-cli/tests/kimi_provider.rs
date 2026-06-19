@@ -21,6 +21,11 @@
 //!   2. a journaled WorkflowStep carries `provider="kimi"` — proving the
 //!      Task.executor -> compile -> registry -> spawn chain end-to-end;
 //!   3. the orchestration did NOT fail.
+//!   4. the DURABLE per-session AgentEvent trace is attributed to provider="kimi"
+//!      and NOT misattributed to provider="claude". Kimi is claude-shaped on the
+//!      wire and reuses the claude reducer; this guards that the reducer is told
+//!      which provider it is reducing for, so trace/dashboard queries that group
+//!      by AgentEvent.provider don't credit Kimi turns to claude.
 //!
 //! NB: this proves the PLUMBING only. The real `kimi` CLI flags + stream format
 //! are an operator/S3-spike concern and are deliberately out of scope here.
@@ -104,6 +109,37 @@ fn find_workflow_steps(home: &TempHome) -> Vec<String> {
             if path.is_dir() {
                 walk(&path, out);
             } else if path.file_name().and_then(|n| n.to_str()) == Some("workflow_steps.jsonl") {
+                out.push(path);
+            }
+        }
+    }
+    let mut files = Vec::new();
+    walk(home.harness_home(), &mut files);
+    let mut lines = Vec::new();
+    for f in files {
+        if let Ok(text) = fs::read_to_string(&f) {
+            for line in text.lines() {
+                if !line.trim().is_empty() {
+                    lines.push(line.to_string());
+                }
+            }
+        }
+    }
+    lines
+}
+
+/// Locate every `agent_events.jsonl` row written under the harness home (the
+/// durable per-session AgentEvent trace).
+fn find_agent_events(home: &TempHome) -> Vec<String> {
+    fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
+        let Ok(entries) = fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                walk(&path, out);
+            } else if path.file_name().and_then(|n| n.to_str()) == Some("agent_events.jsonl") {
                 out.push(path);
             }
         }
@@ -279,5 +315,47 @@ fn task_executor_kimi_compiles_dispatches_and_spawns_a_kimi_by_name() {
         kimi_step,
         "no journaled WorkflowStep had result.provider == \"kimi\"; steps:\n{}",
         step_lines.join("\n")
+    );
+
+    // (3) The DURABLE per-session AgentEvent trace is attributed to provider="kimi"
+    // and never to provider="claude". The default run retains the trace, so
+    // KimiAdapter::ingest_ephemeral_trace ran the claude-shaped reducer; this guards
+    // that the reducer stamped our provider id, not its hardcoded "claude".
+    let event_lines = find_agent_events(&home);
+    assert!(
+        !event_lines.is_empty(),
+        "no agent_events.jsonl rows journaled under {:?} (durable trace path did not run)",
+        home.harness_home()
+    );
+    let event_provider = |line: &str| -> Option<String> {
+        serde_json::from_str::<serde_json::Value>(line)
+            .ok()
+            .and_then(|v| {
+                v.get("provider")
+                    .and_then(|p| p.as_str())
+                    .map(str::to_string)
+            })
+    };
+    let any_kimi_event = event_lines
+        .iter()
+        .filter_map(|l| event_provider(l))
+        .any(|p| p == "kimi");
+    assert!(
+        any_kimi_event,
+        "no durable AgentEvent carried provider == \"kimi\"; events:\n{}",
+        event_lines.join("\n")
+    );
+    let misattributed: Vec<&String> = event_lines
+        .iter()
+        .filter(|l| event_provider(l).as_deref() == Some("claude"))
+        .collect();
+    assert!(
+        misattributed.is_empty(),
+        "durable AgentEvent(s) misattributed to provider == \"claude\" for a kimi run:\n{}",
+        misattributed
+            .iter()
+            .map(|l| l.as_str())
+            .collect::<Vec<_>>()
+            .join("\n")
     );
 }

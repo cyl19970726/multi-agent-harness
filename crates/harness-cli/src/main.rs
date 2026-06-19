@@ -14190,7 +14190,8 @@ impl ProviderAdapter for ClaudeAdapter {
         session_id: &str,
         spawn: &EphemeralSpawn,
     ) {
-        let _ = ingest_claude_stream_json(store, session_id, None, None, &spawn.ndjson);
+        let _ =
+            ingest_claude_stream_json(store, self.name(), session_id, None, None, &spawn.ndjson);
     }
 
     fn spawn_ephemeral(&self, ctx: &EphemeralSpawnContext<'_>) -> CliResult<EphemeralSpawn> {
@@ -14217,7 +14218,14 @@ impl ProviderAdapter for ClaudeAdapter {
         source_ref: &str,
     ) -> CliResult<()> {
         let text = fs::read_to_string(source_ref).unwrap_or_default();
-        ingest_claude_stream_json(store, agent_member_id, runtime_id, task_id, &text)
+        ingest_claude_stream_json(
+            store,
+            self.name(),
+            agent_member_id,
+            runtime_id,
+            task_id,
+            &text,
+        )
     }
 }
 
@@ -14672,9 +14680,11 @@ impl ProviderAdapter for KimiAdapter {
         session_id: &str,
         spawn: &EphemeralSpawn,
     ) {
-        // Claude-shaped stream → reuse the claude reducer (stamps provider="kimi"
-        // since the rows derive their provider from the member, not this fn).
-        let _ = ingest_claude_stream_json(store, session_id, None, None, &spawn.ndjson);
+        // Kimi is claude-shaped on the wire → reuse the claude reducer, but pass
+        // our own provider id so the durable AgentEvent / ProviderSession rows are
+        // stamped provider="kimi" (the reducer otherwise has no provider context).
+        let _ =
+            ingest_claude_stream_json(store, self.name(), session_id, None, None, &spawn.ndjson);
     }
 
     fn spawn_ephemeral(&self, ctx: &EphemeralSpawnContext<'_>) -> CliResult<EphemeralSpawn> {
@@ -14700,8 +14710,17 @@ impl ProviderAdapter for KimiAdapter {
         task_id: Option<&str>,
         source_ref: &str,
     ) -> CliResult<()> {
+        // Kimi is claude-shaped on the wire → reuse the claude reducer, but pass
+        // our own provider id so the durable rows are stamped provider="kimi".
         let text = fs::read_to_string(source_ref).unwrap_or_default();
-        ingest_claude_stream_json(store, agent_member_id, runtime_id, task_id, &text)
+        ingest_claude_stream_json(
+            store,
+            self.name(),
+            agent_member_id,
+            runtime_id,
+            task_id,
+            &text,
+        )
     }
 }
 
@@ -14876,8 +14895,13 @@ fn extract_claude_reply_text(events: &[ClaudeStreamEvent]) -> Option<String> {
 
 /// Parse Claude stream-json NDJSON and ingest as neutral AgentEvent / ProviderSession.
 /// Mirrors the Codex exec reducer: same neutral objects, provider-specific parsing.
+///
+/// `provider` stamps the written AgentEvent / ProviderSession rows. Kimi is
+/// claude-shaped on the wire, so it reuses this reducer but passes `provider="kimi"`
+/// so the durable trace is attributed to the real provider (not "claude").
 fn ingest_claude_stream_json(
     store: &HarnessStore,
+    provider: &str,
     agent_member_id: &str,
     runtime_id: Option<&str>,
     task_id: Option<&str>,
@@ -14925,7 +14949,7 @@ fn ingest_claude_stream_json(
             agent_member_id: agent_member_id.into(),
             provider_runtime_id: runtime_id.map(str::to_string),
             task_id: task_id.map(str::to_string),
-            provider: "claude".into(),
+            provider: provider.into(),
             provider_thread_id: thread_id,
             provider_turn_id: turn_id,
             provider_child_thread_id: None, // Subagents handled separately per ADR 0011
@@ -14940,7 +14964,7 @@ fn ingest_claude_stream_json(
     // Create one ProviderSession record for the entire delivery.
     let provider_session = ProviderSession {
         id: session_id.clone(),
-        provider: "claude".into(),
+        provider: provider.into(),
         agent_member_id: agent_member_id.into(),
         task_id: task_id.map(str::to_string),
         workspace_ref: None,
@@ -14948,7 +14972,7 @@ fn ingest_claude_stream_json(
         provider_turn_id: None,
         terminal_source: status_to_terminal_source(&status),
         status,
-        command: "claude".into(),
+        command: provider.into(),
         args: vec![
             "-p".into(),
             "--output-format".into(),
@@ -14956,7 +14980,7 @@ fn ingest_claude_stream_json(
             "--verbose".into(),
         ],
         prompt_ref: None,
-        prompt_summary: Some("delivered via claude -p stream-json".into()),
+        prompt_summary: Some(format!("delivered via {provider} -p stream-json")),
         provider_session_ref: None,
         stdout_ref: None,
         jsonl_ref: None,
