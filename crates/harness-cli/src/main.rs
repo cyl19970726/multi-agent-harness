@@ -9545,6 +9545,58 @@ fn build_replay_map(
     Ok(map)
 }
 
+/// Fire a best-effort completion hook when a [`WorkflowRun`] reaches a terminal
+/// status. Configured by the `HARNESS_WORKFLOW_ON_COMPLETE` env var (a shell
+/// command); a NO-OP when the var is unset/blank — so existing runs are unaffected.
+/// The command runs via `sh -c`, receives `HARNESS_RUN_ID` / `HARNESS_RUN_STATUS`
+/// (snake_case, e.g. `completed`/`failed`) / `HARNESS_RUN_NAME` as env vars and the
+/// full run JSON on stdin, and runs to completion BEFORE the run-owning process
+/// returns — so a backgrounded `run-script &` reliably notifies even though the
+/// caller isn't blocked on it. The hook's stdout is DISCARDED (the run-script JSON
+/// contract on stdout stays clean); its stderr is inherited for diagnostics. A hook
+/// that fails to spawn or exits non-zero is logged to stderr and NEVER fails or
+/// alters the run. Keep the hook quick (or self-detach with `&`): the run-owning
+/// process waits for it.
+fn fire_workflow_completion_hook(run: &WorkflowRun) {
+    let cmd = match std::env::var("HARNESS_WORKFLOW_ON_COMPLETE") {
+        Ok(c) if !c.trim().is_empty() => c,
+        _ => return,
+    };
+    let status = serde_json::to_value(run.status)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_string))
+        .unwrap_or_else(|| format!("{:?}", run.status));
+    let run_json = serde_json::to_string(run).unwrap_or_default();
+    let spawned = Command::new("sh")
+        .arg("-c")
+        .arg(&cmd)
+        .env("HARNESS_RUN_ID", &run.id)
+        .env("HARNESS_RUN_STATUS", &status)
+        .env("HARNESS_RUN_NAME", &run.workflow_name)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::inherit())
+        .spawn();
+    let mut child = match spawned {
+        Ok(child) => child,
+        Err(error) => {
+            eprintln!("workflow on-complete hook failed to spawn: {error}");
+            return;
+        }
+    };
+    if let Some(mut stdin) = child.stdin.take() {
+        use std::io::Write;
+        let _ = stdin.write_all(run_json.as_bytes());
+    }
+    match child.wait() {
+        Ok(exit) if !exit.success() => {
+            eprintln!("workflow on-complete hook exited {exit} for run {}", run.id)
+        }
+        Err(error) => eprintln!("workflow on-complete hook wait failed: {error}"),
+        _ => {}
+    }
+}
+
 fn workflow_run_script_value(
     store: &HarnessStore,
     args: &[String],
@@ -9812,6 +9864,10 @@ fn journal_workflow_outcome(
     run.agents_spawned = outcome.agents_spawned;
     run.final_output = outcome.final_output.clone();
     store.append_workflow_run(&run)?;
+    // The run has reached a terminal status — notify any configured completion hook
+    // (no-op unless HARNESS_WORKFLOW_ON_COMPLETE is set). Fires here, inside the
+    // run-owning process, so a backgrounded `run-script &` still notifies.
+    fire_workflow_completion_hook(&run);
 
     Ok(serde_json::json!({
         "run": serde_json::to_value(&run)?,
@@ -13043,6 +13099,10 @@ fn reap_stale_workflow_runs(store: &HarnessStore) -> CliResult<usize> {
             ),
         });
         store.append_workflow_run(&run)?;
+        // A crashed/abandoned run reaching its terminal Failed status also notifies
+        // the completion hook (no-op unless HARNESS_WORKFLOW_ON_COMPLETE is set), so
+        // a run whose owner died before finalizing still signals completion.
+        fire_workflow_completion_hook(&run);
         reaped += 1;
     }
     Ok(reaped)

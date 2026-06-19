@@ -708,6 +708,15 @@ Pick by how live you need it:
   every run, a per-step timeline (status, provider, `output_summary`), and "drill in"
   to a step's turn events, updating live over SSE. `--trace durable` (default)
   retains the per-node trace; `--trace live` is stream-only.
+- **Completion hook (push — for a backgrounded run).** Set
+  `HARNESS_WORKFLOW_ON_COMPLETE` to a shell command and the harness fires it the
+  moment a run reaches a terminal status, passing `HARNESS_RUN_ID` /
+  `HARNESS_RUN_STATUS` (`completed` / `failed`) / `HARNESS_RUN_NAME` as env vars and
+  the full run JSON on stdin. It fires INSIDE the run-owning process at finalization,
+  so a backgrounded `run-script &` notifies WITHOUT the caller polling. No-op when
+  the var is unset; best-effort (a hook error is logged, never fails the run); keep
+  the hook quick (the run waits for it) or self-detach with a trailing `&`. E.g.
+  `HARNESS_WORKFLOW_ON_COMPLETE='harness message send --from lead --content "wf $HARNESS_RUN_ID $HARNESS_RUN_STATUS"' harness workflow run-script prog.star &`.
 
 ## Permission Note
 
