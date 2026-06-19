@@ -14285,13 +14285,96 @@ fn resolve_kimi_bin() -> String {
     "kimi".into()
 }
 
-/// Spawn a one-shot ephemeral `kimi` worker. Claude-shaped stream-json (so the
-/// claude stream helpers parse it) but with Kimi's REAL CLI flags (`kimi --help`
-/// v0.18): `-p <prompt> --output-format stream-json <permission flag> [--model]`.
-/// Resolves the binary via [`resolve_kimi_bin`] and tees to
-/// `kimi.stream-json.ndjson`. Budget/schema/effort/extra-dirs are NOT real kimi
-/// flags — they degrade to harness-owned handling (see
-/// `ProviderCapabilities::kimi_exec`).
+// ============================================================================
+// Kimi-native stream parsing. Verified LIVE against `kimi -p --output-format
+// stream-json` (v0.18): the stream is FLAT NDJSON, NOT claude-shaped —
+//   {"role":"assistant","content":"<text>"}                       (the reply)
+//   {"role":"meta","type":"session.resume_hint",
+//    "session_id":"session_<uuid>","command":"kimi -r <id>", ...} (resume token)
+// There is no claude `system.init`/`result`/`usage` frame and no model frame in
+// `-p` mode, so success is the child exit code and tokens/model/cost degrade per
+// `ProviderCapabilities::kimi_exec`. `content` is normally a string but may be an
+// array of blocks (tool/structured turns) — both are handled.
+// ============================================================================
+
+/// Parse Kimi stream-json NDJSON text into raw JSON frames (one per non-empty line).
+fn parse_kimi_frames(text: &str) -> Vec<serde_json::Value> {
+    text.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .collect()
+}
+
+/// The assistant reply: concatenate the `content` of every `role=="assistant"`
+/// frame in order. `content` is a string, or an array of blocks (each block's own
+/// string, or its `text`/`content` field). None when the turn produced no text.
+fn extract_kimi_reply_text(frames: &[serde_json::Value]) -> Option<String> {
+    let mut parts: Vec<String> = Vec::new();
+    for frame in frames {
+        if frame.get("role").and_then(|r| r.as_str()) != Some("assistant") {
+            continue;
+        }
+        match frame.get("content") {
+            Some(serde_json::Value::String(s)) => {
+                if !s.trim().is_empty() {
+                    parts.push(s.trim().to_string());
+                }
+            }
+            Some(serde_json::Value::Array(blocks)) => {
+                for block in blocks {
+                    let text = block.as_str().or_else(|| {
+                        block
+                            .get("text")
+                            .or_else(|| block.get("content"))
+                            .and_then(|v| v.as_str())
+                    });
+                    if let Some(s) = text {
+                        if !s.trim().is_empty() {
+                            parts.push(s.trim().to_string());
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    (!parts.is_empty()).then(|| parts.join("\n"))
+}
+
+/// The resumable session id from the `session.resume_hint` meta frame, if present.
+fn extract_kimi_session_id(frames: &[serde_json::Value]) -> Option<String> {
+    frames.iter().find_map(|frame| {
+        if frame.get("type").and_then(|t| t.as_str()) == Some("session.resume_hint") {
+            frame
+                .get("session_id")
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+        } else {
+            None
+        }
+    })
+}
+
+/// Session status for a `kimi -p` turn. There is no terminal success frame, so a
+/// clean child exit IS success; a non-zero exit (e.g. an arg error on stderr) is a
+/// failure; a clean exit with zero frames is stale (no reply produced).
+fn infer_kimi_status(frames: &[serde_json::Value], process_success: bool) -> ProviderSessionStatus {
+    if !process_success {
+        ProviderSessionStatus::Failed
+    } else if frames.is_empty() {
+        ProviderSessionStatus::Stale
+    } else {
+        ProviderSessionStatus::Succeeded
+    }
+}
+
+/// Spawn a one-shot ephemeral `kimi` worker with Kimi's REAL CLI surface
+/// (verified live, v0.18): `-p <prompt> --output-format stream-json [--model]` and
+/// NO permission flag (`-p` rejects them). Resolves the binary via
+/// [`resolve_kimi_bin`], tees to `kimi.stream-json.ndjson`, and parses the
+/// flat kimi-native stream (see the banner above) — budget/schema/effort/extra-dirs
+/// degrade to harness-owned handling (see `ProviderCapabilities::kimi_exec`).
 #[allow(clippy::too_many_arguments)]
 fn spawn_kimi_ephemeral(
     session_dir: &Path,
@@ -14321,23 +14404,17 @@ fn spawn_kimi_ephemeral(
         .arg(prompt)
         .arg("--output-format")
         .arg("stream-json")
-        // Real Kimi has no `--permission-mode <value>` or per-tool allowlist; it
-        // exposes standalone permission flags. Map writable/read-only onto the
-        // closest one. Tool scoping is not CLI-enforceable (capabilities() marks it
-        // off); harness-owned worktree isolation still bounds a writable node.
-        .arg(KimiAdapter.map_permission(if spec.writable {
-            LaunchPermission::WorkspaceWrite
-        } else {
-            LaunchPermission::ReadOnly
-        }))
         .current_dir(cwd);
     if let Some(model) = model {
         cmd.arg("--model").arg(model);
     }
-    // `--max-budget-usd`, `--json-schema`, `--effort`, and `--add-dir` are NOT real
-    // kimi flags (verified `kimi --help` v0.18): budget is enforced by the harness
-    // timeout; schema-mode nodes degrade to the caller's text-extract fallback
-    // (capabilities().schema = false); effort/extra-dirs have no kimi equivalent.
+    // Headless `kimi -p` REJECTS every permission flag (verified live, v0.18:
+    // "Cannot combine --prompt with --plan/--auto/--yolo"), so none is passed — `-p`
+    // has its own non-interactive permission behavior; writable vs read-only is
+    // bounded by the harness-owned worktree, not a CLI flag (capabilities() marks
+    // tool-scoping off). `--max-budget-usd`/`--json-schema`/`--effort`/`--add-dir`
+    // are likewise not real kimi flags: budget -> harness timeout; schema-mode nodes
+    // -> the caller's text-extract fallback on the reply (capabilities().schema=false).
     let _ = (schema_json, effort, max_budget_usd);
 
     let run = run_ndjson_child(
@@ -14348,21 +14425,22 @@ fn spawn_kimi_ephemeral(
         timeout_ms,
         "ephemeral worker",
     )?;
-    // Kimi is claude-shaped, so reuse the claude stream interpreters verbatim.
-    let kimi_events: Vec<ClaudeStreamEvent> = run
-        .events
-        .iter()
-        .filter_map(|v| serde_json::to_string(v).ok())
-        .filter_map(|line| ClaudeStreamEvent::parse_line(&line))
-        .collect();
+    // Kimi `-p --output-format stream-json` is NOT claude-shaped (verified live):
+    // flat frames `{"role":"assistant","content":"..."}` + a
+    // `{"type":"session.resume_hint",...}` meta frame, no claude result/usage/model
+    // frame. Use the kimi-native parsers on the raw JSON frames.
+    let frames = &run.events;
     let ok = matches!(
-        infer_claude_session_status(&kimi_events, run.process_success),
+        infer_kimi_status(frames, run.process_success),
         ProviderSessionStatus::Succeeded
     );
-    let reply = extract_claude_reply_text(&kimi_events);
-    let tokens = parse_claude_usage(&run.events);
-    let model = parse_worker_model(&run.events);
-    let (structured, cost_usd) = parse_claude_result_extras(&run.events);
+    let reply = extract_kimi_reply_text(frames);
+    // -p stream-json carries no usage/model/cost frame; degrade per kimi_exec()
+    // (cost=false). Schema-mode nodes use the caller's text-extract fallback on `reply`.
+    let tokens = None;
+    let model = None;
+    let structured = None;
+    let cost_usd = None;
 
     Ok(EphemeralSpawn {
         ok,
@@ -14458,9 +14536,7 @@ fn run_kimi_exec_delivery_real(
     cmd.arg("-p")
         .arg(&prompt_text)
         .arg("--output-format")
-        .arg("stream-json")
-        // Standalone permission flag (no `--permission-mode <value>` in real kimi).
-        .arg(KimiAdapter.map_permission(spec.permission));
+        .arg("stream-json");
     // Resume uses `-S/--session <id>` in real kimi (not claude's `--resume`).
     if let Some(resume_id) = &spec.resume {
         cmd.arg("--session").arg(resume_id);
@@ -14468,8 +14544,10 @@ fn run_kimi_exec_delivery_real(
     if let Some(model) = &spec.model {
         cmd.arg("--model").arg(model);
     }
-    // `--effort` / `--json-schema` / `--allowedTools` / `--mcp-config` / `--add-dir`
-    // are not real kimi flags; schema/mcp/cost degrade to the harness fallbacks
+    // Headless `kimi -p` REJECTS permission flags (--plan/--auto/--yolo all error
+    // "Cannot combine --prompt with ..."), so none is passed. `--effort` /
+    // `--json-schema` / `--allowedTools` / `--mcp-config` / `--add-dir` are likewise
+    // not real kimi flags; schema/mcp/cost degrade to the harness fallbacks
     // (capabilities().{schema,mcp,cost} = false) and writable roots are bounded by
     // the harness-owned worktree, not a CLI flag.
     cmd.current_dir(&cwd);
@@ -14487,16 +14565,13 @@ fn run_kimi_exec_delivery_real(
         timeout_ms,
         "kimi -p process",
     )?;
-    let events = run
-        .events
-        .iter()
-        .filter_map(|payload| serde_json::to_string(payload).ok())
-        .filter_map(|line| ClaudeStreamEvent::parse_line(&line))
-        .collect::<Vec<_>>();
-    let session_id = extract_session_id_from_claude_events(&events);
+    // Kimi -p stream-json is not claude-shaped — derive the session id from the raw
+    // frames (the caller parses reply/status the same way). The `events` slot of the
+    // shared tuple is unused for kimi (left empty); the raw frames carry the data.
+    let session_id = extract_kimi_session_id(&run.events);
     Ok((
         run.process_success,
-        events,
+        Vec::new(),
         run.events,
         session_id,
         run.stderr,
@@ -14520,19 +14595,24 @@ fn run_kimi_delivery(
     fs::create_dir_all(&session_dir)?;
     let started_at = now_string();
 
-    let (process_success, events, raw_events, session_id, stderr_log) =
+    let (process_success, _events, raw_events, session_id, stderr_log) =
         run_kimi_exec_delivery_real(&session_dir, member, message, timeout_ms, project)?;
-    let (tokens, cost_usd, model, raw_structured) = claude_delivery_telemetry(&raw_events);
+    // Kimi -p stream-json carries no usage/model/cost/structured frame; degrade per
+    // kimi_exec(). Reply/status/session come from the kimi-native parsers on the raw
+    // frames.
+    let (tokens, cost_usd, model): (Option<TokenUsage>, Option<f64>, Option<String>) =
+        (None, None, None);
+    let raw_structured: Option<serde_json::Value> = None;
 
     let ndjson_ref = session_dir.join(KimiAdapter.live_ndjson_file_name());
     let mut ndjson_content = String::new();
-    for event in &events {
-        ndjson_content.push_str(&serde_json::to_string(&event.payload).unwrap_or_default());
+    for frame in &raw_events {
+        ndjson_content.push_str(&serde_json::to_string(frame).unwrap_or_default());
         ndjson_content.push('\n');
     }
     fs::write(&ndjson_ref, &ndjson_content)?;
 
-    let status = infer_claude_session_status(&events, process_success);
+    let status = infer_kimi_status(&raw_events, process_success);
     let structured = structured_for_status(&status, raw_structured);
     let terminal_source = status_to_terminal_source(&status);
     let resolved_session_id = session_id
@@ -14551,10 +14631,10 @@ fn run_kimi_delivery(
         source_type: "kimi_delivery_session".into(),
         source_ref: format!("provider-session:{resolved_session_id}"),
         summary: format!(
-            "Kimi stream-json delivery {} for message {} ({} events)",
+            "Kimi stream-json delivery {} for message {} ({} frames)",
             resolved_session_id,
             message.id,
-            events.len()
+            raw_events.len()
         ),
         created_at: now_string(),
         evidence_kind: None,
@@ -14615,8 +14695,8 @@ fn run_kimi_delivery(
         model,
         structured,
         summary: if process_success {
-            extract_claude_reply_text(&events)
-                .unwrap_or_else(|| format!("Kimi delivery succeeded: {} events", events.len()))
+            extract_kimi_reply_text(&raw_events)
+                .unwrap_or_else(|| format!("Kimi delivery succeeded: {} frames", raw_events.len()))
         } else {
             format!("Kimi delivery failed: {}", stderr_log)
         },
@@ -14637,11 +14717,12 @@ impl ProviderAdapter for KimiAdapter {
     }
 
     fn map_permission(&self, perm: LaunchPermission) -> &'static str {
-        // Unlike codex (`--sandbox <value>`) and claude (`--permission-mode
-        // <value>`), real Kimi Code exposes STANDALONE permission flags (`kimi
-        // --help` v0.18): `--plan` (read-only/plan), `--auto` (auto-approve edits),
-        // `-y/--yolo` (approve everything). This returns the standalone flag itself
-        // — callers push it as a single arg, not as a `--permission-mode` value.
+        // Real Kimi Code exposes STANDALONE permission flags (`kimi --help` v0.18):
+        // `--plan` / `--auto` / `-y/--yolo`. NOTE: the headless `-p` path does NOT
+        // use this — `kimi -p` REJECTS every permission flag ("Cannot combine
+        // --prompt with ..."), so the spawn/delivery paths pass none. Retained for
+        // trait conformance and a potential future interactive/acp invocation; it
+        // returns the standalone flag itself (not a `--permission-mode` value).
         match perm {
             LaunchPermission::ReadOnly => "--plan",
             LaunchPermission::WorkspaceWrite => "--auto",
@@ -14665,14 +14746,26 @@ impl ProviderAdapter for KimiAdapter {
         session_id: &str,
         raw: &serde_json::Value,
     ) -> Vec<HarnessTurnEvent> {
-        // Kimi is claude-shaped, so reuse claude's normalization but stamp the
-        // events with the kimi provider id (so the dashboard attributes the turn
-        // to kimi, not claude).
-        let mut events = ClaudeAdapter.normalize_turn_event(session_id, raw);
-        for event in &mut events {
-            event.provider = self.name().into();
+        // Kimi -p stream-json is flat and NOT claude-shaped, so map its frames
+        // directly: a `role=="assistant"` frame -> an assistant Message event with
+        // the reply text; the `session.resume_hint` meta frame -> ProviderMeta
+        // carrying the resume token; anything else -> a generic ProviderMeta. All
+        // stamped provider="kimi" via `generic_turn_event(self.name(), ...)`.
+        let mut event = generic_turn_event(self.name(), session_id, raw);
+        if raw.get("role").and_then(|r| r.as_str()) == Some("assistant") {
+            event.kind = HarnessTurnEventKind::Message;
+            event.role = Some("assistant".into());
+            event.text = extract_kimi_reply_text(std::slice::from_ref(raw));
+        } else if raw.get("type").and_then(|t| t.as_str()) == Some("session.resume_hint") {
+            event.kind = HarnessTurnEventKind::ProviderMeta;
+            event.provider_thread_id = raw
+                .get("session_id")
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
+        } else {
+            event.kind = HarnessTurnEventKind::ProviderMeta;
         }
-        events
+        vec![event]
     }
 
     fn start_runtime(&self, store: &HarnessStore, member: &AgentMember) -> CliResult<AgentRuntime> {
@@ -14707,11 +14800,9 @@ impl ProviderAdapter for KimiAdapter {
         session_id: &str,
         spawn: &EphemeralSpawn,
     ) {
-        // Kimi is claude-shaped on the wire → reuse the claude reducer, but pass
-        // our own provider id so the durable AgentEvent / ProviderSession rows are
-        // stamped provider="kimi" (the reducer otherwise has no provider context).
-        let _ =
-            ingest_claude_stream_json(store, self.name(), session_id, None, None, &spawn.ndjson);
+        // Kimi -p stream-json is not claude-shaped → use the kimi-native reducer,
+        // stamping the durable AgentEvent / ProviderSession rows provider="kimi".
+        let _ = ingest_kimi_stream_json(store, self.name(), session_id, None, None, &spawn.ndjson);
     }
 
     fn spawn_ephemeral(&self, ctx: &EphemeralSpawnContext<'_>) -> CliResult<EphemeralSpawn> {
@@ -14737,10 +14828,10 @@ impl ProviderAdapter for KimiAdapter {
         task_id: Option<&str>,
         source_ref: &str,
     ) -> CliResult<()> {
-        // Kimi is claude-shaped on the wire → reuse the claude reducer, but pass
-        // our own provider id so the durable rows are stamped provider="kimi".
+        // Kimi -p stream-json is not claude-shaped → use the kimi-native reducer,
+        // stamping the durable rows provider="kimi".
         let text = fs::read_to_string(source_ref).unwrap_or_default();
-        ingest_claude_stream_json(
+        ingest_kimi_stream_json(
             store,
             self.name(),
             agent_member_id,
@@ -15020,6 +15111,80 @@ fn ingest_claude_stream_json(
     };
     store.append_provider_session(&provider_session)?;
 
+    Ok(())
+}
+
+/// Parse Kimi `-p --output-format stream-json` NDJSON and ingest as neutral
+/// AgentEvent / ProviderSession rows. Mirrors [`ingest_claude_stream_json`] but on
+/// the flat kimi-native frames (see the kimi stream banner). `provider` stamps the
+/// rows (always "kimi" here). The session id is read from the `session.resume_hint`
+/// meta frame; status is inferred from the frames (the live spawn path drives the
+/// authoritative status from the child exit code).
+fn ingest_kimi_stream_json(
+    store: &HarnessStore,
+    provider: &str,
+    agent_member_id: &str,
+    runtime_id: Option<&str>,
+    task_id: Option<&str>,
+    text: &str,
+) -> CliResult<()> {
+    let frames = parse_kimi_frames(text);
+    let session_id = extract_kimi_session_id(&frames).unwrap_or_else(|| generated_id("session"));
+    let process_success = true; // The stream parsed; exit-code status is set on the live path.
+    let status = infer_kimi_status(&frames, process_success);
+
+    for frame in &frames {
+        let event_kind = match (
+            frame.get("role").and_then(|r| r.as_str()),
+            frame.get("type").and_then(|t| t.as_str()),
+        ) {
+            (Some("assistant"), _) => "assistant_message",
+            (_, Some("session.resume_hint")) => "session_resume_hint",
+            (Some(role), _) => role, // e.g. "meta", "user"
+            _ => "unknown",
+        };
+        let agent_event = AgentEvent {
+            id: generated_id("event"),
+            agent_member_id: agent_member_id.into(),
+            provider_runtime_id: runtime_id.map(str::to_string),
+            task_id: task_id.map(str::to_string),
+            provider: provider.into(),
+            provider_thread_id: None,
+            provider_turn_id: None,
+            provider_child_thread_id: None,
+            event_type: event_kind.to_string(),
+            summary: summarize_json_value(frame),
+            payload_ref: None,
+            created_at: now_string(),
+        };
+        store.append_event(&agent_event)?;
+    }
+
+    let provider_session = ProviderSession {
+        id: session_id.clone(),
+        provider: provider.into(),
+        agent_member_id: agent_member_id.into(),
+        task_id: task_id.map(str::to_string),
+        workspace_ref: None,
+        provider_thread_id: None,
+        provider_turn_id: None,
+        terminal_source: status_to_terminal_source(&status),
+        status,
+        command: provider.into(),
+        args: vec!["-p".into(), "--output-format".into(), "stream-json".into()],
+        prompt_ref: None,
+        prompt_summary: Some(format!("delivered via {provider} -p stream-json")),
+        provider_session_ref: None,
+        stdout_ref: None,
+        jsonl_ref: None,
+        transcript_ref: None,
+        last_message_ref: None,
+        exit_code: Some(0),
+        started_at: now_string(),
+        ended_at: Some(now_string()),
+        evidence_ids: Vec::new(),
+    };
+    store.append_provider_session(&provider_session)?;
     Ok(())
 }
 
@@ -16715,6 +16880,69 @@ mod workflow_runtime_tests {
         let store = HarnessStore::new(&root);
         store.init().expect("init store");
         store
+    }
+
+    #[test]
+    fn kimi_parsers_match_the_real_v018_stream_shape() {
+        // Verified LIVE against `kimi -p --output-format stream-json` (v0.18): a flat
+        // assistant frame + a session.resume_hint meta frame — NOT claude-shaped.
+        let frames: Vec<serde_json::Value> = vec![
+            serde_json::json!({"role": "assistant", "content": "pong"}),
+            serde_json::json!({
+                "role": "meta",
+                "type": "session.resume_hint",
+                "session_id": "session_abc-123",
+                "command": "kimi -r session_abc-123",
+                "content": "To resume this session: kimi -r session_abc-123"
+            }),
+        ];
+        assert_eq!(extract_kimi_reply_text(&frames).as_deref(), Some("pong"));
+        assert_eq!(
+            extract_kimi_session_id(&frames).as_deref(),
+            Some("session_abc-123")
+        );
+        assert_eq!(
+            infer_kimi_status(&frames, true),
+            ProviderSessionStatus::Succeeded
+        );
+        // REGRESSION GUARD: the claude reply extractor must FAIL on this shape —
+        // proving why the kimi-native parser is required (no `type:"result"` /
+        // `message.content[]`). The pre-fix adapter reused this and lost the reply.
+        let claude_events: Vec<ClaudeStreamEvent> = frames
+            .iter()
+            .filter_map(|v| serde_json::to_string(v).ok())
+            .filter_map(|l| ClaudeStreamEvent::parse_line(&l))
+            .collect();
+        assert_eq!(
+            extract_claude_reply_text(&claude_events),
+            None,
+            "claude parser must not extract a reply from real kimi frames"
+        );
+    }
+
+    #[test]
+    fn kimi_reply_handles_array_content_and_multiple_assistant_frames() {
+        let frames: Vec<serde_json::Value> = vec![
+            serde_json::json!({"role": "assistant", "content": [{"type": "text", "text": "alpha"}]}),
+            serde_json::json!({"role": "user", "content": "ignored"}),
+            serde_json::json!({"role": "assistant", "content": "beta"}),
+        ];
+        assert_eq!(
+            extract_kimi_reply_text(&frames).as_deref(),
+            Some("alpha\nbeta")
+        );
+    }
+
+    #[test]
+    fn kimi_status_failed_on_nonzero_exit_and_stale_when_empty() {
+        assert_eq!(infer_kimi_status(&[], true), ProviderSessionStatus::Stale);
+        assert_eq!(
+            infer_kimi_status(
+                &[serde_json::json!({"role": "assistant", "content": "x"})],
+                false
+            ),
+            ProviderSessionStatus::Failed
+        );
     }
 
     #[test]

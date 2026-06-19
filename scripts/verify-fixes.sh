@@ -118,7 +118,10 @@ for t in \
   planner_schema_and_prompt_advertise_executor \
   provider_capabilities_codex_matches_doc_table \
   provider_capabilities_claude_matches_doc_table \
-  provider_adapter_capabilities_return_codex_and_claude_presets ; do
+  provider_adapter_capabilities_return_codex_and_claude_presets \
+  kimi_parsers_match_the_real_v018_stream_shape \
+  kimi_reply_handles_array_content_and_multiple_assistant_frames \
+  kimi_status_failed_on_nonzero_exit_and_stale_when_empty ; do
   grep -q "test .*$t ... ok" "$TMP/test.log" && ok "unit: $t" || bad "unit: $t did not run/pass"
 done
 # goal-multi-project deterministic regression coverage — one representative test
