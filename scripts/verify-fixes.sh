@@ -138,7 +138,8 @@ for pair in \
   "sse-isolation:sse_streams_are_isolated_per_project" \
   "dashboard-switch:serve_and_cli_from_different_cwds_converge_after_switch" \
   "global-policy:global_writable_node_fails_with_actionable_non_git_message" \
-  "migration:migrate_preserves_records_and_payloads_and_marks_old_store" ; do
+  "migration:migrate_preserves_records_and_payloads_and_marks_old_store" \
+  "provider-neutral:task_executor_kimi_compiles_dispatches_and_spawns_a_kimi_by_name" ; do
   dim="${pair%%:*}"; t="${pair#*:}"
   grep -q "test .*$t ... ok" "$TMP/test.log" && ok "mp[$dim]: $t" || bad "mp[$dim]: $t did not run/pass"
 done

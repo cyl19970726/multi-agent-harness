@@ -1536,6 +1536,15 @@ impl std::fmt::Display for ProviderKind {
 pub fn provider_price_per_mtok(provider: &str) -> (f64, f64) {
     match provider {
         "claude" => (3.0, 15.0),
+        // PLACEHOLDER pricing for Kimi (goal-provider-neutral S4). Moonshot's
+        // published `kimi-for-coding`/`kimi-k2` list price is well BELOW the
+        // codex/gpt-5-class default, so estimating Kimi at the gpt-5 rate would
+        // wildly over-bound spend. These numbers are a conservative documented
+        // guess — the real $/Mtok MUST be confirmed against Moonshot's pricing
+        // page (or the live `kimi` CLI usage frame) before any spend decision is
+        // trusted; see the goal's S3 spike. Until then this only bounds the
+        // workflow token-estimate, never bills.
+        "kimi" => (0.60, 2.50),
         _ => (1.25, 10.0), // codex / gpt-5-class default
     }
 }
@@ -2753,6 +2762,14 @@ mod tests {
         assert_eq!(provider_price_per_mtok("claude"), (3.0, 15.0));
         assert_eq!(provider_price_per_mtok("codex"), (1.25, 10.0));
         assert_eq!(provider_price_per_mtok("gemini"), (1.25, 10.0));
+        // Kimi has its own placeholder row (NOT priced as gpt-5-class), so spend
+        // estimates don't wildly over-bound a cheaper provider
+        // (goal-provider-neutral S4). Confirm it diverges from the default.
+        assert_eq!(provider_price_per_mtok("kimi"), (0.60, 2.50));
+        assert_ne!(
+            provider_price_per_mtok("kimi"),
+            provider_price_per_mtok("codex")
+        );
     }
 
     #[test]
@@ -4906,6 +4923,30 @@ impl ProviderCapabilities {
             hooks: false,             // not documented
             schema: true,             // --json-schema → result.structured_output
             cost: true,               // result.total_cost_usd
+        }
+    }
+
+    /// Kimi exec capabilities (goal-provider-neutral S4) — a HONEST, partly
+    /// UNKNOWN preset for a provider whose live CLI has not been verified.
+    ///
+    /// ASSUMES the `kimi` CLI is invoked like claude (stream-json NDJSON, a
+    /// terminal `result` frame), so `streaming` is the only axis claimed `true`.
+    /// Every other axis is marked `false` = DEGRADED-until-proven, NOT a positive
+    /// claim of absence: resume/MCP/schema/cost/hooks all need to be confirmed
+    /// against the real binary (see the goal's S3 spike) before being flipped on.
+    /// Marking them `false` is the safe default — a missing axis degrades to the
+    /// shared fallback (text-extract for schema, token-estimate for cost,
+    /// leaf-only for resume) rather than a per-provider branch.
+    pub fn kimi_exec() -> Self {
+        ProviderCapabilities {
+            streaming: true,          // assumed: --output-format stream-json
+            resume: false,            // UNKNOWN: resumable session id unverified
+            mid_turn_approval: false, // UNKNOWN
+            subagents: false,         // UNKNOWN
+            mcp: false,               // UNKNOWN
+            hooks: false,             // UNKNOWN: no lifecycle hook bridge
+            schema: false,            // UNKNOWN: degrade to text-extract fallback
+            cost: false,              // UNKNOWN: degrade to token-estimate
         }
     }
 

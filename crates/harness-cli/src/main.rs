@@ -13442,6 +13442,7 @@ trait ProviderAdapter: Sync {
 
 struct CodexAdapter;
 struct ClaudeAdapter;
+struct KimiAdapter;
 
 impl ProviderAdapter for CodexAdapter {
     fn name(&self) -> &'static str {
@@ -14220,9 +14221,493 @@ impl ProviderAdapter for ClaudeAdapter {
     }
 }
 
+// ============================================================================
+// Kimi adapter (goal-provider-neutral S4): a NATIVE third provider, registered
+// with ZERO new match arms.
+//
+// ASSUMES a `kimi` CLI invoked LIKE claude: a non-interactive `-p <prompt>
+// --output-format stream-json --verbose` mode that emits line-delimited JSON
+// (NDJSON) with a `system` init frame carrying `session_id`/`model`, `assistant`
+// message frames, and a terminal `result` frame. The real Kimi Code CLI flags +
+// stream format MUST be verified against the live binary — see the goal's S3
+// spike. Until then this adapter is proven ONLY deterministically against a fake
+// `kimi` shim on PATH (never a real endpoint).
+//
+// The binary is spawned by BARE NAME (`Command::new("kimi")`) so a PATH shim can
+// stand in. Because Kimi is assumed claude-shaped, the stream interpreters
+// (status/reply/usage/model/structured/session-id), the durable-trace ingest,
+// and the live NDJSON tee all reuse the existing claude-stream helpers — they key
+// on the wire SHAPE, not on the claude binary. Only the spawned binary name and
+// the live-file basename differ.
+// ============================================================================
+
+/// Spawn a one-shot ephemeral `kimi` worker. Mirrors [`spawn_claude_ephemeral`]
+/// flag-for-flag (claude-shaped stream-json) but spawns the `kimi` binary by bare
+/// name and tees to `kimi.stream-json.ndjson`. See the KimiAdapter banner: the
+/// real `kimi` CLI surface is S3-spike TBD; this is fake-shim-proven only.
+#[allow(clippy::too_many_arguments)]
+fn spawn_kimi_ephemeral(
+    session_dir: &Path,
+    session_id: &str,
+    spec: &workflow::AgentStepSpec,
+    schema_json: Option<&serde_json::Value>,
+    prompt: &str,
+    cwd: &Path,
+    model: Option<&str>,
+    effort: Option<&str>,
+    timeout_ms: u64,
+    max_budget_usd: Option<f64>,
+) -> CliResult<EphemeralSpawn> {
+    let prompt_with_images;
+    let prompt = if spec.image.is_empty() {
+        prompt
+    } else {
+        prompt_with_images = format!(
+            "Attached image files (read them with the Read tool): {}\n\n{}",
+            spec.image.join(", "),
+            prompt
+        );
+        &prompt_with_images
+    };
+    let tools = if spec.writable {
+        "Read,Edit,Write,Bash,Grep,Glob"
+    } else {
+        "Read,Grep,Glob"
+    };
+    let mut cmd = Command::new("kimi");
+    cmd.arg("-p")
+        .arg(prompt)
+        .arg("--output-format")
+        .arg("stream-json")
+        .arg("--verbose")
+        .arg("--permission-mode")
+        .arg(KimiAdapter.map_permission(if spec.writable {
+            LaunchPermission::WorkspaceWrite
+        } else {
+            LaunchPermission::ReadOnly
+        }))
+        .arg("--allowedTools")
+        .arg(tools)
+        .current_dir(cwd);
+    if let Some(budget) = max_budget_usd {
+        if budget > 0.0 {
+            cmd.arg("--max-budget-usd").arg(format!("{budget}"));
+        }
+    }
+    // Native schema enforcement (claude-shaped `--json-schema`) IF the live CLI
+    // supports it (S3-spike TBD). When it doesn't, the caller's text-extract
+    // fallback covers schema-mode nodes, so passing the flag is harmless to a
+    // shim and lossless to the degraded path.
+    if let Some(schema) = schema_json {
+        cmd.arg("--json-schema").arg(schema.to_string());
+    }
+    if let Some(model) = model {
+        cmd.arg("--model").arg(model);
+    }
+    if let Some(effort) = effort {
+        cmd.arg("--effort").arg(effort);
+    }
+    for path in &spec.add_dir {
+        cmd.arg("--add-dir").arg(path);
+    }
+
+    let run = run_ndjson_child(
+        cmd,
+        session_dir,
+        session_id,
+        KimiAdapter.live_ndjson_file_name(),
+        timeout_ms,
+        "ephemeral worker",
+    )?;
+    // Kimi is claude-shaped, so reuse the claude stream interpreters verbatim.
+    let kimi_events: Vec<ClaudeStreamEvent> = run
+        .events
+        .iter()
+        .filter_map(|v| serde_json::to_string(v).ok())
+        .filter_map(|line| ClaudeStreamEvent::parse_line(&line))
+        .collect();
+    let ok = matches!(
+        infer_claude_session_status(&kimi_events, run.process_success),
+        ProviderSessionStatus::Succeeded
+    );
+    let reply = extract_claude_reply_text(&kimi_events);
+    let tokens = parse_claude_usage(&run.events);
+    let model = parse_worker_model(&run.events);
+    let (structured, cost_usd) = parse_claude_result_extras(&run.events);
+
+    Ok(EphemeralSpawn {
+        ok,
+        reply,
+        ndjson: ndjson_lines(&run.events),
+        stderr: run.stderr,
+        exit_code: run.exit_code,
+        timed_out: run.timed_out,
+        tokens,
+        model,
+        structured,
+        cost_usd,
+        warnings: run.warnings,
+    })
+}
+
+/// Start the (on-demand) Kimi runtime. Like claude/codex, no persistent process
+/// is held; each delivery spawns a fresh `kimi -p` turn. Mirrors
+/// [`start_claude_runtime`] with the `kimi` binary.
+fn start_kimi_runtime(store: &HarnessStore, member: &AgentMember) -> CliResult<AgentRuntime> {
+    let runtime_id = generated_id("runtime");
+    let runtime_dir = store.root().join("runtimes").join(&member.id);
+    fs::create_dir_all(&runtime_dir)?;
+    let endpoint = format!("kimi-runtime://{}", runtime_dir.display());
+    let process_alive = Command::new("which")
+        .arg("kimi")
+        .output()
+        .ok()
+        .map(|output| output.status.success())
+        .unwrap_or(false);
+    Ok(AgentRuntime {
+        id: runtime_id,
+        agent_member_id: member.id.clone(),
+        provider: member.provider.clone(),
+        status: AgentRuntimeStatus::Running,
+        pid: None, // Kimi runs on-demand; no persistent PID
+        control_endpoint: Some(endpoint),
+        command: "kimi".into(),
+        args: Vec::new(),
+        started_at: now_string(),
+        ended_at: None,
+        last_event_at: Some(now_string()),
+        health: AgentRuntimeHealth {
+            process_alive,
+            socket_exists: true,
+            protocol_probe: Some("unknown".into()),
+            delivery_probe: Some("unknown".into()),
+            checked_at: Some(now_string()),
+        },
+    })
+}
+
+/// Spawn `kimi -p --output-format stream-json --verbose` for one member delivery
+/// and parse the claude-shaped NDJSON. Mirrors [`run_claude_exec_delivery_real`]
+/// with the `kimi` binary.
+fn run_kimi_exec_delivery_real(
+    session_dir: &Path,
+    member: &AgentMember,
+    message: &Message,
+    timeout_ms: u64,
+    project: &ProjectContext,
+) -> CliResult<ClaudeDeliveryRun> {
+    let message_content = format!(
+        "Harness message envelope:\nmessage_id: {}\nkind: task\ntask_id: {}\nfrom_agent_id: {}\nto_agent_id: {}\nchannel: -\ncontent:\n{}",
+        message.id,
+        message.task_id.as_deref().unwrap_or("-"),
+        message.from_agent_id,
+        message.to_agent_id.as_deref().unwrap_or("-"),
+        message.content
+    );
+    let system_prompt = provider_developer_instructions(member);
+    let cwd = delivery_worker_cwd(member, project);
+    let spec = build_launch_spec(member, message);
+
+    let mut cmd = Command::new("kimi");
+    cmd.arg("-p")
+        .arg(&message_content)
+        .arg("--output-format")
+        .arg("stream-json")
+        .arg("--verbose");
+    if let Some(resume_id) = &spec.resume {
+        cmd.arg("--resume").arg(resume_id);
+    }
+    if !system_prompt.is_empty() {
+        cmd.arg("--append-system-prompt").arg(&system_prompt);
+    }
+    apply_claude_model_and_effort_args(&mut cmd, &spec);
+    apply_claude_output_schema_arg(&mut cmd, &spec);
+    cmd.arg("--permission-mode")
+        .arg(KimiAdapter.map_permission(spec.permission));
+    if !spec.tools.is_empty() {
+        cmd.arg("--allowedTools").arg(spec.tools.join(","));
+    }
+    if let Some(mcp_path) = write_temp_mcp_config(spec.mcp.as_ref())? {
+        cmd.arg("--mcp-config").arg(&mcp_path);
+    }
+    if let Some(workspace) = &spec.workspace {
+        cmd.arg("--add-dir").arg(workspace);
+    }
+    for root in &spec.writable_roots {
+        cmd.arg("--add-dir").arg(root);
+    }
+    cmd.current_dir(&cwd);
+
+    let delivery_id = session_dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default()
+        .to_string();
+    let run = run_ndjson_child(
+        cmd,
+        session_dir,
+        &delivery_id,
+        KimiAdapter.live_ndjson_file_name(),
+        timeout_ms,
+        "kimi -p process",
+    )?;
+    let events = run
+        .events
+        .iter()
+        .filter_map(|payload| serde_json::to_string(payload).ok())
+        .filter_map(|line| ClaudeStreamEvent::parse_line(&line))
+        .collect::<Vec<_>>();
+    let session_id = extract_session_id_from_claude_events(&events);
+    Ok((
+        run.process_success,
+        events,
+        run.events,
+        session_id,
+        run.stderr,
+    ))
+}
+
+/// Run one Kimi member delivery. Mirrors [`run_claude_delivery`] (claude-shaped
+/// telemetry/status/session bookkeeping) but spawns `kimi` and records the row
+/// under the `kimi` provider + `kimi.stream-json.ndjson` jsonl_ref.
+#[allow(clippy::too_many_arguments)]
+fn run_kimi_delivery(
+    store: &HarnessStore,
+    member: &AgentMember,
+    _runtime: &AgentRuntime,
+    message: &Message,
+    delivery_id: &str,
+    timeout_ms: u64,
+    project: &ProjectContext,
+) -> CliResult<DeliveryOutcome> {
+    let session_dir = store.root().join("provider-sessions").join(delivery_id);
+    fs::create_dir_all(&session_dir)?;
+    let started_at = now_string();
+
+    let (process_success, events, raw_events, session_id, stderr_log) =
+        run_kimi_exec_delivery_real(&session_dir, member, message, timeout_ms, project)?;
+    let (tokens, cost_usd, model, raw_structured) = claude_delivery_telemetry(&raw_events);
+
+    let ndjson_ref = session_dir.join(KimiAdapter.live_ndjson_file_name());
+    let mut ndjson_content = String::new();
+    for event in &events {
+        ndjson_content.push_str(&serde_json::to_string(&event.payload).unwrap_or_default());
+        ndjson_content.push('\n');
+    }
+    fs::write(&ndjson_ref, &ndjson_content)?;
+
+    let status = infer_claude_session_status(&events, process_success);
+    let structured = structured_for_status(&status, raw_structured);
+    let terminal_source = status_to_terminal_source(&status);
+    let resolved_session_id = session_id
+        .clone()
+        .unwrap_or_else(|| generated_id("session"));
+    // Only a real session id parsed from the stream is resumable; the synthetic
+    // fallback is not surfaced as a resume token (claude-identical).
+    let resumable_session_id = session_id.clone();
+    let used_resume_id = build_launch_spec(member, message).resume;
+    let recorded_args = KimiAdapter.recorded_args(used_resume_id.as_deref());
+
+    let evidence_id = generated_id("evidence");
+    let evidence = Evidence {
+        id: evidence_id.clone(),
+        task_id: message.task_id.clone(),
+        source_type: "kimi_delivery_session".into(),
+        source_ref: format!("provider-session:{resolved_session_id}"),
+        summary: format!(
+            "Kimi stream-json delivery {} for message {} ({} events)",
+            resolved_session_id,
+            message.id,
+            events.len()
+        ),
+        created_at: now_string(),
+        evidence_kind: None,
+        goal_id: None,
+    };
+    store.append_evidence(&evidence)?;
+
+    let provider_session = ProviderSession {
+        id: delivery_id.to_string(),
+        provider: KimiAdapter.name().into(),
+        agent_member_id: member.id.clone(),
+        task_id: message.task_id.clone(),
+        workspace_ref: None,
+        provider_thread_id: resumable_session_id.clone(),
+        provider_turn_id: None,
+        terminal_source: terminal_source.clone(),
+        status: status.clone(),
+        command: "kimi".into(),
+        args: recorded_args,
+        prompt_ref: member.prompt_ref.clone(),
+        prompt_summary: Some(format!("deliver message {}", message.id)),
+        provider_session_ref: None,
+        stdout_ref: None,
+        jsonl_ref: Some(ndjson_ref.display().to_string()),
+        transcript_ref: if stderr_log.is_empty() {
+            None
+        } else {
+            Some(session_dir.join("kimi.stderr").display().to_string())
+        },
+        last_message_ref: None,
+        exit_code: if process_success { Some(0) } else { Some(1) },
+        started_at,
+        ended_at: Some(now_string()),
+        evidence_ids: vec![evidence_id.clone()],
+    };
+    store.append_provider_session(&provider_session)?;
+
+    Ok(DeliveryOutcome {
+        provider_thread_id: resumable_session_id,
+        provider_turn_id: None,
+        terminal_source,
+        status,
+        stdout_ref: None,
+        stderr_ref: if !stderr_log.is_empty() {
+            let stderr_path = session_dir.join("kimi.stderr");
+            fs::write(&stderr_path, &stderr_log)?;
+            Some(stderr_path.display().to_string())
+        } else {
+            None
+        },
+        request_ref: Some(session_dir.display().to_string()),
+        provider_request_id: None,
+        provider_session_id: Some(delivery_id.to_string()),
+        evidence_ids: vec![evidence_id],
+        exit_code: if process_success { Some(0) } else { Some(1) },
+        tokens,
+        cost_usd,
+        model,
+        structured,
+        summary: if process_success {
+            extract_claude_reply_text(&events)
+                .unwrap_or_else(|| format!("Kimi delivery succeeded: {} events", events.len()))
+        } else {
+            format!("Kimi delivery failed: {}", stderr_log)
+        },
+    })
+}
+
+impl ProviderAdapter for KimiAdapter {
+    fn name(&self) -> &'static str {
+        "kimi"
+    }
+
+    fn capabilities(&self) -> ProviderCapabilities {
+        ProviderCapabilities::kimi_exec()
+    }
+
+    fn live_ndjson_file_name(&self) -> &'static str {
+        "kimi.stream-json.ndjson"
+    }
+
+    fn map_permission(&self, perm: LaunchPermission) -> &'static str {
+        // Assumed claude-shaped permission vocabulary (S3-spike TBD). If the real
+        // `kimi` CLI has no sandbox concept, harness-owned worktree isolation
+        // still contains a writable node regardless of this flag.
+        match perm {
+            LaunchPermission::ReadOnly => "plan",
+            LaunchPermission::WorkspaceWrite => "acceptEdits",
+            LaunchPermission::FullAccess => "bypassPermissions",
+        }
+    }
+
+    fn recorded_args(&self, resume_id: Option<&str>) -> Vec<String> {
+        let mut args = vec![
+            "-p".into(),
+            "--output-format".into(),
+            "stream-json".into(),
+            "--verbose".into(),
+        ];
+        if let Some(id) = resume_id {
+            args.push("--resume".into());
+            args.push(id.into());
+        }
+        args
+    }
+
+    fn normalize_turn_event(
+        &self,
+        session_id: &str,
+        raw: &serde_json::Value,
+    ) -> Vec<HarnessTurnEvent> {
+        // Kimi is claude-shaped, so reuse claude's normalization but stamp the
+        // events with the kimi provider id (so the dashboard attributes the turn
+        // to kimi, not claude).
+        let mut events = ClaudeAdapter.normalize_turn_event(session_id, raw);
+        for event in &mut events {
+            event.provider = self.name().into();
+        }
+        events
+    }
+
+    fn start_runtime(&self, store: &HarnessStore, member: &AgentMember) -> CliResult<AgentRuntime> {
+        start_kimi_runtime(store, member)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn run_delivery(
+        &self,
+        store: &HarnessStore,
+        member: &AgentMember,
+        runtime: &AgentRuntime,
+        message: &Message,
+        delivery_id: &str,
+        timeout_ms: u64,
+        project: &ProjectContext,
+    ) -> CliResult<DeliveryOutcome> {
+        run_kimi_delivery(
+            store,
+            member,
+            runtime,
+            message,
+            delivery_id,
+            timeout_ms,
+            project,
+        )
+    }
+
+    fn ingest_ephemeral_trace(
+        &self,
+        store: &HarnessStore,
+        session_id: &str,
+        spawn: &EphemeralSpawn,
+    ) {
+        // Claude-shaped stream → reuse the claude reducer (stamps provider="kimi"
+        // since the rows derive their provider from the member, not this fn).
+        let _ = ingest_claude_stream_json(store, session_id, None, None, &spawn.ndjson);
+    }
+
+    fn spawn_ephemeral(&self, ctx: &EphemeralSpawnContext<'_>) -> CliResult<EphemeralSpawn> {
+        spawn_kimi_ephemeral(
+            ctx.session_dir,
+            ctx.session_id,
+            ctx.spec,
+            ctx.schema_json,
+            ctx.prompt,
+            ctx.cwd,
+            ctx.model,
+            ctx.effort,
+            ctx.timeout_ms,
+            ctx.max_budget_usd,
+        )
+    }
+
+    fn ingest_output(
+        &self,
+        store: &HarnessStore,
+        agent_member_id: &str,
+        runtime_id: Option<&str>,
+        task_id: Option<&str>,
+        source_ref: &str,
+    ) -> CliResult<()> {
+        let text = fs::read_to_string(source_ref).unwrap_or_default();
+        ingest_claude_stream_json(store, agent_member_id, runtime_id, task_id, &text)
+    }
+}
+
 /// All providers the harness recognises, in canonical display order.
 fn provider_registry() -> &'static [&'static dyn ProviderAdapter] {
-    &[&CodexAdapter, &ClaudeAdapter]
+    &[&CodexAdapter, &ClaudeAdapter, &KimiAdapter]
 }
 
 /// The adapter for a provider id, or `None` if unrecognised.
@@ -16202,6 +16687,27 @@ mod workflow_runtime_tests {
         assert_eq!(codex.capabilities(), ProviderCapabilities::codex_exec());
         let claude = provider_adapter("claude").expect("claude registered");
         assert_eq!(claude.capabilities(), ProviderCapabilities::claude_exec());
+        // Kimi (goal-provider-neutral S4): registered as a third provider with an
+        // explicit, honestly-degraded capability preset (only streaming claimed).
+        assert_eq!(
+            KimiAdapter.capabilities(),
+            ProviderCapabilities::kimi_exec(),
+            "kimi adapter must report the kimi_exec preset"
+        );
+        let kimi = provider_adapter("kimi").expect("kimi registered");
+        assert_eq!(kimi.capabilities(), ProviderCapabilities::kimi_exec());
+        assert_eq!(kimi.name(), "kimi");
+        assert_eq!(kimi.live_ndjson_file_name(), "kimi.stream-json.ndjson");
+        // Kimi marks its unverified axes false (degraded-until-proven), unlike
+        // claude which has confirmed schema/cost.
+        assert!(!kimi.capabilities().schema, "kimi schema is S3-spike TBD");
+        assert!(!kimi.capabilities().cost, "kimi cost is S3-spike TBD");
+        assert!(!kimi.capabilities().resume, "kimi resume is S3-spike TBD");
+        // supported_provider_names() is the single source of truth and now lists kimi.
+        assert!(
+            supported_provider_names().contains(&"kimi"),
+            "registry-derived provider list must include kimi"
+        );
         // Every registered adapter answers capabilities() without panicking.
         for adapter in provider_registry() {
             let caps = adapter.capabilities();
@@ -19956,10 +20462,11 @@ mod tests {
         let message = error.to_string();
         // Assert the EXACT message: the supported list is now derived from the
         // provider registry, so this guards against ordering/spacing/list drift
-        // (which a substring check would silently miss).
+        // (which a substring check would silently miss). kimi is the third
+        // registered provider (goal-provider-neutral S4).
         assert_eq!(
             message,
-            "unknown provider \"gemini\" for runtime start; supported providers: codex, claude"
+            "unknown provider \"gemini\" for runtime start; supported providers: codex, claude, kimi"
         );
 
         let _ = std::fs::remove_dir_all(root);
