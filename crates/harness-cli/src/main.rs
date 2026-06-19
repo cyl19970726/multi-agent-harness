@@ -14233,26 +14233,65 @@ impl ProviderAdapter for ClaudeAdapter {
 // Kimi adapter (goal-provider-neutral S4): a NATIVE third provider, registered
 // with ZERO new match arms.
 //
-// ASSUMES a `kimi` CLI invoked LIKE claude: a non-interactive `-p <prompt>
-// --output-format stream-json --verbose` mode that emits line-delimited JSON
-// (NDJSON) with a `system` init frame carrying `session_id`/`model`, `assistant`
-// message frames, and a terminal `result` frame. The real Kimi Code CLI flags +
-// stream format MUST be verified against the live binary — see the goal's S3
-// spike. Until then this adapter is proven ONLY deterministically against a fake
-// `kimi` shim on PATH (never a real endpoint).
+// Kimi Code is non-interactive via `-p <prompt> --output-format stream-json`,
+// emitting claude-shaped line-delimited JSON (NDJSON): a `system` init frame
+// carrying `session_id`/`model`, `assistant` message frames, and a terminal
+// `result` frame. The CLI FLAG surface is verified against `kimi --help` v0.18 —
+// Kimi has NONE of claude's `--verbose` / `--permission-mode` / `--allowedTools` /
+// `--json-schema` / `--mcp-config` / `--add-dir` / `--append-system-prompt`; it
+// uses STANDALONE permission flags (`--plan` / `--auto` / `-y`), resumes with
+// `-S/--session`, and has no native schema/budget/effort, which degrade to the
+// harness fallbacks (see `ProviderCapabilities::kimi_exec`). The wire shape is
+// still proven deterministically against a fake `kimi` shim on PATH; the LIVE
+// authenticated run (post `kimi login`) is the operator's step.
 //
-// The binary is spawned by BARE NAME (`Command::new("kimi")`) so a PATH shim can
-// stand in. Because Kimi is assumed claude-shaped, the stream interpreters
-// (status/reply/usage/model/structured/session-id), the durable-trace ingest,
-// and the live NDJSON tee all reuse the existing claude-stream helpers — they key
-// on the wire SHAPE, not on the claude binary. Only the spawned binary name and
-// the live-file basename differ.
+// The binary is resolved by [`resolve_kimi_bin`] (KIMI_CODE_BIN override, else the
+// bare name `kimi` on PATH so a test shim / the installer's PATH entry wins, else
+// the default install path). Because Kimi is claude-shaped on the wire, the stream
+// interpreters (status/reply/usage/model/structured/session-id), the durable-trace
+// ingest, and the live NDJSON tee all reuse the existing claude-stream helpers —
+// they key on the wire SHAPE, not on the claude binary. Only the binary, the
+// live-file basename, and the CLI flags differ.
 // ============================================================================
 
-/// Spawn a one-shot ephemeral `kimi` worker. Mirrors [`spawn_claude_ephemeral`]
-/// flag-for-flag (claude-shaped stream-json) but spawns the `kimi` binary by bare
-/// name and tees to `kimi.stream-json.ndjson`. See the KimiAdapter banner: the
-/// real `kimi` CLI surface is S3-spike TBD; this is fake-shim-proven only.
+/// Resolve the `kimi` (Kimi Code) executable. Order: the `KIMI_CODE_BIN` env
+/// override (explicit), then the bare name `kimi` when it resolves on `PATH` (so a
+/// test PATH shim AND the installer's `~/.kimi-code/bin` PATH entry both win), then
+/// the default install path `~/.kimi-code/bin/kimi`, then the bare name as a last
+/// resort so a missing binary surfaces a clear spawn error. Keeping `kimi`-on-PATH
+/// ahead of the home-dir fallback is what lets the deterministic fake-kimi test
+/// intercept the spawn.
+fn resolve_kimi_bin() -> String {
+    if let Ok(explicit) = std::env::var("KIMI_CODE_BIN") {
+        if !explicit.trim().is_empty() {
+            return explicit;
+        }
+    }
+    let on_path = Command::new("which")
+        .arg("kimi")
+        .output()
+        .ok()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if on_path {
+        return "kimi".into();
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        let candidate = Path::new(&home).join(".kimi-code/bin/kimi");
+        if candidate.is_file() {
+            return candidate.display().to_string();
+        }
+    }
+    "kimi".into()
+}
+
+/// Spawn a one-shot ephemeral `kimi` worker. Claude-shaped stream-json (so the
+/// claude stream helpers parse it) but with Kimi's REAL CLI flags (`kimi --help`
+/// v0.18): `-p <prompt> --output-format stream-json <permission flag> [--model]`.
+/// Resolves the binary via [`resolve_kimi_bin`] and tees to
+/// `kimi.stream-json.ndjson`. Budget/schema/effort/extra-dirs are NOT real kimi
+/// flags — they degrade to harness-owned handling (see
+/// `ProviderCapabilities::kimi_exec`).
 #[allow(clippy::too_many_arguments)]
 fn spawn_kimi_ephemeral(
     session_dir: &Path,
@@ -14277,47 +14316,29 @@ fn spawn_kimi_ephemeral(
         );
         &prompt_with_images
     };
-    let tools = if spec.writable {
-        "Read,Edit,Write,Bash,Grep,Glob"
-    } else {
-        "Read,Grep,Glob"
-    };
-    let mut cmd = Command::new("kimi");
+    let mut cmd = Command::new(resolve_kimi_bin());
     cmd.arg("-p")
         .arg(prompt)
         .arg("--output-format")
         .arg("stream-json")
-        .arg("--verbose")
-        .arg("--permission-mode")
+        // Real Kimi has no `--permission-mode <value>` or per-tool allowlist; it
+        // exposes standalone permission flags. Map writable/read-only onto the
+        // closest one. Tool scoping is not CLI-enforceable (capabilities() marks it
+        // off); harness-owned worktree isolation still bounds a writable node.
         .arg(KimiAdapter.map_permission(if spec.writable {
             LaunchPermission::WorkspaceWrite
         } else {
             LaunchPermission::ReadOnly
         }))
-        .arg("--allowedTools")
-        .arg(tools)
         .current_dir(cwd);
-    if let Some(budget) = max_budget_usd {
-        if budget > 0.0 {
-            cmd.arg("--max-budget-usd").arg(format!("{budget}"));
-        }
-    }
-    // Native schema enforcement (claude-shaped `--json-schema`) IF the live CLI
-    // supports it (S3-spike TBD). When it doesn't, the caller's text-extract
-    // fallback covers schema-mode nodes, so passing the flag is harmless to a
-    // shim and lossless to the degraded path.
-    if let Some(schema) = schema_json {
-        cmd.arg("--json-schema").arg(schema.to_string());
-    }
     if let Some(model) = model {
         cmd.arg("--model").arg(model);
     }
-    if let Some(effort) = effort {
-        cmd.arg("--effort").arg(effort);
-    }
-    for path in &spec.add_dir {
-        cmd.arg("--add-dir").arg(path);
-    }
+    // `--max-budget-usd`, `--json-schema`, `--effort`, and `--add-dir` are NOT real
+    // kimi flags (verified `kimi --help` v0.18): budget is enforced by the harness
+    // timeout; schema-mode nodes degrade to the caller's text-extract fallback
+    // (capabilities().schema = false); effort/extra-dirs have no kimi equivalent.
+    let _ = (schema_json, effort, max_budget_usd);
 
     let run = run_ndjson_child(
         cmd,
@@ -14366,12 +14387,18 @@ fn start_kimi_runtime(store: &HarnessStore, member: &AgentMember) -> CliResult<A
     let runtime_dir = store.root().join("runtimes").join(&member.id);
     fs::create_dir_all(&runtime_dir)?;
     let endpoint = format!("kimi-runtime://{}", runtime_dir.display());
-    let process_alive = Command::new("which")
-        .arg("kimi")
-        .output()
-        .ok()
-        .map(|output| output.status.success())
-        .unwrap_or(false);
+    // Probe the same binary spawn_kimi_ephemeral would resolve.
+    let bin = resolve_kimi_bin();
+    let process_alive = if bin.contains('/') {
+        Path::new(&bin).is_file()
+    } else {
+        Command::new("which")
+            .arg(&bin)
+            .output()
+            .ok()
+            .map(|output| output.status.success())
+            .unwrap_or(false)
+    };
     Ok(AgentRuntime {
         id: runtime_id,
         agent_member_id: member.id.clone(),
@@ -14394,9 +14421,12 @@ fn start_kimi_runtime(store: &HarnessStore, member: &AgentMember) -> CliResult<A
     })
 }
 
-/// Spawn `kimi -p --output-format stream-json --verbose` for one member delivery
-/// and parse the claude-shaped NDJSON. Mirrors [`run_claude_exec_delivery_real`]
-/// with the `kimi` binary.
+/// Spawn `kimi -p --output-format stream-json` (real kimi flags) for one member
+/// delivery and parse the claude-shaped NDJSON. Mirrors
+/// [`run_claude_exec_delivery_real`] but on Kimi's CLI surface: the developer
+/// instructions are folded into the prompt (no `--append-system-prompt`), resume
+/// uses `-S/--session`, and claude-only flags (`--verbose` / `--permission-mode` /
+/// `--allowedTools` / `--json-schema` / `--mcp-config` / `--add-dir`) are dropped.
 fn run_kimi_exec_delivery_real(
     session_dir: &Path,
     member: &AgentMember,
@@ -14416,34 +14446,32 @@ fn run_kimi_exec_delivery_real(
     let cwd = delivery_worker_cwd(member, project);
     let spec = build_launch_spec(member, message);
 
-    let mut cmd = Command::new("kimi");
+    // Kimi has no `--append-system-prompt`; fold the developer instructions into
+    // the prompt text (a leading system block, which claude-shaped models honor).
+    let prompt_text = if system_prompt.is_empty() {
+        message_content
+    } else {
+        format!("{system_prompt}\n\n{message_content}")
+    };
+
+    let mut cmd = Command::new(resolve_kimi_bin());
     cmd.arg("-p")
-        .arg(&message_content)
+        .arg(&prompt_text)
         .arg("--output-format")
         .arg("stream-json")
-        .arg("--verbose");
-    if let Some(resume_id) = &spec.resume {
-        cmd.arg("--resume").arg(resume_id);
-    }
-    if !system_prompt.is_empty() {
-        cmd.arg("--append-system-prompt").arg(&system_prompt);
-    }
-    apply_claude_model_and_effort_args(&mut cmd, &spec);
-    apply_claude_output_schema_arg(&mut cmd, &spec);
-    cmd.arg("--permission-mode")
+        // Standalone permission flag (no `--permission-mode <value>` in real kimi).
         .arg(KimiAdapter.map_permission(spec.permission));
-    if !spec.tools.is_empty() {
-        cmd.arg("--allowedTools").arg(spec.tools.join(","));
+    // Resume uses `-S/--session <id>` in real kimi (not claude's `--resume`).
+    if let Some(resume_id) = &spec.resume {
+        cmd.arg("--session").arg(resume_id);
     }
-    if let Some(mcp_path) = write_temp_mcp_config(spec.mcp.as_ref())? {
-        cmd.arg("--mcp-config").arg(&mcp_path);
+    if let Some(model) = &spec.model {
+        cmd.arg("--model").arg(model);
     }
-    if let Some(workspace) = &spec.workspace {
-        cmd.arg("--add-dir").arg(workspace);
-    }
-    for root in &spec.writable_roots {
-        cmd.arg("--add-dir").arg(root);
-    }
+    // `--effort` / `--json-schema` / `--allowedTools` / `--mcp-config` / `--add-dir`
+    // are not real kimi flags; schema/mcp/cost degrade to the harness fallbacks
+    // (capabilities().{schema,mcp,cost} = false) and writable roots are bounded by
+    // the harness-owned worktree, not a CLI flag.
     cmd.current_dir(&cwd);
 
     let delivery_id = session_dir
@@ -14609,25 +14637,24 @@ impl ProviderAdapter for KimiAdapter {
     }
 
     fn map_permission(&self, perm: LaunchPermission) -> &'static str {
-        // Assumed claude-shaped permission vocabulary (S3-spike TBD). If the real
-        // `kimi` CLI has no sandbox concept, harness-owned worktree isolation
-        // still contains a writable node regardless of this flag.
+        // Unlike codex (`--sandbox <value>`) and claude (`--permission-mode
+        // <value>`), real Kimi Code exposes STANDALONE permission flags (`kimi
+        // --help` v0.18): `--plan` (read-only/plan), `--auto` (auto-approve edits),
+        // `-y/--yolo` (approve everything). This returns the standalone flag itself
+        // — callers push it as a single arg, not as a `--permission-mode` value.
         match perm {
-            LaunchPermission::ReadOnly => "plan",
-            LaunchPermission::WorkspaceWrite => "acceptEdits",
-            LaunchPermission::FullAccess => "bypassPermissions",
+            LaunchPermission::ReadOnly => "--plan",
+            LaunchPermission::WorkspaceWrite => "--auto",
+            LaunchPermission::FullAccess => "--yolo",
         }
     }
 
     fn recorded_args(&self, resume_id: Option<&str>) -> Vec<String> {
-        let mut args = vec![
-            "-p".into(),
-            "--output-format".into(),
-            "stream-json".into(),
-            "--verbose".into(),
-        ];
+        // Mirrors the real kimi invocation surface (no `--verbose`; resume is
+        // `-S/--session <id>`).
+        let mut args = vec!["-p".into(), "--output-format".into(), "stream-json".into()];
         if let Some(id) = resume_id {
-            args.push("--resume".into());
+            args.push("--session".into());
             args.push(id.into());
         }
         args
