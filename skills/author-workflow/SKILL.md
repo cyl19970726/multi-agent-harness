@@ -717,6 +717,10 @@ Pick by how live you need it:
   the var is unset; best-effort (a hook error is logged, never fails the run); keep
   the hook quick (the run waits for it) or self-detach with a trailing `&`. E.g.
   `HARNESS_WORKFLOW_ON_COMPLETE='harness message send --from lead --content "wf $HARNESS_RUN_ID $HARNESS_RUN_STATUS"' harness workflow run-script prog.star &`.
+  Scope: this hook is for `run-script` (and the stale-run reaper). `goal run-phases`
+  (the [Goal layer](#goal-layer-a-second-front-end-onto-this-runtime)) is a blocking
+  foreground orchestrator — its completion signal is the command RETURNING — so it
+  is not covered by this hook.
 
 ## Permission Note
 
