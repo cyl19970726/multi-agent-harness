@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Acceptance: a fresh user can INSTALL the author-workflow skill and RUN the
-# harness. Models the external-user journey with checkable outcomes; exits
-# nonzero on any failed check.
+# Acceptance: a fresh user can INSTALL the authoring skill kit (author-workflow
+# + author-goal + author-planner) and RUN the harness. Models the external-user
+# journey with checkable outcomes; exits nonzero on any failed check.
 #
 #   scripts/acceptance-skill-install.sh            # local: install + build + serve + run
 #   scripts/acceptance-skill-install.sh --remote   # also: raw URL 200 + anonymous public clone
@@ -27,7 +27,7 @@ SV=""
 cleanup() { [ -n "$SV" ] && { kill "$SV" 2>/dev/null; wait "$SV" 2>/dev/null; }; rm -rf "$WORK"; }
 trap cleanup EXIT
 
-echo "== A1: install the skill into a clean project (from this repo) =="
+echo "== A1: install the skill kit into a clean project (from this repo) =="
 PROJ="$WORK/proj"
 mkdir -p "$PROJ"
 if bash "$REPO_ROOT/scripts/install-skill.sh" --agent both --dest "$PROJ" >/dev/null 2>&1; then
@@ -35,17 +35,24 @@ if bash "$REPO_ROOT/scripts/install-skill.sh" --agent both --dest "$PROJ" >/dev/
 else
   bad "install-skill.sh exited nonzero"
 fi
-for d in .claude/skills .agents/skills; do
-  if [ -f "$PROJ/$d/author-workflow/SKILL.md" ] && [ ! -L "$PROJ/$d/author-workflow" ]; then
-    ok "$d/author-workflow installed as real files"
-  else
-    bad "$d/author-workflow missing or a symlink"
-  fi
+# All three shipped skills must land as REAL files (never a symlink) under BOTH
+# the Claude (.claude/skills) and Codex (.agents/skills) roots, each with its
+# SKILL.md and Codex agents/openai.yaml.
+for name in author-workflow author-goal author-planner; do
+  for d in .claude/skills .agents/skills; do
+    if [ -f "$PROJ/$d/$name/SKILL.md" ] && [ ! -L "$PROJ/$d/$name" ]; then
+      ok "$d/$name installed as real files"
+    else
+      bad "$d/$name missing or a symlink"
+    fi
+    [ -f "$PROJ/$d/$name/agents/openai.yaml" ] \
+      && ok "$d/$name/agents/openai.yaml copied (Codex config)" \
+      || bad "$d/$name/agents/openai.yaml missing"
+  done
 done
+# author-workflow additionally ships runnable examples/.
 [ "$(ls "$PROJ/.claude/skills/author-workflow/examples" 2>/dev/null | wc -l | tr -d ' ')" -ge 3 ] \
-  && ok "examples copied" || bad "examples missing"
-[ -f "$PROJ/.claude/skills/author-workflow/agents/openai.yaml" ] \
-  && ok "agents/openai.yaml copied (Codex config)" || bad "openai.yaml missing"
+  && ok "author-workflow examples copied" || bad "author-workflow examples missing"
 
 echo "== A2: build the harness binary =="
 BIN="$REPO_ROOT/target/debug/harness"

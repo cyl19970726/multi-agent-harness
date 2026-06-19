@@ -1,24 +1,31 @@
 #!/usr/bin/env bash
-# Install the multi-agent-harness `author-workflow` skill into a target project
+# Install the multi-agent-harness authoring skill kit into a target project
 # (or your user-level library) for Claude Code and/or Codex.
+#
+# The kit ships three skills: author-workflow, author-goal, author-planner.
 #
 #   Claude Code reads skills from   <base>/.claude/skills/<name>/
 #   Codex      reads skills from     <base>/.agents/skills/<name>/
 #
 # Usage:
-#   scripts/install-skill.sh [--agent claude|codex|both] [--scope project|user] [--dest <base-dir>]
+#   scripts/install-skill.sh [--agent claude|codex|both] [--scope project|user] \
+#       [--dest <base-dir>] [--skill <name> ...]
 #
 #   --agent   which agent's skill dir to install into       (default: claude)
 #   --scope   project = <cwd>, user = $HOME                  (default: project)
 #   --dest    explicit base dir (overrides --scope)
+#   --skill   install only this skill (repeatable; picks a   (default: all three)
+#             subset of author-workflow author-goal author-planner)
 #   --repo    git url to clone when run standalone           (default: this project)
 #   --ref     git ref to clone                               (default: master)
 #
-# Run from a clone (copies the local skill) OR standalone via curl:
+# Run from a clone (copies the local skills) OR standalone via curl:
 #   curl -fsSL https://raw.githubusercontent.com/cyl19970726/multi-agent-harness/master/scripts/install-skill.sh | bash -s -- --agent both
 set -euo pipefail
 
-SKILL_NAME="author-workflow"
+# All shipped skills; --skill narrows this to a subset.
+DEFAULT_SKILLS="author-workflow author-goal author-planner"
+SKILLS=""
 AGENT="claude"
 SCOPE="project"
 DEST=""
@@ -30,12 +37,16 @@ while [ $# -gt 0 ]; do
     --agent) AGENT="$2"; shift 2 ;;
     --scope) SCOPE="$2"; shift 2 ;;
     --dest)  DEST="$2"; shift 2 ;;
+    --skill) SKILLS="${SKILLS:+$SKILLS }$2"; shift 2 ;;
     --repo)  REPO="$2"; shift 2 ;;
     --ref)   REF="$2"; shift 2 ;;
-    -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,28p' "$0"; exit 0 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
+
+# Default to the whole kit when no --skill was given.
+[ -n "$SKILLS" ] || SKILLS="$DEFAULT_SKILLS"
 
 # Base dir the skill dirs are created under.
 if [ -z "$DEST" ]; then
@@ -46,37 +57,43 @@ if [ -z "$DEST" ]; then
   esac
 fi
 
-# Locate the source skill: prefer a local clone (this script lives in scripts/,
-# the skill in skills/); otherwise clone the repo to a temp dir.
+# Locate the source skills root: prefer a local clone (this script lives in
+# scripts/, the skills in skills/); otherwise clone the repo to a temp dir.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || true)"
-SRC=""
+SKILLS_ROOT=""
 TMP=""
-if [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/../skills/$SKILL_NAME/SKILL.md" ]; then
-  SRC="$(cd "$SCRIPT_DIR/../skills/$SKILL_NAME" && pwd)"
+if [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/../skills/author-workflow/SKILL.md" ]; then
+  SKILLS_ROOT="$(cd "$SCRIPT_DIR/../skills" && pwd)"
 else
   TMP="$(mktemp -d)"
   trap 'rm -rf "$TMP"' EXIT
-  echo "fetching $SKILL_NAME from $REPO ($REF)…"
+  echo "fetching skills from $REPO ($REF)…"
   git clone --depth 1 --branch "$REF" "$REPO" "$TMP/repo" >/dev/null 2>&1
-  SRC="$TMP/repo/skills/$SKILL_NAME"
+  SKILLS_ROOT="$TMP/repo/skills"
 fi
-[ -f "$SRC/SKILL.md" ] || { echo "could not find the skill source at $SRC" >&2; exit 1; }
 
+# Copy one skill's real files into <base>/<subdir>/<name>. Deref the repo
+# symlink (.agents/skills/<name> may be a symlink) with cp -RL so the install is
+# always real files, never a symlink.
 install_into() {
-  local subdir="$1" label="$2"
-  local target="$DEST/$subdir/$SKILL_NAME"
+  local subdir="$1" label="$2" name="$3"
+  local src="$SKILLS_ROOT/$name"
+  local target="$DEST/$subdir/$name"
+  [ -f "$src/SKILL.md" ] || { echo "could not find the skill source at $src" >&2; exit 1; }
   mkdir -p "$(dirname "$target")"
   rm -rf "$target"
-  cp -R "$SRC" "$target"
-  echo "✓ installed $SKILL_NAME for $label → $target"
+  cp -RL "$src" "$target"
+  echo "✓ installed $name for $label → $target"
 }
 
-case "$AGENT" in
-  claude) install_into ".claude/skills" "Claude Code" ;;
-  codex)  install_into ".agents/skills" "Codex" ;;
-  both)   install_into ".claude/skills" "Claude Code"; install_into ".agents/skills" "Codex" ;;
-  *) echo "--agent must be claude|codex|both" >&2; exit 2 ;;
-esac
+for name in $SKILLS; do
+  case "$AGENT" in
+    claude) install_into ".claude/skills" "Claude Code" "$name" ;;
+    codex)  install_into ".agents/skills" "Codex" "$name" ;;
+    both)   install_into ".claude/skills" "Claude Code" "$name"; install_into ".agents/skills" "Codex" "$name" ;;
+    *) echo "--agent must be claude|codex|both" >&2; exit 2 ;;
+  esac
+done
 
 echo ""
 echo "Next: build + start the harness service, then ask your agent to author a workflow."
