@@ -18,6 +18,30 @@
         "source": "github",
         "repo": "cyl19970726/multi-agent-harness"
       }
+    },
+    {
+      "name": "author-goal",
+      "displayName": "Author Goal",
+      "description": "Create or advance a Goal in the harness: write the description / design / real-acceptance markdown, accumulate a knowledge ledger, run multi-agent exploration, and move the goal through its lifecycle (manual gated stages and the knowledge-driven phased model executed by `harness goal run-phases`).",
+      "version": "0.1.0",
+      "category": "orchestration",
+      "keywords": ["goal", "orchestration", "lifecycle", "multi-agent"],
+      "source": {
+        "source": "github",
+        "repo": "cyl19970726/multi-agent-harness"
+      }
+    },
+    {
+      "name": "author-planner",
+      "displayName": "Author Planner",
+      "description": "Decompose an explored Goal into an executable plan: an ordered list of sequential phases, each owning a task DAG where tasks with disjoint owned_paths run in parallel. Covers `harness goal plan`, the phase/task shape it produces, and how the plan feeds the phase→Starlark compiler and `goal run-phases` orchestrator.",
+      "version": "0.1.0",
+      "category": "orchestration",
+      "keywords": ["planner", "phases", "task-graph", "orchestration", "multi-agent"],
+      "source": {
+        "source": "github",
+        "repo": "cyl19970726/multi-agent-harness"
+      }
     }
   ]
 }

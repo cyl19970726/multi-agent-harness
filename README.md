@@ -34,16 +34,18 @@ checks.
 
 ## Quickstart
 
-Install the `author-workflow` skill into your agent, start the harness service,
-then ask your agent to author and run a workflow. Full walkthrough:
+Install the authoring skill kit — `author-workflow` + `author-goal` +
+`author-planner` — into your agent, start the harness service, then ask your
+agent to author and run a goal/plan/workflow. Full walkthrough:
 **[docs/getting-started.md](docs/getting-started.md)**.
 
 ```bash
-# 1. install the skill (Claude Code + Codex)
+# 1. install the skill kit (Claude Code + Codex) — all three skills
 scripts/install-skill.sh --agent both
-#    or standalone:  curl -fsSL .../scripts/install-skill.sh | bash -s -- --agent both
-#    or:             npx skills add cyl19970726/multi-agent-harness --skill author-workflow --agent codex
-#    or (Claude):    /plugin marketplace add cyl19970726/multi-agent-harness && /plugin install author-workflow
+#    one skill only:  scripts/install-skill.sh --agent both --skill author-workflow
+#    or standalone:   curl -fsSL .../scripts/install-skill.sh | bash -s -- --agent both
+#    or:              npx skills add cyl19970726/multi-agent-harness --skill author-workflow --agent codex
+#    or (Claude):     /plugin marketplace add cyl19970726/multi-agent-harness && /plugin install author-workflow
 
 # 2. start the service
 cargo build -p harness-cli
@@ -76,7 +78,7 @@ reserved GLOBAL `~/` project. Register with `harness init`, switch with
 | `schemas/` | Stable JSON schemas shared by API, CLI, adapters, and Dashboard. |
 | `crates/` | Rust backend crates. |
 | `apps/agent-dashboard` | React/Vite Agent Dashboard control-plane app and static build output. |
-| `skills/` | Shipped, installable skills (the `author-workflow` deliverable). |
+| `skills/` | Shipped, installable skills (the author-workflow + author-goal + author-planner kit). |
 | `.agents/skills/` | This repo's internal runtime skills (auto-discovered by Codex / harness-spawned workers). |
 | `examples/adapters/earning-engine` | First project adapter example. |
 
@@ -106,12 +108,23 @@ reserved GLOBAL `~/` project. Register with `harness init`, switch with
 
 ## Skills
 
-**Shipped (install into your own project — see the Quickstart):**
+**Shipped (install the kit into your own project — see the Quickstart):**
 
+- [**Author goal**](skills/author-goal/SKILL.md): create or advance a Goal —
+  write its description / design / real-acceptance markdown, accumulate a
+  knowledge ledger, run multi-agent exploration, and move it through its
+  lifecycle (manual gated stages or the knowledge-driven phased model run by
+  `harness goal run-phases`).
+- [**Author planner**](skills/author-planner/SKILL.md): decompose an explored
+  Goal into an executable plan — ordered phases, each owning a task DAG where
+  tasks with disjoint `owned_paths` run in parallel — via `harness goal plan`,
+  feeding the phase→Starlark compiler and `goal run-phases` orchestrator.
 - [**Author workflow**](skills/author-workflow/SKILL.md): teach a shell-capable
   agent (Claude Code / Codex) to author a Starlark multi-agent workflow and run
-  it with `harness workflow run-script`. Install with
-  `scripts/install-skill.sh --agent both`.
+  it with `harness workflow run-script`.
+
+Install the whole kit with `scripts/install-skill.sh --agent both` (add
+`--skill <name>` to pick a subset).
 
 **Internal (this repo's own agents use these via `.agents/skills/`):**
 
