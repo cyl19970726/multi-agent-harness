@@ -24,6 +24,7 @@ Read only what the task needs:
 - Core module purpose and boundaries: `docs/core-modules.md`
 - Data model source-of-truth rules: `docs/data-model.md`
 - Provider-neutral runtime: `docs/agent-runtime.md`
+- Multi-project store and project switching: `docs/multi-project.md`
 - Dashboard information architecture: `docs/dashboard.md`
 - Git/PR workflow: `docs/workflow-git-pr.md`
 - Goal learning loop: `docs/goal-learning-loop.md`
@@ -56,6 +57,13 @@ Read only what the task needs:
 - A task assignment is not proven by directly setting `assignee_agent_id`.
   Create or reference the task, send `Message(kind=task)`, then treat task and
   member assignment state as projections of that delivered message.
+- Tasks attach to a goal phase via `phase_id` — the single validated join key
+  (the legacy free-text `Task.phase` field was retired). The dashboard groups
+  tasks under Goal -> phase -> [Task Graph | Task Kanban], not a flat board.
+- Goals, tasks, and stores are project-scoped: each project has its own store
+  under `~/.harness/projects/<id>/` (the `store_root`, distinct from the
+  project's `project_root` working tree). Use `harness project add|list|switch|
+  migrate` to register and select projects rather than juggling `--store`.
 - Materialize messages into `Task`, `Report`, `Claim`, `Blocker`, or
   `Decision` before using them for gates.
 - Keep provider chat below message/report artifacts in the trust order.
@@ -74,7 +82,7 @@ standing team observes project state
   -> proposed goal / blocker / graph change
   -> Lead accepts, rejects, prioritizes, or requests evidence
 Goal
-  -> GoalDesign
+  -> design_md (synthesized from the knowledge[] ledger) + acceptance_md
   -> scenario understanding
   -> scenario workflow
   -> infra gaps: CLI + skill + adapter + dashboard + CI/CD
@@ -88,6 +96,12 @@ Goal
   -> GoalCase when reusable
   -> follow-up tasks or proposed next goals
 ```
+
+A `Goal` now carries `design_md` (the synthesized design — key problems first,
+then approach — built from the append-only `knowledge[]` ledger) and
+`acceptance_md` (the real acceptance, written BEFORE work). Together these
+absorb the legacy `GoalDesign` field soup; `GoalDesign` survives only as a
+back-compat typed record, not the authoring surface.
 
 Write down the result in tasks, messages, evidence, or decisions. Do not rely
 on hidden chat context.
@@ -105,6 +119,33 @@ task created
 
 If a direct store update bypasses this order, record it as a workflow defect
 and create a follow-up task to move the behavior behind CLI/API validation.
+
+### Phased goal execution
+
+A goal is executed as agent-planned, SEQUENTIAL `phases[]`, each owning a task
+DAG, gated by the phase's `acceptance`. The append-only `knowledge[]` ledger is
+the source of truth for progress; `goal design-synthesize` rebuilds `design_md`
+from it; and once `phases[]` is non-empty the goal's `stage` is a DERIVED
+projection of the phases (forward-only), not a field you set by hand.
+
+The command seam:
+
+- `harness goal plan <goal>` — a planner agent decomposes `design_md` +
+  `acceptance_md` into the phase/task DAG (capped replan loop).
+- `harness goal run-phases <goal>` — execute the phases in order; `--resume`
+  re-enters a `Running` checkpoint and reuses succeeded leaves, and
+  `--max-phase-retries <n>` bounds per-phase retries.
+- `harness goal reconcile-phase` — true up a phase whose work landed out of
+  band.
+- `harness goal finalize [--force]` — close the goal; the last phase/task
+  finishing already auto-finalizes (the derivation runs on every completion
+  seam), so `finalize` is the explicit/forced path.
+
+Phased execution is workflow-backed: `goal run-phases` compiles each phase's
+task DAG to a `.star` program (`compile_phase_to_starlark`) and runs it on the
+SAME runtime the `author-workflow` skill documents — and a passing phase's
+writable diffs LAND on the branch (per-phase landing commit). See the
+`author-workflow` skill for the runtime, flags, and structured-output contract.
 
 If the Lead must do a blocking step locally, record it as a `leader-local
 exception` with the reason, evidence, and follow-up task that should turn the

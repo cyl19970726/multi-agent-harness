@@ -49,8 +49,15 @@ last_verified_with
 reorg_trigger
 ```
 
-CI can start by warning on stale `review_after`, missing owner roles, broken
-`depends_on`, and large docs without a split reason. Promote warnings to
+In this repository the canonical implementation is `docs/registry.json` (schema
+`agent_harness.docs_registry.v1`), enforced by
+`scripts/check-doc-governance.mjs`, which requires **camelCase** keys
+(`ownerRole`, `canonicalFor`, `dependsOn`, `machineConsumers`, `reviewAfter`,
+…). Mirror that shape when emitting registry entries; the snake_case names above
+are illustrative only.
+
+CI can start by warning on stale `reviewAfter`, missing owner roles, broken
+`dependsOn`, and large docs without a split reason. Promote warnings to
 blockers only when the repo relies on them for release or agent operations.
 
 ## Reorg Protocol

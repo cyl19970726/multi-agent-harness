@@ -203,7 +203,20 @@ that still wants an isolated checkout); `writable=True` implies it.
 steps** — the throwaway worktree is created with `git worktree add`. In a non-git
 directory such a step fails fast with an actionable error. Either run the workflow
 from a git repo (`git init`), or keep the step READ-ONLY and retrieve its produced
-text with `harness workflow get-output <run_id> --step <label>`.
+text with `harness workflow get-output <run_id> --step <label>`. Under a
+project-switching `serve`, the worktree base / worker cwd is the run's selected
+project root (#147), not necessarily where the binary launched.
+
+## Goal layer: a second front-end onto this runtime
+
+`goal run-phases` is a second front-end onto this exact runtime. It compiles each
+phase's task DAG to a `.star` program (`compile_phase_to_starlark`) and runs it on
+the same `run-script` runtime documented here. The one behavioral difference is
+landing: standalone `run-script` writable worktrees are discarded (the "never
+auto-merged" rule above holds for `run-script`), but under the goal layer a
+passing phase's writable diffs LAND on the branch via a per-phase landing commit.
+So the trap — "writable edits always vanish" — does not apply to phased goal
+execution.
 
 ## Structured Output: the foundation
 
@@ -601,6 +614,8 @@ Useful flags:
 | `--max-budget-usd <amt>` | Per-run spend ceiling; once cumulative cost reaches it, further leaves short-circuit into failed `budget` steps (also settable via `workflow(budget_usd=…)`). |
 | `--resume <prior_run_id>` | Re-run the SAME program reusing the prior run's SUCCEEDED leaves (no re-spend); fails if the script changed. |
 | `--trace durable\|live` | Retain the heavy per-step turn-event trace (`durable`, default) or stream-only (`live`). |
+| `--model <m>` | Run-wide default model; a per-call `model=` on an `agent()` overrides it. |
+| `--effort <e>` | Run-wide default reasoning effort; a per-call `effort=` on an `agent()` overrides it. |
 | `--progress` | Stream a compact NDJSON line per step (phase, label, `running`/`ok`/`failed`) to STDERR as the run executes — the phase-by-phase timeline — while STDOUT stays the single final JSON. |
 
 The command prints the journaled run as JSON to STDOUT, including the new `run`
