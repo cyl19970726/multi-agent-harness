@@ -73,7 +73,8 @@ This is a concrete evaluator case for this repository. Use it to calibrate
 quality, not as a generic object model for other projects.
 
 ```text
-base_commit: 53c6ae2 Rework docs around critical mechanisms
+base_commit: a clean pre-reorg worktree (before docs were reorganized around
+critical mechanisms)
 final_acceptance: this project can use persistent AgentMembers, task graph,
 message delivery, evidence, review, decision, and Dashboard visibility to
 develop itself.
