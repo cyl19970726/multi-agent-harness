@@ -10,25 +10,24 @@
 //!         -> spawn_kimi_ephemeral   (spawns a `kimi` CLI by BARE NAME)
 //!
 //! A fake `kimi` shim is placed first on PATH so the bare-name spawn intercepts
-//! it. The shim emits a claude-shaped stream-json success stream (a `system`
-//! init + an `assistant` message + a terminal `result`), which is exactly the
-//! wire format KimiAdapter assumes, so the phase's leaf SUCCEEDS deterministically
-//! and the run is journaled with `provider="kimi"`.
+//! it. The shim emits the REAL Kimi `-p --output-format stream-json` stream shape
+//! (verified live, v0.18): a flat `{"role":"assistant","content":"..."}` frame plus
+//! a `{"type":"session.resume_hint","session_id":...}` meta frame — NOT claude-
+//! shaped. So the leaf SUCCEEDS via the kimi-native parsers and the run is
+//! journaled with `provider="kimi"` and the assistant reply text.
 //!
 //! Asserting:
 //!   1. the fake `kimi` shim actually RAN (it recorded its cwd) — proving the
 //!      bare-name spawn reached a `kimi` binary, not codex/claude;
 //!   2. a journaled WorkflowStep carries `provider="kimi"` — proving the
 //!      Task.executor -> compile -> registry -> spawn chain end-to-end;
-//!   3. the orchestration did NOT fail.
-//!   4. the DURABLE per-session AgentEvent trace is attributed to provider="kimi"
-//!      and NOT misattributed to provider="claude". Kimi is claude-shaped on the
-//!      wire and reuses the claude reducer; this guards that the reducer is told
-//!      which provider it is reducing for, so trace/dashboard queries that group
-//!      by AgentEvent.provider don't credit Kimi turns to claude.
+//!   3. the orchestration did NOT fail;
+//!   4. the assistant reply text from the REAL kimi stream shape is captured in a
+//!      journaled WorkflowStep — proving the kimi-native parser (not the claude
+//!      parser) extracted it end-to-end. A claude-parser reuse would lose it.
 //!
-//! NB: this proves the PLUMBING only. The real `kimi` CLI flags + stream format
-//! are an operator/S3-spike concern and are deliberately out of scope here.
+//! NB: this proves the PLUMBING + stream parsing deterministically. The LIVE
+//! authenticated run (post `kimi login`) is the operator's acceptance step.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -37,22 +36,22 @@ use std::process::Command;
 mod harness_env;
 use harness_env::TempHome;
 
-/// Install a fake `kimi` binary (first on PATH) that records its cwd and emits a
-/// claude-shaped stream-json SUCCESS stream so `infer_claude_session_status`
-/// returns `Succeeded`. Returns the bin dir to prepend to PATH.
+/// Install a fake `kimi` binary (first on PATH) that records its cwd and emits the
+/// REAL Kimi `-p --output-format stream-json` shape (verified live, v0.18): a flat
+/// assistant frame + a `session.resume_hint` meta frame. Returns the bin dir to
+/// prepend to PATH.
 fn install_fake_kimi(base: &Path, cwd_marker: &Path) -> PathBuf {
     let bin_dir = base.join("fakebin-kimi");
     fs::create_dir_all(&bin_dir).expect("mk fake kimi bin dir");
     let shim_path = bin_dir.join("kimi");
-    // POSIX shell shim. `pwd -P` records the spawn cwd. The three NDJSON frames
-    // are the claude-shaped success shape KimiAdapter parses: system init,
-    // assistant message, terminal result.
+    // POSIX shell shim. `pwd -P` records the spawn cwd. The two NDJSON frames are
+    // the REAL kimi-native success shape the kimi-native parsers consume: a flat
+    // {role:assistant,content} reply frame + a session.resume_hint meta frame.
     let marker = cwd_marker.display().to_string();
     let script = format!(
         "#!/bin/sh\npwd -P > '{marker}'\n\
-         printf '%s\\n' '{{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"kimi-sess-1\",\"model\":\"kimi-for-coding\"}}'\n\
-         printf '%s\\n' '{{\"type\":\"assistant\",\"message\":{{\"content\":[{{\"type\":\"text\",\"text\":\"pong from fake kimi\"}}]}}}}'\n\
-         printf '%s\\n' '{{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"pong from fake kimi\",\"usage\":{{\"input_tokens\":3,\"output_tokens\":4}}}}'\n\
+         printf '%s\\n' '{{\"role\":\"assistant\",\"content\":\"pong from fake kimi\"}}'\n\
+         printf '%s\\n' '{{\"role\":\"meta\",\"type\":\"session.resume_hint\",\"session_id\":\"session_fake-1\",\"command\":\"kimi -r session_fake-1\",\"content\":\"To resume this session: kimi -r session_fake-1\"}}'\n\
          exit 0\n",
         marker = marker.replace('\'', "'\\''"),
     );
@@ -357,5 +356,19 @@ fn task_executor_kimi_compiles_dispatches_and_spawns_a_kimi_by_name() {
             .map(|l| l.as_str())
             .collect::<Vec<_>>()
             .join("\n")
+    );
+
+    // (4) The assistant reply text from the REAL kimi stream shape was captured in a
+    // journaled WorkflowStep (output_summary), proving the kimi-native parser — not
+    // the claude parser — extracted it end-to-end. A claude-parser reuse on this
+    // flat `{role,content}` shape would yield an empty reply and fail this.
+    let reply_captured = step_lines
+        .iter()
+        .any(|line| line.contains("pong from fake kimi"));
+    assert!(
+        reply_captured,
+        "no journaled WorkflowStep captured the kimi assistant reply \"pong from fake kimi\" \
+         (kimi-native reply parser did not run end-to-end); steps:\n{}",
+        step_lines.join("\n")
     );
 }
