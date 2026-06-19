@@ -103,7 +103,17 @@ Rules every call obeys:
   control-flow leaves on codex or claude.
 - `prompt`, `label`, and `phase` are non-empty strings; optional `model` (any
   non-empty string) overrides the provider's default model — route a CHEAP model
-  to read-only verify/review steps and the strong model to the builder.
+  to read-only verify/review steps and the strong model to the builder. The value
+  is passed VERBATIM to the provider CLI and is NOT validated by the harness (an
+  unknown name is rejected by the provider), and the supported set is NOT
+  hardcoded — it changes as each provider ships new models. Don't rely on a
+  baked-in list; discover the current models from the provider's own CLI:
+  - codex — `codex --help` (the `-m/--model` flag) plus `~/.codex/config.toml`
+    (`model`, `[profiles.*]`, `[model_providers.*]`) for what's configured.
+  - claude — `claude --help`; `--model` takes a latest-model ALIAS
+    (e.g. `sonnet` / `opus` / `haiku`) or a full model id.
+  - kimi — `kimi provider list` (configured providers, model aliases, and the
+    default) and `kimi provider catalog` to discover/import more.
 - `effort` overrides the worker's reasoning effort, passed through verbatim to the
   provider — codex accepts `minimal|low|medium|high` (mapped to `-c
   model_reasoning_effort=…`), claude accepts `low|medium|high|xhigh|max` (mapped to
@@ -675,6 +685,29 @@ add **`--progress`** (NDJSON step events to stderr, which you still see in the
 tool result) and/or run it in the **background** and poll `harness dashboard
 snapshot` (the journal updates per step live). End any answer-producing program
 with `output(...)` so the answer is one field, not a step picked by label.
+
+### Observe a run: status + live progress
+
+Pick by how live you need it:
+
+- **Final result (foreground).** The `run-script` call blocks and returns the whole
+  run as its tool result: `run.final_output.result` (the answer), `run.status`
+  (`completed` / `failed`), the `verdict`, and `steps[]` (per-leaf `label`, `phase`,
+  `provider`, `status`, `output_summary`). One call, whole timeline.
+- **By id, any time / any shell.** `harness workflow get-output <run_id>` prints a
+  run's ordered steps + status as JSON — `--text` for just the deliverable text,
+  `--step <label>` to filter to one leaf. The `<run_id>` (`wfrun-…`) is in the
+  run-script output; use this to inspect a run started in the background or another
+  session.
+- **Live, phase-by-phase.** Add `--progress` for one NDJSON line per step
+  (`phase`, `label`, `running` / `ok` / `failed`) on STDERR as it executes, and/or
+  background the run and poll `harness dashboard snapshot` (`workflow_runs` +
+  `workflow_steps` advance per step).
+- **Visual / SSE.** Point a live server at the SAME store
+  (`harness serve --store <path>`) and open the dashboard **Workflows** surface:
+  every run, a per-step timeline (status, provider, `output_summary`), and "drill in"
+  to a step's turn events, updating live over SSE. `--trace durable` (default)
+  retains the per-node trace; `--trace live` is stream-only.
 
 ## Permission Note
 
