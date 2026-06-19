@@ -854,7 +854,7 @@ export interface WorkflowStepFailure {
 export interface WorkflowStepResult {
   phase?: string;
   label?: string;
-  /** The provider that ran this step ("codex" | "claude"). */
+  /** The provider that ran this step ("codex" | "claude" | "kimi"). */
   provider?: string;
   /** Per-node isolation mode this step ran under, if any ("worktree"). */
   isolation?: string | null;

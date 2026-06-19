@@ -1462,11 +1462,12 @@ function relativeTime(ms: number): string {
   return `${Math.floor(h / 24)}d ago`;
 }
 
-/** Parse a "codex"/"claude" role hint from a step label like "audit-codex". */
+/** Parse a "codex"/"claude"/"kimi" role hint from a step label like "audit-codex". */
 function roleHintFromLabel(label: string): string | undefined {
   const lower = label.toLowerCase();
   if (lower.includes("codex")) return "codex";
   if (lower.includes("claude")) return "claude";
+  if (lower.includes("kimi")) return "kimi";
   return undefined;
 }
 
