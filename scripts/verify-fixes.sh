@@ -121,7 +121,8 @@ for t in \
   provider_adapter_capabilities_return_codex_and_claude_presets \
   kimi_parsers_match_the_real_v018_stream_shape \
   kimi_reply_handles_array_content_and_multiple_assistant_frames \
-  kimi_status_failed_on_nonzero_exit_and_stale_when_empty ; do
+  kimi_status_failed_on_nonzero_exit_and_stale_when_empty \
+  completion_hook_fires_with_run_id_and_status_and_is_noop_without_env ; do
   grep -q "test .*$t ... ok" "$TMP/test.log" && ok "unit: $t" || bad "unit: $t did not run/pass"
 done
 # goal-multi-project deterministic regression coverage — one representative test
