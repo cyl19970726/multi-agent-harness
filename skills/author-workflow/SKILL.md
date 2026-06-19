@@ -94,8 +94,13 @@ A program calls these globals (no `import`; they are pre-bound):
 
 Rules every call obeys:
 
-- `provider` is `"codex"` or `"claude"` — the provider whose ephemeral worker
-  runs the leaf. There is NO member binding; the provider drives delivery.
+- `provider` is `"codex"`, `"claude"`, or `"kimi"` — the provider whose ephemeral
+  worker runs the leaf. There is NO member binding; the provider drives delivery.
+  `"kimi"` (Kimi Code) is registry-routed like the others, but its headless `kimi -p`
+  surface is leaner: no native schema / effort / budget flags and a flat reply
+  stream, so `schema=` degrades to text-extraction and `effort=`, token, and cost
+  come back empty. Use it for plain build / verify leaves; keep schema-gated
+  control-flow leaves on codex or claude.
 - `prompt`, `label`, and `phase` are non-empty strings; optional `model` (any
   non-empty string) overrides the provider's default model — route a CHEAP model
   to read-only verify/review steps and the strong model to the builder.
@@ -691,7 +696,7 @@ its permission profile must allow it:
 - [ ] Program declares `workflow(name, design_intent)` once, before the body, with a real (>= ~20 char) design_intent.
 - [ ] Program calls only `workflow`/`agent`/`parallel`/`pipeline`/`phase`/`log`/`verdict`/`output`/`args`; no clock/random/IO assumed.
 - [ ] A program that produces an answer ends with `output(value)` so the caller reads `final_output.result` (a large answer goes through a `schema`'d dict, not capped free text).
-- [ ] Every agent leaf (`agent()` call / `parallel` spec) has a `provider` of `"codex"` or `"claude"`.
+- [ ] Every agent leaf (`agent()` call / `parallel` spec) has a `provider` of `"codex"`, `"claude"`, or `"kimi"` (keep `schema=`-gated control-flow leaves on codex/claude).
 - [ ] Parallel slots that EDIT files use `isolation` `"worktree"`.
 - [ ] Every leaf whose output drives control flow uses `schema={...}` and the script handles a `None` (and, in fan-outs, a non-dict) result.
 - [ ] If the workflow has only one `agent()` call and no branch/fan-out/loop, it is NOT a workflow — collapse it to that one call.
