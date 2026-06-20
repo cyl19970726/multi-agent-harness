@@ -106,6 +106,22 @@ pub enum GoalPhaseStatus {
     Blocked,
 }
 
+/// The class of a phase (built-in-phases). `Execution` is the goal's planned work
+/// — today's only kind and the default, so a legacy row and an agent-planned phase
+/// stay byte-identical. `Building` marks a SYSTEM-PROVIDED phase that the
+/// orchestrator AUTO-APPENDS after a goal's execution phases pass; its body is a
+/// shipped Starlark program named by `GoalPhase.builtin` (NOT a task DAG).
+/// `Remediation` is reserved for the auto-optimise loop (a phase inserted on
+/// failure) and is not produced yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum PhaseKind {
+    #[default]
+    Execution,
+    Remediation,
+    Building,
+}
+
 /// The class of an artifact a phase or task declares it will produce
 /// (goal-phase-artifacts). The default `Code` matches today's implicit behavior
 /// where a phase's deliverable is a code diff. Serialized snake_case so the wire
@@ -216,6 +232,16 @@ pub struct GoalPhase {
     /// for read-only phases and legacy rows. Additive + back-compat.
     #[serde(default)]
     pub landed_commit: Option<String>,
+    /// The phase class (built-in-phases). Defaults to `Execution`, so a legacy row
+    /// and any agent-planned phase are byte-identical to today. `Building` marks a
+    /// system-provided phase auto-appended after acceptance, whose body is the
+    /// shipped Starlark program named by [`GoalPhase::builtin`] — not a task DAG.
+    #[serde(default)]
+    pub kind: PhaseKind,
+    /// For a `Building` phase: the id of the built-in body to run (e.g. "doc-sync").
+    /// `None` for execution/remediation phases (their body is the task DAG).
+    #[serde(default)]
+    pub builtin: Option<String>,
 }
 
 /// Where a `Knowledge` entry came from.
@@ -3000,6 +3026,8 @@ mod tests {
             inputs: Vec::new(),
             retry: None,
             landed_commit: None,
+            kind: PhaseKind::Execution,
+            builtin: None,
         };
         let pj = serde_json::to_string(&phase).expect("ser phase");
         assert!(
@@ -3036,6 +3064,49 @@ mod tests {
     }
 
     #[test]
+    fn phase_kind_defaults_to_execution_and_building_round_trips() {
+        // built-in-phases back-compat: a legacy GoalPhase row (no `kind`/`builtin`)
+        // deserializes to the Execution default with no builtin body — byte-identical
+        // intent to today.
+        let legacy = r#"{
+            "id":"p1","name":"Build","intent":"i","status":"not_started",
+            "created_at":"unix-ms:1"
+        }"#;
+        let p: GoalPhase = serde_json::from_str(legacy).expect("legacy phase loads");
+        assert_eq!(
+            p.kind,
+            PhaseKind::Execution,
+            "legacy phase defaults to Execution"
+        );
+        assert_eq!(p.builtin, None, "legacy phase has no builtin body");
+
+        // A Building phase carrying a builtin id round-trips with a snake_case kind.
+        let building = GoalPhase {
+            id: "doc-sync".into(),
+            name: "Doc sync".into(),
+            intent: "sync docs after acceptance".into(),
+            status: GoalPhaseStatus::NotStarted,
+            acceptance: Some("declared doc/skill updates written; doc gates green".into()),
+            verdict_decision_id: None,
+            created_at: "unix-ms:1".into(),
+            started_at: None,
+            ended_at: None,
+            outputs: Vec::new(),
+            inputs: Vec::new(),
+            retry: None,
+            landed_commit: None,
+            kind: PhaseKind::Building,
+            builtin: Some("doc-sync".into()),
+        };
+        let j = serde_json::to_string(&building).expect("ser building phase");
+        assert!(j.contains("\"kind\":\"building\""), "snake_case kind: {j}");
+        assert_eq!(
+            serde_json::from_str::<GoalPhase>(&j).expect("de building phase"),
+            building
+        );
+    }
+
+    #[test]
     fn goal_with_phases_and_knowledge_round_trips() {
         let mut g = goal_in_stage(GoalStage::Working);
         g.phases = vec![GoalPhase {
@@ -3052,6 +3123,8 @@ mod tests {
             inputs: Vec::new(),
             retry: None,
             landed_commit: None,
+            kind: PhaseKind::Execution,
+            builtin: None,
         }];
         g.knowledge = vec![Knowledge {
             id: "k1".into(),
@@ -3389,6 +3462,8 @@ mod tests {
             inputs: Vec::new(),
             retry: None,
             landed_commit: None,
+            kind: PhaseKind::Execution,
+            builtin: None,
         }
     }
 
