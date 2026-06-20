@@ -87,8 +87,10 @@ harness --store-source goal list
 ```bash
 harness init                          # register + activate the project rooted at cwd
 harness --project <path> init         # register + activate a project by path
+harness project add [<path>] [--switch]  # register a project (default cwd) WITHOUT switching unless --switch
 harness project list                  # enumerate registered projects + _global
-harness project show [--project <id>] # metadata for the (selected) project
+harness project current               # print the currently-active project context
+harness project show [<id|path>]      # metadata for the (selected) project; no arg = current
 harness project switch <id|path>      # flip ACTIVE_PROJECT + registry current
 harness project migrate               # centralize a repo-local .harness (see below)
 harness project remove <id> [--force] # drop a registration (_global is protected)

@@ -253,19 +253,26 @@ peek header: id · title · status · ready/waiting
 `summary` + the **rendered markdown** of each `source_refs` doc, with a table of
 contents. Depends on the docs-rendering work package (§5).
 
-## 5. Docs rendering (open work package)
+## 5. Docs rendering (shipped)
 
-`model.docs` is currently a hard-coded catalog in
-[../../apps/agent-dashboard/src/model/readModel.ts](../../apps/agent-dashboard/src/model/readModel.ts)
-and `DocsContext` only lists paths — no markdown is fetched or rendered. To
-render Vision `source_refs` and a Docs surface, one of:
+Implemented via the **backend route** (the recommended option below), so docs
+stay a single source of truth and the Workbench renders live content rather than
+bundling a copy:
 
-- **Backend** `GET /v1/docs/:path` returning the markdown body (path-allow-listed
-  to `docs/**`), rendered client-side; or
-- **Build-time** bundling of `docs/**` into the frontend.
+- `GET /v1/docs?path=docs/...` returns `{ path, content }` with the raw markdown
+  body, allow-listed to the `docs/` tree and protected against path traversal
+  (`read_allowed_doc` in [../../crates/harness-cli/src/main.rs](../../crates/harness-cli/src/main.rs)).
+- The frontend fetches it through `fetchDoc` / `fetchDocRegistry` in
+  [../../apps/agent-dashboard/src/api.ts](../../apps/agent-dashboard/src/api.ts)
+  and renders the body with the `Markdown` component
+  ([../../apps/agent-dashboard/src/components/workbench/Markdown.tsx](../../apps/agent-dashboard/src/components/workbench/Markdown.tsx)).
+  The Docs surface builds its tree from `docs/registry.json` (fetched over the
+  same allow-listed route). Live source only — the offline fixture has no docs
+  server.
 
-Recommended: the backend route, so docs stay a single source of truth and the
-Workbench renders live content. Tracked separately from the schema/board work.
+The build-time bundling alternative (embedding `docs/**` into the frontend) was
+considered and not taken, to avoid a second copy of the docs drifting from the
+canonical tree.
 
 ## 6. Acceptance
 

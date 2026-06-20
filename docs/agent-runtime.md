@@ -75,9 +75,9 @@ WorkspaceProvider
   cleanup_or_archive(task)
 ```
 
-Codex, Claude Code, OpenClaw, a Permission Agent, or a future cloud provider
-should implement these boundaries without changing `Goal`, `Task`, `Message`,
-`Evidence`, `Proposal`, or `Decision` semantics.
+Codex, Claude Code, Kimi, OpenClaw, a Permission Agent, or a future cloud
+provider should implement these boundaries without changing `Goal`, `Task`,
+`Message`, `Evidence`, `Proposal`, or `Decision` semantics.
 
 ## Queue And Context Policy
 

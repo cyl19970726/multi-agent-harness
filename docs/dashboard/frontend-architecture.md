@@ -64,7 +64,7 @@ mutation truth.
 | Framework | React 18 | Good composition for page/workbench surfaces. |
 | Language | TypeScript strict mode | Snapshot/read-model contracts must remain explicit. |
 | Bundler | Vite | Lightweight local dev and static `web/` output. |
-| Styling | Tailwind CSS v4 via `@tailwindcss/vite` | Token-driven utility styling tied to page-local contracts; dark operator-console theme in `src/index.css`. |
+| Styling | Tailwind CSS v4 via `@tailwindcss/vite` | Token-driven utility styling tied to page-local contracts; light, Notion-like theme in `src/index.css` (ADR 0019, supersedes the 0016 dark operator-console theme). |
 | UI kit | shadcn/ui primitives over Radix (`components.json`, style `new-york`) in `src/components/ui` | Accessible Radix behavior with copy-in primitives the product owns and can adapt. |
 | Product atoms | `src/components/workbench` | Workbench-specific atoms composed from the shadcn/ui primitives. |
 | Icons | `lucide-react` | Use icon+tooltip/label where it clarifies action. |
@@ -176,7 +176,7 @@ src/
   components/
     ui/           # shadcn/ui primitives over Radix (components.json, new-york)
     workbench/    # product atoms composed from the ui primitives
-  index.css       # Tailwind v4 entry + dark operator-console token theme
+  index.css       # Tailwind v4 entry + light Notion-like token theme (ADR 0019)
 ```
 
 shadcn configuration lives in `apps/agent-dashboard/components.json`. The build

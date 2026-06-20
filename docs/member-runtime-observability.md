@@ -237,6 +237,7 @@ provider activity
 | --- | --- | --- | --- | --- |
 | Codex (local app-server) | real (pid) | real (unix socket) | real (initialize) | real (turn terminal) |
 | Claude (CLI) | real-ish (binary present / pid per delivery) | endpoint = runtime dir | as available | as available (receipt proof) |
+| Kimi (CLI) | real-ish (binary present / pid per delivery) | endpoint = runtime dir | as available | as available (receipt proof) |
 | Future Claude HTTP/SDK | degrades to "session exists" | degrades to "API reachable" | "API reachable" | "request accepted / completed" |
 
    Codex local processes can satisfy all four layers truthfully. The Claude CLI

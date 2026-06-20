@@ -284,24 +284,33 @@ pub struct ProviderCapabilities {
     pub subagents: bool,          // native child threads
     pub mcp: bool,                // MCP server attachment
     pub hooks: bool,              // lifecycle hook surface
+    pub schema: bool,             // native structured-output / JSON-schema flag
+    pub cost: bool,               // provider reports billed USD in terminal frame
 }
 ```
 
 Each provider implements a static method to declare its capabilities. Current
 values per implementation:
 
-| Capability | Codex exec | Claude -p / SDK |
-| --- | --- | --- |
-| streaming | yes (`--json` NDJSON) | yes (`stream-json`) |
-| resume | yes (`--session`) | yes (`--resume`) |
-| mid_turn_approval | **no** (policy pre-approve) | no (Tier-3 only) |
-| subagents | yes (observed) | yes (observed) |
-| mcp | yes (config) | yes (`--mcp-config`) |
-| hooks | no (limited) | no |
+| Capability | Codex exec | Claude -p / SDK | Kimi exec |
+| --- | --- | --- | --- |
+| streaming | yes (`--json` NDJSON) | yes (`stream-json`) | yes (`--output-format stream-json`) |
+| resume | yes (`--session`) | yes (`--resume`) | no (unverified — degraded) |
+| mid_turn_approval | **no** (policy pre-approve) | no (Tier-3 only) | no (unverified) |
+| subagents | yes (observed) | yes (observed) | no (unverified) |
+| mcp | yes (config) | yes (`--mcp-config`) | no (unverified) |
+| hooks | no (limited) | no | no (unverified) |
+| schema | yes (`--output-schema`) | yes (`--json-schema`) | no (text-extract fallback) |
+| cost | no (token usage only) | yes (`result.total_cost_usd`) | no (token-estimate fallback) |
 
-**Implementation:** `ProviderCapabilities::codex_exec()` and
-`ProviderCapabilities::claude_exec()` return the tables above. The snapshot can
-include these capabilities so the Dashboard shows honest per-provider support.
+**Implementation:** `ProviderCapabilities::codex_exec()`,
+`ProviderCapabilities::claude_exec()`, and `ProviderCapabilities::kimi_exec()`
+return the columns above (see
+[crates/harness-core/src/lib.rs](../crates/harness-core/src/lib.rs)). The
+`kimi_exec()` row is intentionally conservative — every axis except `streaming`
+is `false` = degraded-until-verified against the live binary, not a positive
+claim of absence. The snapshot can include these capabilities so the Dashboard
+shows honest per-provider support.
 
 ### The adapter boundary (generalized from earning-engine)
 

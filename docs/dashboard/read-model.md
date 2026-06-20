@@ -115,8 +115,8 @@ member
 
 ## Warning Promotion
 
-Warnings in `apps/agent-dashboard/src/warnings.ts` are advisory until they are
-promoted.
+Warnings in `apps/agent-dashboard/src/model/warnings.ts` are advisory until they
+are promoted.
 
 Promotion rule:
 
@@ -132,33 +132,36 @@ blocks a goal, move the rule to a canonical surface first.
 
 ## Current Advisory Warnings
 
+The `kind` strings below are owned by `apps/agent-dashboard/src/model/warnings.ts`
+(`deriveWarnings`); treat that file as the source of truth and re-verify this
+table against it rather than trusting the prose.
+
 | Warning | Meaning |
 | --- | --- |
-| `fake_assignment_risk` | Task has an assignee but no task assignment message. |
+| `fake_assignment_risk` | Task has an assignee and is past `planned` but no task assignment message exists. |
 | `assignment_not_delivered` | Task assignment exists but has not reached delivered or acknowledged. |
 | `missing_report` | Task is in review or done without a report message. |
-| `failed_delivery` | Message delivery failed. |
-| `queued_task_message` | Task assignment is still queued. |
-| `closed_member_pending_delivery` | Message is queued or claimed for a member that cannot receive normal delivery. |
-| `claimed_delivery_pending` | Message has a provider-session claim and waits for terminal reconciliation. |
-| `provider_session_blocks_delivery` | Running or queued provider session should block later normal delivery. |
+| `missing_evidence` | Task is in review without linked evidence. |
+| `proposal_missing_evidence` | Proposal has no evidence refs. |
+| `decision_missing` | Reviewable task (review/done) lacks a Leader decision. |
+| `lead_owner_role_mismatch` | Team `owner_agent_id` resolves to a member whose role is not `lead`, or does not resolve to any member. |
+| `review_needs_decision` | A review verdict (fail/blocked/needs_changes or with blockers) needs a Leader decision. |
+| `gap_p0_open` | A P0 `Gap` is still open. |
+| `gap_unresolved` | A non-P0-open `Gap` is unresolved (open/in_progress/blocked). |
 | `failed_provider_session` | Provider session failed or was canceled. |
-| `unresolved_provider_session` | Provider turn was accepted but still lacks terminal reconciliation. |
-| `provider_only_claim` | Provider session exists without a harness report message. |
-| `proposal_missing_evidence` | Submitted or accepted proposal has no evidence refs. |
-| `proposal_bad_evidence_ref` | Proposal references evidence missing from the snapshot. |
-| `owned_path_violation` | Proposal changed paths outside task ownership. |
-| `decision_missing_evidence` | Decision has no evidence refs. |
 | `goal_learning_gap` | Goal learning status reports a missing workflow link. |
+| `goal_close_without_evaluation` | Goal task graph is complete (or goal is closed) without a closeout Decision + GoalEvaluation. |
+| `waiver_without_follow_up` | A closeout waiver lacks a follow-up task or evidence. |
 
 ## Implementation Files
 
 | File | Role |
 | --- | --- |
 | `apps/agent-dashboard/src/types.ts` | Snapshot and UI object types. |
-| `apps/agent-dashboard/src/readModel.ts` | Selectors, goal scope, member/team/task grouping. |
-| `apps/agent-dashboard/src/warnings.ts` | Advisory warning derivation. |
-| `apps/agent-dashboard/src/components/*` | Display and navigation only. |
+| `apps/agent-dashboard/src/model/readModel.ts` | Selectors, goal scope, member/team/task grouping. |
+| `apps/agent-dashboard/src/model/warnings.ts` | Advisory warning derivation. |
+| `apps/agent-dashboard/src/surfaces/*` | Page surfaces (display and navigation only). |
+| `apps/agent-dashboard/src/components/{ui,workbench}/*` | shadcn/ui primitives and product atoms. |
 
 ## Current Autonomous Projection
 

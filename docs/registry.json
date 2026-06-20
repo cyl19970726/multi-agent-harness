@@ -1564,6 +1564,308 @@
         "npx pnpm@9.15.4 check"
       ],
       "reorgTrigger": "The @-mention reuse decision, the assignment-proof rendering, the reference_doc_paths/updates_doc_paths field model, the doc-sync trigger choice, or the WP plan changes; or any of the proposed fields lands as an accepted schema/ADR change."
+    },
+    {
+      "path": "docs/getting-started.md",
+      "ownerRole": "product",
+      "status": "stable",
+      "lifecycle": "volatile",
+      "canonicalFor": [
+        "two-step quickstart (install author-workflow skill + start serve)",
+        "skill install paths (script / npx skills / plugin)",
+        "serve + run-script same-store invariant",
+        "author + run + read-back a workflow"
+      ],
+      "dependsOn": [
+        "README.md",
+        "skills/author-workflow/SKILL.md",
+        "docs/multi-project.md"
+      ],
+      "machineConsumers": [
+        "check-doc-links",
+        "check-doc-governance"
+      ],
+      "reviewAfter": "2026-09-30",
+      "lastVerifiedWith": [
+        "npx pnpm@9.15.4 check"
+      ],
+      "reorgTrigger": "The quickstart steps, skill install paths, serve/run-script store resolution, or the host-function surface change."
+    },
+    {
+      "path": "docs/multi-project.md",
+      "ownerRole": "operations",
+      "status": "stable",
+      "lifecycle": "volatile",
+      "canonicalFor": [
+        "multi-project store_root vs project_root model",
+        "central store layout and project identity",
+        "project resolution precedence + project commands",
+        "GLOBAL _global policy + migration path",
+        "multi-project live acceptance"
+      ],
+      "dependsOn": [
+        "README.md",
+        "crates/harness-core/src/lib.rs",
+        "crates/harness-cli/src/main.rs"
+      ],
+      "machineConsumers": [
+        "check-doc-links",
+        "check-doc-governance"
+      ],
+      "reviewAfter": "2026-09-30",
+      "lastVerifiedWith": [
+        "npx pnpm@9.15.4 check"
+      ],
+      "reorgTrigger": "The store_root/project_root split, project identity rules, resolution precedence, project commands, GLOBAL policy, or migration flow change."
+    },
+    {
+      "path": "docs/resident-claude.md",
+      "ownerRole": "provider-integration",
+      "status": "planned",
+      "lifecycle": "volatile",
+      "canonicalFor": [
+        "opt-in resident Claude delivery path (hold stdin = no EOF)",
+        "hot/cold/idle resident model + config-fingerprint pool keying",
+        "HARNESS_CLAUDE_RESIDENT flag",
+        "resident daemon (cross-invocation warm-child host, unix-only)"
+      ],
+      "dependsOn": [
+        "docs/decisions/0021-resident-daemon.md",
+        "docs/decisions/0020-codex-persistent-service-exploration.md",
+        "docs/decisions/0018-exec-stream-primary-substrate.md",
+        "crates/harness-cli/src/main.rs"
+      ],
+      "machineConsumers": [
+        "check-doc-links",
+        "check-doc-governance"
+      ],
+      "reviewAfter": "2026-09-30",
+      "lastVerifiedWith": [
+        "npx pnpm@9.15.4 check"
+      ],
+      "reorgTrigger": "The resident keep-alive contract, hot/cold/idle model, HARNESS_CLAUDE_RESIDENT gating, or the resident-daemon socket/pidfile/IPC behavior change."
+    },
+    {
+      "path": "docs/design/internal-vs-external-workflow.md",
+      "ownerRole": "architect",
+      "status": "stable",
+      "lifecycle": "volatile",
+      "canonicalFor": [
+        "internal (Claude Code Workflow tool) vs external (harness run-script) comparison",
+        "in-process subagent vs out-of-process subprocess substrate difference",
+        "the three root causes of the external-side gap"
+      ],
+      "dependsOn": [
+        "docs/research/dynamic-workflow-runtime-design.md",
+        "docs/decisions/0023-starlark-workflow-frontend.md",
+        "skills/author-workflow/SKILL.md"
+      ],
+      "machineConsumers": [
+        "check-doc-links",
+        "check-doc-governance"
+      ],
+      "reviewAfter": "2026-09-30",
+      "lastVerifiedWith": [
+        "npx pnpm@9.15.4 check"
+      ],
+      "reorgTrigger": "The internal/external substrate comparison, the authoring-language choice, or the root-cause analysis changes."
+    },
+    {
+      "path": "docs/design/external-workflow-gap-analysis.md",
+      "ownerRole": "architect",
+      "status": "stable",
+      "lifecycle": "volatile",
+      "canonicalFor": [
+        "concrete planning-dimension gaps (A-E) between external and internal workflows",
+        "evidence mined from ~60 internal Workflow run records",
+        "per-gap closing recommendation for the external runtime"
+      ],
+      "dependsOn": [
+        "docs/design/internal-vs-external-workflow.md",
+        "docs/design/internal-workflow-catalog.md",
+        "docs/research/dynamic-workflow-runtime-design.md"
+      ],
+      "machineConsumers": [
+        "check-doc-links",
+        "check-doc-governance"
+      ],
+      "reviewAfter": "2026-09-30",
+      "lastVerifiedWith": [
+        "npx pnpm@9.15.4 check"
+      ],
+      "reorgTrigger": "The gap taxonomy (A-E), the mined evidence corpus, or the per-gap closing recommendations change."
+    },
+    {
+      "path": "docs/design/internal-workflow-catalog.md",
+      "ownerRole": "architect",
+      "status": "stable",
+      "lifecycle": "archival",
+      "canonicalFor": [
+        "12 annotated reference internal Workflow programs",
+        "control-flow idioms transferable to the external runtime",
+        "mapping each program to the external workflow gap it teaches"
+      ],
+      "dependsOn": [
+        "docs/design/external-workflow-gap-analysis.md",
+        "docs/design/internal-workflow-catalog-full.md"
+      ],
+      "machineConsumers": [
+        "check-doc-links",
+        "check-doc-governance"
+      ],
+      "reviewAfter": "2026-12-31",
+      "lastVerifiedWith": [
+        "npx pnpm@9.15.4 check"
+      ],
+      "reorgTrigger": "The annotated reference set, the extracted idioms, or the gap mapping changes."
+    },
+    {
+      "path": "docs/design/internal-workflow-catalog-full.md",
+      "ownerRole": "architect",
+      "status": "stable",
+      "lifecycle": "archival",
+      "canonicalFor": [
+        "full classification of all 62 mined internal Workflow records",
+        "workflow-family distribution",
+        "companion corpus to the 12 deep-dive catalog"
+      ],
+      "dependsOn": [
+        "docs/design/internal-workflow-catalog.md",
+        "docs/design/external-workflow-gap-analysis.md"
+      ],
+      "machineConsumers": [
+        "check-doc-links",
+        "check-doc-governance"
+      ],
+      "reviewAfter": "2026-12-31",
+      "lastVerifiedWith": [
+        "npx pnpm@9.15.4 check"
+      ],
+      "reorgTrigger": "The mined corpus or its family classification changes."
+    },
+    {
+      "path": "docs/design/workflow-eval-harness.md",
+      "ownerRole": "architect",
+      "status": "idea",
+      "lifecycle": "volatile",
+      "canonicalFor": [
+        "workflow-vs-single-agent measurement system design",
+        "baseline comparison + naive-vs-exploiting-structure judgment",
+        "cost/variance-aware evaluation method"
+      ],
+      "dependsOn": [
+        "docs/design/external-workflow-gap-analysis.md",
+        "skills/author-workflow/SKILL.md"
+      ],
+      "machineConsumers": [
+        "check-doc-links",
+        "check-doc-governance"
+      ],
+      "reviewAfter": "2026-09-30",
+      "lastVerifiedWith": [
+        "npx pnpm@9.15.4 check"
+      ],
+      "reorgTrigger": "The evaluation comparison model, the baseline definition, or the cost/variance method changes."
+    },
+    {
+      "path": "docs/design/workflow-language-spike.md",
+      "ownerRole": "architect",
+      "status": "idea",
+      "lifecycle": "volatile",
+      "canonicalFor": [
+        "spike: should the external workflow be authored in a mainstream language",
+        "three-way authoring comparison with running feasibility proofs",
+        "judgment on whether Starlark is the real ceiling"
+      ],
+      "dependsOn": [
+        "docs/design/internal-vs-external-workflow.md",
+        "docs/decisions/0023-starlark-workflow-frontend.md",
+        "skills/author-workflow/SKILL.md"
+      ],
+      "machineConsumers": [
+        "check-doc-links",
+        "check-doc-governance"
+      ],
+      "reviewAfter": "2026-09-30",
+      "lastVerifiedWith": [
+        "npx pnpm@9.15.4 check"
+      ],
+      "reorgTrigger": "The authoring-language recommendation, the candidate-runtime comparison, or the Starlark front-end decision (ADR 0023) changes."
+    },
+    {
+      "path": "docs/design/workflow-surface-layout.md",
+      "ownerRole": "product-design",
+      "status": "planned",
+      "lifecycle": "volatile",
+      "canonicalFor": [
+        "read-only Workflow dashboard surface layout design",
+        "workflows index + self-splitting run-detail pattern",
+        "Workflow surface decision log"
+      ],
+      "dependsOn": [
+        "docs/dashboard/frontend-design.md",
+        "docs/dashboard/read-model.md",
+        "apps/agent-dashboard/src/types.ts"
+      ],
+      "machineConsumers": [
+        "check-doc-links",
+        "check-doc-governance"
+      ],
+      "reviewAfter": "2026-09-30",
+      "lastVerifiedWith": [
+        "npx pnpm@9.15.4 check"
+      ],
+      "reorgTrigger": "The Workflow surface IA, the index/run-detail split pattern, or the underlying read model changes."
+    },
+    {
+      "path": "docs/research/agent-live-tui-design.md",
+      "ownerRole": "architect",
+      "status": "idea",
+      "lifecycle": "volatile",
+      "canonicalFor": [
+        "live agent activity view (Claude-Code-TUI style) design",
+        "incremental NDJSON write + poll-while-running staging",
+        "reuse of TurnDrillIn / summarizeRawEvent / provider-session events"
+      ],
+      "dependsOn": [
+        "docs/member-runtime-observability.md",
+        "crates/harness-cli/src/main.rs",
+        "apps/agent-dashboard/src/types.ts"
+      ],
+      "machineConsumers": [
+        "check-doc-links",
+        "check-doc-governance"
+      ],
+      "reviewAfter": "2026-09-30",
+      "lastVerifiedWith": [
+        "npx pnpm@9.15.4 check"
+      ],
+      "reorgTrigger": "The live-turn rendering staging, the incremental-write mechanism, or the reused TUI/event machinery changes."
+    },
+    {
+      "path": "docs/research/agents-multica-layout-design.md",
+      "ownerRole": "product-design",
+      "status": "idea",
+      "lifecycle": "volatile",
+      "canonicalFor": [
+        "Multica-style Agents page layout (synthesized design)",
+        "chosen variant + no-empty-tabs rationale",
+        "conversation-default + live-current-work tab structure"
+      ],
+      "dependsOn": [
+        "docs/dashboard/design-principles.md",
+        "docs/dashboard/pages/agent-member-workbench.md",
+        "apps/agent-dashboard/src/types.ts"
+      ],
+      "machineConsumers": [
+        "check-doc-links",
+        "check-doc-governance"
+      ],
+      "reviewAfter": "2026-09-30",
+      "lastVerifiedWith": [
+        "npx pnpm@9.15.4 check"
+      ],
+      "reorgTrigger": "The chosen Agents layout variant, the tab structure, or the AgentMember config-backing model changes."
     }
   ]
 }

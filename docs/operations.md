@@ -154,6 +154,10 @@ hatches. They should appear only with a rationale in the recorded decision.
 These are design commitments, not current blockers until scripts and CI jobs
 exist.
 
+The Agent Dashboard gate is already current (not planned): `pnpm check:dashboard`
+is defined in `package.json` and chained into the default `pnpm check`, which CI
+runs (`.github/workflows/ci.yml`). It is also listed under Current Gates above.
+
 ```bash
 pnpm check:dashboard
 ```
@@ -167,6 +171,8 @@ vite build --config apps/agent-dashboard/vite.config.ts
 
 Dashboard build output is committed under `apps/agent-dashboard/web/` so the
 static snapshot viewer can still be opened directly.
+
+The following remain genuinely planned (no executable script or CI job yet):
 
 ```text
 CLI --help snapshot
