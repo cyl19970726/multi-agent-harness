@@ -102,8 +102,10 @@ following edges over existing objects:
 | `Vision` | referenced by `Goal.vision_id` | Long-lived target a goal collection moves toward. |
 
 New scalar links on existing objects: `Goal.vision_id` /
-`Goal.goal_design_id` / `Goal.closed_by_decision_id`; `Task.phase` /
-`Task.scope_refs[]` / `Task.requires_human_approval` / `Task.verdict_decision_id`;
+`Goal.goal_design_id` / `Goal.closed_by_decision_id`; `Task.phase_id`
+(the join key to a `GoalPhase`; the legacy free-text `Task.phase` label was
+retired) / `Task.scope_refs[]` / `Task.requires_human_approval` /
+`Task.verdict_decision_id`;
 `Evidence.evidence_kind` / `Evidence.goal_id`; `Decision.decision_kind` /
 `Decision.goal_id` / `Decision.is_waiver` / `Decision.follow_up_task_id`.
 

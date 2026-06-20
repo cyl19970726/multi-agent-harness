@@ -9,8 +9,9 @@ have somewhere to run). Then ask your agent to author and run one.
 - **Rust** (stable) — builds the `harness` binary.
 - **Node + pnpm** — for the dashboard and the doc checks.
 - At least one provider CLI on `PATH`, authenticated:
-  - **Codex** (`codex`) and/or **Claude Code** (`claude`). Each workflow leaf
-    runs as a one-shot `codex exec` / `claude -p` worker.
+  - **Codex** (`codex`), **Claude Code** (`claude`), and/or **Kimi Code**
+    (`kimi`). Each workflow leaf runs as a one-shot worker — `codex exec`,
+    `claude -p`, or `kimi -p --output-format stream-json` respectively.
 
 ## 1. Install the skill
 

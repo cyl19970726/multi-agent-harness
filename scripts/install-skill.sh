@@ -24,7 +24,7 @@
 set -euo pipefail
 
 # All shipped skills; --skill narrows this to a subset.
-DEFAULT_SKILLS="author-workflow author-goal author-planner"
+DEFAULT_SKILLS="author-workflow author-goal author-planner bootstrap-project-workflow"
 SKILLS=""
 AGENT="claude"
 SCOPE="project"

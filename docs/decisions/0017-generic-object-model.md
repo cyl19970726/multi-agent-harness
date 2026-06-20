@@ -75,6 +75,14 @@ plus valid and invalid fixtures:
 
 A **Phase is a `Task.phase` label** (with `parent_task_id`), not a Phase object.
 
+> **Superseded by the phased goal model (shipped #146–#153).** A phase is now a
+> first-class `GoalPhase` object owned by `Goal.phases[]`, and a task joins its
+> phase via the validated `Task.phase_id` key (a phase owns the tasks whose
+> `phase_id == phase.id`). The flat `Task.phase` string is retained only as a
+> legacy field for old JSONL rows. Source of truth:
+> `crates/harness-core/src/lib.rs` (`struct GoalPhase`, `Task.phase_id`). The
+> additive-optional schema-evolution policy this ADR fixes is unchanged.
+
 ### 3. Open-enum pattern, domain-neutral core
 
 Verdict / decision / review_kind / evidence_kind / decision_kind are free

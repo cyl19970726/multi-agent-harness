@@ -176,8 +176,14 @@ and [schemas.md](schemas.md).
 | `GoalCase` | `examples/goal-cases/<case-id>/` files | A sanitized, reusable teaching artifact distilled from a goal. The committed files remain the human artifact; the schema validates an optional `case.json` manifest. |
 | `Vision` | loose `vision_ref` / `vision_summary` fields | A long-lived target a `Goal` points to via `Goal.vision_id`; the next-goal proposal compares a `GoalEvaluation` against the linked `Vision`. |
 
-`Phase` is **not** an object: a phase is a `Task` with a `phase` label plus
-`parent_task_id`.
+`Phase` is now a first-class object (`GoalPhase`), superseding the earlier
+"a phase is just a `Task` with a `phase` label" model. A `Goal` carries an
+agent-planned, sequential `phases: Vec<GoalPhase>`, and a `Task` joins its phase
+through `Task.phase_id` (the legacy free-text `Task.phase` label was retired).
+See `crates/harness-core/src/lib.rs` (`struct GoalPhase`, `Goal.phases`,
+`Task.phase_id`) and the phase model in
+[goal-learning-loop.md](goal-learning-loop.md). The phase shape, the phase→task
+DAG, and the `goal run-phases` orchestrator shipped in #146–#153.
 
 ### Closeout Gate
 

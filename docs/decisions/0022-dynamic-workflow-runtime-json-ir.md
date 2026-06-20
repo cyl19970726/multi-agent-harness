@@ -2,6 +2,18 @@
 
 ## Status
 
+> **Superseded in part by
+> [0023 (Starlark program front-end)](0023-starlark-workflow-frontend.md):** the
+> JSON-IR authoring path decided here — the `WorkflowSpec` / `WorkflowNode` /
+> `dispatch_spec()` interpreter, the `harness workflow run-spec` CLI arm, and
+> `schemas/workflow-spec.schema.json` (+ fixtures + the
+> `acceptance-dynamic-workflow` proof) — was **deleted** once Starlark proved a
+> strict superset. Starlark (run via `harness workflow run-script`) is now the
+> sole dynamic authoring surface alongside the compiled Rust registry. The
+> `crates/harness-workflow` crate, the additive `WorkflowRun`/`WorkflowStep`
+> fields, the scheduler primitives (`parallel()`/`pipeline()`), and the
+> one-journal/one-dashboard contract decided here are **kept**.
+
 Accepted. **Promotes the deferred parts of
 [the dynamic-workflow design study](../research/dynamic-workflow-runtime-design.md)**
 (its WP5 IR + an author surface) into a shipped path, and builds on

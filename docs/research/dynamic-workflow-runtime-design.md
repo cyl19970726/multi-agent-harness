@@ -10,6 +10,19 @@ source of truth where the two differ. The locked decisions live in
 
 ## 0. As-built (shipped) — skill + CLI + JSON-IR
 
+> **Superseded in part (see [ADR 0023](../decisions/0023-starlark-workflow-frontend.md)).**
+> The JSON-IR specifics in this block — `harness workflow run-spec`,
+> `WorkflowSpec`/`WorkflowNode`/`dispatch_spec()`,
+> `schemas/workflow-spec.schema.json`, and `scripts/acceptance-dynamic-workflow.mjs`
+> — were **deleted** once the Starlark front-end proved a strict superset.
+> The dynamic authoring surface is now a **Starlark program** run via
+> `harness workflow run-script <prog.star>` (with a mandatory
+> `workflow(name, design_intent)` header), authored with the
+> [`skills/author-workflow`](../../skills/author-workflow) skill. The runtime
+> primitives (`parallel()`/`pipeline()`/scheduler), the `crates/harness-workflow`
+> crate, the additive object fields, and the one-journal/one-dashboard contract
+> below all **still hold** — Starlark just replaced the JSON-IR as the producer.
+
 The study recommended Hybrid **Option C** (§3): ship named compiled Rust
 workflows behind a registry first, defer the runtime-authored IR (Option B) to
 WP5. WP1–WP4 landed that registry runtime. Stages 1–5 of the implementation then
