@@ -2223,6 +2223,189 @@ fn land_phase_diffs(
     Ok(Some(sha))
 }
 
+/// A Starlark string literal for `s`. JSON string escaping is a valid Starlark
+/// double-quoted string, so this reuses serde_json to escape `\`, `"`, newlines.
+fn star_lit(s: &str) -> String {
+    serde_json::to_string(s).unwrap_or_else(|_| "\"\"".to_string())
+}
+
+/// A SYSTEM-PROVIDED "building" phase (built-in-phases). Its body is a shipped
+/// Starlark program (`build_builtin_phase_script`), NOT an agent-planned task DAG;
+/// the orchestrator AUTO-APPENDS these after a goal's execution phases pass.
+/// `blocking` building phases fail the goal if they don't pass; soft ones are
+/// best-effort (a failure is recorded but does not block verification).
+struct BuiltinPhaseDef {
+    id: &'static str,
+    name: &'static str,
+    intent: &'static str,
+    acceptance: &'static str,
+    /// Consumed by S2b (auto-append): a failed `blocking` building phase fails the
+    /// goal; a soft one is best-effort (recorded, does not block verification).
+    #[allow(dead_code)]
+    blocking: bool,
+}
+
+/// The built-in building phases, in append order. `doc-sync` is blocking (docs may
+/// not silently drift after a goal ships); `skill-extract` / `self-improve` are
+/// soft (best-effort distillation). Bodies are in `build_builtin_phase_script`.
+const BUILTIN_BUILDING_PHASES: &[BuiltinPhaseDef] = &[
+    BuiltinPhaseDef {
+        id: "doc-sync",
+        name: "Doc sync",
+        intent: "Govern the docs this goal touched (fix drift, register/deprecate, keep the tree mirroring the system) so docs can't silently drift after the goal ships.",
+        acceptance: "The goal's declared doc/skill updates are written, the doc registry is consistent, and the doc CI gates pass.",
+        blocking: true,
+    },
+    BuiltinPhaseDef {
+        id: "skill-extract",
+        name: "Skill extract",
+        intent: "Distil any recurring, contract-stable practice from this goal's run into a Skill (knowledge-lifecycle promotion), or record there is nothing to extract.",
+        acceptance: "A skill was extracted, or an explicit no-op was recorded.",
+        blocking: false,
+    },
+    BuiltinPhaseDef {
+        id: "self-improve",
+        name: "Self improve",
+        intent: "Reflect on the goal: what worked, what failed, anti-patterns, and candidate next goals — a written evaluation.",
+        acceptance: "A goal evaluation was written.",
+        blocking: false,
+    },
+];
+
+fn builtin_phase_def(id: &str) -> Option<&'static BuiltinPhaseDef> {
+    BUILTIN_BUILDING_PHASES.iter().find(|b| b.id == id)
+}
+
+/// The docs a goal declares it must UPDATE (the doc-sync inputs): the `path`s of
+/// its phases' doc-class artifact outputs. Empty → doc-sync audits broadly.
+fn declared_doc_updates(goal: &Goal) -> Vec<String> {
+    use harness_core::ArtifactKind;
+    goal.phases
+        .iter()
+        .flat_map(|p| p.outputs.iter())
+        .filter(|o| {
+            matches!(
+                o.kind,
+                ArtifactKind::DesignDoc
+                    | ArtifactKind::Adr
+                    | ArtifactKind::MigrationDoc
+                    | ArtifactKind::RegisteredDoc
+            )
+        })
+        .filter_map(|o| {
+            o.path
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+        })
+        .collect()
+}
+
+/// A minimal built-in-phase Starlark body: one schema'd agent + a `verdict` on its
+/// `pass` (so the orchestrator's existing status gate enforces it) + `output`.
+fn builtin_single_agent_star(
+    id: &str,
+    def: &BuiltinPhaseDef,
+    prompt: &str,
+    writable: bool,
+) -> String {
+    format!(
+        "workflow({wf}, {intent})\nlog({log})\n_r = agent(\n    {p},\n    provider=\"codex\",\n    label={lbl},\n    writable={w},\n    schema={{\"pass\": \"bool\", \"reason\": \"string\"}},\n)\nverdict(bool(_r) and _r.get(\"pass\") == True, _r.get(\"reason\") if _r else \"built-in phase produced no structured verdict\")\noutput(_r)\n",
+        wf = star_lit(id),
+        intent = star_lit(&format!("{} Acceptance: {}", def.intent, def.acceptance)),
+        log = star_lit(&format!("built-in phase {id}: {}", def.name)),
+        p = star_lit(prompt),
+        lbl = star_lit(id),
+        w = if writable { "True" } else { "False" },
+    )
+}
+
+/// Build the Starlark body for a built-in (building) phase, interpolating the
+/// goal's context. The building-phase counterpart to `compile_phase_to_starlark`
+/// (which compiles an execution phase's task DAG).
+fn build_builtin_phase_script(
+    goal: &Goal,
+    phase: &harness_core::GoalPhase,
+) -> Result<String, String> {
+    let id = phase
+        .builtin
+        .as_deref()
+        .ok_or_else(|| format!("building phase `{}` has no `builtin` id", phase.id))?;
+    let def = builtin_phase_def(id).ok_or_else(|| format!("unknown built-in phase `{id}`"))?;
+    match id {
+        "doc-sync" => {
+            let updates = declared_doc_updates(goal);
+            let updates_md = if updates.is_empty() {
+                "(none declared — audit docs/ for drift this goal may have introduced)".to_string()
+            } else {
+                updates.join(", ")
+            };
+            let prompt = format!(
+                "Built-in doc-sync phase for goal {gid}. Use the bootstrap-project-workflow \
+                 doc-governance skill (its references/governance.md) to govern this repo's docs now \
+                 that the goal's execution phases passed. Apply ONLY conservative, high-confidence \
+                 fixes: factual drift (match code, cite file:line), broken links/refs, register orphan \
+                 docs in docs/registry.json, mark superseded ADRs deprecated with a link to the \
+                 replacement. Do NOT do structural reorg (propose it in your reason instead). Declared \
+                 docs to update: {updates_md}. Then run the doc gates: `node scripts/check-doc-links.mjs \
+                 && node scripts/check-doc-governance.mjs && node scripts/check-doc-size.mjs` — all must \
+                 pass. Return pass=true only if your fixes are applied AND the three gates are green; \
+                 otherwise pass=false with the blocking gap.",
+                gid = goal.id,
+                updates_md = updates_md,
+            );
+            Ok(builtin_single_agent_star("doc-sync", def, &prompt, true))
+        }
+        "skill-extract" => {
+            let prompt = format!(
+                "Built-in skill-extract phase for goal {gid}. Review this goal's run (phases, knowledge \
+                 ledger, what was built) and decide whether a recurring, contract-stable practice should \
+                 be distilled into a Skill (knowledge-lifecycle note->docs->skill). If yes, draft \
+                 skills/<name>/SKILL.md and report it. If nothing is stable/recurring enough, return \
+                 pass=true reason \"nothing to extract\". Best-effort; pass=false only on an actual error.",
+                gid = goal.id,
+            );
+            Ok(builtin_single_agent_star(
+                "skill-extract",
+                def,
+                &prompt,
+                true,
+            ))
+        }
+        "self-improve" => {
+            let prompt = format!(
+                "Built-in self-improve phase for goal {gid}. Reflect and write a short evaluation: what \
+                 worked, what failed, anti-patterns, and 1-3 candidate next goals. Return pass=true with \
+                 the evaluation; pass=false only on error.",
+                gid = goal.id,
+            );
+            Ok(builtin_single_agent_star(
+                "self-improve",
+                def,
+                &prompt,
+                false,
+            ))
+        }
+        _ => Err(format!("no Starlark body for built-in phase `{id}`")),
+    }
+}
+
+/// Compile a phase to its Starlark body: a `Building` phase uses its shipped
+/// built-in body (`build_builtin_phase_script`); an execution phase compiles its
+/// task DAG (`compile_phase_to_starlark`). The single seam the orchestrator calls.
+fn compile_phase_script(
+    goal: &Goal,
+    phase: &harness_core::GoalPhase,
+    all_tasks: &[Task],
+) -> Result<String, String> {
+    if phase.kind == harness_core::PhaseKind::Building {
+        build_builtin_phase_script(goal, phase)
+    } else {
+        compile_phase_to_starlark(goal, phase, all_tasks)
+    }
+}
+
 /// Sequence a goal's phases: gate each on its verdict before the next, write each
 /// phase's task outcomes back, advance the goal's derived stage, and persist a
 /// durable [`GoalOrchestrationRun`] checkpoint. Already-`Passed` phases are
@@ -2394,7 +2577,7 @@ fn orchestrate_goal_phases(
                 .filter(|t| t.goal_id.as_deref() == Some(goal.id.as_str()))
                 .collect();
             let script =
-                compile_phase_to_starlark(&goal, &phase, &goal_tasks).map_err(CliError::Usage)?;
+                compile_phase_script(&goal, &phase, &goal_tasks).map_err(CliError::Usage)?;
             let hash = content_hash_hex16(&script);
             let dir = store.root().join("compiled");
             std::fs::create_dir_all(&dir)?;
@@ -7616,6 +7799,32 @@ fn is_git_repo(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// Does `provider`'s exec mode PHYSICALLY enforce read-only (so a non-writable
+/// leaf cannot mutate its cwd)? codex (`--sandbox read-only`) and claude (a
+/// read-only tool allowlist `Read,Grep,Glob`) do; kimi's headless `kimi -p`
+/// rejects every permission flag, so it does NOT. An unknown provider is treated
+/// as unenforceable (the safe default). Drives [`step_needs_isolation`].
+fn provider_enforces_read_only(provider: &str) -> bool {
+    provider_adapter(provider)
+        .map(|a| a.capabilities().enforces_read_only)
+        .unwrap_or(false)
+}
+
+/// Whether an ephemeral leaf must run in a throwaway git worktree instead of the
+/// shared repo cwd. A leaf isolates when it explicitly opts into
+/// `isolation="worktree"`, when it is `writable` (edits must land in a discardable
+/// checkout), OR when it is read-only on a provider that cannot enforce read-only
+/// — kimi can edit from a "read-only" leaf, so the worktree is the only boundary
+/// that keeps those writes off the live repo. Pure + unit-testable; the live call
+/// passes `provider_enforces_read_only(provider)`.
+fn step_needs_isolation(
+    writable: bool,
+    isolation: Option<&str>,
+    provider_enforces_read_only: bool,
+) -> bool {
+    isolation == Some("worktree") || writable || !provider_enforces_read_only
+}
+
 /// Spin up a NEW one-shot EDITABLE ephemeral worker for one `agent()` node and
 /// reduce its result into a [`workflow::StepResult`].
 ///
@@ -7642,29 +7851,51 @@ fn spawn_ephemeral_worker(
 
     // Opt-in isolation: harness-owned throwaway worktree, else the shared cwd.
     // The guard (when present) cleans up on every exit path via Drop.
-    // A node isolates when it explicitly opts in, OR whenever it is `writable`:
-    // an editing worker runs in a throwaway worktree so its writes land in a
-    // discardable checkout (captured as the step diff), never the live repo.
-    let isolate = spec.isolation.as_deref() == Some("worktree") || spec.writable;
+    // A node isolates when it explicitly opts in, when it is `writable` (an editing
+    // worker runs in a throwaway worktree so its writes land in a discardable
+    // checkout, never the live repo), OR when it is read-only on a provider that
+    // cannot enforce read-only — kimi's `kimi -p` has no read-only mode, so a
+    // "read-only" kimi leaf could otherwise edit the live repo; the worktree is the
+    // only boundary. See `step_needs_isolation` / `provider_enforces_read_only`.
+    let explicit_or_writable = spec.isolation.as_deref() == Some("worktree") || spec.writable;
+    let mut isolate = step_needs_isolation(
+        spec.writable,
+        spec.isolation.as_deref(),
+        provider_enforces_read_only(&spec.provider),
+    );
 
     // GLOBAL / non-git policy (P5): an isolated/writable node needs a git worktree,
     // which cannot exist in a non-git project (the reserved `_global` `~/` project,
     // or any non-repo root). Fail LOUD with the same actionable message the
     // `is_git_repo` gate in `WorktreeGuard::create` uses (#89 item 5) — surfaced
-    // here BEFORE the worktree attempt so the project id / kind is named. Read-only
-    // `isolation=none` nodes are unaffected and run in the shared project root.
+    // here BEFORE the worktree attempt so the project id / kind is named.
     if isolate && !project.is_git_repo {
-        return Err(CliError::Usage(format!(
-            "node '{}' needs an isolated git worktree (it is writable, or sets \
-             isolation=\"worktree\"), but project '{}' ({}) is not a git repository. \
-             Run this step READ-ONLY (drop writable / isolation=\"none\") and retrieve \
-             its output with `harness workflow get-output <run_id> --step {}`, or run \
-             the workflow against a git-backed project.",
-            spec.label,
-            project.id,
-            repo_root.display(),
-            spec.label,
-        )));
+        if explicit_or_writable {
+            return Err(CliError::Usage(format!(
+                "node '{}' needs an isolated git worktree (it is writable, or sets \
+                 isolation=\"worktree\"), but project '{}' ({}) is not a git repository. \
+                 Run this step READ-ONLY (drop writable / isolation=\"none\") and retrieve \
+                 its output with `harness workflow get-output <run_id> --step {}`, or run \
+                 the workflow against a git-backed project.",
+                spec.label,
+                project.id,
+                repo_root.display(),
+                spec.label,
+            )));
+        }
+        // Read-only leaf that only needs isolation because its provider can't enforce
+        // read-only: a non-git root has no worktree to isolate into. DEGRADE (don't
+        // fail) — run in the shared cwd and warn that writes aren't contained, rather
+        // than breaking read-only kimi leaves on the `_global` / non-repo project.
+        eprintln!(
+            "warning: read-only {provider} leaf '{label}' cannot be worktree-isolated \
+             (project '{pid}' is not a git repository) and {provider} has no read-only \
+             mode — running it in the shared cwd; it MAY edit files there.",
+            provider = spec.provider,
+            label = spec.label,
+            pid = project.id,
+        );
+        isolate = false;
     }
 
     let guard = if isolate {
@@ -13420,6 +13651,11 @@ trait ProviderAdapter: Sync {
             hooks: false,
             schema: false,
             cost: false,
+            // Conservative default: a provider that adopts the default posture is
+            // assumed UNABLE to enforce read-only, so its read-only leaves are
+            // worktree-isolated rather than trusted (matches the serde default and the
+            // unknown-provider fallback in `provider_enforces_read_only`).
+            enforces_read_only: false,
         }
     }
 
@@ -17046,6 +17282,22 @@ mod workflow_runtime_tests {
         assert!(!kimi.capabilities().schema, "kimi schema is S3-spike TBD");
         assert!(!kimi.capabilities().cost, "kimi cost is S3-spike TBD");
         assert!(!kimi.capabilities().resume, "kimi resume is S3-spike TBD");
+        // Read-only enforcement: codex (--sandbox read-only) and claude (read-only
+        // tool allowlist) PHYSICALLY enforce read-only; kimi -p has no read-only mode
+        // (rejects every permission flag), so a read-only kimi leaf must be worktree-
+        // isolated rather than trusted. This drives `step_needs_isolation`.
+        assert!(
+            codex.capabilities().enforces_read_only,
+            "codex enforces read-only via --sandbox read-only"
+        );
+        assert!(
+            claude.capabilities().enforces_read_only,
+            "claude enforces read-only via a read-only tool allowlist"
+        );
+        assert!(
+            !kimi.capabilities().enforces_read_only,
+            "kimi -p has no read-only mode — must be worktree-isolated"
+        );
         // supported_provider_names() is the single source of truth and now lists kimi.
         assert!(
             supported_provider_names().contains(&"kimi"),
@@ -17060,6 +17312,42 @@ mod workflow_runtime_tests {
                 adapter.name()
             );
         }
+    }
+
+    #[test]
+    fn read_only_leaf_isolates_only_when_provider_cannot_enforce_read_only() {
+        // A read-only leaf (writable=false, no explicit isolation) on a provider that
+        // ENFORCES read-only (codex/claude) runs in the shared cwd — no worktree.
+        assert!(
+            !step_needs_isolation(false, None, true),
+            "read-only leaf on an enforcing provider stays in the shared cwd"
+        );
+        // The same read-only leaf on a provider that CANNOT enforce read-only (kimi)
+        // MUST be worktree-isolated — the regression this fix closes (a read-only kimi
+        // leaf edited the live repo).
+        assert!(
+            step_needs_isolation(false, None, false),
+            "read-only leaf on a non-enforcing provider must be isolated"
+        );
+        // Writable / explicit-isolation always isolate, regardless of the provider's
+        // read-only enforcement.
+        assert!(
+            step_needs_isolation(true, None, true),
+            "writable always isolates"
+        );
+        assert!(
+            step_needs_isolation(false, Some("worktree"), true),
+            "explicit isolation always isolates"
+        );
+        // Sanity: the live wiring resolves real providers to the right enforcement.
+        assert!(
+            !step_needs_isolation(false, None, provider_enforces_read_only("codex")),
+            "codex read-only leaf does not need isolation"
+        );
+        assert!(
+            step_needs_isolation(false, None, provider_enforces_read_only("kimi")),
+            "kimi read-only leaf needs isolation"
+        );
     }
 
     /// A throwaway [`ProjectContext`] for tests that build a `WorkflowDeliveryOptions`
@@ -23059,6 +23347,66 @@ mod tests {
             skill_refs: Vec::new(),
             stage_changed_at: None,
         }
+    }
+
+    #[test]
+    fn building_phase_compiles_to_its_builtin_body_with_no_tasks() {
+        // built-in-phases S2a: a Building phase compiles to its SHIPPED Starlark
+        // body (NOT a task DAG) — referencing the doc-governance skill + a verdict,
+        // and needing zero tasks.
+        let goal = make_goal("g-bi");
+        let phase = harness_core::GoalPhase {
+            id: "doc-sync".into(),
+            name: "Doc sync".into(),
+            intent: "i".into(),
+            status: harness_core::GoalPhaseStatus::NotStarted,
+            acceptance: None,
+            verdict_decision_id: None,
+            created_at: "unix-ms:1".into(),
+            started_at: None,
+            ended_at: None,
+            outputs: Vec::new(),
+            inputs: Vec::new(),
+            retry: None,
+            landed_commit: None,
+            kind: harness_core::PhaseKind::Building,
+            builtin: Some("doc-sync".into()),
+        };
+        let script = compile_phase_script(&goal, &phase, &[])
+            .expect("building phase compiles with no tasks");
+        assert!(
+            script.contains("bootstrap-project-workflow"),
+            "doc-sync body references the doc-governance skill: {script}"
+        );
+        assert!(
+            script.contains("verdict("),
+            "building body emits a verdict: {script}"
+        );
+        assert!(
+            script.contains("workflow("),
+            "building body has a workflow header: {script}"
+        );
+
+        // An unknown builtin id is a clear error.
+        let bad = harness_core::GoalPhase {
+            builtin: Some("nope".into()),
+            ..phase.clone()
+        };
+        assert!(
+            compile_phase_script(&goal, &bad, &[]).is_err(),
+            "unknown builtin id must error"
+        );
+
+        // An execution phase with no tasks still errors (today's behavior unchanged).
+        let exec = harness_core::GoalPhase {
+            kind: harness_core::PhaseKind::Execution,
+            builtin: None,
+            ..phase.clone()
+        };
+        assert!(
+            compile_phase_script(&goal, &exec, &[]).is_err(),
+            "execution phase with no tasks errors as before"
+        );
     }
 
     fn make_task(id: &str, goal_id: &str) -> Task {
