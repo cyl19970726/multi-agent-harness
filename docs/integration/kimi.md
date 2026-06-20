@@ -50,8 +50,8 @@ Kimi Code 官方 CLI 提供 `kimi` 命令行工具。相比直接走 Moonshot HT
   harness 可以复用 ProviderAdapter、ProviderSession、NDJSON tee、event ingest 等基础设施；
 - **registry-routed provider**：Kimi 通过 `ProviderAdapter` trait 实现接入，provider
   lookup 走 `provider_adapter(name)`，不是新增散落 match arms
-  (`crates/harness-cli/src/main.rs:13397-13500`,
-  `crates/harness-cli/src/main.rs:14766-14915`)；
+  (`ProviderAdapter` trait `crates/harness-cli/src/main.rs:13397`;
+  `provider_registry()` + `provider_adapter()` `crates/harness-cli/src/main.rs:14906-14916`)；
 - **real CLI surface is small**：headless 模式只依赖 `-p`、`--output-format stream-json`、
   可选 `--model`、可选 `--session`，避免伪造 Claude-only flags；
 - **honest degradation**：Kimi v0.18 的 `-p` stream 不返回 Claude `result`、`usage`、
@@ -258,7 +258,7 @@ Provider config remains provider-neutral:
   "provider": "kimi",
   "provider_config": {
     "approval_policy": "none" | "prompt_required",
-    "sandbox_policy": "read-only" | "workspace-write",
+    "workspace_policy": "workspaceWrite" | "readOnly",
     "service_tier": "free" | "pro" | "team"
   }
 }
@@ -398,6 +398,8 @@ against Moonshot pricing or a future live usage frame before spend decisions are
 6. **Resume fallback** — only a parsed `session.resume_hint.session_id` is exposed as resumable.
    Synthetic fallback session ids are not surfaced as resume tokens
    (`crates/harness-cli/src/main.rs:14675-14685`).
+
+7. **Reconciliation hook** — 可通过 `agent reconcile` 手工修复状态（与 Codex / Claude 同）。
 
 ## Unsupported or Risky Surfaces
 

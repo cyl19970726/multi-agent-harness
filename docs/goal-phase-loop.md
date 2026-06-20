@@ -13,7 +13,7 @@ Goal
               -> next phase
 ```
 
-A phase is the unit of planning, gating, and landing. A phase **compiles to a Dynamic Agent Workflow** (a `.star` program of `agent()` / `parallel()` / `verdict()` leaves) that the workflow runtime executes. The workflow runtime is documented separately at [`docs/research/dynamic-workflow-runtime-design.md`](research/dynamic-workflow-runtime-design.md), with locked decisions in [`docs/decisions/0022-dynamic-workflow-runtime-json-ir.md`](decisions/0022-dynamic-workflow-runtime-json-ir.md) and [`docs/decisions/0023-starlark-workflow-frontend.md`](decisions/0023-starlark-workflow-frontend.md).
+A phase is the unit of planning, gating, and landing. A phase **compiles to a Dynamic Agent Workflow** (a `.star` program of `agent()` / `parallel()` / `verdict()` leaves) that the workflow runtime executes. The workflow runtime is documented separately at [`docs/workflow-runtime.md`](workflow-runtime.md), with locked decisions in [`docs/decisions/0022-dynamic-workflow-runtime-json-ir.md`](decisions/0022-dynamic-workflow-runtime-json-ir.md) and [`docs/decisions/0023-starlark-workflow-frontend.md`](decisions/0023-starlark-workflow-frontend.md).
 
 ## 1. Goal and phases
 
@@ -39,7 +39,7 @@ pub struct GoalPhase {
 
 Phases are the source of truth for goal progress. The legacy `Goal.stage` field becomes a derived projection: `Goal.effective_stage()` (`lib.rs:400`) derives `Verified` when every phase is `Passed`, `Working` when any phase has started/failed/blocked, and `Draft` when all are `NotStarted`. `GoalPhaseStatus` (`lib.rs:100`) is `NotStarted | InProgress | Passed | Failed | Blocked`.
 
-A legacy goal with empty `phases` runs as a single implicit phase for back-compat.
+A goal with no `phases` is **refused** by `goal run-phases` — it errors `goal has no phases to run` (`main.rs:2244`); plan it first (`goal phase-add` or the planner). Likewise `compile_phase_to_starlark` errors if a phase has no live tasks (`lib.rs:664`).
 
 ## 2. Per-phase task DAG
 
@@ -97,7 +97,7 @@ The compiled script starts with a mandatory `workflow(name, design_intent)` head
 `harness goal run-phases <goal>` enters `orchestrate_goal_phases` (`main.rs:2235`). It:
 
 1. Loads the goal and refuses if `phases` is empty (`main.rs:2244-2248`).
-2. Reuses an in-flight `GoalOrchestrationRun` with `status == Running` as a resume checkpoint, else starts a fresh one (`main.rs:2254-2273`). `GoalOrchestrationRun` (`lib.rs:301`) persists `phase_runs: Vec<OrchestrationPhaseRun>` (`lib.rs:280`) so `--resume` can re-enter without re-spending completed phases.
+2. Reuses an in-flight `GoalOrchestrationRun` with `status == Running` as a resume checkpoint, else starts a fresh one (`main.rs:2254-2273`) — this reuse is **unconditional**: the `--resume` flag is an auditable opt-in marker (parsed at `main.rs:3211`), not a behavior toggle; the orchestrator re-enters the checkpoint with or without it. `GoalOrchestrationRun` (`lib.rs:301`) persists `phase_runs: Vec<OrchestrationPhaseRun>` (`lib.rs:280`), and each `OrchestrationPhaseRun` carries a `workflow_run_id` — that link (NOT a `goal_id`/`phase_id` on `WorkflowRun`, which has none) is how a goal reaches its workflow runs — so completed phases are not re-spent.
 3. Walks phases in order. A `Passed` phase is skipped (`main.rs:2279-2282`).
 4. Checks cross-phase `inputs` fail-fast (`main.rs:2291-2336`).
 5. Reuses a prior workflow run id for intra-phase resume when the phase is `InProgress` or `Failed` (`main.rs:2345-2365`).
