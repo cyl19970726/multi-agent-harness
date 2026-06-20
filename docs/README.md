@@ -2,6 +2,8 @@
 
 | Topic | Doc |
 | --- | --- |
+| Vision: the closed self-advancing loop + roadmap | [VISION.md](VISION.md) |
+| Getting started: author + run a workflow | [getting-started.md](getting-started.md) |
 | Agent operating rules | [../AGENTS.md](../AGENTS.md) |
 | Product requirements | [prd.md](prd.md) |
 | MVP: self-hosting and LetMeTry strategy pilot | [mvp.md](mvp.md) |
@@ -10,8 +12,14 @@
 | Architecture, modules, task flow, and package plan | [architecture.md](architecture.md) |
 | Core module PRD and architecture narrative | [core-modules.md](core-modules.md) |
 | Data model, source-of-truth rules, and projections | [data-model.md](data-model.md) |
+| Goal → phase → task → workflow loop (run-phases) | [goal-phase-loop.md](goal-phase-loop.md) |
+| Starlark workflow runtime (run-script) | [workflow-runtime.md](workflow-runtime.md) |
 | Provider-neutral Agent Runtime Object Model | [agent-runtime.md](agent-runtime.md) |
 | Agent control plane, lifecycle, queues, and Workbench operations | [agent-control-plane.md](agent-control-plane.md) |
+| Provider/platform adaptation (launch spec, capabilities) | [agent-integration-model.md](agent-integration-model.md) |
+| Per-provider runtime health observability | [member-runtime-observability.md](member-runtime-observability.md) |
+| Resident Claude runtime (opt-in) | [resident-claude.md](resident-claude.md) |
+| Multi-project central store + control plane | [multi-project.md](multi-project.md) |
 | Agent Workbench information architecture | [dashboard.md](dashboard.md) |
 | Agent Workbench docs placement map | [dashboard/README.md](dashboard/README.md) |
 | Agent Workbench frontend design principles | [dashboard/design-principles.md](dashboard/design-principles.md) |
@@ -30,6 +38,7 @@
 | Codex message delivery | [integration/codex-message-delivery.md](integration/codex-message-delivery.md) |
 | Codex source-audit findings | [integration/codex-source-audit.md](integration/codex-source-audit.md) |
 | Claude Code provider integration | [integration/claude.md](integration/claude.md) |
+| Kimi (Moonshot) provider integration | [integration/kimi.md](integration/kimi.md) |
 | Operations | [operations.md](operations.md) |
 | Schemas and minimal object contracts | [schemas.md](schemas.md) |
 | Design decisions | [decisions/README.md](decisions/README.md) |
@@ -41,7 +50,7 @@ integrating project repository, not in the generic core docs.
 
 | Skill | Use |
 | --- | --- |
-| [bootstrap-project-workflow](../.agents/skills/bootstrap-project-workflow/SKILL.md) | Bootstrap or audit docs, CI/CD, diagrams, task workflow, and project governance. |
+| [bootstrap-project-workflow](../skills/bootstrap-project-workflow/SKILL.md) | Bootstrap or audit docs, CI/CD, diagrams, task workflow, and project governance (shipped built-in skill; the doc-governance skill the future doc-sync phase runs). |
 | [generic-agent-harness](../.agents/skills/generic-agent-harness/SKILL.md) | Operate or extend the generic harness objects and message-first workflow. |
 | [multi-agent-system-design](../.agents/skills/multi-agent-system-design/SKILL.md) | Design or audit durable multi-agent mailboxes, delivery, runtime lifecycle, permission messages, and dashboard proof. |
 

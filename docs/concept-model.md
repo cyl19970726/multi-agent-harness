@@ -182,7 +182,7 @@ agent-planned, sequential `phases: Vec<GoalPhase>`, and a `Task` joins its phase
 through `Task.phase_id` (the legacy free-text `Task.phase` label was retired).
 See `crates/harness-core/src/lib.rs` (`struct GoalPhase`, `Goal.phases`,
 `Task.phase_id`) and the phase model in
-[goal-learning-loop.md](goal-learning-loop.md). The phase shape, the phase→task
+[goal-phase-loop.md](goal-phase-loop.md). The phase shape, the phase→task
 DAG, and the `goal run-phases` orchestrator shipped in #146–#153.
 
 ### Closeout Gate
