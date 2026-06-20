@@ -109,6 +109,35 @@
       "reorgTrigger": "Docs grow new stable sections, readers, or machine-consumed groups."
     },
     {
+      "path": "docs/VISION.md",
+      "ownerRole": "product",
+      "status": "stable",
+      "lifecycle": "stable",
+      "canonicalFor": [
+        "product vision",
+        "closed-loop model",
+        "self-improvement flywheel",
+        "roadmap sequencing"
+      ],
+      "dependsOn": [
+        "docs/prd.md",
+        "docs/mvp.md",
+        "docs/decisions/0019-vision-goal-task-workbench-redesign.md",
+        "crates/harness-core/src/lib.rs",
+        "docs/vision/closed-loop.svg",
+        "docs/vision/task-vs-workflow.svg"
+      ],
+      "machineConsumers": [
+        "check-doc-links",
+        "check-doc-governance"
+      ],
+      "reviewAfter": "2026-09-20",
+      "lastVerifiedWith": [
+        "npx pnpm@9.15.4 check"
+      ],
+      "reorgTrigger": "The product vision, the closed-loop model, or the roadmap sequencing changes."
+    },
+    {
       "path": "docs/prd.md",
       "ownerRole": "product",
       "status": "stable",
