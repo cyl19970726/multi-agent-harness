@@ -2786,6 +2786,8 @@ fn plan_into_goal(
                 inputs: parse_outputs(p, "inputs"),
                 retry: parse_retry(p),
                 landed_commit: None,
+                kind: harness_core::PhaseKind::Execution,
+                builtin: None,
             });
             result.phases_added.push(phase_id.clone());
         }
@@ -2970,6 +2972,8 @@ fn goal_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
                     })
                     .transpose()?,
                 landed_commit: None,
+                kind: harness_core::PhaseKind::Execution,
+                builtin: None,
             });
             goal.updated_at = now_string();
             store.append_goal(&goal)?;
@@ -20283,6 +20287,8 @@ agent("a NEW second leaf that changes the ordinal alignment")
                 inputs: Vec::new(),
                 retry: None,
                 landed_commit: None,
+                kind: harness_core::PhaseKind::Execution,
+                builtin: None,
             }],
             knowledge: vec![Knowledge {
                 id: "knowledge-1".into(),
@@ -23106,6 +23112,8 @@ mod tests {
             inputs: Vec::new(),
             retry: None,
             landed_commit: None,
+            kind: harness_core::PhaseKind::Execution,
+            builtin: None,
         }];
         let mut a = make_task("t-a", "goal-compile");
         a.phase_id = Some("phase-1".into());
@@ -23184,6 +23192,8 @@ mod tests {
             inputs: Vec::new(),
             retry: None,
             landed_commit: None,
+            kind: harness_core::PhaseKind::Execution,
+            builtin: None,
         };
         goal.phases = vec![phase.clone()];
         let mut t = make_task("t-bad", "goal-revise");
@@ -23247,6 +23257,8 @@ mod tests {
             inputs: Vec::new(),
             retry: None,
             landed_commit: None,
+            kind: harness_core::PhaseKind::Execution,
+            builtin: None,
         }
     }
 
@@ -25826,6 +25838,8 @@ mod tests {
             inputs: Vec::new(),
             retry: None,
             landed_commit: None,
+            kind: harness_core::PhaseKind::Execution,
+            builtin: None,
         }];
         store.append_goal(&goal).expect("append goal");
     }
