@@ -122,7 +122,12 @@ for t in \
   kimi_parsers_match_the_real_v018_stream_shape \
   kimi_reply_handles_array_content_and_multiple_assistant_frames \
   kimi_status_failed_on_nonzero_exit_and_stale_when_empty \
-  completion_hook_fires_with_run_id_and_status_and_is_noop_without_env ; do
+  completion_hook_fires_with_run_id_and_status_and_is_noop_without_env \
+  phase_kind_defaults_to_execution_and_building_round_trips \
+  building_phase_compiles_to_its_builtin_body_with_no_tasks \
+  builtin_phases_auto_append_run_and_are_idempotent \
+  blocking_doc_sync_failure_fails_the_goal \
+  soft_building_failure_does_not_block_the_goal ; do
   grep -q "test .*$t ... ok" "$TMP/test.log" && ok "unit: $t" || bad "unit: $t did not run/pass"
 done
 # goal-multi-project deterministic regression coverage — one representative test
