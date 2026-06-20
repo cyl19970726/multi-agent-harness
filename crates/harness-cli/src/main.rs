@@ -2223,6 +2223,248 @@ fn land_phase_diffs(
     Ok(Some(sha))
 }
 
+/// A Starlark string literal for `s`. JSON string escaping is a valid Starlark
+/// double-quoted string, so this reuses serde_json to escape `\`, `"`, newlines.
+fn star_lit(s: &str) -> String {
+    serde_json::to_string(s).unwrap_or_else(|_| "\"\"".to_string())
+}
+
+/// A SYSTEM-PROVIDED "building" phase (built-in-phases). Its body is a shipped
+/// Starlark program (`build_builtin_phase_script`), NOT an agent-planned task DAG;
+/// the orchestrator AUTO-APPENDS these after a goal's execution phases pass.
+/// `blocking` building phases fail the goal if they don't pass; soft ones are
+/// best-effort (a failure is recorded but does not block verification).
+struct BuiltinPhaseDef {
+    id: &'static str,
+    name: &'static str,
+    intent: &'static str,
+    acceptance: &'static str,
+    /// Consumed by S2b (auto-append): a failed `blocking` building phase fails the
+    /// goal; a soft one is best-effort (recorded, does not block verification).
+    #[allow(dead_code)]
+    blocking: bool,
+}
+
+/// The built-in building phases, in append order. `doc-sync` is blocking (docs may
+/// not silently drift after a goal ships); `skill-extract` / `self-improve` are
+/// soft (best-effort distillation). Bodies are in `build_builtin_phase_script`.
+const BUILTIN_BUILDING_PHASES: &[BuiltinPhaseDef] = &[
+    BuiltinPhaseDef {
+        id: "doc-sync",
+        name: "Doc sync",
+        intent: "Govern the docs this goal touched (fix drift, register/deprecate, keep the tree mirroring the system) so docs can't silently drift after the goal ships.",
+        acceptance: "The goal's declared doc/skill updates are written, the doc registry is consistent, and the doc CI gates pass.",
+        blocking: true,
+    },
+    BuiltinPhaseDef {
+        id: "skill-extract",
+        name: "Skill extract",
+        intent: "Distil any recurring, contract-stable practice from this goal's run into a Skill (knowledge-lifecycle promotion), or record there is nothing to extract.",
+        acceptance: "A skill was extracted, or an explicit no-op was recorded.",
+        blocking: false,
+    },
+    BuiltinPhaseDef {
+        id: "self-improve",
+        name: "Self improve",
+        intent: "Reflect on the goal: what worked, what failed, anti-patterns, and candidate next goals — a written evaluation.",
+        acceptance: "A goal evaluation was written.",
+        blocking: false,
+    },
+];
+
+fn builtin_phase_def(id: &str) -> Option<&'static BuiltinPhaseDef> {
+    BUILTIN_BUILDING_PHASES.iter().find(|b| b.id == id)
+}
+
+/// The docs a goal declares it must UPDATE (the doc-sync inputs): the `path`s of
+/// its phases' doc-class artifact outputs. Empty → doc-sync audits broadly.
+fn declared_doc_updates(goal: &Goal) -> Vec<String> {
+    use harness_core::ArtifactKind;
+    goal.phases
+        .iter()
+        .flat_map(|p| p.outputs.iter())
+        .filter(|o| {
+            matches!(
+                o.kind,
+                ArtifactKind::DesignDoc
+                    | ArtifactKind::Adr
+                    | ArtifactKind::MigrationDoc
+                    | ArtifactKind::RegisteredDoc
+            )
+        })
+        .filter_map(|o| {
+            o.path
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+        })
+        .collect()
+}
+
+/// A minimal built-in-phase Starlark body: one schema'd agent + a `verdict` on its
+/// `pass` (so the orchestrator's existing status gate enforces it) + `output`.
+fn builtin_single_agent_star(
+    id: &str,
+    def: &BuiltinPhaseDef,
+    prompt: &str,
+    writable: bool,
+) -> String {
+    format!(
+        "workflow({wf}, {intent})\nlog({log})\n_r = agent(\n    {p},\n    provider=\"codex\",\n    label={lbl},\n    writable={w},\n    schema={{\"pass\": \"bool\", \"reason\": \"string\"}},\n)\nverdict(bool(_r) and _r.get(\"pass\") == True, _r.get(\"reason\") if _r else \"built-in phase produced no structured verdict\")\noutput(_r)\n",
+        wf = star_lit(id),
+        intent = star_lit(&format!("{} Acceptance: {}", def.intent, def.acceptance)),
+        log = star_lit(&format!("built-in phase {id}: {}", def.name)),
+        p = star_lit(prompt),
+        lbl = star_lit(id),
+        w = if writable { "True" } else { "False" },
+    )
+}
+
+/// Build the Starlark body for a built-in (building) phase, interpolating the
+/// goal's context. The building-phase counterpart to `compile_phase_to_starlark`
+/// (which compiles an execution phase's task DAG).
+fn build_builtin_phase_script(
+    goal: &Goal,
+    phase: &harness_core::GoalPhase,
+) -> Result<String, String> {
+    let id = phase
+        .builtin
+        .as_deref()
+        .ok_or_else(|| format!("building phase `{}` has no `builtin` id", phase.id))?;
+    let def = builtin_phase_def(id).ok_or_else(|| format!("unknown built-in phase `{id}`"))?;
+    match id {
+        "doc-sync" => {
+            let updates = declared_doc_updates(goal);
+            let updates_md = if updates.is_empty() {
+                "(none declared — audit docs/ for drift this goal may have introduced)".to_string()
+            } else {
+                updates.join(", ")
+            };
+            let prompt = format!(
+                "Built-in doc-sync phase for goal {gid}. Use the bootstrap-project-workflow \
+                 doc-governance skill (its references/governance.md) to govern this repo's docs now \
+                 that the goal's execution phases passed. Apply ONLY conservative, high-confidence \
+                 fixes: factual drift (match code, cite file:line), broken links/refs, register orphan \
+                 docs in docs/registry.json, mark superseded ADRs deprecated with a link to the \
+                 replacement. Do NOT do structural reorg (propose it in your reason instead). Declared \
+                 docs to update: {updates_md}. Then run the doc gates: `node scripts/check-doc-links.mjs \
+                 && node scripts/check-doc-governance.mjs && node scripts/check-doc-size.mjs` — all must \
+                 pass. Return pass=true only if your fixes are applied AND the three gates are green; \
+                 otherwise pass=false with the blocking gap.",
+                gid = goal.id,
+                updates_md = updates_md,
+            );
+            Ok(builtin_single_agent_star("doc-sync", def, &prompt, true))
+        }
+        "skill-extract" => {
+            let prompt = format!(
+                "Built-in skill-extract phase for goal {gid}. Review this goal's run (phases, knowledge \
+                 ledger, what was built) and decide whether a recurring, contract-stable practice should \
+                 be distilled into a Skill (knowledge-lifecycle note->docs->skill). If yes, draft \
+                 skills/<name>/SKILL.md and report it. If nothing is stable/recurring enough, return \
+                 pass=true reason \"nothing to extract\". Best-effort; pass=false only on an actual error.",
+                gid = goal.id,
+            );
+            Ok(builtin_single_agent_star(
+                "skill-extract",
+                def,
+                &prompt,
+                true,
+            ))
+        }
+        "self-improve" => {
+            let prompt = format!(
+                "Built-in self-improve phase for goal {gid}. Reflect and write a short evaluation: what \
+                 worked, what failed, anti-patterns, and 1-3 candidate next goals. Return pass=true with \
+                 the evaluation; pass=false only on error.",
+                gid = goal.id,
+            );
+            Ok(builtin_single_agent_star(
+                "self-improve",
+                def,
+                &prompt,
+                false,
+            ))
+        }
+        _ => Err(format!("no Starlark body for built-in phase `{id}`")),
+    }
+}
+
+/// Compile a phase to its Starlark body: a `Building` phase uses its shipped
+/// built-in body (`build_builtin_phase_script`); an execution phase compiles its
+/// task DAG (`compile_phase_to_starlark`). The single seam the orchestrator calls.
+fn compile_phase_script(
+    goal: &Goal,
+    phase: &harness_core::GoalPhase,
+    all_tasks: &[Task],
+) -> Result<String, String> {
+    if phase.kind == harness_core::PhaseKind::Building {
+        build_builtin_phase_script(goal, phase)
+    } else {
+        compile_phase_to_starlark(goal, phase, all_tasks)
+    }
+}
+
+/// Idempotently append the built-in BUILDING phases AFTER a goal's execution
+/// phases (built-in-phases S2b). Because they are last, the orchestrator runs them
+/// only once the execution phases pass — a failed execution phase returns before
+/// reaching them, so this is the "trigger after acceptance" semantic via ordering.
+/// No-op when any Building phase is already present (resume) or the goal has no
+/// execution phase. Built-in bodies have no task DAG to replan, so `retry=0`.
+/// Returns true when it appended.
+fn ensure_builtin_phases_appended(store: &HarnessStore, goal: &mut Goal) -> CliResult<bool> {
+    if goal
+        .phases
+        .iter()
+        .any(|p| p.kind == harness_core::PhaseKind::Building)
+    {
+        return Ok(false);
+    }
+    if !goal
+        .phases
+        .iter()
+        .any(|p| p.kind == harness_core::PhaseKind::Execution)
+    {
+        return Ok(false);
+    }
+    let now = now_string();
+    for def in BUILTIN_BUILDING_PHASES {
+        goal.phases.push(harness_core::GoalPhase {
+            id: format!("builtin-{}", def.id),
+            name: def.name.to_string(),
+            intent: def.intent.to_string(),
+            status: harness_core::GoalPhaseStatus::NotStarted,
+            acceptance: Some(def.acceptance.to_string()),
+            verdict_decision_id: None,
+            created_at: now.clone(),
+            started_at: None,
+            ended_at: None,
+            outputs: Vec::new(),
+            inputs: Vec::new(),
+            retry: Some(0),
+            landed_commit: None,
+            kind: harness_core::PhaseKind::Building,
+            builtin: Some(def.id.to_string()),
+        });
+    }
+    goal.updated_at = now;
+    store.append_goal(goal)?;
+    Ok(true)
+}
+
+/// True if `phase` is a SOFT (non-blocking) built-in phase: a failure is recorded
+/// but must not block goal verification (built-in-phases S2b).
+fn is_soft_building_phase(phase: &harness_core::GoalPhase) -> bool {
+    phase.kind == harness_core::PhaseKind::Building
+        && phase
+            .builtin
+            .as_deref()
+            .and_then(builtin_phase_def)
+            .map(|d| !d.blocking)
+            .unwrap_or(false)
+}
+
 /// Sequence a goal's phases: gate each on its verdict before the next, write each
 /// phase's task outcomes back, advance the goal's derived stage, and persist a
 /// durable [`GoalOrchestrationRun`] checkpoint. Already-`Passed` phases are
@@ -2239,12 +2481,22 @@ fn orchestrate_goal_phases(
     revise_phase: &PhaseReviseFn<'_>,
     max_phase_retries: u32,
     repo_root: &Path,
+    append_builtin: bool,
 ) -> CliResult<serde_json::Value> {
     let mut goal = goal_load(store, goal_id)?;
     if goal.phases.is_empty() {
         return Err(CliError::Usage(format!(
             "goal `{goal_id}` has no phases to run — plan it first (`goal phase-add` or the planner)"
         )));
+    }
+
+    // built-in-phases S2b: append the BUILDING phases (doc-sync / skill-extract /
+    // self-improve) after the execution phases (idempotent). They run last, so they
+    // fire only once the execution phases pass — a failed execution phase returns
+    // before reaching them. A resume sees them already present and skips. Gated by
+    // `append_builtin` (opt-in: CLI `--builtin-phases`; default off until proven).
+    if append_builtin {
+        ensure_builtin_phases_appended(store, &mut goal)?;
     }
 
     // Snapshot this goal's prior orchestration history (append-ordered) BEFORE we
@@ -2394,7 +2646,7 @@ fn orchestrate_goal_phases(
                 .filter(|t| t.goal_id.as_deref() == Some(goal.id.as_str()))
                 .collect();
             let script =
-                compile_phase_to_starlark(&goal, &phase, &goal_tasks).map_err(CliError::Usage)?;
+                compile_phase_script(&goal, &phase, &goal_tasks).map_err(CliError::Usage)?;
             let hash = content_hash_hex16(&script);
             let dir = store.root().join("compiled");
             std::fs::create_dir_all(&dir)?;
@@ -2591,6 +2843,17 @@ fn orchestrate_goal_phases(
         }
 
         if !passed {
+            // built-in-phases S2b: a SOFT building phase (skill-extract / self-improve)
+            // is best-effort — its failure is already captured (knowledge + the
+            // clean_fail verdict Decision + the passed=false OrchestrationPhaseRun) — but
+            // it must NOT block the goal. Mark it Passed (settled, non-blocking) and
+            // continue; only execution + BLOCKING built-in phases (doc-sync) fail the run.
+            if is_soft_building_phase(&goal.phases[idx]) {
+                goal.phases[idx].status = GoalPhaseStatus::Passed;
+                goal.updated_at = now_string();
+                store.append_goal(&goal)?;
+                continue;
+            }
             orch.status = OrchestrationStatus::Failed;
             store.append_goal_orchestration_run(&orch)?;
             sync_goal_stage(store, &mut goal)?;
@@ -2786,6 +3049,8 @@ fn plan_into_goal(
                 inputs: parse_outputs(p, "inputs"),
                 retry: parse_retry(p),
                 landed_commit: None,
+                kind: harness_core::PhaseKind::Execution,
+                builtin: None,
             });
             result.phases_added.push(phase_id.clone());
         }
@@ -2970,6 +3235,8 @@ fn goal_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
                     })
                     .transpose()?,
                 landed_commit: None,
+                kind: harness_core::PhaseKind::Execution,
+                builtin: None,
             });
             goal.updated_at = now_string();
             store.append_goal(&goal)?;
@@ -3272,6 +3539,7 @@ fn goal_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
                 &revise_phase,
                 max_phase_retries,
                 &repo_root,
+                has_flag(args, "--builtin-phases"),
             )?;
             print_json(&report)?;
             if report.get("status").and_then(|s| s.as_str()) == Some("failed") {
@@ -20283,6 +20551,8 @@ agent("a NEW second leaf that changes the ordinal alignment")
                 inputs: Vec::new(),
                 retry: None,
                 landed_commit: None,
+                kind: harness_core::PhaseKind::Execution,
+                builtin: None,
             }],
             knowledge: vec![Knowledge {
                 id: "knowledge-1".into(),
@@ -23055,6 +23325,66 @@ mod tests {
         }
     }
 
+    #[test]
+    fn building_phase_compiles_to_its_builtin_body_with_no_tasks() {
+        // built-in-phases S2a: a Building phase compiles to its SHIPPED Starlark
+        // body (NOT a task DAG) — referencing the doc-governance skill + a verdict,
+        // and needing zero tasks.
+        let goal = make_goal("g-bi");
+        let phase = harness_core::GoalPhase {
+            id: "doc-sync".into(),
+            name: "Doc sync".into(),
+            intent: "i".into(),
+            status: harness_core::GoalPhaseStatus::NotStarted,
+            acceptance: None,
+            verdict_decision_id: None,
+            created_at: "unix-ms:1".into(),
+            started_at: None,
+            ended_at: None,
+            outputs: Vec::new(),
+            inputs: Vec::new(),
+            retry: None,
+            landed_commit: None,
+            kind: harness_core::PhaseKind::Building,
+            builtin: Some("doc-sync".into()),
+        };
+        let script = compile_phase_script(&goal, &phase, &[])
+            .expect("building phase compiles with no tasks");
+        assert!(
+            script.contains("bootstrap-project-workflow"),
+            "doc-sync body references the doc-governance skill: {script}"
+        );
+        assert!(
+            script.contains("verdict("),
+            "building body emits a verdict: {script}"
+        );
+        assert!(
+            script.contains("workflow("),
+            "building body has a workflow header: {script}"
+        );
+
+        // An unknown builtin id is a clear error.
+        let bad = harness_core::GoalPhase {
+            builtin: Some("nope".into()),
+            ..phase.clone()
+        };
+        assert!(
+            compile_phase_script(&goal, &bad, &[]).is_err(),
+            "unknown builtin id must error"
+        );
+
+        // An execution phase with no tasks still errors (today's behavior unchanged).
+        let exec = harness_core::GoalPhase {
+            kind: harness_core::PhaseKind::Execution,
+            builtin: None,
+            ..phase.clone()
+        };
+        assert!(
+            compile_phase_script(&goal, &exec, &[]).is_err(),
+            "execution phase with no tasks errors as before"
+        );
+    }
+
     fn make_task(id: &str, goal_id: &str) -> Task {
         Task {
             design_md: None,
@@ -23106,6 +23436,8 @@ mod tests {
             inputs: Vec::new(),
             retry: None,
             landed_commit: None,
+            kind: harness_core::PhaseKind::Execution,
+            builtin: None,
         }];
         let mut a = make_task("t-a", "goal-compile");
         a.phase_id = Some("phase-1".into());
@@ -23184,6 +23516,8 @@ mod tests {
             inputs: Vec::new(),
             retry: None,
             landed_commit: None,
+            kind: harness_core::PhaseKind::Execution,
+            builtin: None,
         };
         goal.phases = vec![phase.clone()];
         let mut t = make_task("t-bad", "goal-revise");
@@ -23247,6 +23581,8 @@ mod tests {
             inputs: Vec::new(),
             retry: None,
             landed_commit: None,
+            kind: harness_core::PhaseKind::Execution,
+            builtin: None,
         }
     }
 
@@ -23362,8 +23698,9 @@ mod tests {
          -> CliResult<(String, workflow::WorkflowOutcome)> {
             Ok(mock_outcome(&store, name, WorkflowRunStatus::Completed))
         };
-        let report = orchestrate_goal_phases(&store, "g-orch", &run_phase, &noop_reviser, 0, &root)
-            .expect("orchestrate");
+        let report =
+            orchestrate_goal_phases(&store, "g-orch", &run_phase, &noop_reviser, 0, &root, false)
+                .expect("orchestrate");
         assert_eq!(report["status"], "completed");
         assert_eq!(report["stage"], "verified");
 
@@ -23393,6 +23730,160 @@ mod tests {
             .filter(|d| d.decision_kind.as_deref() == Some("phase_verdict"))
             .collect();
         assert_eq!(verdicts.len(), 2, "one phase_verdict decision per phase");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn builtin_phases_auto_append_run_and_are_idempotent() {
+        // built-in-phases S2b: a goal whose execution phases pass auto-appends and
+        // runs the 3 built-in building phases (doc-sync/skill-extract/self-improve),
+        // each journaled like any phase, and a second run-phases adds NO duplicates.
+        let root = std::env::temp_dir().join(format!("harness-bi-{}", generated_id("bi")));
+        let store = HarnessStore::new(&root);
+        store.init().expect("init");
+        let mut goal = make_goal("g-bi");
+        goal.phases = vec![orch_phase("p1")];
+        persist_new_goal(&store, &goal).unwrap();
+        let mut t = make_task("t1", "g-bi");
+        t.phase_id = Some("p1".into());
+        t.owned_paths = vec!["a".into()];
+        persist_new_task(&store, &t).unwrap();
+
+        let run_phase = |_s: &str,
+                         name: &str,
+                         _r: Option<&str>|
+         -> CliResult<(String, workflow::WorkflowOutcome)> {
+            Ok(mock_outcome(&store, name, WorkflowRunStatus::Completed))
+        };
+        let report =
+            orchestrate_goal_phases(&store, "g-bi", &run_phase, &noop_reviser, 0, &root, true)
+                .expect("orchestrate");
+        assert_eq!(report["status"], "completed");
+        assert_eq!(report["stage"], "verified");
+
+        let g = goal_load(&store, "g-bi").unwrap();
+        assert_eq!(
+            g.phases.len(),
+            4,
+            "execution phase + 3 built-in building phases"
+        );
+        let building: Vec<&str> = g
+            .phases
+            .iter()
+            .filter(|p| p.kind == harness_core::PhaseKind::Building)
+            .filter_map(|p| p.builtin.as_deref())
+            .collect();
+        assert_eq!(building, vec!["doc-sync", "skill-extract", "self-improve"]);
+        assert!(g.phases.iter().all(|p| p.status == GoalPhaseStatus::Passed));
+
+        // Audit chain: every phase (incl. building) journaled an OrchestrationPhaseRun.
+        let orch = store.goal_orchestration_runs().unwrap();
+        assert_eq!(orch.last().unwrap().phase_runs.len(), 4);
+
+        // Idempotent: a second run-phases appends NO duplicate building phases.
+        let report2 =
+            orchestrate_goal_phases(&store, "g-bi", &run_phase, &noop_reviser, 0, &root, true)
+                .expect("re-orchestrate");
+        assert_eq!(report2["status"], "completed");
+        assert_eq!(
+            goal_load(&store, "g-bi").unwrap().phases.len(),
+            4,
+            "no duplicate built-in phases on re-run"
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn blocking_doc_sync_failure_fails_the_goal() {
+        // built-in-phases S2b: a failed BLOCKING built-in phase (doc-sync) fails the
+        // orchestration — the goal does NOT verify (docs may not silently drift).
+        let root = std::env::temp_dir().join(format!("harness-bk-{}", generated_id("bk")));
+        let store = HarnessStore::new(&root);
+        store.init().expect("init");
+        let mut goal = make_goal("g-bk");
+        goal.phases = vec![orch_phase("p1")];
+        persist_new_goal(&store, &goal).unwrap();
+        let mut t = make_task("t1", "g-bk");
+        t.phase_id = Some("p1".into());
+        t.owned_paths = vec!["a".into()];
+        persist_new_task(&store, &t).unwrap();
+
+        let run_phase = |_s: &str,
+                         name: &str,
+                         _r: Option<&str>|
+         -> CliResult<(String, workflow::WorkflowOutcome)> {
+            let status = if name == "phase-builtin-doc-sync" {
+                WorkflowRunStatus::Failed
+            } else {
+                WorkflowRunStatus::Completed
+            };
+            Ok(mock_outcome(&store, name, status))
+        };
+        let report =
+            orchestrate_goal_phases(&store, "g-bk", &run_phase, &noop_reviser, 0, &root, true)
+                .expect("orchestrate");
+        assert_eq!(report["status"], "failed");
+        assert_eq!(report["failed_phase"], "builtin-doc-sync");
+        assert_ne!(
+            goal_load(&store, "g-bk").unwrap().effective_stage(),
+            GoalStage::Verified,
+            "a blocking doc-sync failure must block verification"
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn soft_building_failure_does_not_block_the_goal() {
+        // built-in-phases S2b: a failed SOFT built-in phase (skill-extract) is
+        // recorded (clean_fail verdict Decision) but marked settled, so the goal
+        // still verifies — soft phases are best-effort.
+        let root = std::env::temp_dir().join(format!("harness-sf-{}", generated_id("sf")));
+        let store = HarnessStore::new(&root);
+        store.init().expect("init");
+        let mut goal = make_goal("g-sf");
+        goal.phases = vec![orch_phase("p1")];
+        persist_new_goal(&store, &goal).unwrap();
+        let mut t = make_task("t1", "g-sf");
+        t.phase_id = Some("p1".into());
+        t.owned_paths = vec!["a".into()];
+        persist_new_task(&store, &t).unwrap();
+
+        let run_phase = |_s: &str,
+                         name: &str,
+                         _r: Option<&str>|
+         -> CliResult<(String, workflow::WorkflowOutcome)> {
+            let status = if name == "phase-builtin-skill-extract" {
+                WorkflowRunStatus::Failed
+            } else {
+                WorkflowRunStatus::Completed
+            };
+            Ok(mock_outcome(&store, name, status))
+        };
+        let report =
+            orchestrate_goal_phases(&store, "g-sf", &run_phase, &noop_reviser, 0, &root, true)
+                .expect("orchestrate");
+        assert_eq!(report["status"], "completed");
+        assert_eq!(report["stage"], "verified");
+
+        let g = goal_load(&store, "g-sf").unwrap();
+        let se = g
+            .phases
+            .iter()
+            .find(|p| p.builtin.as_deref() == Some("skill-extract"))
+            .unwrap();
+        assert_eq!(
+            se.status,
+            GoalPhaseStatus::Passed,
+            "soft phase is marked settled despite its failing run"
+        );
+        // ...but the failure is honestly recorded as a clean_fail verdict Decision.
+        let decisions = store.decisions().unwrap();
+        assert!(
+            decisions.iter().any(|d| {
+                d.decision.contains("builtin-skill-extract") && d.decision.contains("clean_fail")
+            }),
+            "the soft phase's failure is recorded as a clean_fail verdict"
+        );
         std::fs::remove_dir_all(&root).ok();
     }
 
@@ -23857,9 +24348,16 @@ mod tests {
             ))
         };
         // The store root is an empty dir → no working-tree fallback hit either.
-        let report =
-            orchestrate_goal_phases(&store, "g-art-absent", &run_phase, &noop_reviser, 0, &root)
-                .expect("orchestrate");
+        let report = orchestrate_goal_phases(
+            &store,
+            "g-art-absent",
+            &run_phase,
+            &noop_reviser,
+            0,
+            &root,
+            false,
+        )
+        .expect("orchestrate");
         assert_eq!(report["status"], "failed");
         assert_eq!(report["failed_phase"], "p1");
         let goal2 = goal_load(&store, "g-art-absent").unwrap();
@@ -23920,6 +24418,7 @@ mod tests {
             &noop_reviser,
             0,
             &repo_root,
+            false,
         )
         .expect("orchestrate");
         assert_eq!(report["status"], "completed");
@@ -23973,9 +24472,16 @@ mod tests {
          -> CliResult<(String, workflow::WorkflowOutcome)> {
             Ok(mock_outcome(&store, name, WorkflowRunStatus::Completed))
         };
-        let report =
-            orchestrate_goal_phases(&store, "g-art-wt", &run_phase, &noop_reviser, 0, &repo_root)
-                .expect("orchestrate");
+        let report = orchestrate_goal_phases(
+            &store,
+            "g-art-wt",
+            &run_phase,
+            &noop_reviser,
+            0,
+            &repo_root,
+            false,
+        )
+        .expect("orchestrate");
         assert_eq!(report["status"], "completed");
         std::fs::remove_dir_all(&root).ok();
         std::fs::remove_dir_all(&repo_root).ok();
@@ -24046,6 +24552,7 @@ mod tests {
             &noop_reviser,
             0,
             &repo_root,
+            false,
         )
         .expect("orchestrate");
         assert_eq!(report["status"], "failed");
@@ -24120,6 +24627,7 @@ mod tests {
             &noop_reviser,
             0,
             &repo_root,
+            false,
         )
         .expect("orchestrate");
         assert_eq!(report["status"], "completed");
@@ -24175,9 +24683,16 @@ mod tests {
         };
 
         // Global cap is 0 — but the phase's retry=2 wins.
-        let report =
-            orchestrate_goal_phases(&store, "g-retry", &run_phase, &revise_phase, 0, &root)
-                .expect("orchestrate");
+        let report = orchestrate_goal_phases(
+            &store,
+            "g-retry",
+            &run_phase,
+            &revise_phase,
+            0,
+            &root,
+            false,
+        )
+        .expect("orchestrate");
         assert_eq!(report["status"], "failed");
         assert_eq!(
             *attempts.borrow(),
@@ -24232,6 +24747,7 @@ mod tests {
             &noop_reviser,
             0,
             &repo_root,
+            false,
         )
         .expect("orchestrate");
         assert_eq!(report["status"], "failed");
@@ -24305,6 +24821,7 @@ mod tests {
             &noop_reviser,
             0,
             &repo_root,
+            false,
         )
         .expect("orchestrate");
         assert_eq!(report["status"], "completed");
@@ -24343,9 +24860,16 @@ mod tests {
          -> CliResult<(String, workflow::WorkflowOutcome)> {
             Ok(mock_outcome_with_diff(&store, name, "src/new.rs"))
         };
-        let report =
-            orchestrate_goal_phases(&store, "g-land", &run_phase, &noop_reviser, 0, &repo_root)
-                .expect("orchestrate");
+        let report = orchestrate_goal_phases(
+            &store,
+            "g-land",
+            &run_phase,
+            &noop_reviser,
+            0,
+            &repo_root,
+            false,
+        )
+        .expect("orchestrate");
         assert_eq!(report["status"], "completed");
 
         // The file is committed AND present in the working tree.
@@ -24421,9 +24945,16 @@ mod tests {
          -> CliResult<(String, workflow::WorkflowOutcome)> {
             Ok(mock_outcome(&store, name, WorkflowRunStatus::Completed))
         };
-        let report =
-            orchestrate_goal_phases(&store, "g-ro", &run_phase, &noop_reviser, 0, &repo_root)
-                .expect("orchestrate");
+        let report = orchestrate_goal_phases(
+            &store,
+            "g-ro",
+            &run_phase,
+            &noop_reviser,
+            0,
+            &repo_root,
+            false,
+        )
+        .expect("orchestrate");
         assert_eq!(report["status"], "completed");
 
         // No new commit; no landed_commit recorded.
@@ -24484,6 +25015,7 @@ mod tests {
             &noop_reviser,
             0,
             &repo_root,
+            false,
         )
         .expect("orchestrate");
         assert_eq!(report["status"], "failed");
@@ -24707,9 +25239,16 @@ mod tests {
          -> CliResult<(String, workflow::WorkflowOutcome)> {
             Ok(mock_outcome(&store, name, WorkflowRunStatus::Completed))
         };
-        let report =
-            orchestrate_goal_phases(&store, "g-art-opt", &run_phase, &noop_reviser, 0, &root)
-                .expect("orchestrate");
+        let report = orchestrate_goal_phases(
+            &store,
+            "g-art-opt",
+            &run_phase,
+            &noop_reviser,
+            0,
+            &root,
+            false,
+        )
+        .expect("orchestrate");
         assert_eq!(report["status"], "completed");
         std::fs::remove_dir_all(&root).ok();
     }
@@ -24773,8 +25312,9 @@ mod tests {
             };
             Ok(mock_outcome(&store, name, status))
         };
-        let report = orchestrate_goal_phases(&store, "g-fail", &run_phase, &noop_reviser, 0, &root)
-            .expect("orchestrate");
+        let report =
+            orchestrate_goal_phases(&store, "g-fail", &run_phase, &noop_reviser, 0, &root, false)
+                .expect("orchestrate");
         assert_eq!(report["status"], "failed");
         assert_eq!(report["failed_phase"], "p1");
 
@@ -24815,8 +25355,9 @@ mod tests {
             };
             Ok(mock_outcome(&store, name, status))
         };
-        let report = orchestrate_goal_phases(&store, "g-resume", &first, &noop_reviser, 0, &root)
-            .expect("first orchestrate");
+        let report =
+            orchestrate_goal_phases(&store, "g-resume", &first, &noop_reviser, 0, &root, false)
+                .expect("first orchestrate");
         assert_eq!(report["status"], "failed");
         assert_eq!(report["failed_phase"], "p2");
         let goal_after_first = goal_load(&store, "g-resume").unwrap();
@@ -24835,8 +25376,9 @@ mod tests {
                 .push((name.to_string(), resume_from.map(str::to_string)));
             Ok(mock_outcome(&store, name, WorkflowRunStatus::Completed))
         };
-        let report = orchestrate_goal_phases(&store, "g-resume", &second, &noop_reviser, 0, &root)
-            .expect("second orchestrate");
+        let report =
+            orchestrate_goal_phases(&store, "g-resume", &second, &noop_reviser, 0, &root, false)
+                .expect("second orchestrate");
         assert_eq!(report["status"], "completed");
 
         let invocations = seen.into_inner();
@@ -24930,9 +25472,16 @@ mod tests {
             }))
         };
 
-        let report =
-            orchestrate_goal_phases(&store, "g-replan", &run_phase, &revise_phase, 1, &root)
-                .expect("orchestrate");
+        let report = orchestrate_goal_phases(
+            &store,
+            "g-replan",
+            &run_phase,
+            &revise_phase,
+            1,
+            &root,
+            false,
+        )
+        .expect("orchestrate");
         assert_eq!(
             report["status"], "completed",
             "phase should pass within the cap"
@@ -25023,8 +25572,9 @@ mod tests {
             }))
         };
 
-        let report = orchestrate_goal_phases(&store, "g-cap", &run_phase, &revise_phase, 2, &root)
-            .expect("orchestrate");
+        let report =
+            orchestrate_goal_phases(&store, "g-cap", &run_phase, &revise_phase, 2, &root, false)
+                .expect("orchestrate");
         assert_eq!(report["status"], "failed");
         assert_eq!(report["failed_phase"], "p1");
         assert_eq!(*attempts.borrow(), 3, "initial run + 2 retries");
@@ -25071,8 +25621,9 @@ mod tests {
             *attempts.borrow_mut() += 1;
             Ok(mock_outcome(&store, name, WorkflowRunStatus::Failed))
         };
-        let report = orchestrate_goal_phases(&store, "g-noop", &run_phase, &noop_reviser, 5, &root)
-            .expect("orchestrate");
+        let report =
+            orchestrate_goal_phases(&store, "g-noop", &run_phase, &noop_reviser, 5, &root, false)
+                .expect("orchestrate");
         assert_eq!(report["status"], "failed");
         assert_eq!(
             *attempts.borrow(),
@@ -25826,6 +26377,8 @@ mod tests {
             inputs: Vec::new(),
             retry: None,
             landed_commit: None,
+            kind: harness_core::PhaseKind::Execution,
+            builtin: None,
         }];
         store.append_goal(&goal).expect("append goal");
     }
