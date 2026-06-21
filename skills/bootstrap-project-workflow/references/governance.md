@@ -48,11 +48,12 @@ does not depend on a language, a registry format, or a CI runner:
 - the doc tree mirrors the key-module decomposition (see SKILL.md "Key Modules
   Drive Directory Shape").
 
-The ENFORCER is project-specific; the contract is not. This repository enforces
-it with `docs/registry.json` + `scripts/check-doc-*.mjs` today (see below); a Go,
-Python, mdBook, or no-node project should hold the same contract through its own
-gate. The harness is converging these into a project-portable governance check so
-any operated project inherits the contract without hosting per-repo scripts.
+The ENFORCER is project-specific; the contract is not. The harness enforces it
+with a project-portable native gate, `harness governance check` (the
+`harness-governance` crate), driven by a per-project `.governance.toml` and the
+registry it declares (default `docs/registry.json`); see the governance-engine
+doc (`docs/governance-engine.md`). So a Go, Python, mdBook, or no-node project
+inherits the same contract without hosting per-repo scripts.
 
 ## Documentation Lifecycle Metadata
 
@@ -75,7 +76,7 @@ The registry is DATA; the gate that enforces it is a separate surface. In this
 repository the registry is `docs/registry.json` (schema
 `agent_harness.docs_registry.v1`), which requires **camelCase** keys
 (`ownerRole`, `canonicalFor`, `dependsOn`, `machineConsumers`, `reviewAfter`,
-…). It is enforced by `scripts/check-doc-*.mjs` in CI **and** re-run by the
+…). It is enforced by `harness governance check` in CI **and** re-run by the
 doc-sync built-in phase after a goal's execution phases pass (see "Integration
 With The doc-sync Phase"). Mirror the field set your project's registry declares;
 the snake_case names above are illustrative only.
