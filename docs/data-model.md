@@ -34,9 +34,12 @@ from harness state without relying on chat memory or provider transcripts.
 
 | Concept | Canonical object | Projection or evidence |
 | --- | --- | --- |
+| Product purpose | PRD and design basis | README summaries |
+| Object meaning | [concept-model.md](concept-model.md) and schemas | Dashboard labels, CLI help |
+| Coordination state | Harness store | Provider transcripts, hooks, logs |
 | Goal status | `Goal` + `Decision` + `GoalEvaluation` | Dashboard goal lane |
 | Task graph | `Task` records and edge fields | Kanban columns, graph view |
-| Assignment | `Message(kind=task)` delivery | `Task.assignee_agent_id`, member current task |
+| Work assignment | `Task` plus delivered `Message(kind=task)` | `Task.assignee_agent_id`, member current task, Dashboard lanes |
 | Agent identity | `AgentMember` | provider thread id, prompt file |
 | Runtime health | `AgentRuntime` + `AgentEvent` | pid, socket, provider stdout |
 | Provider interaction | `ProviderSession` | raw transcript, JSONL frames, hook payloads |
@@ -144,7 +147,13 @@ targets:
 3. Accepted non-trivial work has assignee report, evidence refs, and review.
 4. Accepted proposals name changed paths and check or review evidence.
 5. Provider failure tied to the only assignment path blocks acceptance.
-6. Domain project facts enter through adapters, not generic core state.
+6. Domain project facts and behavior enter through adapters, skills, and tool
+   descriptors, not generic core state.
+7. A proposal cannot be accepted by the same worker as a global decision.
+8. Parallel file-changing tasks need distinct workspaces, branches, or explicit
+   owned-path coordination.
+9. Repeated manual work must become a CLI, skill, adapter, Dashboard view, CI
+   gate, or follow-up task.
 
 ## Relationship To Schemas
 

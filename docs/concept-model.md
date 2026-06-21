@@ -18,20 +18,7 @@ Goal -> Scenario -> Infra -> Agent Team -> Task Graph -> Message Delivery
 The harness is the coordination and evidence system. Project-specific tools
 are connected through adapters.
 
-## Source Of Truth
-
-| Concept | Canonical source | Projection or evidence |
-| --- | --- | --- |
-| Product purpose | PRD and design basis | README summaries |
-| Object meaning | This concept model and schemas | Dashboard labels, CLI help |
-| Coordination state | Harness store | Provider transcripts, hooks, logs |
-| Work assignment | `Task` plus `Message(kind=task)` | `assignee_agent_id`, Dashboard lanes |
-| Runtime execution | `AgentRuntime`, `ProviderSession`, `AgentEvent` | provider stdout, hook payloads |
-| Acceptance | `Proposal`, `Evidence`, `Decision` | chat summaries |
-| Learning | `GoalEvaluation`, `GoalCase` | follow-up notes |
-
-Provider sessions, hooks, and raw logs are evidence sources. They are not the
-coordination state machine.
+Source-of-truth rules and gate invariants now live in [data-model.md](data-model.md). This document keeps object meaning, relationship rules, and open-enum vocabularies.
 
 ## Core Object Relationships
 
@@ -255,26 +242,7 @@ Rules:
 Failure mode this prevents: a polished UI that hides whether the harness
 workflow really happened.
 
-## Anti-Drift Invariants
-
-These invariants should become CLI/API/CI checks as the implementation matures.
-Invariant 1 is now enforced by the `goal close` closeout gate (see the Closeout
-Gate section above); the rest remain documented targets:
-
-1. A goal cannot be closed without a closeout decision (with evidence) and a
-   goal evaluation, or an explicit waiver — **enforced** by CLI `goal close`.
-2. A task cannot be considered assigned without a prior `Message(kind=task)`.
-3. A non-trivial worker claim cannot be accepted without a report message and
-   evidence refs.
-4. A proposal cannot be accepted by the same worker as a global decision.
-5. A failed provider delivery cannot be ignored when it is the only assignment
-   path.
-6. Parallel file-changing tasks need distinct workspaces, branches, or explicit
-   owned-path coordination.
-7. Project-specific behavior must enter through adapters, skills, and tool
-   descriptors, not generic core runtime code.
-8. Repeated manual work must become a CLI, skill, adapter, Dashboard view, CI
-   gate, or follow-up task.
+Gate invariants are maintained in [data-model.md](data-model.md).
 
 ## What To Ask Before Adding A Module
 
