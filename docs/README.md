@@ -14,6 +14,7 @@
 | Data model, source-of-truth rules, and projections | [data-model.md](data-model.md) |
 | Goal → phase → task → workflow loop (run-phases) | [goal-phase-loop.md](goal-phase-loop.md) |
 | Starlark workflow runtime (run-script) | [workflow-runtime.md](workflow-runtime.md) |
+| Doc/skill governance engine (harness governance) | [governance-engine.md](governance-engine.md) |
 | Provider-neutral Agent Runtime Object Model | [agent-runtime.md](agent-runtime.md) |
 | Agent control plane, lifecycle, queues, and Workbench operations | [agent-control-plane.md](agent-control-plane.md) |
 | Provider/platform adaptation (launch spec, capabilities) | [agent-integration-model.md](agent-integration-model.md) |
