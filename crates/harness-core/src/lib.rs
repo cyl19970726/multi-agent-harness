@@ -4969,6 +4969,15 @@ pub struct ProviderCapabilities {
     /// capability matrix: `cost`). Defaults to `false`.
     #[serde(default)]
     pub cost: bool,
+    /// Platform can run a leaf that is PHYSICALLY prevented from mutating the
+    /// workspace — codex `--sandbox read-only`, claude a read-only tool allowlist
+    /// (`Read,Grep,Glob`). When `false` the provider has NO read-only mode (kimi's
+    /// headless `kimi -p` rejects every permission flag), so a read-only leaf must be
+    /// isolated in a throwaway worktree to keep its writes off the live repo rather
+    /// than trusted to stay read-only. Defaults to `false` = assume-unenforceable
+    /// (the safe default: isolate an unknown provider's read-only leaves too).
+    #[serde(default)]
+    pub enforces_read_only: bool,
 }
 
 impl ProviderCapabilities {
@@ -4984,6 +4993,7 @@ impl ProviderCapabilities {
             hooks: false,             // limited in exec mode
             schema: true,             // --output-schema <file>
             cost: false,              // token usage only, no total_cost_usd
+            enforces_read_only: true, // --sandbox read-only
         }
     }
 
@@ -4998,6 +5008,7 @@ impl ProviderCapabilities {
             hooks: false,             // not documented
             schema: true,             // --json-schema → result.structured_output
             cost: true,               // result.total_cost_usd
+            enforces_read_only: true, // --allowedTools Read,Grep,Glob (no Edit/Write/Bash)
         }
     }
 
@@ -5022,6 +5033,11 @@ impl ProviderCapabilities {
             hooks: false,             // UNKNOWN: no lifecycle hook bridge
             schema: false,            // UNKNOWN: degrade to text-extract fallback
             cost: false,              // UNKNOWN: degrade to token-estimate
+            // VERIFIED false: `kimi -p` rejects every permission flag (-y/--auto/
+            // --plan) and has no tool allowlist, so it has NO read-only mode. A
+            // read-only kimi leaf must be worktree-isolated, not trusted (the live
+            // CLI was confirmed to edit the shared tree from a read-only leaf).
+            enforces_read_only: false,
         }
     }
 
@@ -5042,6 +5058,7 @@ impl std::fmt::Display for ProviderCapabilities {
             ("hooks", self.hooks),
             ("schema", self.schema),
             ("cost", self.cost),
+            ("enforces_read_only", self.enforces_read_only),
         ];
         let enabled: Vec<&str> = features
             .iter()

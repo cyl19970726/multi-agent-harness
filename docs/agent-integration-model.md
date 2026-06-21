@@ -286,6 +286,7 @@ pub struct ProviderCapabilities {
     pub hooks: bool,              // lifecycle hook surface
     pub schema: bool,             // native structured-output / JSON-schema flag
     pub cost: bool,               // provider reports billed USD in terminal frame
+    pub enforces_read_only: bool, // can physically run a read-only (non-mutating) leaf
 }
 ```
 
@@ -302,15 +303,30 @@ values per implementation:
 | hooks | no (limited) | no | no (unverified) |
 | schema | yes (`--output-schema`) | yes (`--json-schema`) | no (text-extract fallback) |
 | cost | no (token usage only) | yes (`result.total_cost_usd`) | no (token-estimate fallback) |
+| enforces_read_only | yes (`--sandbox read-only`) | yes (read-only tool allowlist `Read,Grep,Glob`) | **no** (`kimi -p` rejects every permission flag) |
 
 **Implementation:** `ProviderCapabilities::codex_exec()`,
 `ProviderCapabilities::claude_exec()`, and `ProviderCapabilities::kimi_exec()`
 return the columns above (see
-[crates/harness-core/src/lib.rs](../crates/harness-core/src/lib.rs)). The
+[crates/harness-core/src/lib.rs](../crates/harness-core/src/lib.rs)). Most of the
 `kimi_exec()` row is intentionally conservative — every axis except `streaming`
 is `false` = degraded-until-verified against the live binary, not a positive
 claim of absence. The snapshot can include these capabilities so the Dashboard
 shows honest per-provider support.
+
+`enforces_read_only` is different: it is a **VERIFIED** `false` for kimi, not a
+TBD. The live `kimi -p` rejects every permission flag (`-y`/`--auto`/`--plan`)
+and has no tool allowlist, so it has NO read-only mode — a leaf the workflow
+declares read-only can still edit the live tree (observed in dogfooding: a
+read-only kimi leaf edited two checked-in docs). The harness compensates
+**structurally** rather than trusting the provider: a read-only leaf whose
+provider can't enforce read-only is run in a throwaway git worktree anyway, so
+its writes land in a discardable checkout instead of the live repo
+(`step_needs_isolation` / `provider_enforces_read_only` in
+[crates/harness-cli/src/main.rs](../crates/harness-cli/src/main.rs)). On a non-git
+project there is no worktree to isolate into, so the leaf degrades to the shared
+cwd with a printed warning. The default-trait and unknown-provider values are
+`false` (assume-unenforceable = the safe default: isolate).
 
 ### The adapter boundary (generalized from earning-engine)
 

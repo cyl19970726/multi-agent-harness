@@ -245,8 +245,18 @@ Source: `crates/harness-cli/src/main.rs:14779-14790`.
 
 But the real `kimi -p` headless delivery path does **not** use them. Kimi v0.18 rejects permission
 flags combined with `--prompt` / `-p`, so `spawn_kimi_ephemeral` and `run_kimi_exec_delivery_real`
-pass no permission flag. Writable vs read-only boundaries are therefore enforced by harness-owned
-worktree isolation and task ownership, not a Kimi CLI flag.
+pass no permission flag. This means kimi has **no read-only mode at all**: a leaf the workflow
+declares read-only can still edit the live tree (observed in dogfooding — a read-only kimi leaf
+edited two checked-in docs).
+
+Writable vs read-only boundaries are therefore enforced **structurally by the harness**, not by a
+Kimi CLI flag. Kimi declares `enforces_read_only = false` in `ProviderCapabilities::kimi_exec()`
+(unlike codex `--sandbox read-only` and claude's `Read,Grep,Glob` tool allowlist), and the workflow
+leaf runner reads that capability: a read-only leaf whose provider can't enforce read-only is run in
+a throwaway git worktree anyway, so any writes land in a discardable checkout instead of the live
+repo (`provider_enforces_read_only` / `step_needs_isolation`,
+`crates/harness-cli/src/main.rs`). On a non-git project there is no worktree to isolate into, so the
+leaf degrades to the shared cwd with a printed warning that its writes are not contained.
 
 Source: `crates/harness-cli/src/main.rs:14471-14478`,
 `crates/harness-cli/src/main.rs:14607-14612`.
