@@ -14,6 +14,7 @@
 | Data model, source-of-truth rules, and projections | [data-model.md](data-model.md) |
 | Goal → phase → task → workflow loop (run-phases) | [goal-phase-loop.md](goal-phase-loop.md) |
 | Starlark workflow runtime (run-script) | [workflow-runtime.md](workflow-runtime.md) |
+| Doc/skill governance engine (harness governance) | [governance-engine.md](governance-engine.md) |
 | Provider-neutral Agent Runtime Object Model | [agent-runtime.md](agent-runtime.md) |
 | Agent control plane, lifecycle, queues, and Workbench operations | [agent-control-plane.md](agent-control-plane.md) |
 | Provider/platform adaptation (launch spec, capabilities) | [agent-integration-model.md](agent-integration-model.md) |
@@ -50,7 +51,7 @@ integrating project repository, not in the generic core docs.
 
 | Skill | Use |
 | --- | --- |
-| [bootstrap-project-workflow](../skills/bootstrap-project-workflow/SKILL.md) | Bootstrap or audit docs, CI/CD, diagrams, task workflow, and project governance (shipped built-in skill; the doc-governance skill the future doc-sync phase runs). |
+| [bootstrap-project-workflow](../skills/bootstrap-project-workflow/SKILL.md) | Make a project agent-operable: vision-driven docs whose tree projects the key-mechanism/key-module decomposition, CI/CD, diagrams, task workflow, and project governance (shipped built-in skill; the doc-governance skill the doc-sync built-in phase runs, see [goal-phase-loop.md](goal-phase-loop.md)). |
 | [generic-agent-harness](../.agents/skills/generic-agent-harness/SKILL.md) | Operate or extend the generic harness objects and message-first workflow. |
 | [multi-agent-system-design](../.agents/skills/multi-agent-system-design/SKILL.md) | Design or audit durable multi-agent mailboxes, delivery, runtime lifecycle, permission messages, and dashboard proof. |
 

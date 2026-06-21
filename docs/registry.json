@@ -1944,6 +1944,33 @@
         "npx pnpm@9.15.4 check"
       ],
       "reorgTrigger": "The KimiAdapter CLI surface, kimi_exec capabilities, or kimi stream shape change."
+    },
+    {
+      "path": "docs/governance-engine.md",
+      "ownerRole": "architect",
+      "status": "stable",
+      "lifecycle": "volatile",
+      "canonicalFor": [
+        "the harness-native doc/skill governance engine (harness governance check) and the harness-governance crate",
+        "the per-project .governance.toml config shape and the absent-config light default",
+        "byte-parity with the legacy check-doc-*.mjs / check-skills.mjs gates and the self-host regression test"
+      ],
+      "dependsOn": [
+        "docs/agent-integration-model.md",
+        "docs/goal-phase-loop.md",
+        "skills/bootstrap-project-workflow/references/governance.md"
+      ],
+      "machineConsumers": [
+        "harness governance check",
+        "check-doc-links",
+        "check-doc-governance"
+      ],
+      "reviewAfter": "2026-12-31",
+      "lastVerifiedWith": [
+        "harness governance check",
+        "npx pnpm@9.15.4 check"
+      ],
+      "reorgTrigger": "The governance engine's commands, config schema, gate kinds, or the doc-sync integration change; or the full cut lands and the .mjs gates are retired."
     }
   ]
 }

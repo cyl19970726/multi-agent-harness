@@ -259,6 +259,36 @@ Decision
   validation_or_migration_path:
 ```
 
+## Key Modules Drive Directory Shape
+
+The most important shaping rule comes before any per-file split heuristic: **the
+docs tree is a projection of the key-module decomposition.** Derive the tree
+top-down from the modules you identified above — not bottom-up from whatever
+files happen to exist.
+
+```text
+key mechanisms
+  -> key modules
+  -> one canonical home per module
+  -> docs tree shape
+  -> diagrams and per-file splits
+```
+
+- each key module gets one canonical home — `docs/<module>.md`, or
+  `docs/<module>/` when its internals need their own readers;
+- related modules cluster under a shared parent, for example
+  `docs/integration/<provider>.md` for the provider adapters;
+- a doc whose owner module is unclear is a signal that the decomposition, not
+  the filing, is wrong — fix the module map first;
+- only after the module projection is settled do the maintenance splits apply
+  (reader, lifecycle, or machine consumer differ — see the next section).
+
+The test: if the directory shape does not mirror the key modules, the docs are
+misaligned with the system. Reorganize the tree to match the decomposition
+first; diagrams and the per-file split rules then follow from that shape, not the
+other way around. (This is the generative case. The next section covers the
+maintenance cases that keep an already-aligned tree healthy.)
+
 ## Diagrams And Directory Shape
 
 Use diagrams when text hides structure. Prefer Mermaid because it is diffable.

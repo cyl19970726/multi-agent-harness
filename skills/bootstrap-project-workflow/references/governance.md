@@ -32,6 +32,28 @@ facts and commands.
 | What should expire or be archived? | Keep the main path clean for agents. |
 | Which commitments are CI blockers? | Stop stable high-risk drift early. |
 
+## Governance Contract
+
+Governance becomes portable when it is stated as a CONTRACT — invariants any
+project must hold — kept separate from the tool that enforces them. The contract
+does not depend on a language, a registry format, or a CI runner:
+
+- every durable doc has an owner, a status, a lifecycle, and what it is canonical
+  for;
+- no intra-repo link is broken (docs, skills, and their pointers into code
+  resolve);
+- no doc outgrows its split rule without a recorded reason;
+- every machine consumer a doc claims (schema, fixture, command) actually exists;
+- a deprecated doc links to its replacement;
+- the doc tree mirrors the key-module decomposition (see SKILL.md "Key Modules
+  Drive Directory Shape").
+
+The ENFORCER is project-specific; the contract is not. This repository enforces
+it with `docs/registry.json` + `scripts/check-doc-*.mjs` today (see below); a Go,
+Python, mdBook, or no-node project should hold the same contract through its own
+gate. The harness is converging these into a project-portable governance check so
+any operated project inherits the contract without hosting per-repo scripts.
+
 ## Documentation Lifecycle Metadata
 
 For durable docs, maintain a lightweight registry or frontmatter with:
@@ -49,12 +71,14 @@ last_verified_with
 reorg_trigger
 ```
 
-In this repository the canonical implementation is `docs/registry.json` (schema
-`agent_harness.docs_registry.v1`), enforced by
-`scripts/check-doc-governance.mjs`, which requires **camelCase** keys
+The registry is DATA; the gate that enforces it is a separate surface. In this
+repository the registry is `docs/registry.json` (schema
+`agent_harness.docs_registry.v1`), which requires **camelCase** keys
 (`ownerRole`, `canonicalFor`, `dependsOn`, `machineConsumers`, `reviewAfter`,
-…). Mirror that shape when emitting registry entries; the snake_case names above
-are illustrative only.
+…). It is enforced by `scripts/check-doc-*.mjs` in CI **and** re-run by the
+doc-sync built-in phase after a goal's execution phases pass (see "Integration
+With The doc-sync Phase"). Mirror the field set your project's registry declares;
+the snake_case names above are illustrative only.
 
 CI can start by warning on stale `reviewAfter`, missing owner roles, broken
 `dependsOn`, and large docs without a split reason. Promote warnings to
@@ -75,6 +99,23 @@ Checklist:
 6. Run link checks and any governance checks.
 
 Do not create deep directories for one file unless a tool consumes that path.
+
+## Integration With The doc-sync Phase
+
+In a harness-operated project this skill is not run only by hand. After a goal's
+execution phases pass, the orchestrator auto-appends a built-in **doc-sync**
+building phase (`BUILTIN_BUILDING_PHASES` / `build_builtin_phase_script` in
+`crates/harness-cli/src/main.rs`) that applies this governance methodology to the
+docs the goal touched and then runs the repo's doc gates. The phase verdict is a
+real gate: it passes only when the checks pass, so a goal cannot close while it
+has left the docs drifted.
+
+Inputs: the goal's phases declare doc-class artifact outputs
+(`ArtifactKind::DesignDoc` / `Adr` / `RegisteredDoc` / …); the phase collects
+those paths (`declared_doc_updates`) as the focused audit set, and audits broadly
+when none are declared. (Honest limit today: doc-sync verifies declared
+OUTPUTS; a per-goal "docs this goal READS" input lifecycle is not yet modeled —
+state the reads in the goal's design prose until it is.)
 
 ## Surface Responsibility Matrix
 
@@ -130,6 +171,26 @@ Exit rules:
 - Mark obsolete design docs as deprecated and link to replacements.
 - Remove empty directories and placeholder docs.
 - Keep `decisions` only for tradeoffs that future work should respect.
+
+## When To Extract A Skill
+
+The ladder above names "skill", but a skill is worth extracting only when all of
+these hold:
+
+- it is REUSED — an agent runs roughly these steps across more than one goal or
+  project (a one-off belongs in the goal, not a skill);
+- it is PROCEDURAL judgment, not facts — facts belong in docs/schema; a skill
+  encodes how to DO something and what to watch for;
+- it is SURFACE-BOUND — it tells an agent how to operate and points at docs for
+  the architecture instead of restating it (a skill that re-explains the system
+  is a doc wearing a skill's frontmatter);
+- it has an OWNER and can be EVALUATED — you can state the outcome it should
+  drive another agent toward (see "Evaluator Mechanism" in SKILL.md).
+
+Extract too early and you freeze an unstable procedure; too late and the
+knowledge stays trapped in chat history. Re-home a skill back to docs if it stops
+being reused, and keep its pointers into code current — a skill's links rot like
+any doc's.
 
 ## Diagram Governance
 

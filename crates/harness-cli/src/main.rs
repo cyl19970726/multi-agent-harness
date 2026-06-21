@@ -781,6 +781,13 @@ fn run() -> CliResult<()> {
     // Optional debug flag: print which store was chosen and why (P7 "no silent
     // fallback"). Stripped before resolution so subcommands never see it.
     let store_source_debug = take_flag(&mut args, "--store-source");
+    // `governance` is store-LESS: it gates a project's files (docs/skills) and
+    // must run identically on any project — including a non-harness, no-node
+    // repo — without resolving (or emitting deprecation noise about) a harness
+    // store. Route it before `resolve_store` so it never touches the store.
+    if args.first().map(String::as_str) == Some("governance") {
+        return governance_command(&args[1..]);
+    }
     // Resolve the store root FIRST (strips a global `--store`/`--project` from
     // `args` so the subcommand parsers never see them). `serve` and `run-script`
     // started from different working directories converge on ONE store via the
@@ -835,6 +842,101 @@ fn run() -> CliResult<()> {
         command => return Err(CliError::Usage(format!("unknown command: {command}"))),
     }
     Ok(())
+}
+
+/// `harness governance <check|init|describe>` — the project-portable doc/skill
+/// governance gate, native in the binary (no node/pnpm). It runs over a project
+/// root (cwd by default, `--root <path>` to override) using
+/// `<root>/.governance.toml` (or a light default when absent), and
+/// exits non-zero when a blocking gate fails — the same contract the legacy
+/// `pnpm check:links/doc-size/skills/doc-governance` chain had.
+fn governance_command(args: &[String]) -> CliResult<()> {
+    require_subcommand(args, "governance check|init|describe")?;
+    let root = args
+        .iter()
+        .position(|a| a == "--root")
+        .and_then(|i| args.get(i + 1))
+        .map(PathBuf::from)
+        .map(Ok)
+        .unwrap_or_else(std::env::current_dir)?;
+    let json = args.iter().any(|a| a == "--json");
+
+    match args[0].as_str() {
+        "check" => {
+            let config =
+                harness_governance::GovernanceConfig::load(&root).map_err(CliError::Usage)?;
+            let report = harness_governance::run_check(&root, &config);
+            print_governance_report(&report, json);
+            if !report.passed() {
+                std::process::exit(1);
+            }
+        }
+        "init" => {
+            let config = harness_governance::GovernanceConfig::default_harness();
+            let path = root.join(".governance.toml");
+            if path.exists() {
+                return Err(CliError::Usage(format!(
+                    "{} already exists",
+                    path.display()
+                )));
+            }
+            let toml = config.to_toml().map_err(CliError::Usage)?;
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::write(&path, toml)?;
+            println!("wrote {}", path.display());
+        }
+        "describe" => {
+            let config =
+                harness_governance::GovernanceConfig::load(&root).map_err(CliError::Usage)?;
+            print!("{}", config.to_toml().map_err(CliError::Usage)?);
+        }
+        other => {
+            return Err(CliError::Usage(format!(
+                "unknown governance subcommand: {other}"
+            )))
+        }
+    }
+    Ok(())
+}
+
+/// Print a governance report mirroring the legacy gates: per gate, warnings to
+/// stderr (`console.warn`), then either the success summary (stdout) or the
+/// failures (stderr). `--json` emits a machine-readable summary instead.
+fn print_governance_report(report: &harness_governance::GovernanceReport, json: bool) {
+    if json {
+        let gates: Vec<serde_json::Value> = report
+            .gates
+            .iter()
+            .map(|g| {
+                serde_json::json!({
+                    "gate": g.kind,
+                    "severity": g.severity,
+                    "passed": g.failures.is_empty(),
+                    "failures": g.failures,
+                    "warnings": g.warnings,
+                })
+            })
+            .collect();
+        let out = serde_json::json!({ "passed": report.passed(), "gates": gates });
+        println!("{}", serde_json::to_string_pretty(&out).unwrap_or_default());
+        return;
+    }
+    for gate in &report.gates {
+        for w in &gate.warnings {
+            eprintln!("{w}");
+        }
+        if gate.failures.is_empty() {
+            if !gate.summary.is_empty() {
+                println!("{}", gate.summary);
+            }
+        } else {
+            for f in &gate.failures {
+                eprintln!("{f}");
+            }
+        }
+    }
 }
 
 fn member_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {

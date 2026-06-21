@@ -13,6 +13,7 @@ path = "src/main.rs"
 harness-core = { path = "../harness-core" }
 harness-store = { path = "../harness-store" }
 harness-workflow = { path = "../harness-workflow" }
+harness-governance = { path = "../harness-governance" }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

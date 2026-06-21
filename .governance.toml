@@ -1,0 +1,53 @@
+schema = "agent_harness.governance.v1"
+doc_roots = [
+    "README.md",
+    "docs",
+    "schemas",
+    ".agents/skills",
+    "examples",
+    "apps",
+]
+skill_roots = [
+    "skills",
+    ".agents/skills",
+]
+max_lines = 500
+member_data_root = ".agents/data"
+
+[registry]
+path = "docs/registry.json"
+schema = "agent_harness.docs_registry.v1"
+required_fields = [
+    "path",
+    "ownerRole",
+    "status",
+    "lifecycle",
+    "canonicalFor",
+    "dependsOn",
+    "machineConsumers",
+    "reviewAfter",
+    "lastVerifiedWith",
+    "reorgTrigger",
+]
+allowed_statuses = [
+    "idea",
+    "planned",
+    "stable",
+    "deprecated",
+    "archival",
+]
+allowed_lifecycles = [
+    "volatile",
+    "stable",
+    "archival",
+]
+core_docs = [
+    "README.md",
+    "docs/README.md",
+    "docs/prd.md",
+    "docs/design-basis.md",
+    "docs/architecture.md",
+    "docs/operations.md",
+    "docs/schemas.md",
+    "docs/decisions/README.md",
+]
