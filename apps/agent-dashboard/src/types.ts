@@ -740,6 +740,12 @@ export interface DashboardSnapshot {
   live_normalized_events?: Record<string, HarnessTurnEvent[]>;
   workflow_runs?: WorkflowRun[];
   workflow_steps?: WorkflowStep[];
+  /**
+   * The goal↔run orchestration checkpoints (Stage 0): each `goal run-phases`
+   * execution and its per-phase `workflow_run_id` links — the BACK link to the
+   * forward `goal_id`/`phase_id` now stamped on each {@link WorkflowRun}.
+   */
+  goal_orchestration_runs?: GoalOrchestrationRun[];
 }
 
 /**
@@ -818,6 +824,44 @@ export interface WorkflowRun {
    * never mistaken for a real one. `undefined`/false for live and legacy rows.
    */
   dry_run?: boolean;
+  /**
+   * The goal this run belongs to, when spawned by the goal orchestrator
+   * (`goal plan` / `goal run-phases`). Together with `phase_id` this is the
+   * FORWARD goal↔run link (Stage 0). `undefined` for standalone `run-script` /
+   * registry runs and legacy rows.
+   */
+  goal_id?: string | null;
+  /** The goal phase this run executed (`phase-*`) or revised (`revise-*`). */
+  phase_id?: string | null;
+}
+
+/**
+ * One phase's outcome inside a {@link GoalOrchestrationRun} — which compiled
+ * workflow ran it and whether its verdict passed. Mirrors harness-core
+ * `OrchestrationPhaseRun`.
+ */
+export interface OrchestrationPhaseRun {
+  phase_id: string;
+  workflow_run_id?: string | null;
+  compiled_path?: string | null;
+  passed: boolean;
+  started_at: string;
+  ended_at?: string | null;
+  landed_commit?: string | null;
+}
+
+/**
+ * The durable checkpoint for `harness goal run-phases`: it sequences a goal's
+ * phases, gating each on its verdict, and records each phase run. Mirrors
+ * harness-core `GoalOrchestrationRun`.
+ */
+export interface GoalOrchestrationRun {
+  id: string;
+  goal_id: string;
+  status?: string;
+  phase_runs?: OrchestrationPhaseRun[];
+  created_at: string;
+  updated_at: string;
 }
 
 /**

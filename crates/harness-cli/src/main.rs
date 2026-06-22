@@ -1322,11 +1322,20 @@ fn phase_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
 /// leaves of that prior phase run are reused via a replay map — so a killed /
 /// failed phase does not re-spend tokens on already-done task steps. `None` runs
 /// the phase fresh.
+/// The goal↔run link stamped on an orchestrated `WorkflowRun` (Stage 0: close the
+/// chain). `default()` (both `None`) is the standalone `run-script` case.
+#[derive(Clone, Default)]
+struct RunGoalLink {
+    goal_id: Option<String>,
+    phase_id: Option<String>,
+}
+
 fn run_phase_compiled_script(
     store: &HarnessStore,
     script: &str,
     name: &str,
     options: &WorkflowDeliveryOptions,
+    link: &RunGoalLink,
     resume_from: Option<&str>,
 ) -> CliResult<(String, workflow::WorkflowOutcome)> {
     // Optional intra-phase resume: reuse the prior phase run's succeeded leaves.
@@ -1395,6 +1404,8 @@ fn run_phase_compiled_script(
         trace_retention: options.trace_retention.clone(),
         host_pid: Some(std::process::id()),
         dry_run: options.dry_run,
+        goal_id: link.goal_id.clone(),
+        phase_id: link.phase_id.clone(),
     };
     store.append_workflow_run(&run)?;
 
@@ -1712,8 +1723,8 @@ fn force_finalize_goal(
 /// re-entering a phase that already has a prior workflow run, so its succeeded
 /// leaves can be reused; `None` runs the phase fresh. The CLI passes the real
 /// provider runner; tests pass a mock.
-type PhaseRunFn<'a> =
-    dyn Fn(&str, &str, Option<&str>) -> CliResult<(String, workflow::WorkflowOutcome)> + 'a;
+type PhaseRunFn<'a> = dyn Fn(&str, &str, Option<&str>, Option<&str>) -> CliResult<(String, workflow::WorkflowOutcome)>
+    + 'a;
 
 /// The injectable phase REVISER: given the goal, the failed phase, its current
 /// live (non-superseded) tasks, and the failure captured as `Knowledge`, return
@@ -2778,6 +2789,7 @@ fn orchestrate_goal_phases(
             let (run_id, outcome) = run_phase(
                 &script,
                 &format!("phase-{phase_id}"),
+                Some(&phase_id),
                 resume_from.as_deref(),
             )?;
             // A phase passes only if the run completed AND no task step failed AND
@@ -3537,6 +3549,10 @@ fn goal_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
                 &script,
                 &format!("plan-{goal_id}"),
                 &options,
+                &RunGoalLink {
+                    goal_id: Some(goal_id.clone()),
+                    phase_id: None,
+                },
                 None,
             )?;
             // The planner's structured decomposition lands verbatim under
@@ -3616,9 +3632,20 @@ fn goal_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
                 progress: has_flag(args, "--progress"),
                 project: workflow_project_context(store),
             };
-            let run_phase = |script: &str, name: &str, resume_from: Option<&str>| {
-                run_phase_compiled_script(store, script, name, &options, resume_from)
-            };
+            let run_phase =
+                |script: &str, name: &str, phase_id: Option<&str>, resume_from: Option<&str>| {
+                    run_phase_compiled_script(
+                        store,
+                        script,
+                        name,
+                        &options,
+                        &RunGoalLink {
+                            goal_id: Some(goal_id.clone()),
+                            phase_id: phase_id.map(str::to_string),
+                        },
+                        resume_from,
+                    )
+                };
             // The real reviser: compile a one-shot reviser worker and run it
             // through the SAME real-driver path (honors --dry-run, where the mock
             // yields a degenerate empty revision the loop treats as "no replan").
@@ -3638,6 +3665,10 @@ fn goal_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
                     &script,
                     &format!("revise-{}-{}", goal.id, phase.id),
                     &options,
+                    &RunGoalLink {
+                        goal_id: Some(goal.id.clone()),
+                        phase_id: Some(phase.id.clone()),
+                    },
                     None,
                 )?;
                 Ok(outcome
@@ -10177,6 +10208,9 @@ fn workflow_run_script_value(
         // Mark dry-run validation runs so they are never mistaken for real runs in
         // the jsonl / dashboard (issue #89 item 2).
         dry_run: options.dry_run,
+        // Standalone `run-script` is not goal-orchestrated — no goal↔run link.
+        goal_id: None,
+        phase_id: None,
     };
     store.append_workflow_run(&run)?;
 
@@ -10244,6 +10278,9 @@ fn run_workflow_with_driver(
         // abandoned run (see the run-script path and `reap_abandoned_runs`).
         host_pid: Some(std::process::id()),
         dry_run,
+        // Registry runs are not goal-orchestrated — no goal↔run link.
+        goal_id: None,
+        phase_id: None,
     };
     store.append_workflow_run(&run)?;
 
@@ -12940,6 +12977,21 @@ fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::Value> {
     let provider_child_threads = store.provider_child_threads()?;
     let workflow_runs = latest_workflow_runs_in_append_order(store)?;
     let workflow_steps = latest_workflow_steps_in_append_order(store)?;
+    // The goal↔run orchestration checkpoints (Stage 0): each `goal run-phases`
+    // execution, its per-phase `workflow_run_id` links, and status. Surfacing them
+    // makes a real run-phases visible on the dashboard (the back link to the
+    // forward goal_id/phase_id now stamped on each WorkflowRun). Latest-row-wins by
+    // id (the checkpoint is re-appended as it progresses), newest-first — the same
+    // projection every other object gets.
+    let goal_orchestration_runs: Vec<_> = {
+        let mut seen = std::collections::HashSet::new();
+        store
+            .goal_orchestration_runs()?
+            .into_iter()
+            .rev()
+            .filter(|o| seen.insert(o.id.clone()))
+            .collect()
+    };
     let autonomous_proposals =
         autonomous_proposals_snapshot(&tasks, &messages, &evidence, &decisions);
     let goal_learning_status: Vec<_> = goals
@@ -13044,7 +13096,8 @@ fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::Value> {
         "provider_sessions": sessions,
         "provider_child_threads": provider_child_threads,
         "workflow_runs": workflow_runs,
-        "workflow_steps": workflow_steps
+        "workflow_steps": workflow_steps,
+        "goal_orchestration_runs": goal_orchestration_runs
     }))
 }
 
@@ -17564,6 +17617,55 @@ mod workflow_runtime_tests {
         }
     }
 
+    /// Stage 0 (close the chain): the REAL run path — `run_phase_compiled_script`,
+    /// not a stubbed closure — must stamp the goal↔run link FORWARD onto the
+    /// journaled `WorkflowRun` (both the running and the terminal row). Driven in
+    /// `--dry-run` so no provider is spawned; the point is the stamping, not the work.
+    #[test]
+    fn real_run_phase_stamps_goal_and_phase_on_the_workflow_run() {
+        let root = std::env::temp_dir().join(format!("harness-stage0-{}", generated_id("link")));
+        let store = HarnessStore::new(&root);
+        store.init().expect("init");
+        let options = WorkflowDeliveryOptions {
+            dry_run: true,
+            start_runtime: false,
+            timeout_ms: 5_000,
+            default_model: None,
+            default_effort: None,
+            max_budget_usd: None,
+            trace_retention: "durable".into(),
+            progress: false,
+            project: temp_project_context("stage0-link", false),
+        };
+        let script = "workflow(\"phase-p1\", \"stage0 forward goal-run link proof\")\n\
+                      _r = agent(\"noop\", label=\"t1\")\nverdict(True)\noutput(_r)\n";
+        let (run_id, _outcome) = run_phase_compiled_script(
+            &store,
+            script,
+            "phase-p1",
+            &options,
+            &RunGoalLink {
+                goal_id: Some("g-stage0".into()),
+                phase_id: Some("p1".into()),
+            },
+            None,
+        )
+        .expect("real run");
+
+        let run = latest_workflow_runs_in_append_order(&store)
+            .expect("runs")
+            .into_iter()
+            .find(|r| r.id == run_id)
+            .expect("journaled WorkflowRun");
+        assert_eq!(
+            run.goal_id.as_deref(),
+            Some("g-stage0"),
+            "the real run path stamps goal_id onto the WorkflowRun"
+        );
+        assert_eq!(run.phase_id.as_deref(), Some("p1"), "and phase_id");
+        assert!(run.dry_run, "dry-run marker is set");
+    }
+
     fn launch_spec_with_model_effort(model: Option<&str>, effort: Option<&str>) -> LaunchSpec {
         LaunchSpec {
             prompt_ref: None,
@@ -19483,6 +19585,8 @@ mod workflow_runtime_tests {
                 trace_retention: "durable".into(),
                 host_pid: None,
                 dry_run: false,
+                goal_id: None,
+                phase_id: None,
             })
             .expect("append run");
         store
@@ -19525,6 +19629,8 @@ mod workflow_runtime_tests {
             trace_retention: "durable".into(),
             host_pid: None,
             dry_run: false,
+            goal_id: None,
+            phase_id: None,
         };
         // One Running run 5h old -> reaped to Failed; one started "now" -> stays.
         store
@@ -19580,6 +19686,8 @@ mod workflow_runtime_tests {
                 trace_retention: "durable".into(),
                 host_pid: Some(dead_pid),
                 dry_run: false,
+                goal_id: None,
+                phase_id: None,
             })
             .expect("append run");
         // A still-open step under it must be closed to Failed by the reaper too.
@@ -19618,6 +19726,8 @@ mod workflow_runtime_tests {
                 trace_retention: "durable".into(),
                 host_pid: Some(std::process::id()),
                 dry_run: false,
+                goal_id: None,
+                phase_id: None,
             })
             .expect("append live run");
 
@@ -19888,6 +19998,8 @@ mod workflow_runtime_tests {
                 trace_retention: "durable".into(),
                 host_pid: None,
                 dry_run: false,
+                goal_id: None,
+                phase_id: None,
             })
             .expect("append run");
         store
@@ -20705,6 +20817,11 @@ agent("a NEW second leaf that changes the ordinal alignment")
         let snapshot = dashboard_snapshot(&store).expect("snapshot");
         assert!(snapshot.get("workflow_runs").is_some());
         assert!(snapshot.get("workflow_steps").is_some());
+        // Stage 0: the goal↔run orchestration checkpoints are projected too.
+        assert!(
+            snapshot.get("goal_orchestration_runs").is_some(),
+            "snapshot must surface goal_orchestration_runs for the dashboard"
+        );
 
         // After a run, the keys surface the journaled rows.
         let registry = workflow::WorkflowRegistry::builtin();
@@ -23915,6 +24032,7 @@ mod tests {
 
         let run_phase = |_script: &str,
                          name: &str,
+                         _phase_id: Option<&str>,
                          _resume_from: Option<&str>|
          -> CliResult<(String, workflow::WorkflowOutcome)> {
             Ok(mock_outcome(&store, name, WorkflowRunStatus::Completed))
@@ -23938,6 +24056,15 @@ mod tests {
         let last = orch.last().unwrap();
         assert_eq!(last.status, OrchestrationStatus::Completed);
         assert_eq!(last.phase_runs.len(), 2);
+        // Stage 0: each phase run records its workflow_run_id — the BACK link to
+        // the WorkflowRun, whose forward goal_id/phase_id the real run path stamps
+        // (see real_run_phase_stamps_goal_and_phase_on_the_workflow_run).
+        assert!(
+            last.phase_runs
+                .iter()
+                .all(|pr| pr.workflow_run_id.is_some()),
+            "every orchestrated phase run links to its WorkflowRun"
+        );
         // Acceptance #4: each phase gate records a phase_verdict Decision and the
         // phase points at it.
         let goal_final = goal_load(&store, "g-orch").unwrap();
@@ -23972,6 +24099,7 @@ mod tests {
 
         let run_phase = |_s: &str,
                          name: &str,
+                         _phase_id: Option<&str>,
                          _r: Option<&str>|
          -> CliResult<(String, workflow::WorkflowOutcome)> {
             Ok(mock_outcome(&store, name, WorkflowRunStatus::Completed))
@@ -24031,6 +24159,7 @@ mod tests {
 
         let run_phase = |_s: &str,
                          name: &str,
+                         _phase_id: Option<&str>,
                          _r: Option<&str>|
          -> CliResult<(String, workflow::WorkflowOutcome)> {
             let status = if name == "phase-builtin-doc-sync" {
@@ -24071,6 +24200,7 @@ mod tests {
 
         let run_phase = |_s: &str,
                          name: &str,
+                         _phase_id: Option<&str>,
                          _r: Option<&str>|
          -> CliResult<(String, workflow::WorkflowOutcome)> {
             let status = if name == "phase-builtin-skill-extract" {
@@ -24560,6 +24690,7 @@ mod tests {
         // file — today this would pass; the artifact gate must FAIL it.
         let run_phase = |_script: &str,
                          name: &str,
+                         _phase_id: Option<&str>,
                          _resume_from: Option<&str>|
          -> CliResult<(String, workflow::WorkflowOutcome)> {
             Ok(mock_outcome_with_diff(
@@ -24628,6 +24759,7 @@ mod tests {
 
         let run_phase = |_script: &str,
                          name: &str,
+                         _phase_id: Option<&str>,
                          _resume_from: Option<&str>|
          -> CliResult<(String, workflow::WorkflowOutcome)> {
             Ok(mock_outcome_with_diff(&store, name, "docs/report.md"))
@@ -24689,6 +24821,7 @@ mod tests {
         // fallback (rooted at `repo_root`) can satisfy the requirement.
         let run_phase = |_script: &str,
                          name: &str,
+                         _phase_id: Option<&str>,
                          _resume_from: Option<&str>|
          -> CliResult<(String, workflow::WorkflowOutcome)> {
             Ok(mock_outcome(&store, name, WorkflowRunStatus::Completed))
@@ -24762,6 +24895,7 @@ mod tests {
         // registry does not list it, so the registered_doc gate fails the phase.
         let run_phase = |_script: &str,
                          name: &str,
+                         _phase_id: Option<&str>,
                          _resume_from: Option<&str>|
          -> CliResult<(String, workflow::WorkflowOutcome)> {
             Ok(mock_outcome_with_diff(&store, name, "docs/new-doc.md"))
@@ -24837,6 +24971,7 @@ mod tests {
 
         let run_phase = |_script: &str,
                          name: &str,
+                         _phase_id: Option<&str>,
                          _resume_from: Option<&str>|
          -> CliResult<(String, workflow::WorkflowOutcome)> {
             Ok(mock_outcome_with_diff(&store, name, "docs/new-doc.md"))
@@ -24881,6 +25016,7 @@ mod tests {
         let attempts: RefCell<u32> = RefCell::new(0);
         let run_phase = |_script: &str,
                          name: &str,
+                         _phase_id: Option<&str>,
                          _resume_from: Option<&str>|
          -> CliResult<(String, workflow::WorkflowOutcome)> {
             *attempts.borrow_mut() += 1;
@@ -24956,6 +25092,7 @@ mod tests {
         let ran_worker: RefCell<bool> = RefCell::new(false);
         let run_phase = |_script: &str,
                          name: &str,
+                         _phase_id: Option<&str>,
                          _resume_from: Option<&str>|
          -> CliResult<(String, workflow::WorkflowOutcome)> {
             *ran_worker.borrow_mut() = true;
@@ -25031,6 +25168,7 @@ mod tests {
 
         let run_phase = |_script: &str,
                          name: &str,
+                         _phase_id: Option<&str>,
                          _resume_from: Option<&str>|
          -> CliResult<(String, workflow::WorkflowOutcome)> {
             Ok(mock_outcome(&store, name, WorkflowRunStatus::Completed))
@@ -25077,6 +25215,7 @@ mod tests {
         // The mock step's details carry a worktree_diff creating src/new.rs.
         let run_phase = |_script: &str,
                          name: &str,
+                         _phase_id: Option<&str>,
                          _resume_from: Option<&str>|
          -> CliResult<(String, workflow::WorkflowOutcome)> {
             Ok(mock_outcome_with_diff(&store, name, "src/new.rs"))
@@ -25162,6 +25301,7 @@ mod tests {
 
         let run_phase = |_script: &str,
                          name: &str,
+                         _phase_id: Option<&str>,
                          _resume_from: Option<&str>|
          -> CliResult<(String, workflow::WorkflowOutcome)> {
             Ok(mock_outcome(&store, name, WorkflowRunStatus::Completed))
@@ -25225,6 +25365,7 @@ mod tests {
         // file already exists, so `git apply` refuses.
         let run_phase = |_script: &str,
                          name: &str,
+                         _phase_id: Option<&str>,
                          _resume_from: Option<&str>|
          -> CliResult<(String, workflow::WorkflowOutcome)> {
             Ok(mock_outcome_with_diff(&store, name, "src/new.rs"))
@@ -25456,6 +25597,7 @@ mod tests {
 
         let run_phase = |_script: &str,
                          name: &str,
+                         _phase_id: Option<&str>,
                          _resume_from: Option<&str>|
          -> CliResult<(String, workflow::WorkflowOutcome)> {
             Ok(mock_outcome(&store, name, WorkflowRunStatus::Completed))
@@ -25523,6 +25665,7 @@ mod tests {
         }
         let run_phase = |_script: &str,
                          name: &str,
+                         _phase_id: Option<&str>,
                          _resume_from: Option<&str>|
          -> CliResult<(String, workflow::WorkflowOutcome)> {
             // Phase p1 fails its verdict; p2 must never run.
@@ -25567,6 +25710,7 @@ mod tests {
         // First run: p1 passes its verdict, p2 fails — orchestration stops at p2.
         let first = |_script: &str,
                      name: &str,
+                     _phase_id: Option<&str>,
                      _resume_from: Option<&str>|
          -> CliResult<(String, workflow::WorkflowOutcome)> {
             let status = if name.contains("p2") {
@@ -25591,6 +25735,7 @@ mod tests {
         let seen: RefCell<Vec<(String, Option<String>)>> = RefCell::new(Vec::new());
         let second = |_script: &str,
                       name: &str,
+                      _phase_id: Option<&str>,
                       resume_from: Option<&str>|
          -> CliResult<(String, workflow::WorkflowOutcome)> {
             seen.borrow_mut()
@@ -25655,6 +25800,7 @@ mod tests {
         let attempts: RefCell<u32> = RefCell::new(0);
         let run_phase = |_script: &str,
                          name: &str,
+                         _phase_id: Option<&str>,
                          _resume_from: Option<&str>|
          -> CliResult<(String, workflow::WorkflowOutcome)> {
             let mut n = attempts.borrow_mut();
@@ -25771,6 +25917,7 @@ mod tests {
         let attempts: RefCell<u32> = RefCell::new(0);
         let run_phase = |_script: &str,
                          name: &str,
+                         _phase_id: Option<&str>,
                          _resume_from: Option<&str>|
          -> CliResult<(String, workflow::WorkflowOutcome)> {
             *attempts.borrow_mut() += 1;
@@ -25837,6 +25984,7 @@ mod tests {
         let attempts = std::cell::RefCell::new(0u32);
         let run_phase = |_script: &str,
                          name: &str,
+                         _phase_id: Option<&str>,
                          _resume_from: Option<&str>|
          -> CliResult<(String, workflow::WorkflowOutcome)> {
             *attempts.borrow_mut() += 1;

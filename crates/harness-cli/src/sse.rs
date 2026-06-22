@@ -489,6 +489,8 @@ mod tests {
             trace_retention: "durable".into(),
             host_pid: None,
             dry_run: false,
+            goal_id: None,
+            phase_id: None,
         }
     }
 

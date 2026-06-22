@@ -217,6 +217,11 @@ function RunsTable({
               <span className="min-w-0">
                 <Badge tone={tone}>{run.status}</Badge>
                 {run.dry_run && <Badge tone="warn">dry-run</Badge>}
+                {run.goal_id && (
+                  <Badge tone="idle">
+                    {run.phase_id ? `${run.goal_id} · ${run.phase_id}` : run.goal_id}
+                  </Badge>
+                )}
               </span>
               <span className="min-w-0">
                 <ShapeGlyph steps={steps} />
@@ -338,6 +343,11 @@ export function WorkflowRunDetail({ model, onSelectionChange, apiUrl }: Workflow
               <div className="mt-1 flex flex-wrap items-center gap-1.5">
                 <Badge tone={tone}>{run.status}</Badge>
                 {run.dry_run && <Badge tone="warn">dry-run</Badge>}
+                {run.goal_id && (
+                  <Badge tone="idle">
+                    {run.phase_id ? `${run.goal_id} · ${run.phase_id}` : run.goal_id}
+                  </Badge>
+                )}
                 <MonoId>{run.id}</MonoId>
               </div>
             </div>
