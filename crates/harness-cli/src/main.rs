@@ -2064,13 +2064,26 @@ fn unmet_required_artifacts(
         .collect()
 }
 
-/// Read the set of registered doc paths from `<repo_root>/docs/registry.json`
+/// The active registry path for `repo_root` per `.governance.toml`
+/// (`registry.path`), falling back to `docs/registry.json` when no governance
+/// config or registry block is present. Lets the registered_doc gate follow a
+/// project whose registry lives elsewhere (governance-engine generalization).
+fn governance_registry_path(repo_root: &Path) -> String {
+    harness_governance::GovernanceConfig::load(repo_root)
+        .ok()
+        .and_then(|c| c.registry)
+        .map(|r| r.path)
+        .unwrap_or_else(|| "docs/registry.json".to_string())
+}
+
+/// Read the set of registered doc paths from the registry declared by
+/// `<repo_root>/.governance.toml` (default `docs/registry.json`)
 /// (goal-phase-refinements). The registry is the `agent_harness.docs_registry.v1`
 /// schema: `{ "documents": [{ "path": ... }, ...] }`. Returns `None` when the
 /// registry is absent or unparseable (a registered_doc requirement can't be
 /// satisfied without a registry — the caller treats that as "not registered").
 fn registered_doc_paths(repo_root: &Path) -> Option<std::collections::HashSet<String>> {
-    let raw = std::fs::read_to_string(repo_root.join("docs/registry.json")).ok()?;
+    let raw = std::fs::read_to_string(repo_root.join(governance_registry_path(repo_root))).ok()?;
     let json: serde_json::Value = serde_json::from_str(&raw).ok()?;
     let docs = json.get("documents")?.as_array()?;
     Some(
@@ -2119,12 +2132,13 @@ fn unmet_registered_docs(
     }
 
     let registry = registered_doc_paths(repo_root).unwrap_or_default();
+    let registry_path = governance_registry_path(repo_root);
     wanted
         .into_iter()
         .filter(|p| !registry.contains(p))
         .map(|p| {
             format!(
-                "{p} (registered_doc not present in docs/registry.json — add an entry \
+                "{p} (registered_doc not present in {registry_path} — add an entry \
                  with \"path\": \"{p}\")"
             )
         })
@@ -2448,12 +2462,12 @@ fn build_builtin_phase_script(
                  doc-governance skill (its references/governance.md) to govern this repo's docs now \
                  that the goal's execution phases passed. Apply ONLY conservative, high-confidence \
                  fixes: factual drift (match code, cite file:line), broken links/refs, register orphan \
-                 docs in docs/registry.json, mark superseded ADRs deprecated with a link to the \
-                 replacement. Do NOT do structural reorg (propose it in your reason instead). Declared \
-                 docs to update: {updates_md}. Then run the doc gates: `node scripts/check-doc-links.mjs \
-                 && node scripts/check-doc-governance.mjs && node scripts/check-doc-size.mjs` — all must \
-                 pass. Return pass=true only if your fixes are applied AND the three gates are green; \
-                 otherwise pass=false with the blocking gap.",
+                 docs in the registry declared by .governance.toml (default docs/registry.json), mark \
+                 superseded ADRs deprecated with a link to the replacement. Do NOT do structural reorg \
+                 (propose it in your reason instead). Declared docs to update: {updates_md}. Then run \
+                 the governance gate: `harness governance check` (the harness-native links/registry/size/\
+                 skills gates) — it must pass. Return pass=true only if your fixes are applied AND \
+                 `harness governance check` is green; otherwise pass=false with the blocking gap.",
                 gid = goal.id,
                 updates_md = updates_md,
             );

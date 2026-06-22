@@ -96,9 +96,13 @@ audit set — is unchanged.
 
 - First cut (done): the crate + the four native gate ports + `harness governance
   check|init|describe` + this repo's `.governance.toml` + byte-parity + the
-  self-host test. The legacy `.mjs` gates still run in CI unchanged.
-- Full cut (planned): point the doc-sync phase + the `registered_doc` gate at the
-  engine, make `package.json` `check:*` delegate to `harness governance check`,
-  then retire the four `.mjs` scripts once parity is enforced in CI. The `skills`
-  gate gains skill↔doc cross-reference checking (a net add — the legacy doc-sync
-  prompt never ran the skills gate).
+  self-host test.
+- Full cut (done): the #168 doc-sync phase + the `registered_doc` gate now read
+  the engine / config registry; CI's rust job runs `harness governance check`
+  (the node `check-doc-*` / `check-skills` scripts were retired and dropped from
+  `pnpm check`). One intended behavior change: doc-sync now also runs the `skills`
+  gate, which the legacy three-script doc-sync prompt never did.
+- Next: extend the `skills` gate with skill↔doc cross-reference checking (today
+  `check-doc-links` already validates skill→code links via the `.agents/skills`
+  roots; the line-number-ref WARN and the SKILL.md-source link-check are the
+  remaining adds).

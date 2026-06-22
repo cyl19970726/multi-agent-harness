@@ -29,3 +29,7 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
+      # Doc/skill governance gate, native in the binary (replaces the retired
+      # node check-doc-*/check-skills scripts). The cargo-test self-host test
+      # also covers this; this is the explicit, legible CLI gate.
+      - run: cargo run -q -p harness-cli -- governance check

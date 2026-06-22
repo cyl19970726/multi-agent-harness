@@ -90,7 +90,7 @@ contract for resolving and injecting skills:
 
 - **Location.** A skill lives at `.agents/skills/<id>/SKILL.md` with YAML
   frontmatter carrying `name` (matching the folder) and a complete `description`
-  (enforced by `check:skills`).
+  (enforced by the `skills` gate in `harness governance check`).
 - **Resolution.** A `skill_ref` is the skill `<id>`. The harness resolves it via
   the [`skill_resolver` module](../crates/harness-core/src/lib.rs): read
   `.agents/skills/<id>/SKILL.md` (and any files it links). The ref is durable
@@ -98,9 +98,9 @@ contract for resolving and injecting skills:
 - **Discovery.** The harness can enumerate `.agents/skills/*/SKILL.md`. A member
   declares which skills apply via `skill_refs`; the harness does not force a
   model to self-search for skills.
-- **Validation.** `check:skills` now validates that any `skill_ref` in a member
-  JSON resolves to an existing skill directory. Dangling refs fail fast with a
-  clear error message.
+- **Validation.** The `skills` gate (`harness governance check`) validates that
+  any `skill_ref` in a member JSON resolves to an existing skill directory.
+  Dangling refs fail fast with a clear error message.
 - **Injection.** A provider injects resolved skills as **explicit turn input**,
   not as ambient context. On exec-stream this is part of the composed prompt /
   developer instructions (Pillar 1 prompt stack), referenced in the launch spec
@@ -439,9 +439,10 @@ is the concrete "define X, Y, Z" deliverable.
    [integration/README.md](integration/README.md).
 7. **Pass the validation gates.** `npx pnpm@9.15.4 check` must be green
    (`validate:json`, `check:schema-fixtures`, `check:tool-descriptors`,
-   `check:links`, `check:doc-size`, `check:skills`, `check:doc-governance`,
-   `check:dashboard`). Live acceptance follows the provider doc's own gates
-   (e.g. Codex MVP acceptance in [integration/codex.md](integration/codex.md)).
+   `check:dashboard`) and so must `harness governance check` (the doc/skill
+   gates: links, registry, size, skills). Live acceptance follows the provider
+   doc's own gates (e.g. Codex MVP acceptance in
+   [integration/codex.md](integration/codex.md)).
 
 ## Open Gaps Flagged by This Model
 

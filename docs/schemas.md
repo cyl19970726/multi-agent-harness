@@ -105,7 +105,7 @@ Schemas evolve **additive-optional**: see
 
 | Registry | File | Check |
 | --- | --- | --- |
-| Docs governance | [registry.json](registry.json) | `pnpm check:doc-governance` |
+| Docs governance | [registry.json](registry.json) | `harness governance check` |
 
 ## Fixture Validation
 
