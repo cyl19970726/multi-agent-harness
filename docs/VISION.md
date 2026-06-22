@@ -112,7 +112,7 @@ it always links back to its goal.
 "Auditable causal chain" is only real if it is **machine-checkable**, not prose. The moat is the
 following invariants holding (each a GATE that fails the verdict if violated):
 
-- every `WorkflowRun` carries `goal_id` + `phase_id` (today: 0 of 406 — the structural hole)
+- every `WorkflowRun` carries `goal_id` + `phase_id` (Stage 0 — stamped on every orchestrated run + verified live by a real `goal run-phases`)
 - every task in a phase has at least one `Evidence` row
 - a phase's tasks have pairwise-disjoint `owned_paths`
 - every acceptance clause is covered by at least one step's output
@@ -129,11 +129,12 @@ dashboard Agents surface) and the **execution middle** are built and dogfooded a
 provider sessions, ≈406 workflow runs, an append-only knowledge ledger citing `file:line` + PR# +
 commit). What is NOT real yet:
 
-- The **most-engineered subsystem — `orchestrate_goal_phases` / `goal run-phases` — has never run
-  against the real store** (no `goal_orchestration_runs.jsonl`); 9 of 10 goals executed via
-  ad-hoc Starlark workflows, not the phase model.
-- `WorkflowRun` has **no `goal_id`/`phase_id`** — 0 runs link to a goal; causality is today
-  reconstructed from hand-written prose, i.e. "a moat made of comments".
+- **Stage 0 (CLOSED): `goal run-phases` now runs against the real store.** A real
+  `goal run-phases` writes `goal_orchestration_runs.jsonl`, every orchestrated `WorkflowRun`
+  carries `goal_id`/`phase_id` (forward link) + the checkpoint records `workflow_run_id` (back
+  link), and the dashboard snapshot surfaces both — verified live (dry-run + a real provider run).
+  Causality is now a traversable record, not "a moat made of comments". (Historically 9 of 10
+  goals ran via ad-hoc Starlark workflows; that volume predates the link.)
 - **observe / propose / evaluate → next-goal are stubs** with zero production records (0
   `GoalEvaluation`, 0 autonomous goals); a human is the CPU at the loop's two ends.
 - The actual high-volume use (CS2 strategy, AR-card runs) **bypasses the goal loop** and uses

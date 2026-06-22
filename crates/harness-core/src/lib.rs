@@ -2699,6 +2699,19 @@ pub struct WorkflowRun {
     /// `false` (they predate the flag; dry-run journaling is newer).
     #[serde(default)]
     pub dry_run: bool,
+    /// The goal this run belongs to, when it was spawned by the goal orchestrator
+    /// (`goal plan` / `goal run-phases`). `None` for standalone `run-script` /
+    /// registry runs and legacy rows. Together with `phase_id` this closes the
+    /// goal↔run causal link FORWARD (the back link is
+    /// `GoalOrchestrationRun.phase_runs[].workflow_run_id`), so a run is reverse-
+    /// indexable to its goal without parsing `workflow_name`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goal_id: Option<String>,
+    /// The goal phase this run executed (`phase-*`) or revised (`revise-*`).
+    /// `None` for the goal's planner run (`plan-*`), standalone runs, and legacy
+    /// rows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase_id: Option<String>,
 }
 
 /// Default retention policy for a [`WorkflowRun`]'s turn-event trace. Legacy rows
@@ -3392,6 +3405,35 @@ mod tests {
             serde_json::from_str::<WorkflowStep>(&j).expect("de step"),
             s
         );
+    }
+
+    #[test]
+    fn workflow_run_goal_phase_link_round_trips_and_legacy_defaults_to_none() {
+        // Legacy rows (predating the goal↔run link) carry no goal_id/phase_id.
+        let legacy = r#"{"id":"wfrun-1","workflow_name":"phase-p1",
+            "status":"running","created_at":"unix-ms:1"}"#;
+        let mut r: WorkflowRun = serde_json::from_str(legacy).expect("de legacy run");
+        assert!(
+            r.goal_id.is_none() && r.phase_id.is_none(),
+            "legacy run has no goal/phase link"
+        );
+        r.goal_id = Some("goal-x".into());
+        r.phase_id = Some("p1".into());
+        let j = serde_json::to_string(&r).expect("ser run");
+        assert!(
+            j.contains("\"goal_id\":\"goal-x\""),
+            "serializes goal_id: {j}"
+        );
+        assert!(
+            j.contains("\"phase_id\":\"p1\""),
+            "serializes phase_id: {j}"
+        );
+        assert_eq!(serde_json::from_str::<WorkflowRun>(&j).expect("de run"), r);
+        // Absent link is omitted from the wire (skip_serializing_if).
+        let plain =
+            serde_json::to_string(&serde_json::from_str::<WorkflowRun>(legacy).expect("de legacy"))
+                .unwrap();
+        assert!(!plain.contains("goal_id"), "None goal_id omitted: {plain}");
     }
 
     #[test]

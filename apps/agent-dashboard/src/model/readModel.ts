@@ -23,6 +23,7 @@ import type {
   Vision,
   WorkflowDef,
   WorkflowRun,
+  GoalOrchestrationRun,
   WorkflowStep,
   WorkflowWarning,
 } from "../types";
@@ -215,6 +216,8 @@ export interface WorkbenchModel {
   selectedWorkflowRun?: WorkflowRun;
   /** The selected run's steps, ordered by `run.step_ids`. */
   selectedWorkflowSteps: WorkflowStep[];
+  /** The goal↔run orchestration checkpoints (Stage 0), newest-first. */
+  goalOrchestrationRuns: GoalOrchestrationRun[];
 }
 
 const laneOrder: TaskStatus[] = ["planned", "assigned", "running", "blocked", "review", "done", "archived"];
@@ -365,6 +368,10 @@ export function buildWorkbenchModel(
   const selectedWorkflowSteps = selectedWorkflowRun
     ? orderStepsByRun(selectedWorkflowRun, workflowStepsByRun.get(selectedWorkflowRun.id) ?? [])
     : [];
+  // Stage 0: goal↔run orchestration checkpoints, newest-first by updated_at.
+  const goalOrchestrationRuns = [...(snapshot.goal_orchestration_runs ?? [])].sort(
+    (a, b) => (b.updated_at ?? "").localeCompare(a.updated_at ?? ""),
+  );
 
   return {
     snapshot,
@@ -426,6 +433,7 @@ export function buildWorkbenchModel(
     workflowDefs,
     workflowRuns,
     workflowStepsByRun,
+    goalOrchestrationRuns,
     selectedWorkflowRun,
     selectedWorkflowSteps,
   };
