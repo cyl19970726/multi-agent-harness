@@ -9354,6 +9354,14 @@ fn ephemeral_worktree_diff(worktree: &Path) -> Option<String> {
     Some(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
+fn count_unique_worktree_diff_files(diff: &str) -> usize {
+    diff.lines()
+        .filter_map(|line| line.strip_prefix("diff --git "))
+        .filter(|header| !header.trim().is_empty())
+        .collect::<BTreeSet<_>>()
+        .len()
+}
+
 /// Persist the ephemeral worker's NDJSON as neutral AgentEvents + one
 /// ProviderSession row keyed by `session_id`, so the dashboard per-node drill-in
 /// streams its tool calls. Reuses the existing claude stream-json reducer
@@ -10060,6 +10068,34 @@ fn fire_workflow_completion_hook(run: &WorkflowRun) {
     }
 }
 
+fn discarded_worktree_diff_warning(run_id: &str, step: &workflow::StepResult) -> Option<String> {
+    let details = step.details.as_ref()?;
+    let display_diff = details.get("worktree_diff").and_then(|v| v.as_str())?;
+    if display_diff.trim().is_empty() {
+        return None;
+    }
+    let diff = details
+        .get("landing_diff")
+        .and_then(|v| v.as_str())
+        .unwrap_or(display_diff);
+    let changed_files = count_unique_worktree_diff_files(diff);
+    Some(format!(
+        "warning: workflow run {run_id} step '{}' produced {changed_files} changed file(s) \
+         in a discarded throwaway worktree; retrieve with `harness workflow get-output \
+         {run_id} --step {}` or persist by using the goal layer / `goal run-phases` \
+         which lands writable work.",
+        step.label, step.label
+    ))
+}
+
+fn warn_discarded_worktree_diffs(run_id: &str, outcome: &workflow::WorkflowOutcome) {
+    for step in &outcome.steps {
+        if let Some(warning) = discarded_worktree_diff_warning(run_id, step) {
+            eprintln!("{warning}");
+        }
+    }
+}
+
 fn workflow_run_script_value(
     store: &HarnessStore,
     args: &[String],
@@ -10240,6 +10276,7 @@ fn workflow_run_script_value(
     run.design_intent = Some(started.meta.design_intent.clone());
     run.workflow_name = started.meta.name.clone();
 
+    warn_discarded_worktree_diffs(&run.id, &started.outcome);
     journal_workflow_outcome(store, run, &started.outcome)
 }
 
@@ -18456,6 +18493,63 @@ mod workflow_runtime_tests {
         let details = build_step_details(&spec, &spawn, spec.model.as_deref(), 1, Some(small));
         assert_eq!(details["worktree_diff"], serde_json::json!(small));
         assert_eq!(details["worktree_diff_truncated"], serde_json::json!(false));
+    }
+
+    #[test]
+    fn count_unique_worktree_diff_files_counts_headers_once() {
+        let diff = "\
+diff --git a/src/lib.rs b/src/lib.rs
+index 1111111..2222222 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -1 +1 @@
+-old
++new
+diff --git a/docs/workflow-runtime.md b/docs/workflow-runtime.md
+index 3333333..4444444 100644
+--- a/docs/workflow-runtime.md
++++ b/docs/workflow-runtime.md
+@@ -1 +1 @@
+-old
++new
+diff --git a/src/lib.rs b/src/lib.rs
+index 1111111..2222222 100644
+";
+        assert_eq!(count_unique_worktree_diff_files(diff), 2);
+        assert_eq!(count_unique_worktree_diff_files("no diff headers\n"), 0);
+    }
+
+    #[test]
+    fn discarded_worktree_diff_warning_names_run_step_and_recovery() {
+        let diff = "\
+diff --git a/src/new.rs b/src/new.rs
+new file mode 100644
+--- /dev/null
++++ b/src/new.rs
+@@ -0,0 +1 @@
++pub fn new() {}
+";
+        let step = workflow::StepResult {
+            phase: "impl".into(),
+            label: "writer".into(),
+            provider: "codex".into(),
+            isolation: Some("worktree".into()),
+            ok: true,
+            provider_session_id: Some("session-1".into()),
+            output_summary: "done".into(),
+            step_id: None,
+            started_at: None,
+            details: Some(serde_json::json!({ "worktree_diff": diff })),
+            structured: None,
+            ordinal: Some(0),
+        };
+        let warning =
+            discarded_worktree_diff_warning("wfrun-test", &step).expect("warning emitted");
+        assert!(warning.contains("workflow run wfrun-test"));
+        assert!(warning.contains("step 'writer'"));
+        assert!(warning.contains("1 changed file(s)"));
+        assert!(warning.contains("harness workflow get-output wfrun-test --step writer"));
+        assert!(warning.contains("goal run-phases"));
     }
 
     #[test]
