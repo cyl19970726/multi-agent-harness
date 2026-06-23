@@ -8268,6 +8268,7 @@ fn spawn_ephemeral_worker(
     } else {
         None
     };
+    let artifact_outcome = collect_expected_artifacts(&cwd, &repo_root, &spec.expected_artifacts);
 
     // Two-tier persistence (locked design). The live SSE frames were already
     // streamed during the spawn loop (per-session NDJSON + shared
@@ -8321,6 +8322,18 @@ fn spawn_ephemeral_worker(
     if schema_failed {
         output_summary.push_str(" [schema: no valid JSON with required keys]");
     }
+    if !artifact_outcome.copied.is_empty() {
+        output_summary.push_str(&format!(
+            " [expected artifacts copied: {}]",
+            artifact_outcome.copied.join(", ")
+        ));
+    }
+    if !artifact_outcome.failures.is_empty() {
+        output_summary.push_str(&format!(
+            " [expected artifacts missing/empty: {}]",
+            artifact_outcome.failures.join("; ")
+        ));
+    }
 
     // Drop the guard here (explicitly, for clarity) AFTER the diff is collected —
     // cleanup layer 1 (normal) for the worktree path. For the shared-cwd path the
@@ -8346,9 +8359,29 @@ fn spawn_ephemeral_worker(
             );
         }
     }
+    if let Some(map) = details.as_object_mut() {
+        map.insert(
+            "expected_artifacts".into(),
+            serde_json::json!({
+                "declared": spec.expected_artifacts.clone(),
+                "copied": artifact_outcome.copied.clone(),
+                "failures": artifact_outcome.failures.clone(),
+            }),
+        );
+        if !artifact_outcome.failures.is_empty() && map.get("failure").is_none() {
+            map.insert(
+                "failure".into(),
+                serde_json::json!({
+                    "failed": true,
+                    "reason": "expected_artifacts",
+                    "detail": artifact_outcome.failures.join("; "),
+                }),
+            );
+        }
+    }
 
     // The step is ok iff the worker succeeded AND (text mode OR schema parsed).
-    let ok = spawn.ok && !schema_failed;
+    let ok = step_ok_after_gates(spawn.ok, schema_failed, &artifact_outcome);
 
     Ok(workflow::StepResult {
         phase: spec.phase.clone(),
@@ -9354,6 +9387,95 @@ fn ephemeral_worktree_diff(worktree: &Path) -> Option<String> {
     Some(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct ExpectedArtifactOutcome {
+    copied: Vec<String>,
+    failures: Vec<String>,
+}
+
+fn collect_expected_artifacts(
+    worker_cwd: &Path,
+    repo_root: &Path,
+    expected_artifacts: &[String],
+) -> ExpectedArtifactOutcome {
+    let mut outcome = ExpectedArtifactOutcome::default();
+    for artifact in expected_artifacts {
+        let artifact = artifact.trim();
+        if artifact.is_empty() {
+            outcome.failures.push("empty artifact path".to_string());
+            continue;
+        }
+        let rel = Path::new(artifact);
+        if rel.is_absolute()
+            || rel
+                .components()
+                .any(|c| matches!(c, std::path::Component::ParentDir))
+        {
+            outcome.failures.push(format!(
+                "{artifact}: expected_artifacts entries must be repo-relative paths"
+            ));
+            continue;
+        }
+        let src = worker_cwd.join(rel);
+        let metadata = match fs::metadata(&src) {
+            Ok(metadata) => metadata,
+            Err(_) => {
+                outcome.push_missing(artifact);
+                continue;
+            }
+        };
+        if !metadata.is_file() {
+            outcome
+                .failures
+                .push(format!("{artifact}: exists but is not a file"));
+            continue;
+        }
+        if metadata.len() == 0 {
+            outcome.push_missing(artifact);
+            continue;
+        }
+        let dest = repo_root.join(rel);
+        if let Some(parent) = dest.parent() {
+            if let Err(err) = fs::create_dir_all(parent) {
+                outcome
+                    .failures
+                    .push(format!("{artifact}: could not create destination: {err}"));
+                continue;
+            }
+        }
+        let same_path = fs::canonicalize(&src)
+            .ok()
+            .zip(fs::canonicalize(&dest).ok())
+            .is_some_and(|(src, dest)| src == dest);
+        if !same_path {
+            if let Err(err) = fs::copy(&src, &dest) {
+                outcome
+                    .failures
+                    .push(format!("{artifact}: could not copy to live repo: {err}"));
+                continue;
+            }
+        }
+        outcome.copied.push(artifact.to_string());
+    }
+    outcome
+}
+
+impl ExpectedArtifactOutcome {
+    fn push_missing(&mut self, artifact: &str) {
+        self.failures.push(format!(
+            "{artifact}: missing or empty; declare only artifacts the step writes, or write a non-empty file before the step exits"
+        ));
+    }
+}
+
+fn step_ok_after_gates(
+    provider_ok: bool,
+    schema_failed: bool,
+    artifact_outcome: &ExpectedArtifactOutcome,
+) -> bool {
+    provider_ok && !schema_failed && artifact_outcome.failures.is_empty()
+}
+
 fn count_unique_worktree_diff_files(diff: &str) -> usize {
     diff.lines()
         .filter_map(|line| line.strip_prefix("diff --git "))
@@ -9632,11 +9754,18 @@ fn workflow_get_output_value(
             }
             None => (step.output_summary.clone().unwrap_or_default(), "summary"),
         };
+        let session_summary = step
+            .provider_session_id
+            .as_deref()
+            .map(|sid| workflow_provider_session_summary(store, sid))
+            .transpose()?;
         out_steps.push(serde_json::json!({
             "label": step.label,
             "status": serde_json::to_value(step.status)?,
             "provider_session_id": step.provider_session_id,
             "source": source,
+            "result": step.result,
+            "session_summary": session_summary,
             "output": output,
         }));
     }
@@ -9653,6 +9782,42 @@ fn workflow_get_output_value(
         "run_id": run_id,
         "workflow_name": run.workflow_name,
         "steps": out_steps,
+    }))
+}
+
+fn workflow_provider_session_summary(
+    store: &HarnessStore,
+    session_id: &str,
+) -> CliResult<serde_json::Value> {
+    let (retained, events, truncated) = read_session_turn_events_normalized(store, session_id)?;
+    let mut tool_counts: BTreeMap<String, u64> = BTreeMap::new();
+    let mut final_message: Option<String> = None;
+    for event in events {
+        match event.kind {
+            HarnessTurnEventKind::ToolCall => {
+                let name = event
+                    .tool_call
+                    .map(|tool| tool.name)
+                    .unwrap_or_else(|| "unknown".to_string());
+                *tool_counts.entry(name).or_insert(0) += 1;
+            }
+            HarnessTurnEventKind::Message => {
+                if let Some(text) = event.text.filter(|text| !text.trim().is_empty()) {
+                    final_message = Some(truncate_on_char_boundary(text.trim(), 500).to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+    let tool_calls = tool_counts
+        .into_iter()
+        .map(|(name, count)| serde_json::json!({ "name": name, "count": count }))
+        .collect::<Vec<_>>();
+    Ok(serde_json::json!({
+        "retained": retained,
+        "truncated": truncated,
+        "tool_calls": tool_calls,
+        "final_message": final_message,
     }))
 }
 
@@ -18378,6 +18543,7 @@ mod workflow_runtime_tests {
             fallback_model: None,
             image: Vec::new(),
             add_dir: Vec::new(),
+            expected_artifacts: Vec::new(),
             isolation: None,
             prompt: "hi".into(),
             schema: None,
@@ -18422,6 +18588,7 @@ mod workflow_runtime_tests {
             fallback_model: None,
             image: Vec::new(),
             add_dir: Vec::new(),
+            expected_artifacts: Vec::new(),
             isolation: None,
             prompt: "hi".into(),
             schema: None,
@@ -18463,6 +18630,7 @@ mod workflow_runtime_tests {
             fallback_model: None,
             image: Vec::new(),
             add_dir: Vec::new(),
+            expected_artifacts: Vec::new(),
             isolation: Some("worktree".into()),
             prompt: "hi".into(),
             schema: None,
@@ -18593,6 +18761,7 @@ new file mode 100644
             fallback_model: None,
             image: Vec::new(),
             add_dir: Vec::new(),
+            expected_artifacts: Vec::new(),
             isolation: None,
             prompt: "hi".into(),
             schema: None,
@@ -19882,6 +20051,7 @@ new file mode 100644
             fallback_model: None,
             image: Vec::new(),
             add_dir: Vec::new(),
+            expected_artifacts: Vec::new(),
             isolation: None,
             prompt: "do the thing".into(),
             schema: None,
@@ -19943,6 +20113,7 @@ new file mode 100644
             fallback_model: None,
             image: Vec::new(),
             add_dir: Vec::new(),
+            expected_artifacts: Vec::new(),
             isolation: None,
             prompt: "p".into(),
             schema: None,
@@ -20070,7 +20241,10 @@ new file mode 100644
             provider_session_id: Some(sid.into()),
             status: WorkflowStepStatus::Completed,
             output_summary: Some(summary.into()),
-            result: None,
+            result: Some(serde_json::json!({
+                "ok": true,
+                "telemetry": "journaled"
+            })),
             started_at: "unix-ms:1".into(),
             ended_at: Some("unix-ms:2".into()),
         };
@@ -20113,6 +20287,41 @@ new file mode 100644
         let dir = store.root().join("provider-sessions").join("sess-2");
         std::fs::create_dir_all(&dir).expect("mk session dir");
         std::fs::write(dir.join("reply.txt"), &full).expect("write reply");
+        let ndjson_path = dir.join("codex.exec.ndjson");
+        std::fs::write(
+            &ndjson_path,
+            concat!(
+                "{\"type\":\"item.completed\",\"item\":{\"id\":\"cmd-1\",\"type\":\"command_execution\",\"command\":\"python write.py\",\"aggregated_output\":\"ok\\n\",\"exit_code\":0}}\n",
+                "{\"type\":\"item.completed\",\"item\":{\"id\":\"msg-1\",\"type\":\"agent_message\",\"text\":\"final artifact note\"}}\n"
+            ),
+        )
+        .expect("write ndjson");
+        store
+            .append_provider_session(&ProviderSession {
+                id: "sess-2".into(),
+                provider: "codex".into(),
+                agent_member_id: "sess-2".into(),
+                task_id: None,
+                workspace_ref: None,
+                provider_thread_id: None,
+                provider_turn_id: None,
+                terminal_source: Some(MessageTerminalSource::TurnCompleted),
+                status: ProviderSessionStatus::Succeeded,
+                command: "codex".into(),
+                args: Vec::new(),
+                prompt_ref: None,
+                prompt_summary: None,
+                provider_session_ref: None,
+                stdout_ref: Some(ndjson_path.display().to_string()),
+                jsonl_ref: Some(ndjson_path.display().to_string()),
+                transcript_ref: None,
+                last_message_ref: None,
+                exit_code: Some(0),
+                started_at: "unix-ms:1".into(),
+                ended_at: Some("unix-ms:2".into()),
+                evidence_ids: Vec::new(),
+            })
+            .expect("append provider session");
 
         let out = workflow_get_output_value(&store, &["wfrun-go".to_string()]).expect("get-output");
         let steps = out["steps"].as_array().expect("steps array");
@@ -20126,6 +20335,15 @@ new file mode 100644
         // s2 has reply.txt -> full text, source "reply".
         assert_eq!(steps[1]["source"], "reply");
         assert_eq!(steps[1]["output"].as_str().unwrap(), full);
+        assert_eq!(steps[1]["result"]["telemetry"], "journaled");
+        assert_eq!(
+            steps[1]["session_summary"]["tool_calls"][0]["name"],
+            "python write.py"
+        );
+        assert_eq!(
+            steps[1]["session_summary"]["final_message"],
+            "final artifact note"
+        );
 
         // --step selects one leaf.
         let one = workflow_get_output_value(
@@ -20193,12 +20411,69 @@ new file mode 100644
             fallback_model: None,
             image: Vec::new(),
             add_dir: Vec::new(),
+            expected_artifacts: Vec::new(),
             isolation: isolation.map(str::to_string),
             prompt: "noop".into(),
             schema: None,
             writable,
             ordinal: Some(0),
         }
+    }
+
+    #[test]
+    fn expected_artifact_is_copied_from_worker_cwd_to_live_repo() {
+        let root = std::env::temp_dir().join(format!("harness-artifact-{}", generated_id("copy")));
+        let worker = root.join("worktree");
+        let repo = root.join("repo");
+        std::fs::create_dir_all(worker.join("out")).expect("mk worker out");
+        std::fs::create_dir_all(&repo).expect("mk repo");
+        std::fs::write(worker.join("out/image.png"), b"image-bytes").expect("write artifact");
+
+        let outcome = collect_expected_artifacts(&worker, &repo, &["out/image.png".to_string()]);
+
+        assert_eq!(outcome.failures, Vec::<String>::new());
+        assert_eq!(outcome.copied, vec!["out/image.png".to_string()]);
+        assert_eq!(
+            std::fs::read(repo.join("out/image.png")).expect("read copied artifact"),
+            b"image-bytes"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn missing_or_empty_expected_artifact_is_actionable_failure() {
+        let root =
+            std::env::temp_dir().join(format!("harness-artifact-{}", generated_id("missing")));
+        let worker = root.join("worktree");
+        let repo = root.join("repo");
+        std::fs::create_dir_all(worker.join("out")).expect("mk worker out");
+        std::fs::create_dir_all(&repo).expect("mk repo");
+        std::fs::write(worker.join("out/empty.txt"), b"").expect("write empty artifact");
+
+        let outcome = collect_expected_artifacts(
+            &worker,
+            &repo,
+            &["out/missing.txt".to_string(), "out/empty.txt".to_string()],
+        );
+
+        assert!(outcome.copied.is_empty());
+        assert_eq!(outcome.failures.len(), 2);
+        assert!(
+            outcome.failures[0].contains("missing or empty")
+                && outcome.failures[0].contains("write a non-empty file"),
+            "failure should be actionable: {:?}",
+            outcome.failures
+        );
+        assert!(
+            outcome.failures[1].contains("missing or empty"),
+            "empty artifact should fail: {:?}",
+            outcome.failures
+        );
+        assert!(
+            !step_ok_after_gates(true, false, &outcome),
+            "a missing declared artifact must fail the step even when the provider succeeded"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

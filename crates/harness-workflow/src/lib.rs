@@ -21,6 +21,7 @@ use std::collections::BTreeMap;
 use std::sync::{Condvar, Mutex};
 
 use harness_core::{WorkflowRunStatus, WorkflowStepStatus};
+use serde::{Deserialize, Serialize};
 
 pub mod starlark_front;
 
@@ -36,7 +37,7 @@ pub const ISOLATION_WORKTREE: &str = "worktree";
 /// workflow-layer description of one `agent()` call; the runtime turns it into a
 /// [`StepResult`]. `model` overrides the provider's default model; `isolation`
 /// opts the node into a throwaway git worktree.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentStepSpec {
     pub phase: String,
     pub label: String,
@@ -56,7 +57,11 @@ pub struct AgentStepSpec {
     /// Image file paths to attach to the worker. Empty means no images.
     pub image: Vec<String>,
     /// Extra directory paths the worker may access. Empty means no extra dirs.
+    #[serde(default)]
     pub add_dir: Vec<String>,
+    /// Artifact paths the step must produce. Empty preserves the legacy behavior.
+    #[serde(default)]
+    pub expected_artifacts: Vec<String>,
     /// Optional per-node isolation. `Some("worktree")` runs the step in its own
     /// throwaway git worktree; `None` edits the shared repo cwd.
     pub isolation: Option<String>,
@@ -506,6 +511,7 @@ pub fn investigate(driver: &AgentStepFn<'_>, topic: &str) -> WorkflowOutcome {
             fallback_model: None,
             image: Vec::new(),
             add_dir: Vec::new(),
+            expected_artifacts: Vec::new(),
             isolation: None,
             prompt: format!("Scope the investigation of: {topic}. List the modules to audit."),
             schema: None,
@@ -527,6 +533,7 @@ pub fn investigate(driver: &AgentStepFn<'_>, topic: &str) -> WorkflowOutcome {
             fallback_model: None,
             image: Vec::new(),
             add_dir: Vec::new(),
+            expected_artifacts: Vec::new(),
             isolation: None,
             prompt: format!("Audit the code paths involved in: {topic}."),
             schema: None,
@@ -542,6 +549,7 @@ pub fn investigate(driver: &AgentStepFn<'_>, topic: &str) -> WorkflowOutcome {
             fallback_model: None,
             image: Vec::new(),
             add_dir: Vec::new(),
+            expected_artifacts: Vec::new(),
             isolation: None,
             prompt: format!("Audit the recent diffs related to: {topic}."),
             schema: None,
@@ -733,6 +741,47 @@ mod tests {
     }
 
     #[test]
+    fn agent_step_spec_expected_artifacts_round_trips_and_defaults() {
+        let spec = AgentStepSpec {
+            phase: "p".into(),
+            label: "writer".into(),
+            provider: "codex".into(),
+            model: None,
+            effort: None,
+            fallback_model: None,
+            image: Vec::new(),
+            add_dir: Vec::new(),
+            expected_artifacts: vec!["out/image.png".into()],
+            isolation: Some(ISOLATION_WORKTREE.into()),
+            prompt: "write it".into(),
+            schema: None,
+            writable: true,
+            ordinal: Some(7),
+        };
+        let encoded = serde_json::to_string(&spec).expect("serialize");
+        let decoded: AgentStepSpec = serde_json::from_str(&encoded).expect("deserialize");
+        assert_eq!(decoded.expected_artifacts, vec!["out/image.png"]);
+
+        let legacy = serde_json::json!({
+            "phase": "p",
+            "label": "writer",
+            "provider": "codex",
+            "model": null,
+            "effort": null,
+            "fallback_model": null,
+            "image": [],
+            "add_dir": [],
+            "isolation": null,
+            "prompt": "write it",
+            "schema": null,
+            "writable": false,
+            "ordinal": null
+        });
+        let decoded: AgentStepSpec = serde_json::from_value(legacy).expect("legacy decode");
+        assert!(decoded.expected_artifacts.is_empty());
+    }
+
+    #[test]
     fn serial_step_runs_before_parallel_fan_out() {
         let order = Mutex::new(Vec::new());
         let outcome = {
@@ -778,6 +827,7 @@ mod tests {
                 fallback_model: None,
                 image: Vec::new(),
                 add_dir: Vec::new(),
+                expected_artifacts: Vec::new(),
                 isolation: None,
                 prompt: format!("prompt {i}"),
                 schema: None,
@@ -841,6 +891,7 @@ mod tests {
                 fallback_model: None,
                 image: Vec::new(),
                 add_dir: Vec::new(),
+                expected_artifacts: Vec::new(),
                 isolation: None,
                 prompt: "x".to_string(),
                 schema: None,
@@ -916,6 +967,7 @@ mod tests {
                 fallback_model: None,
                 image: Vec::new(),
                 add_dir: Vec::new(),
+                expected_artifacts: Vec::new(),
                 isolation: None,
                 prompt: format!("prompt {i}"),
                 schema: None,
@@ -964,6 +1016,7 @@ mod tests {
             fallback_model: None,
             image: Vec::new(),
             add_dir: Vec::new(),
+            expected_artifacts: Vec::new(),
             isolation: None,
             prompt: "x".to_string(),
             schema: None,
