@@ -5920,6 +5920,8 @@ fn serve_command(store: &HarnessStore, resolved: &ResolvedStore, args: &[String]
         std::thread::spawn(move || loop {
             std::thread::sleep(REAP_POLL_INTERVAL);
             let _ = reap_stale_workflow_runs(&reaper_store);
+            let _ = workflow_gc_worktrees(&reaper_store);
+            let _ = workflow_gc_trace(&reaper_store, 100, None, false);
         });
     }
 
@@ -8127,12 +8129,27 @@ fn spawn_ephemeral_worker(
     }
 
     let guard = if isolate {
-        Some(WorktreeGuard::create(
-            &repo_root,
-            run_id,
-            &spec.label,
-            session_id,
-        )?)
+        let guard = WorktreeGuard::create(&repo_root, run_id, &spec.label, session_id)?;
+        let repo = repo_root.display().to_string();
+        let branch = command_stdout("git", &["-C", &repo, "branch", "--show-current"])
+            .ok()
+            .map(|branch| branch.trim().to_string())
+            .filter(|branch| !branch.is_empty())
+            .unwrap_or_else(|| "detached".to_string());
+        let head = command_stdout("git", &["-C", &repo, "rev-parse", "--short", "HEAD"])
+            .ok()
+            .map(|head| head.trim().to_string())
+            .filter(|head| !head.is_empty())
+            .unwrap_or_else(|| "unknown".to_string());
+        eprintln!(
+            "workflow: created worktree for node '{}' from project root {} ({} {}) at {}",
+            spec.label,
+            repo_root.display(),
+            branch,
+            head,
+            guard.path.display()
+        );
+        Some(guard)
     } else {
         None
     };
@@ -9833,7 +9850,17 @@ fn workflow_gc_worktrees(store: &HarnessStore) -> CliResult<serde_json::Value> {
         .args(["-C", &repo, "worktree", "prune"])
         .output();
 
-    // Registered worktree paths (so we never delete a live one).
+    let runs_by_id: BTreeMap<String, WorkflowRunStatus> =
+        latest_workflow_runs_in_append_order(store)?
+            .into_iter()
+            .map(|run| (run.id, run.status))
+            .collect();
+    let mut run_ids_by_len: Vec<&str> = runs_by_id.keys().map(String::as_str).collect();
+    run_ids_by_len.sort_by_key(|id| std::cmp::Reverse(id.len()));
+
+    // Registered worktree paths. A registered path is preserved only while its
+    // owning WorkflowRun is still Running; terminal or missing owners are stale
+    // after the serve reaper has finalized abandoned runs.
     let listed = Command::new("git")
         .args(["-C", &repo, "worktree", "list", "--porcelain"])
         .output()?;
@@ -9856,7 +9883,16 @@ fn workflow_gc_worktrees(store: &HarnessStore) -> CliResult<serde_json::Value> {
             let is_registered = registered
                 .iter()
                 .any(|reg| reg == &path || reg.canonicalize().ok() == path.canonicalize().ok());
-            if is_registered {
+            let owner_status = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .and_then(|name| {
+                    run_ids_by_len
+                        .iter()
+                        .find(|run_id| name == **run_id || name.starts_with(&format!("{run_id}-")))
+                        .and_then(|run_id| runs_by_id.get(*run_id).copied())
+                });
+            if is_registered && owner_status == Some(WorkflowRunStatus::Running) {
                 continue;
             }
             let _ = Command::new("git")
@@ -17634,6 +17670,91 @@ mod workflow_runtime_tests {
         store
     }
 
+    fn init_gc_git_project(tag: &str, store: &HarnessStore) -> PathBuf {
+        let project_root =
+            std::env::temp_dir().join(format!("harness-gc-project-{}", generated_id(tag)));
+        std::fs::create_dir_all(&project_root).expect("mk gc project root");
+        let git = |args: &[&str]| {
+            Command::new("git")
+                .arg("-C")
+                .arg(&project_root)
+                .args(args)
+                .output()
+                .expect("git")
+        };
+        assert!(git(&["init"]).status.success(), "git init");
+        let _ = git(&["config", "user.email", "t@t"]);
+        let _ = git(&["config", "user.name", "t"]);
+        std::fs::write(project_root.join("README"), "x").expect("seed file");
+        assert!(git(&["add", "-A"]).status.success(), "git add");
+        assert!(
+            git(&["commit", "-m", "init"]).status.success(),
+            "git commit"
+        );
+        let ctx = ProjectContext {
+            id: format!("gc-{}", generated_id(tag)),
+            project_root: project_root.clone(),
+            store_root: store.root().to_path_buf(),
+            kind: ProjectKind::Repo,
+            is_git_repo: true,
+        };
+        project::write_metadata(&ctx, None).expect("write gc project metadata");
+        project_root
+    }
+
+    fn seed_gc_workflow_run(store: &HarnessStore, id: &str, status: WorkflowRunStatus) {
+        store
+            .append_workflow_run(&WorkflowRun {
+                id: id.into(),
+                workflow_name: "gc-demo".into(),
+                status,
+                step_ids: Vec::new(),
+                created_at: "unix-ms:1".into(),
+                ended_at: if status == WorkflowRunStatus::Running {
+                    None
+                } else {
+                    Some("unix-ms:2".into())
+                },
+                summary: None,
+                args: None,
+                agents_spawned: 0,
+                final_output: None,
+                initiated_by: Some("test".into()),
+                design_intent: None,
+                spec: None,
+                trace_retention: "durable".into(),
+                host_pid: None,
+                dry_run: false,
+                goal_id: None,
+                phase_id: None,
+            })
+            .expect("append gc run");
+    }
+
+    fn add_registered_gc_worktree(
+        project_root: &Path,
+        run_id: &str,
+        label: &str,
+        session_id: &str,
+    ) -> PathBuf {
+        let (rel, branch) = worktree_paths(run_id, label, session_id);
+        let path = project_root.join(rel);
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(project_root)
+            .args(["worktree", "add", "-B", &branch])
+            .arg(&path)
+            .arg("HEAD")
+            .output()
+            .expect("git worktree add");
+        assert!(
+            output.status.success(),
+            "git worktree add failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        path
+    }
+
     #[test]
     fn kimi_parsers_match_the_real_v018_stream_shape() {
         // Verified LIVE against `kimi -p --output-format stream-json` (v0.18): a flat
@@ -20681,6 +20802,68 @@ new file mode 100644
         );
         assert!(rel_a.contains("wfrun-1") && rel_a.contains("dup"));
         assert!(br_a.starts_with("harness/wt/"));
+    }
+
+    #[test]
+    fn gc_worktrees_removes_registered_worktrees_for_terminal_or_absent_runs() {
+        let store = temp_store("gc-wt-stale");
+        let project_root = init_gc_git_project("stale", &store);
+        seed_gc_workflow_run(&store, "wfrun-terminal", WorkflowRunStatus::Completed);
+        let terminal = add_registered_gc_worktree(
+            &project_root,
+            "wfrun-terminal",
+            "writer",
+            "session-terminal-0",
+        );
+        let absent =
+            add_registered_gc_worktree(&project_root, "wfrun-absent", "writer", "session-abs-0");
+
+        let out = workflow_gc_worktrees(&store).expect("gc worktrees");
+        let removed = out["removed"].as_array().expect("removed array");
+        let terminal_display = terminal.display().to_string();
+        let absent_display = absent.display().to_string();
+        assert!(
+            removed
+                .iter()
+                .any(|value| value.as_str() == Some(terminal_display.as_str())),
+            "terminal owner's worktree should be reported removed: {out}"
+        );
+        assert!(
+            removed
+                .iter()
+                .any(|value| value.as_str() == Some(absent_display.as_str())),
+            "absent owner's worktree should be reported removed: {out}"
+        );
+        assert!(!terminal.exists(), "terminal run worktree removed");
+        assert!(!absent.exists(), "absent run worktree removed");
+        let _ = std::fs::remove_dir_all(&project_root);
+    }
+
+    #[test]
+    fn gc_worktrees_keeps_registered_worktree_for_running_run() {
+        let store = temp_store("gc-wt-running");
+        let project_root = init_gc_git_project("running", &store);
+        seed_gc_workflow_run(&store, "wfrun-running", WorkflowRunStatus::Running);
+        let running = add_registered_gc_worktree(
+            &project_root,
+            "wfrun-running",
+            "writer",
+            "session-running-0",
+        );
+
+        let out = workflow_gc_worktrees(&store).expect("gc worktrees");
+        assert!(
+            out["removed"].as_array().expect("removed array").is_empty(),
+            "running owner should not be removed: {out}"
+        );
+        assert!(running.is_dir(), "running run worktree preserved");
+        let _ = Command::new("git")
+            .arg("-C")
+            .arg(&project_root)
+            .args(["worktree", "remove", "--force"])
+            .arg(&running)
+            .output();
+        let _ = std::fs::remove_dir_all(&project_root);
     }
 
     #[test]
