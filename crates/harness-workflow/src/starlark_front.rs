@@ -201,6 +201,7 @@ impl StarlarkCtx<'_> {
         fallback_model: Option<String>,
         image: Vec<String>,
         add_dir: Vec<String>,
+        expected_artifacts: Vec<String>,
         isolation: Option<String>,
         schema: Option<serde_json::Value>,
         writable: bool,
@@ -236,6 +237,7 @@ impl StarlarkCtx<'_> {
             fallback_model,
             image,
             add_dir,
+            expected_artifacts,
             isolation,
             prompt,
             schema,
@@ -458,6 +460,7 @@ impl StarlarkCtx<'_> {
                 fallback_model: None,
                 image: Vec::new(),
                 add_dir: Vec::new(),
+                expected_artifacts: Vec::new(),
                 isolation: None,
                 prompt: item.clone(),
                 schema: None,
@@ -655,6 +658,7 @@ fn read_parallel_specs(
         let fallback_model = dict_str(&dict, "fallback_model")?;
         let image = dict_str_list(&dict, "image")?;
         let add_dir = dict_str_list(&dict, "add_dir")?;
+        let expected_artifacts = dict_str_list(&dict, "expected_artifacts")?;
         let isolation = dict_str(&dict, "isolation")?;
         let schema = dict_schema(&dict, "schema")?;
         let writable = dict_bool(&dict, "writable")?;
@@ -667,6 +671,7 @@ fn read_parallel_specs(
             fallback_model,
             image,
             add_dir,
+            expected_artifacts,
             isolation,
             prompt,
             schema,
@@ -699,6 +704,7 @@ struct StageTemplate {
     fallback_model: Option<String>,
     image: Vec<String>,
     add_dir: Vec<String>,
+    expected_artifacts: Vec<String>,
     isolation: Option<String>,
     schema: Option<serde_json::Value>,
     writable: bool,
@@ -721,6 +727,7 @@ impl StageTemplate {
             fallback_model: self.fallback_model.clone(),
             image: self.image.clone(),
             add_dir: self.add_dir.clone(),
+            expected_artifacts: self.expected_artifacts.clone(),
             isolation: self.isolation.clone(),
             prompt,
             schema: self.schema.clone(),
@@ -783,6 +790,7 @@ fn read_pipeline_stages(
         let fallback_model = dict_str(&dict, "fallback_model")?;
         let image = dict_str_list(&dict, "image")?;
         let add_dir = dict_str_list(&dict, "add_dir")?;
+        let expected_artifacts = dict_str_list(&dict, "expected_artifacts")?;
         let isolation = dict_str(&dict, "isolation")?;
         let schema = dict_schema(&dict, "schema")?;
         let writable = dict_bool(&dict, "writable")?;
@@ -796,6 +804,7 @@ fn read_pipeline_stages(
             fallback_model,
             image,
             add_dir,
+            expected_artifacts,
             isolation,
             schema,
             writable,
@@ -861,6 +870,7 @@ fn workflow_globals(builder: &mut GlobalsBuilder) {
         #[starlark(require = named)] fallback_model: Option<String>,
         #[starlark(require = named)] image: Option<Value<'v>>,
         #[starlark(require = named)] add_dir: Option<Value<'v>>,
+        #[starlark(require = named)] expected_artifacts: Option<Value<'v>>,
         #[starlark(require = named)] isolation: Option<String>,
         #[starlark(require = named)] schema: Option<Value<'v>>,
         #[starlark(require = named, default = false)] writable: bool,
@@ -883,6 +893,12 @@ fn workflow_globals(builder: &mut GlobalsBuilder) {
             Some(value) if !value.is_none() => value_str_list(value, "agent() `add_dir`")?,
             _ => Vec::new(),
         };
+        let expected_artifacts = match expected_artifacts {
+            Some(value) if !value.is_none() => {
+                value_str_list(value, "agent() `expected_artifacts`")?
+            }
+            _ => Vec::new(),
+        };
         let has_schema = schema_json.is_some();
         let result = ctx_of(eval).run_one(
             prompt,
@@ -894,6 +910,7 @@ fn workflow_globals(builder: &mut GlobalsBuilder) {
             fallback_model,
             image,
             add_dir,
+            expected_artifacts,
             isolation,
             schema_json,
             writable,
@@ -1501,6 +1518,97 @@ pipeline(
         assert_eq!(seen["pipe"].1, vec!["skills".to_string()]);
         assert_eq!(seen["pipe"].2.as_deref(), Some("claude-opus"));
         assert_eq!(outcome.steps.len(), 3);
+    }
+
+    #[test]
+    fn expected_artifacts_flow_onto_agent_parallel_and_pipeline_specs() {
+        let seen = Mutex::new(Vec::<(String, Vec<String>)>::new());
+        let script = r#"
+agent("write one", label = "single", expected_artifacts = ["out/one.png"])
+parallel([{"prompt": "write two", "label": "fanout", "expected_artifacts": ["out/two.png", "out/two.json"]}])
+pipeline(
+    ["item"],
+    [{"prompt": "stage {input}", "label": "pipe", "expected_artifacts": ["out/pipe.txt"]}],
+)
+"#;
+        let outcome = {
+            let driver = |spec: &AgentStepSpec| {
+                seen.lock()
+                    .unwrap()
+                    .push((spec.label.clone(), spec.expected_artifacts.clone()));
+                StepResult {
+                    phase: spec.phase.clone(),
+                    label: spec.label.clone(),
+                    provider: spec.provider.clone(),
+                    isolation: spec.isolation.clone(),
+                    ok: true,
+                    provider_session_id: Some("s".to_string()),
+                    output_summary: "ok".to_string(),
+                    step_id: None,
+                    started_at: None,
+                    details: None,
+                    structured: None,
+                    ordinal: None,
+                }
+            };
+            run_starlark(&format!("{HEADER}{script}"), "demo", None, &driver)
+                .expect("run ok")
+                .outcome
+        };
+
+        let seen: std::collections::HashMap<String, Vec<String>> =
+            seen.into_inner().unwrap().into_iter().collect();
+        assert_eq!(seen["single"], vec!["out/one.png".to_string()]);
+        assert_eq!(
+            seen["fanout"],
+            vec!["out/two.png".to_string(), "out/two.json".to_string()]
+        );
+        assert_eq!(seen["pipe"], vec!["out/pipe.txt".to_string()]);
+        assert_eq!(outcome.steps.len(), 3);
+    }
+
+    #[test]
+    fn expected_artifacts_round_trips_into_agent_step_spec() {
+        let spec = AgentStepSpec {
+            phase: "p".into(),
+            label: "writer".into(),
+            provider: "codex".into(),
+            model: None,
+            effort: None,
+            fallback_model: None,
+            image: Vec::new(),
+            add_dir: Vec::new(),
+            expected_artifacts: vec!["out/image.png".into()],
+            isolation: Some("worktree".into()),
+            prompt: "write".into(),
+            schema: None,
+            writable: true,
+            ordinal: Some(7),
+        };
+        let value = serde_json::to_value(&spec).expect("serialize spec");
+        let roundtrip: AgentStepSpec = serde_json::from_value(value).expect("deserialize spec");
+        assert_eq!(
+            roundtrip.expected_artifacts,
+            vec!["out/image.png".to_string()]
+        );
+
+        let legacy = serde_json::json!({
+            "phase": "p",
+            "label": "legacy",
+            "provider": "codex",
+            "model": null,
+            "effort": null,
+            "fallback_model": null,
+            "image": [],
+            "add_dir": [],
+            "isolation": null,
+            "prompt": "old",
+            "schema": null,
+            "writable": false,
+            "ordinal": null
+        });
+        let legacy: AgentStepSpec = serde_json::from_value(legacy).expect("legacy spec");
+        assert!(legacy.expected_artifacts.is_empty());
     }
 
     #[test]

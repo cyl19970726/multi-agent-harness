@@ -3,6 +3,7 @@ use std::env;
 use std::fs;
 use std::io::{BufRead, BufReader, BufWriter, Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::path::Component;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -828,6 +829,7 @@ fn run() -> CliResult<()> {
         "board" => board_command(&store)?,
         "codex" => codex_command(&store, &args[1..])?,
         "workflow" => workflow_command(&store, &args[1..])?,
+        "governance" => governance_command(&args[1..])?,
         "hook" => hook_command(&store, &args[1..])?,
         "serve" => serve_command(&store, &resolved, &args[1..])?,
         #[cfg(unix)]
@@ -8122,6 +8124,11 @@ fn spawn_ephemeral_worker(
         None
     };
 
+    // Artifact gate: copy declared products out of an isolated worktree before
+    // cleanup, and fail the step when any declared artifact is absent/empty.
+    let artifact_outcome = check_expected_artifacts(&cwd, &repo_root, &spec.expected_artifacts);
+    let artifact_failed = !artifact_outcome.failures.is_empty();
+
     // Two-tier persistence (locked design). The live SSE frames were already
     // streamed during the spawn loop (per-session NDJSON + shared
     // provider_turn_events.jsonl), so a LIVE drill-in worked during execution no
@@ -8174,6 +8181,18 @@ fn spawn_ephemeral_worker(
     if schema_failed {
         output_summary.push_str(" [schema: no valid JSON with required keys]");
     }
+    if !artifact_outcome.copied.is_empty() {
+        output_summary.push_str(&format!(
+            " [expected artifacts copied: {}]",
+            artifact_outcome.copied.join(", ")
+        ));
+    }
+    if artifact_failed {
+        output_summary.push_str(&format!(
+            " [expected artifacts missing: {}]",
+            artifact_outcome.failures.join("; ")
+        ));
+    }
 
     // Drop the guard here (explicitly, for clarity) AFTER the diff is collected —
     // cleanup layer 1 (normal) for the worktree path. For the shared-cwd path the
@@ -8199,9 +8218,23 @@ fn spawn_ephemeral_worker(
             );
         }
     }
+    if !spec.expected_artifacts.is_empty() {
+        if let Some(map) = details.as_object_mut() {
+            map.insert(
+                "expected_artifacts".into(),
+                serde_json::json!({
+                    "declared": &spec.expected_artifacts,
+                    "present": &artifact_outcome.present,
+                    "copied": &artifact_outcome.copied,
+                    "missing": &artifact_outcome.failures,
+                }),
+            );
+        }
+    }
 
-    // The step is ok iff the worker succeeded AND (text mode OR schema parsed).
-    let ok = spawn.ok && !schema_failed;
+    // The step is ok iff the worker succeeded, schema mode parsed, and every
+    // declared artifact was present/non-empty and copied out when needed.
+    let ok = spawn.ok && !schema_failed && !artifact_failed;
 
     Ok(workflow::StepResult {
         phase: spec.phase.clone(),
@@ -8371,6 +8404,91 @@ fn object_has_required_keys(obj: &serde_json::Value, required: &[String]) -> boo
         Some(map) => required.iter().all(|key| map.contains_key(key)),
         None => false,
     }
+}
+
+#[derive(Debug, Default)]
+struct ExpectedArtifactOutcome {
+    present: Vec<String>,
+    copied: Vec<String>,
+    failures: Vec<String>,
+}
+
+fn expected_artifact_relpath(path: &str) -> Result<PathBuf, String> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return Err("empty artifact path".to_string());
+    }
+    let raw = Path::new(trimmed);
+    if raw.is_absolute() {
+        return Err(format!(
+            "{trimmed}: expected artifact path must be relative"
+        ));
+    }
+    let mut rel = PathBuf::new();
+    for component in raw.components() {
+        match component {
+            Component::Normal(part) => rel.push(part),
+            Component::CurDir => {}
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                return Err(format!(
+                    "{trimmed}: expected artifact path must stay under the repo root"
+                ));
+            }
+        }
+    }
+    if rel.as_os_str().is_empty() {
+        Err(format!("{trimmed}: expected artifact path is empty"))
+    } else {
+        Ok(rel)
+    }
+}
+
+fn check_expected_artifacts(
+    cwd: &Path,
+    repo_root: &Path,
+    expected_artifacts: &[String],
+) -> ExpectedArtifactOutcome {
+    let mut outcome = ExpectedArtifactOutcome::default();
+    for declared in expected_artifacts {
+        let rel = match expected_artifact_relpath(declared) {
+            Ok(rel) => rel,
+            Err(reason) => {
+                outcome.failures.push(reason);
+                continue;
+            }
+        };
+        let display = rel.display().to_string();
+        let src = cwd.join(&rel);
+        let ok = fs::metadata(&src)
+            .map(|meta| meta.is_file() && meta.len() > 0)
+            .unwrap_or(false);
+        if !ok {
+            outcome.failures.push(format!(
+                "{display}: missing or empty after the worker finished"
+            ));
+            continue;
+        }
+        outcome.present.push(display.clone());
+        let dst = repo_root.join(&rel);
+        if src != dst {
+            if let Some(parent) = dst.parent() {
+                if let Err(error) = fs::create_dir_all(parent) {
+                    outcome
+                        .failures
+                        .push(format!("{display}: cannot create destination dir: {error}"));
+                    continue;
+                }
+            }
+            if let Err(error) = fs::copy(&src, &dst) {
+                outcome.failures.push(format!(
+                    "{display}: cannot copy artifact to repo root: {error}"
+                ));
+                continue;
+            }
+            outcome.copied.push(display);
+        }
+    }
+    outcome
 }
 
 /// Maximum worktree-diff text we store on a step result. Diffs above this are
@@ -9480,8 +9598,13 @@ fn workflow_get_output_value(
         out_steps.push(serde_json::json!({
             "label": step.label,
             "status": serde_json::to_value(step.status)?,
-            "provider_session_id": step.provider_session_id,
+            "provider_session_id": &step.provider_session_id,
             "source": source,
+            "result": &step.result,
+            "turn_summary": step.provider_session_id
+                .as_deref()
+                .map(|sid| workflow_turn_summary_value(store, sid))
+                .transpose()?,
             "output": output,
         }));
     }
@@ -9498,6 +9621,101 @@ fn workflow_get_output_value(
         "run_id": run_id,
         "workflow_name": run.workflow_name,
         "steps": out_steps,
+    }))
+}
+
+fn workflow_turn_summary_value(
+    store: &HarnessStore,
+    session_id: &str,
+) -> CliResult<serde_json::Value> {
+    let Some(session) = latest_provider_session(store, session_id)? else {
+        return Ok(serde_json::json!({
+            "available": false,
+            "reason": "provider session not found",
+        }));
+    };
+    let (retained, events, truncated) = read_session_turn_events_normalized(store, session_id)?;
+    if !retained {
+        return Ok(serde_json::json!({
+            "available": false,
+            "provider": session.provider,
+            "status": provider_status_label(&session.status),
+            "reason": "trace not retained",
+            "event_count": 0,
+            "truncated": truncated,
+        }));
+    }
+
+    const MAX_TOOL_CALLS: usize = 20;
+    let mut tool_calls = Vec::new();
+    let mut tool_call_count = 0usize;
+    let mut tool_result_count = 0usize;
+    let mut final_message: Option<serde_json::Value> = None;
+    let mut turn_completed: Option<serde_json::Value> = None;
+    let mut errors = Vec::new();
+
+    for event in &events {
+        match event.kind {
+            HarnessTurnEventKind::ToolCall => {
+                tool_call_count += 1;
+                if let Some(call) = &event.tool_call {
+                    if tool_calls.len() < MAX_TOOL_CALLS {
+                        tool_calls.push(serde_json::json!({
+                            "seq": event.seq,
+                            "id": call.id,
+                            "name": call.name,
+                            "args": summarize_json_value(&call.args),
+                        }));
+                    }
+                }
+            }
+            HarnessTurnEventKind::ToolResult => {
+                tool_result_count += 1;
+            }
+            HarnessTurnEventKind::Message | HarnessTurnEventKind::MessageDelta => {
+                let text = event.text.as_ref().or(event.delta.as_ref());
+                if let Some(text) = text.filter(|t| !t.trim().is_empty()) {
+                    final_message = Some(serde_json::json!({
+                        "seq": event.seq,
+                        "role": event.role,
+                        "text": truncate_on_char_boundary(text, 500),
+                    }));
+                }
+            }
+            HarnessTurnEventKind::TurnCompleted => {
+                turn_completed = Some(serde_json::json!({
+                    "seq": event.seq,
+                    "status": event.status,
+                    "usage": event.usage,
+                    "duration_ms": event.duration_ms,
+                    "cost_usd": event.cost_usd,
+                    "error": event.error,
+                }));
+            }
+            HarnessTurnEventKind::Error => {
+                if let Some(error) = &event.error {
+                    errors.push(serde_json::json!({
+                        "seq": event.seq,
+                        "error": truncate_on_char_boundary(error, 500),
+                    }));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Ok(serde_json::json!({
+        "available": true,
+        "provider": session.provider,
+        "status": provider_status_label(&session.status),
+        "event_count": events.len(),
+        "truncated": truncated,
+        "tool_call_count": tool_call_count,
+        "tool_result_count": tool_result_count,
+        "tool_calls": tool_calls,
+        "final_message": final_message,
+        "turn_completed": turn_completed,
+        "errors": errors,
     }))
 }
 
@@ -16880,6 +17098,49 @@ fn stop_pid(pid: u32) -> CliResult<()> {
     }
 }
 
+fn governance_command(args: &[String]) -> CliResult<()> {
+    require_subcommand(args, "governance check")?;
+    match args[0].as_str() {
+        "check" => {
+            let out = governance_check_value()?;
+            print_json(&out)
+        }
+        other => Err(CliError::Usage(format!(
+            "unknown governance command: {other}"
+        ))),
+    }
+}
+
+fn governance_check_value() -> CliResult<serde_json::Value> {
+    let output = Command::new("node")
+        .args(["scripts/check-doc-governance.mjs"])
+        .output()
+        .map_err(|error| CliError::Usage(format!("failed to run governance check: {error}")))?;
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    if !output.status.success() {
+        let detail = [stdout.as_str(), stderr.as_str()]
+            .into_iter()
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n");
+        return Err(CliError::Usage(format!(
+            "governance check failed{}",
+            if detail.is_empty() {
+                String::new()
+            } else {
+                format!(":\n{detail}")
+            }
+        )));
+    }
+    Ok(serde_json::json!({
+        "status": "ok",
+        "checks": ["check-doc-governance"],
+        "stdout": stdout,
+        "stderr": stderr,
+    }))
+}
+
 fn require_subcommand(args: &[String], usage: &str) -> CliResult<()> {
     if args.is_empty() {
         Err(CliError::Usage(format!("usage: harness {usage}")))
@@ -17234,6 +17495,7 @@ fn print_help() {
   workflow get-output <run_id> [--step <label>] [--text]
   workflow gc-worktrees
   workflow gc-trace [--keep-runs <n>] [--keep-days <d>] [--dry-run]
+  governance check
   serve [--addr 127.0.0.1:8787] [--once]
   daemon start [--socket <path>] [--idle-secs <n>]   (unix: resident warm-child host)
   daemon status
@@ -18123,6 +18385,7 @@ mod workflow_runtime_tests {
             fallback_model: None,
             image: Vec::new(),
             add_dir: Vec::new(),
+            expected_artifacts: Vec::new(),
             isolation: None,
             prompt: "hi".into(),
             schema: None,
@@ -18167,6 +18430,7 @@ mod workflow_runtime_tests {
             fallback_model: None,
             image: Vec::new(),
             add_dir: Vec::new(),
+            expected_artifacts: Vec::new(),
             isolation: None,
             prompt: "hi".into(),
             schema: None,
@@ -18208,6 +18472,7 @@ mod workflow_runtime_tests {
             fallback_model: None,
             image: Vec::new(),
             add_dir: Vec::new(),
+            expected_artifacts: Vec::new(),
             isolation: Some("worktree".into()),
             prompt: "hi".into(),
             schema: None,
@@ -18281,6 +18546,7 @@ mod workflow_runtime_tests {
             fallback_model: None,
             image: Vec::new(),
             add_dir: Vec::new(),
+            expected_artifacts: Vec::new(),
             isolation: None,
             prompt: "hi".into(),
             schema: None,
@@ -19562,6 +19828,7 @@ mod workflow_runtime_tests {
             fallback_model: None,
             image: Vec::new(),
             add_dir: Vec::new(),
+            expected_artifacts: Vec::new(),
             isolation: None,
             prompt: "do the thing".into(),
             schema: None,
@@ -19623,6 +19890,7 @@ mod workflow_runtime_tests {
             fallback_model: None,
             image: Vec::new(),
             add_dir: Vec::new(),
+            expected_artifacts: Vec::new(),
             isolation: None,
             prompt: "p".into(),
             schema: None,
@@ -19740,20 +20008,23 @@ mod workflow_runtime_tests {
     #[test]
     fn workflow_get_output_returns_full_reply_and_falls_back_to_summary() {
         let store = temp_store("get-output");
-        let mk_step = |id: &str, label: &str, sid: &str, summary: &str| WorkflowStep {
-            task_id: None,
-            verdict_outcome: None,
-            id: id.into(),
-            run_id: "wfrun-go".into(),
-            phase: "p".into(),
-            label: label.into(),
-            provider_session_id: Some(sid.into()),
-            status: WorkflowStepStatus::Completed,
-            output_summary: Some(summary.into()),
-            result: None,
-            started_at: "unix-ms:1".into(),
-            ended_at: Some("unix-ms:2".into()),
-        };
+        let mk_step =
+            |id: &str, label: &str, sid: &str, summary: &str, result: Option<serde_json::Value>| {
+                WorkflowStep {
+                    task_id: None,
+                    verdict_outcome: None,
+                    id: id.into(),
+                    run_id: "wfrun-go".into(),
+                    phase: "p".into(),
+                    label: label.into(),
+                    provider_session_id: Some(sid.into()),
+                    status: WorkflowStepStatus::Completed,
+                    output_summary: Some(summary.into()),
+                    result,
+                    started_at: "unix-ms:1".into(),
+                    ended_at: Some("unix-ms:2".into()),
+                }
+            };
         store
             .append_workflow_run(&WorkflowRun {
                 id: "wfrun-go".into(),
@@ -19775,7 +20046,7 @@ mod workflow_runtime_tests {
             })
             .expect("append run");
         store
-            .append_workflow_step(&mk_step("s1", "scan", "sess-1", "scan summary"))
+            .append_workflow_step(&mk_step("s1", "scan", "sess-1", "scan summary", None))
             .expect("append s1");
         store
             .append_workflow_step(&mk_step(
@@ -19783,6 +20054,14 @@ mod workflow_runtime_tests {
                 "synthesis",
                 "sess-2",
                 "synth summary (capped)",
+                Some(serde_json::json!({
+                    "ok": true,
+                    "failure": null,
+                    "expected_artifacts": {
+                        "declared": ["artifact.png"],
+                        "missing": ["artifact.png: missing or empty after the worker finished"],
+                    },
+                })),
             ))
             .expect("append s2");
 
@@ -19791,6 +20070,22 @@ mod workflow_runtime_tests {
         let dir = store.root().join("provider-sessions").join("sess-2");
         std::fs::create_dir_all(&dir).expect("mk session dir");
         std::fs::write(dir.join("reply.txt"), &full).expect("write reply");
+        let ndjson = dir.join("claude.stream-json.ndjson");
+        std::fs::write(
+            &ndjson,
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"I will make it."},{"type":"tool_use","id":"toolu_1","name":"Write","input":{"file_path":"artifact.png"}}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"ok"}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Done creating artifact.png"}]}}
+{"type":"result","subtype":"success","duration_ms":1200,"total_cost_usd":0.02}
+"#,
+        )
+        .expect("write events");
+        store
+            .append_provider_session(&provider_session_with_ref(
+                "sess-2",
+                Some(ndjson.display().to_string()),
+            ))
+            .expect("append provider session");
 
         let out = workflow_get_output_value(&store, &["wfrun-go".to_string()]).expect("get-output");
         let steps = out["steps"].as_array().expect("steps array");
@@ -19804,6 +20099,18 @@ mod workflow_runtime_tests {
         // s2 has reply.txt -> full text, source "reply".
         assert_eq!(steps[1]["source"], "reply");
         assert_eq!(steps[1]["output"].as_str().unwrap(), full);
+        assert_eq!(steps[1]["result"]["ok"], true);
+        assert_eq!(
+            steps[1]["result"]["expected_artifacts"]["missing"][0],
+            "artifact.png: missing or empty after the worker finished"
+        );
+        assert_eq!(steps[1]["turn_summary"]["available"], true);
+        assert_eq!(steps[1]["turn_summary"]["tool_call_count"], 1);
+        assert_eq!(steps[1]["turn_summary"]["tool_calls"][0]["name"], "Write");
+        assert_eq!(
+            steps[1]["turn_summary"]["final_message"]["text"],
+            "Done creating artifact.png"
+        );
 
         // --step selects one leaf.
         let one = workflow_get_output_value(
@@ -19830,6 +20137,48 @@ mod workflow_runtime_tests {
         )
         .is_err());
         assert!(workflow_get_output_value(&store, &["wfrun-missing".to_string()]).is_err());
+    }
+
+    #[test]
+    fn expected_artifacts_gate_reports_missing_and_copies_present() {
+        let base = std::env::temp_dir().join(format!("harness-artifacts-{}", generated_id("art")));
+        let worktree = base.join("worktree");
+        let repo = base.join("repo");
+        std::fs::create_dir_all(worktree.join("out")).expect("mk worktree");
+        std::fs::create_dir_all(&repo).expect("mk repo");
+        std::fs::write(worktree.join("out").join("image.png"), "bytes").expect("write artifact");
+
+        let expected = vec![
+            "out/image.png".to_string(),
+            "out/missing.png".to_string(),
+            "../escape.txt".to_string(),
+        ];
+        let outcome = check_expected_artifacts(&worktree, &repo, &expected);
+
+        assert_eq!(outcome.present, vec!["out/image.png".to_string()]);
+        assert_eq!(outcome.copied, vec!["out/image.png".to_string()]);
+        assert_eq!(
+            std::fs::read_to_string(repo.join("out").join("image.png")).unwrap(),
+            "bytes"
+        );
+        assert!(
+            outcome
+                .failures
+                .iter()
+                .any(|failure| failure.contains("out/missing.png: missing or empty")),
+            "missing artifact should fail the gate: {:?}",
+            outcome.failures
+        );
+        assert!(
+            outcome
+                .failures
+                .iter()
+                .any(|failure| failure.contains("stay under the repo root")),
+            "path traversal should fail the gate: {:?}",
+            outcome.failures
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
@@ -19871,6 +20220,7 @@ mod workflow_runtime_tests {
             fallback_model: None,
             image: Vec::new(),
             add_dir: Vec::new(),
+            expected_artifacts: Vec::new(),
             isolation: isolation.map(str::to_string),
             prompt: "noop".into(),
             schema: None,

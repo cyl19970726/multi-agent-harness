@@ -4969,6 +4969,11 @@ pub struct ProviderCapabilities {
     /// capability matrix: `cost`). Defaults to `false`.
     #[serde(default)]
     pub cost: bool,
+    /// Platform can enforce a read-only filesystem/tool policy for an exec leaf.
+    /// Providers that cannot prove this are isolated in worktrees for read-only
+    /// workflow leaves.
+    #[serde(default)]
+    pub enforces_read_only: bool,
 }
 
 impl ProviderCapabilities {
@@ -4984,6 +4989,7 @@ impl ProviderCapabilities {
             hooks: false,             // limited in exec mode
             schema: true,             // --output-schema <file>
             cost: false,              // token usage only, no total_cost_usd
+            enforces_read_only: true, // --sandbox read-only
         }
     }
 
@@ -4998,6 +5004,7 @@ impl ProviderCapabilities {
             hooks: false,             // not documented
             schema: true,             // --json-schema → result.structured_output
             cost: true,               // result.total_cost_usd
+            enforces_read_only: true, // read-only tool allowlist in exec mode
         }
     }
 
@@ -5014,14 +5021,15 @@ impl ProviderCapabilities {
     /// leaf-only for resume) rather than a per-provider branch.
     pub fn kimi_exec() -> Self {
         ProviderCapabilities {
-            streaming: true,          // assumed: --output-format stream-json
-            resume: false,            // UNKNOWN: resumable session id unverified
-            mid_turn_approval: false, // UNKNOWN
-            subagents: false,         // UNKNOWN
-            mcp: false,               // UNKNOWN
-            hooks: false,             // UNKNOWN: no lifecycle hook bridge
-            schema: false,            // UNKNOWN: degrade to text-extract fallback
-            cost: false,              // UNKNOWN: degrade to token-estimate
+            streaming: true,           // assumed: --output-format stream-json
+            resume: false,             // UNKNOWN: resumable session id unverified
+            mid_turn_approval: false,  // UNKNOWN
+            subagents: false,          // UNKNOWN
+            mcp: false,                // UNKNOWN
+            hooks: false,              // UNKNOWN: no lifecycle hook bridge
+            schema: false,             // UNKNOWN: degrade to text-extract fallback
+            cost: false,               // UNKNOWN: degrade to token-estimate
+            enforces_read_only: false, // UNKNOWN: isolate read-only leaves
         }
     }
 

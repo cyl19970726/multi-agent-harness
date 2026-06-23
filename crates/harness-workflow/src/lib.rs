@@ -36,7 +36,7 @@ pub const ISOLATION_WORKTREE: &str = "worktree";
 /// workflow-layer description of one `agent()` call; the runtime turns it into a
 /// [`StepResult`]. `model` overrides the provider's default model; `isolation`
 /// opts the node into a throwaway git worktree.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AgentStepSpec {
     pub phase: String,
     pub label: String,
@@ -56,7 +56,12 @@ pub struct AgentStepSpec {
     /// Image file paths to attach to the worker. Empty means no images.
     pub image: Vec<String>,
     /// Extra directory paths the worker may access. Empty means no extra dirs.
+    #[serde(default)]
     pub add_dir: Vec<String>,
+    /// Relative artifact paths the step is expected to produce. Empty means no
+    /// artifact gate is enforced.
+    #[serde(default)]
+    pub expected_artifacts: Vec<String>,
     /// Optional per-node isolation. `Some("worktree")` runs the step in its own
     /// throwaway git worktree; `None` edits the shared repo cwd.
     pub isolation: Option<String>,
@@ -506,6 +511,7 @@ pub fn investigate(driver: &AgentStepFn<'_>, topic: &str) -> WorkflowOutcome {
             fallback_model: None,
             image: Vec::new(),
             add_dir: Vec::new(),
+            expected_artifacts: Vec::new(),
             isolation: None,
             prompt: format!("Scope the investigation of: {topic}. List the modules to audit."),
             schema: None,
@@ -527,6 +533,7 @@ pub fn investigate(driver: &AgentStepFn<'_>, topic: &str) -> WorkflowOutcome {
             fallback_model: None,
             image: Vec::new(),
             add_dir: Vec::new(),
+            expected_artifacts: Vec::new(),
             isolation: None,
             prompt: format!("Audit the code paths involved in: {topic}."),
             schema: None,
@@ -542,6 +549,7 @@ pub fn investigate(driver: &AgentStepFn<'_>, topic: &str) -> WorkflowOutcome {
             fallback_model: None,
             image: Vec::new(),
             add_dir: Vec::new(),
+            expected_artifacts: Vec::new(),
             isolation: None,
             prompt: format!("Audit the recent diffs related to: {topic}."),
             schema: None,
@@ -778,6 +786,7 @@ mod tests {
                 fallback_model: None,
                 image: Vec::new(),
                 add_dir: Vec::new(),
+                expected_artifacts: Vec::new(),
                 isolation: None,
                 prompt: format!("prompt {i}"),
                 schema: None,
@@ -841,6 +850,7 @@ mod tests {
                 fallback_model: None,
                 image: Vec::new(),
                 add_dir: Vec::new(),
+                expected_artifacts: Vec::new(),
                 isolation: None,
                 prompt: "x".to_string(),
                 schema: None,
@@ -916,6 +926,7 @@ mod tests {
                 fallback_model: None,
                 image: Vec::new(),
                 add_dir: Vec::new(),
+                expected_artifacts: Vec::new(),
                 isolation: None,
                 prompt: format!("prompt {i}"),
                 schema: None,
@@ -964,6 +975,7 @@ mod tests {
             fallback_model: None,
             image: Vec::new(),
             add_dir: Vec::new(),
+            expected_artifacts: Vec::new(),
             isolation: None,
             prompt: "x".to_string(),
             schema: None,
