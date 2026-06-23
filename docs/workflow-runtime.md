@@ -288,7 +288,9 @@ The worktree path is unique per run, node label, and provider session id, so sam
 
 Writable or isolated leaves require a git-backed project. Non-git projects fail before worktree creation with an actionable message; read-only leaves can still run (`crates/harness-cli/src/main.rs:7646`, `crates/harness-cli/src/main.rs:7652`). `WorktreeGuard::create` also checks git-ness and reports how to recover by making the step read-only or running from a git repo (`crates/harness-cli/src/main.rs:7436`, `crates/harness-cli/src/main.rs:7441`, `crates/harness-cli/src/main.rs:7443`).
 
-Standalone `run-script` does not land worktree diffs back into the project. It records the diff and discards the worktree. This is the correct boundary for ad hoc workflows: execution and evidence are durable; repository mutation is not automatic.
+Standalone `run-script` writable work is EPHEMERAL. It records the diff and discards the worktree, so in-repo artifacts are not present in the project after the run. Use the goal layer (`goal run-phases`) when writable task output must land on the branch, or retrieve captured text with `harness workflow get-output <run_id> --step <label>`.
+
+Security note: the throwaway worktree only contains writes made inside that checkout. Absolute-path writes escape the worktree boundary and persist wherever that absolute path points, so workflows should not treat worktree isolation as a whole-machine sandbox.
 
 ## `run-script` Vs `goal run-phases`
 
