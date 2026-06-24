@@ -202,6 +202,7 @@ impl StarlarkCtx<'_> {
         phase: Option<String>,
         model: Option<String>,
         effort: Option<String>,
+        service_tier: Option<String>,
         fallback_model: Option<String>,
         timeout_s: Option<u64>,
         image: Vec<String>,
@@ -239,6 +240,7 @@ impl StarlarkCtx<'_> {
             provider,
             model,
             effort,
+            service_tier,
             fallback_model,
             timeout_s,
             image,
@@ -463,6 +465,7 @@ impl StarlarkCtx<'_> {
                 provider: String::new(),
                 model: None,
                 effort: None,
+                service_tier: None,
                 fallback_model: None,
                 timeout_s: None,
                 image: Vec::new(),
@@ -748,6 +751,7 @@ fn read_parallel_specs(
         let phase = dict_str(&dict, "phase")?;
         let model = dict_str(&dict, "model")?;
         let effort = dict_str(&dict, "effort")?;
+        let service_tier = dict_str(&dict, "service_tier")?;
         let fallback_model = dict_str(&dict, "fallback_model")?;
         let timeout_s = dict_positive_u64(&dict, "timeout_s", "parallel() spec")?;
         let image = dict_str_list(&dict, "image")?;
@@ -764,6 +768,7 @@ fn read_parallel_specs(
                 provider,
                 model,
                 effort,
+                service_tier,
                 fallback_model,
                 timeout_s,
                 image,
@@ -800,6 +805,7 @@ struct StageTemplate {
     phase: String,
     model: Option<String>,
     effort: Option<String>,
+    service_tier: Option<String>,
     fallback_model: Option<String>,
     timeout_s: Option<u64>,
     image: Vec<String>,
@@ -825,6 +831,7 @@ impl StageTemplate {
             provider: self.provider.clone(),
             model: self.model.clone(),
             effort: self.effort.clone(),
+            service_tier: self.service_tier.clone(),
             fallback_model: self.fallback_model.clone(),
             timeout_s: self.timeout_s,
             image: self.image.clone(),
@@ -889,6 +896,7 @@ fn read_pipeline_stages(
         let phase = dict_str(&dict, "phase")?;
         let model = dict_str(&dict, "model")?;
         let effort = dict_str(&dict, "effort")?;
+        let service_tier = dict_str(&dict, "service_tier")?;
         let fallback_model = dict_str(&dict, "fallback_model")?;
         let timeout_s = dict_positive_u64(&dict, "timeout_s", "pipeline() stage")?;
         let image = dict_str_list(&dict, "image")?;
@@ -905,6 +913,7 @@ fn read_pipeline_stages(
             phase: ctx.phase_for(phase),
             model,
             effort,
+            service_tier,
             fallback_model,
             timeout_s,
             image,
@@ -975,6 +984,7 @@ fn workflow_globals(builder: &mut GlobalsBuilder) {
         #[starlark(require = named)] phase: Option<String>,
         #[starlark(require = named)] model: Option<String>,
         #[starlark(require = named)] effort: Option<String>,
+        #[starlark(require = named)] service_tier: Option<String>,
         #[starlark(require = named)] fallback_model: Option<String>,
         #[starlark(require = named)] timeout_s: Option<Value<'v>>,
         #[starlark(require = named)] image: Option<Value<'v>>,
@@ -1023,6 +1033,7 @@ fn workflow_globals(builder: &mut GlobalsBuilder) {
             phase,
             model,
             effort,
+            service_tier,
             fallback_model,
             timeout_s,
             image,
@@ -1786,21 +1797,22 @@ verdict(results[0]["reason"] == "schema", "pipeline inspected final failure")
     }
 
     #[test]
-    fn passthrough_kwargs_flow_onto_agent_parallel_and_pipeline_specs() {
+    fn passthrough_kwargs_include_service_tier_for_agent_parallel_and_pipeline_specs() {
         let seen = Mutex::new(Vec::<(
             String,
             Vec<String>,
             Vec<String>,
             Vec<String>,
             Option<String>,
+            Option<String>,
             Option<u64>,
         )>::new());
         let script = r#"
-agent("inspect", label = "single", image = ["a.png"], add_dir = ["src"], expected_artifacts = ["out/single.png"], fallback_model = "claude-sonnet", timeout_s = 11)
-parallel([{"prompt": "compare", "label": "fanout", "image": ["b.png", "c.jpg"], "add_dir": ["crates"], "expected_artifacts": ["out/fanout.json"], "fallback_model": "claude-haiku", "timeout_s": 12}])
+agent("inspect", label = "single", image = ["a.png"], add_dir = ["src"], expected_artifacts = ["out/single.png"], service_tier = "priority", fallback_model = "claude-sonnet", timeout_s = 11)
+parallel([{"prompt": "compare", "label": "fanout", "image": ["b.png", "c.jpg"], "add_dir": ["crates"], "expected_artifacts": ["out/fanout.json"], "service_tier": "flex", "fallback_model": "claude-haiku", "timeout_s": 12}])
 pipeline(
     ["item"],
-    [{"prompt": "stage {input}", "label": "pipe", "image": ["d.webp"], "add_dir": ["skills"], "expected_artifacts": ["out/pipe.txt"], "fallback_model": "claude-opus", "timeout_s": 13}],
+    [{"prompt": "stage {input}", "label": "pipe", "image": ["d.webp"], "add_dir": ["skills"], "expected_artifacts": ["out/pipe.txt"], "service_tier": "default", "fallback_model": "claude-opus", "timeout_s": 13}],
 )
 "#;
         let outcome = {
@@ -1810,6 +1822,7 @@ pipeline(
                     spec.image.clone(),
                     spec.add_dir.clone(),
                     spec.expected_artifacts.clone(),
+                    spec.service_tier.clone(),
                     spec.fallback_model.clone(),
                     spec.timeout_s,
                 ));
@@ -1841,6 +1854,7 @@ pipeline(
                 Vec<String>,
                 Vec<String>,
                 Option<String>,
+                Option<String>,
                 Option<u64>,
             ),
         > = seen
@@ -1848,13 +1862,22 @@ pipeline(
             .unwrap()
             .into_iter()
             .map(
-                |(label, image, add_dir, expected_artifacts, fallback_model, timeout_s)| {
+                |(
+                    label,
+                    image,
+                    add_dir,
+                    expected_artifacts,
+                    service_tier,
+                    fallback_model,
+                    timeout_s,
+                )| {
                     (
                         label,
                         (
                             image,
                             add_dir,
                             expected_artifacts,
+                            service_tier,
                             fallback_model,
                             timeout_s,
                         ),
@@ -1865,21 +1888,24 @@ pipeline(
         assert_eq!(seen["single"].0, vec!["a.png".to_string()]);
         assert_eq!(seen["single"].1, vec!["src".to_string()]);
         assert_eq!(seen["single"].2, vec!["out/single.png".to_string()]);
-        assert_eq!(seen["single"].3.as_deref(), Some("claude-sonnet"));
-        assert_eq!(seen["single"].4, Some(11));
+        assert_eq!(seen["single"].3.as_deref(), Some("priority"));
+        assert_eq!(seen["single"].4.as_deref(), Some("claude-sonnet"));
+        assert_eq!(seen["single"].5, Some(11));
         assert_eq!(
             seen["fanout"].0,
             vec!["b.png".to_string(), "c.jpg".to_string()]
         );
         assert_eq!(seen["fanout"].1, vec!["crates".to_string()]);
         assert_eq!(seen["fanout"].2, vec!["out/fanout.json".to_string()]);
-        assert_eq!(seen["fanout"].3.as_deref(), Some("claude-haiku"));
-        assert_eq!(seen["fanout"].4, Some(12));
+        assert_eq!(seen["fanout"].3.as_deref(), Some("flex"));
+        assert_eq!(seen["fanout"].4.as_deref(), Some("claude-haiku"));
+        assert_eq!(seen["fanout"].5, Some(12));
         assert_eq!(seen["pipe"].0, vec!["d.webp".to_string()]);
         assert_eq!(seen["pipe"].1, vec!["skills".to_string()]);
         assert_eq!(seen["pipe"].2, vec!["out/pipe.txt".to_string()]);
-        assert_eq!(seen["pipe"].3.as_deref(), Some("claude-opus"));
-        assert_eq!(seen["pipe"].4, Some(13));
+        assert_eq!(seen["pipe"].3.as_deref(), Some("default"));
+        assert_eq!(seen["pipe"].4.as_deref(), Some("claude-opus"));
+        assert_eq!(seen["pipe"].5, Some(13));
         assert_eq!(outcome.steps.len(), 3);
     }
 

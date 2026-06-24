@@ -8195,6 +8195,7 @@ fn spawn_ephemeral_worker(
             cwd: &cwd,
             model: effective_model,
             effort: effective_effort,
+            service_tier: spec.service_tier.as_deref(),
             timeout_ms: options.timeout_ms,
             wall_clock_ms: spec.timeout_s.map(|seconds| seconds.saturating_mul(1_000)),
             max_budget_usd: options.max_budget_usd,
@@ -8906,6 +8907,25 @@ fn classify_failure_reason(
     }
 }
 
+fn apply_codex_ephemeral_model_effort_service_tier_args(
+    cmd: &mut Command,
+    model: Option<&str>,
+    effort: Option<&str>,
+    service_tier: Option<&str>,
+) {
+    if let Some(model) = model {
+        cmd.arg("-m").arg(model);
+    }
+    // Codex takes both reasoning effort and service tier as config overrides.
+    if let Some(effort) = effort {
+        cmd.arg("-c")
+            .arg(format!("model_reasoning_effort={effort}"));
+    }
+    if let Some(tier) = service_tier {
+        cmd.arg("-c").arg(format!("service_tier={tier}"));
+    }
+}
+
 /// Spawn a one-shot `codex exec` with an EDITABLE (`--sandbox workspace-write`)
 /// sandbox, JSON event stream, running in `cwd`. Non-interactive (stdin closed)
 /// with a per-node timeout. When `schema_json` is set, `--output-schema <file>`
@@ -8913,7 +8933,7 @@ fn classify_failure_reason(
 /// `codex exec --help`: `--json`, `--sandbox workspace-write`, `--cd <dir>`,
 /// `-m <model>`, `--skip-git-repo-check`, `--output-last-message <file>`,
 /// `--output-schema <file>`.
-#[allow(clippy::too_many_arguments)] // the spawn surface (session/spec/schema/cwd/model/effort/timeout)
+#[allow(clippy::too_many_arguments)] // the spawn surface (session/spec/schema/cwd/model/effort/tier/timeout)
 fn spawn_codex_ephemeral(
     session_dir: &Path,
     session_id: &str,
@@ -8924,6 +8944,7 @@ fn spawn_codex_ephemeral(
     cwd: &Path,
     model: Option<&str>,
     effort: Option<&str>,
+    service_tier: Option<&str>,
     timeout_ms: u64,
     wall_clock_ms: Option<u64>,
 ) -> CliResult<EphemeralSpawn> {
@@ -8957,14 +8978,7 @@ fn spawn_codex_ephemeral(
             cmd.arg("--output-schema").arg(&schema_path);
         }
     }
-    if let Some(model) = model {
-        cmd.arg("-m").arg(model);
-    }
-    // Reasoning effort: codex takes it as a config override (no dedicated flag).
-    if let Some(effort) = effort {
-        cmd.arg("-c")
-            .arg(format!("model_reasoning_effort={effort}"));
-    }
+    apply_codex_ephemeral_model_effort_service_tier_args(&mut cmd, model, effort, service_tier);
     // codex has no fallback-model flag; only providers with a native flag use it.
     for path in &spec.image {
         cmd.arg("-i").arg(path);
@@ -14495,6 +14509,7 @@ struct EphemeralSpawnContext<'a> {
     cwd: &'a Path,
     model: Option<&'a str>,
     effort: Option<&'a str>,
+    service_tier: Option<&'a str>,
     timeout_ms: u64,
     wall_clock_ms: Option<u64>,
     max_budget_usd: Option<f64>,
@@ -14986,6 +15001,7 @@ impl ProviderAdapter for CodexAdapter {
             ctx.cwd,
             ctx.model,
             ctx.effort,
+            ctx.service_tier,
             ctx.timeout_ms,
             ctx.wall_clock_ms,
         )
@@ -18480,6 +18496,39 @@ mod workflow_runtime_tests {
     }
 
     #[test]
+    fn ephemeral_codex_service_tier_arg_is_a_config_override() {
+        let mut cmd = Command::new("codex");
+        apply_codex_ephemeral_model_effort_service_tier_args(
+            &mut cmd,
+            Some("gpt-5"),
+            Some("high"),
+            Some("priority"),
+        );
+
+        assert_eq!(
+            command_args(&cmd),
+            vec![
+                "-m",
+                "gpt-5",
+                "-c",
+                "model_reasoning_effort=high",
+                "-c",
+                "service_tier=priority",
+            ]
+        );
+    }
+
+    #[test]
+    fn ephemeral_codex_omits_service_tier_when_absent() {
+        let mut cmd = Command::new("codex");
+        apply_codex_ephemeral_model_effort_service_tier_args(&mut cmd, None, None, None);
+
+        let args = command_args(&cmd);
+        assert!(args.is_empty());
+        assert!(!args.iter().any(|arg| arg.starts_with("service_tier=")));
+    }
+
+    #[test]
     fn persistent_claude_effort_arg_matches_ephemeral_mapping() {
         let spec = launch_spec_with_model_effort(Some("opus"), Some("medium"));
         let mut cmd = Command::new("claude");
@@ -19075,6 +19124,7 @@ mod workflow_runtime_tests {
             provider: "codex".into(),
             model: Some("gpt-5-codex".into()),
             effort: None,
+            service_tier: None,
             fallback_model: None,
             timeout_s: None,
             image: Vec::new(),
@@ -19122,6 +19172,7 @@ mod workflow_runtime_tests {
             provider: "claude".into(),
             model: None,
             effort: None,
+            service_tier: None,
             fallback_model: None,
             timeout_s: None,
             image: Vec::new(),
@@ -19166,6 +19217,7 @@ mod workflow_runtime_tests {
             provider: "codex".into(),
             model: None,
             effort: None,
+            service_tier: None,
             fallback_model: None,
             timeout_s: None,
             image: Vec::new(),
@@ -19299,6 +19351,7 @@ new file mode 100644
             provider: "codex".into(),
             model: None,
             effort: None,
+            service_tier: None,
             fallback_model: None,
             timeout_s: None,
             image: Vec::new(),
@@ -20891,6 +20944,7 @@ new file mode 100644
             provider: "claude".into(),
             model: None,
             effort: None,
+            service_tier: None,
             fallback_model: None,
             timeout_s: None,
             image: Vec::new(),
@@ -20954,6 +21008,7 @@ new file mode 100644
             provider: "claude".into(),
             model: None,
             effort: None,
+            service_tier: None,
             fallback_model: None,
             timeout_s: None,
             image: Vec::new(),
@@ -21253,6 +21308,7 @@ new file mode 100644
             provider: "claude".into(),
             model: None,
             effort: None,
+            service_tier: None,
             fallback_model: None,
             timeout_s: None,
             image: Vec::new(),

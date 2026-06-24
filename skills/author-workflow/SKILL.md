@@ -82,9 +82,9 @@ A program calls these globals (no `import`; they are pre-bound):
 | Call | Returns | Meaning |
 | --- | --- | --- |
 | `workflow(name, design_intent, budget_usd=, success_criterion=)` | — | REQUIRED header. Declares the run name + the WHY behind its shape. Optional `budget_usd=N` caps the run's cumulative spend; `success_criterion="..."` declares the bar `verdict()` is judged against. Must run once before the body. |
-| `agent(prompt, provider="codex", label=, phase=, model=, effort=, fallback_model=, timeout_s=, image=, add_dir=, expected_artifacts=, isolation=, schema=, writable=False)` | output text, OR a dict (with `schema=`) | Run ONE ephemeral worker synchronously. `prompt` is positional; the rest are keyword args. `model=` overrides the provider default model; `effort=` overrides reasoning effort (see the rules below); `fallback_model=` sets a provider fallback model when supported; `timeout_s=` is a per-leaf wall-clock cap in seconds; `image=` is a list of image file paths; `add_dir=` is a list of extra directory paths; `expected_artifacts=` is a list of repo-relative output files to assert and copy back. READ-ONLY by default; `writable=True` lets it edit / run shell AND auto-isolates it into a throwaway worktree. With `schema={...}` it returns a parsed dict (or `None`) — see [Structured Output](#structured-output-the-foundation). Capture the return to chain: `scan = agent("...")`. |
-| `parallel([dict, ...])` | list (input order) | Barrier fan-out: run every spec concurrently, block until ALL finish. Each element is the parsed dict (if that spec had a `schema` that parsed) else its output string. Each dict needs a `prompt` and may set `provider` (default `"codex"`), `label`, `phase`, `model`, `effort`, `fallback_model`, `timeout_s`, `image`, `add_dir`, `expected_artifacts`, `isolation`, `schema`, `writable`. |
-| `pipeline(items, stages)` | list (one per item) | No-barrier streaming: each item flows through every stage independently. `stages` is a list of dicts `{prompt, provider?, label?, phase?, model?, effort?, fallback_model?, timeout_s?, image?, add_dir?, expected_artifacts?, isolation?, schema?, writable?}` (or pass the stages as positional args: `pipeline(items, s1, s2)`) whose `prompt` is a TEMPLATE containing `{input}` — replaced with the item for stage 1, then the prior stage's output for each next stage (forward-injection). Returns each item's LAST stage result. |
+| `agent(prompt, provider="codex", label=, phase=, model=, effort=, service_tier=, fallback_model=, timeout_s=, image=, add_dir=, expected_artifacts=, isolation=, schema=, writable=False)` | output text, OR a dict (with `schema=`) | Run ONE ephemeral worker synchronously. `prompt` is positional; the rest are keyword args. `model=` overrides the provider default model; `effort=` overrides reasoning effort (see the rules below); `service_tier=` overrides the Codex CLI service tier for this leaf; `fallback_model=` sets a provider fallback model when supported; `timeout_s=` is a per-leaf wall-clock cap in seconds; `image=` is a list of image file paths; `add_dir=` is a list of extra directory paths; `expected_artifacts=` is a list of repo-relative output files to assert and copy back. READ-ONLY by default; `writable=True` lets it edit / run shell AND auto-isolates it into a throwaway worktree. With `schema={...}` it returns a parsed dict (or `None`) — see [Structured Output](#structured-output-the-foundation). Capture the return to chain: `scan = agent("...")`. |
+| `parallel([dict, ...])` | list (input order) | Barrier fan-out: run every spec concurrently, block until ALL finish. Each element is the parsed dict (if that spec had a `schema` that parsed) else its output string. Each dict needs a `prompt` and may set `provider` (default `"codex"`), `label`, `phase`, `model`, `effort`, `service_tier`, `fallback_model`, `timeout_s`, `image`, `add_dir`, `expected_artifacts`, `isolation`, `schema`, `writable`. |
+| `pipeline(items, stages)` | list (one per item) | No-barrier streaming: each item flows through every stage independently. `stages` is a list of dicts `{prompt, provider?, label?, phase?, model?, effort?, service_tier?, fallback_model?, timeout_s?, image?, add_dir?, expected_artifacts?, isolation?, schema?, writable?}` (or pass the stages as positional args: `pipeline(items, s1, s2)`) whose `prompt` is a TEMPLATE containing `{input}` — replaced with the item for stage 1, then the prior stage's output for each next stage (forward-injection). Returns each item's LAST stage result. |
 | `verdict(ok, reason="")` | — | Declare the run's TYPED outcome. `reason` may be positional or keyword (`verdict(ok, "why")` ≡ `verdict(ok, reason="why")`). `ok=False` finalizes the run `Failed` even if every worker ran — so "workers ran" ≠ "intent satisfied". A closed-loop program's final gate calls this. |
 | `output(value)` | — | Declare the run's RESULT — the one unambiguous answer the calling agent reads back. `value` (a string or dict) is persisted verbatim under `final_output.result`, UNCAPPED, so the caller reads one field instead of digging the answer out of a step by label. Last call wins; pass a `schema`'d dict when you want the answer typed (a free-text `agent()` return is the worker's FULL reply — not truncated). |
 | `json.encode(value)` / `json.decode(str)` | string / value | Serialize a prior `agent()`'s dict to inject it verbatim into the next prompt (forward-injection), or parse JSON back. |
@@ -97,10 +97,10 @@ Rules every call obeys:
 - `provider` is `"codex"`, `"claude"`, or `"kimi"` — the provider whose ephemeral
   worker runs the leaf. There is NO member binding; the provider drives delivery.
   `"kimi"` (Kimi Code) is registry-routed like the others, but its headless `kimi -p`
-  surface is leaner: no native schema / effort / budget flags and a flat reply
-  stream, so `schema=` degrades to text-extraction and `effort=`, token, and cost
-  come back empty. Use it for plain build / verify leaves; keep schema-gated
-  control-flow leaves on codex or claude.
+  surface is leaner: no native schema / effort / service-tier / budget flags and
+  a flat reply stream, so `schema=` degrades to text-extraction and `effort=`,
+  `service_tier=`, token, and cost come back empty. Use it for plain build /
+  verify leaves; keep schema-gated control-flow leaves on codex or claude.
 - `prompt`, `label`, and `phase` are non-empty strings; optional `model` (any
   non-empty string) overrides the provider's default model — route a CHEAP model
   to read-only verify/review steps and the strong model to the builder. The value
@@ -120,6 +120,10 @@ Rules every call obeys:
   `--effort …`). Use a low effort on cheap mechanical leaves and a high effort on the
   hard reasoning step. Not validated by the runtime — the provider CLI rejects a
   value it does not know, so use each provider's own levels.
+- `service_tier` overrides Codex's speed/cost tier for this leaf, passed through
+  verbatim as `-c service_tier=<value>` (for example `default`, `priority`, or
+  `flex`, depending on the installed Codex CLI). Leave it unset to inherit
+  `~/.codex/config.toml`; claude and kimi ignore it.
 - `image` is a list of image file paths attached to the worker. Codex receives
   repeatable `-i <file>` args; claude `-p` has no image flag, so the paths are
   injected into the prompt for the worker to open with the Read tool.

@@ -51,6 +51,11 @@ pub struct AgentStepSpec {
     /// claude → `--effort <effort>` (low|medium|high|xhigh|max). `None` uses the
     /// provider default. Not validated here — the provider CLI rejects bad values.
     pub effort: Option<String>,
+    /// Optional Codex service tier override, passed through as
+    /// `-c service_tier=<tier>`. Other providers ignore it. `None` preserves the
+    /// provider's configured default.
+    #[serde(default)]
+    pub service_tier: Option<String>,
     /// Optional fallback model override. Only providers with a native fallback
     /// flag use it; otherwise it is ignored by the runtime.
     pub fallback_model: Option<String>,
@@ -512,6 +517,7 @@ pub fn investigate(driver: &AgentStepFn<'_>, topic: &str) -> WorkflowOutcome {
             provider: "codex".to_string(),
             model: None,
             effort: None,
+            service_tier: None,
             fallback_model: None,
             timeout_s: None,
             image: Vec::new(),
@@ -535,6 +541,7 @@ pub fn investigate(driver: &AgentStepFn<'_>, topic: &str) -> WorkflowOutcome {
             provider: "codex".to_string(),
             model: None,
             effort: None,
+            service_tier: None,
             fallback_model: None,
             timeout_s: None,
             image: Vec::new(),
@@ -552,6 +559,7 @@ pub fn investigate(driver: &AgentStepFn<'_>, topic: &str) -> WorkflowOutcome {
             provider: "claude".to_string(),
             model: None,
             effort: None,
+            service_tier: None,
             fallback_model: None,
             timeout_s: None,
             image: Vec::new(),
@@ -748,13 +756,14 @@ mod tests {
     }
 
     #[test]
-    fn agent_step_spec_expected_artifacts_round_trips_and_defaults() {
+    fn agent_step_spec_expected_artifacts_and_service_tier_round_trips_and_defaults() {
         let spec = AgentStepSpec {
             phase: "p".into(),
             label: "writer".into(),
             provider: "codex".into(),
             model: None,
             effort: None,
+            service_tier: Some("priority".into()),
             fallback_model: None,
             timeout_s: None,
             image: Vec::new(),
@@ -769,6 +778,7 @@ mod tests {
         let encoded = serde_json::to_string(&spec).expect("serialize");
         let decoded: AgentStepSpec = serde_json::from_str(&encoded).expect("deserialize");
         assert_eq!(decoded.expected_artifacts, vec!["out/image.png"]);
+        assert_eq!(decoded.service_tier.as_deref(), Some("priority"));
         assert_eq!(decoded.timeout_s, None);
 
         let legacy = serde_json::json!({
@@ -789,6 +799,7 @@ mod tests {
         });
         let decoded: AgentStepSpec = serde_json::from_value(legacy).expect("legacy decode");
         assert!(decoded.expected_artifacts.is_empty());
+        assert_eq!(decoded.service_tier, None);
         assert_eq!(decoded.timeout_s, None);
     }
 
@@ -835,6 +846,7 @@ mod tests {
                 provider: "codex".to_string(),
                 model: None,
                 effort: None,
+                service_tier: None,
                 fallback_model: None,
                 timeout_s: None,
                 image: Vec::new(),
@@ -900,6 +912,7 @@ mod tests {
                 provider: "codex".to_string(),
                 model: None,
                 effort: None,
+                service_tier: None,
                 fallback_model: None,
                 timeout_s: None,
                 image: Vec::new(),
@@ -977,6 +990,7 @@ mod tests {
                 provider: "codex".to_string(),
                 model: None,
                 effort: None,
+                service_tier: None,
                 fallback_model: None,
                 timeout_s: None,
                 image: Vec::new(),
@@ -1027,6 +1041,7 @@ mod tests {
             provider: "codex".to_string(),
             model: None,
             effort: None,
+            service_tier: None,
             fallback_model: None,
             timeout_s: None,
             image: Vec::new(),
