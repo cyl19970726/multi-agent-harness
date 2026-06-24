@@ -283,6 +283,14 @@ Codex leaves run through `codex exec`, receive `--cd`, sandbox selection, JSON s
 
 The selected project root, not the long-running harness process cwd, is the shared worker cwd and worktree base. The centralized store root remains separate (`crates/harness-cli/src/main.rs:7126`, `crates/harness-cli/src/main.rs:7127`, `crates/harness-cli/src/main.rs:7130`, `crates/harness-cli/src/main.rs:7531`, `crates/harness-cli/src/main.rs:7543`, `crates/harness-cli/src/main.rs:7566`, `crates/harness-cli/src/main.rs:7569`).
 
+### Worker Process Lifecycle
+
+Ephemeral provider workers run in their own process group so the harness can tear down the whole worker tree, not just the immediate CLI process, when an idle or per-leaf wall timeout fires. A worker that exits normally is cleaned up in-process, including removal of its temporary worker pidfile.
+
+If the orchestrating host process is killed before it can run that cleanup path, its provider worker process group can survive as an orphan. The workflow runtime writes per-worker pidfiles under `<store_root>/worker_pids/`, and `reap_orphaned_workers` reclaims those workers after their owning `WorkflowRun` is terminal, missing, or still `Running` but owned by a dead `host_pid`. The sweep runs before `workflow run-script` starts a fresh run, in the `serve` reaper loop after stale run rows and worktrees are handled, and manually through `harness workflow reap-workers [--dry-run]`.
+
+Before killing a recorded pid group, the reaper checks the live process argv with `ps` and requires it to contain the recorded provider command marker (`codex`, `claude`, `kimi`, or a test marker such as `sleep`). If the marker no longer matches, the pid is treated as reused: the stale pidfile is removed, but the live process is left alone.
+
 ## Worktree Isolation
 
 Workflow leaves are read-only by default: `writable=False` is the Starlark default (`crates/harness-workflow/src/starlark_front.rs:866`). A writable leaf may edit files and run shell, and it automatically isolates into a harness-owned throwaway git worktree (`crates/harness-workflow/src/lib.rs:70`, `crates/harness-workflow/src/lib.rs:72`).
