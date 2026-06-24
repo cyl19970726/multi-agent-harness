@@ -289,7 +289,7 @@ Ephemeral provider workers run in their own process group so the harness can tea
 
 If the orchestrating host process is killed before it can run that cleanup path, its provider worker process group can survive as an orphan. The workflow runtime writes per-worker pidfiles under `<store_root>/worker_pids/`, and `reap_orphaned_workers` reclaims those workers after their owning `WorkflowRun` is terminal, missing, or still `Running` but owned by a dead `host_pid`. The sweep runs before `workflow run-script` starts a fresh run, in the `serve` reaper loop after stale run rows and worktrees are handled, and manually through `harness workflow reap-workers [--dry-run]`.
 
-Before killing a recorded pid group, the reaper checks the live process argv with `ps` and requires it to contain the recorded provider command marker (`codex`, `claude`, `kimi`, or a test marker such as `sleep`). If the marker no longer matches, the pid is treated as reused: the stale pidfile is removed, but the live process is left alone.
+Before killing a recorded pid group, the reaper checks the live process argv with `ps` and requires it to contain the recorded provider command marker (`codex`, `claude`, `kimi`, or a test marker such as `sleep`). It also verifies the current process group still matches the pidfile and that the live process did not start after the pidfile's recorded start window. If any identity check fails, the pid is treated as reused: the stale pidfile is removed, but the live process is left alone.
 
 ## Worktree Isolation
 

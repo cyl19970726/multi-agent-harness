@@ -13923,6 +13923,79 @@ fn process_command_for_pid(pid: u32) -> String {
         .unwrap_or_default()
 }
 
+fn process_group_for_pid(pid: u32) -> Option<u32> {
+    if pid == 0 {
+        return None;
+    }
+    #[cfg(unix)]
+    {
+        let pgid = unsafe { libc::getpgid(pid as libc::pid_t) };
+        (pgid > 0).then_some(pgid as u32)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+        None
+    }
+}
+
+fn parse_ps_etime_ms(value: &str) -> Option<u128> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let (days, rest) = if let Some((days, rest)) = trimmed.split_once('-') {
+        (days.trim().parse::<u128>().ok()?, rest)
+    } else {
+        (0, trimmed)
+    };
+    let parts: Vec<&str> = rest.split(':').collect();
+    let seconds = match parts.as_slice() {
+        [seconds] => seconds.trim().parse::<u128>().ok()?,
+        [minutes, seconds] => {
+            minutes.trim().parse::<u128>().ok()? * 60 + seconds.trim().parse::<u128>().ok()?
+        }
+        [hours, minutes, seconds] => {
+            hours.trim().parse::<u128>().ok()? * 60 * 60
+                + minutes.trim().parse::<u128>().ok()? * 60
+                + seconds.trim().parse::<u128>().ok()?
+        }
+        _ => return None,
+    };
+    Some((days * 24 * 60 * 60 + seconds) * 1_000)
+}
+
+fn process_elapsed_ms_for_pid(pid: u32) -> Option<u128> {
+    let output = Command::new("ps")
+        .arg("-p")
+        .arg(pid.to_string())
+        .args(["-o", "etime="])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    parse_ps_etime_ms(&String::from_utf8_lossy(&output.stdout))
+}
+
+// `ps etime` is only second-resolution and often rounds down, so a just-spawned
+// original worker can appear to have started slightly after the pidfile write.
+const PID_START_TOLERANCE_MS: u128 = 2_000;
+
+fn process_identity_matches_pidfile(pidfile: &OrphanPidfile, command: &str) -> bool {
+    if pidfile.cmd_marker.is_empty() || !command.contains(&pidfile.cmd_marker) {
+        return false;
+    }
+    if process_group_for_pid(pidfile.pid) != Some(pidfile.pgid) {
+        return false;
+    }
+    let Some(elapsed_ms) = process_elapsed_ms_for_pid(pidfile.pid) else {
+        return false;
+    };
+    let inferred_start_ms = current_unix_ms().saturating_sub(elapsed_ms);
+    inferred_start_ms <= pidfile.started_ms.saturating_add(PID_START_TOLERANCE_MS)
+}
+
 fn worker_pid_dir(store: &HarnessStore) -> PathBuf {
     store.root().join("worker_pids")
 }
@@ -14016,7 +14089,7 @@ fn reap_orphaned_workers(store: &HarnessStore, dry_run: bool) -> CliResult<serde
         }
 
         let command = process_command_for_pid(pidfile.pid);
-        if pidfile.cmd_marker.is_empty() || !command.contains(&pidfile.cmd_marker) {
+        if !process_identity_matches_pidfile(&pidfile, &command) {
             skipped_pid_reuse += 1;
             if !dry_run {
                 let _ = fs::remove_file(&path);
@@ -14028,6 +14101,7 @@ fn reap_orphaned_workers(store: &HarnessStore, dry_run: bool) -> CliResult<serde
                 "pgid": pidfile.pgid,
                 "cmd_marker": pidfile.cmd_marker,
                 "command": command,
+                "current_pgid": process_group_for_pid(pidfile.pid),
                 "action": if dry_run { "would_skip_pid_reuse" } else { "skipped_pid_reuse" },
             }));
             continue;
@@ -20637,6 +20711,16 @@ new file mode 100644
         pid: u32,
         cmd_marker: &str,
     ) -> PathBuf {
+        write_test_worker_pidfile_with_started_ms(store, run_id, pid, cmd_marker, current_unix_ms())
+    }
+
+    fn write_test_worker_pidfile_with_started_ms(
+        store: &HarnessStore,
+        run_id: &str,
+        pid: u32,
+        cmd_marker: &str,
+        started_ms: u128,
+    ) -> PathBuf {
         let dir = worker_pid_dir(store);
         fs::create_dir_all(&dir).expect("mkdir worker_pids");
         let path = dir.join(format!("{run_id}__{pid}.json"));
@@ -20645,7 +20729,7 @@ new file mode 100644
             pid,
             pgid: pid,
             cmd_marker: cmd_marker.to_string(),
-            started_ms: current_unix_ms(),
+            started_ms,
         };
         fs::write(
             &path,
@@ -20744,6 +20828,43 @@ new file mode 100644
         );
         assert!(!pidfile.exists(), "stale reused-pid pidfile is removed");
         kill_test_process_group(&mut child);
+    }
+
+    #[test]
+    fn reap_orphaned_workers_skips_same_marker_pid_reuse_when_process_started_later() {
+        let store = temp_store("reap-worker-same-marker-pid-reuse");
+        append_test_workflow_run(&store, "wfrun-terminal", WorkflowRunStatus::Completed, None);
+        let stale_started_ms = current_unix_ms().saturating_sub(10_000);
+        let mut child = spawn_sleep_process_group();
+        let pid = child.id();
+        let pidfile = write_test_worker_pidfile_with_started_ms(
+            &store,
+            "wfrun-terminal",
+            pid,
+            "sleep",
+            stale_started_ms,
+        );
+
+        let summary = reap_orphaned_workers(&store, false).expect("reap workers");
+
+        assert_eq!(summary["scanned"], 1);
+        assert_eq!(summary["skipped_pid_reuse"], 1);
+        assert!(
+            pid_exists_libc(pid),
+            "same-marker reused pid must not be killed when start time is newer"
+        );
+        assert!(!pidfile.exists(), "stale reused-pid pidfile is removed");
+        kill_test_process_group(&mut child);
+    }
+
+    #[test]
+    fn parse_ps_etime_ms_accepts_common_ps_formats() {
+        assert_eq!(parse_ps_etime_ms("03"), Some(3_000));
+        assert_eq!(parse_ps_etime_ms("02:03"), Some(123_000));
+        assert_eq!(parse_ps_etime_ms("01:02:03"), Some(3_723_000));
+        assert_eq!(parse_ps_etime_ms("2-01:02:03"), Some(176_523_000));
+        assert_eq!(parse_ps_etime_ms(""), None);
+        assert_eq!(parse_ps_etime_ms("bad"), None);
     }
 
     #[test]
