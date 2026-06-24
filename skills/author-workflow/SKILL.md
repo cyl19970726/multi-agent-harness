@@ -82,9 +82,9 @@ A program calls these globals (no `import`; they are pre-bound):
 | Call | Returns | Meaning |
 | --- | --- | --- |
 | `workflow(name, design_intent, budget_usd=, success_criterion=)` | — | REQUIRED header. Declares the run name + the WHY behind its shape. Optional `budget_usd=N` caps the run's cumulative spend; `success_criterion="..."` declares the bar `verdict()` is judged against. Must run once before the body. |
-| `agent(prompt, provider="codex", label=, phase=, model=, effort=, fallback_model=, image=, add_dir=, isolation=, schema=, writable=False)` | output text, OR a dict (with `schema=`) | Run ONE ephemeral worker synchronously. `prompt` is positional; the rest are keyword args. `model=` overrides the provider default model; `effort=` overrides reasoning effort (see the rules below); `fallback_model=` sets a provider fallback model when supported; `image=` is a list of image file paths; `add_dir=` is a list of extra directory paths. READ-ONLY by default; `writable=True` lets it edit / run shell AND auto-isolates it into a throwaway worktree. With `schema={...}` it returns a parsed dict (or `None`) — see [Structured Output](#structured-output-the-foundation). Capture the return to chain: `scan = agent("...")`. |
-| `parallel([dict, ...])` | list (input order) | Barrier fan-out: run every spec concurrently, block until ALL finish. Each element is the parsed dict (if that spec had a `schema` that parsed) else its output string. Each dict needs a `prompt` and may set `provider` (default `"codex"`), `label`, `phase`, `model`, `effort`, `fallback_model`, `image`, `add_dir`, `isolation`, `schema`, `writable`. |
-| `pipeline(items, stages)` | list (one per item) | No-barrier streaming: each item flows through every stage independently. `stages` is a list of dicts `{prompt, provider?, label?, phase?, model?, effort?, fallback_model?, image?, add_dir?, isolation?, schema?, writable?}` (or pass the stages as positional args: `pipeline(items, s1, s2)`) whose `prompt` is a TEMPLATE containing `{input}` — replaced with the item for stage 1, then the prior stage's output for each next stage (forward-injection). Returns each item's LAST stage result. |
+| `agent(prompt, provider="codex", label=, phase=, model=, effort=, fallback_model=, image=, add_dir=, expected_artifacts=, isolation=, schema=, writable=False)` | output text, OR a dict (with `schema=`) | Run ONE ephemeral worker synchronously. `prompt` is positional; the rest are keyword args. `model=` overrides the provider default model; `effort=` overrides reasoning effort (see the rules below); `fallback_model=` sets a provider fallback model when supported; `image=` is a list of image file paths; `add_dir=` is a list of extra directory paths; `expected_artifacts=` is a list of repo-relative output files to assert and copy back. READ-ONLY by default; `writable=True` lets it edit / run shell AND auto-isolates it into a throwaway worktree. With `schema={...}` it returns a parsed dict (or `None`) — see [Structured Output](#structured-output-the-foundation). Capture the return to chain: `scan = agent("...")`. |
+| `parallel([dict, ...])` | list (input order) | Barrier fan-out: run every spec concurrently, block until ALL finish. Each element is the parsed dict (if that spec had a `schema` that parsed) else its output string. Each dict needs a `prompt` and may set `provider` (default `"codex"`), `label`, `phase`, `model`, `effort`, `fallback_model`, `image`, `add_dir`, `expected_artifacts`, `isolation`, `schema`, `writable`. |
+| `pipeline(items, stages)` | list (one per item) | No-barrier streaming: each item flows through every stage independently. `stages` is a list of dicts `{prompt, provider?, label?, phase?, model?, effort?, fallback_model?, image?, add_dir?, expected_artifacts?, isolation?, schema?, writable?}` (or pass the stages as positional args: `pipeline(items, s1, s2)`) whose `prompt` is a TEMPLATE containing `{input}` — replaced with the item for stage 1, then the prior stage's output for each next stage (forward-injection). Returns each item's LAST stage result. |
 | `verdict(ok, reason="")` | — | Declare the run's TYPED outcome. `reason` may be positional or keyword (`verdict(ok, "why")` ≡ `verdict(ok, reason="why")`). `ok=False` finalizes the run `Failed` even if every worker ran — so "workers ran" ≠ "intent satisfied". A closed-loop program's final gate calls this. |
 | `output(value)` | — | Declare the run's RESULT — the one unambiguous answer the calling agent reads back. `value` (a string or dict) is persisted verbatim under `final_output.result`, UNCAPPED, so the caller reads one field instead of digging the answer out of a step by label. Last call wins; pass a `schema`'d dict when you want the answer typed (a free-text `agent()` return is the worker's FULL reply — not truncated). |
 | `json.encode(value)` / `json.decode(str)` | string / value | Serialize a prior `agent()`'s dict to inject it verbatim into the next prompt (forward-injection), or parse JSON back. |
@@ -125,6 +125,8 @@ Rules every call obeys:
   injected into the prompt for the worker to open with the Read tool.
 - `add_dir` is a list of extra directory paths the worker may access. Codex and
   claude both receive repeatable `--add-dir <path>` args.
+- `expected_artifacts` is a list of repo-relative files the step must produce;
+  the runtime rejects absolute paths and `..` components.
 - `fallback_model` is an optional fallback model override. Claude receives
   `--fallback-model <model>`; codex has no fallback-model flag, so it is not
   passed to codex.
@@ -202,6 +204,14 @@ its `git diff` becomes the step's evidence, and the worktree is cleaned up after
 (auto-removed if unchanged, never auto-merged). So a `parallel()` block of several
 `writable` slots is automatically conflict-free — each gets its own worktree.
 
+When a writable leaf PRODUCES FILES that must survive cleanup, declare
+`expected_artifacts=["repo/relative/path.ext", ...]`. At step end the CLI copies
+each declared non-empty file from the throwaway worktree into the live repo before
+cleanup; a missing, empty, absolute, or `..` path marks that step FAILED. An empty
+list preserves legacy behavior. Use this for file-producing leaves such as image
+generation: it both asserts the output exists and persists it past the ephemeral
+worktree.
+
 A `writable` worker runs with **FULL permissions** — codex `--sandbox
 danger-full-access`, claude `--permission-mode bypassPermissions` — so it can run
 arbitrary shell, **`git add`/`git commit`**, install deps, and reach the network.
@@ -221,6 +231,16 @@ from a git repo (`git init`), or keep the step READ-ONLY and retrieve its produc
 text with `harness workflow get-output <run_id> --step <label>`. Under a
 project-switching `serve`, the worktree base / worker cwd is the run's selected
 project root (#147), not necessarily where the binary launched.
+
+A writable / isolated leaf branches from the PROJECT-ROOT checkout's current
+`HEAD`, not the cwd that launched `run-script`. The CLI prints the worktree base
+(root + branch + short HEAD) when it creates one; keep the selected project root
+on the intended branch or a writable leaf can branch from a stale base.
+
+Standalone `run-script` still discards writable worktree diffs. At run end it now
+WARNS when a writable / isolated step had a non-empty discarded diff, naming the
+step, changed-file count, and recovery path (`harness workflow get-output ...` or
+land the work through the goal layer).
 
 ## Goal layer: a second front-end onto this runtime
 
@@ -698,7 +718,10 @@ Pick by how live you need it:
   run's ordered steps + status as JSON — `--text` for just the deliverable text,
   `--step <label>` to filter to one leaf. The `<run_id>` (`wfrun-…`) is in the
   run-script output; use this to inspect a run started in the background or another
-  session.
+  session. Each step includes the journaled `result` plus `session_summary`
+  (`tool_calls` with counts, `final_message`, `retained`, `truncated`), so a
+  "completed but no artifact" leaf is diagnosable: did the worker call the tool,
+  and what did its final message say?
 - **Live, phase-by-phase.** Add `--progress` for one NDJSON line per step
   (`phase`, `label`, `running` / `ok` / `failed`) on STDERR as it executes, and/or
   background the run and poll `harness dashboard snapshot` (`workflow_runs` +
@@ -744,6 +767,7 @@ its permission profile must allow it:
 - [ ] A program that produces an answer ends with `output(value)` so the caller reads `final_output.result` (a large answer goes through a `schema`'d dict, not capped free text).
 - [ ] Every agent leaf (`agent()` call / `parallel` spec) has a `provider` of `"codex"`, `"claude"`, or `"kimi"` (keep `schema=`-gated control-flow leaves on codex/claude).
 - [ ] Parallel slots that EDIT files use `isolation` `"worktree"`.
+- [ ] Writable leaves that produce files declare `expected_artifacts` with repo-relative paths.
 - [ ] Every leaf whose output drives control flow uses `schema={...}` and the script handles a `None` (and, in fan-outs, a non-dict) result.
 - [ ] If the workflow has only one `agent()` call and no branch/fan-out/loop, it is NOT a workflow — collapse it to that one call.
 - [ ] Quality steps (verify / adversarial / judge / loop-until-dry / completeness) cross-check rather than trust a single pass, where the task warrants it.

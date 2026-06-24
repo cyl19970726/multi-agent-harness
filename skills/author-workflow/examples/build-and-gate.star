@@ -14,8 +14,7 @@
 # CONSTRAINTS, numbered DELIVERABLES, the exact GATE command, and a report
 # contract — the internal bar, not a one-liner.
 #
-# Run:  harness workflow run-script ./build-and-gate.star \
-#   --args '{"task":"add a --json flag to the `report` command that prints the report as JSON","gate":"cargo test -p report-cli && cargo clippy --all-targets -- -D warnings"}'
+# Run:  harness workflow run-script ./build-and-gate.star
 
 workflow(
     "build-and-gate",
@@ -26,8 +25,9 @@ workflow(
     success_criterion = "the declared gate command exits 0 after the change (gate_green == true)",
 )
 
-task = args["task"]
-gate = args["gate"]
+task = "add a --json flag to the `report` command that prints the report as JSON"
+gate = "cargo test -p report-cli && cargo clippy --all-targets -- -D warnings"
+artifact = "target/harness-workflow/build-report.json"
 
 # ---- typed contracts ----------------------------------------------------------
 DESIGN = {
@@ -37,9 +37,10 @@ DESIGN = {
     "risks": "what could break or regress, one per line",
 }
 BUILD_RESULT = {
-    "gate_green": "bool: true ONLY if the gate command exited 0 after your changes",
+    "gate_green": "bool",
     "summary": "one line: what you implemented and the final gate status",
     "files_changed": "the files you created or modified, one per line",
+    "artifact_path": "the repo-relative report artifact path you wrote",
     "blockers": "anything that blocked a green gate, one per line; empty if green",
 }
 
@@ -67,6 +68,9 @@ leave the changes in the working tree.
 
 TASK: {task}
 
+REPORT ARTIFACT: write a non-empty JSON report to this repo-relative path:
+{artifact}
+
 FOLLOW THIS DESIGN (verify it against the real files; correct it where the code
 disagrees):
 {design_json}
@@ -79,16 +83,19 @@ HARD CONSTRAINTS:
 REQUIRED DELIVERABLES:
 1. The implementation, per the design.
 2. Tests covering the new behavior (do not weaken existing ones).
+3. A non-empty JSON report at REPORT ARTIFACT summarizing files changed, gate attempts,
+   final gate status, and blockers.
 
 THEN GATE: run `{gate}`. If it fails, read the errors, FIX the ROOT CAUSE, and
 re-run — up to 5 honest attempts. Never use --no-verify and never fake a pass.
 
 Report: gate_green (true ONLY if the gate exited 0), a one-line summary, the files
-you changed, and any blockers if it could not go green.""".format(
-        task=task, design_json=design_json, gate=gate,
+you changed, artifact_path, and any blockers if it could not go green.""".format(
+        task=task, artifact=artifact, design_json=design_json, gate=gate,
     ),
     label = "build",
     writable = True,          # edits + shell run in its own worktree; the diff is the evidence
+    expected_artifacts = [artifact],
     schema = BUILD_RESULT,
 )
 
