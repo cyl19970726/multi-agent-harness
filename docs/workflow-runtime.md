@@ -45,6 +45,7 @@ The Starlark front-end is the sole dynamic authoring surface: it lets an agent w
 | `model` | Optional provider model override |
 | `effort` | Optional provider reasoning-effort override |
 | `fallback_model` | Optional provider fallback model when the adapter supports it |
+| `timeout_s` | Optional per-leaf wall-clock timeout in seconds |
 | `image` | Image file paths passed or described to the worker |
 | `add_dir` | Extra directory paths the worker may access |
 | `isolation` | Optional isolation mode; only `worktree` is supported |
@@ -86,6 +87,7 @@ agent(
     model=None,
     effort=None,
     fallback_model=None,
+    timeout_s=None,
     image=None,
     add_dir=None,
     isolation=None,
@@ -107,6 +109,7 @@ Argument semantics:
 | `model` | Leaf model override, otherwise CLI `--model`, otherwise provider default |
 | `effort` | Leaf effort override, otherwise CLI `--effort`, otherwise provider default |
 | `fallback_model` | Passed to providers that support native fallback |
+| `timeout_s` | Per-leaf wall-clock timeout in seconds; a fired timeout fails the step |
 | `image` | List of image paths |
 | `add_dir` | List of additional directory paths |
 | `isolation` | Optional `worktree` |
@@ -198,6 +201,8 @@ Key `run-script` flags:
 | `--effort <effort>` | Run-level default effort; leaf `effort=` wins |
 | `--max-budget-usd <n>` | Per-run cumulative budget ceiling and per-worker Claude backstop |
 | `--progress` | Emit compact NDJSON progress events to stderr |
+
+`--timeout-ms` is the global idle-since-last-output timer: streaming output resets it. `timeout_s` is a per-leaf wall-clock cap on `agent()`, `parallel()` specs, and `pipeline()` stages; it fails the step even if the worker is still streaming.
 | `--initiated-by <id>` | Initiator id; defaults to `HARNESS_AGENT_MEMBER_ID` or `operator` |
 
 These flags are parsed in `workflow_run_script_value` (`crates/harness-cli/src/main.rs:9600`, `crates/harness-cli/src/main.rs:9651`, `crates/harness-cli/src/main.rs:9661`, `crates/harness-cli/src/main.rs:9671`, `crates/harness-cli/src/main.rs:9681`, `crates/harness-cli/src/main.rs:9698`). The command prints the selected workflow store to stderr so stdout remains a single JSON result (`crates/harness-cli/src/main.rs:9393`, `crates/harness-cli/src/main.rs:9397`, `crates/harness-cli/src/main.rs:9404`).

@@ -54,6 +54,10 @@ pub struct AgentStepSpec {
     /// Optional fallback model override. Only providers with a native fallback
     /// flag use it; otherwise it is ignored by the runtime.
     pub fallback_model: Option<String>,
+    /// Optional per-leaf wall-clock timeout in seconds. `None` leaves the step
+    /// bounded only by the CLI's idle-since-last-output timeout.
+    #[serde(default)]
+    pub timeout_s: Option<u64>,
     /// Image file paths to attach to the worker. Empty means no images.
     pub image: Vec<String>,
     /// Extra directory paths the worker may access. Empty means no extra dirs.
@@ -509,6 +513,7 @@ pub fn investigate(driver: &AgentStepFn<'_>, topic: &str) -> WorkflowOutcome {
             model: None,
             effort: None,
             fallback_model: None,
+            timeout_s: None,
             image: Vec::new(),
             add_dir: Vec::new(),
             expected_artifacts: Vec::new(),
@@ -531,6 +536,7 @@ pub fn investigate(driver: &AgentStepFn<'_>, topic: &str) -> WorkflowOutcome {
             model: None,
             effort: None,
             fallback_model: None,
+            timeout_s: None,
             image: Vec::new(),
             add_dir: Vec::new(),
             expected_artifacts: Vec::new(),
@@ -547,6 +553,7 @@ pub fn investigate(driver: &AgentStepFn<'_>, topic: &str) -> WorkflowOutcome {
             model: None,
             effort: None,
             fallback_model: None,
+            timeout_s: None,
             image: Vec::new(),
             add_dir: Vec::new(),
             expected_artifacts: Vec::new(),
@@ -749,6 +756,7 @@ mod tests {
             model: None,
             effort: None,
             fallback_model: None,
+            timeout_s: None,
             image: Vec::new(),
             add_dir: Vec::new(),
             expected_artifacts: vec!["out/image.png".into()],
@@ -761,6 +769,7 @@ mod tests {
         let encoded = serde_json::to_string(&spec).expect("serialize");
         let decoded: AgentStepSpec = serde_json::from_str(&encoded).expect("deserialize");
         assert_eq!(decoded.expected_artifacts, vec!["out/image.png"]);
+        assert_eq!(decoded.timeout_s, None);
 
         let legacy = serde_json::json!({
             "phase": "p",
@@ -769,6 +778,7 @@ mod tests {
             "model": null,
             "effort": null,
             "fallback_model": null,
+            "timeout_s": null,
             "image": [],
             "add_dir": [],
             "isolation": null,
@@ -779,6 +789,7 @@ mod tests {
         });
         let decoded: AgentStepSpec = serde_json::from_value(legacy).expect("legacy decode");
         assert!(decoded.expected_artifacts.is_empty());
+        assert_eq!(decoded.timeout_s, None);
     }
 
     #[test]
@@ -825,6 +836,7 @@ mod tests {
                 model: None,
                 effort: None,
                 fallback_model: None,
+                timeout_s: None,
                 image: Vec::new(),
                 add_dir: Vec::new(),
                 expected_artifacts: Vec::new(),
@@ -889,6 +901,7 @@ mod tests {
                 model: None,
                 effort: None,
                 fallback_model: None,
+                timeout_s: None,
                 image: Vec::new(),
                 add_dir: Vec::new(),
                 expected_artifacts: Vec::new(),
@@ -965,6 +978,7 @@ mod tests {
                 model: None,
                 effort: None,
                 fallback_model: None,
+                timeout_s: None,
                 image: Vec::new(),
                 add_dir: Vec::new(),
                 expected_artifacts: Vec::new(),
@@ -1014,6 +1028,7 @@ mod tests {
             model: None,
             effort: None,
             fallback_model: None,
+            timeout_s: None,
             image: Vec::new(),
             add_dir: Vec::new(),
             expected_artifacts: Vec::new(),

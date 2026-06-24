@@ -8194,6 +8194,7 @@ fn spawn_ephemeral_worker(
             model: effective_model,
             effort: effective_effort,
             timeout_ms: options.timeout_ms,
+            wall_clock_ms: spec.timeout_s.map(|seconds| seconds.saturating_mul(1_000)),
             max_budget_usd: options.max_budget_usd,
         };
         match provider_adapter(spec.provider.as_str()) {
@@ -8626,6 +8627,9 @@ fn build_step_details(
             }),
         );
     }
+    if spawn.wall_timed_out {
+        map.insert("wall_timed_out".into(), serde_json::Value::Bool(true));
+    }
 
     if let Some(diff) = diff {
         let (text, truncated) = if diff.len() > WORKTREE_DIFF_CAP {
@@ -8685,6 +8689,8 @@ struct EphemeralSpawn {
     exit_code: Option<i32>,
     /// True when the per-node timeout fired (the worker was killed mid-turn).
     timed_out: bool,
+    /// True when the timeout was the per-leaf wall-clock cap, not idle silence.
+    wall_timed_out: bool,
     /// Normalized token usage parsed from the terminal event, when present:
     /// `{ input, output, total }`. `None` when the stream carried no usage.
     tokens: Option<TokenUsage>,
@@ -8916,6 +8922,7 @@ fn spawn_codex_ephemeral(
     model: Option<&str>,
     effort: Option<&str>,
     timeout_ms: u64,
+    wall_clock_ms: Option<u64>,
 ) -> CliResult<EphemeralSpawn> {
     let last_message_ref = session_dir.join("last-message.md");
     // Read-only by default; a `writable` node gets FULL access (the codex analogue of
@@ -8977,6 +8984,7 @@ fn spawn_codex_ephemeral(
         session_id,
         "codex.stream-json.ndjson",
         timeout_ms,
+        wall_clock_ms,
         "ephemeral worker",
     )?;
     let codex_events: Vec<CodexExecEvent> = run
@@ -9021,6 +9029,7 @@ fn spawn_codex_ephemeral(
         stderr: run.stderr,
         exit_code: run.exit_code,
         timed_out: run.timed_out,
+        wall_timed_out: run.wall_timed_out,
         tokens,
         // codex exec --json carries no model; only spec.model is known.
         model: None,
@@ -9049,6 +9058,7 @@ fn spawn_claude_ephemeral(
     model: Option<&str>,
     effort: Option<&str>,
     timeout_ms: u64,
+    wall_clock_ms: Option<u64>,
     max_budget_usd: Option<f64>,
 ) -> CliResult<EphemeralSpawn> {
     let prompt_with_images;
@@ -9115,6 +9125,7 @@ fn spawn_claude_ephemeral(
         session_id,
         "claude.stream-json.ndjson",
         timeout_ms,
+        wall_clock_ms,
         "ephemeral worker",
     )?;
     let claude_events: Vec<ClaudeStreamEvent> = run
@@ -9141,6 +9152,7 @@ fn spawn_claude_ephemeral(
         stderr: run.stderr,
         exit_code: run.exit_code,
         timed_out: run.timed_out,
+        wall_timed_out: run.wall_timed_out,
         tokens,
         model,
         structured,
@@ -9159,6 +9171,8 @@ struct NdjsonRun {
     exit_code: Option<i32>,
     /// True when the per-node timeout fired and we killed the child.
     timed_out: bool,
+    /// True when the per-leaf wall-clock timeout fired.
+    wall_timed_out: bool,
     events: Vec<serde_json::Value>,
     stderr: String,
     warnings: Vec<String>,
@@ -9204,6 +9218,7 @@ fn run_ndjson_child(
     session_id: &str,
     live_file_name: &str,
     timeout_ms: u64,
+    wall_clock_ms: Option<u64>,
     // Human label for this worker in spawn/timeout error + warning strings
     // (e.g. "ephemeral worker", "codex exec", "claude -p"). The persistent member
     // path passes its provider-specific label so failure summaries read the same
@@ -9333,7 +9348,9 @@ fn run_ndjson_child(
     // auth/network stall) is killed. Killing closes stdout/stderr so the reader
     // threads finish and join cleanly.
     let idle_limit = Duration::from_millis(timeout_ms.max(1));
+    let wall_clock_limit = wall_clock_ms.map(|ms| Duration::from_millis(ms.max(1)));
     let mut timed_out = false;
+    let mut wall_timed_out = false;
     let mut exit_code: Option<i32> = None;
     let process_success = loop {
         match child.try_wait() {
@@ -9342,6 +9359,13 @@ fn run_ndjson_child(
                 break status.success();
             }
             Ok(None) => {
+                if let Some(wall) = wall_clock_limit {
+                    if start.elapsed() > wall {
+                        kill_worker_tree(&mut child);
+                        wall_timed_out = true;
+                        break false;
+                    }
+                }
                 let last = Duration::from_millis(last_activity_ms.load(Ordering::Relaxed));
                 if start.elapsed().saturating_sub(last) > idle_limit {
                     kill_worker_tree(&mut child);
@@ -9359,14 +9383,25 @@ fn run_ndjson_child(
     if timed_out && stderr_log.is_empty() {
         stderr_log = format!("timeout waiting for {context}");
     }
+    if wall_timed_out && stderr_log.is_empty() {
+        let wall_s = wall_clock_ms.unwrap_or(0).div_ceil(1_000);
+        stderr_log = format!("{context} exceeded per-leaf wall-clock timeout of {wall_s}s");
+    }
     if timed_out {
         warnings.push(format!("{context} timed out"));
+    }
+    if wall_timed_out {
+        let wall_s = wall_clock_ms.unwrap_or(0).div_ceil(1_000);
+        warnings.push(format!(
+            "{context} exceeded per-leaf wall-clock timeout of {wall_s}s"
+        ));
     }
 
     Ok(NdjsonRun {
         process_success,
         exit_code,
-        timed_out,
+        timed_out: timed_out || wall_timed_out,
+        wall_timed_out,
         events,
         stderr: stderr_log,
         warnings,
@@ -14109,6 +14144,7 @@ struct EphemeralSpawnContext<'a> {
     model: Option<&'a str>,
     effort: Option<&'a str>,
     timeout_ms: u64,
+    wall_clock_ms: Option<u64>,
     max_budget_usd: Option<f64>,
 }
 
@@ -14598,6 +14634,7 @@ impl ProviderAdapter for CodexAdapter {
             ctx.model,
             ctx.effort,
             ctx.timeout_ms,
+            ctx.wall_clock_ms,
         )
     }
 
@@ -14993,6 +15030,7 @@ impl ProviderAdapter for ClaudeAdapter {
             ctx.model,
             ctx.effort,
             ctx.timeout_ms,
+            ctx.wall_clock_ms,
             ctx.max_budget_usd,
         )
     }
@@ -15174,6 +15212,7 @@ fn spawn_kimi_ephemeral(
     model: Option<&str>,
     effort: Option<&str>,
     timeout_ms: u64,
+    wall_clock_ms: Option<u64>,
     max_budget_usd: Option<f64>,
 ) -> CliResult<EphemeralSpawn> {
     let prompt_with_images;
@@ -15211,6 +15250,7 @@ fn spawn_kimi_ephemeral(
         session_id,
         KimiAdapter.live_ndjson_file_name(),
         timeout_ms,
+        wall_clock_ms,
         "ephemeral worker",
     )?;
     // Kimi `-p --output-format stream-json` is NOT claude-shaped (verified live):
@@ -15237,6 +15277,7 @@ fn spawn_kimi_ephemeral(
         stderr: run.stderr,
         exit_code: run.exit_code,
         timed_out: run.timed_out,
+        wall_timed_out: run.wall_timed_out,
         tokens,
         model,
         structured,
@@ -15351,6 +15392,7 @@ fn run_kimi_exec_delivery_real(
         &delivery_id,
         KimiAdapter.live_ndjson_file_name(),
         timeout_ms,
+        None,
         "kimi -p process",
     )?;
     // Kimi -p stream-json is not claude-shaped — derive the session id from the raw
@@ -15604,6 +15646,7 @@ impl ProviderAdapter for KimiAdapter {
             ctx.model,
             ctx.effort,
             ctx.timeout_ms,
+            ctx.wall_clock_ms,
             ctx.max_budget_usd,
         )
     }
@@ -16314,6 +16357,7 @@ fn run_codex_exec_process(
         delivery_id,
         "codex.stream-json.ndjson",
         timeout_ms,
+        None,
         "codex exec",
     )?;
     let events = run
@@ -16974,6 +17018,7 @@ fn run_claude_exec_delivery_real(
         &delivery_id,
         "claude.stream-json.ndjson",
         timeout_ms,
+        None,
         "claude -p process",
     )?;
     let events = run
@@ -18662,6 +18707,7 @@ mod workflow_runtime_tests {
             model: Some("gpt-5-codex".into()),
             effort: None,
             fallback_model: None,
+            timeout_s: None,
             image: Vec::new(),
             add_dir: Vec::new(),
             expected_artifacts: Vec::new(),
@@ -18678,6 +18724,7 @@ mod workflow_runtime_tests {
             stderr: String::new(),
             exit_code: Some(0),
             timed_out: false,
+            wall_timed_out: false,
             tokens: Some(TokenUsage {
                 input: 10,
                 output: 4,
@@ -18707,6 +18754,7 @@ mod workflow_runtime_tests {
             model: None,
             effort: None,
             fallback_model: None,
+            timeout_s: None,
             image: Vec::new(),
             add_dir: Vec::new(),
             expected_artifacts: Vec::new(),
@@ -18723,6 +18771,7 @@ mod workflow_runtime_tests {
             stderr: "boom: provider exploded".into(),
             exit_code: Some(3),
             timed_out: false,
+            wall_timed_out: false,
             tokens: None,
             // The node requested no model, so the worker-reported one is used.
             model: Some("claude-opus-4-8".into()),
@@ -18749,6 +18798,7 @@ mod workflow_runtime_tests {
             model: None,
             effort: None,
             fallback_model: None,
+            timeout_s: None,
             image: Vec::new(),
             add_dir: Vec::new(),
             expected_artifacts: Vec::new(),
@@ -18765,6 +18815,7 @@ mod workflow_runtime_tests {
             stderr: String::new(),
             exit_code: Some(0),
             timed_out: false,
+            wall_timed_out: false,
             tokens: None,
             model: None,
             structured: None,
@@ -18880,6 +18931,7 @@ new file mode 100644
             model: None,
             effort: None,
             fallback_model: None,
+            timeout_s: None,
             image: Vec::new(),
             add_dir: Vec::new(),
             expected_artifacts: Vec::new(),
@@ -18921,6 +18973,7 @@ new file mode 100644
             "s",
             "out.ndjson",
             500,
+            None,
             "ephemeral worker",
         )
         .expect("run");
@@ -18956,6 +19009,7 @@ new file mode 100644
             "s",
             "out.ndjson",
             1_000,
+            None,
             "ephemeral worker",
         )
         .expect("run");
@@ -18993,6 +19047,7 @@ new file mode 100644
             "s",
             "out.ndjson",
             300,
+            None,
             "ephemeral worker",
         )
         .expect("run");
@@ -19003,6 +19058,78 @@ new file mode 100644
         );
         assert!(run.process_success, "it should exit cleanly on its own");
         assert_eq!(run.events.len(), 8, "all streamed events captured");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn run_ndjson_child_kills_streaming_worker_via_wall_clock_timeout() {
+        // A worker that never goes idle is still bounded by the per-leaf wall-clock
+        // timeout.
+        let root = std::env::temp_dir().join(format!("mah-wall-{}", generated_id("t")));
+        let session_dir = root.join("provider-sessions").join("s");
+        fs::create_dir_all(&session_dir).expect("mkdir");
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c")
+            .arg("for i in $(seq 1 30); do printf '{\"type\":\"item\"}\\n'; sleep 0.1; done");
+
+        let start = Instant::now();
+        let run = run_ndjson_child(
+            cmd,
+            &session_dir,
+            "s",
+            "out.ndjson",
+            5_000,
+            Some(1_000),
+            "ephemeral worker",
+        )
+        .expect("run");
+        let elapsed = start.elapsed();
+
+        assert!(
+            elapsed < Duration::from_secs(3),
+            "wall-clock timeout should fire near the cap; took {elapsed:?}"
+        );
+        assert!(run.wall_timed_out, "the wall-clock timeout must fire");
+        assert!(run.timed_out, "wall-clock timeouts are terminal timeouts");
+        assert!(!run.process_success);
+        assert!(run.warnings.iter().any(|warning| {
+            warning == "ephemeral worker exceeded per-leaf wall-clock timeout of 1s"
+        }));
+        assert!(
+            !run.events.is_empty(),
+            "streamed events before the wall-clock kill are retained"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn run_ndjson_child_allows_worker_finishing_before_wall_clock_timeout() {
+        let root = std::env::temp_dir().join(format!("mah-wall-ok-{}", generated_id("t")));
+        let session_dir = root.join("provider-sessions").join("s");
+        fs::create_dir_all(&session_dir).expect("mkdir");
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c")
+            .arg("for i in 1 2 3; do printf '{\"type\":\"item\"}\\n'; sleep 0.05; done");
+
+        let run = run_ndjson_child(
+            cmd,
+            &session_dir,
+            "s",
+            "out.ndjson",
+            1_000,
+            Some(2_000),
+            "ephemeral worker",
+        )
+        .expect("run");
+
+        assert!(!run.wall_timed_out);
+        assert!(!run.timed_out);
+        assert!(run.process_success);
+        assert_eq!(run.events.len(), 3);
+        assert!(run
+            .warnings
+            .iter()
+            .all(|warning| { !warning.contains("per-leaf wall-clock timeout") }));
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -20170,6 +20297,7 @@ new file mode 100644
             model: None,
             effort: None,
             fallback_model: None,
+            timeout_s: None,
             image: Vec::new(),
             add_dir: Vec::new(),
             expected_artifacts: Vec::new(),
@@ -20232,6 +20360,7 @@ new file mode 100644
             model: None,
             effort: None,
             fallback_model: None,
+            timeout_s: None,
             image: Vec::new(),
             add_dir: Vec::new(),
             expected_artifacts: Vec::new(),
@@ -20530,6 +20659,7 @@ new file mode 100644
             model: None,
             effort: None,
             fallback_model: None,
+            timeout_s: None,
             image: Vec::new(),
             add_dir: Vec::new(),
             expected_artifacts: Vec::new(),
