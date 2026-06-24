@@ -5921,6 +5921,7 @@ fn serve_command(store: &HarnessStore, resolved: &ResolvedStore, args: &[String]
             std::thread::sleep(REAP_POLL_INTERVAL);
             let _ = reap_stale_workflow_runs(&reaper_store);
             let _ = workflow_gc_worktrees(&reaper_store);
+            let _ = reap_orphaned_workers(&reaper_store, false);
             let _ = workflow_gc_trace(&reaper_store, 100, None, false);
         });
     }
@@ -8187,6 +8188,7 @@ fn spawn_ephemeral_worker(
         let ctx = EphemeralSpawnContext {
             session_dir: &session_dir,
             session_id: &session_id,
+            run_id,
             spec,
             schema_json: schema_json.as_ref(),
             prompt,
@@ -8915,6 +8917,7 @@ fn classify_failure_reason(
 fn spawn_codex_ephemeral(
     session_dir: &Path,
     session_id: &str,
+    run_id: &str,
     spec: &workflow::AgentStepSpec,
     schema_json: Option<&serde_json::Value>,
     prompt: &str,
@@ -8985,6 +8988,15 @@ fn spawn_codex_ephemeral(
         "codex.stream-json.ndjson",
         timeout_ms,
         wall_clock_ms,
+        Some(OrphanRegistration {
+            dir: session_dir
+                .parent()
+                .and_then(|provider_sessions| provider_sessions.parent())
+                .unwrap_or(session_dir)
+                .join("worker_pids"),
+            run_id: run_id.to_string(),
+            cmd_marker: "codex".to_string(),
+        }),
         "ephemeral worker",
     )?;
     let codex_events: Vec<CodexExecEvent> = run
@@ -9051,6 +9063,7 @@ fn spawn_codex_ephemeral(
 fn spawn_claude_ephemeral(
     session_dir: &Path,
     session_id: &str,
+    run_id: &str,
     spec: &workflow::AgentStepSpec,
     schema_json: Option<&serde_json::Value>,
     prompt: &str,
@@ -9126,6 +9139,15 @@ fn spawn_claude_ephemeral(
         "claude.stream-json.ndjson",
         timeout_ms,
         wall_clock_ms,
+        Some(OrphanRegistration {
+            dir: session_dir
+                .parent()
+                .and_then(|provider_sessions| provider_sessions.parent())
+                .unwrap_or(session_dir)
+                .join("worker_pids"),
+            run_id: run_id.to_string(),
+            cmd_marker: "claude".to_string(),
+        }),
         "ephemeral worker",
     )?;
     let claude_events: Vec<ClaudeStreamEvent> = run
@@ -9212,6 +9234,50 @@ fn kill_worker_tree(child: &mut std::process::Child) {
     let _ = child.wait();
 }
 
+#[derive(Clone, Debug)]
+struct OrphanRegistration {
+    dir: PathBuf,
+    run_id: String,
+    cmd_marker: String,
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+struct OrphanPidfile {
+    run_id: String,
+    pid: u32,
+    pgid: u32,
+    cmd_marker: String,
+    started_ms: u128,
+}
+
+struct OrphanPidfileGuard {
+    path: PathBuf,
+}
+
+impl OrphanPidfileGuard {
+    fn create(reg: OrphanRegistration, pid: u32) -> CliResult<Self> {
+        fs::create_dir_all(&reg.dir)?;
+        let path = reg.dir.join(format!("{}__{}.json", reg.run_id, pid));
+        let entry = OrphanPidfile {
+            run_id: reg.run_id,
+            pid,
+            // `process_group(0)` makes the child its own group leader, so pid == pgid.
+            pgid: pid,
+            cmd_marker: reg.cmd_marker,
+            started_ms: current_unix_ms(),
+        };
+        fs::write(&path, serde_json::to_vec(&entry)?)?;
+        Ok(Self { path })
+    }
+}
+
+impl Drop for OrphanPidfileGuard {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+#[allow(clippy::too_many_arguments)] // shared process runner surface plus optional orphan registration
 fn run_ndjson_child(
     mut cmd: Command,
     session_dir: &Path,
@@ -9219,6 +9285,7 @@ fn run_ndjson_child(
     live_file_name: &str,
     timeout_ms: u64,
     wall_clock_ms: Option<u64>,
+    orphan_reg: Option<OrphanRegistration>,
     // Human label for this worker in spawn/timeout error + warning strings
     // (e.g. "ephemeral worker", "codex exec", "claude -p"). The persistent member
     // path passes its provider-specific label so failure summaries read the same
@@ -9238,6 +9305,17 @@ fn run_ndjson_child(
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|error| CliError::Usage(format!("failed to spawn {context}: {error}")))?;
+    let _orphan_guard = if let Some(reg) = orphan_reg {
+        match OrphanPidfileGuard::create(reg, child.id()) {
+            Ok(guard) => Some(guard),
+            Err(error) => {
+                kill_worker_tree(&mut child);
+                return Err(error);
+            }
+        }
+    } else {
+        None
+    };
 
     let stdout = child
         .stdout
@@ -10040,11 +10118,16 @@ fn workflow_gc_trace(
 fn workflow_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     require_subcommand(
         args,
-        "workflow run|run-script|get-output|list|reap|gc-worktrees|gc-trace",
+        "workflow run|run-script|get-output|list|reap|reap-workers|gc-worktrees|gc-trace",
     )?;
     match args[0].as_str() {
         "gc-worktrees" => {
             let result = workflow_gc_worktrees(store)?;
+            print_json(&result)?;
+        }
+        "reap-workers" => {
+            let dry_run = args[1..].iter().any(|a| a == "--dry-run");
+            let result = reap_orphaned_workers(store, dry_run)?;
             print_json(&result)?;
         }
         "reap" => {
@@ -10440,6 +10523,7 @@ fn workflow_run_script_value(
     // Reap any orphaned `Running` rows from crashed prior runs before starting a
     // new one, so phantoms never accumulate in the store / dashboard. Best-effort.
     let _ = reap_stale_workflow_runs(store);
+    let _ = reap_orphaned_workers(store, false);
 
     // Mint the run id up front so the real driver can journal each step's
     // `running` row as it starts (live SSE progress).
@@ -13789,6 +13873,273 @@ const REAP_STALE_RUN_AFTER_MS: u128 = 4 * 60 * 60 * 1000; // 4 hours
 /// reflected on the dashboard within this window.
 const REAP_POLL_INTERVAL: Duration = Duration::from_secs(30);
 
+fn pid_exists_libc(pid: u32) -> bool {
+    if pid == 0 {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        let rc = unsafe { libc::kill(pid as libc::pid_t, 0) };
+        if rc == 0 {
+            return true;
+        }
+        std::io::Error::last_os_error()
+            .raw_os_error()
+            .is_some_and(|errno| errno != libc::ESRCH)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+        false
+    }
+}
+
+fn kill_orphan_worker_group(pid: u32, pgid: u32) -> bool {
+    #[cfg(unix)]
+    {
+        if pgid > 0 {
+            let rc = unsafe { libc::kill(-(pgid as libc::pid_t), libc::SIGKILL) };
+            if rc == 0 {
+                return true;
+            }
+        }
+        unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) == 0 }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (pid, pgid);
+        false
+    }
+}
+
+fn process_command_for_pid(pid: u32) -> String {
+    Command::new("ps")
+        .arg("-p")
+        .arg(pid.to_string())
+        .args(["-o", "command="])
+        .output()
+        .ok()
+        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
+        .unwrap_or_default()
+}
+
+fn process_group_for_pid(pid: u32) -> Option<u32> {
+    if pid == 0 {
+        return None;
+    }
+    #[cfg(unix)]
+    {
+        let pgid = unsafe { libc::getpgid(pid as libc::pid_t) };
+        (pgid > 0).then_some(pgid as u32)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+        None
+    }
+}
+
+fn parse_ps_etime_ms(value: &str) -> Option<u128> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let (days, rest) = if let Some((days, rest)) = trimmed.split_once('-') {
+        (days.trim().parse::<u128>().ok()?, rest)
+    } else {
+        (0, trimmed)
+    };
+    let parts: Vec<&str> = rest.split(':').collect();
+    let seconds = match parts.as_slice() {
+        [seconds] => seconds.trim().parse::<u128>().ok()?,
+        [minutes, seconds] => {
+            minutes.trim().parse::<u128>().ok()? * 60 + seconds.trim().parse::<u128>().ok()?
+        }
+        [hours, minutes, seconds] => {
+            hours.trim().parse::<u128>().ok()? * 60 * 60
+                + minutes.trim().parse::<u128>().ok()? * 60
+                + seconds.trim().parse::<u128>().ok()?
+        }
+        _ => return None,
+    };
+    Some((days * 24 * 60 * 60 + seconds) * 1_000)
+}
+
+fn process_elapsed_ms_for_pid(pid: u32) -> Option<u128> {
+    let output = Command::new("ps")
+        .arg("-p")
+        .arg(pid.to_string())
+        .args(["-o", "etime="])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    parse_ps_etime_ms(&String::from_utf8_lossy(&output.stdout))
+}
+
+// `ps etime` is only second-resolution and often rounds down, so a just-spawned
+// original worker can appear to have started slightly after the pidfile write.
+const PID_START_TOLERANCE_MS: u128 = 2_000;
+
+fn process_identity_matches_pidfile(pidfile: &OrphanPidfile, command: &str) -> bool {
+    if pidfile.cmd_marker.is_empty() || !command.contains(&pidfile.cmd_marker) {
+        return false;
+    }
+    if process_group_for_pid(pidfile.pid) != Some(pidfile.pgid) {
+        return false;
+    }
+    let Some(elapsed_ms) = process_elapsed_ms_for_pid(pidfile.pid) else {
+        return false;
+    };
+    let inferred_start_ms = current_unix_ms().saturating_sub(elapsed_ms);
+    inferred_start_ms <= pidfile.started_ms.saturating_add(PID_START_TOLERANCE_MS)
+}
+
+fn worker_pid_dir(store: &HarnessStore) -> PathBuf {
+    store.root().join("worker_pids")
+}
+
+fn reap_orphaned_workers(store: &HarnessStore, dry_run: bool) -> CliResult<serde_json::Value> {
+    let dir = worker_pid_dir(store);
+    let mut scanned = 0usize;
+    let mut killed = 0usize;
+    let mut already_dead = 0usize;
+    let mut skipped_pid_reuse = 0usize;
+    let mut kept_running = 0usize;
+    let mut entries = Vec::new();
+
+    let runs: BTreeMap<String, WorkflowRun> = latest_workflow_runs_in_append_order(store)?
+        .into_iter()
+        .map(|run| (run.id.clone(), run))
+        .collect();
+
+    let read_dir = match fs::read_dir(&dir) {
+        Ok(read_dir) => read_dir,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(serde_json::json!({
+                "scanned": 0,
+                "killed": 0,
+                "already_dead": 0,
+                "skipped_pid_reuse": 0,
+                "kept_running": 0,
+                "dry_run": dry_run,
+                "entries": [],
+            }))
+        }
+        Err(error) => return Err(error.into()),
+    };
+
+    for entry in read_dir.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+            continue;
+        }
+        scanned += 1;
+        let path_display = path.display().to_string();
+        let pidfile = match fs::read_to_string(&path)
+            .ok()
+            .and_then(|content| serde_json::from_str::<OrphanPidfile>(&content).ok())
+        {
+            Some(pidfile) => pidfile,
+            None => {
+                if !dry_run {
+                    let _ = fs::remove_file(&path);
+                }
+                entries.push(serde_json::json!({
+                    "path": path_display,
+                    "action": if dry_run { "would_remove_invalid_pidfile" } else { "removed_invalid_pidfile" },
+                }));
+                continue;
+            }
+        };
+
+        let owner = runs.get(&pidfile.run_id);
+        let owner_running = owner.is_some_and(|run| run.status == WorkflowRunStatus::Running);
+        let owner_host_alive = owner
+            .and_then(|run| run.host_pid)
+            .is_some_and(pid_exists_libc);
+        if owner_running && owner_host_alive {
+            kept_running += 1;
+            entries.push(serde_json::json!({
+                "path": path_display,
+                "run_id": pidfile.run_id,
+                "pid": pidfile.pid,
+                "pgid": pidfile.pgid,
+                "cmd_marker": pidfile.cmd_marker,
+                "action": "kept_running",
+            }));
+            continue;
+        }
+
+        if !pid_exists_libc(pidfile.pid) {
+            already_dead += 1;
+            if !dry_run {
+                let _ = fs::remove_file(&path);
+            }
+            entries.push(serde_json::json!({
+                "path": path_display,
+                "run_id": pidfile.run_id,
+                "pid": pidfile.pid,
+                "pgid": pidfile.pgid,
+                "cmd_marker": pidfile.cmd_marker,
+                "action": if dry_run { "would_remove_already_dead" } else { "already_dead" },
+            }));
+            continue;
+        }
+
+        let command = process_command_for_pid(pidfile.pid);
+        if !process_identity_matches_pidfile(&pidfile, &command) {
+            skipped_pid_reuse += 1;
+            if !dry_run {
+                let _ = fs::remove_file(&path);
+            }
+            entries.push(serde_json::json!({
+                "path": path_display,
+                "run_id": pidfile.run_id,
+                "pid": pidfile.pid,
+                "pgid": pidfile.pgid,
+                "cmd_marker": pidfile.cmd_marker,
+                "command": command,
+                "current_pgid": process_group_for_pid(pidfile.pid),
+                "action": if dry_run { "would_skip_pid_reuse" } else { "skipped_pid_reuse" },
+            }));
+            continue;
+        }
+
+        let killed_worker = dry_run || kill_orphan_worker_group(pidfile.pid, pidfile.pgid);
+        if killed_worker {
+            killed += 1;
+            if !dry_run {
+                let _ = fs::remove_file(&path);
+            }
+        }
+        entries.push(serde_json::json!({
+            "path": path_display,
+            "run_id": pidfile.run_id,
+            "pid": pidfile.pid,
+            "pgid": pidfile.pgid,
+            "cmd_marker": pidfile.cmd_marker,
+            "command": command,
+            "action": match (dry_run, killed_worker) {
+                (true, _) => "would_kill",
+                (false, true) => "killed",
+                (false, false) => "kill_failed",
+            },
+        }));
+    }
+
+    Ok(serde_json::json!({
+        "scanned": scanned,
+        "killed": killed,
+        "already_dead": already_dead,
+        "skipped_pid_reuse": skipped_pid_reuse,
+        "kept_running": kept_running,
+        "dry_run": dry_run,
+        "entries": entries,
+    }))
+}
+
 /// Finalize ABANDONED `Running` workflow runs to `Failed`, so a crashed / killed
 /// driver does not sit `Running` forever in the store / snapshot / dashboard.
 ///
@@ -14137,6 +14488,7 @@ fn build_bootstrap_prompt(member: &AgentMember) -> String {
 struct EphemeralSpawnContext<'a> {
     session_dir: &'a Path,
     session_id: &'a str,
+    run_id: &'a str,
     spec: &'a workflow::AgentStepSpec,
     schema_json: Option<&'a serde_json::Value>,
     prompt: &'a str,
@@ -14627,6 +14979,7 @@ impl ProviderAdapter for CodexAdapter {
         spawn_codex_ephemeral(
             ctx.session_dir,
             ctx.session_id,
+            ctx.run_id,
             ctx.spec,
             ctx.schema_json,
             ctx.prompt,
@@ -15023,6 +15376,7 @@ impl ProviderAdapter for ClaudeAdapter {
         spawn_claude_ephemeral(
             ctx.session_dir,
             ctx.session_id,
+            ctx.run_id,
             ctx.spec,
             ctx.schema_json,
             ctx.prompt,
@@ -15205,6 +15559,7 @@ fn infer_kimi_status(frames: &[serde_json::Value], process_success: bool) -> Pro
 fn spawn_kimi_ephemeral(
     session_dir: &Path,
     session_id: &str,
+    run_id: &str,
     spec: &workflow::AgentStepSpec,
     schema_json: Option<&serde_json::Value>,
     prompt: &str,
@@ -15251,6 +15606,15 @@ fn spawn_kimi_ephemeral(
         KimiAdapter.live_ndjson_file_name(),
         timeout_ms,
         wall_clock_ms,
+        Some(OrphanRegistration {
+            dir: session_dir
+                .parent()
+                .and_then(|provider_sessions| provider_sessions.parent())
+                .unwrap_or(session_dir)
+                .join("worker_pids"),
+            run_id: run_id.to_string(),
+            cmd_marker: "kimi".to_string(),
+        }),
         "ephemeral worker",
     )?;
     // Kimi `-p --output-format stream-json` is NOT claude-shaped (verified live):
@@ -15392,6 +15756,7 @@ fn run_kimi_exec_delivery_real(
         &delivery_id,
         KimiAdapter.live_ndjson_file_name(),
         timeout_ms,
+        None,
         None,
         "kimi -p process",
     )?;
@@ -15639,6 +16004,7 @@ impl ProviderAdapter for KimiAdapter {
         spawn_kimi_ephemeral(
             ctx.session_dir,
             ctx.session_id,
+            ctx.run_id,
             ctx.spec,
             ctx.schema_json,
             ctx.prompt,
@@ -16358,6 +16724,7 @@ fn run_codex_exec_process(
         "codex.stream-json.ndjson",
         timeout_ms,
         None,
+        None,
         "codex exec",
     )?;
     let events = run
@@ -17018,6 +17385,7 @@ fn run_claude_exec_delivery_real(
         &delivery_id,
         "claude.stream-json.ndjson",
         timeout_ms,
+        None,
         None,
         "claude -p process",
     )?;
@@ -17685,6 +18053,7 @@ fn print_help() {
   workflow run-script <prog.star> [--name <n>] [--args <json>] [--trace durable|live] [--dry-run] [--resume <prior_run_id>] [--timeout-ms <ms>] [--model <m>] [--effort <e>]
   workflow get-output <run_id> [--step <label>] [--text]
   workflow gc-worktrees
+  workflow reap-workers [--dry-run]
   workflow gc-trace [--keep-runs <n>] [--keep-days <d>] [--dry-run]
   serve [--addr 127.0.0.1:8787] [--once]
   daemon start [--socket <path>] [--idle-secs <n>]   (unix: resident warm-child host)
@@ -18974,6 +19343,7 @@ new file mode 100644
             "out.ndjson",
             500,
             None,
+            None,
             "ephemeral worker",
         )
         .expect("run");
@@ -19009,6 +19379,7 @@ new file mode 100644
             "s",
             "out.ndjson",
             1_000,
+            None,
             None,
             "ephemeral worker",
         )
@@ -19048,6 +19419,7 @@ new file mode 100644
             "out.ndjson",
             300,
             None,
+            None,
             "ephemeral worker",
         )
         .expect("run");
@@ -19080,6 +19452,7 @@ new file mode 100644
             "out.ndjson",
             5_000,
             Some(1_000),
+            None,
             "ephemeral worker",
         )
         .expect("run");
@@ -19118,6 +19491,7 @@ new file mode 100644
             "out.ndjson",
             1_000,
             Some(2_000),
+            None,
             "ephemeral worker",
         )
         .expect("run");
@@ -19130,6 +19504,35 @@ new file mode 100644
             .warnings
             .iter()
             .all(|warning| { !warning.contains("per-leaf wall-clock timeout") }));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn run_ndjson_child_without_orphan_registration_writes_no_pidfile() {
+        let root = std::env::temp_dir().join(format!("mah-no-pidfile-{}", generated_id("t")));
+        let session_dir = root.join("provider-sessions").join("s");
+        fs::create_dir_all(&session_dir).expect("mkdir");
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c").arg("printf '{\"type\":\"item\"}\\n'");
+
+        let run = run_ndjson_child(
+            cmd,
+            &session_dir,
+            "s",
+            "out.ndjson",
+            1_000,
+            None,
+            None,
+            "ephemeral worker",
+        )
+        .expect("run");
+
+        assert!(run.process_success);
+        assert_eq!(run.events.len(), 1);
+        assert!(
+            !root.join("worker_pids").exists(),
+            "no pid registry is created unless a caller registers the worker"
+        );
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -20270,6 +20673,198 @@ new file mode 100644
             "the reaped run's open step is closed to Failed"
         );
         assert!(step.ended_at.is_some());
+    }
+
+    fn spawn_sleep_process_group() -> std::process::Child {
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c").arg("sleep 30");
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            cmd.process_group(0);
+        }
+        cmd.spawn().expect("spawn sleep worker")
+    }
+
+    fn kill_test_process_group(child: &mut std::process::Child) {
+        #[cfg(unix)]
+        unsafe {
+            libc::kill(-(child.id() as libc::pid_t), libc::SIGKILL);
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+
+    fn wait_for_child_exit(child: &mut std::process::Child) {
+        for _ in 0..50 {
+            if child.try_wait().expect("try_wait").is_some() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        panic!("child did not exit after reaper kill");
+    }
+
+    fn write_test_worker_pidfile(
+        store: &HarnessStore,
+        run_id: &str,
+        pid: u32,
+        cmd_marker: &str,
+    ) -> PathBuf {
+        write_test_worker_pidfile_with_started_ms(store, run_id, pid, cmd_marker, current_unix_ms())
+    }
+
+    fn write_test_worker_pidfile_with_started_ms(
+        store: &HarnessStore,
+        run_id: &str,
+        pid: u32,
+        cmd_marker: &str,
+        started_ms: u128,
+    ) -> PathBuf {
+        let dir = worker_pid_dir(store);
+        fs::create_dir_all(&dir).expect("mkdir worker_pids");
+        let path = dir.join(format!("{run_id}__{pid}.json"));
+        let entry = OrphanPidfile {
+            run_id: run_id.to_string(),
+            pid,
+            pgid: pid,
+            cmd_marker: cmd_marker.to_string(),
+            started_ms,
+        };
+        fs::write(
+            &path,
+            serde_json::to_vec(&entry).expect("serialize pidfile"),
+        )
+        .expect("write pidfile");
+        path
+    }
+
+    fn append_test_workflow_run(
+        store: &HarnessStore,
+        id: &str,
+        status: WorkflowRunStatus,
+        host_pid: Option<u32>,
+    ) {
+        store
+            .append_workflow_run(&WorkflowRun {
+                id: id.into(),
+                workflow_name: "demo".into(),
+                status,
+                step_ids: vec![],
+                created_at: now_string(),
+                ended_at: None,
+                summary: None,
+                args: None,
+                agents_spawned: 0,
+                final_output: None,
+                initiated_by: Some("op".into()),
+                design_intent: None,
+                spec: None,
+                trace_retention: "durable".into(),
+                host_pid,
+                dry_run: false,
+                goal_id: None,
+                phase_id: None,
+            })
+            .expect("append run");
+    }
+
+    #[test]
+    fn reap_orphaned_workers_kills_live_process_for_absent_run() {
+        let store = temp_store("reap-worker-kill");
+        let mut child = spawn_sleep_process_group();
+        let pid = child.id();
+        let pidfile = write_test_worker_pidfile(&store, "wfrun-missing", pid, "sleep");
+
+        let summary = reap_orphaned_workers(&store, false).expect("reap workers");
+        wait_for_child_exit(&mut child);
+
+        assert_eq!(summary["scanned"], 1);
+        assert_eq!(summary["killed"], 1);
+        assert!(
+            !pid_exists_libc(pid),
+            "worker pid should be gone after wait"
+        );
+        assert!(!pidfile.exists(), "killed worker pidfile is removed");
+    }
+
+    #[test]
+    fn reap_orphaned_workers_preserves_live_worker_owned_by_running_run() {
+        let store = temp_store("reap-worker-live-run");
+        append_test_workflow_run(
+            &store,
+            "wfrun-live-owner",
+            WorkflowRunStatus::Running,
+            Some(std::process::id()),
+        );
+        let mut child = spawn_sleep_process_group();
+        let pid = child.id();
+        let pidfile = write_test_worker_pidfile(&store, "wfrun-live-owner", pid, "sleep");
+
+        let summary = reap_orphaned_workers(&store, false).expect("reap workers");
+
+        assert_eq!(summary["scanned"], 1);
+        assert_eq!(summary["kept_running"], 1);
+        assert!(pid_exists_libc(pid), "live owned worker is not killed");
+        assert!(pidfile.exists(), "live owned worker pidfile is kept");
+        kill_test_process_group(&mut child);
+    }
+
+    #[test]
+    fn reap_orphaned_workers_skips_pid_reuse_when_marker_does_not_match() {
+        let store = temp_store("reap-worker-pid-reuse");
+        append_test_workflow_run(&store, "wfrun-terminal", WorkflowRunStatus::Completed, None);
+        let mut child = spawn_sleep_process_group();
+        let pid = child.id();
+        let pidfile = write_test_worker_pidfile(&store, "wfrun-terminal", pid, "codex");
+
+        let summary = reap_orphaned_workers(&store, false).expect("reap workers");
+
+        assert_eq!(summary["scanned"], 1);
+        assert_eq!(summary["skipped_pid_reuse"], 1);
+        assert!(
+            pid_exists_libc(pid),
+            "marker mismatch must not kill live pid"
+        );
+        assert!(!pidfile.exists(), "stale reused-pid pidfile is removed");
+        kill_test_process_group(&mut child);
+    }
+
+    #[test]
+    fn reap_orphaned_workers_skips_same_marker_pid_reuse_when_process_started_later() {
+        let store = temp_store("reap-worker-same-marker-pid-reuse");
+        append_test_workflow_run(&store, "wfrun-terminal", WorkflowRunStatus::Completed, None);
+        let stale_started_ms = current_unix_ms().saturating_sub(10_000);
+        let mut child = spawn_sleep_process_group();
+        let pid = child.id();
+        let pidfile = write_test_worker_pidfile_with_started_ms(
+            &store,
+            "wfrun-terminal",
+            pid,
+            "sleep",
+            stale_started_ms,
+        );
+
+        let summary = reap_orphaned_workers(&store, false).expect("reap workers");
+
+        assert_eq!(summary["scanned"], 1);
+        assert_eq!(summary["skipped_pid_reuse"], 1);
+        assert!(
+            pid_exists_libc(pid),
+            "same-marker reused pid must not be killed when start time is newer"
+        );
+        assert!(!pidfile.exists(), "stale reused-pid pidfile is removed");
+        kill_test_process_group(&mut child);
+    }
+
+    #[test]
+    fn parse_ps_etime_ms_accepts_common_ps_formats() {
+        assert_eq!(parse_ps_etime_ms("03"), Some(3_000));
+        assert_eq!(parse_ps_etime_ms("02:03"), Some(123_000));
+        assert_eq!(parse_ps_etime_ms("01:02:03"), Some(3_723_000));
+        assert_eq!(parse_ps_etime_ms("2-01:02:03"), Some(176_523_000));
+        assert_eq!(parse_ps_etime_ms(""), None);
+        assert_eq!(parse_ps_etime_ms("bad"), None);
     }
 
     #[test]
