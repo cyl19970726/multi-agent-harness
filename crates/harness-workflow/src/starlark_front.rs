@@ -18,19 +18,22 @@
 //!   structured the way it is. The run is REJECTED if `workflow(...)` is never
 //!   called or `design_intent` is blank / shorter than [`MIN_DESIGN_INTENT_LEN`]
 //!   characters — every workflow must justify its shape.
-//! * `agent(prompt, provider="codex", label=None, phase=None, model=None, timeout_s=None, isolation=None, schema=None)`
+//! * `agent(prompt, provider="codex", label=None, phase=None, model=None, timeout_s=None, isolation=None, schema=None, return_status=False)`
 //!   — run ONE ephemeral worker synchronously. In text mode (no `schema`) it
 //!   returns the worker's output text (so the script can chain, e.g.
 //!   `scan = agent(...)` then `scan.splitlines()`). In STRUCTURED mode
 //!   (`schema={...}`) it forces the worker to reply with a single JSON object
 //!   carrying the schema's top-level keys, then returns the parsed dict
-//!   (`res["ok"]`), or `None` if the worker produced no valid JSON.
+//!   (`res["ok"]`), or `None` if the worker produced no valid JSON. With
+//!   `return_status=True`, it returns an inspectable status dict carrying
+//!   `ok`, `reason`, `detail`, `failure`, `text`, and `structured` so scripts can
+//!   branch on failed leaves.
 //! * `parallel(specs)` — a barrier fan-out: run every spec concurrently and block until
 //!   ALL finish, returning a list in input order where each element is the parsed
 //!   structured dict (if that spec had a `schema` and parsed) else its
 //!   output-summary string. `specs` is a list of dicts, each with a required
 //!   `prompt` and optional `provider` (default "codex"), `label`, `phase`,
-//!   `model`, `timeout_s`, `isolation`, and `schema` — e.g.
+//!   `model`, `timeout_s`, `isolation`, `schema`, and `return_status` — e.g.
 //!   `parallel([{"prompt": "fix " + x} for x in args["items"]])`.
 //! * `pipeline(items, stages)` — a STREAMING fan-out: every item flows through ALL
 //!   `stages` in order with NO barrier between stages (item A may be in stage 3
@@ -38,8 +41,9 @@
 //!   per item: the LAST stage's parsed structured dict (if it had a `schema` and
 //!   parsed) else its output-summary string. `items` is a list of strings OR dicts;
 //!   `stages` is a list of stage dicts (`prompt` TEMPLATE + optional `provider`,
-//!   `label`, `phase`, `model`, `timeout_s`, `schema`, `writable`). Each stage `prompt` may
-//!   contain the literal `{input}` placeholder, FORWARD-INJECTED with the item
+//!   `label`, `phase`, `model`, `timeout_s`, `schema`, `writable`,
+//!   `return_status`). Each stage `prompt` may contain the literal `{input}`
+//!   placeholder, FORWARD-INJECTED with the item
 //!   (stage 1) or the prior stage's output (stage N) — e.g.
 //!   `pipeline(args["files"], [{"prompt": "scan {input}"}, {"prompt": "fix per {input}"}])`.
 //! * `phase(name)` — set the default phase for subsequent steps.
@@ -559,6 +563,65 @@ fn budget_skip_result(spec: &AgentStepSpec, budget: Option<f64>, spent: f64) -> 
     }
 }
 
+fn failure_value(result: &StepResult) -> Option<&serde_json::Value> {
+    result
+        .details
+        .as_ref()
+        .and_then(|details| details.get("failure"))
+}
+
+fn failure_reason(result: &StepResult) -> Option<String> {
+    failure_value(result)
+        .and_then(|failure| failure.get("reason"))
+        .and_then(|reason| reason.as_str())
+        .map(str::to_string)
+        .or_else(|| (!result.ok).then(|| "failed".to_string()))
+}
+
+fn failure_detail(result: &StepResult) -> Option<String> {
+    failure_value(result)
+        .and_then(|failure| failure.get("detail"))
+        .and_then(|detail| detail.as_str())
+        .map(str::to_string)
+        .or_else(|| (!result.ok).then(|| result.output_summary.clone()))
+}
+
+fn status_json(result: &StepResult) -> serde_json::Value {
+    serde_json::json!({
+        "ok": result.ok,
+        "reason": failure_reason(result),
+        "detail": failure_detail(result),
+        "failure": failure_value(result).cloned(),
+        "text": result.output_summary.as_str(),
+        "structured": result.structured.clone(),
+        "provider_session_id": result.provider_session_id.clone(),
+        "label": result.label.as_str(),
+        "phase": result.phase.as_str(),
+        "provider": result.provider.as_str(),
+        "isolation": result.isolation.clone(),
+        "ordinal": result.ordinal,
+    })
+}
+
+fn result_value<'v>(
+    heap: Heap<'v>,
+    result: &StepResult,
+    has_schema: bool,
+    return_status: bool,
+) -> Value<'v> {
+    if return_status {
+        return json_to_value(heap, &status_json(result));
+    }
+    if has_schema {
+        match &result.structured {
+            Some(structured) => json_to_value(heap, structured),
+            None => Value::new_none(),
+        }
+    } else {
+        heap.alloc(result.output_summary.as_str())
+    }
+}
+
 /// Downcast the evaluator's `extra` slot back to the [`StarlarkCtx`]. The slot is
 /// always set by [`run_starlark`] before evaluation, so this never fails in practice.
 fn ctx_of<'a, 'v>(eval: &'a Evaluator<'v, '_, '_>) -> &'a StarlarkCtx<'a> {
@@ -662,10 +725,16 @@ fn dict_schema(dict: &DictRef<'_>, key: &str) -> anyhow::Result<Option<serde_jso
 /// Read a `parallel()` `specs` list (a Starlark list of dicts) into PLAIN Rust
 /// [`AgentStepSpec`]s, resolving phase/label defaults via `ctx`. This happens on
 /// the eval thread BEFORE any fan-out, so no Starlark value crosses a thread.
+#[derive(Debug, Clone)]
+struct ParallelSpec {
+    spec: AgentStepSpec,
+    return_status: bool,
+}
+
 fn read_parallel_specs(
     ctx: &StarlarkCtx<'_>,
     specs: Value<'_>,
-) -> anyhow::Result<Vec<AgentStepSpec>> {
+) -> anyhow::Result<Vec<ParallelSpec>> {
     let list = ListRef::from_value(specs)
         .ok_or_else(|| anyhow::anyhow!("parallel() expects a list of spec dicts"))?;
     let mut out = Vec::with_capacity(list.len());
@@ -687,22 +756,26 @@ fn read_parallel_specs(
         let isolation = dict_str(&dict, "isolation")?;
         let schema = dict_schema(&dict, "schema")?;
         let writable = dict_bool(&dict, "writable")?;
-        out.push(AgentStepSpec {
-            phase: ctx.phase_for(phase),
-            label: label.unwrap_or_else(|| provider.clone()),
-            provider,
-            model,
-            effort,
-            fallback_model,
-            timeout_s,
-            image,
-            add_dir,
-            expected_artifacts,
-            isolation,
-            prompt,
-            schema,
-            writable,
-            ordinal: None,
+        let return_status = dict_bool(&dict, "return_status")?;
+        out.push(ParallelSpec {
+            spec: AgentStepSpec {
+                phase: ctx.phase_for(phase),
+                label: label.unwrap_or_else(|| provider.clone()),
+                provider,
+                model,
+                effort,
+                fallback_model,
+                timeout_s,
+                image,
+                add_dir,
+                expected_artifacts,
+                isolation,
+                prompt,
+                schema,
+                writable,
+                ordinal: None,
+            },
+            return_status,
         });
     }
     Ok(out)
@@ -735,6 +808,7 @@ struct StageTemplate {
     isolation: Option<String>,
     schema: Option<serde_json::Value>,
     writable: bool,
+    return_status: bool,
 }
 
 impl StageTemplate {
@@ -823,6 +897,7 @@ fn read_pipeline_stages(
         let isolation = dict_str(&dict, "isolation")?;
         let schema = dict_schema(&dict, "schema")?;
         let writable = dict_bool(&dict, "writable")?;
+        let return_status = dict_bool(&dict, "return_status")?;
         out.push(StageTemplate {
             prompt_template,
             provider,
@@ -838,6 +913,7 @@ fn read_pipeline_stages(
             isolation,
             schema,
             writable,
+            return_status,
         });
     }
     Ok(out)
@@ -889,7 +965,9 @@ fn workflow_globals(builder: &mut GlobalsBuilder) {
     /// script can chain it). In STRUCTURED mode (`schema={...}`) it forces the
     /// worker to reply with a single JSON object carrying the schema's top-level
     /// keys and returns the parsed dict (e.g. `res["ok"]`); if the worker never
-    /// produced valid JSON it returns `None` so the script can check/skip.
+    /// produced valid JSON it returns `None` so the script can check/skip. With
+    /// `return_status=True`, return a dict with `ok`, `reason`, `detail`, raw
+    /// `failure`, `text`, and `structured` regardless of text/schema mode.
     fn agent<'v>(
         #[starlark(require = pos)] prompt: String,
         #[starlark(require = named, default = "codex".to_string())] provider: String,
@@ -905,6 +983,7 @@ fn workflow_globals(builder: &mut GlobalsBuilder) {
         #[starlark(require = named)] isolation: Option<String>,
         #[starlark(require = named)] schema: Option<Value<'v>>,
         #[starlark(require = named, default = false)] writable: bool,
+        #[starlark(require = named, default = false)] return_status: bool,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> anyhow::Result<Value<'v>> {
         let schema_json = match schema {
@@ -953,18 +1032,12 @@ fn workflow_globals(builder: &mut GlobalsBuilder) {
             schema_json,
             writable,
         );
-        let heap = eval.heap();
-        if has_schema {
-            // Structured mode: hand the script the parsed dict, or `None` when the
-            // worker never produced valid JSON (so the script can check/skip).
-            match &result.structured {
-                Some(structured) => Ok(json_to_value(heap, structured)),
-                None => Ok(Value::new_none()),
-            }
-        } else {
-            // Text mode: return the output summary string exactly as before.
-            Ok(heap.alloc(result.output_summary.as_str()))
-        }
+        Ok(result_value(
+            eval.heap(),
+            &result,
+            has_schema,
+            return_status,
+        ))
     }
 
     /// Run a barrier fan-out: every spec runs concurrently and the call blocks
@@ -982,15 +1055,17 @@ fn workflow_globals(builder: &mut GlobalsBuilder) {
         // Extract every spec into PLAIN Rust before any threading — no Starlark
         // value may cross the barrier's thread boundary.
         let extracted = read_parallel_specs(ctx, specs)?;
-        let results = ctx.run_parallel(extracted);
+        let return_shapes: Vec<_> = extracted
+            .iter()
+            .map(|item| (item.spec.schema.is_some(), item.return_status))
+            .collect();
+        let results = ctx.run_parallel(extracted.into_iter().map(|item| item.spec).collect());
         let heap = eval.heap();
         let values: Vec<Value<'v>> = results
             .iter()
-            .map(|result| match &result.structured {
-                // A spec with a schema that parsed → hand the script the dict.
-                Some(structured) => json_to_value(heap, structured),
-                // Schema-less (or unparsed) → the summary string, as before.
-                None => heap.alloc(result.output_summary.as_str()),
+            .zip(return_shapes.iter())
+            .map(|(result, (has_schema, return_status))| {
+                result_value(heap, result, *has_schema, *return_status)
             })
             .collect();
         Ok(heap.alloc(values))
@@ -1034,16 +1109,15 @@ fn workflow_globals(builder: &mut GlobalsBuilder) {
         // threading — no Starlark value may cross the streaming engine's threads.
         let items = read_pipeline_items(items)?;
         let stages = read_pipeline_stages(ctx, stages_value)?;
+        let return_shape = stages
+            .last()
+            .map(|stage| (stage.schema.is_some(), stage.return_status))
+            .unwrap_or((false, false));
         let results = ctx.run_pipeline(items, stages);
         let heap = eval.heap();
         let values: Vec<Value<'v>> = results
             .iter()
-            .map(|result| match &result.structured {
-                // The last stage carried a schema that parsed → hand back the dict.
-                Some(structured) => json_to_value(heap, structured),
-                // Schema-less (or unparsed) → the last stage's summary string.
-                None => heap.alloc(result.output_summary.as_str()),
-            })
+            .map(|result| result_value(heap, result, return_shape.0, return_shape.1))
             .collect();
         Ok(heap.alloc(values))
     }
@@ -1432,6 +1506,225 @@ b = agent("fix what scan found: " + a, provider = "claude", label = "fixer")
             .outcome;
         assert_eq!(outcome.status, WorkflowRunStatus::Failed);
         assert_eq!(outcome.steps.len(), 1);
+    }
+
+    #[test]
+    fn agent_return_status_allows_failure_reason_retry() {
+        let driver = |spec: &AgentStepSpec| {
+            if spec.label == "flaky" {
+                StepResult {
+                    phase: spec.phase.clone(),
+                    label: spec.label.clone(),
+                    provider: spec.provider.clone(),
+                    isolation: spec.isolation.clone(),
+                    ok: false,
+                    provider_session_id: Some("session-flaky".to_string()),
+                    output_summary: "delivery failed before response".to_string(),
+                    step_id: None,
+                    started_at: None,
+                    details: Some(serde_json::json!({
+                        "failure": {
+                            "failed": true,
+                            "reason": "delivery",
+                            "detail": "provider stream closed before final answer",
+                        }
+                    })),
+                    structured: None,
+                    ordinal: None,
+                }
+            } else {
+                StepResult {
+                    phase: spec.phase.clone(),
+                    label: spec.label.clone(),
+                    provider: spec.provider.clone(),
+                    isolation: spec.isolation.clone(),
+                    ok: true,
+                    provider_session_id: Some("session-retry".to_string()),
+                    output_summary: "retry recovered".to_string(),
+                    step_id: None,
+                    started_at: None,
+                    details: None,
+                    structured: None,
+                    ordinal: None,
+                }
+            }
+        };
+        let script = r#"
+first = agent("try once", label = "flaky", return_status = True)
+if not first["ok"] and first["reason"] == "delivery":
+    second = agent("retry once", label = "retry", return_status = True)
+    output({
+        "retried": True,
+        "first_reason": first["reason"],
+        "first_detail": first["detail"],
+        "second_ok": second["ok"],
+        "second_text": second["text"],
+    })
+    verdict(second["ok"], "retried after " + first["reason"])
+else:
+    output({"retried": False, "first": first})
+    verdict(False, "unexpected first result")
+"#;
+        let run =
+            run_starlark(&format!("{HEADER}{script}"), "demo", None, &driver).expect("run ok");
+
+        assert_eq!(run.outcome.status, WorkflowRunStatus::Completed);
+        assert_eq!(run.outcome.steps.len(), 2);
+        assert!(!run.outcome.steps[0].ok);
+        assert!(run.outcome.steps[1].ok);
+        let fo = run.outcome.final_output.expect("final_output");
+        assert_eq!(fo["result"]["retried"], serde_json::json!(true));
+        assert_eq!(fo["result"]["first_reason"], serde_json::json!("delivery"));
+        assert_eq!(
+            fo["result"]["first_detail"],
+            serde_json::json!("provider stream closed before final answer")
+        );
+        assert_eq!(fo["result"]["second_ok"], serde_json::json!(true));
+        assert_eq!(
+            fo["result"]["second_text"],
+            serde_json::json!("retry recovered")
+        );
+    }
+
+    #[test]
+    fn parallel_return_status_surfaces_failed_slot_without_breaking_default_slot() {
+        let driver = |spec: &AgentStepSpec| {
+            if spec.label == "bad" {
+                StepResult {
+                    phase: spec.phase.clone(),
+                    label: spec.label.clone(),
+                    provider: spec.provider.clone(),
+                    isolation: spec.isolation.clone(),
+                    ok: false,
+                    provider_session_id: None,
+                    output_summary: "timed out waiting for provider output".to_string(),
+                    step_id: None,
+                    started_at: None,
+                    details: Some(serde_json::json!({
+                        "failure": {
+                            "failed": true,
+                            "reason": "timeout",
+                            "detail": "leaf exceeded timeout_s=1",
+                        }
+                    })),
+                    structured: None,
+                    ordinal: None,
+                }
+            } else {
+                StepResult {
+                    phase: spec.phase.clone(),
+                    label: spec.label.clone(),
+                    provider: spec.provider.clone(),
+                    isolation: spec.isolation.clone(),
+                    ok: true,
+                    provider_session_id: Some("session-good".to_string()),
+                    output_summary: "plain success".to_string(),
+                    step_id: None,
+                    started_at: None,
+                    details: None,
+                    structured: None,
+                    ordinal: None,
+                }
+            }
+        };
+        let script = r#"
+results = parallel([
+    {"prompt": "fail", "label": "bad", "return_status": True},
+    {"prompt": "succeed", "label": "good"},
+])
+output({
+    "bad_ok": results[0]["ok"],
+    "bad_reason": results[0]["reason"],
+    "bad_detail": results[0]["detail"],
+    "good_text": results[1],
+})
+"#;
+        let run =
+            run_starlark(&format!("{HEADER}{script}"), "demo", None, &driver).expect("run ok");
+        let fo = run.outcome.final_output.expect("final_output");
+        assert_eq!(fo["result"]["bad_ok"], serde_json::json!(false));
+        assert_eq!(fo["result"]["bad_reason"], serde_json::json!("timeout"));
+        assert_eq!(
+            fo["result"]["bad_detail"],
+            serde_json::json!("leaf exceeded timeout_s=1")
+        );
+        assert_eq!(
+            fo["result"]["good_text"],
+            serde_json::json!("plain success")
+        );
+    }
+
+    #[test]
+    fn pipeline_return_status_uses_last_stage_shape() {
+        let driver = |spec: &AgentStepSpec| {
+            if spec.label == "final" {
+                StepResult {
+                    phase: spec.phase.clone(),
+                    label: spec.label.clone(),
+                    provider: spec.provider.clone(),
+                    isolation: spec.isolation.clone(),
+                    ok: false,
+                    provider_session_id: Some("session-final".to_string()),
+                    output_summary: "schema parse failed".to_string(),
+                    step_id: None,
+                    started_at: None,
+                    details: Some(serde_json::json!({
+                        "failure": {
+                            "failed": true,
+                            "reason": "schema",
+                            "detail": "missing required key summary",
+                        }
+                    })),
+                    structured: None,
+                    ordinal: None,
+                }
+            } else {
+                StepResult {
+                    phase: spec.phase.clone(),
+                    label: spec.label.clone(),
+                    provider: spec.provider.clone(),
+                    isolation: spec.isolation.clone(),
+                    ok: true,
+                    provider_session_id: Some("session-scan".to_string()),
+                    output_summary: "scan ok".to_string(),
+                    step_id: None,
+                    started_at: None,
+                    details: None,
+                    structured: None,
+                    ordinal: None,
+                }
+            }
+        };
+        let script = r#"
+results = pipeline(
+    ["alpha"],
+    [
+        {"prompt": "scan {input}", "label": "scan"},
+        {"prompt": "summarize {input}", "label": "final", "return_status": True},
+    ],
+)
+output({
+    "ok": results[0]["ok"],
+    "reason": results[0]["reason"],
+    "detail": results[0]["detail"],
+    "text": results[0]["text"],
+})
+verdict(results[0]["reason"] == "schema", "pipeline inspected final failure")
+"#;
+        let run =
+            run_starlark(&format!("{HEADER}{script}"), "demo", None, &driver).expect("run ok");
+        assert_eq!(run.outcome.status, WorkflowRunStatus::Completed);
+        let fo = run.outcome.final_output.expect("final_output");
+        assert_eq!(fo["result"]["ok"], serde_json::json!(false));
+        assert_eq!(fo["result"]["reason"], serde_json::json!("schema"));
+        assert_eq!(
+            fo["result"]["detail"],
+            serde_json::json!("missing required key summary")
+        );
+        assert_eq!(
+            fo["result"]["text"],
+            serde_json::json!("schema parse failed")
+        );
     }
 
     #[test]

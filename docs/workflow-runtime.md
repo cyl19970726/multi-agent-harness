@@ -93,10 +93,24 @@ agent(
     isolation=None,
     schema=None,
     writable=False,
+    return_status=False,
 )
 ```
 
 `agent()` runs one ephemeral provider worker synchronously. In text mode it returns the worker's output text. With `schema={...}`, it returns the parsed structured dict, or `None` when no valid JSON object with the required keys was produced (`crates/harness-workflow/src/starlark_front.rs:847`, `crates/harness-workflow/src/starlark_front.rs:849`, `crates/harness-workflow/src/starlark_front.rs:850`, `crates/harness-workflow/src/starlark_front.rs:902`).
+
+`return_status=True` is the self-healing control-flow surface. It preserves the journaled `StepResult`, but changes the script-visible value to a dict:
+
+```python
+first = agent("try the flaky leaf", label="flaky", return_status=True)
+if not first["ok"] and first["reason"] == "delivery":
+    second = agent("retry once", label="retry", return_status=True)
+    verdict(second["ok"], "retried after " + first["reason"])
+else:
+    verdict(first["ok"], first["detail"] or "")
+```
+
+The status dict carries `ok`, `reason`, `detail`, `failure`, `text`, `structured`, `provider_session_id`, `label`, `phase`, `provider`, `isolation`, and `ordinal`. `reason` and `detail` come from `StepResult.details.failure.reason/detail` when the provider classified the failure. If a failed step has no classified failure object, `reason` falls back to `"failed"` and `detail` falls back to the step output summary. Successful steps return `reason=None`, `detail=None`, and still carry `text` plus any parsed `structured` payload.
 
 Argument semantics:
 
@@ -115,6 +129,7 @@ Argument semantics:
 | `isolation` | Optional `worktree` |
 | `schema` | Dict converted to JSON schema / structured-output contract |
 | `writable` | Enables edit/shell behavior and implies worktree isolation |
+| `return_status` | Opt-in script return shape for inspecting failed leaves and branching to retry, alternative, or abort |
 
 The actual host function signature is defined at `crates/harness-workflow/src/starlark_front.rs:854` through `crates/harness-workflow/src/starlark_front.rs:867`. `schema`, `image`, and `add_dir` are validated as dict/list values before the spec is built (`crates/harness-workflow/src/starlark_front.rs:869`, `crates/harness-workflow/src/starlark_front.rs:878`, `crates/harness-workflow/src/starlark_front.rs:882`).
 
@@ -127,7 +142,7 @@ parallel([
 ])
 ```
 
-`parallel(specs)` is a barrier fan-out: all specs run concurrently, then the call returns a list in input order. Each spec requires `prompt` and accepts the same leaf fields as `agent()` where relevant (`crates/harness-workflow/src/starlark_front.rs:28`, `crates/harness-workflow/src/starlark_front.rs:31`, `crates/harness-workflow/src/starlark_front.rs:915`, `crates/harness-workflow/src/starlark_front.rs:920`). The runtime extracts plain Rust specs before threading, so no Starlark heap values cross the barrier (`crates/harness-workflow/src/starlark_front.rs:927`).
+`parallel(specs)` is a barrier fan-out: all specs run concurrently, then the call returns a list in input order. Each spec requires `prompt` and accepts the same leaf fields as `agent()` where relevant, including per-spec `return_status=True` for status dict slots (`crates/harness-workflow/src/starlark_front.rs:28`, `crates/harness-workflow/src/starlark_front.rs:31`, `crates/harness-workflow/src/starlark_front.rs:915`, `crates/harness-workflow/src/starlark_front.rs:920`). The runtime extracts plain Rust specs before threading, so no Starlark heap values cross the barrier (`crates/harness-workflow/src/starlark_front.rs:927`).
 
 The scheduler bounds concurrency to `min(16, available_parallelism()-2)` and enforces a 1000-agent lifetime cap (`crates/harness-workflow/src/lib.rs:7`, `crates/harness-workflow/src/lib.rs:161`, `crates/harness-workflow/src/lib.rs:175`, `crates/harness-workflow/src/lib.rs:194`). Results are re-ordered back into input order (`crates/harness-workflow/src/lib.rs:302`).
 
@@ -143,7 +158,7 @@ pipeline(
 )
 ```
 
-`pipeline(items, stages)` is a streaming fan-out: each item flows through every stage independently, with no barrier between stages. A fast item can reach stage 3 while another remains in stage 1 (`crates/harness-workflow/src/lib.rs:324`, `crates/harness-workflow/src/lib.rs:325`, `crates/harness-workflow/src/starlark_front.rs:944`, `crates/harness-workflow/src/starlark_front.rs:945`). Each stage `prompt` may contain `{input}`, replaced by the original item for stage 1 or by the prior stage's output for later stages (`crates/harness-workflow/src/starlark_front.rs:953`, `crates/harness-workflow/src/starlark_front.rs:954`, `crates/harness-workflow/src/starlark_front.rs:680`, `crates/harness-workflow/src/starlark_front.rs:711`).
+`pipeline(items, stages)` is a streaming fan-out: each item flows through every stage independently, with no barrier between stages. A fast item can reach stage 3 while another remains in stage 1 (`crates/harness-workflow/src/lib.rs:324`, `crates/harness-workflow/src/lib.rs:325`, `crates/harness-workflow/src/starlark_front.rs:944`, `crates/harness-workflow/src/starlark_front.rs:945`). Each stage `prompt` may contain `{input}`, replaced by the original item for stage 1 or by the prior stage's output for later stages (`crates/harness-workflow/src/starlark_front.rs:953`, `crates/harness-workflow/src/starlark_front.rs:954`, `crates/harness-workflow/src/starlark_front.rs:680`, `crates/harness-workflow/src/starlark_front.rs:711`). The script-visible return list is shaped by the last stage: when that stage has `return_status=True`, each returned item is the same status dict described for `agent()`.
 
 `pipeline()` accepts either the canonical list form `pipeline(items, [s1, s2])` or positional stage specs `pipeline(items, s1, s2)` (`crates/harness-workflow/src/starlark_front.rs:958`, `crates/harness-workflow/src/starlark_front.rs:960`, `crates/harness-workflow/src/starlark_front.rs:968`). Pipeline leaves currently advance ordinals but are excluded from `--resume` replay in v1 (`crates/harness-workflow/src/starlark_front.rs:386`, `crates/harness-workflow/src/starlark_front.rs:388`, `crates/harness-workflow/src/starlark_front.rs:1144`, `crates/harness-workflow/src/starlark_front.rs:1147`).
 
