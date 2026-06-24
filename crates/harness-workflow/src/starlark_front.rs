@@ -18,7 +18,7 @@
 //!   structured the way it is. The run is REJECTED if `workflow(...)` is never
 //!   called or `design_intent` is blank / shorter than [`MIN_DESIGN_INTENT_LEN`]
 //!   characters — every workflow must justify its shape.
-//! * `agent(prompt, provider="codex", label=None, phase=None, model=None, isolation=None, schema=None)`
+//! * `agent(prompt, provider="codex", label=None, phase=None, model=None, timeout_s=None, isolation=None, schema=None)`
 //!   — run ONE ephemeral worker synchronously. In text mode (no `schema`) it
 //!   returns the worker's output text (so the script can chain, e.g.
 //!   `scan = agent(...)` then `scan.splitlines()`). In STRUCTURED mode
@@ -30,7 +30,7 @@
 //!   structured dict (if that spec had a `schema` and parsed) else its
 //!   output-summary string. `specs` is a list of dicts, each with a required
 //!   `prompt` and optional `provider` (default "codex"), `label`, `phase`,
-//!   `model`, `isolation`, and `schema` — e.g.
+//!   `model`, `timeout_s`, `isolation`, and `schema` — e.g.
 //!   `parallel([{"prompt": "fix " + x} for x in args["items"]])`.
 //! * `pipeline(items, stages)` — a STREAMING fan-out: every item flows through ALL
 //!   `stages` in order with NO barrier between stages (item A may be in stage 3
@@ -38,7 +38,7 @@
 //!   per item: the LAST stage's parsed structured dict (if it had a `schema` and
 //!   parsed) else its output-summary string. `items` is a list of strings OR dicts;
 //!   `stages` is a list of stage dicts (`prompt` TEMPLATE + optional `provider`,
-//!   `label`, `phase`, `model`, `schema`, `writable`). Each stage `prompt` may
+//!   `label`, `phase`, `model`, `timeout_s`, `schema`, `writable`). Each stage `prompt` may
 //!   contain the literal `{input}` placeholder, FORWARD-INJECTED with the item
 //!   (stage 1) or the prior stage's output (stage N) — e.g.
 //!   `pipeline(args["files"], [{"prompt": "scan {input}"}, {"prompt": "fix per {input}"}])`.
@@ -199,6 +199,7 @@ impl StarlarkCtx<'_> {
         model: Option<String>,
         effort: Option<String>,
         fallback_model: Option<String>,
+        timeout_s: Option<u64>,
         image: Vec<String>,
         add_dir: Vec<String>,
         expected_artifacts: Vec<String>,
@@ -235,6 +236,7 @@ impl StarlarkCtx<'_> {
             model,
             effort,
             fallback_model,
+            timeout_s,
             image,
             add_dir,
             expected_artifacts,
@@ -458,6 +460,7 @@ impl StarlarkCtx<'_> {
                 model: None,
                 effort: None,
                 fallback_model: None,
+                timeout_s: None,
                 image: Vec::new(),
                 add_dir: Vec::new(),
                 expected_artifacts: Vec::new(),
@@ -590,6 +593,27 @@ fn dict_bool(dict: &DictRef<'_>, key: &str) -> anyhow::Result<bool> {
     }
 }
 
+/// Read a positive Starlark integer as a wall-clock timeout in seconds.
+fn value_positive_u64(value: Value<'_>, field: &str) -> anyhow::Result<u64> {
+    let Some(seconds) = value.unpack_i32() else {
+        return Err(anyhow::anyhow!("{field} must be a positive integer"));
+    };
+    if seconds <= 0 {
+        return Err(anyhow::anyhow!("{field} must be greater than 0 seconds"));
+    }
+    Ok(seconds as u64)
+}
+
+/// Read an optional positive integer field off a spec dict. Absent / Starlark
+/// `None` -> no wall-clock cap; errors when present but non-positive/non-int.
+fn dict_positive_u64(dict: &DictRef<'_>, key: &str, context: &str) -> anyhow::Result<Option<u64>> {
+    match dict.get_str(key) {
+        None => Ok(None),
+        Some(value) if value.is_none() => Ok(None),
+        Some(value) => value_positive_u64(value, &format!("{context} field `{key}`")).map(Some),
+    }
+}
+
 /// Read a Starlark list of strings. Used for `image`, whose host-function value
 /// cannot be unpacked directly into `Vec<String>` on the Starlark version we use.
 fn value_str_list(value: Value<'_>, field: &str) -> anyhow::Result<Vec<String>> {
@@ -656,6 +680,7 @@ fn read_parallel_specs(
         let model = dict_str(&dict, "model")?;
         let effort = dict_str(&dict, "effort")?;
         let fallback_model = dict_str(&dict, "fallback_model")?;
+        let timeout_s = dict_positive_u64(&dict, "timeout_s", "parallel() spec")?;
         let image = dict_str_list(&dict, "image")?;
         let add_dir = dict_str_list(&dict, "add_dir")?;
         let expected_artifacts = dict_str_list(&dict, "expected_artifacts")?;
@@ -669,6 +694,7 @@ fn read_parallel_specs(
             model,
             effort,
             fallback_model,
+            timeout_s,
             image,
             add_dir,
             expected_artifacts,
@@ -702,6 +728,7 @@ struct StageTemplate {
     model: Option<String>,
     effort: Option<String>,
     fallback_model: Option<String>,
+    timeout_s: Option<u64>,
     image: Vec<String>,
     add_dir: Vec<String>,
     expected_artifacts: Vec<String>,
@@ -725,6 +752,7 @@ impl StageTemplate {
             model: self.model.clone(),
             effort: self.effort.clone(),
             fallback_model: self.fallback_model.clone(),
+            timeout_s: self.timeout_s,
             image: self.image.clone(),
             add_dir: self.add_dir.clone(),
             expected_artifacts: self.expected_artifacts.clone(),
@@ -788,6 +816,7 @@ fn read_pipeline_stages(
         let model = dict_str(&dict, "model")?;
         let effort = dict_str(&dict, "effort")?;
         let fallback_model = dict_str(&dict, "fallback_model")?;
+        let timeout_s = dict_positive_u64(&dict, "timeout_s", "pipeline() stage")?;
         let image = dict_str_list(&dict, "image")?;
         let add_dir = dict_str_list(&dict, "add_dir")?;
         let expected_artifacts = dict_str_list(&dict, "expected_artifacts")?;
@@ -802,6 +831,7 @@ fn read_pipeline_stages(
             model,
             effort,
             fallback_model,
+            timeout_s,
             image,
             add_dir,
             expected_artifacts,
@@ -868,6 +898,7 @@ fn workflow_globals(builder: &mut GlobalsBuilder) {
         #[starlark(require = named)] model: Option<String>,
         #[starlark(require = named)] effort: Option<String>,
         #[starlark(require = named)] fallback_model: Option<String>,
+        #[starlark(require = named)] timeout_s: Option<Value<'v>>,
         #[starlark(require = named)] image: Option<Value<'v>>,
         #[starlark(require = named)] add_dir: Option<Value<'v>>,
         #[starlark(require = named)] expected_artifacts: Option<Value<'v>>,
@@ -899,6 +930,12 @@ fn workflow_globals(builder: &mut GlobalsBuilder) {
             }
             _ => Vec::new(),
         };
+        let timeout_s = match timeout_s {
+            Some(value) if !value.is_none() => {
+                Some(value_positive_u64(value, "agent() `timeout_s`")?)
+            }
+            _ => None,
+        };
         let has_schema = schema_json.is_some();
         let result = ctx_of(eval).run_one(
             prompt,
@@ -908,6 +945,7 @@ fn workflow_globals(builder: &mut GlobalsBuilder) {
             model,
             effort,
             fallback_model,
+            timeout_s,
             image,
             add_dir,
             expected_artifacts,
@@ -1462,13 +1500,14 @@ b = agent("fix what scan found: " + a, provider = "claude", label = "fixer")
             Vec<String>,
             Vec<String>,
             Option<String>,
+            Option<u64>,
         )>::new());
         let script = r#"
-agent("inspect", label = "single", image = ["a.png"], add_dir = ["src"], expected_artifacts = ["out/single.png"], fallback_model = "claude-sonnet")
-parallel([{"prompt": "compare", "label": "fanout", "image": ["b.png", "c.jpg"], "add_dir": ["crates"], "expected_artifacts": ["out/fanout.json"], "fallback_model": "claude-haiku"}])
+agent("inspect", label = "single", image = ["a.png"], add_dir = ["src"], expected_artifacts = ["out/single.png"], fallback_model = "claude-sonnet", timeout_s = 11)
+parallel([{"prompt": "compare", "label": "fanout", "image": ["b.png", "c.jpg"], "add_dir": ["crates"], "expected_artifacts": ["out/fanout.json"], "fallback_model": "claude-haiku", "timeout_s": 12}])
 pipeline(
     ["item"],
-    [{"prompt": "stage {input}", "label": "pipe", "image": ["d.webp"], "add_dir": ["skills"], "expected_artifacts": ["out/pipe.txt"], "fallback_model": "claude-opus"}],
+    [{"prompt": "stage {input}", "label": "pipe", "image": ["d.webp"], "add_dir": ["skills"], "expected_artifacts": ["out/pipe.txt"], "fallback_model": "claude-opus", "timeout_s": 13}],
 )
 "#;
         let outcome = {
@@ -1479,6 +1518,7 @@ pipeline(
                     spec.add_dir.clone(),
                     spec.expected_artifacts.clone(),
                     spec.fallback_model.clone(),
+                    spec.timeout_s,
                 ));
                 StepResult {
                     phase: spec.phase.clone(),
@@ -1503,14 +1543,29 @@ pipeline(
         #[allow(clippy::type_complexity)]
         let seen: std::collections::HashMap<
             String,
-            (Vec<String>, Vec<String>, Vec<String>, Option<String>),
+            (
+                Vec<String>,
+                Vec<String>,
+                Vec<String>,
+                Option<String>,
+                Option<u64>,
+            ),
         > = seen
             .into_inner()
             .unwrap()
             .into_iter()
             .map(
-                |(label, image, add_dir, expected_artifacts, fallback_model)| {
-                    (label, (image, add_dir, expected_artifacts, fallback_model))
+                |(label, image, add_dir, expected_artifacts, fallback_model, timeout_s)| {
+                    (
+                        label,
+                        (
+                            image,
+                            add_dir,
+                            expected_artifacts,
+                            fallback_model,
+                            timeout_s,
+                        ),
+                    )
                 },
             )
             .collect();
@@ -1518,6 +1573,7 @@ pipeline(
         assert_eq!(seen["single"].1, vec!["src".to_string()]);
         assert_eq!(seen["single"].2, vec!["out/single.png".to_string()]);
         assert_eq!(seen["single"].3.as_deref(), Some("claude-sonnet"));
+        assert_eq!(seen["single"].4, Some(11));
         assert_eq!(
             seen["fanout"].0,
             vec!["b.png".to_string(), "c.jpg".to_string()]
@@ -1525,11 +1581,31 @@ pipeline(
         assert_eq!(seen["fanout"].1, vec!["crates".to_string()]);
         assert_eq!(seen["fanout"].2, vec!["out/fanout.json".to_string()]);
         assert_eq!(seen["fanout"].3.as_deref(), Some("claude-haiku"));
+        assert_eq!(seen["fanout"].4, Some(12));
         assert_eq!(seen["pipe"].0, vec!["d.webp".to_string()]);
         assert_eq!(seen["pipe"].1, vec!["skills".to_string()]);
         assert_eq!(seen["pipe"].2, vec!["out/pipe.txt".to_string()]);
         assert_eq!(seen["pipe"].3.as_deref(), Some("claude-opus"));
+        assert_eq!(seen["pipe"].4, Some(13));
         assert_eq!(outcome.steps.len(), 3);
+    }
+
+    #[test]
+    fn timeout_s_rejects_non_positive_values() {
+        let seen = Mutex::new(Vec::new());
+        let driver = recording_driver(&seen);
+        for script in [
+            r#"agent("x", timeout_s = 0)"#,
+            r#"parallel([{"prompt": "x", "timeout_s": -1}])"#,
+            r#"pipeline(["x"], [{"prompt": "{input}", "timeout_s": 0}])"#,
+        ] {
+            let err = run_starlark(&format!("{HEADER}{script}"), "demo", None, &driver)
+                .expect_err("timeout_s should be rejected");
+            assert!(
+                err.to_string().contains("greater than 0 seconds"),
+                "unexpected error: {err}"
+            );
+        }
     }
 
     #[test]
