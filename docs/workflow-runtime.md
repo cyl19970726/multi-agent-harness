@@ -44,6 +44,7 @@ The Starlark front-end is the sole dynamic authoring surface: it lets an agent w
 | `provider` | Provider id such as `codex`, `claude`, or `kimi` |
 | `model` | Optional provider model override |
 | `effort` | Optional provider reasoning-effort override |
+| `service_tier` | Optional Codex service-tier override; other providers ignore it |
 | `fallback_model` | Optional provider fallback model when the adapter supports it |
 | `timeout_s` | Optional per-leaf wall-clock timeout in seconds |
 | `image` | Image file paths passed or described to the worker |
@@ -86,6 +87,7 @@ agent(
     phase=None,
     model=None,
     effort=None,
+    service_tier=None,
     fallback_model=None,
     timeout_s=None,
     image=None,
@@ -122,6 +124,7 @@ Argument semantics:
 | `phase` | Step phase; defaults to current `phase()` or workflow name |
 | `model` | Leaf model override, otherwise CLI `--model`, otherwise provider default |
 | `effort` | Leaf effort override, otherwise CLI `--effort`, otherwise provider default |
+| `service_tier` | Codex-only service tier override passed as `-c service_tier=<value>`; unset inherits the Codex CLI config |
 | `fallback_model` | Passed to providers that support native fallback |
 | `timeout_s` | Per-leaf wall-clock timeout in seconds; a fired timeout fails the step |
 | `image` | List of image paths |
@@ -294,7 +297,7 @@ The fields are defined at `crates/harness-core/src/lib.rs:2689` through `crates/
 
 A workflow leaf names a provider, not a pre-existing `AgentMember`. The real driver spins up one-shot ephemeral workers and reduces them into `StepResult` (`crates/harness-cli/src/main.rs:7321`, `crates/harness-cli/src/main.rs:7325`, `crates/harness-cli/src/main.rs:7615`). The provider registry is the single source of supported provider ids and currently includes Codex, Claude, and Kimi (`crates/harness-cli/src/main.rs:14905`, `crates/harness-cli/src/main.rs:14907`, `crates/harness-cli/src/main.rs:14911`, `crates/harness-cli/src/main.rs:14918`).
 
-Codex leaves run through `codex exec`, receive `--cd`, sandbox selection, JSON stream output, optional `-m`, effort config, images, extra dirs, and optional output schema (`crates/harness-cli/src/main.rs:8388`, `crates/harness-cli/src/main.rs:8419`, `crates/harness-cli/src/main.rs:8421`, `crates/harness-cli/src/main.rs:8423`, `crates/harness-cli/src/main.rs:8431`, `crates/harness-cli/src/main.rs:8437`, `crates/harness-cli/src/main.rs:8440`, `crates/harness-cli/src/main.rs:8446`, `crates/harness-cli/src/main.rs:8449`). Claude leaves run through `claude -p`, stream JSON, use an allowed-tools gate, support `--json-schema`, `--model`, `--effort`, `--fallback-model`, and `--add-dir` (`crates/harness-cli/src/main.rs:8521`, `crates/harness-cli/src/main.rs:8560`, `crates/harness-cli/src/main.rs:8563`, `crates/harness-cli/src/main.rs:8568`, `crates/harness-cli/src/main.rs:8582`, `crates/harness-cli/src/main.rs:8585`, `crates/harness-cli/src/main.rs:8588`, `crates/harness-cli/src/main.rs:8592`, `crates/harness-cli/src/main.rs:8595`). Kimi is registered through the same adapter interface, but its `-p --output-format stream-json` surface is flatter and currently carries no usage/model/cost/structured frame (`crates/harness-cli/src/main.rs:14660`, `crates/harness-cli/src/main.rs:14766`, `crates/harness-cli/src/main.rs:14771`, `crates/harness-cli/src/main.rs:14793`, `crates/harness-cli/src/main.rs:14863`, `crates/harness-cli/src/main.rs:14868`).
+Codex leaves run through `codex exec`, receive `--cd`, sandbox selection, JSON stream output, optional `-m`, effort and service-tier config overrides, images, extra dirs, and optional output schema (`crates/harness-cli/src/main.rs:8388`, `crates/harness-cli/src/main.rs:8419`, `crates/harness-cli/src/main.rs:8421`, `crates/harness-cli/src/main.rs:8423`, `crates/harness-cli/src/main.rs:8431`, `crates/harness-cli/src/main.rs:8437`, `crates/harness-cli/src/main.rs:8440`, `crates/harness-cli/src/main.rs:8446`, `crates/harness-cli/src/main.rs:8449`). Claude leaves run through `claude -p`, stream JSON, use an allowed-tools gate, support `--json-schema`, `--model`, `--effort`, `--fallback-model`, and `--add-dir` (`crates/harness-cli/src/main.rs:8521`, `crates/harness-cli/src/main.rs:8560`, `crates/harness-cli/src/main.rs:8563`, `crates/harness-cli/src/main.rs:8568`, `crates/harness-cli/src/main.rs:8582`, `crates/harness-cli/src/main.rs:8585`, `crates/harness-cli/src/main.rs:8588`, `crates/harness-cli/src/main.rs:8592`, `crates/harness-cli/src/main.rs:8595`). Kimi is registered through the same adapter interface, but its `-p --output-format stream-json` surface is flatter and currently carries no usage/model/cost/structured frame (`crates/harness-cli/src/main.rs:14660`, `crates/harness-cli/src/main.rs:14766`, `crates/harness-cli/src/main.rs:14771`, `crates/harness-cli/src/main.rs:14793`, `crates/harness-cli/src/main.rs:14863`, `crates/harness-cli/src/main.rs:14868`).
 
 The selected project root, not the long-running harness process cwd, is the shared worker cwd and worktree base. The centralized store root remains separate (`crates/harness-cli/src/main.rs:7126`, `crates/harness-cli/src/main.rs:7127`, `crates/harness-cli/src/main.rs:7130`, `crates/harness-cli/src/main.rs:7531`, `crates/harness-cli/src/main.rs:7543`, `crates/harness-cli/src/main.rs:7566`, `crates/harness-cli/src/main.rs:7569`).
 
