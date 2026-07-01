@@ -8033,8 +8033,10 @@ fn is_git_repo(path: &Path) -> bool {
 /// Does `provider`'s exec mode PHYSICALLY enforce read-only (so a non-writable
 /// leaf cannot mutate its cwd)? codex (`--sandbox read-only`) and claude (a
 /// read-only tool allowlist `Read,Grep,Glob`) do; kimi's headless `kimi -p`
-/// rejects every permission flag, so it does NOT. An unknown provider is treated
-/// as unenforceable (the safe default). Drives [`step_needs_isolation`].
+/// rejects every permission flag, so it does NOT. This remains provider
+/// capability metadata; read-only workflow cwd routing is controlled by
+/// [`step_needs_isolation`].
+#[cfg(test)]
 fn provider_enforces_read_only(provider: &str) -> bool {
     provider_adapter(provider)
         .map(|a| a.capabilities().enforces_read_only)
@@ -8044,25 +8046,19 @@ fn provider_enforces_read_only(provider: &str) -> bool {
 /// Whether an ephemeral leaf must run in a throwaway git worktree instead of the
 /// shared repo cwd. A leaf isolates when it explicitly opts into
 /// `isolation="worktree"`, when it is `writable` (edits must land in a discardable
-/// checkout), OR when it is read-only on a provider that cannot enforce read-only
-/// — kimi can edit from a "read-only" leaf, so the worktree is the only boundary
-/// that keeps those writes off the live repo. Pure + unit-testable; the live call
-/// passes `provider_enforces_read_only(provider)`.
-fn step_needs_isolation(
-    writable: bool,
-    isolation: Option<&str>,
-    provider_enforces_read_only: bool,
-) -> bool {
-    isolation == Some("worktree") || writable || !provider_enforces_read_only
+/// checkout). Read-only leaves stay in the selected project root even if a
+/// provider cannot physically enforce read-only; provider capability gaps should
+/// not silently turn a read-only scan/review into a git-worktree requirement.
+fn step_needs_isolation(writable: bool, isolation: Option<&str>) -> bool {
+    isolation == Some("worktree") || writable
 }
 
 /// Spin up a NEW one-shot EDITABLE ephemeral worker for one `agent()` node and
 /// reduce its result into a [`workflow::StepResult`].
 ///
-/// Workspace: the shared repo cwd by default (serial nodes' edits compose on the
-/// same tree, exactly like Claude Code's Workflow). When the node opts into
-/// `isolation:"worktree"` the HARNESS creates a throwaway worktree (uniform for
-/// both providers) and runs the worker there; its `git diff` is collected as the
+/// Workspace: read-only leaves run in the selected project root. Writable leaves
+/// and nodes that explicitly set `isolation:"worktree"` run in a throwaway
+/// worktree (uniform for both providers); its `git diff` is collected as the
 /// node's evidence and the worktree is NOT auto-merged. Cleanup is the
 /// `WorktreeGuard`'s Drop (bulletproof across success/failure/timeout).
 fn spawn_ephemeral_worker(
@@ -8082,18 +8078,11 @@ fn spawn_ephemeral_worker(
 
     // Opt-in isolation: harness-owned throwaway worktree, else the shared cwd.
     // The guard (when present) cleans up on every exit path via Drop.
-    // A node isolates when it explicitly opts in, when it is `writable` (an editing
-    // worker runs in a throwaway worktree so its writes land in a discardable
-    // checkout, never the live repo), OR when it is read-only on a provider that
-    // cannot enforce read-only — kimi's `kimi -p` has no read-only mode, so a
-    // "read-only" kimi leaf could otherwise edit the live repo; the worktree is the
-    // only boundary. See `step_needs_isolation` / `provider_enforces_read_only`.
-    let explicit_or_writable = spec.isolation.as_deref() == Some("worktree") || spec.writable;
-    let mut isolate = step_needs_isolation(
-        spec.writable,
-        spec.isolation.as_deref(),
-        provider_enforces_read_only(&spec.provider),
-    );
+    // A node isolates when it explicitly opts in, or when it is `writable` (an
+    // editing worker runs in a throwaway worktree so its writes land in a
+    // discardable checkout, never the live repo). Read-only scans/reviews do not
+    // implicitly require git worktrees.
+    let isolate = step_needs_isolation(spec.writable, spec.isolation.as_deref());
 
     // GLOBAL / non-git policy (P5): an isolated/writable node needs a git worktree,
     // which cannot exist in a non-git project (the reserved `_global` `~/` project,
@@ -8101,32 +8090,17 @@ fn spawn_ephemeral_worker(
     // `is_git_repo` gate in `WorktreeGuard::create` uses (#89 item 5) — surfaced
     // here BEFORE the worktree attempt so the project id / kind is named.
     if isolate && !project.is_git_repo {
-        if explicit_or_writable {
-            return Err(CliError::Usage(format!(
-                "node '{}' needs an isolated git worktree (it is writable, or sets \
-                 isolation=\"worktree\"), but project '{}' ({}) is not a git repository. \
-                 Run this step READ-ONLY (drop writable / isolation=\"none\") and retrieve \
-                 its output with `harness workflow get-output <run_id> --step {}`, or run \
-                 the workflow against a git-backed project.",
-                spec.label,
-                project.id,
-                repo_root.display(),
-                spec.label,
-            )));
-        }
-        // Read-only leaf that only needs isolation because its provider can't enforce
-        // read-only: a non-git root has no worktree to isolate into. DEGRADE (don't
-        // fail) — run in the shared cwd and warn that writes aren't contained, rather
-        // than breaking read-only kimi leaves on the `_global` / non-repo project.
-        eprintln!(
-            "warning: read-only {provider} leaf '{label}' cannot be worktree-isolated \
-             (project '{pid}' is not a git repository) and {provider} has no read-only \
-             mode — running it in the shared cwd; it MAY edit files there.",
-            provider = spec.provider,
-            label = spec.label,
-            pid = project.id,
-        );
-        isolate = false;
+        return Err(CliError::Usage(format!(
+            "node '{}' needs an isolated git worktree (it is writable, or sets \
+             isolation=\"worktree\"), but project '{}' ({}) is not a git repository. \
+             Run this step READ-ONLY (drop writable / isolation=\"none\") and retrieve \
+             its output with `harness workflow get-output <run_id> --step {}`, or run \
+             the workflow against a git-backed project.",
+            spec.label,
+            project.id,
+            repo_root.display(),
+            spec.label,
+        )));
     }
 
     let guard = if isolate {
@@ -18286,9 +18260,9 @@ mod workflow_runtime_tests {
         assert!(!kimi.capabilities().cost, "kimi cost is S3-spike TBD");
         assert!(!kimi.capabilities().resume, "kimi resume is S3-spike TBD");
         // Read-only enforcement: codex (--sandbox read-only) and claude (read-only
-        // tool allowlist) PHYSICALLY enforce read-only; kimi -p has no read-only mode
-        // (rejects every permission flag), so a read-only kimi leaf must be worktree-
-        // isolated rather than trusted. This drives `step_needs_isolation`.
+        // tool allowlist) PHYSICALLY enforce read-only; kimi -p has no read-only
+        // mode (rejects every permission flag). This is capability metadata only;
+        // read-only workflow leaves still run in the selected project root.
         assert!(
             codex.capabilities().enforces_read_only,
             "codex enforces read-only via --sandbox read-only"
@@ -18299,7 +18273,7 @@ mod workflow_runtime_tests {
         );
         assert!(
             !kimi.capabilities().enforces_read_only,
-            "kimi -p has no read-only mode — must be worktree-isolated"
+            "kimi -p has no read-only mode"
         );
         // supported_provider_names() is the single source of truth and now lists kimi.
         assert!(
@@ -18318,38 +18292,35 @@ mod workflow_runtime_tests {
     }
 
     #[test]
-    fn read_only_leaf_isolates_only_when_provider_cannot_enforce_read_only() {
-        // A read-only leaf (writable=false, no explicit isolation) on a provider that
-        // ENFORCES read-only (codex/claude) runs in the shared cwd — no worktree.
+    fn read_only_leaf_stays_shared_cwd_regardless_of_provider_enforcement() {
+        // A read-only leaf (writable=false, no explicit isolation) runs in the
+        // shared project cwd. Provider capability does not silently create a git
+        // worktree requirement.
         assert!(
-            !step_needs_isolation(false, None, true),
+            !step_needs_isolation(false, None),
             "read-only leaf on an enforcing provider stays in the shared cwd"
         );
-        // The same read-only leaf on a provider that CANNOT enforce read-only (kimi)
-        // MUST be worktree-isolated — the regression this fix closes (a read-only kimi
-        // leaf edited the live repo).
         assert!(
-            step_needs_isolation(false, None, false),
-            "read-only leaf on a non-enforcing provider must be isolated"
+            !step_needs_isolation(false, None),
+            "read-only leaf on a non-enforcing provider also stays in the shared cwd"
         );
-        // Writable / explicit-isolation always isolate, regardless of the provider's
-        // read-only enforcement.
+        // Writable / explicit-isolation always isolate.
+        assert!(step_needs_isolation(true, None), "writable always isolates");
         assert!(
-            step_needs_isolation(true, None, true),
-            "writable always isolates"
-        );
-        assert!(
-            step_needs_isolation(false, Some("worktree"), true),
+            step_needs_isolation(false, Some("worktree")),
             "explicit isolation always isolates"
         );
-        // Sanity: the live wiring resolves real providers to the right enforcement.
+        // Sanity: provider enforcement metadata remains honest, but no longer drives
+        // cwd isolation.
+        assert!(provider_enforces_read_only("codex"));
+        assert!(!provider_enforces_read_only("kimi"));
         assert!(
-            !step_needs_isolation(false, None, provider_enforces_read_only("codex")),
+            !step_needs_isolation(false, None),
             "codex read-only leaf does not need isolation"
         );
         assert!(
-            step_needs_isolation(false, None, provider_enforces_read_only("kimi")),
-            "kimi read-only leaf needs isolation"
+            !step_needs_isolation(false, None),
+            "kimi read-only leaf does not need isolation"
         );
     }
 
