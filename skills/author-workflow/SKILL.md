@@ -22,11 +22,11 @@ journals a `WorkflowRun` plus one `WorkflowStep` per agent call — identical to
 built-in `workflow run --name` path, so the run shows up live on the Agent
 Dashboard Workflows surface.
 
-Each ephemeral worker CAN EDIT files (full sandbox + editing tools, not
-read-only) and, by default, shares the repo cwd with every sibling call — serial
-calls' edits compose naturally on the same tree. When two calls mutate the tree
-in parallel and you do not want them to collide, opt one or both into
-`isolation="worktree"` (see below).
+Each ephemeral worker is READ-ONLY by default and runs in the selected project
+root. A worker may edit only when the call sets `writable=True`; writable calls
+automatically use a throwaway worktree. A read-only call can still opt into
+`isolation="worktree"` when it explicitly needs an isolated checkout, but
+provider capability gaps do not silently create worktrees.
 
 ## When To Use
 
@@ -99,8 +99,11 @@ Rules every call obeys:
   `"kimi"` (Kimi Code) is registry-routed like the others, but its headless `kimi -p`
   surface is leaner: no native schema / effort / service-tier / budget flags and
   a flat reply stream, so `schema=` degrades to text-extraction and `effort=`,
-  `service_tier=`, token, and cost come back empty. Use it for plain build /
-  verify leaves; keep schema-gated control-flow leaves on codex or claude.
+  `service_tier=`, token, and cost come back empty. Kimi also does not physically
+  enforce a read-only sandbox, but read-only Kimi leaves still run in the selected
+  project root rather than forcing a worktree. Use codex or claude when hard
+  read-only enforcement matters; keep schema-gated control-flow leaves on codex
+  or claude.
 - `prompt`, `label`, and `phase` are non-empty strings; optional `model` (any
   non-empty string) overrides the provider's default model — route a CHEAP model
   to read-only verify/review steps and the strong model to the builder. The value
@@ -197,9 +200,12 @@ workflow("x", "first part " +
 
 ### Workspace: read-only by default, `writable=True` to edit
 
-Every call is READ-ONLY by default — the worker may read files and run searches
-but CANNOT edit files or run shell. This is the safe default for the common case
-(finders, reviewers, verifiers, synthesizers all only read).
+Every call is READ-ONLY by default and runs in the selected project root — the
+worker may read files and run searches but must not edit files or run shell. This
+is the safe default for the common case (finders, reviewers, verifiers,
+synthesizers all only read). The runtime does not create a worktree merely
+because the provider cannot physically enforce read-only; choose codex/claude for
+hard read-only enforcement.
 
 A call that must EDIT files or run commands sets `writable=True`. That worker is
 automatically run in its own harness-owned throwaway git worktree under
@@ -226,7 +232,8 @@ never point a workflow with destructive/money-moving `writable` steps at a tree 
 care about.
 
 `isolation="worktree"` is the explicit form of the same thing (a read-only call
-that still wants an isolated checkout); `writable=True` implies it.
+that still wants an isolated checkout); `writable=True` implies it. Do not set it
+for ordinary read-only reviews or scans.
 
 **The workflow's cwd must be a git repo for `writable` / `isolation="worktree"`
 steps** — the throwaway worktree is created with `git worktree add`. In a non-git
@@ -759,10 +766,11 @@ its permission profile must allow it:
 - The runner's allowed-tool / command policy must permit running the `harness`
   binary (for Claude this is a `Bash(harness ...)` allowance; for Codex the
   sandbox/approval policy must let the shell call through).
-- Each agent call spins up a fresh ephemeral worker that CAN EDIT files and runs
-  in the repo cwd (or its worktree). A `prompt` that writes files or runs
-  destructive/money-moving actions executes for real — scope prompts accordingly
-  and reach for `isolation="worktree"` when parallel calls mutate the tree.
+- Each agent call spins up a fresh ephemeral worker in the selected project root
+  by default. It can edit only when `writable=True`, in which case the runtime
+  uses a throwaway worktree. A `prompt` that writes files or runs
+  destructive/money-moving actions executes for real once writable — scope prompts
+  accordingly.
 - If `harness` is not on the runner's `PATH`, invoke it by absolute path and
   ensure that path is the allowed command.
 
