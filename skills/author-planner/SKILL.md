@@ -22,12 +22,14 @@ A goal's plan is two append-only structures on the Goal:
 | Structure | What it is |
 | --- | --- |
 | `phases[]` (`GoalPhase`) | The agent-planned, **sequential** checkpoints. A phase must pass its gate (steps ok + verdict + declared `outputs` present) before the next begins. |
-| Tasks (`Task` with `phase_id`) | The per-phase DAG. Each task is a mini-goal: `design_md` + `acceptance_criteria` + `owned_paths` + `depends_on_task_ids` + `outputs`. |
+| Tasks (`Task` with `phase_id`) | The per-phase DAG. Each task is a mini-goal: `design_md` + `acceptance_criteria` + `owned_paths` + `depends_on_task_ids` + `outputs` + optional `executor`. |
 
 A **phase** is `{ id, name, intent, acceptance, outputs, inputs, retry }`. A **task**
 is `{ id, title, design_md, acceptance(list), owned_paths(list), depends_on(list of
-task ids in the SAME phase), outputs }`. `phase_id` is the canonical task↔phase join
-key (the goal is implied) — a task's `phase_id` must name a real phase of its goal.
+task ids in the SAME phase), outputs, executor? }`. `phase_id` is the canonical
+task↔phase join key (the goal is implied) — a task's `phase_id` must name a real
+phase of its goal. `executor` selects the provider for the compiled worker leaf
+when set; the phase acceptance judge remains the harness's built-in judge path.
 
 ### The two ordering rules (this is the whole model)
 
@@ -63,9 +65,15 @@ Do not write tasks as one-line chores. A task carries:
   `ArtifactSpec` manifest): `{ id, kind, path?, purpose, required, acceptance? }`,
   `kind` ∈ {design_doc, adr, code, test_report, migration_doc, registered_doc,
   screenshot, other}. The compiler injects "you MUST produce these" into the worker
-  prompt, and the gate **fails the phase if a `required` output's `path` is absent**
-  (a `registered_doc` must also be in `docs/registry.json`). Empty `outputs` = today's
-  behavior. Declare outputs so a phase can't "pass" having produced nothing.
+  prompt, and the gate **fails the phase if a `required` output has a non-empty
+  exact repo-relative `path` and that file is absent or empty**. A required output
+  without `path` is prompt/judge context, not a deterministic file-presence gate.
+  A `registered_doc` must also be registered in the governance registry path
+  declared by `.governance.toml`, falling back to `docs/registry.json`. Empty
+  `outputs` = today's behavior. Declare outputs so a phase can't "pass" having
+  produced nothing.
+- **`executor`** — optional provider selector (`codex`, `claude`, `kimi`, etc. as
+  supported by the runtime). The phase compiler maps it to `agent(provider=...)`.
 
 A **phase** also takes `inputs` (artifacts it requires from a PRIOR phase — checked
 before it runs, fail-fast if missing) and `retry` (per-phase replan budget,
@@ -106,6 +114,26 @@ harness's mock object (where `phases` is a placeholder string, not an array), so
 the command degrades gracefully: it creates nothing and says so. A REAL plan needs
 a real provider.
 
+### Hand-authoring a small plan
+
+Use this when the design is already clear and a full planner call would add
+variance. Keep owned paths tight; they drive both parallelism and worktree
+isolation.
+
+```bash
+harness goal phase-add --goal <goal> --phase-id docs-fix --name "Docs fix" \
+    --intent "Correct skill drift found by audit" \
+    --acceptance "skills validate and installed copies match" \
+    --output "id=skill-doc,kind=other,path=skills/author-goal/SKILL.md,required=true"
+
+harness task create --goal <goal> --phase-id docs-fix \
+    --title "Patch author-goal" --objective "Correct closeout/gate wording" \
+    --owner lead --reviewer lead --owned-path skills/author-goal \
+    --design-file slice.md --acceptance "quick_validate passes" \
+    --output "id=author-goal-skill,kind=other,path=skills/author-goal/SKILL.md,required=true" \
+    --executor codex
+```
+
 ## From plan to execution
 
 The plan is the truth; the `.star` is a derived, throwaway view:
@@ -116,7 +144,7 @@ harness phase compile <goal> --phase <phase-id>
 
 # Run the whole plan: sequence phases, gate each on its verdict, advance the goal
 harness goal run-phases <goal> [--dry-run]
-harness goal run-phases <goal> --resume               # don't re-spend done work
+harness goal run-phases <goal> --resume               # explicit re-entry intent
 harness goal run-phases <goal> --max-phase-retries 2  # replan budget per phase
 ```
 
@@ -129,11 +157,13 @@ phase runs on, and [[author-goal]] for getting a goal to `explored` first.
 
 - **Gate.** A phase passes only if its run completed, **every task step is ok**, the
   compiled `verdict()` returned true (when the phase has an `acceptance`), **AND every
-  `required` declared `output` exists** (a `registered_doc` must also be in
-  `docs/registry.json`). Before a phase runs, its `inputs` preconditions are checked
-  (fail-fast if a required upstream artifact is missing). On a pass the goal records a
-  `Decision(decision_kind=phase_verdict)`, points `GoalPhase.verdict_decision_id` at it,
-  writes each task → `Done`, and links each `WorkflowStep` to its task.
+  required declared output with a non-empty exact `path` exists and is non-empty**.
+  A `registered_doc` must also be in the governance registry (`.governance.toml`
+  registry path, default `docs/registry.json`). Before a phase runs, its `inputs`
+  preconditions are checked (fail-fast if a required upstream artifact is missing).
+  On a pass the goal records a `Decision(decision_kind=phase_verdict)`, points
+  `GoalPhase.verdict_decision_id` at it, writes each task → `Done`, and links each
+  `WorkflowStep` to its task.
 - **Land.** A passing phase **lands** its writable tasks' worktree diffs onto the branch
   (a per-phase landing commit + `GoalPhase.landed_commit`; clean-tree guard + rollback,
   never a force-merge) — so a passing phase leaves durable artifacts, not a dropped
@@ -143,13 +173,18 @@ phase runs on, and [[author-goal]] for getting a goal to `explored` first.
   planner to **revise** this phase's task graph (dead tasks → `TaskStatus::Superseded`
   + `superseded_by_knowledge_id`; new tasks appended), recompiles, reruns. Tasks are
   *living*: superseded, never deleted, so the trail survives.
-- **Resume.** `--resume` re-enters from the durable `GoalOrchestrationRun` checkpoint:
-  passed phases are skipped, and a re-run phase replays its prior succeeded leaves (no
-  re-spend). A kill mid-run is safe.
+- **Resume.** The orchestrator records a durable `GoalOrchestrationRun`
+  checkpoint. Re-entering a `Running` checkpoint reuses it, passed phases are
+  skipped, and a re-run phase replays its prior succeeded leaves (no re-spend).
+  The `--resume` flag records explicit operator intent for that re-entry, but the
+  checkpoint/succeeded-leaf reuse is driven by the stored orchestration state.
+  A kill mid-run is safe.
 - **Auto-finalize.** The goal's stage is **derived** from its phases (else tasks) and
   re-synced on every completion seam — finishing the last phase advances the goal to
   `verified` (done) with no manual `goal stage`. `goal reconcile-phase` trues up a phase
-  whose work shipped out-of-band; `goal finalize` closes a goal.
+  whose work shipped out-of-band; `goal finalize` structurally finalizes stage/status.
+  Learning closeout still requires closeout Decision + `goal evaluate` + strict
+  `goal learning-status` + `goal close` (see [[author-goal]]).
 
 So the planner's output is not a one-shot script — it is a **living task graph** the
 orchestrator edits (via replan) as execution surfaces new knowledge.
@@ -172,5 +207,30 @@ orchestrator edits (via replan) as execution surfaces new knowledge.
   having produced nothing (the gate only sees steps-ok + verdict). For a phase whose
   point IS a deliverable (a report, an ADR, a registered doc, a migration runbook),
   declare it as a `required` output so the gate enforces it.
+- **Pathless required outputs.** A required output without `path` is not a file
+  existence gate. Give deliverables exact repo-relative paths when the phase must
+  prove the file exists.
+- **Hard-coded registry assumptions.** `registered_doc` checks the governance
+  registry path from `.governance.toml` and only defaults to `docs/registry.json`.
+  Do not assume every project uses that default path.
 - **Stale/loose `phase_id`.** A task whose `phase_id` doesn't name a real phase of its
   goal is rejected at create — don't hand-set `phase_id` to a phase that isn't there.
+
+## Maintaining This Skill
+
+After changing this repo copy, sync every installed runtime copy and validate
+them. Codex discovers `~/.codex/skills`; Claude discovers `~/.claude/skills`;
+the shared agent bundle lives in `~/.agents/skills`.
+
+```bash
+rsync -a --delete skills/author-planner/ ~/.agents/skills/author-planner/
+rsync -a --delete skills/author-planner/ ~/.codex/skills/author-planner/
+rsync -a --delete skills/author-planner/ ~/.claude/skills/author-planner/
+python3 ~/.codex/skills/.system/skill-creator/scripts/quick_validate.py skills/author-planner
+python3 ~/.codex/skills/.system/skill-creator/scripts/quick_validate.py ~/.agents/skills/author-planner
+python3 ~/.codex/skills/.system/skill-creator/scripts/quick_validate.py ~/.codex/skills/author-planner
+python3 ~/.codex/skills/.system/skill-creator/scripts/quick_validate.py ~/.claude/skills/author-planner
+diff -qr skills/author-planner ~/.agents/skills/author-planner
+diff -qr skills/author-planner ~/.codex/skills/author-planner
+diff -qr skills/author-planner ~/.claude/skills/author-planner
+```
