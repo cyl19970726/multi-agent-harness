@@ -13,7 +13,7 @@ exists; the concept model explains how the objects are allowed to relate.
 
 ## Product Shape
 
-Multi-Agent Harness is not only an agent runner. It is a control system for a
+Star Harness is not only an agent runner. It is a control system for a
 standing team that can observe a project, propose goals, adjust the task graph,
 and turn accepted work into durable multi-agent execution:
 

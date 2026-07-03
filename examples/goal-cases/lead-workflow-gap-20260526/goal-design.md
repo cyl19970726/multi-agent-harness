@@ -3,7 +3,7 @@
 ## Goal
 
 - Goal id: `self-host-mvp`
-- Objective: make Multi-Agent Harness capable of managing its own development.
+- Objective: make Star Harness capable of managing its own development.
 - Owner: `leader`
 - Success criteria: repository changes should be planned, assigned, reported,
   reviewed, decided, and made visible through harness objects instead of chat

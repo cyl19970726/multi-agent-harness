@@ -6,7 +6,7 @@ It is not the current MVP spec; the current spec lives in
 
 ## Scenario
 
-The goal was to make Multi-Agent Harness harder to fake. Static snapshots,
+The goal was to make Star Harness harder to fake. Static snapshots,
 dry-run delivery, and hand-written JSONL were useful diagnostics, but they did
 not prove that persistent Agent Members could receive work, produce evidence,
 be reviewed, and appear in Dashboard state.

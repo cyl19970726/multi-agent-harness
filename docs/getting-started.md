@@ -1,6 +1,6 @@
 # Getting started
 
-Two things to get going: **install the `author-workflow` skill** (so your agent
+Two things to get going: **install the `star-workflow` skill** (so your agent
 knows how to write workflows) and **start the harness service** (so the workflows
 have somewhere to run). Then ask your agent to author and run one.
 
@@ -15,7 +15,7 @@ have somewhere to run). Then ask your agent to author and run one.
 
 ## 1. Install the skill
 
-The skill ships in [`skills/author-workflow/`](../skills/author-workflow/). It is
+The skill ships in [`skills/star-workflow/`](../skills/star-workflow/). It is
 a plain [Agent Skill](https://code.claude.com/docs/en/skills) (`SKILL.md` +
 examples), so it installs into either agent's skill directory:
 
@@ -39,18 +39,18 @@ curl -fsSL https://raw.githubusercontent.com/cyl19970726/multi-agent-harness/mas
 **B. `npx skills` (cross-agent installer).**
 
 ```bash
-npx skills add cyl19970726/multi-agent-harness --skill author-workflow --agent codex
-npx skills add cyl19970726/multi-agent-harness --skill author-workflow --agent claude
+npx skills add cyl19970726/multi-agent-harness --skill star-workflow --agent codex
+npx skills add cyl19970726/multi-agent-harness --skill star-workflow --agent claude
 ```
 
 **C. Claude Code plugin (auto-updates).**
 
 ```text
 /plugin marketplace add cyl19970726/multi-agent-harness
-/plugin install author-workflow
+/plugin install star-workflow
 ```
 
-Verify it landed: the agent should now see `author-workflow` in its skill list.
+Verify it landed: the agent should now see `star-workflow` in its skill list.
 
 ## 2. Build + start the harness service
 
@@ -134,11 +134,11 @@ capped fallback, e.g. for a `--trace live` run whose trace was pruned).
 
 ## What the skill teaches
 
-`author-workflow` teaches the agent the runtime's host functions
+`star-workflow` teaches the agent the runtime's host functions
 (`workflow()` / `agent()` / `parallel()` / `pipeline()` / `phase()` / `log()` /
 `verdict()`), structured output (`schema=` → native `--json-schema` /
 `--output-schema`), the safety knobs (per-node `writable=`/`isolation=`, the
 budget ceiling), and the quality meta-patterns (verify→repair, adversarial
 verify, judge panel, loop-until-dry) — so it writes real closed-loop programs,
-not a naive linear fan-out. See [`skills/author-workflow/SKILL.md`](../skills/author-workflow/SKILL.md)
-and its [`examples/`](../skills/author-workflow/examples/).
+not a naive linear fan-out. See [`skills/star-workflow/SKILL.md`](../skills/star-workflow/SKILL.md)
+and its [`examples/`](../skills/star-workflow/examples/).

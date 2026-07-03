@@ -143,9 +143,9 @@ The command seam:
 
 Phased execution is workflow-backed: `goal run-phases` compiles each phase's
 task DAG to a `.star` program (`compile_phase_to_starlark`) and runs it on the
-SAME runtime the `author-workflow` skill documents — and a passing phase's
+SAME runtime the `star-workflow` skill documents — and a passing phase's
 writable diffs LAND on the branch (per-phase landing commit). See the
-`author-workflow` skill for the runtime, flags, and structured-output contract.
+`star-workflow` skill for the runtime, flags, and structured-output contract.
 
 If the Lead must do a blocking step locally, record it as a `leader-local
 exception` with the reason, evidence, and follow-up task that should turn the

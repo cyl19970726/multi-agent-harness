@@ -1,6 +1,6 @@
 ---
-name: author-goal
-description: "Use when creating or advancing a Goal in this harness: write the markdown sections (description / design / real acceptance), accumulate a knowledge ledger, run multi-agent exploration, and move the goal through its lifecycle. Covers BOTH the manual gated lifecycle (draft → exploring → explored → working → done → verifying → verified) and the knowledge-driven PHASED model (append-only knowledge[] + agent-planned sequential phases[] + a per-phase task graph, executed by `goal run-phases`). To decompose an explored goal into phases + a task DAG, hand off to [[author-planner]]."
+name: star-goal
+description: "Use when creating or advancing a Goal in this harness: write the markdown sections (description / design / real acceptance), accumulate a knowledge ledger, run multi-agent exploration, and move the goal through its lifecycle. Covers BOTH the manual gated lifecycle (draft → exploring → explored → working → done → verifying → verified) and the knowledge-driven PHASED model (append-only knowledge[] + agent-planned sequential phases[] + a per-phase task graph, executed by `goal run-phases`). To decompose an explored goal into phases + a task DAG, hand off to [[star-planner]]."
 ---
 
 # Author Goal
@@ -23,7 +23,7 @@ goal. Do not fill sections to look complete — fill them because you explored.
 | `knowledge[]` | any | **Append-only ledger of findings** (the TRUTH), each with provenance: `phase_id` / `task_id` / `author` / `timestamp` / `tags` / `source`. Fed by exploration AND task execution. |
 | `design_md` | explored | **Key problems FIRST**, then the Big Picture / Overview, then the approach. Either hand-written, or **re-synthesized from `knowledge[]`** via `design-synthesize` (stamps `design_synthesis_at`). |
 | `acceptance_md` | before working | The REAL acceptance: criteria + scenario + how to verify *for real*. |
-| `phases[]` | when planning | Agent-planned, **sequential** checkpoints; each owns a task DAG (see [[author-planner]]). Optional — a simple goal needs none. |
+| `phases[]` | when planning | Agent-planned, **sequential** checkpoints; each owns a task DAG (see [[star-planner]]). Optional — a simple goal needs none. |
 | `skill_refs[]` | any | Domain skills needed to DO the work (NOT this skill). |
 | `stage` | — | Lifecycle position. **Derived from `phases[]` when present** (the stored field is a legacy projection); the stored value is the truth only for goals with no phases. |
 
@@ -80,7 +80,7 @@ DEEP and EXHAUSTIVE: identify **all** the key problems (not a tidy few), and mak
 the architecture **concrete** — actual type/trait signatures, data structures,
 file:line, before/after — not prose gestures. If a section reads like a summary,
 it is too thin. Deep design is naturally multi-agent: fan out parallel grounded
-deep-dives (e.g. via [[author-workflow]], codex-heavy) and synthesize their FULL
+deep-dives (e.g. via [[star-workflow]], codex-heavy) and synthesize their FULL
 output. The design is only as good as the problems it identified. Lead with them:
 
 1. **Key problems** — the genuine, grounded obstacles, each tied to real evidence
@@ -187,7 +187,7 @@ The full loop:
 harness goal knowledge-add --goal <goal> --author <who> --notes-file f.md --tag x
 harness goal design-synthesize --goal <goal>
 
-# 2. Plan: decompose design_md → phases + a per-phase task DAG (see author-planner).
+# 2. Plan: decompose design_md → phases + a per-phase task DAG (see star-planner).
 #    Phases/tasks may DECLARE output artifacts the gate verifies, cross-phase inputs,
 #    and a per-phase retry budget.
 harness goal plan <goal>                    # agent-driven; --dry-run plans nothing
@@ -235,7 +235,7 @@ A **simple goal needs none of this** — one phase, or just the manual lifecycle
 Reach for phases when the work is a real multi-step, multi-worker build that
 benefits from gated checkpoints and a living task graph. The decomposition rules,
 the artifact manifest (`outputs`), cross-phase `inputs`, and per-phase `retry` live
-in [[author-planner]]; the Starlark runtime each phase compiles to is [[author-workflow]].
+in [[star-planner]]; the Starlark runtime each phase compiles to is [[star-workflow]].
 
 ### The task ↔ phase field model (what changed)
 - **`phase_id` is the canonical join key.** A task belongs to a goal's phase via
@@ -265,6 +265,6 @@ in [[author-planner]]; the Starlark runtime each phase compiles to is [[author-w
   let `design-synthesize` rebuild the prose from the ledger.
 - **Phases for a one-step goal.** Don't build a task DAG + `run-phases` for work that
   is a single change. Use the manual lifecycle; reach for phases only when gated,
-  multi-worker checkpoints earn their keep (the rules are in [[author-planner]]).
+  multi-worker checkpoints earn their keep (the rules are in [[star-planner]]).
 - **Editing the compiled `.star` by hand.** It is a derived, throwaway view of the
   task graph; change the tasks and recompile, never the `.star`.

@@ -14,7 +14,7 @@ headless exec-stream, per
 
 ## Vision Link
 
-Multi-Agent Harness must support Codex first while leaving room for other
+Star Harness must support Codex first while leaving room for other
 providers such as Claude Code, OpenClaw, cloud-hosted agents, or a Permission
 Agent. Provider integrations are successful only when they implement the same
 harness objects and workflow without changing `Goal`, `Task`, `Message`,

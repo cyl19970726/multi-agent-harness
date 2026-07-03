@@ -168,7 +168,7 @@ Sorted by family, then duration. ★ = has a deep dive in the companion catalog 
   - *idiom:* Fan out fixed review dimensions, then spawn exactly one adversarial verifier per emitted finding (count set by runtime output) before a judge triages into must/should/optional.
   - *patterns:* parallel-barrier, adversarial-verify, one-verifier-per-finding, judge-synthesis, schema-gated-handoff
 - **align-author-skill** · `wf_a6c24f10-9e2` · 7 agents · 6m · completed · plan=static · gap=contrast
-  - *what:* Three diverse lenses critique the author-workflow skill for naivety, a verifier rejects overstated gaps, and confirmed gaps become a prioritized edit list.
+  - *what:* Three diverse lenses critique the star-workflow skill for naivety, a verifier rejects overstated gaps, and confirmed gaps become a prioritized edit list.
   - *idiom:* Run each critique lens through a paired critique->adversarial-verify pipeline (verifier rejects overstated gaps), then synthesize only verifier-CONFIRMED gaps into concrete edits.
   - *patterns:* pipeline-no-barrier, adversarial-verify, perspective-diverse-verify, judge-synthesis, schema-gated-handoff
 - **multica-layout-review** ★5 · `wf_f86139b9-018` · 26 agents · 5.7m · completed · plan=dynamic-decomposition · gap=dyn
@@ -286,7 +286,7 @@ Sorted by family, then duration. ★ = has a deep dive in the companion catalog 
   - *idiom:* Four parallel scoped readers (one using a specialized agentType) hand prose findings into a single architect synthesizer that injects all four as labeled INPUT blocks.
   - *patterns:* parallel-barrier, judge-synthesis, mixed-model
 - **can-agents-use-workflow-skill** · `wf_fcbd031c-817` · 4 agents · 6.3m · completed · plan=static · gap=D
-  - *what:* Three parallel investigators probe whether spawned agents can use the author-workflow skill+CLI, synthesized into a yes/no/partial answer with the exact gap.
+  - *what:* Three parallel investigators probe whether spawned agents can use the star-workflow skill+CLI, synthesized into a yes/no/partial answer with the exact gap.
   - *idiom:* Three parallel read-only investigators each answer a distinct sub-question with typed evidence, then a single synthesizer merges them into one honest yes/no/partial verdict — no build, no gate.
   - *patterns:* parallel-barrier, research-mapreduce, judge-synthesis, schema-gated-handoff
 - **xhs-wenchuang-report-research** · `wf_e2175003-946` · 4 agents · 5.3m · completed · plan=static · gap=—

@@ -430,7 +430,7 @@ research. An eval that wants to show workflow > baseline must pick the former.
 5. **To calibrate when NOT to bother:** #12 — the contrast.
 
 Across all 12, four habits recur and are what we should port into the
-`author-workflow` skill as the **default skeleton**, not optional tips:
+`star-workflow` skill as the **default skeleton**, not optional tips:
 **(i)** a `schema` on every handoff; **(ii)** a `COMMON`/`CTX`/`RULES` constant
 shared into every agent; **(iii)** branch on a typed field (`ok` / `severity` /
 `winner` / `real` / `holds`); **(iv)** a verify→repair loop or a real acceptance

@@ -53,7 +53,7 @@ So this spike is scoped to **closing root cause 1**. That is the single biggest
 ## 1. The same scenario, three ways
 
 Scenario: review across N dimensions → keep findings → report. (Full Starlark
-version: [`bug-hunt-verify.star`](../../skills/author-workflow/examples/bug-hunt-verify.star).)
+version: [`bug-hunt-verify.star`](../../skills/star-workflow/examples/bug-hunt-verify.star).)
 
 ### Today — Starlark (`run-script`)
 

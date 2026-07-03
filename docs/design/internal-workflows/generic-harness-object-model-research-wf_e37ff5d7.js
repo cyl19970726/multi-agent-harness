@@ -72,7 +72,7 @@ const [lmtSkills, ourSchemaDocs, ourBackend, ourFrontend] = await parallel([
 
 phase('Synthesize')
 
-const synthPrompt = `You are the architect for Multi-Agent Harness, a GENERIC multi-agent coordination system. The owner wants to adopt the good design from let-me-try's skills (which are referenced but code-trial-specific) and GENERALIZE it into our schema + Rust backend + frontend, as one coherent object-model migration plan.
+const synthPrompt = `You are the architect for Star Harness, a GENERIC multi-agent coordination system. The owner wants to adopt the good design from let-me-try's skills (which are referenced but code-trial-specific) and GENERALIZE it into our schema + Rust backend + frontend, as one coherent object-model migration plan.
 
 === INPUT A: let-me-try v1 ALL skills — object/data model (mark domain-specific vs generic) ===
 ${lmtSkills}

@@ -1,11 +1,11 @@
 # Agent Operating Rules
 
-This repository builds Multi-Agent Harness itself. Work in this repo must use
+This repository builds Star Harness itself. Work in this repo must use
 the harness objects as the canonical coordination state.
 
 ## Product We Are Building
 
-Multi-Agent Harness is a goal-task-multi-agent development system. Its purpose
+Star Harness is a goal-task-multi-agent development system. Its purpose
 is to turn a high-level goal into an executable, reviewable, reusable workflow:
 
 ```text
@@ -132,7 +132,7 @@ contract for the product itself: goal design, task graph design, message-first
 assignment, provider sessions, evidence, critic review, decisions, goal
 evaluation, and follow-up tasks.
 
-Load `.agents/skills/bootstrap-project-workflow/SKILL.md` only when the goal is about
+Load `skills/bootstrap-project-workflow/SKILL.md` only when the goal is about
 project bootstrapping or governance: docs and CI/CD design, directory reorg,
 new requirement workflow design, adapter boundaries, skill design, task-system
 design, or migrating a project into a harness-operable shape.

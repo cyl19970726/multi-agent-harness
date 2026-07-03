@@ -1,5 +1,5 @@
 ---
-name: author-workflow
+name: star-workflow
 description: "Use when an agent needs to author a dynamic multi-agent workflow at runtime: write a Starlark program (loops, conditionals, data-driven fan-out) that calls agent()/parallel()/phase()/log() over the harness runtime, declare a mandatory workflow(name, design_intent) header, run it with `harness workflow run-script`, and read the resulting WorkflowRun/WorkflowStep records back from the dashboard snapshot or store."
 ---
 
@@ -64,7 +64,7 @@ for reproducibility.
 ## Host API
 
 The interpreter is [Starlark](https://github.com/facebook/starlark-rust)
-([`crates/harness-workflow/src/starlark_front.rs`](../../../crates/harness-workflow/src/starlark_front.rs)),
+([`crates/harness-workflow/src/starlark_front.rs`](../../crates/harness-workflow/src/starlark_front.rs)),
 the same dialect Bazel uses. It is HERMETIC by design: the script has no clock, no
 randomness, and no IO. The orchestration (which agents run, in what order, with what
 prompts) is therefore deterministic — the ONLY nondeterminism lives in the journaled

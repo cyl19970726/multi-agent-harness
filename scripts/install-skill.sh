@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Install the multi-agent-harness authoring skill kit into a target project
+# Install the Star Harness authoring skill kit into a target project
 # (or your user-level library) for Claude Code and/or Codex.
 #
-# The kit ships three skills: author-workflow, author-goal, author-planner.
+# The kit ships three skills: star-workflow, star-goal, star-planner.
 #
 #   Claude Code reads skills from   <base>/.claude/skills/<name>/
 #   Codex      reads skills from     <base>/.agents/skills/<name>/
@@ -15,7 +15,7 @@
 #   --scope   project = <cwd>, user = $HOME                  (default: project)
 #   --dest    explicit base dir (overrides --scope)
 #   --skill   install only this skill (repeatable; picks a   (default: all three)
-#             subset of author-workflow author-goal author-planner)
+#             subset of star-workflow star-goal star-planner)
 #   --repo    git url to clone when run standalone           (default: this project)
 #   --ref     git ref to clone                               (default: master)
 #
@@ -24,7 +24,7 @@
 set -euo pipefail
 
 # All shipped skills; --skill narrows this to a subset.
-DEFAULT_SKILLS="author-workflow author-goal author-planner bootstrap-project-workflow"
+DEFAULT_SKILLS="star-workflow star-goal star-planner bootstrap-project-workflow"
 SKILLS=""
 AGENT="claude"
 SCOPE="project"
@@ -62,7 +62,7 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || true)"
 SKILLS_ROOT=""
 TMP=""
-if [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/../skills/author-workflow/SKILL.md" ]; then
+if [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/../skills/star-workflow/SKILL.md" ]; then
   SKILLS_ROOT="$(cd "$SCRIPT_DIR/../skills" && pwd)"
 else
   TMP="$(mktemp -d)"
