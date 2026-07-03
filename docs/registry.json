@@ -1571,14 +1571,14 @@
       "status": "stable",
       "lifecycle": "volatile",
       "canonicalFor": [
-        "two-step quickstart (install author-workflow skill + start serve)",
+        "two-step quickstart (install star-workflow skill + start serve)",
         "skill install paths (script / npx skills / plugin)",
         "serve + run-script same-store invariant",
         "author + run + read-back a workflow"
       ],
       "dependsOn": [
         "README.md",
-        "skills/author-workflow/SKILL.md",
+        "skills/star-workflow/SKILL.md",
         "docs/multi-project.md"
       ],
       "machineConsumers": [
@@ -1658,7 +1658,7 @@
       "dependsOn": [
         "docs/research/dynamic-workflow-runtime-design.md",
         "docs/decisions/0023-starlark-workflow-frontend.md",
-        "skills/author-workflow/SKILL.md"
+        "skills/star-workflow/SKILL.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -1755,7 +1755,7 @@
       ],
       "dependsOn": [
         "docs/design/external-workflow-gap-analysis.md",
-        "skills/author-workflow/SKILL.md"
+        "skills/star-workflow/SKILL.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -1780,7 +1780,7 @@
       "dependsOn": [
         "docs/design/internal-vs-external-workflow.md",
         "docs/decisions/0023-starlark-workflow-frontend.md",
-        "skills/author-workflow/SKILL.md"
+        "skills/star-workflow/SKILL.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -1882,7 +1882,7 @@
         "crates/harness-workflow/src/lib.rs",
         "crates/harness-workflow/src/starlark_front.rs",
         "crates/harness-core/src/lib.rs",
-        "skills/author-workflow/SKILL.md"
+        "skills/star-workflow/SKILL.md"
       ],
       "machineConsumers": [
         "check-doc-links",

@@ -7,7 +7,7 @@ rules those fields must preserve.
 
 ## Vision Link
 
-Multi-Agent Harness must turn a goal into:
+Star Harness must turn a goal into:
 
 ```text
 scenario -> infra -> agent team -> task graph -> message execution

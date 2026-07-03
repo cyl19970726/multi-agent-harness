@@ -1,6 +1,6 @@
 # Kimi (Moonshot) integration
 
-本文档定义 Multi-Agent Harness 如何集成 Kimi Code（Moonshot）。重点是把
+本文档定义 Star Harness 如何集成 Kimi Code（Moonshot）。重点是把
 Kimi 变成 harness 里的第三个 registry-routed provider：可以创建、投递消息、
 观察状态、回收运行时，并把 Kimi Code 的 flat stream-json 输出转成 harness 的
 `AgentEvent`、`ProviderSession`、`Evidence`、`Message` 和 `Decision`。

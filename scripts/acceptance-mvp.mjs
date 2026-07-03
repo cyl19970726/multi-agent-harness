@@ -902,13 +902,13 @@ function liveMultiMemberDeliverySmoke() {
     const workerDelivery = deliverLiveMessage(
       worker.id,
       task.id,
-      "You are the Worker AgentMember in a Multi-Agent Harness acceptance test. Reply with one concise report sentence confirming you received the task and would attach evidence refs.",
+      "You are the Worker AgentMember in a Star Harness acceptance test. Reply with one concise report sentence confirming you received the task and would attach evidence refs.",
       "live-team-task",
     );
     const criticDelivery = deliverLiveMessage(
       critic.id,
       task.id,
-      "You are the Critic AgentMember in a Multi-Agent Harness acceptance test. Reply with one concise critique sentence confirming Worker output must be checked with evidence before acceptance.",
+      "You are the Critic AgentMember in a Star Harness acceptance test. Reply with one concise critique sentence confirming Worker output must be checked with evidence before acceptance.",
       "live-team-review",
     );
     const snapshot = harnessJson(["dashboard", "snapshot"]);

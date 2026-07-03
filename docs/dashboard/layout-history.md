@@ -29,7 +29,7 @@ accepted stack and module boundaries live in
 
 ## Product Context
 
-Multi-Agent Harness is a coordination layer for persistent Agent Teams. The
+Star Harness is a coordination layer for persistent Agent Teams. The
 Workbench must show that this workflow really happened:
 
 ```text
@@ -366,7 +366,7 @@ Team workspace shell
   + controlled graph/Kanban tabs
 ```
 
-Use Candidate 1 as the overall shell because Multi-Agent Harness is a persistent
+Use Candidate 1 as the overall shell because Star Harness is a persistent
 team product. Use Candidate 2 for Goal and Task detail because goals/tasks need
 auditable document-like surfaces. Use Candidate 3 only for relationship views:
 Vision goal graph, selected Goal task graph, blockers, follow-ups, and
@@ -518,7 +518,7 @@ Team workspace shell
 
 Rationale:
 
-- Multi-Agent Harness needs to feel like a persistent team control plane, not a
+- Star Harness needs to feel like a persistent team control plane, not a
   one-shot job runner or JSON report.
 - AgentMembers should read as durable teammates with status, queue, inbox,
   outbox, runtime health, current task, and activity history.

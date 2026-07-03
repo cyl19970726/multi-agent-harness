@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Acceptance: a fresh user can INSTALL the authoring skill kit (author-workflow
-# + author-goal + author-planner) and RUN the harness. Models the external-user
+# Acceptance: a fresh user can INSTALL the authoring skill kit (star-workflow
+# + star-goal + star-planner) and RUN the harness. Models the external-user
 # journey with checkable outcomes; exits nonzero on any failed check.
 #
 #   scripts/acceptance-skill-install.sh            # local: install + build + serve + run
@@ -38,7 +38,7 @@ fi
 # All three shipped skills must land as REAL files (never a symlink) under BOTH
 # the Claude (.claude/skills) and Codex (.agents/skills) roots, each with its
 # SKILL.md and Codex agents/openai.yaml.
-for name in author-workflow author-goal author-planner; do
+for name in star-workflow star-goal star-planner; do
   for d in .claude/skills .agents/skills; do
     if [ -f "$PROJ/$d/$name/SKILL.md" ] && [ ! -L "$PROJ/$d/$name" ]; then
       ok "$d/$name installed as real files"
@@ -50,9 +50,9 @@ for name in author-workflow author-goal author-planner; do
       || bad "$d/$name/agents/openai.yaml missing"
   done
 done
-# author-workflow additionally ships runnable examples/.
-[ "$(ls "$PROJ/.claude/skills/author-workflow/examples" 2>/dev/null | wc -l | tr -d ' ')" -ge 3 ] \
-  && ok "author-workflow examples copied" || bad "author-workflow examples missing"
+# star-workflow additionally ships runnable examples/.
+[ "$(ls "$PROJ/.claude/skills/star-workflow/examples" 2>/dev/null | wc -l | tr -d ' ')" -ge 3 ] \
+  && ok "star-workflow examples copied" || bad "star-workflow examples missing"
 
 echo "== A2: build the harness binary =="
 BIN="$REPO_ROOT/target/debug/harness"
@@ -110,15 +110,15 @@ if [ "$REMOTE" = "1" ]; then
   [ "$code" = "200" ] && ok "raw install-skill.sh reachable (HTTP 200)" \
     || bad "raw script HTTP ${code:-000} (repo private / not pushed?)"
   if GIT_TERMINAL_PROMPT=0 git clone -q --depth 1 "$CLONE_URL" "$WORK/anon" 2>/dev/null \
-      && [ -f "$WORK/anon/skills/author-workflow/SKILL.md" ]; then
-    ok "anonymous public clone carries skills/author-workflow"
+      && [ -f "$WORK/anon/skills/star-workflow/SKILL.md" ]; then
+    ok "anonymous public clone carries skills/star-workflow"
   else
     bad "anonymous public clone failed"
   fi
   if [ -s "$WORK/dl.sh" ]; then
     bash "$WORK/dl.sh" --agent both --dest "$WORK/anonproj" >/dev/null 2>&1 || true
-    [ -f "$WORK/anonproj/.claude/skills/author-workflow/SKILL.md" ] \
-      && [ -f "$WORK/anonproj/.agents/skills/author-workflow/SKILL.md" ] \
+    [ -f "$WORK/anonproj/.claude/skills/star-workflow/SKILL.md" ] \
+      && [ -f "$WORK/anonproj/.agents/skills/star-workflow/SKILL.md" ] \
       && ok "anonymous one-liner install works end to end" || bad "anonymous one-liner install failed"
   fi
 fi

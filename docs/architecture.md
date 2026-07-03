@@ -2,7 +2,7 @@
 
 ## Product Boundary
 
-Multi-Agent Harness is the coordination product. A business project is a tool
+Star Harness is the coordination product. A business project is a tool
 environment connected through an adapter.
 
 The reason for this boundary is described in [design-basis.md](design-basis.md):
@@ -10,7 +10,7 @@ the generic product owns coordination, evidence, governance, and agent-facing
 interfaces; project adapters own domain execution and domain evaluation.
 
 ```text
-Multi-Agent Harness
+Star Harness
   Goal / AgentTeam / AgentMember / AgentRuntime / AgentEvent / Task / Message
   Proposal / Evidence / Decision / ProviderSession
   Skill files

@@ -4,7 +4,7 @@ export const meta = {
   phases: [
     { title: 'Stage1', detail: 'Extract harness-workflow crate + JSON-IR spec + run-spec CLI' },
     { title: 'Stage2', detail: 'Real pipeline() + WP3 fields (args/final_output/result)' },
-    { title: 'Stage3', detail: 'author-workflow skill' },
+    { title: 'Stage3', detail: 'star-workflow skill' },
     { title: 'Stage4', detail: 'Dashboard per-node drill-in' },
     { title: 'Stage5', detail: 'End-to-end acceptance + docs + ADR' },
   ],
@@ -71,12 +71,12 @@ Commit subject: feat(workflow): real streaming pipeline() + WP3 run/step fields 
   {
     id: 'Stage3',
     prompt: COMMON + `
-STAGE 3 — author-workflow skill. (Stages 1-2 committed and green.)
+STAGE 3 — star-workflow skill. (Stages 1-2 committed and green.)
 
-Do: create .agents/skills/author-workflow/SKILL.md following the EXACT format of existing skills (study .agents/skills/generic-agent-harness/SKILL.md and .agents/skills/bootstrap-project-workflow/SKILL.md, and scripts/check-skills.mjs for the required frontmatter/structure). The skill teaches an agent to: (1) write a valid WorkflowSpec JSON (show one worked example spec, e.g. a scan->parallel-fix workflow), (2) invoke \`harness workflow run-spec <spec.json> --codex <member> --claude <member>\`, (3) read the run back (e.g. via the dashboard snapshot or store), and (4) the permission note: the member's profile must allow the \`harness\` binary. Include a runnable example spec file under the skill dir.
+Do: create skills/star-workflow/SKILL.md following the EXACT format of existing skills (study .agents/skills/generic-agent-harness/SKILL.md and skills/bootstrap-project-workflow/SKILL.md, and scripts/check-skills.mjs for the required frontmatter/structure). The skill teaches an agent to: (1) write a valid WorkflowSpec JSON (show one worked example spec, e.g. a scan->parallel-fix workflow), (2) invoke \`harness workflow run-spec <spec.json> --codex <member> --claude <member>\`, (3) read the run back (e.g. via the dashboard snapshot or store), and (4) the permission note: the member's profile must allow the \`harness\` binary. Include a runnable example spec file under the skill dir.
 
 Verify: (a) pnpm check:skills ; (b) pnpm check:doc-governance ; (c) pnpm check:links (if it covers skills). Also validate the example spec against schemas/workflow-spec.schema.json with node scripts/validate-json.mjs or a quick ajv check.
-Commit subject: feat(workflow): author-workflow skill teaching agents to write+run specs (Stage 3).
+Commit subject: feat(workflow): star-workflow skill teaching agents to write+run specs (Stage 3).
 `,
   },
   {

@@ -1,6 +1,6 @@
 # MVP
 
-The MVP is the first evidence that Multi-Agent Harness can manage real work
+The MVP is the first evidence that Star Harness can manage real work
 through its own protocol. It is not accepted by having docs, schemas, or a
 Dashboard alone. It is accepted when the harness can use those pieces together
 to run a non-fake workflow.

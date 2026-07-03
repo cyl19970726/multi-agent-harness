@@ -2,7 +2,7 @@
 
 ## Purpose
 
-A finished goal should improve the next goal. Multi-Agent Harness therefore
+A finished goal should improve the next goal. Star Harness therefore
 stores both the execution trace and the evaluator's interpretation of that
 trace.
 
