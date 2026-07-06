@@ -1,6 +1,6 @@
 # Agent Workbench
 
-The Agent Workbench is the control-plane UI for Multi-Agent Harness. It is not
+The Agent Workbench is the control-plane UI for Star Harness. It is not
 a decorative report, metrics dashboard, or replacement for project-specific
 dashboards. Its job is to make the harness workflow inspectable, operable, and
 repairable.

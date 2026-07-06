@@ -174,9 +174,9 @@ a credible architecture, not yet a demonstrated capability.
 ## Authoring surfaces
 
 Visions, goals, phases, and workflows are agent-authored at runtime via the shipped built-in skill
-kit: [author-goal](../skills/author-goal/SKILL.md),
-[author-planner](../skills/author-planner/SKILL.md),
-[author-workflow](../skills/author-workflow/SKILL.md), and
+kit: [star-goal](../skills/star-goal/SKILL.md),
+[star-planner](../skills/star-planner/SKILL.md),
+[star-workflow](../skills/star-workflow/SKILL.md), and
 [bootstrap-project-workflow](../skills/bootstrap-project-workflow/SKILL.md) (the doc-governance /
 architecture skill the `doc-sync` built-in phase runs). Diagrams (like the two above) are the
 preferred medium for goal/phase/vision docs; rendering them in the dashboard Vision / Docs

@@ -1,5 +1,5 @@
 ---
-name: author-planner
+name: star-planner
 description: "Use when decomposing an explored Goal into an executable plan in this harness: turn a written design_md (+acceptance_md) into an ordered list of sequential phases and, within each phase, a task DAG where tasks with disjoint owned_paths and no deps run in parallel. Covers `harness goal plan` (the agent-driven planner), the phase/task shape it produces, and how that plan feeds the phase→Starlark compiler and `goal run-phases` orchestrator."
 ---
 
@@ -122,8 +122,8 @@ harness goal run-phases <goal> --max-phase-retries 2  # replan budget per phase
 
 `run-phases` walks `phases[]` in order, compiles each phase's live tasks, runs it,
 and only advances past a phase when its acceptance verdict passes — the sequential
-rule, enforced. See [[author-workflow]] for the Starlark runtime the compiled
-phase runs on, and [[author-goal]] for getting a goal to `explored` first.
+rule, enforced. See [[star-workflow]] for the Starlark runtime the compiled
+phase runs on, and [[star-goal]] for getting a goal to `explored` first.
 
 ### Gating, replan, and resume (what the orchestrator does)
 
@@ -165,7 +165,7 @@ orchestrator edits (via replan) as execution surfaces new knowledge.
   no `owned_paths`. A task is a mini-goal; give it the same grounding the goal got.
 - **Planning before exploring.** Running `goal plan` on a goal whose `design_md` is
   thin or absent. The plan is cut from the design — fix the design first
-  ([[author-goal]]), then plan.
+  ([[star-goal]]), then plan.
 - **Cross-phase task deps.** Using `depends_on` to reach into another phase.
   Ordering across phases is the phase sequence; `depends_on` is intra-phase only.
 - **Outputs-less verify/doc phases.** A phase with no `required` `outputs` can "pass"

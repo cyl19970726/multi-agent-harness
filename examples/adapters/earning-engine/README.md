@@ -1,7 +1,7 @@
 # Earning Engine Adapter Example
 
 This example shows how a project can expose its tools to the generic
-Multi-Agent Harness without coupling the generic core to project code.
+Star Harness without coupling the generic core to project code.
 
 The adapter supplies:
 

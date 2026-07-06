@@ -1,6 +1,6 @@
 # Earning Engine Pilot Workflow
 
-This pilot tests whether Multi-Agent Harness can drive strategy-matrix work
+This pilot tests whether Star Harness can drive strategy-matrix work
 without importing Earning Engine strategy code.
 
 ## First Pilot Scenario

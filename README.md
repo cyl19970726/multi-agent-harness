@@ -1,4 +1,4 @@
-# Multi-Agent Harness
+# Star Harness
 
 Generic multi-agent harness for turning a project or business domain into an
 agent-operable system.
@@ -16,7 +16,7 @@ that project's CLI, Dashboard, artifacts, and permission rules.
 ## Product Boundary
 
 ```text
-Multi-Agent Harness
+Star Harness
   Goal / AgentTeam / AgentMember / AgentRuntime / AgentEvent / Task / Message
   Proposal / Evidence / Decision / ProviderSession
   Skill files / Tool descriptors / Agent Dashboard
@@ -34,18 +34,18 @@ checks.
 
 ## Quickstart
 
-Install the authoring skill kit — `author-workflow` + `author-goal` +
-`author-planner` — into your agent, start the harness service, then ask your
+Install the authoring skill kit — `star-workflow` + `star-goal` +
+`star-planner` — into your agent, start the harness service, then ask your
 agent to author and run a goal/plan/workflow. Full walkthrough:
 **[docs/getting-started.md](docs/getting-started.md)**.
 
 ```bash
 # 1. install the skill kit (Claude Code + Codex) — all three skills
 scripts/install-skill.sh --agent both
-#    one skill only:  scripts/install-skill.sh --agent both --skill author-workflow
+#    one skill only:  scripts/install-skill.sh --agent both --skill star-workflow
 #    or standalone:   curl -fsSL .../scripts/install-skill.sh | bash -s -- --agent both
-#    or:              npx skills add cyl19970726/multi-agent-harness --skill author-workflow --agent codex
-#    or (Claude):     /plugin marketplace add cyl19970726/multi-agent-harness && /plugin install author-workflow
+#    or:              npx skills add cyl19970726/multi-agent-harness --skill star-workflow --agent codex
+#    or (Claude):     /plugin marketplace add cyl19970726/multi-agent-harness && /plugin install star-workflow
 
 # 2. start the service
 cargo build -p harness-cli
@@ -78,7 +78,7 @@ reserved GLOBAL `~/` project. Register with `harness init`, switch with
 | `schemas/` | Stable JSON schemas shared by API, CLI, adapters, and Dashboard. |
 | `crates/` | Rust backend crates. |
 | `apps/agent-dashboard` | React/Vite Agent Dashboard control-plane app and static build output. |
-| `skills/` | Shipped, installable skills (the author-workflow + author-goal + author-planner kit). |
+| `skills/` | Shipped, installable skills (the star-workflow + star-goal + star-planner kit). |
 | `.agents/skills/` | This repo's internal runtime skills (auto-discovered by Codex / harness-spawned workers). |
 | `examples/adapters/earning-engine` | First project adapter example. |
 
@@ -110,16 +110,16 @@ reserved GLOBAL `~/` project. Register with `harness init`, switch with
 
 **Shipped (install the kit into your own project — see the Quickstart):**
 
-- [**Author goal**](skills/author-goal/SKILL.md): create or advance a Goal —
+- [**Star goal**](skills/star-goal/SKILL.md): create or advance a Goal —
   write its description / design / real-acceptance markdown, accumulate a
   knowledge ledger, run multi-agent exploration, and move it through its
   lifecycle (manual gated stages or the knowledge-driven phased model run by
   `harness goal run-phases`).
-- [**Author planner**](skills/author-planner/SKILL.md): decompose an explored
+- [**Star planner**](skills/star-planner/SKILL.md): decompose an explored
   Goal into an executable plan — ordered phases, each owning a task DAG where
   tasks with disjoint `owned_paths` run in parallel — via `harness goal plan`,
   feeding the phase→Starlark compiler and `goal run-phases` orchestrator.
-- [**Author workflow**](skills/author-workflow/SKILL.md): teach a shell-capable
+- [**Star workflow**](skills/star-workflow/SKILL.md): teach a shell-capable
   agent (Claude Code / Codex) to author a Starlark multi-agent workflow and run
   it with `harness workflow run-script`.
 
@@ -128,7 +128,7 @@ Install the whole kit with `scripts/install-skill.sh --agent both` (add
 
 **Internal (this repo's own agents use these via `.agents/skills/`):**
 
-- [Bootstrap project workflow](.agents/skills/bootstrap-project-workflow/SKILL.md):
+- [Bootstrap project workflow](skills/bootstrap-project-workflow/SKILL.md):
   create or audit a project's docs, CI/CD, diagrams, task workflow, and
   evidence-backed governance.
 - [Generic agent harness](.agents/skills/generic-agent-harness/SKILL.md): operate and

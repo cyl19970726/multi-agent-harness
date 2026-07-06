@@ -133,7 +133,7 @@ A phase passes only when all of the following hold (`main.rs:2439-2441`), and th
 3. Every required artifact (phase + live task `outputs`) is satisfied (`main.rs:2432-2433`, `unmet_required_artifacts` at `main.rs:1932`).
 4. Every required `RegisteredDoc` is present in `docs/registry.json` (`main.rs:2438`, `unmet_registered_docs` at `main.rs:1990`).
 
-A `workflow`-mode phase gates on clauses 1, 3, and 4 only — it trusts the run's own status and verdict rather than requiring every step to be `ok`. An authored Starlark program can legitimately tolerate a failed leaf (e.g. `return_status=True` plus a retry/fallback that still reaches `verdict(True)`, per `skills/author-workflow/examples/failure-aware-retry.star`); the run still finalizes `Completed` even though one journaled step is `ok=false`, and that tolerated failure must not fail the phase. A `task_graph` phase keeps the strict all-steps-`ok` clause.
+A `workflow`-mode phase gates on clauses 1, 3, and 4 only — it trusts the run's own status and verdict rather than requiring every step to be `ok`. An authored Starlark program can legitimately tolerate a failed leaf (e.g. `return_status=True` plus a retry/fallback that still reaches `verdict(True)`, per `skills/star-workflow/examples/failure-aware-retry.star`); the run still finalizes `Completed` even though one journaled step is `ok=false`, and that tolerated failure must not fail the phase. A `task_graph` phase keeps the strict all-steps-`ok` clause.
 
 If `phase.acceptance` is set, the compiled judge leaf returns structured `{"pass": bool, "reason": string}` and `verdict(...)` hard-gates the phase (`lib.rs:901-918`). If no acceptance is set, the applicable clauses above form the gate.
 

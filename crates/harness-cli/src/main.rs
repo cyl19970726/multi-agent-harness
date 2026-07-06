@@ -3017,7 +3017,7 @@ fn orchestrate_goal_phases(
             // Completed — hence the all-steps-ok clause catches it. A WORKFLOW-mode
             // phase runs an AUTHORED program that may legitimately TOLERATE a failed
             // leaf (return_status + retry + verdict(True) → status Completed with a
-            // journaled ok=false step; see skills/author-workflow/examples/
+            // journaled ok=false step; see skills/star-workflow/examples/
             // failure-aware-retry.star). Requiring all-steps-ok there would wrongly
             // fail such a run, so the workflow-mode gate trusts the run's own status
             // + verdict (surfaced as Completed) and the required-artifact set only.
@@ -8341,8 +8341,10 @@ fn is_git_repo(path: &Path) -> bool {
 /// Does `provider`'s exec mode PHYSICALLY enforce read-only (so a non-writable
 /// leaf cannot mutate its cwd)? codex (`--sandbox read-only`) and claude (a
 /// read-only tool allowlist `Read,Grep,Glob`) do; kimi's headless `kimi -p`
-/// rejects every permission flag, so it does NOT. An unknown provider is treated
-/// as unenforceable (the safe default). Drives [`step_needs_isolation`].
+/// rejects every permission flag, so it does NOT. This remains provider
+/// capability metadata; read-only workflow cwd routing is controlled by
+/// [`step_needs_isolation`].
+#[cfg(test)]
 fn provider_enforces_read_only(provider: &str) -> bool {
     provider_adapter(provider)
         .map(|a| a.capabilities().enforces_read_only)
@@ -8356,20 +8358,16 @@ fn step_write_mode_direct(spec: &workflow::AgentStepSpec) -> bool {
 /// Whether an ephemeral leaf must run in a throwaway git worktree instead of the
 /// shared repo cwd. A leaf isolates when it explicitly opts into
 /// `isolation="worktree"`, when it is `writable` (edits must land in a discardable
-/// checkout), OR when it is read-only on a provider that cannot enforce read-only
-/// — kimi can edit from a "read-only" leaf, so the worktree is the only boundary
-/// that keeps those writes off the live repo. Pure + unit-testable; the live call
-/// passes `provider_enforces_read_only(provider)`.
-fn step_needs_isolation(
-    writable: bool,
-    isolation: Option<&str>,
-    write_mode: Option<&str>,
-    provider_enforces_read_only: bool,
-) -> bool {
+/// checkout). Read-only leaves stay in the selected project root even if a
+/// provider cannot physically enforce read-only (#190); provider capability gaps
+/// should not silently turn a read-only scan/review into a git-worktree
+/// requirement. `write_mode="direct"` writes the shared project root in place, so
+/// it never isolates either.
+fn step_needs_isolation(writable: bool, isolation: Option<&str>, write_mode: Option<&str>) -> bool {
     if write_mode == Some(workflow::WRITE_MODE_DIRECT) {
         return false;
     }
-    isolation == Some("worktree") || writable || !provider_enforces_read_only
+    isolation == Some("worktree") || writable
 }
 
 fn direct_write_diff(repo_root: &Path) -> Option<String> {
@@ -8443,12 +8441,14 @@ fn ensure_direct_write_ready(
 /// Spin up a NEW one-shot EDITABLE ephemeral worker for one `agent()` node and
 /// reduce its result into a [`workflow::StepResult`].
 ///
-/// Workspace: read-only leaves run in the selected project root when their
-/// provider can enforce read-only. Editable leaves default to a harness-owned
-/// throwaway worktree; `write_mode="direct"` is the explicit simple serial path
-/// that writes the selected project root immediately. Worktree diffs are captured
-/// as pending patches; direct diffs are recorded as evidence because the change is
-/// already in the repo working tree.
+/// Workspace: read-only leaves run in the selected project root (#190 — even on a
+/// provider that cannot physically enforce read-only). Editable leaves default to
+/// a harness-owned throwaway worktree (its `git diff` is collected and the
+/// worktree is NOT auto-merged; cleanup is the `WorktreeGuard`'s Drop, bulletproof
+/// across success/failure/timeout); `write_mode="direct"` is the explicit simple
+/// serial path that writes the selected project root immediately. Worktree diffs
+/// are captured as pending patches; direct diffs are recorded as evidence because
+/// the change is already in the repo working tree.
 fn spawn_ephemeral_worker(
     store: &HarnessStore,
     options: &WorkflowDeliveryOptions,
@@ -8466,22 +8466,21 @@ fn spawn_ephemeral_worker(
 
     // Opt-in isolation: harness-owned throwaway worktree, else the shared cwd.
     // The guard (when present) cleans up on every exit path via Drop.
-    // A node isolates when it explicitly opts in, when it is `writable` (an editing
-    // worker runs in a throwaway worktree so its writes land in a discardable
-    // checkout, never the live repo), OR when it is read-only on a provider that
-    // cannot enforce read-only — kimi's `kimi -p` has no read-only mode, so a
-    // "read-only" kimi leaf could otherwise edit the live repo; the worktree is the
-    // only boundary. See `step_needs_isolation` / `provider_enforces_read_only`.
+    // A node isolates when it explicitly opts in, or when it is `writable` (an
+    // editing worker runs in a throwaway worktree so its writes land in a
+    // discardable checkout, never the live repo). Read-only scans/reviews do not
+    // implicitly require git worktrees — read-only leaves stay in the selected
+    // project root even on a provider that cannot enforce read-only (#190).
+    // `write_mode="direct"` writes the shared project root in place instead of a
+    // worktree, so it validates the tree up front and never isolates.
     let direct_write = step_write_mode_direct(spec);
     if direct_write {
         ensure_direct_write_ready(project, &repo_root, spec)?;
     }
-    let explicit_or_writable = spec.isolation.as_deref() == Some("worktree") || spec.writable;
-    let mut isolate = step_needs_isolation(
+    let isolate = step_needs_isolation(
         spec.writable,
         spec.isolation.as_deref(),
         spec.write_mode.as_deref(),
-        provider_enforces_read_only(&spec.provider),
     );
 
     // GLOBAL / non-git policy (P5): an isolated/writable node needs a git worktree,
@@ -8490,32 +8489,17 @@ fn spawn_ephemeral_worker(
     // `is_git_repo` gate in `WorktreeGuard::create` uses (#89 item 5) — surfaced
     // here BEFORE the worktree attempt so the project id / kind is named.
     if isolate && !project.is_git_repo {
-        if explicit_or_writable {
-            return Err(CliError::Usage(format!(
-                "node '{}' needs an isolated git worktree (it is writable, or sets \
-                 isolation=\"worktree\"), but project '{}' ({}) is not a git repository. \
-                 Run this step READ-ONLY (drop writable / isolation=\"none\") and retrieve \
-                 its output with `harness workflow get-output <run_id> --step {}`, or run \
-                 the workflow against a git-backed project.",
-                spec.label,
-                project.id,
-                repo_root.display(),
-                spec.label,
-            )));
-        }
-        // Read-only leaf that only needs isolation because its provider can't enforce
-        // read-only: a non-git root has no worktree to isolate into. DEGRADE (don't
-        // fail) — run in the shared cwd and warn that writes aren't contained, rather
-        // than breaking read-only kimi leaves on the `_global` / non-repo project.
-        eprintln!(
-            "warning: read-only {provider} leaf '{label}' cannot be worktree-isolated \
-             (project '{pid}' is not a git repository) and {provider} has no read-only \
-             mode — running it in the shared cwd; it MAY edit files there.",
-            provider = spec.provider,
-            label = spec.label,
-            pid = project.id,
-        );
-        isolate = false;
+        return Err(CliError::Usage(format!(
+            "node '{}' needs an isolated git worktree (it is writable, or sets \
+             isolation=\"worktree\"), but project '{}' ({}) is not a git repository. \
+             Run this step READ-ONLY (drop writable / isolation=\"none\") and retrieve \
+             its output with `harness workflow get-output <run_id> --step {}`, or run \
+             the workflow against a git-backed project.",
+            spec.label,
+            project.id,
+            repo_root.display(),
+            spec.label,
+        )));
     }
 
     let guard = if isolate {
@@ -19890,9 +19874,9 @@ mod workflow_runtime_tests {
         assert!(!kimi.capabilities().cost, "kimi cost is S3-spike TBD");
         assert!(!kimi.capabilities().resume, "kimi resume is S3-spike TBD");
         // Read-only enforcement: codex (--sandbox read-only) and claude (read-only
-        // tool allowlist) PHYSICALLY enforce read-only; kimi -p has no read-only mode
-        // (rejects every permission flag), so a read-only kimi leaf must be worktree-
-        // isolated rather than trusted. This drives `step_needs_isolation`.
+        // tool allowlist) PHYSICALLY enforce read-only; kimi -p has no read-only
+        // mode (rejects every permission flag). This is capability metadata only;
+        // read-only workflow leaves still run in the selected project root.
         assert!(
             codex.capabilities().enforces_read_only,
             "codex enforces read-only via --sandbox read-only"
@@ -19903,7 +19887,7 @@ mod workflow_runtime_tests {
         );
         assert!(
             !kimi.capabilities().enforces_read_only,
-            "kimi -p has no read-only mode — must be worktree-isolated"
+            "kimi -p has no read-only mode"
         );
         // supported_provider_names() is the single source of truth and now lists kimi.
         assert!(
@@ -19922,46 +19906,42 @@ mod workflow_runtime_tests {
     }
 
     #[test]
-    fn read_only_leaf_isolates_only_when_provider_cannot_enforce_read_only() {
-        // A read-only leaf (writable=false, no explicit isolation) on a provider that
-        // ENFORCES read-only (codex/claude) runs in the shared cwd — no worktree.
+    fn read_only_leaf_stays_shared_cwd_regardless_of_provider_enforcement() {
+        // A read-only leaf (writable=false, no explicit isolation) runs in the
+        // shared project cwd. Provider capability does not silently create a git
+        // worktree requirement.
         assert!(
-            !step_needs_isolation(false, None, None, true),
+            !step_needs_isolation(false, None, None),
             "read-only leaf on an enforcing provider stays in the shared cwd"
         );
-        // The same read-only leaf on a provider that CANNOT enforce read-only (kimi)
-        // MUST be worktree-isolated — the regression this fix closes (a read-only kimi
-        // leaf edited the live repo).
         assert!(
-            step_needs_isolation(false, None, None, false),
-            "read-only leaf on a non-enforcing provider must be isolated"
+            !step_needs_isolation(false, None, None),
+            "read-only leaf on a non-enforcing provider also stays in the shared cwd (#190)"
         );
-        // Writable / explicit-isolation always isolate, regardless of the provider's
-        // read-only enforcement.
+        // Writable / explicit-isolation always isolate.
         assert!(
-            step_needs_isolation(true, None, None, true),
+            step_needs_isolation(true, None, None),
             "writable always isolates"
         );
         assert!(
-            step_needs_isolation(false, Some("worktree"), None, true),
+            step_needs_isolation(false, Some("worktree"), None),
             "explicit isolation always isolates"
         );
-        // Sanity: the live wiring resolves real providers to the right enforcement.
+        // Sanity: provider enforcement metadata remains honest, but no longer drives
+        // cwd isolation (#190). Read-only leaves stay in the shared project root on
+        // enforcing (codex) and non-enforcing (kimi) providers alike.
+        assert!(provider_enforces_read_only("codex"));
+        assert!(!provider_enforces_read_only("kimi"));
         assert!(
-            !step_needs_isolation(false, None, None, provider_enforces_read_only("codex")),
+            !step_needs_isolation(false, None, None),
             "codex read-only leaf does not need isolation"
         );
         assert!(
-            step_needs_isolation(false, None, None, provider_enforces_read_only("kimi")),
-            "kimi read-only leaf needs isolation"
+            !step_needs_isolation(false, None, None),
+            "kimi read-only leaf does not need isolation (#190 — no worktree from a capability gap)"
         );
         assert!(
-            !step_needs_isolation(
-                true,
-                None,
-                Some(workflow::WRITE_MODE_DIRECT),
-                provider_enforces_read_only("codex")
-            ),
+            !step_needs_isolation(true, None, Some(workflow::WRITE_MODE_DIRECT)),
             "direct write mode writes shared cwd instead of creating a worktree"
         );
     }
@@ -23790,9 +23770,12 @@ new file mode 100644
         let _ = std::fs::remove_dir_all(store.root());
     }
 
-    // D3a (standalone): a FAILED writable step and a READ-ONLY isolated step (a
-    // #167 kimi-style leaf that isolated only because its provider can't enforce
-    // read-only) BOTH strand nothing — no pending WorkflowPatch is persisted.
+    // D3a (standalone): a FAILED writable step and a READ-ONLY step that produced a
+    // stray diff BOTH strand nothing — no pending WorkflowPatch is persisted. Post
+    // #190 a read-only kimi leaf runs on the project root (no worktree from a
+    // capability gap), but the `should_persist_workflow_patch` writable gate is the
+    // real guarantee: `writable=false` diffs are discarded whether or not the leaf
+    // isolated, so a read-only leaf can never persist a patch.
     #[test]
     fn standalone_run_does_not_persist_failed_or_readonly_isolated_diffs() {
         let store = temp_store("standalone-d3a");
@@ -23847,8 +23830,9 @@ new file mode 100644
             step_id: Some("wfstep-kimi".into()),
             started_at: None,
             details: Some(serde_json::json!({
-                // A read-only leaf that isolated only for provider-enforcement, yet
-                // produced a diff (unauthorized write). writable=false → discard it.
+                // A read-only leaf that produced a stray diff (unauthorized write).
+                // writable=false → the persistence gate discards it regardless of
+                // whether the leaf isolated (post #190 it would not).
                 "worktree_diff": new_file_diff_str("src/sneaky.txt", "sneaky"),
                 "worktree_changed_paths": ["src/sneaky.txt"],
                 "writable": false,

@@ -6,8 +6,8 @@ source_skill="$(cd "$script_dir/.." && pwd)"
 
 codex_home="${CODEX_HOME:-$HOME/.codex}"
 targets=(
-  "$codex_home/skills/author-workflow"
-  "$HOME/.agents/skills/author-workflow"
+  "$codex_home/skills/star-workflow"
+  "$HOME/.agents/skills/star-workflow"
 )
 
 validator="${SKILL_VALIDATOR:-$HOME/.codex/skills/.system/skill-creator/scripts/quick_validate.py}"

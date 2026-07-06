@@ -1,6 +1,6 @@
 ---
-name: author-workflow
-description: "Use when an agent needs to author a dynamic multi-agent workflow at runtime, including workflow-mode GoalPhases: write a Starlark program (loops, conditionals, data-driven fan-out) that calls agent()/parallel()/phase()/log() over the harness runtime, declare a mandatory workflow(name, design_intent) header, run it with `harness workflow run-script`, and read the resulting WorkflowRun/WorkflowStep records back from the dashboard snapshot or store. For task_graph GoalPhases, use author-planner instead."
+name: star-workflow
+description: "Use when an agent needs to author a dynamic multi-agent workflow at runtime, including workflow-mode GoalPhases: write a Starlark program (loops, conditionals, data-driven fan-out) that calls agent()/parallel()/phase()/log() over the harness runtime, declare a mandatory workflow(name, design_intent) header, run it with `harness workflow run-script`, and read the resulting WorkflowRun/WorkflowStep records back from the dashboard snapshot or store. For task_graph GoalPhases, use star-planner instead."
 ---
 
 # Author Workflow
@@ -22,11 +22,15 @@ member) and journals a `WorkflowRun` plus one `WorkflowStep` per agent call —
 identical to the built-in `workflow run --name` path, so the run shows up live on
 the Agent Dashboard Workflows surface.
 
-Every leaf is READ-ONLY by default. A leaf may write only when it explicitly sets
-`writable=True`. Standalone `run-script` then uses a throwaway worktree and saves
-the diff as a pending `WorkflowPatch`; the live repo is not changed until the
-patch is applied. `write_mode="direct"` is the explicit exception for a simple
-serial leaf that should edit the selected project root immediately.
+Each ephemeral worker is READ-ONLY by default and runs in the selected project
+root — even on a provider (like kimi) that cannot physically enforce read-only,
+provider capability gaps do not silently create worktrees (#190). A worker may
+edit only when the call sets `writable=True`; standalone `run-script` then uses a
+throwaway worktree and saves the diff as a pending `WorkflowPatch`, so the live
+repo is not changed until the patch is applied. A read-only call can still opt
+into `isolation="worktree"` when it explicitly needs an isolated checkout.
+`write_mode="direct"` is the explicit exception for a simple serial leaf that
+should edit the selected project root immediately.
 
 ## When To Use
 
@@ -63,14 +67,14 @@ come from mixing permission (`writable=True`) with landing semantics.
 
 | Scenario | Use | Do not use |
 | --- | --- | --- |
-| Read-only scan / review / synthesis | Omit `writable`; use `schema=` for any branch decision. | Do not assume a read-only leaf can run arbitrary shell on every provider; Kimi is isolated because it cannot enforce read-only. |
+| Read-only scan / review / synthesis | Omit `writable`; use `schema=` for any branch decision. | Do not assume a read-only leaf can run arbitrary shell on every provider; Kimi cannot physically enforce read-only, so choose codex/claude when hard read-only enforcement matters (read-only leaves still run on the project root regardless — #190). |
 | Failure-aware retry / fallback | Use `return_status=True` and inspect `ok`, `reason`, `detail`, and `structured` before retrying or aborting. | Do not parse prose to guess whether a leaf timed out, failed, or merely returned a negative domain verdict. |
 | Normal code implementation | `writable=True`, default worktree landing, `owned_paths=[...]`, leave `persist_changes` unset or `"patch"`. Operator or workflow later applies/rejects the pending `WorkflowPatch`. | Do not rely on `expected_artifacts` to preserve code edits; it is for named files, not source diffs. |
 | Workflow-internal apply/reject | Implement in one writable leaf, have that leaf return a compact diff/gate summary, review it with a schema'd read-only gate, then call `apply_patch(label, reason)` or `reject_patch(label, reason)`. | Do not auto-apply without a gate; if the reviewer cannot see the relevant evidence, leave the patch pending for manual review. |
 | Simple direct edit | One serial `agent(..., writable=True, write_mode="direct")` against a clean git project. Use for small docs/config edits the operator intends to land in the current tree now. | Do not use direct mode inside `parallel()` / `pipeline()`, and do not split direct edit/repair across multiple writable leaves: after the first leaf dirties the repo, another direct leaf is refused. |
 | Parallel fixes | `parallel([{..., "writable": True, "owned_paths": [...]}, ...])`; each slot gets its own worktree and patch. Use unique labels such as `fix:1`, `fix:2`. | Never use `write_mode="direct"` for concurrent mutations. Avoid duplicate labels if humans must apply/reject individual patches. |
 | File/artifact generation | `writable=True`, `expected_artifacts=[...]`, and `artifact_manifest([...], artifact_root=..., write_roots=[...])`. | Do not write artifacts to absolute paths or outside declared roots; those writes escape worktree cleanup/accounting. |
-| Goal phase execution | For a workflow-mode GoalPhase, author a repo `.star` workflow and attach it as `workflow_ref=repo:workflows/name.star`; `goal run-phases` loads that script directly and links the resulting `WorkflowRun` to the GoalPhase. TaskGraph phases remain owned by `author-planner`. | Do not put a TaskGraph in front of a workflow-mode phase, and do not assume standalone `run-script` auto-lands worktree diffs; goal-managed runs have separate landing semantics. |
+| Goal phase execution | For a workflow-mode GoalPhase, author a repo `.star` workflow and attach it as `workflow_ref=repo:workflows/name.star`; `goal run-phases` loads that script directly and links the resulting `WorkflowRun` to the GoalPhase. TaskGraph phases remain owned by `star-planner`. | Do not put a TaskGraph in front of a workflow-mode phase, and do not assume standalone `run-script` auto-lands worktree diffs; goal-managed runs have separate landing semantics. |
 | Landing mode choice | Use `examples/landing-mode-chooser.star` when deciding between ad-hoc `run-script` and goal-managed `run-phases`. | Do not describe "writable" as one landing behavior; the same runtime has different landing semantics depending on the front-end. |
 
 Good starting points:
@@ -126,7 +130,7 @@ for reproducibility.
 ## Host API
 
 The interpreter is [Starlark](https://github.com/facebook/starlark-rust)
-([`crates/harness-workflow/src/starlark_front.rs`](../../../crates/harness-workflow/src/starlark_front.rs)),
+([`crates/harness-workflow/src/starlark_front.rs`](../../crates/harness-workflow/src/starlark_front.rs)),
 the same dialect Bazel uses. It is HERMETIC by design: the script has no clock, no
 randomness, and no IO. The orchestration (which agents run, in what order, with what
 prompts) is therefore deterministic — the ONLY nondeterminism lives in the journaled
@@ -163,8 +167,11 @@ Rules every call obeys:
   `"kimi"` (Kimi Code) is registry-routed like the others, but its headless `kimi -p`
   surface is leaner: no native schema / effort / service-tier / budget flags and
   a flat reply stream, so `schema=` degrades to text-extraction and `effort=`,
-  `service_tier=`, token, and cost come back empty. Use it for plain build /
-  verify leaves; keep schema-gated control-flow leaves on codex or claude.
+  `service_tier=`, token, and cost come back empty. Kimi also does not physically
+  enforce a read-only sandbox, but read-only Kimi leaves still run in the selected
+  project root rather than forcing a worktree. Use codex or claude when hard
+  read-only enforcement matters; keep schema-gated control-flow leaves on codex
+  or claude.
 - `prompt`, `label`, and `phase` are non-empty strings; optional `model` (any
   non-empty string) overrides the provider's default model — route a CHEAP model
   to read-only verify/review steps and the strong model to the builder. The value
@@ -200,10 +207,11 @@ Rules every call obeys:
   is intentionally throwaway. Use `owned_paths=["src", "docs"]` on code-writing
   leaves so patch apply can reject path escapes. Patch capture only happens for a
   step that both SUCCEEDED (`ok`) and was declared `writable=True` — a failed
-  leaf's diff is discarded, and a read-only leaf that was worktree-isolated
-  because its provider can't enforce read-only (the Kimi case; see
-  [Workspace: read-only by default](#workspace-read-only-by-default-writabletrue-to-edit))
-  never produces a patch even though it ran in a worktree. Starlark validation
+  leaf's diff is discarded, and a read-only leaf never produces a patch (the
+  writable gate, not isolation, is the guarantee; read-only leaves run on the
+  project root even on a provider that can't enforce read-only — #190; see
+  [Workspace: read-only by default](#workspace-read-only-by-default-writabletrue-to-edit)).
+  Starlark validation
   rejects `auto_apply_on_verdict=True` or `persist_changes="patch"` on a
   `writable=False` leaf, and rejects any `persist_changes` other than
   `"patch"`/`"discard"` or `write_mode` other than `"direct"`/absent, in
@@ -287,9 +295,12 @@ workflow("x", "first part " +
 
 ### Workspace: read-only by default, `writable=True` to edit
 
-Every call is READ-ONLY by default — the worker may read files and run searches
-but CANNOT edit files or run shell. This is the safe default for the common case
-(finders, reviewers, verifiers, synthesizers all only read).
+Every call is READ-ONLY by default and runs in the selected project root — the
+worker may read files and run searches but must not edit files or run shell. This
+is the safe default for the common case (finders, reviewers, verifiers,
+synthesizers all only read). The runtime does not create a worktree merely
+because the provider cannot physically enforce read-only; choose codex/claude for
+hard read-only enforcement.
 
 A call that must EDIT files or run commands sets `writable=True`. That worker is
 automatically run in its own harness-owned throwaway git worktree under
@@ -397,7 +408,8 @@ in the task/evidence; otherwise keep store writes in the Lead process after the
 workflow returns.
 
 `isolation="worktree"` is the explicit form of the same thing (a read-only call
-that still wants an isolated checkout); `writable=True` implies it.
+that still wants an isolated checkout); `writable=True` implies it. Do not set it
+for ordinary read-only reviews or scans.
 
 **The workflow's cwd must be a git repo for `writable` / `isolation="worktree"`
 steps** — the throwaway worktree is created with `git worktree add`. In a non-git
@@ -1058,11 +1070,12 @@ its permission profile must allow it:
 - The runner's allowed-tool / command policy must permit running the `harness`
   binary (for Claude this is a `Bash(harness ...)` allowance; for Codex the
   sandbox/approval policy must let the shell call through).
-- Each agent call spins up a fresh ephemeral worker. `writable=True` grants edit
-  tools/full provider permission; by default those writes go to a throwaway
-  worktree. `write_mode="direct"` is the explicit choice to write the selected
-  repo cwd immediately. A prompt that writes files or runs destructive /
-  money-moving actions executes for real — scope prompts accordingly and keep
+- Each agent call spins up a fresh ephemeral worker that is READ-ONLY in the
+  selected project root by default (#190). `writable=True` grants edit tools/full
+  provider permission; by default those writes go to a throwaway worktree.
+  `write_mode="direct"` is the explicit choice to write the selected repo cwd
+  immediately. A prompt that writes files or runs destructive / money-moving
+  actions executes for real once writable — scope prompts accordingly and keep
   parallel mutations in worktrees.
 - Nested `harness ...` commands inside an ephemeral worker write a session-local
   child store by default, not the parent project's central store. Use
@@ -1096,15 +1109,15 @@ its permission profile must allow it:
 
 ## Maintaining This Skill
 
-When updating this repository's `skills/author-workflow` copy, sync the installed
+When updating this repository's `skills/star-workflow` copy, sync the installed
 copies before accepting the task:
 
 ```bash
-skills/author-workflow/scripts/sync-installed.sh
+skills/star-workflow/scripts/sync-installed.sh
 ```
 
-The script updates `$CODEX_HOME/skills/author-workflow` (or `~/.codex/skills` by
-default) and `~/.agents/skills/author-workflow`, diffs both installed copies
+The script updates `$CODEX_HOME/skills/star-workflow` (or `~/.codex/skills` by
+default) and `~/.agents/skills/star-workflow`, diffs both installed copies
 against the repo copy, and runs `quick_validate.py` when the validator is
 available. If an update should not be installed, record that as explicit evidence
 and explain why.

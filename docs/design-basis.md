@@ -1,6 +1,6 @@
 # Design Basis
 
-This document records the design thinking behind Multi-Agent Harness. It sits
+This document records the design thinking behind Star Harness. It sits
 between the product requirements and the implementation architecture: PRD says
 why the product exists, architecture says what modules exist, and this document
 explains why the system is decomposed this way.
