@@ -76,6 +76,24 @@ The board lays out `displayGoalStatus` (Goals: active/blocked/review/done) or
 `status` (Tasks: planned/assigned/running/blocked/review/done), overlaying the
 `taskGraph` ready/waiting chip on each task card.
 
+### Phase-scoped projections (goal-task-board-model)
+
+Tasks are viewed under Goal -> Phase; the flat global task board is retired and
+the Work board defaults to the goal collection, with a goal-scoped task lane
+view as the drill-in fallback. Phase-scoped derivations in
+`apps/agent-dashboard/src/model/readModel.ts`:
+
+| Selector | Owns |
+| --- | --- |
+| `phaseTaskDag(phaseId, tasks)` | layers a phase's live tasks into the same layer/group shape the Starlark compiler emits (in-phase `depends_on_task_ids` only; superseded tasks excluded). |
+| `phaseKanban(phaseId, tasks)` | phase-scoped status lanes, the Kanban counterpart of `phaseTaskDag`; covered by the phase-board fixture. Since the goal workflow workbench, the Goal page renders the phase DAG plus workflow panel rather than a per-phase lane toggle. |
+| `phaselessGoalTasks(goalId, tasks)` | the "(no phase)" set — live tasks on the goal without a live phase, kept visible under phase-driven goals. |
+
+Workflow-run projections in `apps/agent-dashboard/src/model/workflowSelectors.ts`
+join `WorkflowRun.goal_id`/`phase_id` forward links with
+`goal_orchestration_runs` checkpoints (e.g. `selectPhaseWorkflowRuns`) so each
+phase shows the runs that executed it.
+
 ## Detail Panels
 
 Task detail must show the evidence chain that proves work happened:
@@ -160,6 +178,8 @@ table against it rather than trusting the prose.
 | `apps/agent-dashboard/src/types.ts` | Snapshot and UI object types. |
 | `apps/agent-dashboard/src/model/readModel.ts` | Selectors, goal scope, member/team/task grouping. |
 | `apps/agent-dashboard/src/model/warnings.ts` | Advisory warning derivation. |
+| `apps/agent-dashboard/src/model/workflowSelectors.ts` | Workflow-run projections (per-phase runs, step status counts, run progress/liveness). |
+| `apps/agent-dashboard/src/model/workflowShape.ts` | Derived serial/parallel shape and Gantt geometry for a run's steps. |
 | `apps/agent-dashboard/src/surfaces/*` | Page surfaces (display and navigation only). |
 | `apps/agent-dashboard/src/components/{ui,workbench}/*` | shadcn/ui primitives and product atoms. |
 

@@ -84,6 +84,13 @@ These projections must be derived from the same harness read model. The graph
 cannot become decorative topology, and the Kanban cannot become a separate
 frontend state machine.
 
+Shipped scoping (goal-task-board-model, then the goal workflow workbench):
+task projections live under Goal -> Phase. The Goal document renders each
+phase's task DAG together with that phase's workflow runs; the Work board
+defaults to the goal collection; a goal-scoped task lane view remains as the
+drill-in/legacy fallback, with a "(no phase)" section for phaseless-but-goaled
+tasks. The flat global task board is retired.
+
 Use a controlled canvas, not a freeform whiteboard:
 
 - automatic layout;
@@ -102,6 +109,11 @@ treated as disposable execution surfaces.
 Do not make AgentTeam a graph by default. Role groups, queues, status, prompt
 refs, permissions, runtime state, current task, and continuity are the primary
 team affordances. Reserve graph views for optional message-flow diagnostics.
+
+Shipped state: the current Workbench exposes a flat Agents area (roster plus a
+URL-addressable per-agent detail page) with no Team surface; `AgentTeam`
+objects are retained in the read model for data continuity until a team
+workspace ships.
 
 AgentMember detail must feel live:
 
@@ -158,9 +170,9 @@ Realtime UI should show generated time, polling or streaming state, event age,
 active provider sessions, queued messages, direct message affordance, and safe
 repair actions.
 
-## Current Failure Modes
+## Failure Modes That Drove The Rebuild
 
-The current implementation proves useful data surfaces, but its layout has been
+The pre-rebuild implementation proved useful data surfaces, but its layout was
 hard to operate:
 
 - snapshot paste/debug controls occupy primary space during live operation;
@@ -175,5 +187,8 @@ hard to operate:
 - repeated object versions can leak into React lists and create duplicate key
   warnings.
 
-The redesign should preserve state visibility while changing where that state
-appears and how operators move through it.
+The shipped rebuild addressed the worst of these: the raw snapshot moved behind
+a top-bar Debug toggle, and a URL-addressable agent detail page (`?agent=<id>`)
+now shows a chronological conversation timeline. The list stays as regression
+checks: any layout change must preserve state visibility while changing where
+that state appears and how operators move through it.

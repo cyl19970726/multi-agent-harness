@@ -17,7 +17,7 @@ actually happened:
 
 ```text
 vision -> goal collection -> selected goal -> goal design
-  -> goal graph/Kanban -> task graph/Kanban
+  -> goal graph/Kanban -> goal phases -> task graph/Kanban
   -> task message -> agent runtime
   -> report/evidence -> proposal/review -> decision/evaluation
   -> distance-to-vision assessment
@@ -91,6 +91,7 @@ Workbench needs should force the data model to expose missing state.
 | Show review quality | critic/reviewer report, missing evidence, path ownership checks |
 | Show acceptance | `Decision` plus rationale and evidence ids |
 | Show learning | `GoalEvaluation`, follow-up tasks, reusable goal case link |
+| Show orchestration | `WorkflowRun.goal_id`/`phase_id` forward links plus `goal_orchestration_runs` checkpoints |
 
 If a field is needed only for a visual label, it may remain a read model. If it
 changes acceptance or safety, it belongs in schema/CLI/API and eventually CI.
@@ -102,7 +103,8 @@ changes acceptance or safety, it belongs in schema/CLI/API and eventually CI.
 | Goal board | Track active goals, acceptance, and evaluation. | create follow-up task, record evaluation |
 | Observer proposals | Show proposed goals, blockers, graph changes, evidence, and Lead disposition. | accept/reject/defer proposal |
 | Goal graph / Kanban | Show goal dependencies, generated goals, blockers, follow-ups, completion state, review/evaluation readiness, and Lead disposition. | propose/accept/reject/defer goal, create follow-up |
-| Task graph / Kanban | Show task work order, blockers, owner, assignee, reviewer, PR/workspace, graph changes, and execution state. | create/split/block/assign task |
+| Task graph / Kanban | Show task work order, blockers, owner, assignee, reviewer, PR/workspace, graph changes, and execution state. Tasks are viewed under Goal -> Phase (per-phase task DAG plus goal-scoped lanes); the flat global task board is retired. | create/split/block/assign task |
+| Workflow runs | Show workflow runs and steps (codex/claude/kimi), including `goal run-phases` orchestration linked back to its goal and phase via `WorkflowRun.goal_id`/`phase_id`. | open run detail, drill to goal/phase context |
 | Agent team | Show member identity, role, skills, permissions, runtime state. Prefer roster/control-plane layout over graph by default. | create/start/stop/close member |
 | Inbox / outbox | Show messages, queued work, delivery success/failure. | send message, retry delivery, ask follow-up |
 | Runtime timeline | Show provider sessions, event age, failures, hooks, child threads. | interrupt, reconcile, close runtime |
@@ -118,6 +120,9 @@ The first Workbench should be a work surface, not a landing page. The default
 screen should answer "what is happening now and what needs a decision?"
 
 ```text
+top bar:
+  project picker (multi-project serve), live source state, refresh, debug toggle
+
 app rail:
   vision, teams, goals, docs, warnings, debug
 
@@ -141,7 +146,7 @@ mixed with frontend implementation details:
 | --- | --- | --- |
 | `docs/dashboard.md` | product-level Workbench purpose, information architecture, backward data requirements, user-facing acceptance | component folder layout, package commands, framework internals |
 | `docs/dashboard/README.md` | Workbench docs placement map, change order, and docs/surface routing rules | product semantics or component implementation |
-| `docs/dashboard/design-principles.md` | core frontend design principles, graph/Kanban policy, AgentTeam/AgentMember UI doctrine, visual system, and current UX failure modes | route-level layout details or React module boundaries |
+| `docs/dashboard/design-principles.md` | core frontend design principles, graph/Kanban policy, AgentTeam/AgentMember UI doctrine, visual system, and the UX failure modes that gate layout changes | route-level layout details or React module boundaries |
 | `docs/dashboard/layout-history.md` | candidate Workbench layout directions, Designer/Questioner critique, scoring rubric, and the selected/killed/deprecated decision ledger including rejected-implementation outcomes | component internals or unscored future ideas |
 | `docs/dashboard/frontend-design.md` | frontend design index, reading order, page-spec map, and implementation-readiness summary | page-level details, framework internals, run commands |
 | `docs/dashboard/pages/*.md` | page/workspace purpose, canonical objects, workflow proof, IA, actions, detailed layout contract, ASCII diagrams, dimensions, scroll ownership, failure modes | component implementation |
