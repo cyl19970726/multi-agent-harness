@@ -84,24 +84,34 @@ import {
   severityTone,
   taskTone,
   timelineTone,
+  workflowRunTone,
 } from "@/components/workbench/tones";
+import {
+  WorkflowDefinitionPreview,
+  WorkflowRunSummary,
+} from "@/components/workbench/WorkflowPanels";
 
 import {
   displayGoalStatus,
   formatDuration,
   memberName,
+  orderStepsByRun,
   parseTs,
-  phaseKanban,
   phaselessGoalTasks,
   phaseTaskDag,
   taskTitle,
   tasksBlockedBy,
   taskGitMetadata,
-  type Lane,
   type PhaseDagLayer,
   type TimelineItem,
   type WorkbenchModel,
 } from "../model/readModel";
+import {
+  buildPhaseWorkflowPreview,
+  compactWorkflowScript,
+  selectPhaseWorkflowRuns,
+  workflowScriptFromRun,
+} from "../model/workflowSelectors";
 import {
   assignTask,
   closeMember,
@@ -119,8 +129,10 @@ import type {
   AgentProviderConfig,
   AgentStats,
   ArtifactSpec,
+  Decision,
   DeliveryStatus,
   DocRegistryEntry,
+  Evidence,
   Exploration,
   Goal,
   GoalDesign,
@@ -137,6 +149,7 @@ import type {
   RuntimeHealth,
   Task,
   Vision,
+  WorkflowRun,
   WorkflowStep,
   WorkflowWarning,
 } from "../types";
@@ -230,7 +243,8 @@ function ActionButton({
 
 function fmtTime(value?: string | null): string {
   if (!value) return "—";
-  const date = new Date(value);
+  const parsed = parseTs(value);
+  const date = new Date(parsed || value);
   if (Number.isNaN(date.getTime())) return value;
   return date.toLocaleString(undefined, {
     month: "short",
@@ -522,11 +536,13 @@ function GoalCard({
   onSelect: () => void;
 }) {
   const tasks = model.tasks.filter((task) => task.goal_id === goal.id);
+  const phaseCount = goal.phases?.length ?? 0;
+  const specSummary = goalSpecSummary(goal);
   return (
     <button
       type="button"
       onClick={onSelect}
-      className="block w-full rounded-lg border border-border bg-background/40 p-3 text-left transition-colors hover:border-input hover:bg-accent/40"
+      className="block w-full rounded-lg border border-border bg-background/40 p-3 text-left transition-colors hover:border-input hover:bg-accent/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
     >
       <div className="flex items-start justify-between gap-2">
         <span className="line-clamp-2 text-[13px] font-medium leading-snug">
@@ -534,14 +550,35 @@ function GoalCard({
         </span>
         <Badge tone={goalTone(goal.status)}>{goal.status ?? "active"}</Badge>
       </div>
+      {specSummary && (
+        <p className="mt-2 line-clamp-3 text-[12px] leading-relaxed text-foreground/75">
+          {specSummary}
+        </p>
+      )}
       <p className="mt-1 text-[11px] font-medium text-muted-foreground">
         stage: {effectiveStage(goal)}
       </p>
-      <div className="mt-2 inline-flex items-center gap-1 text-[11px] text-muted-foreground">
-        <ClipboardList className="size-3" /> {tasks.length} tasks
+      <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
+        <span className="inline-flex items-center gap-1">
+          <GitBranch className="size-3" /> {phaseCount} phases
+        </span>
+        <span className="inline-flex items-center gap-1">
+          <ClipboardList className="size-3" /> {tasks.length} tasks
+        </span>
+        <span className="ml-auto inline-flex items-center gap-1 font-medium text-primary">
+          Open spec <ExternalLink className="size-3" />
+        </span>
       </div>
     </button>
   );
+}
+
+function goalSpecSummary(goal: Goal): string {
+  const source = goal.description_md || goal.design_md || goal.acceptance_md || "";
+  return source
+    .split(/\n+/)
+    .map((line) => line.replace(/^[-#*\s]+/, "").trim())
+    .find(Boolean) ?? "";
 }
 
 /* ------------------------------------------------------------------ */
@@ -1258,12 +1295,7 @@ function GoalTasksJump({
 export function GoalDocument({
   model,
   onSelectionChange,
-  phaseId,
-  phaseView,
-}: SurfaceProps & {
-  phaseId?: string;
-  phaseView?: "graph" | "kanban";
-}) {
+}: SurfaceProps) {
   const goal = model.selectedGoal;
   if (!goal) {
     return (
@@ -1311,31 +1343,119 @@ export function GoalDocument({
   ];
 
   return (
-    <DocumentSurface>
+    <DocumentSurface className="max-w-[1120px]">
       <header className="space-y-3">
         <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-          <Target className="size-3.5" /> Goal
+          <Target className="size-3.5" /> Goal Workbench
         </div>
         <div className="flex flex-wrap items-start justify-between gap-3">
           <h1 className="text-2xl font-semibold tracking-tight text-foreground">
             {goal.title ?? goal.id}
           </h1>
           <div className="flex shrink-0 items-center gap-1.5 pt-1">
-            {goal.priority && <Badge tone="info">{goal.priority}</Badge>}
             <Badge tone={goalTone(goal.status)}>{displayGoalStatus(goal)}</Badge>
           </div>
         </div>
-        <DocProperties
-          items={[
-            { label: "Owner", value: memberName(model.members, goal.owner_agent_id) },
-            { label: "Team", value: model.selectedTeam?.name ?? "—" },
-            { label: "Vision", value: model.visionForGoal?.summary ?? "—" },
-            { label: "Created", value: fmtTime(goal.created_at) },
-            { label: "Updated", value: fmtTime(goal.updated_at) },
-          ]}
-        />
-        <GoalStageBar stage={effectiveStage(goal)} />
+        <GoalMetaChips goal={goal} model={model} />
+        {(goal.phases?.length ?? 0) > 0 ? (
+          <GoalLifecycleSummary goal={goal} />
+        ) : (
+          <GoalStageBar stage={effectiveStage(goal)} />
+        )}
       </header>
+
+      <GoalWorkbenchOverview
+        goal={goal}
+        model={model}
+        hasDesign={hasDesign}
+        hasEvaluation={hasEvaluation}
+        hasCloseoutDecision={hasCloseoutDecision}
+        mayClose={mayClose}
+      />
+
+      {(goal.explorations?.length ?? 0) > 0 && (
+        <CollapsibleSection
+          kicker="Multi-agent / multi-round"
+          title={`Exploration (${goal.explorations!.length})`}
+        >
+          <GoalExplorations explorations={goal.explorations!} />
+        </CollapsibleSection>
+      )}
+
+      {(goal.skill_refs?.length ?? 0) > 0 && (
+        <DocSection label="Skills">
+          <div className="flex flex-wrap gap-1.5">
+            {goal.skill_refs!.map((s) => (
+              <Badge key={s} tone="info">
+                {s}
+              </Badge>
+            ))}
+          </div>
+        </DocSection>
+      )}
+
+      {(goal.phases?.length ?? 0) > 0 && (
+        <DocSection label="Phases">
+          <div className="rounded-lg border border-border bg-card">
+            <GoalPhasesTimeline
+              goalId={goal.id}
+              phases={goal.phases!}
+              tasks={model.goalTasks}
+              knowledge={goal.knowledge ?? []}
+              workflowSteps={model.snapshot.workflow_steps ?? []}
+              workflowRuns={model.workflowRuns}
+              workflowStepsByRun={model.workflowStepsByRun}
+              goalOrchestrationRuns={model.goalOrchestrationRuns}
+              taskGraph={model.taskGraph}
+              members={model.members}
+              messages={model.messages}
+              evidence={model.evidence}
+              reviews={model.reviews}
+              decisions={model.decisions}
+              onSelectTask={(taskId, pId) =>
+                onSelectionChange({ surface: "task", taskId, goalId: goal.id, phaseId: pId })
+              }
+              onSelectWorkflowRun={(workflowRunId, pId) =>
+                onSelectionChange({ surface: "workflows", workflowRunId, goalId: goal.id, phaseId: pId })
+              }
+            />
+          </div>
+        </DocSection>
+      )}
+
+      <PhalessGoalTasksSection
+        goal={goal}
+        tasks={model.goalTasks}
+        members={model.members}
+        messages={model.messages}
+        evidence={model.evidence}
+        reviews={model.reviews}
+        decisions={model.decisions}
+        onSelectTask={(taskId) =>
+          onSelectionChange({ surface: "task", taskId, goalId: goal.id, phaseId: undefined })
+        }
+      />
+
+      {(goal.knowledge?.length ?? 0) > 0 && (
+        <DocSection label="Knowledge timeline">
+          <div className="rounded-lg border border-border bg-card">
+            <GoalKnowledgeTimeline
+              knowledge={goal.knowledge!}
+              onSelectTask={(taskId) =>
+                onSelectionChange({ surface: "task", taskId, goalId: goal.id })
+              }
+            />
+          </div>
+        </DocSection>
+      )}
+
+      <CollapsibleSection
+        kicker="Operations"
+        title="Implementation work"
+        badge={<Badge tone="idle">{model.goalTasks.length}</Badge>}
+      >
+        <GoalTasksJump model={model} onSelectionChange={onSelectionChange} />
+      </CollapsibleSection>
 
       {goal.description_md && (
         <GoalMdSection
@@ -1363,80 +1483,6 @@ export function GoalDocument({
           source={goal.acceptance_md}
         />
       )}
-
-      {(goal.explorations?.length ?? 0) > 0 && (
-        <CollapsibleSection
-          kicker="Multi-agent / multi-round"
-          title={`Exploration (${goal.explorations!.length})`}
-        >
-          <GoalExplorations explorations={goal.explorations!} />
-        </CollapsibleSection>
-      )}
-
-      {(goal.skill_refs?.length ?? 0) > 0 && (
-        <DocSection label="Skills">
-          <div className="flex flex-wrap gap-1.5">
-            {goal.skill_refs!.map((s) => (
-              <Badge key={s} tone="info">
-                {s}
-              </Badge>
-            ))}
-          </div>
-        </DocSection>
-      )}
-
-      {(goal.phases?.length ?? 0) > 0 && (
-        <DocSection label="Phases">
-          <div className="rounded-lg border border-border bg-card">
-            <GoalPhasesTimeline
-              phases={goal.phases!}
-              tasks={model.goalTasks}
-              knowledge={goal.knowledge ?? []}
-              workflowSteps={model.snapshot.workflow_steps ?? []}
-              selectedPhaseId={phaseId}
-              phaseView={phaseView ?? "graph"}
-              onSelectPhaseView={(pId, view) =>
-                onSelectionChange({ phaseId: pId, phaseView: view })
-              }
-              onSelectTask={(taskId, pId) =>
-                onSelectionChange({ surface: "task", taskId, goalId: goal.id, phaseId: pId })
-              }
-            />
-          </div>
-        </DocSection>
-      )}
-
-      <PhalessGoalTasksSection
-        goal={goal}
-        tasks={model.goalTasks}
-        phaseView={phaseView ?? "graph"}
-        onSelectPhaseView={(view) =>
-          onSelectionChange({ phaseId: NO_PHASE_KEY, phaseView: view })
-        }
-        showKanban={phaseId === NO_PHASE_KEY && phaseView === "kanban"}
-        onSelectTask={(taskId) =>
-          onSelectionChange({ surface: "task", taskId, goalId: goal.id, phaseId: undefined })
-        }
-      />
-
-      {(goal.knowledge?.length ?? 0) > 0 && (
-        <DocSection label="Knowledge timeline">
-          <div className="rounded-lg border border-border bg-card">
-            <GoalKnowledgeTimeline
-              knowledge={goal.knowledge!}
-              onSelectTask={(taskId) =>
-                onSelectionChange({ surface: "task", taskId, goalId: goal.id })
-              }
-            />
-          </div>
-        </DocSection>
-      )}
-
-      <DocSection label="Tasks">
-        <div className="rounded-lg border border-border bg-card">
-          <GoalTasksJump model={model} onSelectionChange={onSelectionChange} />
-        </div>
-      </DocSection>
 
       <CollapsibleSection kicker="Retrospective" title="Goal evaluation">
         <GoalEvaluationSection evaluation={evaluation} />
@@ -1513,6 +1559,602 @@ export function GoalDocument({
 
 function learningCount(value?: unknown[]): number {
   return value?.length ?? 0;
+}
+
+function cleanMarkdownLine(line: string): string {
+  return line
+    .replace(/^#{1,6}\s+/, "")
+    .replace(/^[-*]\s+/, "")
+    .replace(/`/g, "")
+    .replace(/\*\*/g, "")
+    .trim();
+}
+
+function markdownSummary(source?: string | null, max = 300): string {
+  const text = (source ?? "")
+    .split(/\n+/)
+    .map(cleanMarkdownLine)
+    .filter(Boolean)
+    .join(" ");
+  if (!text) return "No spec recorded.";
+  if (text.length <= max) return text;
+  return `${text.slice(0, max - 1).trimEnd()}…`;
+}
+
+function operatorSummary(source?: string | null, max = 300): string {
+  return markdownSummary(source, max)
+    .replace(/\btable\/kanban\b/gi, "structured workspace")
+    .replace(/\btable\/kanban views\b/gi, "structured workspace views")
+    .replace(/\bkanban\b/gi, "board")
+    .replace(/\bTaskGraph\b/g, "phase plan")
+    .replace(/\bTask Graph\b/g, "phase plan")
+    .replace(/\btask graph\b/g, "phase plan");
+}
+
+function currentGoalPhase(goal: Goal): GoalPhase | undefined {
+  const phases = goal.phases ?? [];
+  return (
+    phases.find((phase) => ["in_progress", "blocked", "failed"].includes(phase.status)) ??
+    phases.find((phase) => phase.status !== "passed") ??
+    phases[phases.length - 1]
+  );
+}
+
+function goalScopedEvidence(goal: Goal, tasks: Task[], evidence: Evidence[]): Evidence[] {
+  const taskIds = new Set(tasks.map((task) => task.id));
+  return evidence.filter(
+    (item) => item.goal_id === goal.id || (item.task_id != null && taskIds.has(item.task_id)),
+  );
+}
+
+function goalScopedDecisions(goal: Goal, tasks: Task[], decisions: Decision[]): Decision[] {
+  const taskIds = new Set(tasks.map((task) => task.id));
+  return decisions.filter(
+    (decision) => decision.goal_id === goal.id || (decision.task_id != null && taskIds.has(decision.task_id)),
+  );
+}
+
+function goalScopedMessages(tasks: Task[], messages: Message[]): Message[] {
+  const taskIds = new Set(tasks.map((task) => task.id));
+  return messages.filter((message) => message.task_id != null && taskIds.has(message.task_id));
+}
+
+type GoalProofItem = {
+  label: string;
+  detail: string;
+  ok: boolean;
+  tone: StatusTone;
+};
+
+function goalProofItems({
+  goal,
+  tasks,
+  messages,
+  evidence,
+  reviews,
+  decisions,
+  hasDesign,
+  hasEvaluation,
+  hasCloseoutDecision,
+}: {
+  goal: Goal;
+  tasks: Task[];
+  messages: Message[];
+  evidence: Evidence[];
+  reviews: Review[];
+  decisions: Decision[];
+  hasDesign: boolean;
+  hasEvaluation: boolean;
+  hasCloseoutDecision: boolean;
+}): GoalProofItem[] {
+  const scopedMessages = goalScopedMessages(tasks, messages);
+  const scopedEvidence = goalScopedEvidence(goal, tasks, evidence);
+  const scopedDecisions = goalScopedDecisions(goal, tasks, decisions);
+  return [
+    {
+      label: "Goal design",
+      detail: hasDesign ? "ready" : "needed",
+      ok: hasDesign,
+      tone: hasDesign ? "good" : "warn",
+    },
+    {
+      label: "Work assigned",
+      detail: scopedMessages.some((message) => message.kind === "task") ? "sent" : "needed",
+      ok: scopedMessages.some((message) => message.kind === "task"),
+      tone: scopedMessages.some((message) => message.kind === "task") ? "good" : "warn",
+    },
+    {
+      label: "Workflow report",
+      detail: scopedMessages.some((message) => message.kind === "report") ? "received" : "none yet",
+      ok: scopedMessages.some((message) => message.kind === "report"),
+      tone: scopedMessages.some((message) => message.kind === "report") ? "good" : "warn",
+    },
+    {
+      label: "Evidence",
+      detail: scopedEvidence.length > 0 ? `${scopedEvidence.length} item${scopedEvidence.length === 1 ? "" : "s"}` : "none yet",
+      ok: scopedEvidence.length > 0,
+      tone: scopedEvidence.length > 0 ? "good" : "warn",
+    },
+    {
+      label: "Review",
+      detail: reviews.length > 0 ? "reviewed" : "not reviewed",
+      ok: reviews.length > 0,
+      tone: reviews.length > 0 ? "good" : "warn",
+    },
+    {
+      label: "Decision",
+      detail: hasCloseoutDecision ? "closeout" : scopedDecisions.length > 0 ? "recorded" : "pending",
+      ok: hasCloseoutDecision || scopedDecisions.length > 0,
+      tone: hasCloseoutDecision || scopedDecisions.length > 0 ? "good" : "warn",
+    },
+    {
+      label: "Evaluation",
+      detail: hasEvaluation ? "recorded" : "needed",
+      ok: hasEvaluation,
+      tone: hasEvaluation ? "good" : "warn",
+    },
+  ];
+}
+
+function GoalLifecycleSummary({ goal }: { goal: Goal }) {
+  const phases = goal.phases ?? [];
+  const passed = phases.filter((phase) => phase.status === "passed").length;
+  const blocked = phases.filter((phase) => ["blocked", "failed"].includes(phase.status)).length;
+  const currentPhase = currentGoalPhase(goal);
+  const gateLabel = blocked > 0
+    ? "Blocked"
+    : passed === phases.length && phases.length > 0
+      ? "Passed"
+      : phases.some((phase) => phase.status === "in_progress")
+        ? "Running"
+        : "Spec pending review";
+  const gateTone: StatusTone = blocked > 0
+    ? "bad"
+    : gateLabel === "Passed"
+      ? "good"
+      : gateLabel === "Running"
+        ? "running"
+        : "warn";
+  return (
+    <div className="flex flex-wrap items-center gap-2 rounded-lg border border-border bg-card/60 px-3 py-2">
+      <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+        Goal gate
+      </span>
+      <Badge tone={gateTone}>{gateLabel}</Badge>
+      <span className="text-[11px] text-muted-foreground">
+        {currentPhase ? `Gate: ${currentPhase.name}` : `${phases.length} phases`}
+      </span>
+      {passed > 0 && (
+        <span className="text-[11px] text-muted-foreground">
+          {passed} accepted
+        </span>
+      )}
+      {blocked > 0 && (
+        <span className="text-[11px] text-status-bad">
+          issue needs review
+        </span>
+      )}
+      {passed === 0 && blocked === 0 && (
+        <span className="text-[11px] text-muted-foreground">
+          evidence and review required
+        </span>
+      )}
+    </div>
+  );
+}
+
+function GoalMetaChips({ goal, model }: { goal: Goal; model: WorkbenchModel }) {
+  const phases = goal.phases ?? [];
+  const currentPhase = currentGoalPhase(goal);
+  const phaseText = phases.length
+    ? currentPhase
+      ? `Phase: ${currentPhase.name}`
+      : `${phases.length} phases`
+    : "no phases";
+  return (
+    <div className="flex flex-wrap items-center gap-1.5">
+      <span className="inline-flex items-center gap-1.5 rounded-md border border-border bg-card px-2 py-1 text-[11px] text-foreground/85">
+        <User className="size-3 text-muted-foreground" />
+        {memberName(model.members, goal.owner_agent_id)}
+      </span>
+      {model.selectedTeam?.name && (
+        <span className="inline-flex items-center gap-1.5 rounded-md border border-border bg-card px-2 py-1 text-[11px] text-foreground/85">
+          <Bot className="size-3 text-muted-foreground" />
+          {model.selectedTeam.name}
+        </span>
+      )}
+      <span className="inline-flex max-w-[18rem] items-center gap-1.5 rounded-md border border-border bg-card px-2 py-1 text-[11px] text-foreground/85">
+        <Workflow className="size-3 shrink-0 text-muted-foreground" />
+        <span className="truncate">{phaseText}</span>
+      </span>
+      <span className="hidden items-center gap-1.5 rounded-md border border-border bg-card px-2 py-1 text-[11px] text-muted-foreground sm:inline-flex">
+        <Clock className="size-3" />
+        Updated {fmtTime(goal.updated_at)}
+      </span>
+      {model.visionForGoal?.summary && (
+        <span className="hidden max-w-[28rem] truncate rounded-md border border-border bg-card px-2 py-1 text-[11px] text-muted-foreground md:inline-flex">
+          Vision: {model.visionForGoal.summary}
+        </span>
+      )}
+    </div>
+  );
+}
+
+function GoalWorkbenchOverview({
+  goal,
+  model,
+  hasDesign,
+  hasEvaluation,
+  hasCloseoutDecision,
+  mayClose,
+}: {
+  goal: Goal;
+  model: WorkbenchModel;
+  hasDesign: boolean;
+  hasEvaluation: boolean;
+  hasCloseoutDecision: boolean;
+  mayClose: boolean;
+}) {
+  const phases = goal.phases ?? [];
+  const currentPhase = currentGoalPhase(goal);
+  const proofItems = goalProofItems({
+    goal,
+    tasks: model.goalTasks,
+    messages: model.messages,
+    evidence: model.evidence,
+    reviews: model.reviewsForGoal,
+    decisions: model.decisions,
+    hasDesign,
+    hasEvaluation,
+    hasCloseoutDecision,
+  });
+  const proofComplete = proofItems.filter((item) => item.ok).length;
+  const evidenceProof = proofItems.find((item) => item.label === "Evidence");
+  const overviewLayers = currentPhase ? phaseTaskDag(currentPhase.id, model.goalTasks) : [];
+  const overviewWorkflowScript = currentPhase
+    ? compactWorkflowScript(buildPhaseWorkflowPreview(currentPhase, overviewLayers), 2200)
+    : undefined;
+  const gateState = goalOverviewGateState({
+    phases,
+    currentPhase,
+    proofComplete,
+    proofTotal: proofItems.length,
+  });
+  const nextAction = goalNextAction({
+    goal,
+    model,
+    currentPhase,
+    proofItems,
+    hasDesign,
+    hasEvaluation,
+    mayClose,
+  });
+
+  return (
+    <section className="overflow-hidden rounded-xl border border-border bg-card">
+      <div className="grid gap-0 xl:grid-cols-[minmax(0,1.2fr)_minmax(20rem,0.8fr)]">
+        <div className="border-b border-border p-3 xl:border-b-0 xl:border-r">
+          <p className="mb-1.5 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+            <Workflow className="size-3" /> Phase workflow
+          </p>
+          {currentPhase ? (
+            <div className="space-y-2">
+              <div className="rounded-md border border-border/70 bg-background/55 px-2.5 py-2">
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <Badge tone={phaseStatusTone(currentPhase.status)}>{phaseStatusLabel(currentPhase.status)}</Badge>
+                  <span className="min-w-0 truncate text-[13px] font-medium text-foreground">
+                    {currentPhase.name}
+                  </span>
+                </div>
+                <p className="mt-1 text-[12px] leading-snug text-foreground/80">
+                  {operatorSummary(currentPhase.intent, 260)}
+                </p>
+              </div>
+              {overviewWorkflowScript && (
+                <WorkflowDefinitionPreview
+                  heading="Workflow plan"
+                  script={overviewWorkflowScript}
+                  collapseExtraStepsOnMobile
+                />
+              )}
+            </div>
+          ) : (
+            <p className="text-[12px] text-muted-foreground">No phase workflow recorded.</p>
+          )}
+        </div>
+
+        <div className="p-3">
+          <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+            <p className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+              <ShieldCheck className="size-3" /> Review gate
+            </p>
+            <Badge tone={gateState.tone}>{gateState.label}</Badge>
+          </div>
+          <p className="text-[12px] leading-snug text-foreground/80">
+            {goalGateOperatorCopy(gateState.label, currentPhase)}
+          </p>
+          {currentPhase && (
+            <div className="space-y-2">
+              <div className="mt-2 grid gap-1.5 sm:grid-cols-2">
+                <GoalOverviewGateFact label="Evidence" value={evidenceProof?.detail ?? "none yet"} tone={evidenceProof?.tone ?? "warn"} />
+                <GoalOverviewGateFact
+                  label="Review gate"
+                  value={proofComplete === proofItems.length ? "passed" : `${proofItems.length - proofComplete} needed`}
+                  tone={proofComplete === proofItems.length ? "good" : "warn"}
+                />
+                <GoalOverviewGateFact
+                  label="Current gate"
+                  value={currentPhase.status === "passed" ? "passed" : gateState.label.toLowerCase()}
+                  tone={gateState.tone}
+                />
+                <GoalOverviewGateFact label="Next action" value={nextAction.label} tone={nextAction.tone} />
+              </div>
+              <GoalAcceptanceCheckRows proofItems={proofItems} />
+              <details className="group rounded-md border border-border/70 bg-background/55 px-2 py-1.5">
+                <summary className="cursor-pointer list-none text-[11px] font-medium text-muted-foreground transition-colors hover:text-foreground">
+                  Goal spec and acceptance
+                </summary>
+                <div className="mt-2 space-y-2 border-t border-border/60 pt-2">
+                  <p className="text-[12px] leading-snug text-foreground/80">
+                    {operatorSummary(goal.description_md, 260)}
+                  </p>
+                  <p className="text-[12px] leading-snug text-muted-foreground">
+                    Acceptance: {operatorSummary(goal.acceptance_md, 220)}
+                  </p>
+                </div>
+              </details>
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-0 border-t border-border bg-muted/15 sm:hidden">
+        <div className="border-r border-border px-3 py-2">
+          <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+            Phase
+          </p>
+          <p className="mt-0.5 text-[12px] text-foreground">
+            <span className="font-semibold">{currentPhase?.name ?? "none"}</span>
+          </p>
+        </div>
+        <div className="px-3 py-2">
+          <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+            Accept
+          </p>
+          <p className="mt-0.5 text-[12px] text-foreground">
+            <span className="font-semibold tabular-nums">{Math.max(proofItems.length - proofComplete, 0)}</span>
+            <span className="text-muted-foreground"> proof items needed</span>
+          </p>
+        </div>
+        <div className="col-span-2 flex items-center gap-1.5 border-t border-border px-3 py-2 text-[12px] text-muted-foreground">
+          <Zap className={cn("size-3.5 shrink-0", toneText[nextAction.tone])} />
+          Next:
+          <span className="min-w-0 truncate font-medium text-foreground">{nextAction.label}</span>
+        </div>
+      </div>
+
+      <div className="hidden flex-wrap items-center gap-x-4 gap-y-2 border-t border-border bg-muted/20 px-3 py-2 sm:flex">
+        <span className="inline-flex min-w-0 items-center gap-1.5 text-[12px] text-muted-foreground">
+          <Activity className="size-3.5 shrink-0" />
+          Gate:
+          <Badge tone={gateState.tone}>{gateState.label}</Badge>
+        </span>
+        <span className="inline-flex min-w-0 items-center gap-1.5 text-[12px] text-muted-foreground">
+          <Zap className={cn("size-3.5 shrink-0", toneText[nextAction.tone])} />
+          Next:
+          <span className="truncate font-medium text-foreground">{nextAction.label}</span>
+        </span>
+      </div>
+    </section>
+  );
+}
+
+function goalOverviewGateState({
+  phases,
+  currentPhase,
+  proofComplete,
+  proofTotal,
+}: {
+  phases: GoalPhase[];
+  currentPhase?: GoalPhase;
+  proofComplete: number;
+  proofTotal: number;
+}): { label: string; tone: StatusTone } {
+  if (phases.some((phase) => ["blocked", "failed"].includes(phase.status))) {
+    return { label: "Blocked", tone: "bad" };
+  }
+  if (proofTotal > 0 && proofComplete === proofTotal) {
+    return { label: "Passed", tone: "good" };
+  }
+  if (currentPhase?.status === "in_progress") {
+    return { label: "Running", tone: "running" };
+  }
+  if (currentPhase?.status === "not_started") {
+    return { label: "Spec pending review", tone: "warn" };
+  }
+  return { label: "Ready to compile", tone: "info" };
+}
+
+function GoalOverviewGateFact({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: string;
+  tone: StatusTone;
+}) {
+  return (
+    <div className="min-w-0 rounded-md border border-border/60 bg-card/70 px-2 py-1.5">
+      <div className="flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+        <StatusDot tone={tone} />
+        {label}
+      </div>
+      <p className="mt-0.5 truncate text-[12px] font-medium text-foreground/90">{value}</p>
+    </div>
+  );
+}
+
+function goalGateOperatorCopy(label: string, phase?: GoalPhase): string {
+  if (label === "Passed") return "Workflow evidence, review, decision, and evaluation are ready for closeout.";
+  if (label === "Blocked") return "Review the blocked phase evidence, resolve the acceptance issue, then rerun the gate.";
+  if (label === "Running") return `Watch the live phase workflow for ${phase?.name ?? "the current phase"} and review new evidence as it lands.`;
+  if (label === "Ready to compile") return "Compile or run the phase workflow, then collect evidence for reviewer approval.";
+  return "Waiting for design evidence and reviewer approval before this phase can advance.";
+}
+
+function GoalAcceptanceCheckRows({ proofItems }: { proofItems: GoalProofItem[] }) {
+  const visible = proofItems.filter((item) =>
+    ["Goal design", "Evidence", "Review", "Decision"].includes(item.label),
+  );
+  return (
+    <div className="space-y-1 rounded-md border border-border/70 bg-background/55 px-2 py-1.5">
+      {visible.map((item) => (
+        <div key={item.label} className="flex min-w-0 items-center gap-2 border-t border-border/60 pt-1.5 first:border-t-0 first:pt-0">
+          <StatusDot tone={item.tone} className="shrink-0" />
+          <span className="min-w-0 flex-1 text-[12px] font-medium text-foreground/90">{item.label}</span>
+          <span className="shrink-0 text-[11px] text-muted-foreground">{item.detail}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function GoalProofMiniRow({ item }: { item: GoalProofItem }) {
+  return (
+    <div className="flex min-w-0 items-center gap-1.5 rounded-md border border-border bg-background/60 px-2 py-1 text-[11px]">
+      <StatusDot tone={item.tone} className="shrink-0" />
+      <span className="min-w-0 flex-1 truncate font-medium text-foreground/90">{item.label}</span>
+      <span className="shrink-0 text-muted-foreground">{item.detail}</span>
+    </div>
+  );
+}
+
+function countTaskStatuses(tasks: Task[], statuses: readonly string[]): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const status of statuses) counts[status] = 0;
+  for (const task of tasks) {
+    counts[task.status] = (counts[task.status] ?? 0) + 1;
+  }
+  return counts;
+}
+
+function TaskCountChip({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: number;
+  tone: StatusTone;
+}) {
+  if (value <= 0) return null;
+  return (
+    <span className="inline-flex items-center gap-1 rounded-md border border-border bg-background/50 px-2 py-1 text-[11px]">
+      <StatusDot tone={tone} />
+      <span>{label}</span>
+      <span className="font-mono text-muted-foreground">{value}</span>
+    </span>
+  );
+}
+
+function goalNextAction({
+  goal,
+  model,
+  currentPhase,
+  proofItems,
+  hasDesign,
+  hasEvaluation,
+  mayClose,
+}: {
+  goal: Goal;
+  model: WorkbenchModel;
+  currentPhase?: GoalPhase;
+  proofItems: GoalProofItem[];
+  hasDesign: boolean;
+  hasEvaluation: boolean;
+  mayClose: boolean;
+}): { label: string; owner?: string; tone: StatusTone } {
+		  if (!hasDesign) {
+		    return {
+		      label: "complete goal design",
+      owner: memberName(model.members, goal.owner_agent_id),
+      tone: "warn",
+    };
+  }
+  const blocked = model.goalTasks.find((task) => task.status === "blocked");
+  if (blocked) {
+    return {
+      label: "review phase issue",
+      owner: memberName(model.members, blocked.assignee_agent_id ?? blocked.owner_agent_id),
+      tone: "bad",
+    };
+  }
+  if (currentPhase?.status === "not_started") {
+    return {
+      label: "run workflow plan",
+      owner: memberName(model.members, goal.owner_agent_id),
+      tone: "warn",
+    };
+  }
+  if (currentPhase?.status === "in_progress") {
+    return {
+      label: "watch active workflow",
+      owner: memberName(model.members, goal.owner_agent_id),
+      tone: "running",
+    };
+  }
+  const review = model.goalTasks.find((task) => task.status === "review");
+	  if (review) {
+	    return {
+	      label: "review phase evidence",
+      owner: memberName(model.members, review.reviewer_agent_id ?? goal.owner_agent_id),
+      tone: "decision",
+    };
+  }
+  const running = model.goalTasks.find((task) => ["running", "assigned"].includes(task.status));
+  if (running) {
+    return {
+      label: "continue active workflow",
+      owner: memberName(model.members, running.assignee_agent_id ?? running.owner_agent_id),
+      tone: "running",
+    };
+  }
+  const planned = model.goalTasks.find((task) => task.status === "planned");
+  if (planned) {
+    return {
+      label: "prepare next workflow",
+      owner: memberName(model.members, goal.owner_agent_id),
+      tone: "warn",
+    };
+  }
+  const proofGap = proofItems.find((item) => !item.ok);
+	  if (proofGap) {
+	    return {
+	      label: `complete ${proofGap.label.toLowerCase()}`,
+      owner: memberName(model.members, goal.owner_agent_id),
+      tone: "warn",
+    };
+  }
+  if (currentPhase && currentPhase.status !== "passed") {
+    return {
+      label: `pass phase gate: ${currentPhase.name}`,
+      owner: memberName(model.members, goal.owner_agent_id),
+      tone: "decision",
+    };
+  }
+	  if (!hasEvaluation) {
+	    return {
+	      label: "complete goal evaluation",
+      owner: memberName(model.members, goal.owner_agent_id),
+      tone: "warn",
+    };
+  }
+  return {
+    label: mayClose ? "ready for closeout decision" : "monitor next follow-up",
+    owner: memberName(model.members, goal.owner_agent_id),
+    tone: mayClose ? "good" : "info",
+  };
 }
 
 /** A labeled bullet list used by the GoalDesign / GoalEvaluation sections. */
@@ -1683,52 +2325,54 @@ function taskWorktreeDiffs(task: Task, steps: WorkflowStep[]): string[] {
  * artifact kind, its path, a required/optional marker, and the purpose; when
  * worktree diffs are available a present/absent dot (else "—") mirrors the gate.
  */
-function Deliverables({ outputs, diffs }: { outputs: ArtifactSpec[]; diffs: string[] }) {
+function ProofOutputs({ outputs, diffs }: { outputs: ArtifactSpec[]; diffs: string[] }) {
   if (outputs.length === 0) return null;
+  const required = outputs.filter((output) => output.required !== false).length;
+  const optional = outputs.length - required;
   return (
-    <div className="mt-2 space-y-1.5 rounded-md border border-border bg-muted/20 px-2 py-1.5">
-      <p className="flex items-center gap-1.5 text-[9px] font-semibold uppercase tracking-wider text-muted-foreground">
-        <Package className="size-3" /> Deliverables ({outputs.length})
-      </p>
-      {outputs.map((spec) => {
-        const present = artifactPresence(spec.path, diffs);
-        return (
-          <div key={spec.id} className="flex flex-wrap items-center gap-1.5 text-[11px]">
-            {present === undefined ? (
-              <span
-                className="w-2 shrink-0 text-center text-muted-foreground/60"
-                title="presence not derivable (no captured diff)"
-              >
-                —
+    <details className="group mt-2 rounded-md border border-border bg-muted/15 px-2 py-1.5">
+      <summary className="flex cursor-pointer list-none flex-wrap items-center gap-1.5 text-[10px] font-medium text-muted-foreground transition-colors hover:text-foreground">
+        <Package className="size-3" />
+        Results & evidence
+        <Badge tone="idle">{outputs.length}</Badge>
+        {required > 0 && <span>{required} required</span>}
+        {optional > 0 && <span>{optional} optional</span>}
+      </summary>
+      <div className="mt-2 space-y-1.5 border-t border-border/70 pt-2">
+        {outputs.map((spec) => {
+          const present = artifactPresence(spec.path, diffs);
+          return (
+            <div key={spec.id} className="flex flex-wrap items-center gap-1.5 text-[11px]">
+              {present === undefined ? (
+                <span
+                  className="w-2 shrink-0 text-center text-muted-foreground/60"
+                  title="presence not derivable (no captured diff)"
+                >
+                  —
+                </span>
+              ) : (
+                <StatusDot
+                  tone={present ? "good" : "bad"}
+                  className="shrink-0"
+                />
+              )}
+              <Badge tone={artifactKindTone(spec.kind)}>{artifactKindLabel(spec.kind)}</Badge>
+              {spec.path ? (
+                <MonoId>{spec.path}</MonoId>
+              ) : (
+                <span className="text-muted-foreground/70 italic">no path</span>
+              )}
+              <span className="text-[10px] text-muted-foreground/70">
+                {spec.required === false ? "optional" : "required"}
               </span>
-            ) : (
-              <StatusDot
-                tone={present ? "good" : "bad"}
-                className="shrink-0"
-              />
-            )}
-            <Badge tone={artifactKindTone(spec.kind)}>{artifactKindLabel(spec.kind)}</Badge>
-            {spec.path ? (
-              <MonoId>{spec.path}</MonoId>
-            ) : (
-              <span className="text-muted-foreground/70 italic">no path</span>
-            )}
-            {spec.required === false ? (
-              <span className="text-[9px] uppercase tracking-wide text-muted-foreground/60">
-                optional
-              </span>
-            ) : (
-              <span className="text-[9px] font-semibold uppercase tracking-wide text-status-warn/80">
-                required
-              </span>
-            )}
-            {spec.purpose && (
-              <span className="min-w-0 text-muted-foreground">— {spec.purpose}</span>
-            )}
-          </div>
-        );
-      })}
-    </div>
+              {spec.purpose && (
+                <span className="min-w-0 text-muted-foreground">— {spec.purpose}</span>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </details>
   );
 }
 
@@ -1742,59 +2386,109 @@ function phaseStatusLabel(status?: GoalPhaseStatus): string {
     case "in_progress":
       return "in progress";
     case "not_started":
-      return "not started";
+      return "ready";
     default:
-      return status ?? "not started";
+      return status ?? "ready";
   }
 }
 
 /**
  * The sequential PHASES TIMELINE for a phase-driven goal (goal-planning-model).
- * Each phase shows its status, intent, acceptance gate, and the per-phase task
- * DAG (independent + disjoint-owned tasks render as parallel rows; dependent
- * tasks land in a later layer). Superseded tasks render struck through with the
- * knowledge that abandoned them. Only shown when `goal.phases` is non-empty;
- * legacy goals keep the plain stage bar above.
+ * Each phase shows its status, intent, acceptance gate, plan steps, generated
+ * Starlark workflow shape, and the latest live workflow run. Superseded steps
+ * render struck through with the knowledge that abandoned them. Only shown when
+ * `goal.phases` is non-empty; legacy goals keep the plain stage bar above.
  */
 function GoalPhasesTimeline({
+  goalId,
   phases,
   tasks,
   knowledge,
   workflowSteps,
-  selectedPhaseId,
-  phaseView,
-  onSelectPhaseView,
+  workflowRuns,
+  workflowStepsByRun,
+  goalOrchestrationRuns,
+  taskGraph,
+  members,
+  messages,
+  evidence,
+  reviews,
+  decisions,
   onSelectTask,
+  onSelectWorkflowRun,
 }: {
+  goalId: string;
   phases: GoalPhase[];
   tasks: Task[];
   knowledge: Knowledge[];
   workflowSteps: WorkflowStep[];
-  /** The phase whose view choice is active (others default to "graph"). */
-  selectedPhaseId?: string;
-  /** The active view for the selected phase. */
-  phaseView: "graph" | "kanban";
-  onSelectPhaseView: (phaseId: string, view: "graph" | "kanban") => void;
+  workflowRuns: WorkflowRun[];
+  workflowStepsByRun: Map<string, WorkflowStep[]>;
+  goalOrchestrationRuns: WorkbenchModel["goalOrchestrationRuns"];
+  taskGraph: WorkbenchModel["taskGraph"];
+  members: AgentMember[];
+  messages: Message[];
+  evidence: Evidence[];
+  reviews: Review[];
+  decisions: Decision[];
   onSelectTask: (taskId: string, phaseId: string) => void;
+  onSelectWorkflowRun: (workflowRunId: string, phaseId: string) => void;
 }) {
+  const firstExpandableTask = tasks.find(
+    (task) =>
+      task.status !== "done" &&
+      task.status !== "archived" &&
+      task.status !== "superseded" &&
+      phases.some((phase) => phase.id === task.phase_id),
+  ) ?? tasks.find((task) => phases.some((phase) => phase.id === task.phase_id));
+  const [expandedTaskIds, setExpandedTaskIds] = useState<Set<string>>(
+    () => new Set(firstExpandableTask ? [firstExpandableTask.id] : []),
+  );
+  const phaseTaskIds = tasks
+    .filter((task) => phases.some((phase) => phase.id === task.phase_id))
+    .map((task) => task.id)
+    .sort()
+    .join("|");
+  useEffect(() => {
+    setExpandedTaskIds((current) => {
+      const validIds = new Set(phaseTaskIds ? phaseTaskIds.split("|") : []);
+      const next = new Set([...current].filter((id) => validIds.has(id)));
+      if (next.size === 0 && firstExpandableTask) next.add(firstExpandableTask.id);
+      return next;
+    });
+  }, [phaseTaskIds, firstExpandableTask?.id]);
+  const toggleTask = (taskId: string) => {
+    setExpandedTaskIds((current) => {
+      const next = new Set(current);
+      if (next.has(taskId)) next.delete(taskId);
+      else next.add(taskId);
+      return next;
+    });
+  };
+
   return (
     <div className="space-y-3 p-3">
       {phases.map((phase, index) => {
+        const phaseTasks = tasks.filter((task) => task.phase_id === phase.id);
         const layers = phaseTaskDag(phase.id, tasks);
-        // A phase shows Kanban only when it is the selected phase AND the active
-        // view is kanban; every other phase keeps the default Graph (DAG) view.
-        const view = phase.id === selectedPhaseId ? phaseView : "graph";
-        const superseded = tasks.filter(
-          (task) => task.phase_id === phase.id && task.status === "superseded",
-        );
-        // Presence of a phase's declared artifacts is derived from the worktree
-        // diffs of every step across the phase's tasks (the same signal the gate
-        // checks). Absent any diff, presence renders as "—" (not derivable).
-        const phaseDiffs = tasks
-          .filter((task) => task.phase_id === phase.id)
-          .flatMap((task) => taskWorktreeDiffs(task, workflowSteps));
-        const last = index === phases.length - 1;
-        return (
+        const phaseRuns = selectPhaseWorkflowRuns({
+          goalId,
+          phaseId: phase.id,
+          workflowRuns,
+          goalOrchestrationRuns,
+        });
+        const latestRun = phaseRuns[0];
+        const latestRunSteps = latestRun
+          ? orderStepsByRun(latestRun, workflowStepsByRun.get(latestRun.id) ?? [])
+          : [];
+	        const superseded = phaseTasks.filter((task) => task.status === "superseded");
+	        // Presence of a phase's declared artifacts is derived from the worktree
+	        // diffs of every step across the phase's tasks (the same signal the gate
+	        // checks). Absent any diff, presence renders as "—" (not derivable).
+	        const phaseDiffs = phaseTasks.flatMap((task) => taskWorktreeDiffs(task, workflowSteps));
+	        const acceptanceText = phase.acceptance?.trim();
+	        const last = index === phases.length - 1;
+	        return (
           <div key={phase.id} className="relative pl-6">
             {/* Sequential connector line down the left edge. */}
             {!last && (
@@ -1808,33 +2502,15 @@ function GoalPhasesTimeline({
             </span>
             <div className="rounded-lg border border-border bg-background/40 p-3">
               <div className="flex flex-wrap items-center gap-2">
-                <span className="font-mono text-[10px] text-muted-foreground">
-                  {index + 1}
+                <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+                  Phase {index + 1}
                 </span>
                 <span className="text-[13px] font-semibold text-foreground">{phase.name}</span>
                 <Badge tone={phaseStatusTone(phase.status)}>
                   {phaseStatusLabel(phase.status)}
                 </Badge>
-                <MonoId>{phase.id}</MonoId>
-                <span className="ml-auto">
-                  <PhaseViewToggle
-                    value={view}
-                    onChange={(next) => onSelectPhaseView(phase.id, next)}
-                  />
-                </span>
               </div>
-              {phase.intent && (
-                <p className="mt-1.5 text-[12px] leading-snug text-foreground/80">{phase.intent}</p>
-              )}
-              {phase.acceptance && (
-                <div className="mt-2 flex items-start gap-1.5 rounded-md border border-border bg-muted/30 px-2 py-1.5">
-                  <CheckCircle2 className="mt-0.5 size-3 shrink-0 text-status-good" />
-                  <span className="text-[11px] text-muted-foreground">
-                    <span className="font-medium text-foreground/70">Gate: </span>
-                    {phase.acceptance}
-                  </span>
-                </div>
-              )}
+
               {phase.landed_commit && (
                 <div className="mt-2 inline-flex items-center gap-1.5 rounded-md border border-border bg-muted/30 px-2 py-1">
                   <GitCommitHorizontal className="size-3 shrink-0 text-status-good" />
@@ -1844,20 +2520,44 @@ function GoalPhasesTimeline({
                   </span>
                 </div>
               )}
-              {(phase.outputs?.length ?? 0) > 0 && (
-                <Deliverables outputs={phase.outputs!} diffs={phaseDiffs} />
-              )}
-              {view === "kanban" ? (
-                <PhaseKanban
-                  lanes={phaseKanban(phase.id, tasks)}
-                  onSelectTask={(taskId) => onSelectTask(taskId, phase.id)}
-                />
-              ) : (
-                <PhaseTaskDag
-                  layers={layers}
-                  onSelectTask={(taskId) => onSelectTask(taskId, phase.id)}
-                />
-              )}
+
+              <PhaseWorkflowRunPanel
+                phase={phase}
+                layers={layers}
+                tasks={phaseTasks}
+                messages={messages}
+                evidence={evidence}
+                reviews={reviews}
+                decisions={decisions}
+                latestRun={latestRun}
+                latestRunSteps={latestRunSteps}
+                phaseRuns={phaseRuns}
+                acceptanceText={acceptanceText}
+                phaseDiffs={phaseDiffs}
+                onOpenRun={(runId) => onSelectWorkflowRun(runId, phase.id)}
+              />
+
+              <details className="group mt-2 rounded-md border border-border bg-muted/10">
+                <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2 text-[11px] font-medium text-muted-foreground transition-colors hover:text-foreground">
+                  <ChevronRight className="size-3.5 transition-transform group-open:rotate-90" />
+                  Inspect implementation work
+                  <Badge tone="idle">{phaseTasks.length}</Badge>
+                </summary>
+                <div className="border-t border-border/70 px-3 pb-3 pt-2">
+                  <PhasePlanSequence
+                    layers={layers}
+                    members={members}
+                    messages={messages}
+                    evidence={evidence}
+                    reviews={reviews}
+                    decisions={decisions}
+                    expandedTaskIds={expandedTaskIds}
+                    onToggleTask={toggleTask}
+                    onOpenTask={(taskId) => onSelectTask(taskId, phase.id)}
+                  />
+                </div>
+              </details>
+
               {superseded.length > 0 && (
                 <SupersededTasks
                   tasks={superseded}
@@ -1873,234 +2573,980 @@ function GoalPhasesTimeline({
   );
 }
 
-/**
- * Render a phase's task DAG layer by layer (mirroring the compiler): a layer's
- * groups stack vertically (they run serially), and a parallel group's tasks sit
- * side by side. An arrow between layers shows the dependency ordering.
- */
-function PhaseTaskDag({
+function PhaseTaskCounts({
+  tasks,
+  graph,
+}: {
+  tasks: Task[];
+  graph: WorkbenchModel["taskGraph"];
+}) {
+  if (tasks.length === 0) {
+    return (
+      <div className="mt-2 rounded-md border border-border bg-muted/20 px-2 py-1.5 text-[11px] text-muted-foreground">
+        No phase-owned tasks yet.
+      </div>
+    );
+  }
+  const counts = countTaskStatuses(tasks, TASK_COLUMNS);
+  const ready = tasks.filter((task) => readinessFor(task, graph).ready && !["done", "archived", "superseded"].includes(task.status)).length;
+  return (
+    <div className="mt-2 flex flex-wrap items-center gap-1.5 rounded-md border border-border bg-muted/20 px-2 py-1.5">
+      <span className="mr-1 inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+        <ClipboardList className="size-3" /> Workflow state
+      </span>
+      <span className="rounded bg-background/70 px-1.5 py-0.5 text-[10px] font-medium text-foreground/80">
+        total {tasks.length}
+      </span>
+      <TaskCountChip label="active" value={ready + counts.assigned + counts.running} tone="running" />
+      <TaskCountChip label="blocked" value={counts.blocked} tone="bad" />
+      <TaskCountChip label="review" value={counts.review} tone="decision" />
+      <TaskCountChip label="passed" value={counts.done} tone="good" />
+    </div>
+  );
+}
+
+function PhaseProofStrip({
+  tasks,
+  messages,
+  evidence,
+  reviews,
+  decisions,
+}: {
+  tasks: Task[];
+  messages: Message[];
+  evidence: Evidence[];
+  reviews: Review[];
+  decisions: Decision[];
+}) {
+  const taskIds = new Set(tasks.map((task) => task.id));
+  const assignments = messages.filter(
+    (message) => message.kind === "task" && message.task_id != null && taskIds.has(message.task_id),
+  ).length;
+  const reports = messages.filter(
+    (message) => message.kind === "report" && message.task_id != null && taskIds.has(message.task_id),
+  ).length;
+  const evidenceCount = evidence.filter((item) => item.task_id != null && taskIds.has(item.task_id)).length;
+  const reviewCount = reviews.filter((review) => review.task_id != null && taskIds.has(review.task_id)).length;
+  const decisionCount = decisions.filter((decision) => decision.task_id != null && taskIds.has(decision.task_id)).length;
+
+  if (tasks.length === 0) return null;
+  return (
+    <div className="mt-2 flex flex-wrap items-center gap-1.5">
+      <span className="mr-1 inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+        <FileCheck2 className="size-3" /> Evidence chain
+      </span>
+      <PhaseProofChip label="assignment" value={assignments} />
+      <PhaseProofChip label="report" value={reports} />
+      <PhaseProofChip label="evidence" value={evidenceCount} />
+      <PhaseProofChip label="review" value={reviewCount} />
+      <PhaseProofChip label="decision" value={decisionCount} />
+    </div>
+  );
+}
+
+function PhaseProofChip({ label, value }: { label: string; value: number }) {
+  const ok = value > 0;
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center gap-1 rounded-md border px-2 py-1 text-[11px]",
+        ok
+          ? "border-status-good/25 bg-status-good/12 text-status-good"
+          : "border-border bg-background/50 text-muted-foreground",
+      )}
+    >
+      <StatusDot tone={ok ? "good" : "idle"} />
+      {label}
+      <span className="font-mono opacity-75">{value}</span>
+    </span>
+  );
+}
+
+function PhaseWorkflowRunPanel({
+  phase,
   layers,
-  onSelectTask,
+  tasks,
+  messages,
+  evidence,
+  reviews,
+  decisions,
+  latestRun,
+  latestRunSteps,
+  phaseRuns,
+  acceptanceText,
+  phaseDiffs,
+  onOpenRun,
+}: {
+  phase: GoalPhase;
+  layers: PhaseDagLayer[];
+  tasks: Task[];
+  messages: Message[];
+  evidence: Evidence[];
+  reviews: Review[];
+  decisions: Decision[];
+  latestRun?: WorkflowRun;
+  latestRunSteps: WorkflowStep[];
+  phaseRuns: WorkflowRun[];
+  acceptanceText?: string;
+  phaseDiffs: string[];
+  onOpenRun: (runId: string) => void;
+}) {
+  const objective = phase.intent?.trim();
+  const workflowRef = phase.workflow_ref ?? (phase.builtin ? `builtin:${phase.builtin}` : undefined);
+  const finalOutput = workflowRunFinalOutput(latestRun);
+  const directWorkflowRun = phase.execution_mode === "workflow" && latestRunSteps.length === 0;
+  const firstPlannedTask = layers[0]?.groups[0]?.tasks[0];
+  const firstStepLabel = latestRunSteps[0]?.label
+    ? titleCaseLabel(latestRunSteps[0].label)
+    : firstPlannedTask
+      ? firstPlannedTask.title ?? firstPlannedTask.objective ?? firstPlannedTask.id
+      : directWorkflowRun || phase.execution_mode === "workflow"
+        ? "Direct workflow verdict"
+        : undefined;
+  const nextAction = latestRun
+    ? latestRun.status === "failed"
+      ? "Review acceptance criteria and evidence"
+      : latestRun.status === "completed"
+        ? "Record phase decision"
+        : "Watch live execution"
+    : "Workflow plan is ready. Run it to collect evidence.";
+  const actionLabel = latestRun ? "Open run" : "Run workflow plan";
+  const taskIds = new Set(tasks.map((task) => task.id));
+  const proof = phaseProofCounts(taskIds, messages, evidence, reviews, decisions);
+  const plannedStageCount = latestRunSteps.length || layers.reduce(
+    (total, layer) => total + layer.groups.reduce((inner, group) => inner + group.tasks.length, 0),
+    0,
+  ) || (phase.execution_mode === "workflow" ? 1 : 0);
+  const passedStages = directWorkflowRun && latestRun?.status === "completed"
+    ? 1
+    : latestRunSteps.filter((step) => ["completed", "cached"].includes(step.status)).length;
+  const failedStages = latestRunSteps.filter((step) => step.status === "failed").length;
+
+  return (
+    <section className="mt-3 overflow-hidden rounded-md border border-border bg-card/65">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/70 bg-muted/20 px-3 py-2">
+        <div className="min-w-0">
+          <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+            <Workflow className="size-3" />
+            Phase execution
+          </div>
+          <p className="mt-1 text-[12px] font-medium text-foreground">
+            {nextAction}
+          </p>
+          <div className="mt-2 flex flex-wrap items-center gap-1.5">
+            <Button
+              type="button"
+              size="sm"
+              variant={latestRun ? "outline" : "default"}
+              className="h-7 gap-1.5 px-2 text-[11px]"
+              disabled={!latestRun}
+              onClick={latestRun ? () => onOpenRun(latestRun.id) : undefined}
+              title={latestRun ? "Open live execution detail" : "Start action is not wired in this read-only surface yet"}
+            >
+              <Workflow className="size-3" />
+              {actionLabel}
+            </Button>
+            {latestRun && (
+              <Badge tone={workflowRunTone(latestRun.status)}>
+                {latestRun.status === "failed" ? "needs review" : latestRun.status === "completed" ? "passed" : latestRun.status}
+              </Badge>
+            )}
+            {workflowRef && <MonoId>{workflowRef}</MonoId>}
+            {latestRun && <MonoId>{latestRun.workflow_name}</MonoId>}
+          </div>
+          {firstStepLabel && (
+            <p className="mt-1 text-[11px] leading-snug text-muted-foreground">
+              First run stage: <span className="font-medium text-foreground/80">{firstStepLabel}</span>
+            </p>
+          )}
+        </div>
+      </div>
+
+      <PhaseRunnerSummary
+        objective={objective}
+        firstStepLabel={firstStepLabel}
+        plannedStageCount={plannedStageCount}
+        passedStages={passedStages}
+        failedStages={failedStages}
+        latestRun={latestRun}
+        workflowRef={workflowRef}
+        finalOutputReason={finalOutput.reason}
+        hasRunOutput={finalOutput.hasOutput}
+        directWorkflowRun={directWorkflowRun}
+        proof={proof}
+      />
+
+      <div className="grid gap-3 p-3 xl:grid-cols-[minmax(0,1.35fr)_minmax(18rem,0.75fr)]">
+        <div className="min-w-0 space-y-3">
+          <PhaseWorkflowPanel
+            phase={phase}
+            layers={layers}
+            latestRun={latestRun}
+            latestRunSteps={latestRunSteps}
+            workflowRef={workflowRef}
+          />
+          <PhaseSpecBand
+            objective={objective}
+            acceptanceText={acceptanceText}
+            outputs={phase.outputs ?? []}
+            phaseDiffs={phaseDiffs}
+          />
+        </div>
+
+        <div className="min-w-0 space-y-3">
+          <WorkflowRunSummary
+            run={latestRun}
+            steps={latestRunSteps}
+            attempts={phaseRuns.length}
+            phaseId={phase.id}
+            plannedLayers={layers}
+            hasVerdictGate={Boolean(phase.acceptance?.trim())}
+            onOpenRun={latestRun ? onOpenRun : undefined}
+          />
+          <PhaseEvidenceOutcome
+            tasks={tasks}
+            messages={messages}
+            evidence={evidence}
+            reviews={reviews}
+            decisions={decisions}
+            latestRun={latestRun}
+            latestRunSteps={latestRunSteps}
+          />
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function titleCaseLabel(label: string): string {
+  return label
+    .split(/[-_\s]+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function phaseProofCounts(
+  taskIds: Set<string>,
+  messages: Message[],
+  evidence: Evidence[],
+  reviews: Review[],
+  decisions: Decision[],
+) {
+  return {
+    reports: messages.filter((message) => message.kind === "report" && message.task_id != null && taskIds.has(message.task_id)).length,
+    evidence: evidence.filter((item) => item.task_id != null && taskIds.has(item.task_id)).length,
+    reviews: reviews.filter((review) => review.task_id != null && taskIds.has(review.task_id)).length,
+    decisions: decisions.filter((decision) => decision.task_id != null && taskIds.has(decision.task_id)).length,
+  };
+}
+
+function workflowRunFinalOutput(run?: WorkflowRun): { hasOutput: boolean; reason?: string } {
+  const out = run?.final_output;
+  if (!out || typeof out !== "object") return { hasOutput: false };
+  const record = out as Record<string, unknown>;
+  const verdict = record.verdict;
+  const reason =
+    verdict && typeof verdict === "object" && typeof (verdict as Record<string, unknown>).reason === "string"
+      ? ((verdict as Record<string, unknown>).reason as string)
+      : typeof record.summary === "string"
+        ? record.summary
+        : run?.summary ?? undefined;
+  return {
+    hasOutput: Object.keys(record).length > 0,
+    reason,
+  };
+}
+
+function PhaseRunnerSummary({
+  objective,
+  firstStepLabel,
+  plannedStageCount,
+  passedStages,
+  failedStages,
+  latestRun,
+  workflowRef,
+  finalOutputReason,
+  hasRunOutput,
+  directWorkflowRun,
+  proof,
+}: {
+  objective?: string;
+  firstStepLabel?: string;
+  plannedStageCount: number;
+  passedStages: number;
+  failedStages: number;
+  latestRun?: WorkflowRun;
+  workflowRef?: string;
+  finalOutputReason?: string;
+  hasRunOutput?: boolean;
+  directWorkflowRun?: boolean;
+  proof: ReturnType<typeof phaseProofCounts>;
+}) {
+  const liveTone: StatusTone = latestRun?.status === "failed" || failedStages > 0
+    ? "bad"
+    : latestRun?.status === "completed"
+      ? "good"
+      : latestRun
+        ? workflowRunTone(latestRun.status)
+        : "idle";
+  const currentValue = latestRun
+    ? latestRun.status === "failed" || failedStages > 0
+      ? "blocked"
+      : latestRun.status === "completed"
+        ? "passed"
+        : latestRun.status
+    : "not started";
+  const reviewValue = proof.decisions > 0
+    ? "passed"
+    : proof.reviews > 0 || proof.evidence > 0
+      ? "needs review"
+      : "pending evidence";
+  const reviewTone: StatusTone = proof.decisions > 0
+    ? "good"
+    : proof.reviews > 0 || proof.evidence > 0
+      ? "decision"
+      : "warn";
+  const planValue = directWorkflowRun ? "direct workflow" : `${plannedStageCount} stage${plannedStageCount === 1 ? "" : "s"}`;
+  const planDetail = directWorkflowRun
+    ? workflowRef ?? latestRun?.workflow_name ?? "workflow verdict"
+    : firstStepLabel
+      ? `starts with ${firstStepLabel}`
+      : "no stages compiled";
+  const currentDetail = directWorkflowRun
+    ? latestRun?.status === "completed"
+      ? "verdict accepted"
+      : "waiting for verdict"
+    : latestRun
+      ? `${passedStages}/${plannedStageCount || passedStages} stages passed`
+      : "run has not started";
+  const checksValue = hasRunOutput
+    ? "run output"
+    : proof.evidence > 0
+      ? `${proof.evidence} evidence`
+      : "not started";
+  const checksDetail = finalOutputReason
+    ? operatorSummary(finalOutputReason, 80)
+    : proof.reports > 0
+      ? `${proof.reports} report${proof.reports === 1 ? "" : "s"}`
+      : hasRunOutput
+        ? "final output recorded"
+        : "waiting for run output";
+
+  return (
+    <div className="border-b border-border bg-background/35 px-3 py-2.5">
+      <div className="grid gap-2 md:grid-cols-4">
+        <PhaseRunnerFact
+          label="Workflow plan"
+          value={planValue}
+          detail={planDetail}
+          tone="info"
+        />
+        <PhaseRunnerFact
+          label="Current step"
+          value={currentValue}
+          detail={currentDetail}
+          tone={liveTone}
+        />
+        <PhaseRunnerFact
+          label="Checks"
+          value={checksValue}
+          detail={checksDetail}
+          tone={hasRunOutput || proof.evidence > 0 ? "good" : "idle"}
+        />
+        <PhaseRunnerFact
+          label="Review gate"
+          value={reviewValue}
+          detail={proof.decisions > 0 ? "decision recorded" : "evidence-backed review required"}
+          tone={reviewTone}
+        />
+      </div>
+      {objective && (
+        <p className="mt-2 line-clamp-1 text-[11px] text-muted-foreground">
+          Phase summary: <span className="text-foreground/75">{operatorSummary(objective, 220)}</span>
+        </p>
+      )}
+      {workflowRef && (
+        <p className="mt-1 line-clamp-1 text-[11px] text-muted-foreground">
+          Workflow source: <span className="font-mono text-foreground/75">{workflowRef}</span>
+        </p>
+      )}
+    </div>
+  );
+}
+
+function PhaseRunnerFact({
+  label,
+  value,
+  detail,
+  tone,
+}: {
+  label: string;
+  value: string;
+  detail: string;
+  tone: StatusTone;
+}) {
+  return (
+    <div className="min-w-0 rounded-md border border-border/70 bg-card/70 px-2 py-1.5">
+      <div className="flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+        <StatusDot tone={tone} />
+        {label}
+      </div>
+      <p className="mt-0.5 truncate text-[12px] font-semibold text-foreground">{value}</p>
+      <p className="truncate text-[10px] text-muted-foreground">{detail}</p>
+    </div>
+  );
+}
+
+function PhaseSpecBand({
+  objective,
+  acceptanceText,
+  outputs,
+  phaseDiffs,
+}: {
+  objective?: string;
+  acceptanceText?: string;
+  outputs: ArtifactSpec[];
+  phaseDiffs: string[];
+}) {
+  const hasDetails = Boolean(objective || acceptanceText || outputs.length > 0);
+  if (!hasDetails) return null;
+  return (
+    <details className="group rounded-md border border-border/70 bg-muted/15 px-3 py-2">
+      <summary className="flex cursor-pointer list-none items-center justify-between gap-2 text-[11px] font-medium text-muted-foreground transition-colors hover:text-foreground">
+        <span>Phase spec and acceptance</span>
+        <span className="min-w-0 truncate text-[10px] font-normal text-muted-foreground/80">
+          {objective ? operatorSummary(objective, 120) : "context"}
+        </span>
+      </summary>
+      <div className="mt-2 grid gap-2 border-t border-border/70 pt-2 lg:grid-cols-2">
+        <div className="min-w-0">
+          <div className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+            Phase spec
+          </div>
+          <p className="mt-1 text-[12px] leading-snug text-foreground/85">
+            {objective ? operatorSummary(objective, 360) : "No phase purpose recorded."}
+          </p>
+        </div>
+        <div className="min-w-0">
+          <div className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+            Acceptance
+          </div>
+          <p className="mt-1 text-[12px] leading-snug text-foreground/80">
+            {acceptanceText ? operatorSummary(acceptanceText, 320) : "No acceptance target recorded."}
+          </p>
+        </div>
+      </div>
+      <details className="group mt-2">
+        <summary className="cursor-pointer list-none text-[10px] font-medium text-muted-foreground transition-colors hover:text-foreground">
+          Read full spec and acceptance
+        </summary>
+        <div className="mt-2 space-y-2 border-t border-border/70 pt-2 text-[12px] leading-relaxed text-foreground/80">
+          {objective && <p>{objective}</p>}
+          {acceptanceText && (
+            <div>
+              <p className="text-[10px] font-medium text-muted-foreground">
+                Acceptance
+              </p>
+              <p className="mt-1">{acceptanceText}</p>
+            </div>
+          )}
+          {outputs.length > 0 && (
+            <ProofOutputs outputs={outputs} diffs={phaseDiffs} />
+          )}
+          </div>
+      </details>
+    </details>
+  );
+}
+
+function PhaseEvidenceOutcome({
+  tasks,
+  messages,
+  evidence,
+  reviews,
+  decisions,
+  latestRun,
+  latestRunSteps,
+}: {
+  tasks: Task[];
+  messages: Message[];
+  evidence: Evidence[];
+  reviews: Review[];
+  decisions: Decision[];
+  latestRun?: WorkflowRun;
+  latestRunSteps: WorkflowStep[];
+}) {
+  const taskIds = new Set(tasks.map((task) => task.id));
+  const proof = {
+    updates: messages.filter((message) => message.kind === "report" && message.task_id != null && taskIds.has(message.task_id)).length,
+    evidence: evidence.filter((item) => item.task_id != null && taskIds.has(item.task_id)).length,
+    reviews: reviews.filter((review) => review.task_id != null && taskIds.has(review.task_id)).length,
+    decisions: decisions.filter((decision) => decision.task_id != null && taskIds.has(decision.task_id)).length,
+  };
+  const finishedSteps = latestRunSteps.filter((step) => ["completed", "cached"].includes(step.status)).length;
+  const failedSteps = latestRunSteps.filter((step) => step.status === "failed").length;
+  const hasWorkflowEvidence = proof.evidence > 0 || latestRunSteps.some((step) => step.output_summary?.trim());
+  const reviewTone = failedSteps > 0 || latestRun?.status === "failed"
+    ? "bad"
+    : proof.reviews > 0
+      ? "decision"
+      : "idle";
+  const outcomeTone = proof.decisions > 0
+    ? "good"
+    : hasWorkflowEvidence
+      ? "decision"
+      : "idle";
+  const outcome = proof.decisions > 0
+    ? "passed"
+    : hasWorkflowEvidence
+      ? "needs review"
+      : "not started";
+
+  return (
+    <div className="rounded-md border border-border/70 bg-background/50 px-3 py-2.5">
+      <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+        <FileCheck2 className="size-3" />
+        Checks & evidence
+      </div>
+      <div className="mt-2 space-y-1.5">
+        <PhaseOutcomeLine
+          label="Evidence collected"
+          value={proof.evidence > 0 ? `${proof.evidence} item${proof.evidence === 1 ? "" : "s"}` : "not started"}
+          detail={proof.updates > 0 ? `${proof.updates} source update${proof.updates === 1 ? "" : "s"}` : "workflow evidence pending"}
+          tone={proof.evidence > 0 ? "good" : "idle"}
+        />
+        <PhaseOutcomeLine
+          label="Review"
+          value={failedSteps > 0 ? "blocked" : proof.reviews > 0 ? "passed" : "not started"}
+          detail={latestRunSteps.length > 0 ? `${finishedSteps}/${latestRunSteps.length} run stages passed` : "live execution not started"}
+          tone={reviewTone}
+        />
+        <PhaseOutcomeLine
+          label="Decision"
+          value={outcome}
+          detail={proof.decisions > 0 ? "phase can advance" : "requires evidence-backed review"}
+          tone={outcomeTone}
+        />
+      </div>
+    </div>
+  );
+}
+
+function PhaseOutcomeLine({
+  label,
+  value,
+  detail,
+  tone,
+}: {
+  label: string;
+  value: string;
+  detail: string;
+  tone: StatusTone;
+}) {
+  return (
+    <div className="grid min-w-0 gap-1 border-t border-border/60 pt-1.5 first:border-t-0 first:pt-0 sm:grid-cols-[minmax(8rem,0.75fr)_minmax(0,1fr)]">
+      <div className="flex min-w-0 items-center gap-1.5 text-[12px] font-medium text-foreground">
+        <StatusDot tone={tone} />
+        <span className="truncate">{label}</span>
+      </div>
+      <p className="min-w-0 text-[11px] text-muted-foreground">
+        <span className="font-medium text-foreground/80">{value}</span>
+        <span className="mx-1 text-muted-foreground/60">·</span>
+        {detail}
+      </p>
+    </div>
+  );
+}
+
+function PhaseWorkflowPanel({
+  phase,
+  layers,
+  latestRun,
+  latestRunSteps,
+  workflowRef,
+}: {
+  phase: GoalPhase;
+  layers: PhaseDagLayer[];
+  latestRun?: WorkflowRun;
+  latestRunSteps: WorkflowStep[];
+  workflowRef?: string;
+}) {
+  const script = compactWorkflowScript(workflowScriptFromRun(latestRun) ?? buildPhaseWorkflowPreview(phase, layers));
+
+  return (
+    <WorkflowDefinitionPreview
+      heading="Run plan"
+      script={script}
+      steps={latestRunSteps}
+      sourceLabel={workflowRef ?? latestRun?.workflow_name}
+      collapseExtraStepsOnMobile
+    />
+  );
+}
+
+/**
+ * Render a phase's implementation work items as optional diagnostic context.
+ * Phase execution itself is represented by the phase spec, run plan, live
+ * execution, and evidence panels above.
+ */
+function PhasePlanSequence({
+  layers,
+  members,
+  messages,
+  evidence,
+  reviews,
+  decisions,
+  expandedTaskIds,
+  onToggleTask,
+  onOpenTask,
 }: {
   layers: PhaseDagLayer[];
-  onSelectTask: (taskId: string) => void;
+  members: AgentMember[];
+  messages: Message[];
+  evidence: Evidence[];
+  reviews: Review[];
+  decisions: Decision[];
+  expandedTaskIds: Set<string>;
+  onToggleTask: (taskId: string) => void;
+  onOpenTask: (taskId: string) => void;
 }) {
   if (layers.length === 0) {
     return (
-      <p className="mt-2 text-[11px] text-muted-foreground">No live tasks in this phase.</p>
+      <p className="mt-2 text-[11px] text-muted-foreground">No executable plan steps in this phase.</p>
     );
   }
+  let stepNumber = 0;
   return (
-    <div className="mt-2.5 space-y-1.5">
+    <div className="mt-2.5 space-y-2">
+      <div className="flex flex-wrap items-center gap-1.5 text-[10px] font-medium text-muted-foreground">
+        <ListChecks className="size-3" />
+        <span>Implementation work items</span>
+        <span className="rounded bg-muted px-1.5 py-0.5 font-mono">
+          {layers.reduce((total, layer) => total + layer.groups.reduce((inner, group) => inner + group.tasks.length, 0), 0)} items
+        </span>
+      </div>
       {layers.map((layer, index) => (
         <div key={layer.layer} className="space-y-1.5">
           {layer.groups.map((group, groupIndex) => (
             <div
               key={groupIndex}
               className={cn(
-                "flex flex-wrap gap-1.5",
-                group.parallel &&
-                  "rounded-md border border-dashed border-border/70 bg-muted/20 p-1.5",
+                "space-y-1.5",
+                group.parallel && "rounded-md bg-muted/20 p-2",
               )}
             >
               {group.parallel && (
-                <span className="self-center pl-0.5 pr-1 text-[9px] font-semibold uppercase tracking-wider text-muted-foreground">
-                  parallel
+                <span className="inline-flex items-center gap-1.5 text-[9px] font-semibold uppercase tracking-wider text-muted-foreground">
+                  <Workflow className="size-3" />
+                  same stage · {group.tasks.length} items
                 </span>
               )}
-              {group.tasks.map((task) => (
-                <PhaseTaskChip key={task.id} task={task} onClick={() => onSelectTask(task.id)} />
-              ))}
+              {group.tasks.map((task) => {
+                stepNumber += 1;
+                return (
+                  <PhaseTaskNode
+                    key={task.id}
+                    task={task}
+                    stepNumber={stepNumber}
+                    parallel={group.parallel}
+                    members={members}
+                    messages={messages}
+                    evidence={evidence}
+                    reviews={reviews}
+                    decisions={decisions}
+                    expanded={expandedTaskIds.has(task.id)}
+                    onToggle={() => onToggleTask(task.id)}
+                    onOpen={() => onOpenTask(task.id)}
+                  />
+                );
+              })}
             </div>
           ))}
-          {index < layers.length - 1 && (
-            <div className="flex justify-center py-0.5 text-muted-foreground/50">
-              <ChevronDown className="size-3" />
-            </div>
-          )}
+          {index < layers.length - 1 && <div className="h-1" aria-hidden />}
         </div>
       ))}
     </div>
   );
 }
 
-/** A compact task chip inside the phase DAG (status dot + title + status badge). */
-function PhaseTaskChip({ task, onClick }: { task: Task; onClick: () => void }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className="inline-flex min-w-0 items-center gap-1.5 rounded-md border border-border bg-background/60 px-2 py-1 text-left text-[11px] transition-colors hover:border-input hover:bg-accent/40"
-    >
-      <StatusDot tone={taskTone(task.status)} pulse={task.status === "running"} />
-      <span className="max-w-44 truncate font-medium text-foreground/90">
-        {task.title ?? task.id}
-      </span>
-      <Badge tone={taskTone(task.status)}>{task.status}</Badge>
-    </button>
-  );
-}
-
-/**
- * Sentinel `phaseId` for the goal's "(no phase)" section, so its view choice is
- * URL-addressable alongside real phases (a real phase id can never be this).
- */
-const NO_PHASE_KEY = "__no_phase__";
-
-/**
- * The per-phase [ Graph | Kanban ] segmented toggle (goal-task-board-model).
- * Mirrors the Work board's [ Goals | Tasks ] segmented control so the dashboard
- * reads consistently. Graph keeps the DAG; Kanban shows phaseKanban() lanes.
- */
-function PhaseViewToggle({
-  value,
-  onChange,
+function PhaseTaskNode({
+  task,
+  stepNumber,
+  parallel,
+  members,
+  messages,
+  evidence,
+  reviews,
+  decisions,
+  expanded,
+  onToggle,
+  onOpen,
 }: {
-  value: "graph" | "kanban";
-  onChange: (view: "graph" | "kanban") => void;
+  task: Task;
+  stepNumber?: number;
+  parallel?: boolean;
+  members: AgentMember[];
+  messages: Message[];
+  evidence: Evidence[];
+  reviews: Review[];
+  decisions: Decision[];
+  expanded: boolean;
+  onToggle: () => void;
+  onOpen: () => void;
 }) {
+  const git = taskGitMetadata(task);
+  const proof = taskProofCounts(task, messages, evidence, reviews, decisions);
+  const acceptance = task.acceptance_criteria ?? [];
+  const body = markdownSummary(task.objective ?? task.design_md ?? task.description, 260);
+  const primaryAgent =
+    task.assignee_agent_id ? memberName(members, task.assignee_agent_id)
+    : task.owner_agent_id ? memberName(members, task.owner_agent_id)
+    : undefined;
+  const owners = [
+    task.owner_agent_id ? `owner ${memberName(members, task.owner_agent_id)}` : undefined,
+    task.assignee_agent_id ? `assignee ${memberName(members, task.assignee_agent_id)}` : undefined,
+    task.reviewer_agent_id ? `reviewer ${memberName(members, task.reviewer_agent_id)}` : undefined,
+  ].filter((value): value is string => Boolean(value));
+
   return (
-    <div className="flex items-center gap-1 rounded-md border border-border bg-card p-0.5">
-      {(["graph", "kanban"] as const).map((option) => (
+    <div
+      className={cn(
+        "min-w-0 rounded-md border bg-background/70 transition-colors",
+        expanded ? "border-primary/30 bg-primary/5" : "border-border/80",
+      )}
+    >
+      <div className="flex items-stretch gap-1 p-1">
         <button
-          key={option}
           type="button"
-          onClick={() => onChange(option)}
-          className={cn(
-            "rounded px-2 py-0.5 text-[10px] font-medium capitalize transition-colors",
-            value === option
-              ? "bg-primary/15 text-primary"
-              : "text-muted-foreground hover:text-foreground",
-          )}
+          onClick={onToggle}
+          aria-expanded={expanded}
+          className="flex min-w-0 flex-1 items-start gap-2 rounded px-2 py-2 text-left transition-colors hover:bg-accent/40"
         >
-          {option}
+          <ChevronRight
+            className={cn(
+              "mt-0.5 size-3.5 shrink-0 text-muted-foreground transition-transform",
+              expanded && "rotate-90 text-primary",
+            )}
+          />
+          <span className="mt-0.5 inline-flex h-5 min-w-5 shrink-0 items-center justify-center rounded border border-border bg-card px-1 font-mono text-[10px] text-muted-foreground">
+            {stepNumber != null ? String(stepNumber).padStart(2, "0") : <StatusDot tone={taskTone(task.status)} />}
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className="flex flex-wrap items-center gap-1.5">
+              <span className="min-w-0 max-w-full truncate text-[12px] font-semibold text-foreground/90">
+                {task.title ?? task.id}
+              </span>
+              <Badge tone={taskTone(task.status)}>{task.status}</Badge>
+            </span>
+            <span className="mt-1 line-clamp-2 text-[11px] leading-snug text-muted-foreground">
+              {body}
+            </span>
+            <span className="mt-1 flex flex-wrap items-center gap-1.5 text-[10px] text-muted-foreground">
+              {primaryAgent && (
+                <span className="inline-flex items-center gap-1 rounded bg-muted px-1.5 py-0.5">
+                  <User className="size-2.5" />
+                  {primaryAgent}
+                </span>
+              )}
+              {parallel && (
+                <span className="inline-flex items-center gap-1 rounded bg-muted px-1.5 py-0.5">
+                  same stage
+                </span>
+              )}
+            </span>
+          </span>
         </button>
-      ))}
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              onClick={onOpen}
+              className="mt-1 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+              aria-label={`Open work item detail for ${task.title ?? task.id}`}
+            >
+              <ExternalLink className="size-3.5" />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="top">Open work item detail</TooltipContent>
+        </Tooltip>
+      </div>
+
+      {expanded && (
+        <div className="border-t border-border/70 px-3 pb-3 pt-2">
+          <div className="grid gap-3 lg:grid-cols-[minmax(0,1.1fr)_minmax(14rem,0.8fr)]">
+            <div className="space-y-2">
+              <div>
+                <p className="mb-1 text-[9px] font-semibold uppercase tracking-wider text-muted-foreground">
+                  Work item brief
+                </p>
+                <p className="text-[12px] leading-relaxed text-foreground/85">{body}</p>
+              </div>
+              <TaskAcceptanceList items={acceptance} />
+            </div>
+            <div className="space-y-1.5 rounded-md border border-border bg-card/70 p-2">
+              <p className="text-[9px] font-semibold uppercase tracking-wider text-muted-foreground">
+                Ownership
+              </p>
+              {owners.length > 0 ? (
+                <div className="flex flex-wrap gap-1">
+                  {owners.map((owner) => (
+                    <span
+                      key={owner}
+                      className="inline-flex items-center gap-1 rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground"
+                    >
+                      <User className="size-2.5" />
+                      {owner}
+                    </span>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-[11px] text-muted-foreground">No owner slots recorded.</p>
+              )}
+              <div>
+                <p className="mt-2 text-[9px] font-semibold uppercase tracking-wider text-muted-foreground">
+                  Owned paths
+                </p>
+                <PathList paths={git.owned_paths} />
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-3 flex flex-wrap items-center gap-1.5">
+            <details className="w-full">
+              <summary className="cursor-pointer text-[10px] font-semibold uppercase tracking-wider text-muted-foreground hover:text-foreground">
+                Protocol evidence
+              </summary>
+              <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                <PhaseProofChip label="assignment" value={proof.assignments} />
+                <PhaseProofChip label="report" value={proof.reports} />
+                <PhaseProofChip label="evidence" value={proof.evidence} />
+                <PhaseProofChip label="review" value={proof.reviews} />
+                <PhaseProofChip label="decision" value={proof.decisions} />
+                <MonoId>{task.id}</MonoId>
+              </div>
+            </details>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
-/**
- * Phase-scoped Kanban: the status lanes from {@link phaseKanban}, rendered as a
- * horizontally-scrollable strip of compact columns. Empty lanes are dropped so a
- * sparse phase stays readable; an all-empty phase shows a single empty note.
- */
-function PhaseKanban({
-  lanes,
-  onSelectTask,
-}: {
-  lanes: Lane[];
-  onSelectTask: (taskId: string) => void;
-}) {
-  const populated = lanes.filter((lane) => lane.tasks.length > 0);
-  if (populated.length === 0) {
+function TaskAcceptanceList({ items }: { items: string[] }) {
+  if (items.length === 0) {
     return (
-      <p className="mt-2 text-[11px] text-muted-foreground">No live tasks in this phase.</p>
+      <p className="rounded-md border border-border bg-muted/20 px-2 py-1.5 text-[11px] text-muted-foreground">
+        No work-item acceptance criteria recorded.
+      </p>
     );
   }
   return (
-    <div className="mt-2.5 flex gap-2 overflow-x-auto pb-1">
-      {populated.map((lane) => (
-        <div
-          key={lane.id}
-          className="flex w-44 shrink-0 flex-col rounded-md border border-border bg-card/60"
-        >
-          <div className="flex items-center gap-1.5 border-b border-border px-2 py-1.5">
-            <StatusDot tone={taskTone(lane.id)} />
-            <span className="text-[10px] font-semibold capitalize">{lane.title}</span>
-            <span className="ml-auto font-mono text-[10px] text-muted-foreground">
-              {lane.tasks.length}
-            </span>
-          </div>
-          <div className="space-y-1 p-1.5">
-            {lane.tasks.map((task) => (
-              <PhaseTaskChip key={task.id} task={task} onClick={() => onSelectTask(task.id)} />
-            ))}
-          </div>
-        </div>
-      ))}
+    <div>
+      <p className="mb-1 text-[9px] font-semibold uppercase tracking-wider text-muted-foreground">
+        Acceptance
+      </p>
+      <ul className="space-y-1">
+        {items.slice(0, 4).map((item, index) => (
+          <li key={index} className="flex gap-1.5 text-[11px] leading-snug text-foreground/80">
+            <CheckCircle2 className="mt-0.5 size-3 shrink-0 text-status-good" />
+            <span>{item}</span>
+          </li>
+        ))}
+      </ul>
+      {items.length > 4 && (
+        <p className="mt-1 text-[10px] text-muted-foreground">
+          +{items.length - 4} more criteria in step detail
+        </p>
+      )}
     </div>
   );
 }
 
+function taskProofCounts(
+  task: Task,
+  messages: Message[],
+  evidence: Evidence[],
+  reviews: Review[],
+  decisions: Decision[],
+) {
+  return {
+    assignments: messages.filter((message) => message.task_id === task.id && message.kind === "task").length,
+    reports: messages.filter((message) => message.task_id === task.id && message.kind === "report").length,
+    evidence: evidence.filter((item) => item.task_id === task.id).length,
+    reviews: reviews.filter((review) => review.task_id === task.id).length,
+    decisions: decisions.filter((decision) => decision.task_id === task.id).length,
+  };
+}
+
 /**
- * The goal's "(no phase)" section (goal-task-board-model): goal-scoped tasks that
- * carry no `phase_id`. Shown only when such tasks exist so a fully-phased goal
- * stays clean. Offers the same Graph/Kanban toggle — Graph lists the tasks as
- * chips (there is no phase DAG to layer), Kanban buckets them into status lanes.
+ * The goal's unphased triage section (goal-task-board-model): goal-scoped tasks
+ * that carry no `phase_id`. Shown only when such tasks exist so a fully-phased
+ * goal stays clean. It uses the same expandable plan-step node as a phase, but
+ * stays outside the phase workflow because these tasks have not been accepted
+ * into a compiled phase plan.
  */
 function PhalessGoalTasksSection({
   goal,
   tasks,
-  phaseView,
-  showKanban,
-  onSelectPhaseView,
+  members,
+  messages,
+  evidence,
+  reviews,
+  decisions,
   onSelectTask,
 }: {
   goal: Goal;
   tasks: Task[];
-  phaseView: "graph" | "kanban";
-  showKanban: boolean;
-  onSelectPhaseView: (view: "graph" | "kanban") => void;
+  members: AgentMember[];
+  messages: Message[];
+  evidence: Evidence[];
+  reviews: Review[];
+  decisions: Decision[];
   onSelectTask: (taskId: string) => void;
 }) {
   const phaseless = phaselessGoalTasks(goal.id, tasks);
+  const [expandedTaskIds, setExpandedTaskIds] = useState<Set<string>>(() => new Set());
   if (phaseless.length === 0) return null;
-  const view = showKanban ? "kanban" : phaseView === "kanban" ? "graph" : phaseView;
+  const toggleTask = (taskId: string) => {
+    setExpandedTaskIds((current) => {
+      const next = new Set(current);
+      if (next.has(taskId)) next.delete(taskId);
+      else next.add(taskId);
+      return next;
+    });
+  };
   return (
-    <DocSection label="(no phase)">
-      <div className="rounded-lg border border-border bg-card p-3">
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="text-[12px] font-medium text-muted-foreground">
-            Goal-scoped tasks with no phase
-          </span>
-          <span className="font-mono text-[11px] text-muted-foreground">
-            {phaseless.length}
-          </span>
-          <span className="ml-auto">
-            <PhaseViewToggle value={view} onChange={onSelectPhaseView} />
-          </span>
+    <CollapsibleSection
+      kicker="Follow-up"
+      title="Phase backlog"
+      badge={<Badge tone="warn">{phaseless.length}</Badge>}
+    >
+      <div className="p-3">
+        <div className="flex flex-wrap items-center gap-2 text-[12px] text-muted-foreground">
+          <span className="font-medium text-foreground">Not in a phase plan yet</span>
+          <span className="font-mono">{phaseless.length}</span>
         </div>
-        {view === "kanban" ? (
-          <PhaseKanban
-            lanes={buildPhaselessLanes(phaseless)}
-            onSelectTask={onSelectTask}
-          />
-        ) : (
-          <div className="mt-2.5 flex flex-wrap gap-1.5">
-            {phaseless.map((task) => (
-              <PhaseTaskChip
-                key={task.id}
-                task={task}
-                onClick={() => onSelectTask(task.id)}
-              />
-            ))}
-          </div>
-        )}
+        <div className="mt-2.5 flex flex-wrap gap-2">
+          {phaseless.map((task) => (
+            <PhaseTaskNode
+              key={task.id}
+              task={task}
+              members={members}
+              messages={messages}
+              evidence={evidence}
+              reviews={reviews}
+              decisions={decisions}
+              expanded={expandedTaskIds.has(task.id)}
+              onToggle={() => toggleTask(task.id)}
+              onOpen={() => onSelectTask(task.id)}
+            />
+          ))}
+        </div>
       </div>
-    </DocSection>
+    </CollapsibleSection>
   );
 }
-
-/** Bucket a phaseless task list into the same status lanes the board uses. */
-function buildPhaselessLanes(tasks: Task[]): Lane[] {
-  return TASK_LANE_ORDER.map((status) => ({
-    id: status,
-    title: status,
-    tasks: tasks.filter((task) => task.status === status),
-  }));
-}
-
-/** Lane order for the phaseless kanban (mirrors readModel's laneOrder). */
-const TASK_LANE_ORDER = [
-  "planned",
-  "assigned",
-  "running",
-  "blocked",
-  "review",
-  "done",
-  "archived",
-] as const;
 
 /** Superseded tasks: greyed + struck, with the knowledge that abandoned them. */
 function SupersededTasks({
@@ -2636,7 +4082,7 @@ export function TaskDocument({
           label="Declared artifacts"
           action={<Badge tone="info">{task.outputs!.length}</Badge>}
         >
-          <Deliverables
+          <ProofOutputs
             outputs={task.outputs!}
             diffs={taskWorktreeDiffs(task, model.snapshot.workflow_steps ?? [])}
           />
@@ -3073,11 +4519,12 @@ function TaskSheet({
 /**
  * The Work board (goal-task-board-model). The PRIMARY rail view is the GOAL
  * COLLECTION (4 lifecycle columns) — the flat global task board has been retired,
- * because tasks are now viewed strictly under Goal -> Phase -> [Graph | Kanban].
- * The only remaining task layout here is the GOAL-SCOPED board (`boardGoal` set),
- * a fallback for LEGACY phaseless goals, reached from a goal document's "View
- * tasks". `boardScope` is retained for URL/back-compat but no longer surfaces a
- * flat all-tasks view. Selecting a task card opens the Task slide-over.
+ * because phase-owned work is now viewed under Goal -> Phase -> plan/workflow.
+ * The only remaining task layout here is the GOAL-SCOPED board (`boardGoal` set
+ * or `?surface=tasks&goal=<id>`), reached from a goal document's "View tasks"
+ * and direct Work deep links. `boardScope` is retained for URL/back-compat but
+ * no longer surfaces a flat all-tasks view. Selecting a task card opens the Task
+ * slide-over.
  */
 export function GraphKanban({
   model,
@@ -3095,8 +4542,8 @@ export function GraphKanban({
     ? model.tasks.find((task) => task.id === peekTaskId)
     : undefined;
   const goalById = new Map(model.goals.map((goal) => [goal.id, goal]));
-  // A goal filter pins the board to that goal's task columns (the legacy
-  // phaseless fallback). Absent a filter, the board is the goal collection.
+  // A goal filter pins the board to that goal's task columns. Absent a filter,
+  // the board is the goal collection.
   const filterGoal = boardGoal ? goalById.get(boardGoal) : undefined;
   const scopedMode = Boolean(filterGoal);
   const boardTasks = boardGoal
@@ -3111,34 +4558,22 @@ export function GraphKanban({
   return (
     <div className="space-y-5">
       <SurfaceHeader
-        kicker={scopedMode ? "Goal-scoped tasks (legacy)" : "Goal collection"}
-        title="Work"
+        kicker={scopedMode ? "Task projection" : "Goal collection"}
+        title={scopedMode ? `${filterGoal?.title ?? filterGoal?.id} tasks` : "Work"}
         description={
           scopedMode
-            ? "Tasks for this goal, by status. This goal-scoped board is the fallback for legacy goals that have no phases; phase-driven goals view tasks under Goal -> Phase -> [Graph | Kanban]."
+            ? "Status lanes for tasks attached to this goal. Goal spec, phase gates, and proof state stay anchored in the Goal Workbench."
             : "Goals by lifecycle. A goal reaches done only after a closeout decision and evaluation — never from task activity alone. Open a goal to see its phases and tasks."
         }
       />
 
       {filterGoal && (
-        <div className="flex items-center gap-2 rounded-md border border-border bg-card/40 px-3 py-2 text-xs">
-          <Target className="size-3.5 text-primary" />
-          <span className="text-muted-foreground">Filtered to goal</span>
-          <button
-            type="button"
-            className="font-medium hover:text-primary"
-            onClick={() => onSelectionChange({ goalId: filterGoal.id, surface: "goal" })}
-          >
-            {filterGoal.title ?? filterGoal.id}
-          </button>
-          <button
-            type="button"
-            className="ml-auto inline-flex items-center gap-1 text-muted-foreground hover:text-foreground"
-            onClick={() => onSelectionChange({ boardGoal: undefined })}
-          >
-            <X className="size-3" /> Back to goals
-          </button>
-        </div>
+        <GoalTaskProjectionHeader
+          goal={filterGoal}
+          taskCount={boardTasks.length}
+          onOpenGoal={() => onSelectionChange({ goalId: filterGoal.id, surface: "goal" })}
+          onBackToGoals={() => onSelectionChange({ boardGoal: undefined, goalId: undefined })}
+        />
       )}
 
       <div className="flex gap-3 overflow-x-auto pb-2">
@@ -3198,6 +4633,57 @@ export function GraphKanban({
         />
       )}
     </div>
+  );
+}
+
+function GoalTaskProjectionHeader({
+  goal,
+  taskCount,
+  onOpenGoal,
+  onBackToGoals,
+}: {
+  goal: Goal;
+  taskCount: number;
+  onOpenGoal: () => void;
+  onBackToGoals: () => void;
+}) {
+  const phases = goal.phases ?? [];
+  const passed = phases.filter((phase) => phase.status === "passed").length;
+  return (
+    <section className="rounded-lg border border-border bg-card">
+      <div className="grid gap-0 lg:grid-cols-[minmax(0,1fr)_auto]">
+        <div className="min-w-0 p-3.5">
+          <div className="mb-1.5 flex flex-wrap items-center gap-1.5">
+            <Badge tone={goalTone(goal.status)}>{displayGoalStatus(goal)}</Badge>
+	            {goal.priority && <Badge tone="info">{goal.priority.toUpperCase()}</Badge>}
+            <span className="inline-flex items-center gap-1 rounded-md bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+              <GitBranch className="size-3" />
+              {passed}/{phases.length} phases
+            </span>
+            <span className="inline-flex items-center gap-1 rounded-md bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+              <ClipboardList className="size-3" />
+              {taskCount} tasks
+            </span>
+          </div>
+          <h2 className="truncate text-[15px] font-semibold text-foreground">
+            {goal.title ?? goal.id}
+          </h2>
+          <p className="mt-1 line-clamp-2 max-w-4xl text-[12px] leading-relaxed text-muted-foreground">
+            {goalSpecSummary(goal)}
+          </p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2 border-t border-border p-3.5 lg:border-l lg:border-t-0">
+          <Button size="sm" onClick={onOpenGoal}>
+            <Target className="size-3.5" />
+            Open Goal Workbench
+          </Button>
+          <Button size="sm" variant="secondary" onClick={onBackToGoals}>
+            <X className="size-3.5" />
+            Goal collection
+          </Button>
+        </div>
+      </div>
+    </section>
   );
 }
 
@@ -5122,46 +6608,14 @@ function HealthRow({
 /* Docs browser                                                       */
 /* ------------------------------------------------------------------ */
 
-/**
- * Top-level sidebar sections, mirroring the docs/ folder layout. A doc is
- * matched to the first group whose test passes (Core = a markdown file directly
- * under docs/, the rest = a named subfolder). Order here is the sidebar order.
- */
-const DOC_GROUPS: { id: string; title: string; match: (path: string) => boolean }[] = [
-  { id: "core", title: "Core", match: (p) => /^docs\/[^/]+\.md$/.test(p) },
-  { id: "dashboard", title: "Dashboard", match: (p) => p.startsWith("docs/dashboard/") },
-  { id: "decisions", title: "Decisions", match: (p) => p.startsWith("docs/decisions/") },
-  { id: "integration", title: "Integration", match: (p) => p.startsWith("docs/integration/") },
-  { id: "research", title: "Research", match: (p) => p.startsWith("docs/research/") },
-  { id: "design", title: "Design", match: (p) => p.startsWith("docs/design/") },
-  { id: "other", title: "Other", match: () => true },
-];
-
-function groupForDoc(path: string): string {
-  return DOC_GROUPS.find((group) => group.match(path))!.id;
-}
-
 /** Tokens upper-cased verbatim in doc titles (the rest are capitalised). */
 const DOC_ACRONYMS = new Set([
   "prd", "mvp", "api", "pr", "ci", "git", "adr", "mcp", "sse", "cli", "tui",
   "ui", "ux", "id", "db", "json", "ndjson", "http", "url", "io", "ai", "llm",
 ]);
 
-/**
- * Human title from a doc path (the registry has no title field). A README/index
- * is a folder's landing page, so it is named after its folder. Otherwise the
- * filename is split on - / _, known acronyms upper-cased and the rest
- * capitalised. "docs/agent-runtime.md" → "Agent runtime"; "docs/prd.md" → "PRD";
- * "docs/integration/README.md" → "Integration".
- */
-function docTitle(path: string): string {
-  const parts = path.replace(/\.md$/, "").split("/");
-  let base = parts[parts.length - 1];
-  if (/^(readme|index)$/i.test(base)) {
-    const parent = parts[parts.length - 2];
-    base = parent === "docs" ? "overview" : (parent ?? base);
-  }
-  return base
+function titleFromSlug(slug: string): string {
+  return slug
     .split(/[-_]/)
     .filter(Boolean)
     .map((token) =>
@@ -5170,6 +6624,109 @@ function docTitle(path: string): string {
         : token.charAt(0).toUpperCase() + token.slice(1),
     )
     .join(" ");
+}
+
+/**
+ * Human title from a doc path (the registry has no title field). A README/index
+ * is a folder's landing page, so it is named after its folder. Otherwise the
+ * filename is split on - / _, known acronyms upper-cased and the rest
+ * capitalised. "docs/agent-runtime.md" -> "Agent runtime"; "docs/prd.md" -> "PRD";
+ * "docs/integration/README.md" -> "Integration".
+ */
+function docTitle(path: string): string {
+  const parts = path.replace(/\.md$/, "").split("/");
+  let base = parts[parts.length - 1];
+  if (/^(readme|index)$/i.test(base)) {
+    const parent = parts[parts.length - 2];
+    base = parent === "docs" ? "overview" : (parent ?? base);
+  }
+  return titleFromSlug(base);
+}
+
+type DocTreeNode = {
+  id: string;
+  name: string;
+  path: string;
+  doc?: DocRegistryEntry;
+  children: DocTreeNode[];
+  docCount: number;
+};
+
+const ROOT_DOCS = new Set(["README.md", "AGENTS.md"]);
+
+function isBrowsableDoc(doc: DocRegistryEntry): boolean {
+  return doc.path.endsWith(".md") && (doc.path.startsWith("docs/") || ROOT_DOCS.has(doc.path));
+}
+
+function docTreeSort(a: DocTreeNode, b: DocTreeNode): number {
+  const rootOrder = new Map([
+    ["README.md", 0],
+    ["AGENTS.md", 1],
+    ["docs", 2],
+  ]);
+  const aRoot = rootOrder.get(a.path);
+  const bRoot = rootOrder.get(b.path);
+  if (aRoot !== undefined || bRoot !== undefined) {
+    return (aRoot ?? 99) - (bRoot ?? 99);
+  }
+
+  const aFile = a.doc?.path.split("/").pop()?.toLowerCase();
+  const bFile = b.doc?.path.split("/").pop()?.toLowerCase();
+  const fileWeight = (file?: string) => {
+    if (file === "readme.md") return 0;
+    if (file === "index.md") return 1;
+    return file ? 2 : 3;
+  };
+  const weight = fileWeight(aFile) - fileWeight(bFile);
+  if (weight !== 0) return weight;
+  return a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
+}
+
+function buildDocTree(docs: DocRegistryEntry[]): DocTreeNode[] {
+  const root: DocTreeNode = { id: "", name: "", path: "", children: [], docCount: 0 };
+
+  for (const doc of docs) {
+    let cursor = root;
+    const parts = doc.path.split("/");
+    for (let index = 0; index < parts.length; index += 1) {
+      const part = parts[index];
+      const path = parts.slice(0, index + 1).join("/");
+      const isLeaf = index === parts.length - 1;
+      let child = cursor.children.find((node) => node.path === path);
+      if (!child) {
+        child = {
+          id: path,
+          name: isLeaf ? docTitle(doc.path) : titleFromSlug(part),
+          path,
+          children: [],
+          docCount: 0,
+        };
+        cursor.children.push(child);
+      }
+      if (isLeaf) {
+        child.doc = doc;
+        child.name = docTitle(doc.path);
+      }
+      cursor = child;
+    }
+  }
+
+  const finalize = (node: DocTreeNode): number => {
+    node.children.sort(docTreeSort);
+    node.docCount = (node.doc ? 1 : 0) + node.children.reduce((total, child) => total + finalize(child), 0);
+    return node.docCount;
+  };
+  finalize(root);
+  return root.children;
+}
+
+function docFolderAncestors(path: string): string[] {
+  const parts = path.split("/");
+  const ancestors: string[] = [];
+  for (let index = 0; index < parts.length - 1; index += 1) {
+    ancestors.push(parts.slice(0, index + 1).join("/"));
+  }
+  return ancestors;
 }
 
 /** Registry status → status-dot tone. */
@@ -5187,12 +6744,11 @@ function docStatusTone(status?: DocRegistryEntry["status"]): StatusTone {
 }
 
 /**
- * The Docs surface: a two-pane browser that maps the repo's docs/ tree onto the
- * frontend. The sidebar is built from docs/registry.json (fetched via the
- * allow-listed /v1/docs route — no extra endpoint), grouped by folder; the main
- * pane renders the selected doc as a Notion-style markdown document. The open
- * doc is URL-addressable as ?doc=<path>, so Vision source_refs and shared links
- * land directly on it.
+ * The Docs surface: a two-pane browser that maps the repo's markdown docs onto
+ * a nested tree. The sidebar is built from docs/registry.json (fetched via the
+ * allow-listed /v1/docs route); the main pane renders the selected doc as a
+ * Notion-style markdown document. The open doc is URL-addressable as
+ * ?doc=<path>, so Vision source_refs and shared links land directly on it.
  */
 export function DocsBrowser({
   apiUrl,
@@ -5219,21 +6775,45 @@ export function DocsBrowser({
       .catch((error: unknown) => {
         if (!cancelled)
           setRegistry({ status: "error", detail: error instanceof Error ? error.message : String(error) });
-      });
+    });
     return () => {
       cancelled = true;
     };
   }, [apiUrl]);
 
-  const mdDocs =
-    registry.status === "ok"
-      ? registry.docs.filter((doc) => doc.path.startsWith("docs/") && doc.path.endsWith(".md"))
-      : [];
-  const groups = DOC_GROUPS.map((group) => ({
-    ...group,
-    docs: mdDocs.filter((doc) => groupForDoc(doc.path) === group.id),
-  })).filter((group) => group.docs.length > 0);
+  const [expandedFolders, setExpandedFolders] = useState<Set<string>>(() => new Set(["docs"]));
+
+  useEffect(() => {
+    if (!docPath) return;
+    const ancestors = docFolderAncestors(docPath);
+    if (ancestors.length === 0) return;
+    setExpandedFolders((current) => {
+      const next = new Set(current);
+      let changed = false;
+      for (const ancestor of ancestors) {
+        if (!next.has(ancestor)) {
+          next.add(ancestor);
+          changed = true;
+        }
+      }
+      return changed ? next : current;
+    });
+  }, [docPath]);
+
+  const mdDocs = registry.status === "ok" ? registry.docs.filter(isBrowsableDoc) : [];
+  const docTree = buildDocTree(mdDocs);
   const selected = mdDocs.find((doc) => doc.path === docPath);
+  const toggleFolder = (path: string) => {
+    setExpandedFolders((current) => {
+      const next = new Set(current);
+      if (next.has(path)) {
+        next.delete(path);
+      } else {
+        next.add(path);
+      }
+      return next;
+    });
+  };
 
   return (
     <div className="flex h-full min-h-0">
@@ -5257,35 +6837,18 @@ export function DocsBrowser({
           {registry.status === "error" && (
             <p className="px-2 py-3 text-[12px] text-muted-foreground">{registry.detail}</p>
           )}
-          {registry.status === "ok" &&
-            groups.map((group) => (
-              <div key={group.id} className="mb-3">
-                <p className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-                  {group.title}
-                </p>
-                <div className="space-y-0.5">
-                  {group.docs.map((doc) => {
-                    const active = doc.path === docPath;
-                    return (
-                      <button
-                        key={doc.path}
-                        type="button"
-                        onClick={() => onSelectionChange({ surface: "docs", docPath: doc.path })}
-                        className={cn(
-                          "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[13px] transition-colors hover:bg-accent/50",
-                          active
-                            ? "bg-primary/12 text-primary hover:bg-primary/12"
-                            : "text-foreground/90",
-                        )}
-                      >
-                        <StatusDot tone={docStatusTone(doc.status)} className="shrink-0" />
-                        <span className="truncate">{docTitle(doc.path)}</span>
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            ))}
+          {registry.status === "ok" && mdDocs.length > 0 && (
+            <DocTree
+              nodes={docTree}
+              docPath={docPath}
+              expandedFolders={expandedFolders}
+              onToggleFolder={toggleFolder}
+              onSelectDoc={(path) => onSelectionChange({ surface: "docs", docPath: path })}
+            />
+          )}
+          {registry.status === "ok" && mdDocs.length === 0 && (
+            <p className="px-2 py-3 text-[12px] text-muted-foreground">No markdown docs in the registry.</p>
+          )}
         </div>
       </nav>
 
@@ -5306,11 +6869,89 @@ export function DocsBrowser({
             <EmptyState
               icon={BookOpen}
               title="Select a document"
-              description="Pick a doc from the sidebar. The tree is built from docs/registry.json and grouped by folder."
+              description="Pick a doc from the sidebar. The tree is built from repository paths in docs/registry.json."
             />
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+function DocTree({
+  nodes,
+  docPath,
+  expandedFolders,
+  onToggleFolder,
+  onSelectDoc,
+  depth = 0,
+}: {
+  nodes: DocTreeNode[];
+  docPath?: string;
+  expandedFolders: Set<string>;
+  onToggleFolder: (path: string) => void;
+  onSelectDoc: (path: string) => void;
+  depth?: number;
+}) {
+  if (nodes.length === 0) return null;
+
+  return (
+    <div className="space-y-0.5">
+      {nodes.map((node) => {
+        if (node.doc) {
+          const active = node.doc.path === docPath;
+          return (
+            <button
+              key={node.path}
+              type="button"
+              title={node.doc.path}
+              onClick={() => onSelectDoc(node.doc!.path)}
+              className={cn(
+                "flex h-8 w-full items-center gap-2 rounded-md pr-2 text-left text-[13px] transition-colors hover:bg-accent/50",
+                active ? "bg-primary/12 text-primary hover:bg-primary/12" : "text-foreground/90",
+              )}
+              style={{ paddingLeft: 10 + depth * 14 }}
+            >
+              <StatusDot tone={docStatusTone(node.doc.status)} className="shrink-0" />
+              <span className="truncate">{node.name}</span>
+            </button>
+          );
+        }
+
+        const open = expandedFolders.has(node.path);
+        return (
+          <div key={node.path}>
+            <button
+              type="button"
+              title={node.path}
+              aria-expanded={open}
+              onClick={() => onToggleFolder(node.path)}
+              className="flex h-8 w-full items-center gap-1.5 rounded-md pr-2 text-left text-[13px] font-medium text-foreground/90 transition-colors hover:bg-accent/50"
+              style={{ paddingLeft: 6 + depth * 14 }}
+            >
+              {open ? (
+                <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" />
+              ) : (
+                <ChevronRight className="size-3.5 shrink-0 text-muted-foreground" />
+              )}
+              <span className="truncate">{node.name}</span>
+              <span className="ml-auto rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+                {node.docCount}
+              </span>
+            </button>
+            {open && (
+              <DocTree
+                nodes={node.children}
+                docPath={docPath}
+                expandedFolders={expandedFolders}
+                onToggleFolder={onToggleFolder}
+                onSelectDoc={onSelectDoc}
+                depth={depth + 1}
+              />
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }

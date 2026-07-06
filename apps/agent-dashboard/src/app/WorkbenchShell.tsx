@@ -154,7 +154,7 @@ export function WorkbenchShell({
         onTogglePoll={onTogglePoll}
       />
       <ActionErrorBanner error={sourceError} />
-      <div className="flex min-h-0 flex-1">
+      <div className="flex min-h-0 flex-1 flex-col-reverse sm:flex-row">
         <AppRail
           selection={selection}
           onSurfaceChange={(surface) => updateSelection({ surface })}
@@ -183,7 +183,7 @@ export function WorkbenchShell({
               <div className="min-h-0 flex-1">{surface}</div>
             ) : (
               <div className="flex-1 overflow-y-auto">
-                <div className="mx-auto w-full max-w-[1480px] p-5 xl:p-6">{surface}</div>
+                <div className="mx-auto w-full max-w-[1480px] p-3 sm:p-5 xl:p-6">{surface}</div>
               </div>
             );
           })()}
@@ -261,12 +261,12 @@ function TopBar({
   const isOnline = isStreaming || sourceLabel === "polling";
   const statusTone = sourceError ? "warn" : isOnline ? "good" : "info";
   return (
-    <header className="flex h-14 shrink-0 items-center gap-3 border-b border-border bg-card/70 px-3 backdrop-blur-md">
-      <div className="flex items-center gap-2.5">
+    <header className="flex h-14 min-w-0 shrink-0 items-center gap-2 border-b border-border bg-card/70 px-3 backdrop-blur-md lg:gap-3">
+      <div className="flex min-w-0 shrink items-center gap-2.5">
         <div className="grid size-8 place-items-center rounded-md bg-primary/15 text-primary ring-1 ring-primary/40">
           <Workflow className="size-4" />
         </div>
-        <div className="leading-tight">
+        <div className="min-w-0 leading-tight">
           <div className="text-[13px] font-semibold tracking-tight">
             Agent Workbench
           </div>
@@ -285,20 +285,20 @@ function TopBar({
         />
       </div>
 
-      <div className="mx-2 hidden flex-1 justify-center md:flex">
+      <div className="mx-1 hidden min-w-0 flex-1 justify-center lg:mx-2 lg:flex">
         <button
           type="button"
-          className="flex h-8 w-full max-w-md items-center gap-2 rounded-md border border-border bg-background/50 px-2.5 text-xs text-muted-foreground transition-colors hover:border-input"
+          className="flex h-8 w-full max-w-sm items-center gap-2 rounded-md border border-border bg-background/50 px-2.5 text-xs text-muted-foreground transition-colors hover:border-input xl:max-w-md"
         >
-          <Search className="size-3.5" />
-          <span>Search objects, members, tasks…</span>
+          <Search className="size-3.5 shrink-0" />
+          <span className="min-w-0 truncate">Search workbench…</span>
           <span className="ml-auto">
             <Kbd>⌘K</Kbd>
           </span>
         </button>
       </div>
 
-      <div className="ml-auto flex items-center gap-2">
+      <div className="ml-auto flex shrink-0 items-center gap-2">
         <div className="hidden items-center gap-1.5 rounded-md border border-border bg-background/50 px-2 py-1.5 sm:flex">
           <StatusDot tone={statusTone} pulse={isStreaming} />
           <span className="text-[11px] text-muted-foreground">{sourceLabel}</span>
@@ -486,7 +486,7 @@ function AppRail({
   return (
     <nav
       aria-label="Workbench navigation"
-      className="flex w-16 shrink-0 flex-col items-center gap-1 border-r border-border bg-card/40 py-3"
+      className="flex h-14 w-full shrink-0 flex-row items-center justify-around gap-1 border-t border-border bg-card/40 px-2 py-1 sm:h-auto sm:w-16 sm:flex-col sm:justify-start sm:border-r sm:border-t-0 sm:px-0 sm:py-3"
     >
       {navItems.map((item) => {
         const active = selection.surface === item.id;
@@ -504,7 +504,10 @@ function AppRail({
                 )}
               >
                 {active && (
-                  <span className="absolute -left-3 top-1/2 h-5 w-0.5 -translate-y-1/2 rounded-r bg-primary" />
+                  <>
+                    <span className="absolute -bottom-1 left-1/2 h-0.5 w-5 -translate-x-1/2 rounded-t bg-primary sm:hidden" />
+                    <span className="absolute -left-3 top-1/2 hidden h-5 w-0.5 -translate-y-1/2 rounded-r bg-primary sm:block" />
+                  </>
                 )}
                 <Icon className="size-[18px]" />
               </button>
@@ -539,22 +542,18 @@ function SurfaceSwitch({
     case "vision":
       return <VisionOverview {...shared} />;
     case "goal":
-      return (
-        <GoalDocument
-          {...shared}
-          phaseId={selection.phaseId}
-          phaseView={selection.phaseView}
-        />
-      );
+      return <GoalDocument {...shared} />;
     case "task":
       return <TaskDocument {...shared} taskTab={selection.taskTab} />;
     case "tasks":
       // The Work board is the Goal collection; a `boardGoal` filter pins it to
-      // one legacy goal's task columns (the phaseless fallback).
+      // one goal's task columns. Accept `?surface=tasks&goal=<id>` as a deep
+      // link alias because Goal pages and user-shared URLs already carry
+      // `goal`, while the older Work-specific filter was named `boardGoal`.
       return (
         <GraphKanban
           {...shared}
-          boardGoal={selection.boardGoal}
+          boardGoal={selection.boardGoal ?? selection.goalId}
           peekTaskId={selection.taskId}
         />
       );
