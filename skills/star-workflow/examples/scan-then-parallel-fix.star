@@ -1,8 +1,9 @@
 # SCAN -> PARALLEL FIX — the fan-out WIDTH is decided AT RUNTIME from a scan's
 # output (a comprehension over its lines), which no static shape can express.
 # A serial scan enumerates defects on the shared tree; then one writable fix per
-# defect runs in its OWN worktree (so the parallel edits cannot collide), each
-# fed the SHARED standards and the ONE defect it owns.
+# defect runs in its OWN worktree (so the parallel checkouts cannot collide), each
+# fed the SHARED standards and the ONE defect it owns. The resulting patches still
+# need review/apply and can conflict when applied to the live repo.
 #
 # Note the prompt shape this skill expects everywhere: a ROLE, an explicit
 # what-to-READ, hard CONSTRAINTS, and an exact OUTPUT format — not a one-liner.
@@ -63,16 +64,29 @@ log("scan found " + str(len(defects)) + " defects; fanning out one isolated fix 
 
 # ---- fix: one writable worker per defect, each in its own worktree -----------
 phase("fix")
-parallel([
+fix_results = parallel([
     {
-        "prompt": COMMON + "\n\nFix EXACTLY this one defect, nothing else:\n  " + defect +
+        "prompt": COMMON + "\n\nFix EXACTLY this one defect, nothing else:\n  " + defects[i] +
                   "\n\nDeliverable: the minimal edit that resolves it. Then state in one " +
                   "line WHAT you changed and WHY it fixes the defect without affecting " +
                   "anything else. If the line turns out NOT to be a real defect on close " +
                   "reading, change nothing and say so.",
         "provider": "codex",
-        "label": "fix",
-        "writable": True,   # edits run in a throwaway worktree; the diff is the evidence
+        "label": "fix:" + str(i + 1),
+        "writable": True,          # implies a throwaway worktree
+        "persist_changes": "patch",
+        "owned_paths": [area],
     }
-    for defect in defects
+    for i in range(len(defects))
 ])
+patch_labels = ["fix:" + str(i + 1) for i in range(len(defects))]
+
+output({
+    "defects": "\n".join(defects),
+    "pending_patch_labels": "\n".join(patch_labels),
+    "fix_summaries": "\n---\n".join([str(r) for r in fix_results]),
+})
+verdict(
+    type(scan) == "dict",
+    reason = "created " + str(len(patch_labels)) + " pending patch(es); review/apply each label explicitly",
+)

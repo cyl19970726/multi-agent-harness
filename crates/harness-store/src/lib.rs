@@ -9,7 +9,8 @@ use harness_core::{
     AgentEvent, AgentMember, AgentRuntime, AgentTeam, Decision, Evidence, Gap, Goal, GoalCase,
     GoalDesign, GoalEvaluation, GoalOrchestrationRun, Message, MessageDelivery,
     MessageDeliveryStatus, MessageTerminalSource, Proposal, ProviderChildThread, ProviderSession,
-    ProviderSessionStatus, Review, Task, Vision, WorkflowRun, WorkflowStep,
+    ProviderSessionStatus, Review, Task, Vision, WorkflowArtifactManifest, WorkflowPatch,
+    WorkflowRun, WorkflowStep,
 };
 use serde::{de::DeserializeOwned, Serialize};
 use thiserror::Error;
@@ -143,6 +144,17 @@ impl HarnessStore {
         self.append_jsonl("workflow_steps.jsonl", value)
     }
 
+    pub fn append_workflow_patch(&self, value: &WorkflowPatch) -> StoreResult<()> {
+        self.append_jsonl("workflow_patches.jsonl", value)
+    }
+
+    pub fn append_workflow_artifact_manifest(
+        &self,
+        value: &WorkflowArtifactManifest,
+    ) -> StoreResult<()> {
+        self.append_jsonl("workflow_artifact_manifests.jsonl", value)
+    }
+
     pub fn append_goal_orchestration_run(&self, value: &GoalOrchestrationRun) -> StoreResult<()> {
         self.append_jsonl("goal_orchestration_runs.jsonl", value)
     }
@@ -270,6 +282,14 @@ impl HarnessStore {
 
     pub fn workflow_steps(&self) -> StoreResult<Vec<WorkflowStep>> {
         self.read_jsonl("workflow_steps.jsonl")
+    }
+
+    pub fn workflow_patches(&self) -> StoreResult<Vec<WorkflowPatch>> {
+        self.read_jsonl("workflow_patches.jsonl")
+    }
+
+    pub fn workflow_artifact_manifests(&self) -> StoreResult<Vec<WorkflowArtifactManifest>> {
+        self.read_jsonl("workflow_artifact_manifests.jsonl")
     }
 
     pub fn goal_orchestration_runs(&self) -> StoreResult<Vec<GoalOrchestrationRun>> {

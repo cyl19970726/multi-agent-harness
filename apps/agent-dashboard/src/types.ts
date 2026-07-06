@@ -46,6 +46,10 @@ export type GoalPhaseStatus =
   | "failed"
   | "blocked";
 
+export type GoalPhaseKind = "execution" | "remediation" | "building";
+
+export type GoalPhaseExecutionMode = "task_graph" | "workflow";
+
 /**
  * Kind of a declared artifact (goal-phase-artifacts; mirrors harness-core
  * `ArtifactKind`, serde snake_case). `code` is the default and matches today's
@@ -128,6 +132,10 @@ export interface GoalPhase {
    * `goal reconcile-phase` for out-of-band work; absent for read-only / legacy.
    */
   landed_commit?: string | null;
+  kind?: GoalPhaseKind;
+  builtin?: string | null;
+  execution_mode?: GoalPhaseExecutionMode;
+  workflow_ref?: string | null;
 }
 
 /** Where a {@link Knowledge} entry came from (mirrors `KnowledgeSource`). */

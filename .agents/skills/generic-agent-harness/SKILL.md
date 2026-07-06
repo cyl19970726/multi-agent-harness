@@ -58,8 +58,10 @@ Read only what the task needs:
   Create or reference the task, send `Message(kind=task)`, then treat task and
   member assignment state as projections of that delivered message.
 - Tasks attach to a goal phase via `phase_id` — the single validated join key
-  (the legacy free-text `Task.phase` field was retired). The dashboard groups
-  tasks under Goal -> phase -> [Task Graph | Task Kanban], not a flat board.
+  (the legacy free-text `Task.phase` field was retired). A `GoalPhase` chooses
+  one executor: `task_graph` for Task/Message/AgentMember work, or `workflow`
+  for direct WorkflowRun/WorkflowStep execution from `workflow_ref`. The
+  dashboard must render by mode instead of inventing a placeholder task graph.
 - Goals, tasks, and stores are project-scoped: each project has its own store
   under `~/.harness/projects/<id>/` (the `store_root`, distinct from the
   project's `project_root` working tree). Use `harness project add|list|switch|
@@ -141,8 +143,9 @@ The command seam:
   finishing already auto-finalizes (the derivation runs on every completion
   seam), so `finalize` is the explicit/forced path.
 
-Phased execution is workflow-backed: `goal run-phases` compiles each phase's
-task DAG to a `.star` program (`compile_phase_to_starlark`) and runs it on the
+Phased execution is workflow-backed: `goal run-phases` either compiles a
+`task_graph` phase's task DAG to a `.star` program (`compile_phase_to_starlark`)
+or runs a `workflow` phase's authored `workflow_ref` directly. Both paths use the
 SAME runtime the `star-workflow` skill documents — and a passing phase's
 writable diffs LAND on the branch (per-phase landing commit). See the
 `star-workflow` skill for the runtime, flags, and structured-output contract.

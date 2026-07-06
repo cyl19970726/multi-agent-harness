@@ -459,7 +459,7 @@
         "check-doc-links",
         "check-doc-governance"
       ],
-      "reviewAfter": "2026-06-26",
+      "reviewAfter": "2026-08-03",
       "lastVerifiedWith": [
         "npx pnpm@9.15.4 check"
       ],
@@ -518,7 +518,7 @@
         "check-doc-links",
         "check-doc-governance"
       ],
-      "reviewAfter": "2026-06-26",
+      "reviewAfter": "2026-08-03",
       "lastVerifiedWith": [
         "npx pnpm@9.15.4 check"
       ],
@@ -551,7 +551,7 @@
         "check-doc-links",
         "check-doc-governance"
       ],
-      "reviewAfter": "2026-06-26",
+      "reviewAfter": "2026-08-03",
       "lastVerifiedWith": [
         "npx pnpm@9.15.4 check"
       ],
@@ -1035,11 +1035,42 @@
         "check-doc-links",
         "check-doc-governance"
       ],
-      "reviewAfter": "2026-06-26",
+      "reviewAfter": "2026-08-03",
       "lastVerifiedWith": [
         "npx pnpm@9.15.4 check"
       ],
       "reorgTrigger": "Core Workbench page list, page-spec template, page-local layout contract template, or page-spec boundary changes."
+    },
+    {
+      "path": "docs/dashboard/pages/goal.md",
+      "ownerRole": "product-design",
+      "status": "stable",
+      "lifecycle": "volatile",
+      "canonicalFor": [
+        "Goal Workbench page contract",
+        "phase-first Goal detail surface",
+        "Goal proof-chain screenshot gate"
+      ],
+      "dependsOn": [
+        "docs/prd.md",
+        "docs/concept-model.md",
+        "docs/dashboard.md",
+        "docs/dashboard/frontend-design.md",
+        "docs/dashboard/design-principles.md",
+        "docs/dashboard/layout-history.md",
+        "docs/dashboard/work-board-design.md",
+        "docs/dashboard/acceptance.md",
+        ".agents/skills/harness-frontend-product-design/SKILL.md"
+      ],
+      "machineConsumers": [
+        "check-doc-links",
+        "check-doc-governance"
+      ],
+      "reviewAfter": "2026-08-03",
+      "lastVerifiedWith": [
+        "wfrun-1783013150649-0"
+      ],
+      "reorgTrigger": "Goal detail page contract, phase spine layout, screenshot gate, or Goal proof-chain acceptance changes."
     },
     {
       "path": "docs/dashboard/pages/team-workspace.md",
