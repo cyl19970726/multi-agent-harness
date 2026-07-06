@@ -1,9 +1,9 @@
 ---
 name: star-planner
-description: "Use when decomposing an explored Goal into an executable plan in this harness: turn a written design_md (+acceptance_md) into an ordered list of sequential phases and, within each phase, a task DAG where tasks with disjoint owned_paths and no deps run in parallel. Covers `harness goal plan` (the agent-driven planner), the phase/task shape it produces, and how that plan feeds the phase→Starlark compiler and `goal run-phases` orchestrator."
+description: "Use when decomposing an explored Goal into an executable plan in this harness: turn a written design_md (+acceptance_md) into an ordered list of sequential phases, where each phase is either a task_graph (tasks with disjoint owned_paths and no deps run in parallel) or an authored workflow (workflow_ref, no tasks). Covers `harness goal plan` (the agent-driven planner), the phase/task shape it produces, and how that plan feeds the phase→Starlark compiler and `goal run-phases` orchestrator."
 ---
 
-# Author Planner
+# Star Planner
 
 Once a Goal is `explored` — it has a real `design_md` (key problems first, then
 the architecture) and a real `acceptance_md` — the next step is to **decompose it
@@ -21,15 +21,22 @@ A goal's plan is two append-only structures on the Goal:
 
 | Structure | What it is |
 | --- | --- |
-| `phases[]` (`GoalPhase`) | The agent-planned, **sequential** checkpoints. A phase must pass its gate (steps ok + verdict + declared `outputs` present) before the next begins. |
-| Tasks (`Task` with `phase_id`) | The per-phase DAG. Each task is a mini-goal: `design_md` + `acceptance_criteria` + `owned_paths` + `depends_on_task_ids` + `outputs` + optional `executor`. |
+| `phases[]` (`GoalPhase`) | The agent-planned, **sequential** checkpoints. Each picks one `execution_mode`: `task_graph` (default) or `workflow`. A phase must pass its (per-mode) gate before the next begins — see "Gating, replan, and resume" below. |
+| Tasks (`Task` with `phase_id`) | The per-phase DAG, **only for `task_graph` phases**. Each task is a mini-goal: `design_md` + `acceptance_criteria` + `owned_paths` + `depends_on_task_ids` + `outputs` + optional `executor`. A `workflow`-mode phase has no tasks. |
 
-A **phase** is `{ id, name, intent, acceptance, outputs, inputs, retry }`. A **task**
-is `{ id, title, design_md, acceptance(list), owned_paths(list), depends_on(list of
-task ids in the SAME phase), outputs, executor? }`. `phase_id` is the canonical
-task↔phase join key (the goal is implied) — a task's `phase_id` must name a real
-phase of its goal. `executor` selects the provider for the compiled worker leaf
-when set; the phase acceptance judge remains the harness's built-in judge path.
+A **phase** is `{ id, name, intent, acceptance, outputs, inputs, retry, execution_mode,
+workflow_ref }`. `execution_mode` is `task_graph` (default; the phase owns tasks
+compiled by `compile_phase_to_starlark`) or `workflow` (the phase has no tasks and
+runs the authored Starlark program named by `workflow_ref`, either
+`repo:path/to/workflow.star` or `builtin:<id>`; see ADR
+`docs/decisions/0024-goal-phase-execution-modes.md`). A **task** is `{ id, title,
+design_md, acceptance(list), owned_paths(list), depends_on(list of task ids in the
+SAME phase), outputs, executor? }`. `phase_id` is the canonical task↔phase join key
+(the goal is implied) — a task's `phase_id` must name a real phase of its goal.
+`executor` selects the provider for the compiled worker leaf when set; the phase
+acceptance judge remains the harness's built-in judge path. The CLI rejects mixed
+configs: a `workflow`-mode phase must set `workflow_ref` and must not have tasks; a
+`task_graph` phase must not set `workflow_ref`.
 
 ### The two ordering rules (this is the whole model)
 
@@ -124,22 +131,24 @@ isolation.
 harness goal phase-add --goal <goal> --phase-id docs-fix --name "Docs fix" \
     --intent "Correct skill drift found by audit" \
     --acceptance "skills validate and installed copies match" \
-    --output "id=skill-doc,kind=other,path=skills/author-goal/SKILL.md,required=true"
+    --output "id=skill-doc,kind=other,path=skills/star-goal/SKILL.md,required=true"
 
 harness task create --goal <goal> --phase-id docs-fix \
-    --title "Patch author-goal" --objective "Correct closeout/gate wording" \
-    --owner lead --reviewer lead --owned-path skills/author-goal \
+    --title "Patch star-goal" --objective "Correct closeout/gate wording" \
+    --owner lead --reviewer lead --owned-path skills/star-goal \
     --design-file slice.md --acceptance "quick_validate passes" \
-    --output "id=author-goal-skill,kind=other,path=skills/author-goal/SKILL.md,required=true" \
+    --output "id=star-goal-skill,kind=other,path=skills/star-goal/SKILL.md,required=true" \
     --executor codex
 ```
 
 ## From plan to execution
 
-The plan is the truth; the `.star` is a derived, throwaway view:
+For a `task_graph` phase, the plan is the truth and the `.star` is a derived,
+throwaway view; a `workflow`-mode phase has no plan to compile — its `.star` at
+`workflow_ref` IS the plan:
 
 ```bash
-# Compile ONE phase's task DAG into a Starlark workflow (inspect the parallelism)
+# task_graph phase: compile its task DAG into a Starlark workflow (inspect the parallelism)
 harness phase compile <goal> --phase <phase-id>
 
 # Run the whole plan: sequence phases, gate each on its verdict, advance the goal
@@ -148,31 +157,45 @@ harness goal run-phases <goal> --resume               # explicit re-entry intent
 harness goal run-phases <goal> --max-phase-retries 2  # replan budget per phase
 ```
 
-`run-phases` walks `phases[]` in order, compiles each phase's live tasks, runs it,
-and only advances past a phase when its acceptance verdict passes — the sequential
-rule, enforced. See [[star-workflow]] for the Starlark runtime the compiled
-phase runs on, and [[star-goal]] for getting a goal to `explored` first.
+`run-phases` walks `phases[]` in order. For each phase it either compiles the live
+tasks (`task_graph`) or loads the authored script named by `workflow_ref`
+(`workflow`), runs it, and only advances past the phase when the per-mode gate
+passes — the sequential rule, enforced. See [[star-workflow]] for the Starlark
+runtime a `task_graph` phase compiles to (and a `workflow` phase runs directly),
+and [[star-goal]] for getting a goal to `explored` first.
 
 ### Gating, replan, and resume (what the orchestrator does)
 
-- **Gate.** A phase passes only if its run completed, **every task step is ok**, the
-  compiled `verdict()` returned true (when the phase has an `acceptance`), **AND every
-  required declared output with a non-empty exact `path` exists and is non-empty**.
-  A `registered_doc` must also be in the governance registry (`.governance.toml`
-  registry path, default `docs/registry.json`). Before a phase runs, its `inputs`
-  preconditions are checked (fail-fast if a required upstream artifact is missing).
-  On a pass the goal records a `Decision(decision_kind=phase_verdict)`, points
-  `GoalPhase.verdict_decision_id` at it, writes each task → `Done`, and links each
-  `WorkflowStep` to its task.
-- **Land.** A passing phase **lands** its writable tasks' worktree diffs onto the branch
+- **Gate.** The gate is **per `execution_mode`**. A `task_graph` phase passes only if
+  its run completed, **every task step is ok**, the compiled `verdict()` returned true
+  (when the phase has an `acceptance`), **AND every required declared output with a
+  non-empty exact `path` exists and is non-empty**. A `workflow`-mode phase passes on a
+  looser gate: run status `Completed` **AND** every required declared output present —
+  there is no "every step ok" clause, so an authored script that deliberately tolerates
+  a failed leaf (a retry/fallback that still reaches its own `verdict(True)`, e.g.
+  `skills/star-workflow/examples/failure-aware-retry.star`) is not wrongly failed just
+  because one journaled step is `ok=false`. Either mode: a `registered_doc` output must
+  also be in the governance registry (`.governance.toml` registry path, default
+  `docs/registry.json`). Before a phase runs, its `inputs` preconditions are checked
+  (fail-fast if a required upstream artifact is missing). On a pass the goal records a
+  `Decision(decision_kind=phase_verdict)`, points `GoalPhase.verdict_decision_id` at it;
+  for `task_graph` phases it also writes each task → `Done` and links each `WorkflowStep`
+  to its task.
+- **Land.** A passing phase **lands** its writable work's worktree diffs onto the branch
   (a per-phase landing commit + `GoalPhase.landed_commit`; clean-tree guard + rollback,
   never a force-merge) — so a passing phase leaves durable artifacts, not a dropped
-  worktree. Sequential phases build on the prior phase's landed HEAD.
-- **Replan.** On a failure with retries left (`GoalPhase.retry`, else
-  `--max-phase-retries`), the orchestrator appends a `Knowledge` finding, asks the
-  planner to **revise** this phase's task graph (dead tasks → `TaskStatus::Superseded`
-  + `superseded_by_knowledge_id`; new tasks appended), recompiles, reruns. Tasks are
-  *living*: superseded, never deleted, so the trail survives.
+  worktree. This is true for both modes and is the run's **sole landing authority**:
+  `goal run-phases` persists no `WorkflowPatch` rows; an in-script `apply_patch()` is
+  journaled intent only, and `reject_patch()` / `persist_changes="discard"` exclude that
+  step's diff from the phase's landing commit. Sequential phases build on the prior
+  phase's landed HEAD.
+- **Replan.** Only `task_graph` phases replan: on a failure with retries left
+  (`GoalPhase.retry`, else `--max-phase-retries`), the orchestrator appends a
+  `Knowledge` finding, asks the planner to **revise** this phase's task graph (dead
+  tasks → `TaskStatus::Superseded` + `superseded_by_knowledge_id`; new tasks appended),
+  recompiles, reruns. Tasks are *living*: superseded, never deleted, so the trail
+  survives. A `workflow`-mode phase has no task graph to revise — a failure there
+  simply stops the orchestration at that phase.
 - **Resume.** The orchestrator records a durable `GoalOrchestrationRun`
   checkpoint. Re-entering a `Running` checkpoint reuses it, passed phases are
   skipped, and a re-run phase replays its prior succeeded leaves (no re-spend).
@@ -184,7 +207,7 @@ phase runs on, and [[star-goal]] for getting a goal to `explored` first.
   `verified` (done) with no manual `goal stage`. `goal reconcile-phase` trues up a phase
   whose work shipped out-of-band; `goal finalize` structurally finalizes stage/status.
   Learning closeout still requires closeout Decision + `goal evaluate` + strict
-  `goal learning-status` + `goal close` (see [[author-goal]]).
+  `goal learning-status` + `goal close` (see [[star-goal]]).
 
 So the planner's output is not a one-shot script — it is a **living task graph** the
 orchestrator edits (via replan) as execution surfaces new knowledge.
@@ -215,6 +238,10 @@ orchestrator edits (via replan) as execution surfaces new knowledge.
   Do not assume every project uses that default path.
 - **Stale/loose `phase_id`.** A task whose `phase_id` doesn't name a real phase of its
   goal is rejected at create — don't hand-set `phase_id` to a phase that isn't there.
+- **Mixed execution_mode config.** Setting `workflow_ref` on a `task_graph` phase, or
+  attaching tasks to a `workflow`-mode phase, or leaving a `workflow`-mode phase
+  without `workflow_ref`. The CLI rejects all three; pick one mode per phase and
+  populate only the fields it needs.
 
 ## Maintaining This Skill
 
@@ -223,14 +250,14 @@ them. Codex discovers `~/.codex/skills`; Claude discovers `~/.claude/skills`;
 the shared agent bundle lives in `~/.agents/skills`.
 
 ```bash
-rsync -a --delete skills/author-planner/ ~/.agents/skills/author-planner/
-rsync -a --delete skills/author-planner/ ~/.codex/skills/author-planner/
-rsync -a --delete skills/author-planner/ ~/.claude/skills/author-planner/
-python3 ~/.codex/skills/.system/skill-creator/scripts/quick_validate.py skills/author-planner
-python3 ~/.codex/skills/.system/skill-creator/scripts/quick_validate.py ~/.agents/skills/author-planner
-python3 ~/.codex/skills/.system/skill-creator/scripts/quick_validate.py ~/.codex/skills/author-planner
-python3 ~/.codex/skills/.system/skill-creator/scripts/quick_validate.py ~/.claude/skills/author-planner
-diff -qr skills/author-planner ~/.agents/skills/author-planner
-diff -qr skills/author-planner ~/.codex/skills/author-planner
-diff -qr skills/author-planner ~/.claude/skills/author-planner
+rsync -a --delete skills/star-planner/ ~/.agents/skills/star-planner/
+rsync -a --delete skills/star-planner/ ~/.codex/skills/star-planner/
+rsync -a --delete skills/star-planner/ ~/.claude/skills/star-planner/
+python3 ~/.codex/skills/.system/skill-creator/scripts/quick_validate.py skills/star-planner
+python3 ~/.codex/skills/.system/skill-creator/scripts/quick_validate.py ~/.agents/skills/star-planner
+python3 ~/.codex/skills/.system/skill-creator/scripts/quick_validate.py ~/.codex/skills/star-planner
+python3 ~/.codex/skills/.system/skill-creator/scripts/quick_validate.py ~/.claude/skills/star-planner
+diff -qr skills/star-planner ~/.agents/skills/star-planner
+diff -qr skills/star-planner ~/.codex/skills/star-planner
+diff -qr skills/star-planner ~/.claude/skills/star-planner
 ```

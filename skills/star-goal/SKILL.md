@@ -1,9 +1,9 @@
 ---
 name: star-goal
-description: "Use when creating or advancing a Goal in this harness: write the markdown sections (description / design / real acceptance), accumulate a knowledge ledger, run multi-agent exploration, and move the goal through its lifecycle. Covers BOTH the manual gated lifecycle (draft → exploring → explored → working → done → verifying → verified) and the knowledge-driven PHASED model (append-only knowledge[] + agent-planned sequential phases[] + a per-phase task graph, executed by `goal run-phases`). To decompose an explored goal into phases + a task DAG, hand off to [[star-planner]]."
+description: "Use when creating or advancing a Goal in this harness: write the markdown sections (description / design / real acceptance), accumulate a knowledge ledger, run multi-agent exploration, and move the goal through its lifecycle. Covers BOTH the manual gated lifecycle (draft → exploring → explored → working → done → verifying → verified) and the knowledge-driven PHASED model (append-only knowledge[] + agent-planned sequential phases[], each either a per-phase task graph or an authored workflow, executed by `goal run-phases`). To decompose an explored goal into phases + a task DAG, hand off to [[star-planner]]."
 ---
 
-# Author Goal
+# Star Goal
 
 A Goal in this harness is **markdown-first**, not a pile of typed fields. Its
 substance lives in three rich sections, and it advances through an explicit
@@ -23,7 +23,7 @@ goal. Do not fill sections to look complete — fill them because you explored.
 | `knowledge[]` | any | **Append-only ledger of findings** (the TRUTH), each with provenance: `phase_id` / `task_id` / `author` / `timestamp` / `tags` / `source`. Fed by exploration AND task execution. |
 | `design_md` | explored | **Key problems FIRST**, then the Big Picture / Overview, then the approach. Either hand-written, or **re-synthesized from `knowledge[]`** via `design-synthesize` (stamps `design_synthesis_at`). |
 | `acceptance_md` | before working | The REAL acceptance: criteria + scenario + how to verify *for real*. |
-| `phases[]` | when planning | Agent-planned, **sequential** checkpoints; each owns a task DAG (see [[star-planner]]). Optional — a simple goal needs none. |
+| `phases[]` | when planning | Agent-planned, **sequential** checkpoints; each is either `execution_mode=task_graph` (owns a task DAG, see [[star-planner]]) or `execution_mode=workflow` (runs an authored `workflow_ref`, no tasks). Optional — a simple goal needs none. |
 | `skill_refs[]` | any | Domain skills needed to DO the work (NOT this skill). |
 | `stage` | — | Lifecycle position. **Derived from `phases[]` when present** (the stored field is a legacy projection); the stored value is the truth only for goals with no phases. |
 
@@ -237,8 +237,10 @@ safe for a single short line with no newlines.
 
 Beyond the manual lifecycle, a goal can carry an **agent-planned plan** and be run
 by the orchestrator. The model: `knowledge[]` is the truth, `design_md` is a
-re-synthesizable view of it, and `phases[]` (sequential) each own a **task DAG**.
-The full loop:
+re-synthesizable view of it, and `phases[]` (sequential) each choose one
+`execution_mode`: **`task_graph`** (the phase owns a **task DAG**) or
+**`workflow`** (the phase runs an authored `workflow_ref` Starlark program with no
+tasks at all). The full loop (shown here for the default `task_graph` mode):
 
 ```bash
 # 1. Capture findings + (re)synthesize the design from them
@@ -280,16 +282,27 @@ harness goal learning-status --goal <goal> --strict --require-evaluation
 harness goal close --goal <goal>
 ```
 
-What `run-phases` does per phase: compile the phase's live tasks → a `.star`
-(disjoint-`owned_paths` no-dep tasks → `parallel()`, writable tasks → worktree
-isolation, phase `acceptance` → a `verdict()` gate), run it, and pass **only if the
-run completed, every task step is ok, AND every `required` declared output artifact
-exists** (the verifying gate). A passing phase then **lands** its writable tasks'
-diffs onto the branch (a per-phase landing commit + `landed_commit`; clean-tree
-guard + rollback, never a force-merge). On a failure with retries left it
-**replans**: appends a `Knowledge` entry, asks the planner to revise (supersede dead
-tasks → `TaskStatus::Superseded` + new ones), recompiles, reruns — capped by the
-phase's `retry` (else `--max-phase-retries`).
+What `run-phases` does per phase depends on `execution_mode`. For a `task_graph`
+phase: compile the phase's live tasks → a `.star` (disjoint-`owned_paths` no-dep
+tasks → `parallel()`, writable tasks → worktree isolation, phase `acceptance` →
+a `verdict()` gate), run it, and pass **only if the run completed, every task
+step is ok, AND every `required` declared output artifact exists**. For a
+`workflow` phase: load the authored `.star` named by `workflow_ref`
+(`repo:workflows/foo.star` or `builtin:<id>`) and run it as-is — it passes when
+the run's status is `Completed` and every `required` declared output artifact
+exists; there is no per-step "every step ok" clause, so an authored script that
+deliberately tolerates a failed leaf (e.g. a retry/fallback pattern) is not
+wrongly failed by the gate. Either way, a passing phase then **lands** its
+writable work's diffs onto the branch (a per-phase landing commit +
+`landed_commit`; clean-tree guard + rollback, never a force-merge) — this is the
+run's sole landing authority: `goal run-phases` persists no `WorkflowPatch` rows,
+and an in-script `apply_patch()` is journaled intent only, while `reject_patch()`
+/ `persist_changes="discard"` exclude that step's diff from the phase's landing
+commit. On a failure with retries left, a `task_graph` phase **replans**: appends
+a `Knowledge` entry, asks the planner to revise (supersede dead tasks →
+`TaskStatus::Superseded` + new ones), recompiles, reruns — capped by the phase's
+`retry` (else `--max-phase-retries`). A `workflow` phase has no task graph to
+revise, so a failure simply stops the orchestration at that phase.
 
 **You no longer advance the stage by hand.** A goal's stage is **derived** from its
 constituent work (phases, else tasks) and auto-synced on every completion seam — so
@@ -302,9 +315,11 @@ a closeout Decision plus typed GoalEvaluation, or a valid waiver.
 
 A **simple goal needs none of this** — one phase, or just the manual lifecycle.
 Reach for phases when the work is a real multi-step, multi-worker build that
-benefits from gated checkpoints and a living task graph. The decomposition rules,
-the artifact manifest (`outputs`), cross-phase `inputs`, and per-phase `retry` live
-in [[star-planner]]; the Starlark runtime each phase compiles to is [[star-workflow]].
+benefits from gated checkpoints and a living task graph (or, for `workflow`-mode
+phases, a hand-authored orchestration). The decomposition rules, the artifact
+manifest (`outputs`), cross-phase `inputs`, and per-phase `retry` live in
+[[star-planner]]; the Starlark runtime a `task_graph` phase compiles to (and a
+`workflow` phase runs directly via `workflow_ref`) is [[star-workflow]].
 
 ### The task ↔ phase field model (what changed)
 - **`phase_id` is the canonical join key.** A task belongs to a goal's phase via
@@ -351,14 +366,14 @@ them. Codex discovers `~/.codex/skills`; Claude discovers `~/.claude/skills`;
 the shared agent bundle lives in `~/.agents/skills`.
 
 ```bash
-rsync -a --delete skills/author-goal/ ~/.agents/skills/author-goal/
-rsync -a --delete skills/author-goal/ ~/.codex/skills/author-goal/
-rsync -a --delete skills/author-goal/ ~/.claude/skills/author-goal/
-python3 ~/.codex/skills/.system/skill-creator/scripts/quick_validate.py skills/author-goal
-python3 ~/.codex/skills/.system/skill-creator/scripts/quick_validate.py ~/.agents/skills/author-goal
-python3 ~/.codex/skills/.system/skill-creator/scripts/quick_validate.py ~/.codex/skills/author-goal
-python3 ~/.codex/skills/.system/skill-creator/scripts/quick_validate.py ~/.claude/skills/author-goal
-diff -qr skills/author-goal ~/.agents/skills/author-goal
-diff -qr skills/author-goal ~/.codex/skills/author-goal
-diff -qr skills/author-goal ~/.claude/skills/author-goal
+rsync -a --delete skills/star-goal/ ~/.agents/skills/star-goal/
+rsync -a --delete skills/star-goal/ ~/.codex/skills/star-goal/
+rsync -a --delete skills/star-goal/ ~/.claude/skills/star-goal/
+python3 ~/.codex/skills/.system/skill-creator/scripts/quick_validate.py skills/star-goal
+python3 ~/.codex/skills/.system/skill-creator/scripts/quick_validate.py ~/.agents/skills/star-goal
+python3 ~/.codex/skills/.system/skill-creator/scripts/quick_validate.py ~/.codex/skills/star-goal
+python3 ~/.codex/skills/.system/skill-creator/scripts/quick_validate.py ~/.claude/skills/star-goal
+diff -qr skills/star-goal ~/.agents/skills/star-goal
+diff -qr skills/star-goal ~/.codex/skills/star-goal
+diff -qr skills/star-goal ~/.claude/skills/star-goal
 ```
