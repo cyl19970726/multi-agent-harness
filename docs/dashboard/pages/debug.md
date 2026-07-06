@@ -2,7 +2,7 @@
 
 ```text
 status: planned
-owner_role: frontend-architecture
+owner_role: product-design
 canonical_for: raw snapshot, import/export, and low-level object inspection
 route_or_surface: /debug and closed debug drawer
 ```
