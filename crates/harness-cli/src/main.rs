@@ -23451,6 +23451,713 @@ new file mode 100644
         assert!(step.ended_at.is_some());
     }
 
+    // ---- issue #193: cancellation cascade + terminal-reason classification ----
+
+    /// Build a workflow provider session with an explicit id + status (issue #193
+    /// test helper). Distinct from `provider_session_with_ref` (which is always
+    /// Succeeded) so a test can seed a still-`Running` leaf session.
+    fn mk_session(id: &str, status: ProviderSessionStatus) -> ProviderSession {
+        ProviderSession {
+            id: id.into(),
+            provider: "codex".into(),
+            agent_member_id: "member-x".into(),
+            task_id: None,
+            workspace_ref: None,
+            provider_thread_id: None,
+            provider_turn_id: None,
+            terminal_source: None,
+            status,
+            command: "codex".into(),
+            args: Vec::new(),
+            prompt_ref: None,
+            prompt_summary: None,
+            provider_session_ref: None,
+            stdout_ref: None,
+            jsonl_ref: None,
+            transcript_ref: None,
+            last_message_ref: None,
+            exit_code: None,
+            started_at: "unix-ms:1".into(),
+            ended_at: None,
+            evidence_ids: Vec::new(),
+        }
+    }
+
+    fn mk_step_row(
+        id: &str,
+        run_id: &str,
+        session_id: Option<&str>,
+        status: WorkflowStepStatus,
+        output_summary: Option<&str>,
+    ) -> WorkflowStep {
+        WorkflowStep {
+            task_id: None,
+            verdict_outcome: None,
+            id: id.into(),
+            run_id: run_id.into(),
+            phase: "work".into(),
+            label: id.into(),
+            provider_session_id: session_id.map(|s| s.to_string()),
+            status,
+            output_summary: output_summary.map(|s| s.to_string()),
+            result: None,
+            started_at: now_string(),
+            ended_at: if matches!(status, WorkflowStepStatus::Running) {
+                None
+            } else {
+                Some(now_string())
+            },
+            terminal_reason: None,
+            partial: false,
+        }
+    }
+
+    fn find_run(store: &HarnessStore, id: &str) -> WorkflowRun {
+        latest_workflow_runs_in_append_order(store)
+            .expect("read runs")
+            .into_iter()
+            .find(|r| r.id == id)
+            .expect("run present")
+    }
+
+    fn find_step(store: &HarnessStore, id: &str) -> WorkflowStep {
+        latest_workflow_steps_in_append_order(store)
+            .expect("read steps")
+            .into_iter()
+            .find(|s| s.id == id)
+            .expect("step present")
+    }
+
+    fn find_session(store: &HarnessStore, id: &str) -> ProviderSession {
+        latest_provider_session(store, id)
+            .expect("read session")
+            .expect("session present")
+    }
+
+    /// A dead pid guaranteed absent on this host (spawn + immediately reap `true`).
+    fn dead_pid() -> u32 {
+        let mut child = std::process::Command::new("true")
+            .spawn()
+            .expect("spawn true");
+        let pid = child.id();
+        child.wait().expect("wait true");
+        pid
+    }
+
+    #[test]
+    fn reaper_stamps_driver_exited_reason_and_reconciles_sessions() {
+        // TEST 1: simulated driver death → run+steps get driver_exited, sessions
+        // reconciled terminal, partial_output_available correct (one step done).
+        let store = temp_store("i193-driver-exited");
+        let now = current_unix_ms();
+        let dead = dead_pid();
+
+        store
+            .append_workflow_run(&WorkflowRun {
+                id: "wfrun-x".into(),
+                workflow_name: "demo".into(),
+                status: WorkflowRunStatus::Running,
+                step_ids: vec!["s-done".into(), "s-open".into()],
+                created_at: format!("unix-ms:{now}"),
+                ended_at: None,
+                summary: None,
+                args: None,
+                agents_spawned: 2,
+                final_output: None,
+                initiated_by: Some("op".into()),
+                design_intent: None,
+                spec: None,
+                trace_retention: "durable".into(),
+                host_pid: Some(dead),
+                dry_run: false,
+                goal_id: None,
+                phase_id: None,
+                terminal_reason: None,
+                partial_output_available: false,
+            })
+            .expect("append run");
+        // One step already completed (with a succeeded session) — partial output.
+        store
+            .append_provider_session(&mk_session("sess-done", ProviderSessionStatus::Succeeded))
+            .expect("append done session");
+        store
+            .append_workflow_step(&mk_step_row(
+                "s-done",
+                "wfrun-x",
+                Some("sess-done"),
+                WorkflowStepStatus::Completed,
+                Some("wrote report.md"),
+            ))
+            .expect("append done step");
+        // One step still running with a running session — must be reconciled.
+        store
+            .append_provider_session(&mk_session("sess-open", ProviderSessionStatus::Running))
+            .expect("append open session");
+        store
+            .append_workflow_step(&mk_step_row(
+                "s-open",
+                "wfrun-x",
+                Some("sess-open"),
+                WorkflowStepStatus::Running,
+                Some("partial draft so far"),
+            ))
+            .expect("append open step");
+
+        let reaped = reap_stale_workflow_runs(&store).expect("reap");
+        assert_eq!(reaped, 1);
+
+        let run = find_run(&store, "wfrun-x");
+        assert_eq!(run.status, WorkflowRunStatus::Failed);
+        assert_eq!(
+            run.terminal_reason,
+            Some(WorkflowTerminalReason::DriverExited)
+        );
+        assert!(
+            run.partial_output_available,
+            "one step had completed → partial output available"
+        );
+
+        // The open step is closed, classified, and marked partial (it had output).
+        let open = find_step(&store, "s-open");
+        assert_eq!(open.status, WorkflowStepStatus::Failed);
+        assert_eq!(
+            open.terminal_reason,
+            Some(WorkflowTerminalReason::DriverExited)
+        );
+        assert!(
+            open.partial,
+            "a reaped step that produced output is partial"
+        );
+
+        // Both sessions agree on a terminal state; the running one → Failed, the
+        // already-terminal one is untouched.
+        assert_eq!(
+            find_session(&store, "sess-open").status,
+            ProviderSessionStatus::Failed
+        );
+        assert_eq!(
+            find_session(&store, "sess-done").status,
+            ProviderSessionStatus::Succeeded
+        );
+    }
+
+    #[test]
+    fn reconciliation_is_idempotent_across_repeated_reaps() {
+        // TEST 2: run the reap/reconcile path twice → identical final state, no flap.
+        let store = temp_store("i193-idempotent");
+        let now = current_unix_ms();
+        let dead = dead_pid();
+        store
+            .append_workflow_run(&WorkflowRun {
+                id: "wfrun-i".into(),
+                workflow_name: "demo".into(),
+                status: WorkflowRunStatus::Running,
+                step_ids: vec!["s1".into()],
+                created_at: format!("unix-ms:{now}"),
+                ended_at: None,
+                summary: None,
+                args: None,
+                agents_spawned: 1,
+                final_output: None,
+                initiated_by: Some("op".into()),
+                design_intent: None,
+                spec: None,
+                trace_retention: "durable".into(),
+                host_pid: Some(dead),
+                dry_run: false,
+                goal_id: None,
+                phase_id: None,
+                terminal_reason: None,
+                partial_output_available: false,
+            })
+            .expect("append run");
+        store
+            .append_provider_session(&mk_session("sess-1", ProviderSessionStatus::Running))
+            .expect("append session");
+        store
+            .append_workflow_step(&mk_step_row(
+                "s1",
+                "wfrun-i",
+                Some("sess-1"),
+                WorkflowStepStatus::Running,
+                None,
+            ))
+            .expect("append step");
+
+        assert_eq!(reap_stale_workflow_runs(&store).expect("reap 1"), 1);
+        let run_after_1 = find_run(&store, "wfrun-i");
+        let step_after_1 = find_step(&store, "s1");
+        let sess_after_1 = find_session(&store, "sess-1");
+        let ended_1 = sess_after_1.ended_at.clone();
+
+        // Second pass: the run is already terminal, so nothing is reaped and the
+        // session (already terminal) is NOT rewritten — no state flap.
+        assert_eq!(
+            reap_stale_workflow_runs(&store).expect("reap 2"),
+            0,
+            "an already-terminal run is not reaped again"
+        );
+        let run_after_2 = find_run(&store, "wfrun-i");
+        let step_after_2 = find_step(&store, "s1");
+        let sess_after_2 = find_session(&store, "sess-1");
+
+        assert_eq!(run_after_1.status, run_after_2.status);
+        assert_eq!(run_after_1.terminal_reason, run_after_2.terminal_reason);
+        assert_eq!(step_after_1.status, step_after_2.status);
+        assert_eq!(step_after_1.terminal_reason, step_after_2.terminal_reason);
+        assert_eq!(sess_after_2.status, ProviderSessionStatus::Failed);
+        assert_eq!(
+            sess_after_2.ended_at, ended_1,
+            "an already-terminal session is not rewritten on a second pass"
+        );
+    }
+
+    #[test]
+    fn reconcile_workflow_session_terminal_leaves_terminal_sessions_untouched() {
+        // TEST 2b: the reconcile primitive itself is idempotent + non-flapping.
+        let store = temp_store("i193-reconcile-primitive");
+        store
+            .append_provider_session(&mk_session("sess-run", ProviderSessionStatus::Running))
+            .expect("append running");
+        store
+            .append_provider_session(&mk_session("sess-term", ProviderSessionStatus::Canceled))
+            .expect("append terminal");
+
+        // A running session is moved once (returns true), then is a no-op (false).
+        assert!(reconcile_workflow_session_terminal(
+            &store,
+            "sess-run",
+            ProviderSessionStatus::Failed
+        )
+        .expect("reconcile 1"));
+        assert!(
+            !reconcile_workflow_session_terminal(&store, "sess-run", ProviderSessionStatus::Failed)
+                .expect("reconcile 2"),
+            "already-terminal → no move"
+        );
+        // An already-terminal session is never re-terminalized to a different status.
+        assert!(
+            !reconcile_workflow_session_terminal(
+                &store,
+                "sess-term",
+                ProviderSessionStatus::Failed
+            )
+            .expect("reconcile terminal"),
+            "a Canceled session is not flapped to Failed"
+        );
+        assert_eq!(
+            find_session(&store, "sess-term").status,
+            ProviderSessionStatus::Canceled
+        );
+        // A missing session is a safe no-op (false).
+        assert!(!reconcile_workflow_session_terminal(
+            &store,
+            "nope",
+            ProviderSessionStatus::Failed
+        )
+        .expect("reconcile missing"));
+    }
+
+    #[test]
+    fn workflow_status_reports_liveness_without_mutating() {
+        // TEST 3: `workflow status` on a finished run and on a fabricated half-dead
+        // run (rows say running, pid dead) → correct report, nothing mutated.
+        let store = temp_store("i193-status");
+        let now = current_unix_ms();
+        let dead = dead_pid();
+
+        // (a) A finished run — all terminal, no live pids.
+        store
+            .append_workflow_run(&WorkflowRun {
+                id: "wfrun-fin".into(),
+                workflow_name: "demo".into(),
+                status: WorkflowRunStatus::Completed,
+                step_ids: vec!["fs".into()],
+                created_at: format!("unix-ms:{now}"),
+                ended_at: Some(now_string()),
+                summary: Some("done".into()),
+                args: None,
+                agents_spawned: 1,
+                final_output: None,
+                initiated_by: Some("op".into()),
+                design_intent: None,
+                spec: None,
+                trace_retention: "durable".into(),
+                host_pid: Some(dead),
+                dry_run: false,
+                goal_id: None,
+                phase_id: None,
+                terminal_reason: Some(WorkflowTerminalReason::Completed),
+                partial_output_available: false,
+            })
+            .expect("append finished run");
+        store
+            .append_provider_session(&mk_session("fs-sess", ProviderSessionStatus::Succeeded))
+            .expect("append fs session");
+        store
+            .append_workflow_step(&mk_step_row(
+                "fs",
+                "wfrun-fin",
+                Some("fs-sess"),
+                WorkflowStepStatus::Completed,
+                Some("ok"),
+            ))
+            .expect("append fs step");
+
+        let fin = workflow_status_value(&store, &["wfrun-fin".to_string()]).expect("status fin");
+        assert_eq!(fin["status"], serde_json::json!("completed"));
+        assert_eq!(fin["terminal_reason"], serde_json::json!("completed"));
+        assert_eq!(fin["driver_abandoned"], serde_json::json!(false));
+        assert_eq!(fin["stale_sessions"], serde_json::json!(false));
+
+        // (b) A fabricated half-dead run: rows say Running, host pid is dead, and a
+        // leaf session is still Running → the report flags abandonment + staleness.
+        store
+            .append_workflow_run(&WorkflowRun {
+                id: "wfrun-half".into(),
+                workflow_name: "demo".into(),
+                status: WorkflowRunStatus::Running,
+                step_ids: vec!["hs".into()],
+                created_at: format!("unix-ms:{now}"),
+                ended_at: None,
+                summary: None,
+                args: None,
+                agents_spawned: 1,
+                final_output: None,
+                initiated_by: Some("op".into()),
+                design_intent: None,
+                spec: None,
+                trace_retention: "durable".into(),
+                host_pid: Some(dead),
+                dry_run: false,
+                goal_id: None,
+                phase_id: None,
+                terminal_reason: None,
+                partial_output_available: false,
+            })
+            .expect("append half run");
+        store
+            .append_provider_session(&mk_session("hs-sess", ProviderSessionStatus::Running))
+            .expect("append hs session");
+        store
+            .append_workflow_step(&mk_step_row(
+                "hs",
+                "wfrun-half",
+                Some("hs-sess"),
+                WorkflowStepStatus::Running,
+                None,
+            ))
+            .expect("append hs step");
+
+        let half = workflow_status_value(&store, &["wfrun-half".to_string()]).expect("status half");
+        assert_eq!(half["status"], serde_json::json!("running"));
+        assert_eq!(half["host_pid_alive"], serde_json::json!(false));
+        assert_eq!(
+            half["driver_abandoned"],
+            serde_json::json!(true),
+            "running row + dead driver pid = abandoned"
+        );
+        assert_eq!(
+            half["stale_sessions"],
+            serde_json::json!(true),
+            "a running session behind a dead driver is stale"
+        );
+
+        // status is READ-ONLY: nothing was mutated by either call.
+        assert_eq!(
+            find_run(&store, "wfrun-half").status,
+            WorkflowRunStatus::Running
+        );
+        assert_eq!(
+            find_session(&store, "hs-sess").status,
+            ProviderSessionStatus::Running
+        );
+        assert_eq!(find_step(&store, "hs").status, WorkflowStepStatus::Running);
+    }
+
+    #[test]
+    fn workflow_run_and_step_load_without_new_i193_fields() {
+        // TEST 4: serde back-compat — legacy rows lacking terminal_reason / partial
+        // / partial_output_available still deserialize (default None / false).
+        let legacy_run = serde_json::json!({
+            "id": "wfrun-legacy",
+            "workflow_name": "demo",
+            "status": "failed",
+            "created_at": "unix-ms:1",
+        });
+        let run: WorkflowRun = serde_json::from_value(legacy_run).expect("legacy run decodes");
+        assert_eq!(run.terminal_reason, None);
+        assert!(!run.partial_output_available);
+
+        let legacy_step = serde_json::json!({
+            "id": "wfstep-legacy",
+            "run_id": "wfrun-legacy",
+            "phase": "work",
+            "label": "node",
+            "status": "failed",
+            "started_at": "unix-ms:1",
+        });
+        let step: WorkflowStep = serde_json::from_value(legacy_step).expect("legacy step decodes");
+        assert_eq!(step.terminal_reason, None);
+        assert!(!step.partial);
+    }
+
+    #[test]
+    fn cancel_active_run_journals_canceled_and_reconciles() {
+        // TEST 5 (unit, no real SIGINT): the operator-cancel core cascades to
+        // steps + sessions and is idempotent. A real SIGINT integration test needs
+        // a live provider, so the lead live-verifies by interrupting a real codex
+        // run (see report); this drives the same `cancel_active_run` the SIGINT
+        // watcher thread invokes.
+        let store = temp_store("i193-cancel");
+        let now = current_unix_ms();
+        store
+            .append_workflow_run(&WorkflowRun {
+                id: "wfrun-c".into(),
+                workflow_name: "demo".into(),
+                status: WorkflowRunStatus::Running,
+                step_ids: vec!["c-done".into(), "c-open".into()],
+                created_at: format!("unix-ms:{now}"),
+                ended_at: None,
+                summary: Some("in progress".into()),
+                args: None,
+                agents_spawned: 2,
+                final_output: None,
+                initiated_by: Some("operator".into()),
+                design_intent: None,
+                spec: None,
+                trace_retention: "durable".into(),
+                host_pid: Some(std::process::id()),
+                dry_run: false,
+                goal_id: None,
+                phase_id: None,
+                terminal_reason: None,
+                partial_output_available: false,
+            })
+            .expect("append run");
+        store
+            .append_provider_session(&mk_session("c-done-sess", ProviderSessionStatus::Succeeded))
+            .expect("done session");
+        store
+            .append_workflow_step(&mk_step_row(
+                "c-done",
+                "wfrun-c",
+                Some("c-done-sess"),
+                WorkflowStepStatus::Completed,
+                Some("finished audit"),
+            ))
+            .expect("done step");
+        store
+            .append_provider_session(&mk_session("c-open-sess", ProviderSessionStatus::Running))
+            .expect("open session");
+        store
+            .append_workflow_step(&mk_step_row(
+                "c-open",
+                "wfrun-c",
+                Some("c-open-sess"),
+                WorkflowStepStatus::Running,
+                None,
+            ))
+            .expect("open step");
+
+        assert!(cancel_active_run(&store, "wfrun-c").expect("cancel"));
+
+        let run = find_run(&store, "wfrun-c");
+        assert_eq!(run.status, WorkflowRunStatus::Failed);
+        assert_eq!(
+            run.terminal_reason,
+            Some(WorkflowTerminalReason::CanceledByOperator)
+        );
+        assert!(
+            run.partial_output_available,
+            "a completed step under a canceled run = partial output"
+        );
+        assert!(run.summary.as_deref().unwrap_or("").contains("canceled"));
+
+        let open = find_step(&store, "c-open");
+        assert_eq!(open.status, WorkflowStepStatus::Failed);
+        assert_eq!(
+            open.terminal_reason,
+            Some(WorkflowTerminalReason::CanceledByOperator)
+        );
+        // The open leaf's session is reconciled to Canceled; the finished one stays.
+        assert_eq!(
+            find_session(&store, "c-open-sess").status,
+            ProviderSessionStatus::Canceled
+        );
+        assert_eq!(
+            find_session(&store, "c-done-sess").status,
+            ProviderSessionStatus::Succeeded
+        );
+
+        // Idempotent: cancelling an already-terminal run is a no-op.
+        assert!(!cancel_active_run(&store, "wfrun-c").expect("cancel 2"));
+    }
+
+    #[test]
+    fn orphan_reaper_reconciles_killed_run_sessions_to_stale() {
+        // TEST (G3): reaping an orphan worker whose run is gone reconciles the run's
+        // still-open leaf sessions to Stale (idempotent).
+        let store = temp_store("i193-orphan-stale");
+        let mut child = spawn_sleep_process_group();
+        let pid = child.id();
+        // The owning run is terminal (Failed) — so the live worker is an orphan.
+        append_test_workflow_run(&store, "wfrun-orphan", WorkflowRunStatus::Failed, None);
+        store
+            .append_provider_session(&mk_session("orphan-sess", ProviderSessionStatus::Running))
+            .expect("append session");
+        store
+            .append_workflow_step(&mk_step_row(
+                "orphan-step",
+                "wfrun-orphan",
+                Some("orphan-sess"),
+                WorkflowStepStatus::Running,
+                None,
+            ))
+            .expect("append step");
+        write_test_worker_pidfile(&store, "wfrun-orphan", pid, "sleep");
+
+        let _ = reap_orphaned_workers(&store, false).expect("reap workers");
+        wait_for_child_exit(&mut child);
+        kill_test_process_group(&mut child);
+
+        assert_eq!(
+            find_session(&store, "orphan-sess").status,
+            ProviderSessionStatus::Stale,
+            "a killed orphan's leaf session is reconciled to Stale"
+        );
+
+        // Idempotent: a second reap pass does not flap the (now Stale) session.
+        let _ = reap_orphaned_workers(&store, false).expect("reap workers 2");
+        assert_eq!(
+            find_session(&store, "orphan-sess").status,
+            ProviderSessionStatus::Stale
+        );
+    }
+
+    #[test]
+    fn get_output_surfaces_partial_and_terminal_reason() {
+        // TEST (G4): `workflow get-output` surfaces run-level partial_output_available
+        // + terminal_reason and per-step partial/terminal_reason.
+        let store = temp_store("i193-get-output");
+        let now = current_unix_ms();
+        let dead = dead_pid();
+        store
+            .append_workflow_run(&WorkflowRun {
+                id: "wfrun-go".into(),
+                workflow_name: "demo".into(),
+                status: WorkflowRunStatus::Running,
+                step_ids: vec!["go-done".into(), "go-open".into()],
+                created_at: format!("unix-ms:{now}"),
+                ended_at: None,
+                summary: None,
+                args: None,
+                agents_spawned: 2,
+                final_output: None,
+                initiated_by: Some("op".into()),
+                design_intent: None,
+                spec: None,
+                trace_retention: "durable".into(),
+                host_pid: Some(dead),
+                dry_run: false,
+                goal_id: None,
+                phase_id: None,
+                terminal_reason: None,
+                partial_output_available: false,
+            })
+            .expect("append run");
+        store
+            .append_provider_session(&mk_session(
+                "go-done-sess",
+                ProviderSessionStatus::Succeeded,
+            ))
+            .expect("done session");
+        store
+            .append_workflow_step(&mk_step_row(
+                "go-done",
+                "wfrun-go",
+                Some("go-done-sess"),
+                WorkflowStepStatus::Completed,
+                Some("report body"),
+            ))
+            .expect("done step");
+        store
+            .append_provider_session(&mk_session("go-open-sess", ProviderSessionStatus::Running))
+            .expect("open session");
+        store
+            .append_workflow_step(&mk_step_row(
+                "go-open",
+                "wfrun-go",
+                Some("go-open-sess"),
+                WorkflowStepStatus::Running,
+                Some("half a draft"),
+            ))
+            .expect("open step");
+
+        reap_stale_workflow_runs(&store).expect("reap");
+
+        let out = workflow_get_output_value(&store, &["wfrun-go".to_string()]).expect("get-output");
+        assert_eq!(out["status"], serde_json::json!("failed"));
+        assert_eq!(out["terminal_reason"], serde_json::json!("driver_exited"));
+        assert_eq!(out["partial_output_available"], serde_json::json!(true));
+        let steps = out["steps"].as_array().expect("steps array");
+        let open = steps
+            .iter()
+            .find(|s| s["label"] == serde_json::json!("go-open"))
+            .expect("open step in output");
+        assert_eq!(open["partial"], serde_json::json!(true));
+        assert_eq!(open["terminal_reason"], serde_json::json!("driver_exited"));
+    }
+
+    #[test]
+    fn classify_step_terminal_reason_distinguishes_timeouts_from_failures() {
+        // TEST (G1): the step classifier maps wall/idle timeouts + provider failures
+        // to distinct reasons.
+        let mk = |ok: bool, details: Option<serde_json::Value>| workflow::StepResult {
+            phase: "p".into(),
+            label: "l".into(),
+            provider: "codex".into(),
+            isolation: None,
+            ok,
+            provider_session_id: None,
+            output_summary: String::new(),
+            step_id: None,
+            started_at: None,
+            details,
+            structured: None,
+            ordinal: None,
+        };
+        assert_eq!(
+            classify_step_terminal_reason(&mk(true, None)),
+            WorkflowTerminalReason::Completed
+        );
+        assert_eq!(
+            classify_step_terminal_reason(&mk(
+                false,
+                Some(serde_json::json!({ "wall_timed_out": true }))
+            )),
+            WorkflowTerminalReason::LeafTimeout
+        );
+        assert_eq!(
+            classify_step_terminal_reason(&mk(
+                false,
+                Some(serde_json::json!({ "failure": { "reason": "timeout" } }))
+            )),
+            WorkflowTerminalReason::IdleTimeout
+        );
+        assert_eq!(
+            classify_step_terminal_reason(&mk(
+                false,
+                Some(serde_json::json!({ "failure": { "reason": "exit" } }))
+            )),
+            WorkflowTerminalReason::ProviderFailed
+        );
+        assert_eq!(
+            classify_step_terminal_reason(&mk(false, None)),
+            WorkflowTerminalReason::ProviderFailed
+        );
+    }
+
     fn spawn_sleep_process_group() -> std::process::Child {
         let mut cmd = Command::new("sh");
         cmd.arg("-c").arg("sleep 30");
