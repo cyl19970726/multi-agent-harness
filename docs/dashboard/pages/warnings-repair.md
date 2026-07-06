@@ -36,13 +36,14 @@ Canonical objects:
 - Decision;
 - ProviderSession.
 
-Implemented: the Warnings surface is the home of the `Gap` ledger. It renders
-`Gap` rows sortable by `severity` (`p0`/`p1`/`p2`) and `status`
-(`open`/`in_progress`/`fixed`/`blocked`/`deferred`/`wontfix`), alongside the
-derived `WorkflowWarning` queue. The implemented warning kinds are
-`review_needs_decision`, `gap_unresolved`, `failed_provider_session`,
-`goal_learning_gap`, `goal_close_without_evaluation`, and
-`waiver_without_follow_up`.
+Implemented: the `Gap` ledger is projected in the read model — `Gap` rows sort
+by `severity` (`p0`/`p1`/`p2`) then unresolved-first `status`
+(`open`/`in_progress`/`fixed`/`blocked`/`deferred`/`wontfix`) and derive the
+`gap_p0_open`/`gap_unresolved` warnings — but no dedicated Warnings surface
+renders the ledger yet; warnings currently render object-locally (Task
+document) and feed the decision-queue projection. The warning kinds are owned
+by `apps/agent-dashboard/src/model/warnings.ts` (`deriveWarnings`); see the
+table in [../read-model.md](../read-model.md) for the current list.
 
 Workflow proof:
 

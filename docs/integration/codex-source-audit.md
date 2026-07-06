@@ -41,9 +41,11 @@ Harness AgentMember
   -> normalized harness store
 ```
 
-The harness should integrate at the external app-server/protocol boundary,
-observe hooks and provider state, and keep its own durable objects. It should
-not patch Codex internal processors for V1.
+The harness should integrate at the external protocol boundary — today the
+documented headless exec-stream (`codex exec --json`, ADR 0018); the app-server
+boundary audited here is the retained fallback — observe hooks and provider
+state, and keep its own durable objects. It should not patch Codex internal
+processors for V1.
 
 ## Source Findings
 
@@ -83,7 +85,8 @@ The gateway is an adapter, not a source of truth.
 ## Thread And Message Finding
 
 Codex threads and turns are provider execution state. Harness messages are the
-durable communication ledger. The normal Codex delivery path is:
+durable communication ledger. The app-server (fallback) delivery path is — the
+primary substrate is headless `codex exec --json` per ADR 0018:
 
 ```text
 queued harness Message

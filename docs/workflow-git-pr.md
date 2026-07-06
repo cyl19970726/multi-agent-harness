@@ -17,7 +17,8 @@ Goal
   -> Task
   -> Message(kind=task)
   -> AgentMember works in declared worktree/task branch when files change
-  -> task PR into goal branch
+  -> task PR into goal branch (or per-phase landing commit in the
+     orchestrated `goal run-phases` flow)
   -> Proposal from diff or PR evidence
   -> Evidence and review
   -> Leader Decision
@@ -56,9 +57,15 @@ Rules:
 
 - each non-trivial file-changing goal creates or owns one goal branch;
 - the goal branch is the integration target for accepted task PRs;
-- each file-changing task may create its own task worktree and branch when it
-  needs isolation, parallelism, or path ownership;
-- task PRs target the goal branch, not the production branch;
+- each file-changing task runs in its own disposable worktree when it needs
+  isolation, parallelism, or path ownership; the orchestrated runtime creates
+  a unique throwaway worktree per writable leaf, and keeps read-only leaves on
+  the shared project root (isolating a read-only leaf only when its provider
+  cannot enforce read-only);
+- task work integrates into the goal branch through task-level review: a task
+  PR in the standing-team flow, or a passing phase's landing commit in the
+  orchestrated `goal run-phases` flow (see Phase Landing below);
+- task PRs, where used, target the goal branch, not the production branch;
 - goal branch integration into production happens only after goal acceptance:
   task graph complete or explicitly blocked, evidence present, review complete,
   Leader decision recorded, and GoalEvaluation present or waived;
@@ -66,6 +73,33 @@ Rules:
   without a task branch, but that exception should be visible in the task's
   workspace/proposal state;
 - production branch merges are goal-level decisions, not worker-level actions.
+
+## Phase Landing (Implemented Integration Path)
+
+The orchestrated phase loop (`goal run-phases`) implements task-level
+integration without per-task PRs:
+
+- writable leaves run in unique harness-owned throwaway worktrees; the diff is
+  captured (with `--binary`) as evidence before the worktree is discarded, and
+  stale worktrees left by dead runs are reclaimed (`workflow gc-worktrees`);
+- owned-path compliance is enforced mechanically when a writable leaf's diff
+  is captured, not only checked at review;
+- a passing phase is the single landing authority: it applies every
+  non-rejected, non-discarded writable diff in deterministic order and makes
+  one landing commit on the current branch. Landing refuses to start on a
+  dirty tree, and a failed apply rolls back to the pre-landing HEAD — no
+  auto-merge, no force;
+- a workflow's `reject_patch()` intent or a leaf's `persist_changes="discard"`
+  excludes that step's diff from the landing commit;
+- orchestrated runs persist no standalone patches. Standalone
+  `workflow run-script` writable diffs instead persist as pending
+  `WorkflowPatch` rows (only when the leaf succeeded and was writable) for
+  explicit apply/reject review;
+- `goal reconcile-phase` trues up a phase that was landed or fixed
+  out-of-band.
+
+The goal PR into production remains the outer integration step in both the
+standing-team PR flow and the phase-landing flow.
 
 ## Workflow
 
@@ -98,9 +132,11 @@ sequenceDiagram
 
 - One file-changing task should use one worktree or clearly declared workspace.
 - Parallel tasks need disjoint `owned_paths` or an explicit integration task.
-- Parallel task branches integrate into the goal branch after task-level review;
-  they do not bypass the goal branch and merge directly into production.
-- Workers may read the full repo but should write only within owned paths.
+- Parallel task work integrates into the goal branch after task-level review —
+  as merged task PRs or as a passing phase's landing commit; it does not bypass
+  the goal branch and merge directly into production.
+- Workers may read the full repo but should write only within owned paths; the
+  workflow runtime enforces this when capturing a writable leaf's diff.
 - A worker must not revert unrelated user or agent changes.
 - Path conflicts create a Leader decision: split, serialize, or integrate.
 
@@ -199,3 +235,6 @@ task-graph changes, blockers, or follow-up work for Lead decision.
 7. Task branches target the goal branch; goal branches target production.
 8. AgentTeams persist across tasks and goals unless retired by explicit
    lifecycle decision.
+9. A phase landing commit is an effect of a passing phase verdict; it lands
+   only non-rejected, non-discarded writable diffs and does not substitute for
+   goal acceptance or the goal PR.

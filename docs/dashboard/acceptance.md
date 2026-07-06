@@ -128,9 +128,10 @@ The review may not pass because data rendered, console is clean, network
 requests succeeded, or horizontal overflow is absent. Those checks are required
 but not sufficient.
 
-Each viewport matrix must cover the default Team workspace, Member detail,
-Goal/Task document surface, Graph/Kanban surface, Warnings surface, and Debug
-closed default state. A single happy-path homepage screenshot is not enough.
+Each viewport matrix must cover the default Agents workspace, agent detail,
+Goal/Task document surface, Work board (goal collection plus a goal-scoped
+task view), Workflows surface, and Debug closed default state. A single
+happy-path homepage screenshot is not enough.
 
 The Workbench is acceptable only when the first viewport looks like an operator
 workbench over harness state, not a stacked report of cards and raw objects.

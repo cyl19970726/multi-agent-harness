@@ -432,9 +432,10 @@ Required control-plane views:
 
 Dashboard actions should call the same CLI/API paths as agents. Current safe
 actions include `message send`, `agent deliver`, safe delivery retry, provider
-session reconciliation, review request, and `agent close`. Future actions
-include `agent create`, `agent start`, task graph edits, proposal review, and
-decision recording. The Dashboard must not become a parallel state machine.
+session reconciliation, review request, `agent close`, team/agent/goal
+creation, task assignment, and reviewer handoff. Future actions include
+`agent start`, richer task graph edits, proposal review, and decision
+recording. The Dashboard must not become a parallel state machine.
 
 Minimum useful screens:
 
@@ -464,7 +465,7 @@ The repository currently has enough surface to prove live persistent
 | Busy/idle is inferred poorly | Dashboard cannot know whether to deliver, queue, inject, or interrupt. | Add active-turn and reducer-derived member state. |
 | Peer communication is not a first-class view | Agents can send messages, but the operator cannot see the collaboration graph. | Add inbox/outbox, reply/correlation refs, and channel fanout. |
 | Team autonomy is early-stage | The CLI and Dashboard can represent Observer proposals and next-round planning, but proposal review actions and richer graph editing are still limited. | Harden `autonomy` commands, add Dashboard safe actions for Lead disposition, and promote stable fields only after repeated gates require them. |
-| Dashboard safe actions are partial | It can send/deliver/retry/reconcile/request review/close, but cannot yet create full teams or record final decisions. | Add create/start, task graph edits, proposal review, and decision actions through the same API/CLI paths. |
+| Dashboard safe actions are partial | It can send/deliver/retry/reconcile/request review/close and create teams/agents/goals, assign tasks, and set reviewers, but cannot yet start runtimes or record final decisions. | Add `agent start`, richer task graph edits, proposal review, and decision actions through the same API/CLI paths. |
 | Provider child work is easy to hide | Native subagents or child threads can disappear under the parent member. | Ingest child-thread events and render them under the parent/task. |
 | Goal/task planning is scattered | The repo has phases, but no concise execution roadmap tied to control-plane gaps. | Use the phased plan below as the next implementation graph. |
 

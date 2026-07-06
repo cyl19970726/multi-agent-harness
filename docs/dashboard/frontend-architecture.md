@@ -97,17 +97,26 @@ implementation components for the next slice:
 | `WarningsRepair` | workflow risk queue with affected object, cause, consequence, safe repair state | toast-only alerts |
 | `DebugSurface` / `DebugDrawer` | raw snapshot and import/export only behind explicit debug route/drawer | primary viewport |
 
+Shipped divergence from that plan table: the primary rail is Agents / Vision /
+Work / Workflows / Docs, with Goal/Task drill-in documents and Debug behind a
+top-bar toggle. The Team-shaped components (`TeamRail`, `TeamWorkspace`) did not
+ship — the current UI has no Team surface — and `MemberWorkbench` shipped as the
+Agents area (`AgentsList` + `AgentDetail`). Workflow-run visibility added
+`surfaces/Workflows.tsx` and `components/workbench/WorkflowPanels.tsx`.
+
 Product atoms in `src/components/workbench` are composed from the shadcn/ui
 primitives and preserve the product model:
 
 | Primitive | Purpose |
 | --- | --- |
-| `ActionButton` | command affordance with optional `lucide-react` icon. |
-| `StatusBadge` | text-backed state label, never color-only. |
-| `SectionPanel` | bounded workspace region with title/action slot. |
-| `SegmentedControl` | mode switch for Graph/Kanban, proof tabs, or mobile surfaces. |
+| `StatusDot` + tone maps (`tones.ts`) | text-backed state dots/labels, never color-only. |
+| `Section` / `SurfaceHeader` | bounded workspace region and surface heading with kicker/action slots. |
+| `DocumentSurface` / `DocSection` / `DocProperties` | Notion-style Goal/Task document atoms (ADR 0019). |
 | `TimelineRow` | canonical Message/Event/Evidence/Decision rows. |
-| `LaneBoard` | task/goal execution lanes. |
+| `Avatar`, `AgentSparkline`, `CollapsibleBlock`, `MetaList`, `EmptyState`, `Kbd`, `MonoId` | supporting display atoms (`atoms.tsx`). |
+| `Markdown` | markdown rendering for doc/plan bodies. |
+| `OperatorForms` | safe-action dialogs that dispatch typed `api/actions.ts` descriptors. |
+| `WorkflowPanels` | workflow definition/run summary panels shared by the Goal and Workflows surfaces. |
 
 The rebuild uses Tailwind CSS v4 plus shadcn/ui primitives over Radix as the
 base layer. Material UI, Ant Design, and other full component frameworks remain
@@ -129,7 +138,9 @@ out of scope.
 
 ## Workbench Primitives
 
-The rebuild starts from product primitives, not dashboard widgets:
+The rebuild starts from product primitives, not dashboard widgets. (Design
+vocabulary; the shipped-divergence note in Component Decision applies here too —
+Team-shaped primitives did not ship.)
 
 | Primitive | Purpose |
 | --- | --- |
@@ -146,6 +157,11 @@ The rebuild starts from product primitives, not dashboard widgets:
 | `DebugDrawer` | Raw snapshot/import/export outside the primary viewport. |
 
 ## Old Code Disposition
+
+This disposition was executed in the PR #7 rebuild: the listed old components
+and styles no longer exist. `api.ts`/`types.ts`/`vite.config.ts` were retained,
+and `readModel.ts` migrated to `src/model/readModel.ts`. The table stays as the
+record of what was decided.
 
 | Path/pattern | Decision | Reason |
 | --- | --- | --- |
@@ -169,13 +185,15 @@ Shipped shape after the rebuild (PR #7):
 
 ```text
 src/
-  app/            # App composition, WorkbenchShell, selection state
-  surfaces/       # team, member, vision, goal, task, graph-kanban, docs,
-                  #   decisions, warnings, debug page surfaces
-  model/          # snapshot types, read-model selectors, warnings
+  app/            # App composition, WorkbenchShell, selection state, SSE hook
+  surfaces/       # agents (list + detail), vision, goal, task, work board,
+                  #   workflows, docs, debug page surfaces
+  model/          # read-model selectors, warnings, workflow selectors/shape
   components/
     ui/           # shadcn/ui primitives over Radix (components.json, new-york)
     workbench/    # product atoms composed from the ui primitives
+  api.ts, api/    # snapshot/SSE/projects fetch + typed write-action descriptors
+  types.ts        # snapshot and UI object types
   index.css       # Tailwind v4 entry + light Notion-like token theme (ADR 0019)
 ```
 

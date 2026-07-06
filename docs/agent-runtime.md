@@ -127,6 +127,8 @@ docs/agent-integration-model.md  # how to integrate a new agent (three pillars +
 docs/agent-runtime.md        # provider-neutral A-ROM and interfaces
 docs/integration/README.md   # integration rules and template
 docs/integration/codex.md    # Codex implementation
+docs/integration/claude.md   # Claude implementation
+docs/integration/kimi.md     # Kimi implementation
 docs/integration/<name>.md   # future provider implementation
 ```
 
@@ -152,7 +154,7 @@ The harness serves real-time events via Server-Sent Events (SSE) at the `/v1/eve
 
 ### Endpoint: `GET /v1/events`
 
-**Purpose**: Stream provider-neutral harness events (agent events, messages, provider sessions) to connected clients as they are recorded.
+**Purpose**: Stream provider-neutral harness events (agent events, messages, provider sessions, workflow runs/steps, live provider turn events) to connected clients as they are recorded. The stream is project-scoped: `?project=<id>` selects the project; frames from other projects never leak into a client's stream.
 
 **Response Headers**:
 ```
@@ -170,6 +172,8 @@ The endpoint emits the following event types:
 - **`agent_event`**: A new `AgentEvent` was recorded (provider/runtime/hook event).
 - **`message`**: A new `Message` was created or its `delivery_status` changed.
 - **`provider_session`**: A new `ProviderSession` was recorded or its `status` changed.
+- **`workflow_run`** / **`workflow_step`**: A `WorkflowRun` / `WorkflowStep` record was appended or updated (dynamic workflow runtime).
+- **`provider_turn_event`** / **`provider_turn_event_normalized`**: A raw provider turn-event line teed live to `provider_turn_events.jsonl` during delivery, and its normalized `HarnessTurnEvent` expansion.
 
 ### Event Frame Format
 
@@ -205,7 +209,7 @@ The connection sends a keepalive comment every ~15 seconds (when no events are b
 
 ### Implementation
 
-The watcher thread monitors jsonl store files (`agent_events.jsonl`, `messages.jsonl`, `provider_sessions.jsonl`) for appends. On detection (~500ms poll), new records are parsed and broadcast to all connected SSE clients via a crossbeam channel fan-out. Each client connection receives events independently.
+The watcher thread monitors each project's jsonl store files (`agent_events.jsonl`, `messages.jsonl`, `provider_sessions.jsonl`, `workflow_runs.jsonl`, `workflow_steps.jsonl`, `provider_turn_events.jsonl`) for appends. On detection (~150ms poll), new records are parsed and broadcast via a crossbeam channel fan-out to the clients subscribed to that project. The project registry is re-scanned on every poll, so a project registered after `serve` starts gets a live event channel without a restart. Each client connection receives events independently.
 
 ### How A Member Looks Live
 

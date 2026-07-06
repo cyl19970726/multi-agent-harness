@@ -36,12 +36,15 @@ Canonical objects:
 - Goal;
 - checks, screenshots, PR refs, GoalEvaluation.
 
-Implemented: the DecisionCenter is wired (previously unwired) and renders the
-Evidence -> `Review` -> `Decision` chain. `Review` is a first-class object whose
-`verdict` and `blockers` are visually distinct from the Leader `Decision`;
-`decision_kind` and waiver/`follow_up_task_id` are shown so closeout and
-stop-gate decisions are legible. A `Review` is evidence for a `Decision`, never
-the decision itself.
+Implemented: `Review` is a first-class object whose `verdict`, `blockers`,
+`missing_validation`, and `residual_risk` render visually distinct from the
+Leader `Decision` in the Task document proof chain. The decision queue
+(`decisionQueue`/`leadDecisionQueue`) is a read-model projection; the
+DecisionCenter component that renders it is not reachable from the current
+shell rail. `decision_kind`, `is_waiver`, and `follow_up_task_id` exist on the
+`Decision` snapshot type but are not rendered yet; waiver legibility currently
+comes from goal closeout status and the `waiver_without_follow_up` warning. A
+`Review` is evidence for a `Decision`, never the decision itself.
 
 Workflow proof:
 

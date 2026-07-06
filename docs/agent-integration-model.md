@@ -6,8 +6,9 @@ provider, or platform into Star Harness, what do you have to define?**
 It sits above the provider-neutral runtime contract in
 [agent-runtime.md](agent-runtime.md) and the prompt/identity contract in
 [agent-control-plane.md](agent-control-plane.md), and above the concrete
-provider implementations in [integration/codex.md](integration/codex.md) and
-[integration/claude.md](integration/claude.md). It does not redefine `Goal`,
+provider implementations in [integration/codex.md](integration/codex.md),
+[integration/claude.md](integration/claude.md), and
+[integration/kimi.md](integration/kimi.md). It does not redefine `Goal`,
 `Task`, `Message`, `Evidence`, `Proposal`, or `Decision`; those stay owned by
 the core object model.
 
@@ -24,7 +25,8 @@ Launch spec                     one normalized per-turn request, mapped onto
 ```
 
 The substrate that binds the three pillars is **headless exec-stream**:
-`codex exec --json` and `claude -p --output-format stream-json`, normalized into
+`codex exec --json`, `claude -p --output-format stream-json`, and
+`kimi -p --output-format stream-json`, normalized into
 the neutral `AgentEvent` / `ProviderSession` stream. That decision is recorded
 in [decisions/0018-exec-stream-primary-substrate.md](decisions/0018-exec-stream-primary-substrate.md).
 
@@ -38,8 +40,8 @@ hands a single turn to whatever platform sits behind the member:
 | Pillar | Question | Where it lives today |
 | --- | --- | --- |
 | 1 Base configuration | What does this agent *know and is allowed to be*? | `prompt_ref`, `skill_refs`, `capabilities`, `model`, `profile` on `AgentMember` |
-| 2 Environment | What can it *touch*? | `worktree_ref`, `runtime_workspace_roots`, `workspace_policy`; MCP is **missing** |
-| 3 Platform adaptation | How does the harness *drive* the platform and read it back? | `AgentProvider` (CLI provider layer), `EventReducer`, `ProviderKind` |
+| 2 Environment | What can it *touch*? | `worktree_ref`, `runtime_workspace_roots`, `workspace_policy`; MCP via `AgentProviderConfig.mcp` |
+| 3 Platform adaptation | How does the harness *drive* the platform and read it back? | `AgentProvider` (CLI `ProviderAdapter` registry), `EventReducer`, `ProviderCapabilities` |
 
 The pillars are deliberately separable: changing the platform (Pillar 3) must
 not require rewriting the prompt stack (Pillar 1) or the workspace contract
@@ -318,15 +320,15 @@ shows honest per-provider support.
 TBD. The live `kimi -p` rejects every permission flag (`-y`/`--auto`/`--plan`)
 and has no tool allowlist, so it has NO read-only mode — a leaf the workflow
 declares read-only can still edit the live tree (observed in dogfooding: a
-read-only kimi leaf edited two checked-in docs). The harness compensates
-**structurally** rather than trusting the provider: a read-only leaf whose
-provider can't enforce read-only is run in a throwaway git worktree anyway, so
-its writes land in a discardable checkout instead of the live repo
-(`step_needs_isolation` / `provider_enforces_read_only` in
-[crates/harness-cli/src/main.rs](../crates/harness-cli/src/main.rs)). On a non-git
-project there is no worktree to isolate into, so the leaf degrades to the shared
-cwd with a printed warning. The default-trait and unknown-provider values are
-`false` (assume-unenforceable = the safe default: isolate).
+read-only kimi leaf edited two checked-in docs). Since #190 this is
+**capability metadata**, not isolation routing: read-only workflow leaves run
+in the selected project root regardless of provider — only `writable` leaves
+and explicit `isolation="worktree"` opt-ins get a throwaway git worktree
+(`step_needs_isolation` in
+[crates/harness-cli/src/main.rs](../crates/harness-cli/src/main.rs)); a provider
+capability gap must not silently turn a read-only scan/review into a
+git-worktree requirement. The default-trait and unknown-provider values are
+`false` (assume-unenforceable), surfaced as honest Dashboard capability state.
 
 ### The adapter boundary (generalized from earning-engine)
 
@@ -374,7 +376,7 @@ composer and Dashboard uniform across Codex, Claude, and future platforms.
 | `writable_roots` | paths the turn may write | sandbox writable roots / `cwd` | `--add-dir` | adapter-provided |
 | `tools` | abstract allowed-tool set | approval policy / tool config | `--allowedTools` / SDK `allowed_tools` | adapter-provided |
 | `workspace` | cwd / worktree root | `cwd` | `--add-dir` / process cwd | adapter-provided |
-| `mcp` | neutral MCP block (PROPOSED) | `--config mcp_servers.*` | `--mcp-config` / SDK `mcp_servers` | adapter-provided |
+| `mcp` | neutral MCP block (WP-6, implemented) | `--config mcp_servers.*` | `--mcp-config` / SDK `mcp_servers` | adapter-provided |
 | `skill_refs` | skills to inject (Pillar 1 contract) | explicit skill input item | system-prompt injection / SDK | adapter-provided |
 | `session` / `resume` | resume an existing session | `--session <id>` | `--resume <id>` / SDK `resume` | adapter-provided |
 | `output` | event stream contract → `AgentEvent` | `--json` NDJSON | `--output-format stream-json --verbose` | adapter-provided |
@@ -415,8 +417,8 @@ is the concrete "define X, Y, Z" deliverable.
    `model` / `profile`.
 2. **Define Pillar 2 (environment).** Specify `worktree_ref`,
    `runtime_workspace_roots`, `owned_paths` per task, and `workspace_policy`. If
-   the platform uses MCP, write the neutral `mcp` block (proposed shape) and how
-   the platform consumes it.
+   the platform uses MCP, write the neutral `mcp` block and how the platform
+   consumes it.
 3. **Implement Pillar 3 via exec-stream.** Implement `AgentProvider`
    (start / deliver / probe / ingest) over the platform's documented
    exec/stream mode; write the `EventReducer` mapping; define the health-signal
@@ -424,10 +426,10 @@ is the concrete "define X, Y, Z" deliverable.
 4. **Map the launch spec.** Fill the platform's column of the launch-spec table:
    how each neutral field becomes a concrete CLI flag / SDK argument. Do not
    leak platform wire vocabulary back into the neutral spec.
-5. **Declare provider capabilities.** Publish the proposed
-   `provider_capabilities` block (streaming, resume, mid-turn approval,
-   subagents, mcp, hooks) so the harness/UI can adapt and the Dashboard shows
-   honest state.
+5. **Declare provider capabilities.** Implement the `ProviderCapabilities`
+   declaration (streaming, resume, mid-turn approval, subagents, mcp, hooks,
+   schema, cost, enforces_read_only) so the harness/UI can adapt and the
+   Dashboard shows honest state.
 6. **Write `docs/integration/<provider>.md`** from the provider template in
    [integration/README.md](integration/README.md). Answer every section:
    capability summary, runtime model, message delivery, claim/retry, event
@@ -462,5 +464,5 @@ abstraction remains additive future work under ADR 0017.
   `Decision` here; those stay in the core object model.
 - Do not let one platform's wire vocabulary become the neutral spec.
 - Do not treat provider-native subagents as durable members unless promoted.
-- Do not implement the PROPOSED contracts (skills, MCP, capability declaration)
-  by editing schemas in this document; they are flagged for separate work.
+- Do not evolve the implemented contracts (skills, MCP, capability declaration)
+  by editing this document alone; changes land in code/schemas first.
