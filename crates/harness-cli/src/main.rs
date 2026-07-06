@@ -1227,6 +1227,14 @@ fn parse_goal_stage(s: &str) -> CliResult<GoalStage> {
     })
 }
 
+fn parse_phase_execution_mode(s: &str) -> CliResult<harness_core::PhaseExecutionMode> {
+    serde_json::from_value(serde_json::Value::String(s.to_string())).map_err(|_| {
+        CliError::Usage(format!(
+            "unknown phase execution mode `{s}` (task_graph|workflow)"
+        ))
+    })
+}
+
 fn parse_knowledge_source(s: &str) -> CliResult<KnowledgeSource> {
     serde_json::from_value(serde_json::Value::String(s.to_string())).map_err(|_| {
         CliError::Usage(format!(
@@ -1284,8 +1292,9 @@ fn phase_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
                 .into_values()
                 .filter(|t| t.goal_id.as_deref() == Some(goal.id.as_str()))
                 .collect();
-            let script =
-                compile_phase_to_starlark(&goal, phase, &goal_tasks).map_err(CliError::Usage)?;
+            let repo_root = workflow_project_context(store).project_root;
+            let script = compile_phase_script(&goal, phase, &goal_tasks, &repo_root)
+                .map_err(CliError::Usage)?;
             let hash = content_hash_hex16(&script);
             let dir = store.root().join("compiled");
             std::fs::create_dir_all(&dir)?;
@@ -1303,11 +1312,17 @@ fn phase_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
                 "hash": hash,
                 "path": path.display().to_string(),
                 "bytes": script.len(),
-                "tasks_compiled": goal_tasks
-                    .iter()
-                    .filter(|t| t.phase_id.as_deref() == Some(phase_id.as_str())
-                        && t.status != TaskStatus::Superseded)
-                    .count(),
+                "execution_mode": phase_execution_mode_wire(effective_phase_execution_mode(phase)),
+                "workflow_ref": phase.workflow_ref.as_deref(),
+                "tasks_compiled": if effective_phase_execution_mode(phase) == harness_core::PhaseExecutionMode::TaskGraph {
+                    goal_tasks
+                        .iter()
+                        .filter(|t| t.phase_id.as_deref() == Some(phase_id.as_str())
+                            && t.status != TaskStatus::Superseded)
+                        .count()
+                } else {
+                    0
+                },
             }))?;
         }
         other => return Err(CliError::Usage(format!("unknown phase command: {other}"))),
@@ -2519,17 +2534,134 @@ fn build_builtin_phase_script(
 }
 
 /// Compile a phase to its Starlark body: a `Building` phase uses its shipped
-/// built-in body (`build_builtin_phase_script`); an execution phase compiles its
-/// task DAG (`compile_phase_to_starlark`). The single seam the orchestrator calls.
+/// built-in body (`build_builtin_phase_script`); a workflow-mode execution phase
+/// loads the authored workflow named by `workflow_ref`; a task_graph phase compiles
+/// its task DAG (`compile_phase_to_starlark`). The single seam the orchestrator
+/// and `phase compile` call.
+fn effective_phase_execution_mode(
+    phase: &harness_core::GoalPhase,
+) -> harness_core::PhaseExecutionMode {
+    if phase.kind == harness_core::PhaseKind::Building {
+        harness_core::PhaseExecutionMode::Workflow
+    } else {
+        phase.execution_mode
+    }
+}
+
+fn validate_phase_execution_config(
+    mode: harness_core::PhaseExecutionMode,
+    workflow_ref: Option<&str>,
+) -> CliResult<()> {
+    match (mode, workflow_ref.map(str::trim).filter(|s| !s.is_empty())) {
+        (harness_core::PhaseExecutionMode::Workflow, Some(_)) => Ok(()),
+        (harness_core::PhaseExecutionMode::Workflow, None) => Err(CliError::Usage(
+            "workflow-mode phases require --workflow-ref (for example repo:workflows/foo.star)"
+                .into(),
+        )),
+        (harness_core::PhaseExecutionMode::TaskGraph, Some(_)) => Err(CliError::Usage(
+            "task_graph phases must not set --workflow-ref; use --execution-mode workflow".into(),
+        )),
+        (harness_core::PhaseExecutionMode::TaskGraph, None) => Ok(()),
+    }
+}
+
+fn phase_execution_mode_wire(mode: harness_core::PhaseExecutionMode) -> &'static str {
+    match mode {
+        harness_core::PhaseExecutionMode::TaskGraph => "task_graph",
+        harness_core::PhaseExecutionMode::Workflow => "workflow",
+    }
+}
+
+fn safe_repo_workflow_ref_path(workflow_ref: &str) -> Result<&str, String> {
+    let raw = workflow_ref.trim();
+    let rel = raw.strip_prefix("repo:").unwrap_or(raw).trim();
+    if rel.is_empty() {
+        return Err("workflow_ref path is empty".into());
+    }
+    if raw.contains(':') && !raw.starts_with("repo:") {
+        return Err(format!(
+            "unsupported workflow_ref scheme in `{workflow_ref}` (use repo:<path> or builtin:<id>)"
+        ));
+    }
+    let path = Path::new(rel);
+    if path.extension().and_then(|e| e.to_str()) != Some("star") {
+        return Err(format!(
+            "workflow_ref `{workflow_ref}` must point at a .star workflow"
+        ));
+    }
+    if path.components().any(|c| {
+        matches!(
+            c,
+            std::path::Component::ParentDir
+                | std::path::Component::RootDir
+                | std::path::Component::Prefix(_)
+        )
+    }) {
+        return Err(format!(
+            "workflow_ref `{workflow_ref}` must be a safe repo-relative path"
+        ));
+    }
+    Ok(rel)
+}
+
+fn load_workflow_ref_phase_script(
+    goal: &Goal,
+    phase: &harness_core::GoalPhase,
+    repo_root: &Path,
+) -> Result<String, String> {
+    let workflow_ref = match phase
+        .workflow_ref
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        Some(workflow_ref) => workflow_ref,
+        None if phase.kind == harness_core::PhaseKind::Building && phase.builtin.is_some() => {
+            return build_builtin_phase_script(goal, phase);
+        }
+        None => {
+            return Err(format!(
+                "phase `{}` is workflow-mode but has no workflow_ref",
+                phase.id
+            ));
+        }
+    };
+    if let Some(id) = workflow_ref.trim().strip_prefix("builtin:") {
+        let mut built_in_phase = phase.clone();
+        built_in_phase.builtin = Some(id.trim().to_string());
+        return build_builtin_phase_script(goal, &built_in_phase);
+    }
+    let rel = safe_repo_workflow_ref_path(workflow_ref)?;
+    let path = repo_root.join(rel);
+    let script = fs::read_to_string(&path).map_err(|e| {
+        format!(
+            "cannot read workflow_ref `{workflow_ref}` for phase `{}` at {}: {e}",
+            phase.id,
+            path.display()
+        )
+    })?;
+    if script.trim().is_empty() {
+        return Err(format!(
+            "workflow_ref `{workflow_ref}` for phase `{}` is empty",
+            phase.id
+        ));
+    }
+    Ok(script)
+}
+
 fn compile_phase_script(
     goal: &Goal,
     phase: &harness_core::GoalPhase,
     all_tasks: &[Task],
+    repo_root: &Path,
 ) -> Result<String, String> {
-    if phase.kind == harness_core::PhaseKind::Building {
-        build_builtin_phase_script(goal, phase)
-    } else {
-        compile_phase_to_starlark(goal, phase, all_tasks)
+    match effective_phase_execution_mode(phase) {
+        harness_core::PhaseExecutionMode::Workflow => {
+            load_workflow_ref_phase_script(goal, phase, repo_root)
+        }
+        harness_core::PhaseExecutionMode::TaskGraph => {
+            compile_phase_to_starlark(goal, phase, all_tasks)
+        }
     }
 }
 
@@ -2573,6 +2705,8 @@ fn ensure_builtin_phases_appended(store: &HarnessStore, goal: &mut Goal) -> CliR
             landed_commit: None,
             kind: harness_core::PhaseKind::Building,
             builtin: Some(def.id.to_string()),
+            execution_mode: harness_core::PhaseExecutionMode::Workflow,
+            workflow_ref: Some(format!("builtin:{}", def.id)),
         });
     }
     goal.updated_at = now;
@@ -2761,7 +2895,13 @@ fn orchestrate_goal_phases(
         // `--max-phase-retries`, so an explore phase and a live-demo phase no longer
         // share one budget. `None` falls back to the global default (today's
         // behavior).
-        let mut retries_left = goal.phases[idx].retry.unwrap_or(max_phase_retries);
+        let mut retries_left = if effective_phase_execution_mode(&goal.phases[idx])
+            == harness_core::PhaseExecutionMode::Workflow
+        {
+            0
+        } else {
+            goal.phases[idx].retry.unwrap_or(max_phase_retries)
+        };
         let passed;
         loop {
             let phase = goal.phases[idx].clone();
@@ -2772,8 +2912,8 @@ fn orchestrate_goal_phases(
                 .into_values()
                 .filter(|t| t.goal_id.as_deref() == Some(goal.id.as_str()))
                 .collect();
-            let script =
-                compile_phase_script(&goal, &phase, &goal_tasks).map_err(CliError::Usage)?;
+            let script = compile_phase_script(&goal, &phase, &goal_tasks, repo_root)
+                .map_err(CliError::Usage)?;
             let hash = content_hash_hex16(&script);
             let dir = store.root().join("compiled");
             std::fs::create_dir_all(&dir)?;
@@ -3159,6 +3299,24 @@ fn plan_into_goal(
         let phase_id = slug_for_filename(
             &json_str_nonempty(p, "id").unwrap_or_else(|| format!("phase-{}", p_idx + 1)),
         );
+        let execution_mode = json_str_nonempty(p, "execution_mode")
+            .as_deref()
+            .map(parse_phase_execution_mode)
+            .transpose()?
+            .unwrap_or(harness_core::PhaseExecutionMode::TaskGraph);
+        let workflow_ref = json_str_nonempty(p, "workflow_ref");
+        validate_phase_execution_config(execution_mode, workflow_ref.as_deref())?;
+        if let Some(r) = workflow_ref.as_deref() {
+            if !r.trim().starts_with("builtin:") {
+                safe_repo_workflow_ref_path(r).map_err(CliError::Usage)?;
+            }
+        }
+        let tasks = json_array_or_parsed(p, "tasks");
+        if execution_mode == harness_core::PhaseExecutionMode::Workflow && !tasks.is_empty() {
+            return Err(CliError::Usage(format!(
+                "phase `{phase_id}` is execution_mode=workflow but also includes tasks; choose workflow_ref or task graph tasks, not both"
+            )));
+        }
         if goal.phases.iter().any(|existing| existing.id == phase_id) {
             result.phases_skipped.push(phase_id.clone());
         } else {
@@ -3179,6 +3337,8 @@ fn plan_into_goal(
                 landed_commit: None,
                 kind: harness_core::PhaseKind::Execution,
                 builtin: None,
+                execution_mode,
+                workflow_ref: workflow_ref.clone(),
             });
             result.phases_added.push(phase_id.clone());
         }
@@ -3190,7 +3350,6 @@ fn plan_into_goal(
             .into_keys()
             .chain(result.tasks_created.iter().cloned())
             .collect();
-        let tasks = json_array_or_parsed(p, "tasks");
         for (t_idx, t) in tasks.iter().enumerate() {
             let task_id =
                 json_str_nonempty(t, "id").unwrap_or_else(|| format!("{phase_id}-t{}", t_idx + 1));
@@ -3341,6 +3500,20 @@ fn goal_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
                         "phase-add needs --intent <text> or --intent-file <path>".into(),
                     )
                 })?;
+            let execution_mode = value(args, "--execution-mode")
+                .as_deref()
+                .map(parse_phase_execution_mode)
+                .transpose()?
+                .unwrap_or(harness_core::PhaseExecutionMode::TaskGraph);
+            let workflow_ref = value(args, "--workflow-ref")
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
+            validate_phase_execution_config(execution_mode, workflow_ref.as_deref())?;
+            if let Some(r) = workflow_ref.as_deref() {
+                if !r.trim().starts_with("builtin:") {
+                    safe_repo_workflow_ref_path(r).map_err(CliError::Usage)?;
+                }
+            }
             goal.phases.push(harness_core::GoalPhase {
                 id: phase_id,
                 name,
@@ -3365,6 +3538,8 @@ fn goal_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
                 landed_commit: None,
                 kind: harness_core::PhaseKind::Execution,
                 builtin: None,
+                execution_mode,
+                workflow_ref,
             });
             goal.updated_at = now_string();
             store.append_goal(&goal)?;
@@ -18030,6 +18205,7 @@ fn print_help() {
   member register --name <name> --role <role> [--provider codex|claude] [--capability <cap>] [--worktree <path>] [--permission-profile <profile>] [--runtime-workspace-root <path>]
   member list
   goal create --title <title> --objective <text> --owner <agent> [--success <text>]
+  goal phase-add --id <goal> --phase-id <id> --name <name> --intent <text> [--execution-mode task_graph|workflow --workflow-ref repo:path/to/workflow.star]
   goal plan <goal> [--dry-run] [--trace durable|live] [--timeout-ms <ms>] [--model <m>] [--effort <e>]
   goal reconcile-phase --goal <goal> --phase <id> --to passed|failed [--landed-commit <sha>] [--note-file <md>] [--author <name>]
   goal learning-status --id <goal> [--strict] [--require-evaluation] [--allow-waiver] [--waiver-decision <decision>]
@@ -22224,6 +22400,8 @@ agent("a NEW second leaf that changes the ordinal alignment")
                 landed_commit: None,
                 kind: harness_core::PhaseKind::Execution,
                 builtin: None,
+                execution_mode: harness_core::PhaseExecutionMode::TaskGraph,
+                workflow_ref: None,
             }],
             knowledge: vec![Knowledge {
                 id: "knowledge-1".into(),
@@ -25018,8 +25196,10 @@ mod tests {
             landed_commit: None,
             kind: harness_core::PhaseKind::Building,
             builtin: Some("doc-sync".into()),
+            execution_mode: harness_core::PhaseExecutionMode::TaskGraph,
+            workflow_ref: None,
         };
-        let script = compile_phase_script(&goal, &phase, &[])
+        let script = compile_phase_script(&goal, &phase, &[], Path::new("."))
             .expect("building phase compiles with no tasks");
         assert!(
             script.contains("bootstrap-project-workflow"),
@@ -25040,7 +25220,7 @@ mod tests {
             ..phase.clone()
         };
         assert!(
-            compile_phase_script(&goal, &bad, &[]).is_err(),
+            compile_phase_script(&goal, &bad, &[], Path::new(".")).is_err(),
             "unknown builtin id must error"
         );
 
@@ -25048,12 +25228,68 @@ mod tests {
         let exec = harness_core::GoalPhase {
             kind: harness_core::PhaseKind::Execution,
             builtin: None,
+            execution_mode: harness_core::PhaseExecutionMode::TaskGraph,
+            workflow_ref: None,
             ..phase.clone()
         };
         assert!(
-            compile_phase_script(&goal, &exec, &[]).is_err(),
+            compile_phase_script(&goal, &exec, &[], Path::new(".")).is_err(),
             "execution phase with no tasks errors as before"
         );
+    }
+
+    #[test]
+    fn workflow_mode_phase_compiles_repo_ref_with_no_tasks() {
+        let repo_root =
+            std::env::temp_dir().join(format!("harness-wf-ref-{}", generated_id("repo")));
+        fs::create_dir_all(repo_root.join("workflows")).expect("mkdir workflows");
+        let workflow_path = repo_root.join("workflows/custom-phase.star");
+        let fixture = r#"workflow(
+    "custom-phase",
+    "Direct workflow-mode GoalPhase fixture for regression acceptance.",
+)
+verdict(True, "ok")
+"#;
+        fs::write(&workflow_path, fixture).expect("write workflow fixture");
+
+        let goal = make_goal("g-wf");
+        let phase = harness_core::GoalPhase {
+            id: "custom".into(),
+            name: "Custom".into(),
+            intent: "run the authored workflow".into(),
+            status: harness_core::GoalPhaseStatus::NotStarted,
+            acceptance: None,
+            verdict_decision_id: None,
+            created_at: "unix-ms:1".into(),
+            started_at: None,
+            ended_at: None,
+            outputs: Vec::new(),
+            inputs: Vec::new(),
+            retry: None,
+            landed_commit: None,
+            kind: harness_core::PhaseKind::Execution,
+            builtin: None,
+            execution_mode: harness_core::PhaseExecutionMode::Workflow,
+            workflow_ref: Some("repo:workflows/custom-phase.star".into()),
+        };
+
+        let script = compile_phase_script(&goal, &phase, &[], &repo_root)
+            .expect("workflow-mode phase loads repo workflow");
+        assert_eq!(script, fixture);
+        assert!(
+            !script.contains("Auto-generated by `harness phase compile`"),
+            "workflow-mode phases must not be rewritten as task graph scripts"
+        );
+
+        let unsafe_ref = harness_core::GoalPhase {
+            workflow_ref: Some("repo:../outside.star".into()),
+            ..phase.clone()
+        };
+        assert!(
+            compile_phase_script(&goal, &unsafe_ref, &[], &repo_root).is_err(),
+            "repo workflow refs must stay inside the project"
+        );
+        let _ = fs::remove_dir_all(repo_root);
     }
 
     fn make_task(id: &str, goal_id: &str) -> Task {
@@ -25109,6 +25345,8 @@ mod tests {
             landed_commit: None,
             kind: harness_core::PhaseKind::Execution,
             builtin: None,
+            execution_mode: harness_core::PhaseExecutionMode::TaskGraph,
+            workflow_ref: None,
         }];
         let mut a = make_task("t-a", "goal-compile");
         a.phase_id = Some("phase-1".into());
@@ -25189,6 +25427,8 @@ mod tests {
             landed_commit: None,
             kind: harness_core::PhaseKind::Execution,
             builtin: None,
+            execution_mode: harness_core::PhaseExecutionMode::TaskGraph,
+            workflow_ref: None,
         };
         goal.phases = vec![phase.clone()];
         let mut t = make_task("t-bad", "goal-revise");
@@ -25254,7 +25494,33 @@ mod tests {
             landed_commit: None,
             kind: harness_core::PhaseKind::Execution,
             builtin: None,
+            execution_mode: harness_core::PhaseExecutionMode::TaskGraph,
+            workflow_ref: None,
         }
+    }
+
+    fn orch_workflow_phase(id: &str, workflow_ref: &str) -> harness_core::GoalPhase {
+        let mut phase = orch_phase(id);
+        phase.execution_mode = harness_core::PhaseExecutionMode::Workflow;
+        phase.workflow_ref = Some(workflow_ref.into());
+        phase
+    }
+
+    fn write_test_workflow(repo_root: &Path, rel: &str) {
+        let path = repo_root.join(rel);
+        fs::create_dir_all(path.parent().expect("workflow parent")).expect("mkdir workflow parent");
+        fs::write(
+            path,
+            r#"workflow(
+    "custom-phase",
+    "Direct workflow-mode GoalPhase fixture for orchestration acceptance.",
+)
+log("custom workflow-mode GoalPhase fixture started")
+output({"accepted": True, "surface": "goal-phase-workflow"})
+verdict(True, "custom workflow-mode phase direct run accepted")
+"#,
+        )
+        .expect("write workflow fixture");
     }
 
     /// Init a real git repo at `dir` with one seed commit so `git apply` + commit
@@ -25412,6 +25678,108 @@ mod tests {
             .collect();
         assert_eq!(verdicts.len(), 2, "one phase_verdict decision per phase");
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn orchestrate_runs_custom_workflow_mode_phase_without_tasks() {
+        let root = std::env::temp_dir().join(format!("harness-orch-wf-{}", generated_id("ok")));
+        let store = HarnessStore::new(&root);
+        store.init().expect("init");
+        write_test_workflow(&root, "workflows/custom-phase.star");
+
+        let mut goal = make_goal("g-wf");
+        goal.phases = vec![orch_workflow_phase(
+            "custom",
+            "repo:workflows/custom-phase.star",
+        )];
+        persist_new_goal(&store, &goal).unwrap();
+
+        let run_phase = |script: &str,
+                         name: &str,
+                         phase_id: Option<&str>,
+                         _resume_from: Option<&str>|
+         -> CliResult<(String, workflow::WorkflowOutcome)> {
+            assert_eq!(name, "phase-custom");
+            assert_eq!(phase_id, Some("custom"));
+            assert!(
+                script.contains("custom workflow-mode GoalPhase fixture started"),
+                "orchestrator should pass the authored workflow body, got: {script}"
+            );
+            Ok(mock_outcome(&store, name, WorkflowRunStatus::Completed))
+        };
+        let report =
+            orchestrate_goal_phases(&store, "g-wf", &run_phase, &noop_reviser, 2, &root, false)
+                .expect("orchestrate workflow phase");
+        assert_eq!(report["status"], "completed");
+        assert_eq!(report["stage"], "verified");
+
+        let goal2 = goal_load(&store, "g-wf").unwrap();
+        assert_eq!(goal2.phases[0].status, GoalPhaseStatus::Passed);
+        assert!(
+            latest_tasks(&store).unwrap().is_empty(),
+            "workflow-mode phases do not require task rows"
+        );
+        let orch = store.goal_orchestration_runs().unwrap();
+        let last = orch.last().unwrap();
+        assert_eq!(last.status, OrchestrationStatus::Completed);
+        assert_eq!(last.phase_runs.len(), 1);
+        assert!(last.phase_runs[0].compiled_path.is_some());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn workflow_mode_failure_does_not_invoke_task_graph_reviser() {
+        use std::cell::Cell;
+
+        let root = std::env::temp_dir().join(format!("harness-orch-wf-{}", generated_id("fail")));
+        let store = HarnessStore::new(&root);
+        store.init().expect("init");
+        write_test_workflow(&root, "workflows/custom-phase.star");
+
+        let mut goal = make_goal("g-wf-fail");
+        goal.phases = vec![orch_workflow_phase(
+            "custom",
+            "repo:workflows/custom-phase.star",
+        )];
+        persist_new_goal(&store, &goal).unwrap();
+
+        let attempts = Cell::new(0);
+        let revised = Cell::new(0);
+        let run_phase = |_script: &str,
+                         name: &str,
+                         _phase_id: Option<&str>,
+                         _resume_from: Option<&str>|
+         -> CliResult<(String, workflow::WorkflowOutcome)> {
+            attempts.set(attempts.get() + 1);
+            Ok(mock_outcome(&store, name, WorkflowRunStatus::Failed))
+        };
+        let reviser = |_goal: &Goal,
+                       _phase: &harness_core::GoalPhase,
+                       _live_tasks: &[&Task],
+                       _knowledge: &Knowledge|
+         -> CliResult<serde_json::Value> {
+            revised.set(revised.get() + 1);
+            noop_reviser(_goal, _phase, _live_tasks, _knowledge)
+        };
+
+        let report =
+            orchestrate_goal_phases(&store, "g-wf-fail", &run_phase, &reviser, 2, &root, false)
+                .expect("orchestrate workflow failure");
+        assert_eq!(report["status"], "failed");
+        assert_eq!(report["failed_phase"], "custom");
+        assert_eq!(
+            attempts.get(),
+            1,
+            "workflow phases should not retry through task-graph repair"
+        );
+        assert_eq!(
+            revised.get(),
+            0,
+            "workflow phases should not invoke the task graph reviser"
+        );
+        let goal2 = goal_load(&store, "g-wf-fail").unwrap();
+        assert_eq!(goal2.phases[0].status, GoalPhaseStatus::Failed);
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -27458,6 +27826,50 @@ mod tests {
     }
 
     #[test]
+    fn plan_into_goal_creates_workflow_mode_phase_without_tasks() {
+        let root = std::env::temp_dir().join(format!("harness-plan-{}", generated_id("wf")));
+        let store = HarnessStore::new(&root);
+        store.init().expect("init");
+        let mut goal = make_goal("g-plan-wf");
+        persist_new_goal(&store, &goal).unwrap();
+
+        let structured = serde_json::json!({
+            "phases": [
+                {
+                    "id": "direct-workflow",
+                    "name": "Direct Workflow",
+                    "intent": "run the authored Starlark workflow for this phase",
+                    "acceptance": "the workflow verdict passes",
+                    "execution_mode": "workflow",
+                    "workflow_ref": "repo:workflows/direct-workflow.star",
+                    "tasks": []
+                }
+            ]
+        });
+
+        let result = plan_into_goal(&store, &mut goal, &structured, "leader").expect("plan");
+        assert_eq!(result.phases_added, vec!["direct-workflow"]);
+        assert!(result.tasks_created.is_empty());
+
+        let g = goal_load(&store, "g-plan-wf").unwrap();
+        assert_eq!(g.phases.len(), 1);
+        let phase = &g.phases[0];
+        assert_eq!(
+            phase.execution_mode,
+            harness_core::PhaseExecutionMode::Workflow
+        );
+        assert_eq!(
+            phase.workflow_ref.as_deref(),
+            Some("repo:workflows/direct-workflow.star")
+        );
+        assert!(
+            latest_tasks(&store).unwrap().is_empty(),
+            "workflow-mode planner phases should not create task rows"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn plan_into_goal_maps_phase_and_task_outputs() {
         // goal-phase-artifacts S2: a planner object that declares `outputs` on a
         // phase AND a task must persist them as ArtifactSpec (the kind parsed
@@ -28081,6 +28493,8 @@ mod tests {
             landed_commit: None,
             kind: harness_core::PhaseKind::Execution,
             builtin: None,
+            execution_mode: harness_core::PhaseExecutionMode::TaskGraph,
+            workflow_ref: None,
         }];
         store.append_goal(&goal).expect("append goal");
     }

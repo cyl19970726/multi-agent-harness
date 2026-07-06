@@ -248,14 +248,20 @@ land the work through the goal layer).
 
 ## Goal layer: a second front-end onto this runtime
 
-`goal run-phases` is a second front-end onto this exact runtime. It compiles each
-phase's task DAG to a `.star` program (`compile_phase_to_starlark`) and runs it on
-the same `run-script` runtime documented here. The one behavioral difference is
-landing: standalone `run-script` writable worktrees are discarded (the "never
-auto-merged" rule above holds for `run-script`), but under the goal layer a
-passing phase's writable diffs LAND on the branch via a per-phase landing commit.
-So the trap — "writable edits always vanish" — does not apply to phased goal
-execution.
+`goal run-phases` is a second front-end onto this exact runtime. Each
+`GoalPhase` chooses one executor:
+
+- `execution_mode="task_graph"`: compile the phase's task DAG to a `.star`
+  program (`compile_phase_to_starlark`) and run it here.
+- `execution_mode="workflow"`: load the authored Starlark program named by
+  `workflow_ref` (`repo:workflows/foo.star` or `builtin:<id>`) and run it here
+  directly, with no duplicate task graph.
+
+The one behavioral difference is landing: standalone `run-script` writable
+worktrees are discarded (the "never auto-merged" rule above holds for
+`run-script`), but under the goal layer a passing phase's writable diffs LAND on
+the branch via a per-phase landing commit. So the trap — "writable edits always
+vanish" — does not apply to phased goal execution.
 
 ## Structured Output: the foundation
 

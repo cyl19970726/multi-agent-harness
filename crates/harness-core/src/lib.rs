@@ -122,6 +122,18 @@ pub enum PhaseKind {
     Building,
 }
 
+/// The primary executor for a phase. A phase may be planned as durable TaskGraph
+/// work (`Task` + `Message` + persistent `AgentMember`) or as a direct workflow
+/// run (`WorkflowRun` + `WorkflowStep`). This is a mode selector, not a compiler
+/// pipeline: one phase has one primary execution source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum PhaseExecutionMode {
+    #[default]
+    TaskGraph,
+    Workflow,
+}
+
 /// The class of an artifact a phase or task declares it will produce
 /// (goal-phase-artifacts). The default `Code` matches today's implicit behavior
 /// where a phase's deliverable is a code diff. Serialized snake_case so the wire
@@ -242,6 +254,16 @@ pub struct GoalPhase {
     /// `None` for execution/remediation phases (their body is the task DAG).
     #[serde(default)]
     pub builtin: Option<String>,
+    /// The primary execution backend for this phase. Defaults to `TaskGraph` for
+    /// legacy rows. Built-in building phases and directly-authored workflow
+    /// phases set this to `Workflow` and must also set `workflow_ref`.
+    #[serde(default)]
+    pub execution_mode: PhaseExecutionMode,
+    /// Optional workflow identity for `execution_mode=workflow`: a built-in id
+    /// (`builtin:doc-sync`) or a safe repo-authored workflow ref
+    /// (`repo:workflows/example.star`). TaskGraph phases leave this empty.
+    #[serde(default)]
+    pub workflow_ref: Option<String>,
 }
 
 /// Where a `Knowledge` entry came from.
@@ -954,8 +976,10 @@ pub fn compile_phase_to_starlark(
 /// the convention `compile_phase_to_starlark`'s judge schema uses.
 pub fn planner_schema() -> serde_json::Value {
     serde_json::json!({
-        "phases": "list of {id, name, intent, acceptance, outputs:[{id, kind, path, \
-                   purpose, required, acceptance}], tasks:[{id, title, design_md, \
+        "phases": "list of {id, name, intent, acceptance, execution_mode: task_graph|workflow, \
+                   workflow_ref: repo:path/to/workflow.star when execution_mode=workflow, \
+                   outputs:[{id, kind, path, purpose, required, acceptance}], \
+                   tasks:[{id, title, design_md, \
                    acceptance:[string], owned_paths:[string], depends_on:[task-id], \
                    executor, outputs:[{id, kind, path, purpose, required, acceptance}]}]}",
     })
@@ -985,6 +1009,11 @@ pub fn planner_prompt(goal: &Goal) -> String {
          Rules:\n\
          - Phases run SEQUENTIALLY: a phase must pass its acceptance gate before \
          the next begins. A simple goal may be ONE phase.\n\
+         - Each phase chooses exactly ONE primary executor. Default \
+         `execution_mode` is `task_graph`, which requires tasks. Set \
+         `execution_mode` to `workflow` only when the phase should directly run \
+         an authored repo workflow; then set `workflow_ref` such as \
+         `repo:workflows/foo.star` and leave `tasks` empty.\n\
          - Each task is a mini-goal: give it a concrete `design_md` (a grounded \
          slice of the goal's design), an `acceptance` list, and the `owned_paths` \
          it may write.\n\
@@ -3041,6 +3070,8 @@ mod tests {
             landed_commit: None,
             kind: PhaseKind::Execution,
             builtin: None,
+            execution_mode: PhaseExecutionMode::TaskGraph,
+            workflow_ref: None,
         };
         let pj = serde_json::to_string(&phase).expect("ser phase");
         assert!(
@@ -3092,6 +3123,12 @@ mod tests {
             "legacy phase defaults to Execution"
         );
         assert_eq!(p.builtin, None, "legacy phase has no builtin body");
+        assert_eq!(
+            p.execution_mode,
+            PhaseExecutionMode::TaskGraph,
+            "legacy phase defaults to task_graph execution"
+        );
+        assert_eq!(p.workflow_ref, None, "legacy phase has no workflow ref");
 
         // A Building phase carrying a builtin id round-trips with a snake_case kind.
         let building = GoalPhase {
@@ -3110,9 +3147,15 @@ mod tests {
             landed_commit: None,
             kind: PhaseKind::Building,
             builtin: Some("doc-sync".into()),
+            execution_mode: PhaseExecutionMode::Workflow,
+            workflow_ref: Some("builtin:doc-sync".into()),
         };
         let j = serde_json::to_string(&building).expect("ser building phase");
         assert!(j.contains("\"kind\":\"building\""), "snake_case kind: {j}");
+        assert!(
+            j.contains("\"execution_mode\":\"workflow\""),
+            "snake_case execution_mode: {j}"
+        );
         assert_eq!(
             serde_json::from_str::<GoalPhase>(&j).expect("de building phase"),
             building
@@ -3138,6 +3181,8 @@ mod tests {
             landed_commit: None,
             kind: PhaseKind::Execution,
             builtin: None,
+            execution_mode: PhaseExecutionMode::TaskGraph,
+            workflow_ref: None,
         }];
         g.knowledge = vec![Knowledge {
             id: "k1".into(),
@@ -3506,6 +3551,8 @@ mod tests {
             landed_commit: None,
             kind: PhaseKind::Execution,
             builtin: None,
+            execution_mode: PhaseExecutionMode::TaskGraph,
+            workflow_ref: None,
         }
     }
 

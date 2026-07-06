@@ -5,15 +5,25 @@ This doc assembles the harness's central execution model in one place. The model
 ```text
 Goal
   -> Goal.phases[]        (sequential agent-planned phases)
-    -> per-phase Task DAG (depends_on + disjoint owned_paths)
-      -> compile_phase_to_starlark
+    -> GoalPhase.execution_mode
+      -> task_graph: per-phase Task DAG -> compile_phase_to_starlark
+      -> workflow: workflow_ref -> authored Starlark workflow
         -> harness goal run-phases
           -> verdict gate
             -> per-phase landing
               -> next phase
 ```
 
-A phase is the unit of planning, gating, and landing. A phase **compiles to a Dynamic Agent Workflow** (a `.star` program of `agent()` / `parallel()` / `verdict()` leaves) that the workflow runtime executes. The workflow runtime is documented separately at [`docs/workflow-runtime.md`](workflow-runtime.md), with locked decisions in [`docs/decisions/0022-dynamic-workflow-runtime-json-ir.md`](decisions/0022-dynamic-workflow-runtime-json-ir.md) and [`docs/decisions/0023-starlark-workflow-frontend.md`](decisions/0023-starlark-workflow-frontend.md).
+A phase is the unit of planning, gating, and landing. Each phase chooses one
+executor. `task_graph` phases compile their `Task` DAG into a Dynamic Agent
+Workflow. `workflow` phases load an authored `.star` program through
+`workflow_ref` and run it directly. The workflow runtime is documented
+separately at [`docs/workflow-runtime.md`](workflow-runtime.md), with locked
+decisions in
+[`docs/decisions/0022-dynamic-workflow-runtime-json-ir.md`](decisions/0022-dynamic-workflow-runtime-json-ir.md),
+[`docs/decisions/0023-starlark-workflow-frontend.md`](decisions/0023-starlark-workflow-frontend.md),
+and
+[`docs/decisions/0024-goal-phase-execution-modes.md`](decisions/0024-goal-phase-execution-modes.md).
 
 ## 1. Goal and phases
 
@@ -34,14 +44,21 @@ pub struct GoalPhase {
     pub inputs: Vec<ArtifactSpec>,        // required cross-phase inputs
     pub retry: Option<u32>,               // per-phase retry budget override
     pub landed_commit: Option<String>,    // commit where writable work landed
+    pub execution_mode: PhaseExecutionMode,
+    pub workflow_ref: Option<String>,      // repo:... or builtin:... for workflow mode
 }
 ```
 
 Phases are the source of truth for goal progress. The legacy `Goal.stage` field becomes a derived projection: `Goal.effective_stage()` (`lib.rs:400`) derives `Verified` when every phase is `Passed`, `Working` when any phase has started/failed/blocked, and `Draft` when all are `NotStarted`. `GoalPhaseStatus` (`lib.rs:100`) is `NotStarted | InProgress | Passed | Failed | Blocked`.
 
-A goal with no `phases` is **refused** by `goal run-phases` — it errors `goal has no phases to run` (`main.rs:2244`); plan it first (`goal phase-add` or the planner). Likewise `compile_phase_to_starlark` errors if a phase has no live tasks (`lib.rs:664`).
+A goal with no `phases` is **refused** by `goal run-phases`; plan it first
+(`goal phase-add` or the planner). A `task_graph` phase with no live tasks is
+also refused. A `workflow` phase can have zero tasks, but must have a safe
+`workflow_ref`.
 
 ## 2. Per-phase task DAG
+
+This section applies only to `execution_mode = "task_graph"`.
 
 Each phase owns the tasks whose `Task.phase_id` matches the phase's `id` (`lib.rs:1646`). A `Task` (`lib.rs:1608`) declares:
 
@@ -154,7 +171,14 @@ After a phase run, `write_back_phase_tasks` (`main.rs:1325`) maps each step labe
 
 ## 11. Relation to the workflow runtime
 
-A phase **is** the plan; the workflow runtime **executes** the compiled phase. `compile_phase_to_starlark` emits a Dynamic Agent Workflow — a Starlark program that calls `agent()`, `parallel()`, and `verdict()` primitives provided by `crates/harness-workflow`. The runtime is provider-neutral, schedules leaves under a concurrency cap, journals `WorkflowRun` + `WorkflowStep` rows, and supports deterministic resume via step-identity caching. See the runtime design doc and ADRs cited at the top of this doc.
+A phase **is** the plan; the workflow runtime **executes** the selected executor.
+For `task_graph`, `compile_phase_to_starlark` emits a Dynamic Agent Workflow from
+the task DAG. For `workflow`, the authored Starlark program is already the plan
+and is loaded directly from `workflow_ref`. In both cases the runtime is
+provider-neutral, schedules leaves under a concurrency cap, journals
+`WorkflowRun` + `WorkflowStep` rows, and supports deterministic resume via
+step-identity caching. See the runtime design doc and ADRs cited at the top of
+this doc.
 
 In the product, every workflow run should carry `goal_id` and `phase_id` so the causal chain is machine-traversable. The compiler already emits `phase=<phase_id>` on every leaf; the runtime stores this on `WorkflowStep.phase`, and `link_workflow_steps_to_tasks` binds it back to `Task` records.
 
@@ -162,7 +186,9 @@ In the product, every workflow run should carry `goal_id` and `phase_id` so the 
 
 | Concept | Canonical location | Projection |
 | --- | --- | --- |
-| Phase plan | `Goal.phases[]` + `Task` DAG | Compiled `.star` script |
+| Phase executor | `GoalPhase.execution_mode` | Dashboard mode-specific rendering |
+| Task-graph phase plan | `Goal.phases[]` + `Task` DAG | Compiled `.star` script |
+| Workflow phase plan | `GoalPhase.workflow_ref` | Authored `.star` script |
 | Phase progress | `GoalPhase.status` | `Goal.stage` (derived) |
 | Verdict | `Decision(decision_kind=phase_verdict)` + `GoalPhase.verdict_decision_id` | Dashboard phase timeline |
 | Landed code | `GoalPhase.landed_commit` | Git commit `phase <id> landed (run-phases)` |
