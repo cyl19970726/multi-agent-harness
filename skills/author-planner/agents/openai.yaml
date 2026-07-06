@@ -1,4 +1,0 @@
-interface:
-  display_name: "Author Planner"
-  short_description: "Decompose an explored Goal into sequential phases, task DAGs, outputs, and executor-aware work."
-  default_prompt: "Plan an explored Goal: decompose its design_md (+ acceptance_md) into an ORDERED list of sequential phases and, within each phase, a task DAG where tasks with disjoint owned_paths and no deps run in parallel. Each task is a mini-goal with design_md, acceptance, owned_paths, outputs, and optional executor. Use `harness goal plan <goal>` or hand-author phase/task records, then inspect with `harness phase compile` and execute with `harness goal run-phases`; remember output gates require exact repo-relative paths and goal closeout still happens through author-goal."

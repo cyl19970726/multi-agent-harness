@@ -21,7 +21,9 @@ use harness_core::{
     OrchestrationPhaseRun, OrchestrationStatus, ProjectContext, ProjectKind, Proposal,
     ProposalStatus, ProviderCapabilities, ProviderChildThread, ProviderChildThreadStatus,
     ProviderSession, ProviderSessionStatus, Review, ReviewVerdict, SenderKind, Task, TaskStatus,
-    VerdictOutcome, Vision, WorkflowRun, WorkflowRunStatus, WorkflowStep, WorkflowStepStatus,
+    VerdictOutcome, Vision, WorkflowArtifactFile, WorkflowArtifactManifest,
+    WorkflowArtifactManifestStatus, WorkflowPatch, WorkflowPatchStatus, WorkflowRun,
+    WorkflowRunStatus, WorkflowStep, WorkflowStepStatus,
 };
 use harness_store::{HarnessStore, MessageDeliveryClaimResult};
 use thiserror::Error;
@@ -60,6 +62,10 @@ fn main() {
 enum StoreSource {
     /// `--store <path>` override (deprecated, kept for tests/back-compat).
     StoreFlag,
+    /// Internal guard for workflow child processes. A workflow leaf may run with
+    /// full provider permissions, so nested `harness ...` commands default to a
+    /// session-local store unless the operator explicitly opts out.
+    WorkflowChildEnv,
     /// `HARNESS_ROOT` env override (deprecated, kept for tests/back-compat).
     HarnessRootEnv,
     /// `--project <id|path>` explicit selector.
@@ -114,6 +120,18 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> ResolvedStore
             source: StoreSource::StoreFlag,
             context: None,
         };
+    }
+    // Internal workflow-child guard. This intentionally wins over `--project` /
+    // `HARNESS_PROJECT`, so a worker in a writable leaf cannot accidentally write
+    // the parent project's central store just by running `harness ...`.
+    if let Ok(root) = env::var(HARNESS_WORKFLOW_CHILD_STORE_ROOT_ENV) {
+        if !root.is_empty() {
+            return ResolvedStore {
+                root: PathBuf::from(root),
+                source: StoreSource::WorkflowChildEnv,
+                context: None,
+            };
+        }
     }
     // 2. HARNESS_ROOT env override (deprecated).
     if let Ok(root) = env::var("HARNESS_ROOT") {
@@ -374,7 +392,7 @@ fn init_routed(store: &HarnessStore, resolved: &ResolvedStore) -> CliResult<()> 
     // Override path (`--store`/`HARNESS_ROOT`): historical raw-path behavior.
     if matches!(
         resolved.source,
-        StoreSource::StoreFlag | StoreSource::HarnessRootEnv
+        StoreSource::StoreFlag | StoreSource::WorkflowChildEnv | StoreSource::HarnessRootEnv
     ) {
         store.init()?;
         println!("initialized {}", store.root().display());
@@ -1227,6 +1245,14 @@ fn parse_goal_stage(s: &str) -> CliResult<GoalStage> {
     })
 }
 
+fn parse_phase_execution_mode(s: &str) -> CliResult<harness_core::PhaseExecutionMode> {
+    serde_json::from_value(serde_json::Value::String(s.to_string())).map_err(|_| {
+        CliError::Usage(format!(
+            "unknown phase execution mode `{s}` (task_graph|workflow)"
+        ))
+    })
+}
+
 fn parse_knowledge_source(s: &str) -> CliResult<KnowledgeSource> {
     serde_json::from_value(serde_json::Value::String(s.to_string())).map_err(|_| {
         CliError::Usage(format!(
@@ -1284,8 +1310,9 @@ fn phase_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
                 .into_values()
                 .filter(|t| t.goal_id.as_deref() == Some(goal.id.as_str()))
                 .collect();
-            let script =
-                compile_phase_to_starlark(&goal, phase, &goal_tasks).map_err(CliError::Usage)?;
+            let repo_root = workflow_project_context(store).project_root;
+            let script = compile_phase_script(&goal, phase, &goal_tasks, &repo_root)
+                .map_err(CliError::Usage)?;
             let hash = content_hash_hex16(&script);
             let dir = store.root().join("compiled");
             std::fs::create_dir_all(&dir)?;
@@ -1303,11 +1330,17 @@ fn phase_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
                 "hash": hash,
                 "path": path.display().to_string(),
                 "bytes": script.len(),
-                "tasks_compiled": goal_tasks
-                    .iter()
-                    .filter(|t| t.phase_id.as_deref() == Some(phase_id.as_str())
-                        && t.status != TaskStatus::Superseded)
-                    .count(),
+                "execution_mode": phase_execution_mode_wire(effective_phase_execution_mode(phase)),
+                "workflow_ref": phase.workflow_ref.as_deref(),
+                "tasks_compiled": if effective_phase_execution_mode(phase) == harness_core::PhaseExecutionMode::TaskGraph {
+                    goal_tasks
+                        .iter()
+                        .filter(|t| t.phase_id.as_deref() == Some(phase_id.as_str())
+                            && t.status != TaskStatus::Superseded)
+                        .count()
+                } else {
+                    0
+                },
             }))?;
         }
         other => return Err(CliError::Usage(format!("unknown phase command: {other}"))),
@@ -2243,15 +2276,53 @@ fn git_in(repo_root: &Path, args: &[&str]) -> CliResult<String> {
 /// phase commit; and on a mid-sequence apply failure it `git reset --hard`s back to
 /// the pre-landing HEAD so a failed landing leaves the tree exactly as it found it
 /// (no orphaned staged files for a later phase to absorb).
+/// The set of step labels the workflow explicitly `reject_patch()`ed (a `reject`
+/// entry in the run's `final_output.patch_actions`). Landing skips these steps'
+/// diffs (D1c): the script declared it does NOT want that change landed.
+fn workflow_rejected_labels(outcome: &workflow::WorkflowOutcome) -> BTreeSet<String> {
+    outcome
+        .final_output
+        .as_ref()
+        .and_then(|v| v.get("patch_actions"))
+        .and_then(|v| v.as_array())
+        .map(|actions| {
+            actions
+                .iter()
+                .filter(|a| a.get("action").and_then(|v| v.as_str()) == Some("reject"))
+                .filter_map(|a| a.get("label").and_then(|v| v.as_str()))
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Whether a step opted its diff OUT of landing via `persist_changes="discard"`
+/// (D1c). The default (absent / "patch") lands normally; only "discard" is skipped.
+fn step_discards_changes(step: &workflow::StepResult) -> bool {
+    step.details
+        .as_ref()
+        .and_then(|d| d.get("persist_changes"))
+        .and_then(|v| v.as_str())
+        == Some("discard")
+}
+
 fn land_phase_diffs(
     phase_id: &str,
     outcome: &workflow::WorkflowOutcome,
     repo_root: &Path,
 ) -> CliResult<Option<String>> {
+    // D1c: honor the workflow's declared intents. Skip a step's diff when the
+    // script `reject_patch()`ed it (a reject in final_output.patch_actions) or when
+    // the leaf declared `persist_changes="discard"`. An APPLY intent is the default
+    // (landing lands it), so it needs no special casing.
+    let rejected = workflow_rejected_labels(outcome);
     // Collect diffs in a deterministic order: a leaf's `ordinal` (assigned by the
     // Starlark front-end in issue order) when present, else the journaled index.
     let mut diffs: Vec<(u64, usize, String)> = Vec::new();
     for (idx, step) in outcome.steps.iter().enumerate() {
+        if rejected.contains(&step.label) || step_discards_changes(step) {
+            continue;
+        }
         if let Some(diff) = step_landing_diff(step) {
             diffs.push((step.ordinal.unwrap_or(idx as u64), idx, diff));
         }
@@ -2519,17 +2590,134 @@ fn build_builtin_phase_script(
 }
 
 /// Compile a phase to its Starlark body: a `Building` phase uses its shipped
-/// built-in body (`build_builtin_phase_script`); an execution phase compiles its
-/// task DAG (`compile_phase_to_starlark`). The single seam the orchestrator calls.
+/// built-in body (`build_builtin_phase_script`); a workflow-mode execution phase
+/// loads the authored workflow named by `workflow_ref`; a task_graph phase compiles
+/// its task DAG (`compile_phase_to_starlark`). The single seam the orchestrator
+/// and `phase compile` call.
+fn effective_phase_execution_mode(
+    phase: &harness_core::GoalPhase,
+) -> harness_core::PhaseExecutionMode {
+    if phase.kind == harness_core::PhaseKind::Building {
+        harness_core::PhaseExecutionMode::Workflow
+    } else {
+        phase.execution_mode
+    }
+}
+
+fn validate_phase_execution_config(
+    mode: harness_core::PhaseExecutionMode,
+    workflow_ref: Option<&str>,
+) -> CliResult<()> {
+    match (mode, workflow_ref.map(str::trim).filter(|s| !s.is_empty())) {
+        (harness_core::PhaseExecutionMode::Workflow, Some(_)) => Ok(()),
+        (harness_core::PhaseExecutionMode::Workflow, None) => Err(CliError::Usage(
+            "workflow-mode phases require --workflow-ref (for example repo:workflows/foo.star)"
+                .into(),
+        )),
+        (harness_core::PhaseExecutionMode::TaskGraph, Some(_)) => Err(CliError::Usage(
+            "task_graph phases must not set --workflow-ref; use --execution-mode workflow".into(),
+        )),
+        (harness_core::PhaseExecutionMode::TaskGraph, None) => Ok(()),
+    }
+}
+
+fn phase_execution_mode_wire(mode: harness_core::PhaseExecutionMode) -> &'static str {
+    match mode {
+        harness_core::PhaseExecutionMode::TaskGraph => "task_graph",
+        harness_core::PhaseExecutionMode::Workflow => "workflow",
+    }
+}
+
+fn safe_repo_workflow_ref_path(workflow_ref: &str) -> Result<&str, String> {
+    let raw = workflow_ref.trim();
+    let rel = raw.strip_prefix("repo:").unwrap_or(raw).trim();
+    if rel.is_empty() {
+        return Err("workflow_ref path is empty".into());
+    }
+    if raw.contains(':') && !raw.starts_with("repo:") {
+        return Err(format!(
+            "unsupported workflow_ref scheme in `{workflow_ref}` (use repo:<path> or builtin:<id>)"
+        ));
+    }
+    let path = Path::new(rel);
+    if path.extension().and_then(|e| e.to_str()) != Some("star") {
+        return Err(format!(
+            "workflow_ref `{workflow_ref}` must point at a .star workflow"
+        ));
+    }
+    if path.components().any(|c| {
+        matches!(
+            c,
+            std::path::Component::ParentDir
+                | std::path::Component::RootDir
+                | std::path::Component::Prefix(_)
+        )
+    }) {
+        return Err(format!(
+            "workflow_ref `{workflow_ref}` must be a safe repo-relative path"
+        ));
+    }
+    Ok(rel)
+}
+
+fn load_workflow_ref_phase_script(
+    goal: &Goal,
+    phase: &harness_core::GoalPhase,
+    repo_root: &Path,
+) -> Result<String, String> {
+    let workflow_ref = match phase
+        .workflow_ref
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        Some(workflow_ref) => workflow_ref,
+        None if phase.kind == harness_core::PhaseKind::Building && phase.builtin.is_some() => {
+            return build_builtin_phase_script(goal, phase);
+        }
+        None => {
+            return Err(format!(
+                "phase `{}` is workflow-mode but has no workflow_ref",
+                phase.id
+            ));
+        }
+    };
+    if let Some(id) = workflow_ref.trim().strip_prefix("builtin:") {
+        let mut built_in_phase = phase.clone();
+        built_in_phase.builtin = Some(id.trim().to_string());
+        return build_builtin_phase_script(goal, &built_in_phase);
+    }
+    let rel = safe_repo_workflow_ref_path(workflow_ref)?;
+    let path = repo_root.join(rel);
+    let script = fs::read_to_string(&path).map_err(|e| {
+        format!(
+            "cannot read workflow_ref `{workflow_ref}` for phase `{}` at {}: {e}",
+            phase.id,
+            path.display()
+        )
+    })?;
+    if script.trim().is_empty() {
+        return Err(format!(
+            "workflow_ref `{workflow_ref}` for phase `{}` is empty",
+            phase.id
+        ));
+    }
+    Ok(script)
+}
+
 fn compile_phase_script(
     goal: &Goal,
     phase: &harness_core::GoalPhase,
     all_tasks: &[Task],
+    repo_root: &Path,
 ) -> Result<String, String> {
-    if phase.kind == harness_core::PhaseKind::Building {
-        build_builtin_phase_script(goal, phase)
-    } else {
-        compile_phase_to_starlark(goal, phase, all_tasks)
+    match effective_phase_execution_mode(phase) {
+        harness_core::PhaseExecutionMode::Workflow => {
+            load_workflow_ref_phase_script(goal, phase, repo_root)
+        }
+        harness_core::PhaseExecutionMode::TaskGraph => {
+            compile_phase_to_starlark(goal, phase, all_tasks)
+        }
     }
 }
 
@@ -2573,6 +2761,8 @@ fn ensure_builtin_phases_appended(store: &HarnessStore, goal: &mut Goal) -> CliR
             landed_commit: None,
             kind: harness_core::PhaseKind::Building,
             builtin: Some(def.id.to_string()),
+            execution_mode: harness_core::PhaseExecutionMode::Workflow,
+            workflow_ref: Some(format!("builtin:{}", def.id)),
         });
     }
     goal.updated_at = now;
@@ -2761,7 +2951,13 @@ fn orchestrate_goal_phases(
         // `--max-phase-retries`, so an explore phase and a live-demo phase no longer
         // share one budget. `None` falls back to the global default (today's
         // behavior).
-        let mut retries_left = goal.phases[idx].retry.unwrap_or(max_phase_retries);
+        let mut retries_left = if effective_phase_execution_mode(&goal.phases[idx])
+            == harness_core::PhaseExecutionMode::Workflow
+        {
+            0
+        } else {
+            goal.phases[idx].retry.unwrap_or(max_phase_retries)
+        };
         let passed;
         loop {
             let phase = goal.phases[idx].clone();
@@ -2772,8 +2968,8 @@ fn orchestrate_goal_phases(
                 .into_values()
                 .filter(|t| t.goal_id.as_deref() == Some(goal.id.as_str()))
                 .collect();
-            let script =
-                compile_phase_script(&goal, &phase, &goal_tasks).map_err(CliError::Usage)?;
+            let script = compile_phase_script(&goal, &phase, &goal_tasks, repo_root)
+                .map_err(CliError::Usage)?;
             let hash = content_hash_hex16(&script);
             let dir = store.root().join("compiled");
             std::fs::create_dir_all(&dir)?;
@@ -2816,9 +3012,24 @@ fn orchestrate_goal_phases(
             // actionable messages into the unmet set so the verdict rationale names
             // every reason the phase did not pass.
             unmet.extend(unmet_registered_docs(&phase, &phase_live_tasks, repo_root));
-            let gate_passed = outcome.status == WorkflowRunStatus::Completed
-                && outcome.steps.iter().all(|s| s.ok)
-                && unmet.is_empty();
+            // D2: per-mode gate. A TASK-GRAPH phase has no `verdict()` compiled for
+            // a bare `parallel()` block, so a failed task there leaves the run
+            // Completed — hence the all-steps-ok clause catches it. A WORKFLOW-mode
+            // phase runs an AUTHORED program that may legitimately TOLERATE a failed
+            // leaf (return_status + retry + verdict(True) → status Completed with a
+            // journaled ok=false step; see skills/star-workflow/examples/
+            // failure-aware-retry.star). Requiring all-steps-ok there would wrongly
+            // fail such a run, so the workflow-mode gate trusts the run's own status
+            // + verdict (surfaced as Completed) and the required-artifact set only.
+            let gate_passed = if effective_phase_execution_mode(&phase)
+                == harness_core::PhaseExecutionMode::Workflow
+            {
+                outcome.status == WorkflowRunStatus::Completed && unmet.is_empty()
+            } else {
+                outcome.status == WorkflowRunStatus::Completed
+                    && outcome.steps.iter().all(|s| s.ok)
+                    && unmet.is_empty()
+            };
 
             write_back_phase_tasks(store, &goal, &phase_id, &outcome)?;
 
@@ -3159,6 +3370,24 @@ fn plan_into_goal(
         let phase_id = slug_for_filename(
             &json_str_nonempty(p, "id").unwrap_or_else(|| format!("phase-{}", p_idx + 1)),
         );
+        let execution_mode = json_str_nonempty(p, "execution_mode")
+            .as_deref()
+            .map(parse_phase_execution_mode)
+            .transpose()?
+            .unwrap_or(harness_core::PhaseExecutionMode::TaskGraph);
+        let workflow_ref = json_str_nonempty(p, "workflow_ref");
+        validate_phase_execution_config(execution_mode, workflow_ref.as_deref())?;
+        if let Some(r) = workflow_ref.as_deref() {
+            if !r.trim().starts_with("builtin:") {
+                safe_repo_workflow_ref_path(r).map_err(CliError::Usage)?;
+            }
+        }
+        let tasks = json_array_or_parsed(p, "tasks");
+        if execution_mode == harness_core::PhaseExecutionMode::Workflow && !tasks.is_empty() {
+            return Err(CliError::Usage(format!(
+                "phase `{phase_id}` is execution_mode=workflow but also includes tasks; choose workflow_ref or task graph tasks, not both"
+            )));
+        }
         if goal.phases.iter().any(|existing| existing.id == phase_id) {
             result.phases_skipped.push(phase_id.clone());
         } else {
@@ -3179,6 +3408,8 @@ fn plan_into_goal(
                 landed_commit: None,
                 kind: harness_core::PhaseKind::Execution,
                 builtin: None,
+                execution_mode,
+                workflow_ref: workflow_ref.clone(),
             });
             result.phases_added.push(phase_id.clone());
         }
@@ -3190,7 +3421,6 @@ fn plan_into_goal(
             .into_keys()
             .chain(result.tasks_created.iter().cloned())
             .collect();
-        let tasks = json_array_or_parsed(p, "tasks");
         for (t_idx, t) in tasks.iter().enumerate() {
             let task_id =
                 json_str_nonempty(t, "id").unwrap_or_else(|| format!("{phase_id}-t{}", t_idx + 1));
@@ -3341,6 +3571,20 @@ fn goal_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
                         "phase-add needs --intent <text> or --intent-file <path>".into(),
                     )
                 })?;
+            let execution_mode = value(args, "--execution-mode")
+                .as_deref()
+                .map(parse_phase_execution_mode)
+                .transpose()?
+                .unwrap_or(harness_core::PhaseExecutionMode::TaskGraph);
+            let workflow_ref = value(args, "--workflow-ref")
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
+            validate_phase_execution_config(execution_mode, workflow_ref.as_deref())?;
+            if let Some(r) = workflow_ref.as_deref() {
+                if !r.trim().starts_with("builtin:") {
+                    safe_repo_workflow_ref_path(r).map_err(CliError::Usage)?;
+                }
+            }
             goal.phases.push(harness_core::GoalPhase {
                 id: phase_id,
                 name,
@@ -3365,6 +3609,8 @@ fn goal_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
                 landed_commit: None,
                 kind: harness_core::PhaseKind::Execution,
                 builtin: None,
+                execution_mode,
+                workflow_ref,
             });
             goal.updated_at = now_string();
             store.append_goal(&goal)?;
@@ -6663,7 +6909,7 @@ fn assign_task(
     let mut task = latest_task(store, task_id)?;
     if let Some(goal_id) = task.goal_id.as_deref() {
         let status = goal_learning_status(store, goal_id)?;
-        if status.goal_design.is_empty() {
+        if !status.has_goal_design() {
             if assignment.allow_missing_goal_design {
                 status.require_valid_waiver(store, assignment.waiver_decision_id.as_deref())?;
             } else {
@@ -6992,10 +7238,31 @@ fn json_string_array(body: &serde_json::Value, key: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// Resolve a `GET /v1/docs?path=docs/...` request to the markdown body, allow-listed
-/// to the repository's `docs/` tree. Returns `(canonical-relative-path, content)` or a
-/// human-readable error. Rejects anything outside `docs/` and any path traversal so the
-/// route can only serve committed docs (ADR 0019, Vision `source_refs` rendering).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AllowedDocPathKind {
+    DocsTree,
+    RootDoc,
+}
+
+fn allowed_doc_path_kind(decoded: &str) -> Result<AllowedDocPathKind, String> {
+    if decoded.contains("..") {
+        return Err(format!("path must contain no ..: {decoded}"));
+    }
+    if decoded.starts_with("docs/") {
+        return Ok(AllowedDocPathKind::DocsTree);
+    }
+    if matches!(decoded, "README.md" | "AGENTS.md") {
+        return Ok(AllowedDocPathKind::RootDoc);
+    }
+    Err(format!(
+        "path must be under docs/ or be README.md/AGENTS.md: {decoded}"
+    ))
+}
+
+/// Resolve a `GET /v1/docs?path=...` request to a repository doc body. The route
+/// serves the `docs/` tree plus root `README.md` / `AGENTS.md`, and rejects path
+/// traversal so Docs can expose project entrypoints without exposing arbitrary
+/// repository files.
 fn read_allowed_doc(request_target: &str) -> Result<(String, String), String> {
     let query = request_target.split('?').nth(1).unwrap_or("");
     let raw = query
@@ -7007,21 +7274,29 @@ fn read_allowed_doc(request_target: &str) -> Result<(String, String), String> {
         .replace("%2F", "/")
         .replace("%2f", "/")
         .replace("%20", " ");
-    if !decoded.starts_with("docs/") || decoded.contains("..") {
-        return Err(format!(
-            "path must be under docs/ and contain no ..: {decoded}"
-        ));
-    }
+    let path_kind = allowed_doc_path_kind(&decoded)?;
     let base = std::env::current_dir()
         .and_then(|dir| dir.canonicalize())
         .map_err(|error| format!("cannot resolve working dir: {error}"))?;
-    let docs_root = base.join("docs");
     let full = base
         .join(&decoded)
         .canonicalize()
         .map_err(|error| format!("doc not found: {decoded} ({error})"))?;
-    if !full.starts_with(&docs_root) {
-        return Err(format!("resolved path escapes docs/: {decoded}"));
+    match path_kind {
+        AllowedDocPathKind::DocsTree => {
+            let docs_root = base
+                .join("docs")
+                .canonicalize()
+                .map_err(|error| format!("cannot resolve docs/: {error}"))?;
+            if !full.starts_with(&docs_root) {
+                return Err(format!("resolved path escapes docs/: {decoded}"));
+            }
+        }
+        AllowedDocPathKind::RootDoc => {
+            if full.parent() != Some(base.as_path()) {
+                return Err(format!("resolved path escapes repository root: {decoded}"));
+            }
+        }
     }
     let content =
         std::fs::read_to_string(&full).map_err(|error| format!("read failed: {error}"))?;
@@ -7550,6 +7825,39 @@ struct WorkflowDeliveryOptions {
     project: ProjectContext,
 }
 
+const HARNESS_WORKFLOW_CHILD_STORE_ROOT_ENV: &str = "HARNESS_WORKFLOW_CHILD_STORE_ROOT";
+const HARNESS_WORKFLOW_ALLOW_STORE_MUTATION_ENV: &str = "HARNESS_WORKFLOW_ALLOW_STORE_MUTATION";
+
+fn workflow_child_store_root(session_dir: &Path) -> PathBuf {
+    session_dir.join("nested-harness-store")
+}
+
+fn workflow_child_harness_home(session_dir: &Path) -> PathBuf {
+    session_dir.join("nested-harness-home")
+}
+
+fn workflow_store_mutation_allowed() -> bool {
+    env::var(HARNESS_WORKFLOW_ALLOW_STORE_MUTATION_ENV).as_deref() == Ok("1")
+}
+
+fn apply_workflow_child_store_guard(
+    cmd: &mut Command,
+    session_dir: &Path,
+    allow_store_mutation: bool,
+) {
+    cmd.env("HARNESS_PARENT_WORKFLOW_SESSION_DIR", session_dir);
+    if allow_store_mutation {
+        return;
+    }
+    cmd.env(
+        HARNESS_WORKFLOW_CHILD_STORE_ROOT_ENV,
+        workflow_child_store_root(session_dir),
+    )
+    .env("HARNESS_HOME", workflow_child_harness_home(session_dir))
+    .env("HARNESS_WORKFLOW_STORE_GUARD", "isolated")
+    .env_remove("HARNESS_PROJECT");
+}
+
 /// Emit one compact NDJSON progress event to STDERR (used when `--progress` is on).
 /// Stderr — not stdout — so stdout stays a single parseable JSON document; an agent
 /// caller's shell tool captures both streams, so it still sees the live timeline.
@@ -8043,24 +8351,104 @@ fn provider_enforces_read_only(provider: &str) -> bool {
         .unwrap_or(false)
 }
 
+fn step_write_mode_direct(spec: &workflow::AgentStepSpec) -> bool {
+    spec.write_mode.as_deref() == Some(workflow::WRITE_MODE_DIRECT)
+}
+
 /// Whether an ephemeral leaf must run in a throwaway git worktree instead of the
 /// shared repo cwd. A leaf isolates when it explicitly opts into
 /// `isolation="worktree"`, when it is `writable` (edits must land in a discardable
 /// checkout). Read-only leaves stay in the selected project root even if a
-/// provider cannot physically enforce read-only; provider capability gaps should
-/// not silently turn a read-only scan/review into a git-worktree requirement.
-fn step_needs_isolation(writable: bool, isolation: Option<&str>) -> bool {
+/// provider cannot physically enforce read-only (#190); provider capability gaps
+/// should not silently turn a read-only scan/review into a git-worktree
+/// requirement. `write_mode="direct"` writes the shared project root in place, so
+/// it never isolates either.
+fn step_needs_isolation(writable: bool, isolation: Option<&str>, write_mode: Option<&str>) -> bool {
+    if write_mode == Some(workflow::WRITE_MODE_DIRECT) {
+        return false;
+    }
     isolation == Some("worktree") || writable
+}
+
+fn direct_write_diff(repo_root: &Path) -> Option<String> {
+    let repo = repo_root.display().to_string();
+    let mut diff =
+        command_stdout("git", &["-C", &repo, "diff", "--no-ext-diff", "HEAD"]).unwrap_or_default();
+    let untracked = command_stdout(
+        "git",
+        &["-C", &repo, "ls-files", "--others", "--exclude-standard"],
+    )
+    .unwrap_or_default();
+    for path in untracked.lines().map(str::trim).filter(|p| !p.is_empty()) {
+        let abs = repo_root.join(path);
+        let Ok(bytes) = fs::read(&abs) else {
+            continue;
+        };
+        let text = String::from_utf8_lossy(&bytes);
+        diff.push_str(&format!(
+            "diff --git a/{path} b/{path}\nnew file mode 100644\n--- /dev/null\n+++ b/{path}\n@@ -0,0 +1,{} @@\n",
+            text.lines().count().max(1)
+        ));
+        for line in text.lines() {
+            diff.push('+');
+            diff.push_str(line);
+            diff.push('\n');
+        }
+        if text.is_empty() {
+            diff.push_str("+\n");
+        }
+    }
+    Some(diff)
+}
+
+fn ensure_direct_write_ready(
+    project: &ProjectContext,
+    repo_root: &Path,
+    spec: &workflow::AgentStepSpec,
+) -> CliResult<()> {
+    if !spec.writable {
+        return Err(CliError::Usage(format!(
+            "node '{}' sets write_mode=\"direct\" but is not writable. Direct shared-repo edits require writable=True so the provider receives edit permissions.",
+            spec.label
+        )));
+    }
+    if spec.isolation.as_deref() == Some("worktree") {
+        return Err(CliError::Usage(format!(
+            "node '{}' sets both write_mode=\"direct\" and isolation=\"worktree\". Choose direct shared-repo writes or an isolated worktree, not both.",
+            spec.label
+        )));
+    }
+    if !project.is_git_repo {
+        return Err(CliError::Usage(format!(
+            "node '{}' sets write_mode=\"direct\", but project '{}' ({}) is not a git repository. Direct writes require a git-backed project so the harness can attribute the resulting diff.",
+            spec.label,
+            project.id,
+            repo_root.display()
+        )));
+    }
+    let status = git_in(repo_root, &["status", "--porcelain"])?;
+    if !status.trim().is_empty() {
+        return Err(CliError::Usage(format!(
+            "node '{}' sets write_mode=\"direct\", but {} has uncommitted changes before the step:\n{}\nDirect writes require a clean repo so the harness can attribute the resulting diff.",
+            spec.label,
+            repo_root.display(),
+            status.trim()
+        )));
+    }
+    Ok(())
 }
 
 /// Spin up a NEW one-shot EDITABLE ephemeral worker for one `agent()` node and
 /// reduce its result into a [`workflow::StepResult`].
 ///
-/// Workspace: read-only leaves run in the selected project root. Writable leaves
-/// and nodes that explicitly set `isolation:"worktree"` run in a throwaway
-/// worktree (uniform for both providers); its `git diff` is collected as the
-/// node's evidence and the worktree is NOT auto-merged. Cleanup is the
-/// `WorktreeGuard`'s Drop (bulletproof across success/failure/timeout).
+/// Workspace: read-only leaves run in the selected project root (#190 — even on a
+/// provider that cannot physically enforce read-only). Editable leaves default to
+/// a harness-owned throwaway worktree (its `git diff` is collected and the
+/// worktree is NOT auto-merged; cleanup is the `WorktreeGuard`'s Drop, bulletproof
+/// across success/failure/timeout); `write_mode="direct"` is the explicit simple
+/// serial path that writes the selected project root immediately. Worktree diffs
+/// are captured as pending patches; direct diffs are recorded as evidence because
+/// the change is already in the repo working tree.
 fn spawn_ephemeral_worker(
     store: &HarnessStore,
     options: &WorkflowDeliveryOptions,
@@ -8081,8 +8469,19 @@ fn spawn_ephemeral_worker(
     // A node isolates when it explicitly opts in, or when it is `writable` (an
     // editing worker runs in a throwaway worktree so its writes land in a
     // discardable checkout, never the live repo). Read-only scans/reviews do not
-    // implicitly require git worktrees.
-    let isolate = step_needs_isolation(spec.writable, spec.isolation.as_deref());
+    // implicitly require git worktrees — read-only leaves stay in the selected
+    // project root even on a provider that cannot enforce read-only (#190).
+    // `write_mode="direct"` writes the shared project root in place instead of a
+    // worktree, so it validates the tree up front and never isolates.
+    let direct_write = step_write_mode_direct(spec);
+    if direct_write {
+        ensure_direct_write_ready(project, &repo_root, spec)?;
+    }
+    let isolate = step_needs_isolation(
+        spec.writable,
+        spec.isolation.as_deref(),
+        spec.write_mode.as_deref(),
+    );
 
     // GLOBAL / non-git policy (P5): an isolated/writable node needs a git worktree,
     // which cannot exist in a non-git project (the reserved `_global` `~/` project,
@@ -8158,26 +8557,31 @@ fn spawn_ephemeral_worker(
     // Factored into a closure so structured mode can re-run it once for the retry.
     let effective_model = workflow_effective_model(options, spec);
     let effective_effort = workflow_effective_effort(options, spec);
-    let spawn_once = |prompt: &str| -> CliResult<EphemeralSpawn> {
-        let ctx = EphemeralSpawnContext {
-            session_dir: &session_dir,
-            session_id: &session_id,
-            run_id,
-            spec,
-            schema_json: schema_json.as_ref(),
-            prompt,
-            cwd: &cwd,
-            model: effective_model,
-            effort: effective_effort,
-            service_tier: spec.service_tier.as_deref(),
-            timeout_ms: options.timeout_ms,
-            wall_clock_ms: spec.timeout_s.map(|seconds| seconds.saturating_mul(1_000)),
-            max_budget_usd: options.max_budget_usd,
+    let default_wall_clock_ms = spec.timeout_s.map(|seconds| seconds.saturating_mul(1_000));
+    let spawn_once_with_limits =
+        |prompt: &str, timeout_ms: u64, wall_clock_ms: Option<u64>| -> CliResult<EphemeralSpawn> {
+            let ctx = EphemeralSpawnContext {
+                session_dir: &session_dir,
+                session_id: &session_id,
+                run_id,
+                spec,
+                schema_json: schema_json.as_ref(),
+                prompt,
+                cwd: &cwd,
+                model: effective_model,
+                effort: effective_effort,
+                service_tier: spec.service_tier.as_deref(),
+                timeout_ms,
+                wall_clock_ms,
+                max_budget_usd: options.max_budget_usd,
+            };
+            match provider_adapter(spec.provider.as_str()) {
+                Some(adapter) => adapter.spawn_ephemeral(&ctx),
+                None => Err(unknown_provider_error(&spec.provider, "ephemeral worker")),
+            }
         };
-        match provider_adapter(spec.provider.as_str()) {
-            Some(adapter) => adapter.spawn_ephemeral(&ctx),
-            None => Err(unknown_provider_error(&spec.provider, "ephemeral worker")),
-        }
+    let spawn_once = |prompt: &str| -> CliResult<EphemeralSpawn> {
+        spawn_once_with_limits(prompt, options.timeout_ms, default_wall_clock_ms)
     };
 
     // Retry ONCE on a transient PROCESS crash — a non-zero / signalled exit that
@@ -8210,6 +8614,8 @@ fn spawn_ephemeral_worker(
     // Wall-clock span of the worker process itself, for the step's `duration_ms`.
     let worker_start = Instant::now();
     let mut structured: Option<serde_json::Value> = None;
+    let mut schema_retry_limits: Option<(u64, Option<u64>)> = None;
+    let mut schema_retry_timed_out = false;
     let spawn = if let Some(schema) = &spec.schema {
         let instruction = schema_instruction(schema);
 
@@ -8227,13 +8633,17 @@ fn spawn_ephemeral_worker(
 
         // ONE corrective retry when the worker produced no valid JSON.
         if structured.is_none() {
+            let (retry_timeout_ms, retry_wall_clock_ms) =
+                schema_correction_retry_limits(options.timeout_ms, default_wall_clock_ms);
+            schema_retry_limits = Some((retry_timeout_ms, retry_wall_clock_ms));
             let retry_prompt = format!(
                 "{}{instruction}\n\nYour previous reply was not valid JSON with keys [{}]; \
                  return ONLY that JSON object.",
                 spec.prompt,
                 required_keys.join(", "),
             );
-            spawn = spawn_once(&retry_prompt)?;
+            spawn = spawn_once_with_limits(&retry_prompt, retry_timeout_ms, retry_wall_clock_ms)?;
+            schema_retry_timed_out = spawn.timed_out;
             structured = spawn.structured.clone().or_else(|| {
                 spawn
                     .reply
@@ -8260,6 +8670,19 @@ fn spawn_ephemeral_worker(
     // them — read-only `_global` nodes simply carry no diff (P5, documented).
     let diff = if isolate {
         ephemeral_worktree_diff(&cwd)
+    } else {
+        None
+    };
+    // D4a: enumerate the changed paths from the SAME worktree state (before the
+    // guard drops it) via `git diff --name-status -z -M`, recording both rename
+    // sides. Stored on the step so persist / landing don't re-parse the diff text.
+    let worktree_changed_paths = if isolate {
+        ephemeral_worktree_changed_paths(&cwd)
+    } else {
+        None
+    };
+    let direct_diff = if direct_write {
+        direct_write_diff(&repo_root)
     } else {
         None
     };
@@ -8309,6 +8732,14 @@ fn spawn_ephemeral_worker(
             output_summary.push_str(&format!(" [worktree diff: {lines} lines]"));
         }
     }
+    if let Some(diff) = &direct_diff {
+        if diff.trim().is_empty() {
+            output_summary.push_str(" [direct diff: empty]");
+        } else {
+            let lines = diff.lines().count();
+            output_summary.push_str(&format!(" [direct diff: {lines} lines]"));
+        }
+    }
     if !spawn.ok && !spawn.stderr.trim().is_empty() {
         let err = spawn.stderr.replace('\n', " ");
         let err = truncate_on_char_boundary(&err, 160);
@@ -8335,8 +8766,47 @@ fn spawn_ephemeral_worker(
     // guard is None and there is nothing to remove.
     drop(guard);
 
-    let mut details =
-        build_step_details(spec, &spawn, effective_model, duration_ms, diff.as_deref());
+    let mut details = build_step_details(
+        spec,
+        &spawn,
+        effective_model,
+        duration_ms,
+        diff.as_deref(),
+        worktree_changed_paths.as_deref(),
+    );
+    if let Some(direct_diff) = direct_diff.as_deref() {
+        if let Some(map) = details.as_object_mut() {
+            let (text, truncated) = if direct_diff.len() > WORKTREE_DIFF_CAP {
+                (
+                    truncate_on_char_boundary(direct_diff, WORKTREE_DIFF_CAP),
+                    true,
+                )
+            } else {
+                (direct_diff, false)
+            };
+            map.insert(
+                "direct_diff".into(),
+                serde_json::Value::String(text.to_string()),
+            );
+            map.insert(
+                "direct_diff_truncated".into(),
+                serde_json::Value::Bool(truncated),
+            );
+        }
+    }
+    if let Some((retry_timeout_ms, retry_wall_clock_ms)) = schema_retry_limits {
+        if let Some(map) = details.as_object_mut() {
+            map.insert(
+                "schema_retry".into(),
+                serde_json::json!({
+                    "attempted": true,
+                    "idle_timeout_ms": retry_timeout_ms,
+                    "wall_clock_ms": retry_wall_clock_ms,
+                    "timed_out": schema_retry_timed_out,
+                }),
+            );
+        }
+    }
     // Record a "schema" failure (reusing the same failure shape build_step_details
     // emits for worker failures) so the dashboard renders the schema miss.
     if schema_failed {
@@ -8346,9 +8816,10 @@ fn spawn_ephemeral_worker(
                 serde_json::json!({
                     "failed": true,
                     "reason": "schema",
-                    "detail": format!(
-                        "worker reply was not a JSON object with required keys [{}]",
-                        required_keys.join(", "),
+                    "detail": schema_failure_detail(
+                        &required_keys,
+                        schema_retry_limits.is_some(),
+                        schema_retry_timed_out,
                     ),
                 }),
             );
@@ -8552,6 +9023,35 @@ fn object_has_required_keys(obj: &serde_json::Value, required: &[String]) -> boo
 /// truncated to the cap and flagged with `worktree_diff_truncated: true` so the
 /// dashboard can render a "diff truncated" hint without choking on a huge blob.
 const WORKTREE_DIFF_CAP: usize = 20_000;
+const SCHEMA_CORRECTION_RETRY_TIMEOUT_MS: u64 = 60_000;
+
+fn schema_correction_retry_limits(
+    idle_timeout_ms: u64,
+    leaf_wall_clock_ms: Option<u64>,
+) -> (u64, Option<u64>) {
+    let retry_idle_timeout_ms = idle_timeout_ms.min(SCHEMA_CORRECTION_RETRY_TIMEOUT_MS);
+    let retry_wall_clock_ms = Some(
+        leaf_wall_clock_ms
+            .unwrap_or(SCHEMA_CORRECTION_RETRY_TIMEOUT_MS)
+            .min(SCHEMA_CORRECTION_RETRY_TIMEOUT_MS),
+    );
+    (retry_idle_timeout_ms, retry_wall_clock_ms)
+}
+
+fn schema_failure_detail(
+    required_keys: &[String],
+    retry_attempted: bool,
+    retry_timed_out: bool,
+) -> String {
+    let retry_detail = if retry_timed_out {
+        "schema correction retry timed out before producing valid JSON"
+    } else if retry_attempted {
+        "schema correction retry returned no valid JSON with required keys"
+    } else {
+        "worker reply was not a JSON object with required keys"
+    };
+    format!("{retry_detail} [{}]", required_keys.join(", "))
+}
 
 /// Assemble the observability `details` object merged onto the step's `result`
 /// JSON (see `workflow::step_result_json`): the model the worker ran, exit code,
@@ -8564,6 +9064,7 @@ fn build_step_details(
     effective_model: Option<&str>,
     duration_ms: u64,
     diff: Option<&str>,
+    worktree_changed_paths: Option<&[String]>,
 ) -> serde_json::Value {
     // The node's requested model wins; otherwise fall back to the model the
     // worker reported in its own output (claude's init frame).
@@ -8574,6 +9075,17 @@ fn build_step_details(
         "model": model,
         "exit_code": spawn.exit_code,
         "duration_ms": duration_ms,
+        "persist_changes": spec.persist_changes.clone(),
+        "write_mode": spec.write_mode.clone(),
+        "owned_paths": spec.owned_paths.clone(),
+        "artifact_root": spec.artifact_root.clone(),
+        "write_roots": spec.write_roots.clone(),
+        "auto_apply_on_verdict": spec.auto_apply_on_verdict,
+        // D3a: whether this leaf was DECLARED writable. A read-only leaf that runs
+        // isolated only because its provider can't enforce read-only (#167 kimi)
+        // also produces a `worktree_diff`, so persistence must key on `writable`
+        // to swallow that unauthorized diff instead of persisting it.
+        "writable": spec.writable,
     });
     let map = details
         .as_object_mut()
@@ -8634,6 +9146,13 @@ fn build_step_details(
                 serde_json::Value::String(diff.to_string()),
             );
         }
+    }
+
+    // D4a: the robustly-enumerated changed paths (both rename sides + all
+    // adds/mods/deletes) captured from the worktree by name-status. Persist /
+    // landing read this instead of re-parsing `diff --git` headers off the text.
+    if let Some(changed) = worktree_changed_paths {
+        map.insert("worktree_changed_paths".into(), serde_json::json!(changed));
     }
 
     if !spawn.warnings.is_empty() {
@@ -8935,6 +9454,7 @@ fn spawn_codex_ephemeral(
         "read-only"
     };
     let mut cmd = Command::new("codex");
+    apply_workflow_child_store_guard(&mut cmd, session_dir, workflow_store_mutation_allowed());
     cmd.arg("exec")
         .arg("--cd")
         .arg(cwd)
@@ -9082,6 +9602,7 @@ fn spawn_claude_ephemeral(
         "Read,Grep,Glob"
     };
     let mut cmd = Command::new("claude");
+    apply_workflow_child_store_guard(&mut cmd, session_dir, workflow_store_mutation_allowed());
     cmd.arg("-p")
         .arg(prompt)
         .arg("--output-format")
@@ -9486,12 +10007,18 @@ fn ndjson_lines(events: &[serde_json::Value]) -> String {
     out
 }
 
-/// `git -C <wt> diff` — the node's collected evidence for the isolation path.
-/// Returns None when git is unavailable; an empty string means a clean tree.
+/// `git -C <wt> diff --binary` — the node's collected evidence for the isolation
+/// path. Returns None when git is unavailable; an empty string means a clean tree.
 ///
 /// We first `git add -A --intent-to-add` so brand-new UNTRACKED files a worker
 /// creates show up in the diff as additions (plain `git diff` omits untracked
 /// content). The worktree is throwaway, so touching its index is harmless.
+///
+/// D5 (binary-safe capture): `--binary` embeds a `GIT binary patch` block for any
+/// changed binary file instead of collapsing it to a "Binary files differ" stub.
+/// The throwaway worktree is deleted right after capture, so a stub would lose the
+/// content irrecoverably AND poison the whole patch at `git apply --check`; the
+/// binary block is git-encoded ASCII, so it round-trips through the stored diff.
 fn ephemeral_worktree_diff(worktree: &Path) -> Option<String> {
     let wt = worktree.display().to_string();
     // Best-effort intent-to-add so untracked files are included; ignore failure.
@@ -9499,10 +10026,118 @@ fn ephemeral_worktree_diff(worktree: &Path) -> Option<String> {
         .args(["-C", &wt, "add", "-A", "--intent-to-add"])
         .output();
     let output = Command::new("git")
-        .args(["-C", &wt, "diff"])
+        .args(["-C", &wt, "diff", "--binary"])
         .output()
         .ok()?;
     Some(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+/// Enumerate the paths a worktree's uncommitted work touches, robustly (D4a).
+/// Uses `git diff --name-status -z -M`: the `-z` NUL-delimited form emits raw
+/// (un-c-quoted) UTF-8 path bytes, so a CJK / spaced / crafted filename can't
+/// desync a whitespace split (the old `diff --git` header parse's failure mode).
+/// A rename record (`R<score>\0old\0new`) contributes BOTH sides; adds / mods /
+/// deletes (`A|M|D\0path`) contribute their single path. Returns None only when
+/// git is unavailable. Assumes the caller already staged intent-to-add (as
+/// [`ephemeral_worktree_diff`] does) so untracked files are enumerated too.
+fn ephemeral_worktree_changed_paths(worktree: &Path) -> Option<Vec<String>> {
+    let wt = worktree.display().to_string();
+    let output = Command::new("git")
+        .args(["-C", &wt, "diff", "--name-status", "-z", "-M", "HEAD"])
+        .output()
+        .ok()?;
+    Some(parse_name_status_z(&output.stdout))
+}
+
+/// Parse `git diff --name-status -z` output into the set of changed paths. Each
+/// record is a status field followed by 1 path (`A`/`M`/`D`/`T`/...) or 2 paths
+/// (`R`/`C` renames/copies — both `old` and `new` are recorded), all NUL-
+/// separated. Paths are raw UTF-8 (the `-z` form never c-quotes), decoded lossily.
+fn parse_name_status_z(bytes: &[u8]) -> Vec<String> {
+    let mut fields = bytes
+        .split(|b| *b == 0)
+        .filter(|f| !f.is_empty())
+        .map(|f| String::from_utf8_lossy(f).to_string());
+    let mut paths = BTreeSet::new();
+    while let Some(status) = fields.next() {
+        // A rename/copy status is `R<score>` / `C<score>` and carries two path
+        // fields (old, new); every other status carries exactly one.
+        let takes_two = status.starts_with('R') || status.starts_with('C');
+        let Some(first) = fields.next() else { break };
+        if takes_two {
+            let Some(second) = fields.next() else {
+                if !first.is_empty() && first != "/dev/null" {
+                    paths.insert(first);
+                }
+                break;
+            };
+            for p in [first, second] {
+                if !p.is_empty() && p != "/dev/null" {
+                    paths.insert(p);
+                }
+            }
+        } else if !first.is_empty() && first != "/dev/null" {
+            paths.insert(first);
+        }
+    }
+    paths.into_iter().collect()
+}
+
+/// Parse `git apply --numstat -z <patch>` output into the set of paths git would
+/// actually touch when applying the patch (D4b). This parses the patch EXACTLY as
+/// git will apply it, closing the crafted-`diff --git`-header bypass (a header can
+/// name a path the hunk never touches) and the c-quoted-CJK false Conflict (the
+/// `-z` form emits raw UTF-8, so no `"\346..."` to mis-decode). Each record is
+/// `added\tdeleted` followed by one path (adds/mods/deletes, and — since git apply
+/// resolves renames to the destination — detected renames) OR two paths
+/// (`old\0new`) for an unresolved rename; all NUL-separated. Errors carry git's
+/// stderr so an unparsable patch fails closed at the call site.
+fn git_apply_numstat_paths(repo_root: &Path, patch: &[u8]) -> CliResult<Vec<String>> {
+    let mut child = Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args(["apply", "--numstat", "-z", "-"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()?;
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(patch)?;
+    }
+    let out = child.wait_with_output()?;
+    if !out.status.success() {
+        return Err(CliError::Usage(format!(
+            "git apply --numstat failed (patch is not applyable as written): {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+    Ok(parse_numstat_z(&out.stdout))
+}
+
+/// Parse `git apply --numstat -z` output into its changed paths. Each record is
+/// `added\tdeleted` (two tab-separated count fields, `-` for binary) then one path
+/// field, except an unresolved rename which appends a second path field. Paths are
+/// raw UTF-8 (the `-z` form never c-quotes), decoded lossily.
+fn parse_numstat_z(bytes: &[u8]) -> Vec<String> {
+    let mut paths = BTreeSet::new();
+    for record in bytes.split(|b| *b == 0).filter(|f| !f.is_empty()) {
+        let text = String::from_utf8_lossy(record);
+        // A record is `<added>\t<deleted>\t<path>`; a leading count block means
+        // this field carries the numstat header + path. A bare field (no tab) is
+        // the SECOND path of an unresolved rename emitted as its own NUL record.
+        if let Some((_counts, path)) = text.rsplit_once('\t') {
+            let path = path.trim();
+            if !path.is_empty() && path != "/dev/null" {
+                paths.insert(path.to_string());
+            }
+        } else {
+            let path = text.trim();
+            if !path.is_empty() && path != "/dev/null" {
+                paths.insert(path.to_string());
+            }
+        }
+    }
+    paths.into_iter().collect()
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -10106,9 +10741,13 @@ fn workflow_gc_trace(
 fn workflow_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     require_subcommand(
         args,
-        "workflow run|run-script|get-output|list|reap|reap-workers|gc-worktrees|gc-trace",
+        "workflow run|run-script|get-output|patch|list|reap|reap-workers|gc-worktrees|gc-trace",
     )?;
     match args[0].as_str() {
+        "patch" => {
+            let result = workflow_patch_command(store, &args[1..])?;
+            print_json(&result)?;
+        }
         "gc-worktrees" => {
             let result = workflow_gc_worktrees(store)?;
             print_json(&result)?;
@@ -10403,6 +11042,954 @@ fn warn_discarded_worktree_diffs(run_id: &str, outcome: &workflow::WorkflowOutco
     }
 }
 
+/// The changed paths for a step's captured diff, preferring the robustly
+/// enumerated `worktree_changed_paths` (D4a: name-status, both rename sides,
+/// c-quote/CJK-safe) recorded at capture time, and falling back to parsing the
+/// diff text's `diff --git` headers only for OLD runs / mock steps that predate
+/// the field. `details` is the step's `result` JSON; `diff` is its landing diff.
+fn step_changed_paths(details: Option<&serde_json::Value>, diff: &str) -> Vec<String> {
+    let stored = details.and_then(|d| d.get("worktree_changed_paths"));
+    if let Some(array) = stored.and_then(|v| v.as_array()) {
+        return array
+            .iter()
+            .filter_map(|v| v.as_str())
+            .map(str::to_string)
+            .collect();
+    }
+    diff_changed_paths(diff)
+}
+
+fn diff_changed_paths(diff: &str) -> Vec<String> {
+    let mut paths = BTreeSet::new();
+    for line in diff.lines() {
+        let Some(rest) = line.strip_prefix("diff --git ") else {
+            continue;
+        };
+        let mut parts = rest.split_whitespace();
+        let _a = parts.next();
+        let Some(b_path) = parts.next() else {
+            continue;
+        };
+        let path = b_path
+            .strip_prefix("b/")
+            .unwrap_or(b_path)
+            .trim_matches('"')
+            .to_string();
+        if !path.is_empty() && path != "/dev/null" {
+            paths.insert(path);
+        }
+    }
+    paths.into_iter().collect()
+}
+
+/// Whether a step was DECLARED `writable` (its details record `writable: true`).
+/// D3a: a leaf that isolated only because its provider can't enforce read-only
+/// (#167 kimi read-only isolation) is NOT writable — its diff must be discarded,
+/// never persisted, so this returns false for it and swallows the diff.
+fn step_is_writable(details: Option<&serde_json::Value>) -> bool {
+    details
+        .and_then(|d| d.get("writable"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+}
+
+/// Whether a captured leaf diff should become a durable pending WorkflowPatch
+/// (STANDALONE, non-orchestrated runs only — orchestrated runs let phase landing
+/// own the diffs, see D1a). D3a: persist ONLY when the step SUCCEEDED and was
+/// DECLARED writable, and the author did not opt out via `persist_changes:
+/// "discard"`. A failed step or a read-only isolated leaf strands nothing.
+fn should_persist_workflow_patch(
+    ok: bool,
+    details: Option<&serde_json::Value>,
+    diff: &str,
+) -> bool {
+    if diff.trim().is_empty() {
+        return false;
+    }
+    if !ok || !step_is_writable(details) {
+        return false;
+    }
+    let persist = details
+        .and_then(|d| d.get("persist_changes"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("patch");
+    persist != "discard"
+}
+
+fn string_array(value: Option<&serde_json::Value>) -> Vec<String> {
+    value
+        .and_then(|v| v.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn latest_workflow_patches_in_append_order(store: &HarnessStore) -> CliResult<Vec<WorkflowPatch>> {
+    let mut latest: BTreeMap<String, WorkflowPatch> = BTreeMap::new();
+    for patch in store.workflow_patches()? {
+        latest.insert(patch.id.clone(), patch);
+    }
+    Ok(latest.into_values().collect())
+}
+
+fn latest_workflow_artifact_manifests_in_append_order(
+    store: &HarnessStore,
+) -> CliResult<Vec<WorkflowArtifactManifest>> {
+    let mut latest: BTreeMap<String, WorkflowArtifactManifest> = BTreeMap::new();
+    for manifest in store.workflow_artifact_manifests()? {
+        latest.insert(manifest.id.clone(), manifest);
+    }
+    Ok(latest.into_values().collect())
+}
+
+fn patch_file_path(store: &HarnessStore, patch: &WorkflowPatch) -> PathBuf {
+    let path = PathBuf::from(&patch.patch_ref);
+    if path.is_absolute() {
+        path
+    } else {
+        store.root().join(path)
+    }
+}
+
+fn workflow_patch_update(
+    store: &HarnessStore,
+    patch: &WorkflowPatch,
+    status: WorkflowPatchStatus,
+    actor: Option<String>,
+    reason: Option<String>,
+    conflict_detail: Option<String>,
+) -> CliResult<WorkflowPatch> {
+    let now = now_string();
+    let mut updated = patch.clone();
+    updated.status = status;
+    updated.updated_at = Some(now.clone());
+    updated.actor = actor;
+    updated.reason = reason;
+    updated.conflict_detail = conflict_detail;
+    match status {
+        WorkflowPatchStatus::Applied => updated.applied_at = Some(now),
+        WorkflowPatchStatus::Rejected => updated.rejected_at = Some(now),
+        _ => {}
+    }
+    store.append_workflow_patch(&updated)?;
+    Ok(updated)
+}
+
+fn apply_patch_bytes(repo_root: &Path, bytes: &[u8], check_only: bool) -> CliResult<()> {
+    let mut child = Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args(if check_only {
+            vec!["apply", "--check", "--whitespace=nowarn", "-"]
+        } else {
+            vec!["apply", "--whitespace=nowarn", "-"]
+        })
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()?;
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(bytes)?;
+    }
+    let out = child.wait_with_output()?;
+    if !out.status.success() {
+        return Err(CliError::Usage(
+            String::from_utf8_lossy(&out.stderr).trim().to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// The set of repo-relative paths that currently have local changes (staged or
+/// unstaged) or are untracked, parsed from `git status --porcelain -z`. The `-z`
+/// form NUL-delimits records and emits raw (un-c-quoted) UTF-8 paths. Each record
+/// is `XY<space>path` with a rename/copy (`R`/`C` in either status column)
+/// appending a second NUL-separated original path — both sides are recorded.
+fn git_dirty_paths(repo_root: &Path) -> CliResult<BTreeSet<String>> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args(["status", "--porcelain", "-z"])
+        .output()?;
+    if !output.status.success() {
+        return Err(CliError::Usage(format!(
+            "git status failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    let mut dirty = BTreeSet::new();
+    let mut fields = output
+        .stdout
+        .split(|b| *b == 0)
+        .filter(|f| !f.is_empty())
+        .map(|f| String::from_utf8_lossy(f).to_string())
+        .peekable();
+    while let Some(entry) = fields.next() {
+        // `XY path` — the status is the first two bytes, the path starts at byte 3.
+        let (xy, path) = if entry.len() > 3 {
+            (&entry[..2], entry[3..].to_string())
+        } else {
+            continue;
+        };
+        if !path.is_empty() {
+            dirty.insert(path);
+        }
+        // A rename/copy carries the original path as the NEXT NUL record.
+        if xy.starts_with('R') || xy.starts_with('C') || xy.ends_with('R') || xy.ends_with('C') {
+            if let Some(orig) = fields.next() {
+                if !orig.is_empty() {
+                    dirty.insert(orig);
+                }
+            }
+        }
+    }
+    Ok(dirty)
+}
+
+fn apply_workflow_patch_record(
+    store: &HarnessStore,
+    patch: &WorkflowPatch,
+    actor: Option<String>,
+    reason: Option<String>,
+    allow_dirty: bool,
+) -> CliResult<WorkflowPatch> {
+    if patch.status != WorkflowPatchStatus::PendingApply {
+        return Err(CliError::Usage(format!(
+            "workflow patch {} is {:?}, not pending_apply",
+            patch.id, patch.status
+        )));
+    }
+    let project = workflow_project_context(store);
+    let repo_root = workflow_repo_root(&project);
+    let path = patch_file_path(store, patch);
+    let bytes = fs::read(&path)?;
+    // D4b: enforce owned_paths against the paths git will ACTUALLY touch, parsed
+    // from `git apply --numstat -z` — this reads the patch exactly as git applies
+    // it, closing the crafted-`diff --git`-header bypass and the c-quoted-CJK false
+    // Conflict. If numstat can't parse the patch, fail closed (a bad patch never
+    // applies). We then cross-check against the stored changed_paths and fail
+    // closed on disagreement (a numstat path not covered by the recorded set means
+    // the patch text and its metadata diverged — refuse rather than trust either).
+    let numstat_paths = match git_apply_numstat_paths(&repo_root, &bytes) {
+        Ok(paths) => paths,
+        Err(error) => {
+            let detail = error.to_string();
+            let _ = workflow_patch_update(
+                store,
+                patch,
+                WorkflowPatchStatus::Conflict,
+                actor,
+                reason,
+                Some(detail.clone()),
+            )?;
+            return Err(CliError::Usage(detail));
+        }
+    };
+    let stored_paths: BTreeSet<String> = if patch.changed_paths.is_empty() {
+        step_changed_paths(None, &String::from_utf8_lossy(&bytes))
+            .into_iter()
+            .collect()
+    } else {
+        patch.changed_paths.iter().cloned().collect()
+    };
+    // Every path git will touch MUST be covered by the recorded changed_paths
+    // (renames record both sides at capture, git apply resolves to the
+    // destination, so numstat ⊆ stored). Anything git touches that we did NOT
+    // record is a mismatch — fail closed.
+    let undisclosed: Vec<String> = numstat_paths
+        .iter()
+        .filter(|p| !stored_paths.contains(*p))
+        .cloned()
+        .collect();
+    if !undisclosed.is_empty() {
+        let detail = format!(
+            "patch {} would touch paths not in its recorded changed_paths (numstat vs stored \
+             disagree): {:?}",
+            patch.id, undisclosed
+        );
+        let _ = workflow_patch_update(
+            store,
+            patch,
+            WorkflowPatchStatus::Conflict,
+            actor,
+            reason,
+            Some(detail.clone()),
+        )?;
+        return Err(CliError::Usage(detail));
+    }
+    let violations = owned_path_violations(&numstat_paths, &patch.owned_paths);
+    if !violations.is_empty() {
+        let detail = format!(
+            "patch touches paths outside owned_paths {:?}: {:?}",
+            patch.owned_paths, violations
+        );
+        let _ = workflow_patch_update(
+            store,
+            patch,
+            WorkflowPatchStatus::Conflict,
+            actor,
+            reason,
+            Some(detail.clone()),
+        )?;
+        return Err(CliError::Usage(detail));
+    }
+    if !allow_dirty {
+        // D6: scope the dirty guard to the patch's OWN paths. Unrelated untracked
+        // files / edits no longer block every apply (and, since one applied patch
+        // leaves the tree dirty, no longer cap a run at a single auto-apply). Refuse
+        // only when a path THIS patch touches already has local modifications
+        // (staged or unstaged) or, for files the patch creates, already exists
+        // untracked — those genuinely collide. `--allow-dirty` still bypasses all.
+        let dirty = git_dirty_paths(&repo_root)?;
+        let colliding: Vec<String> = numstat_paths
+            .iter()
+            .filter(|p| dirty.contains(*p))
+            .cloned()
+            .collect();
+        if !colliding.is_empty() {
+            return Err(CliError::Usage(format!(
+                "cannot apply workflow patch {} because paths it touches have uncommitted \
+                 changes: {:?}\nrerun with --allow-dirty after checking the patch is independent",
+                patch.id, colliding
+            )));
+        }
+    }
+    if let Err(error) = apply_patch_bytes(&repo_root, &bytes, true) {
+        let detail = error.to_string();
+        let _ = workflow_patch_update(
+            store,
+            patch,
+            WorkflowPatchStatus::Conflict,
+            actor,
+            reason,
+            Some(detail.clone()),
+        )?;
+        return Err(CliError::Usage(detail));
+    }
+    apply_patch_bytes(&repo_root, &bytes, false)?;
+    workflow_patch_update(
+        store,
+        patch,
+        WorkflowPatchStatus::Applied,
+        actor,
+        reason,
+        None,
+    )
+}
+
+fn reject_workflow_patch_record(
+    store: &HarnessStore,
+    patch: &WorkflowPatch,
+    actor: Option<String>,
+    reason: Option<String>,
+) -> CliResult<WorkflowPatch> {
+    if patch.status != WorkflowPatchStatus::PendingApply {
+        return Err(CliError::Usage(format!(
+            "workflow patch {} is {:?}, not pending_apply",
+            patch.id, patch.status
+        )));
+    }
+    workflow_patch_update(
+        store,
+        patch,
+        WorkflowPatchStatus::Rejected,
+        actor,
+        reason,
+        None,
+    )
+}
+
+fn patch_status_is_pending(patch: &WorkflowPatch) -> bool {
+    patch.status == WorkflowPatchStatus::PendingApply
+}
+
+fn resolve_workflow_patch(store: &HarnessStore, args: &[String]) -> CliResult<WorkflowPatch> {
+    let key = value(args, "--patch")
+        .or_else(|| args.iter().find(|arg| !arg.starts_with("--")).cloned())
+        .ok_or_else(|| {
+            CliError::Usage(
+                "workflow patch command requires <patch_id|run_id> or --patch <id>".to_string(),
+            )
+        })?;
+    let step = value(args, "--step");
+    let patches = latest_workflow_patches_in_append_order(store)?;
+    if let Some(step) = step {
+        return patches
+            .into_iter()
+            .rev()
+            .find(|patch| patch.run_id == key && (patch.step_id == step || patch.label == step))
+            .ok_or_else(|| {
+                CliError::Usage(format!("no workflow patch for run {key} step {step}"))
+            });
+    }
+    let exact: Vec<_> = patches
+        .iter()
+        .filter(|patch| patch.id == key)
+        .cloned()
+        .collect();
+    if let Some(patch) = exact.into_iter().next() {
+        return Ok(patch);
+    }
+    let by_run: Vec<_> = patches
+        .into_iter()
+        .filter(|patch| patch.run_id == key)
+        .collect();
+    match by_run.len() {
+        1 => Ok(by_run.into_iter().next().expect("one patch")),
+        0 => Err(CliError::Usage(format!(
+            "no workflow patch found for {key}"
+        ))),
+        _ => Err(CliError::Usage(format!(
+            "run {key} has multiple patches; pass --step <label|step_id>"
+        ))),
+    }
+}
+
+fn workflow_patch_command(store: &HarnessStore, args: &[String]) -> CliResult<serde_json::Value> {
+    require_subcommand(args, "workflow patch list|show|apply|reject")?;
+    match args[0].as_str() {
+        "list" => {
+            let run = value(&args[1..], "--run");
+            let mut patches = latest_workflow_patches_in_append_order(store)?;
+            if let Some(run) = run {
+                patches.retain(|patch| patch.run_id == run);
+            }
+            Ok(serde_json::json!({ "patches": patches }))
+        }
+        "show" => {
+            let patch = resolve_workflow_patch(store, &args[1..])?;
+            let text = fs::read_to_string(patch_file_path(store, &patch)).unwrap_or_default();
+            Ok(serde_json::json!({ "patch": patch, "diff": text }))
+        }
+        "apply" => {
+            let patch = resolve_workflow_patch(store, &args[1..])?;
+            let actor = value(&args[1..], "--actor").or_else(|| Some("operator".to_string()));
+            let reason = value(&args[1..], "--reason");
+            let applied = apply_workflow_patch_record(
+                store,
+                &patch,
+                actor,
+                reason,
+                has_flag(&args[1..], "--allow-dirty"),
+            )?;
+            Ok(serde_json::json!({ "patch": applied }))
+        }
+        "reject" => {
+            let patch = resolve_workflow_patch(store, &args[1..])?;
+            let actor = value(&args[1..], "--actor").or_else(|| Some("operator".to_string()));
+            let reason = value(&args[1..], "--reason");
+            let rejected = reject_workflow_patch_record(store, &patch, actor, reason)?;
+            Ok(serde_json::json!({ "patch": rejected }))
+        }
+        other => Err(CliError::Usage(format!(
+            "unknown workflow patch command: {other}"
+        ))),
+    }
+}
+
+fn manifest_path_with_root(repo_root: &Path, artifact_root: Option<&str>, path: &str) -> PathBuf {
+    let raw = Path::new(path);
+    if raw.is_absolute() {
+        return raw.to_path_buf();
+    }
+    if let Some(root) = artifact_root.filter(|r| !r.trim().is_empty()) {
+        let root = root.trim_end_matches('/');
+        let root_path = Path::new(root);
+        if raw.starts_with(root_path) {
+            return repo_root.join(raw);
+        }
+        return repo_root.join(root_path).join(raw);
+    }
+    repo_root.join(raw)
+}
+
+fn manifest_display_path(
+    repo_root: &Path,
+    artifact_root: Option<&str>,
+    path: &str,
+    abs: &Path,
+) -> String {
+    if let Ok(rel) = abs.strip_prefix(repo_root) {
+        return rel.display().to_string();
+    }
+    if Path::new(path).is_absolute() {
+        path.to_string()
+    } else if let Some(root) = artifact_root.filter(|r| !r.trim().is_empty()) {
+        format!("{}/{}", root.trim_end_matches('/'), path)
+    } else {
+        path.to_string()
+    }
+}
+
+fn build_manifest_file(
+    repo_root: &Path,
+    artifact_root: Option<&str>,
+    path: &str,
+) -> WorkflowArtifactFile {
+    let abs = manifest_path_with_root(repo_root, artifact_root, path);
+    let display = manifest_display_path(repo_root, artifact_root, path, &abs);
+    let metadata = fs::metadata(&abs).ok();
+    let exists = metadata.as_ref().is_some_and(|m| m.is_file());
+    let (size_bytes, hash) = if exists {
+        let bytes = fs::read(&abs).unwrap_or_default();
+        let lossy = String::from_utf8_lossy(&bytes);
+        (Some(bytes.len() as u64), Some(content_hash_hex16(&lossy)))
+    } else {
+        (None, None)
+    };
+    WorkflowArtifactFile {
+        path: display,
+        exists,
+        size_bytes,
+        hash,
+        kind: None,
+    }
+}
+
+fn paths_outside_write_roots(paths: &[String], write_roots: &[String]) -> Vec<String> {
+    if write_roots.is_empty() {
+        return Vec::new();
+    }
+    paths
+        .iter()
+        .filter(|path| {
+            !write_roots.iter().any(|root| {
+                let root = root.trim_end_matches('/');
+                path.as_str() == root || path.starts_with(&format!("{root}/"))
+            })
+        })
+        .cloned()
+        .collect()
+}
+
+fn append_artifact_manifest(
+    store: &HarnessStore,
+    run_id: &str,
+    step_id: Option<String>,
+    label: Option<String>,
+    artifact_root: Option<String>,
+    write_roots: Vec<String>,
+    paths: Vec<String>,
+) -> CliResult<WorkflowArtifactManifest> {
+    if paths.is_empty() {
+        return Err(CliError::Usage(
+            "artifact manifest requires at least one path".to_string(),
+        ));
+    }
+    let project = workflow_project_context(store);
+    let repo_root = workflow_repo_root(&project);
+    let files: Vec<_> = paths
+        .iter()
+        .map(|path| build_manifest_file(&repo_root, artifact_root.as_deref(), path))
+        .collect();
+    let display_paths: Vec<String> = files.iter().map(|file| file.path.clone()).collect();
+    let missing: Vec<_> = files
+        .iter()
+        .filter(|file| !file.exists)
+        .map(|file| file.path.clone())
+        .collect();
+    let outside = paths_outside_write_roots(&display_paths, &write_roots);
+    let (status, reason) = if !missing.is_empty() {
+        (
+            WorkflowArtifactManifestStatus::Missing,
+            Some(format!("missing artifact files: {}", missing.join(", "))),
+        )
+    } else if !outside.is_empty() {
+        (
+            WorkflowArtifactManifestStatus::Stale,
+            Some(format!(
+                "artifact files outside write_roots {:?}: {}",
+                write_roots,
+                outside.join(", ")
+            )),
+        )
+    } else {
+        (WorkflowArtifactManifestStatus::Current, None)
+    };
+    let manifest = WorkflowArtifactManifest {
+        id: generated_id("wfartifact"),
+        run_id: run_id.to_string(),
+        step_id,
+        label,
+        artifact_root,
+        status,
+        files,
+        write_roots,
+        created_at: now_string(),
+        updated_at: None,
+        reason,
+    };
+    store.append_workflow_artifact_manifest(&manifest)?;
+    Ok(manifest)
+}
+
+/// Whether a WorkflowRun was created by the `goal run-phases` orchestrator (its
+/// compiled/loaded script spec is stamped `"orchestrated": true`). Orchestrated
+/// runs let PHASE LANDING own leaf diffs end-to-end (D1); standalone `run-script`
+/// runs keep the pending-patch pipeline. `default()`-spec (standalone) is false.
+fn is_orchestrated_run(run: &WorkflowRun) -> bool {
+    run.spec
+        .as_ref()
+        .and_then(|s| s.get("orchestrated"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+}
+
+fn persist_workflow_patches(
+    store: &HarnessStore,
+    run: &WorkflowRun,
+    outcome: &workflow::WorkflowOutcome,
+    steps_json: &[serde_json::Value],
+) -> CliResult<Vec<WorkflowPatch>> {
+    // D1a: an orchestrated run's writable leaf diffs are landed by
+    // `land_phase_diffs` (the #150 single landing authority). Creating pending
+    // WorkflowPatch rows here too would double-own the diff — the patch pipeline
+    // and landing would fight (a mid-run apply_patch dirties the tree and landing's
+    // clean-tree guard then demotes the pass). So persist NOTHING for orchestrated
+    // runs; landing is the one authority.
+    if is_orchestrated_run(run) {
+        return Ok(Vec::new());
+    }
+    let project = workflow_project_context(store);
+    let repo_root = workflow_repo_root(&project);
+    let base_sha = git_in(&repo_root, &["rev-parse", "HEAD"])
+        .ok()
+        .map(|sha| sha.trim().to_string())
+        .filter(|sha| !sha.is_empty());
+    let patch_dir = store.root().join("workflow-patches").join(&run.id);
+    fs::create_dir_all(&patch_dir)?;
+
+    let mut patches = Vec::new();
+    for (idx, result) in outcome.steps.iter().enumerate() {
+        let Some(diff) = step_landing_diff(result) else {
+            continue;
+        };
+        let details = result.details.as_ref();
+        if !should_persist_workflow_patch(result.ok, details, &diff) {
+            continue;
+        }
+        let step_id = steps_json
+            .get(idx)
+            .and_then(|v| v.get("id"))
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .or_else(|| result.step_id.clone())
+            .unwrap_or_else(|| format!("step-{idx}"));
+        let patch_ref = patch_dir.join(format!("{step_id}.patch"));
+        fs::write(&patch_ref, diff.as_bytes())?;
+        let owned_paths = string_array(details.and_then(|d| d.get("owned_paths")));
+        let persist_changes = details
+            .and_then(|d| d.get("persist_changes"))
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        let changed_paths = step_changed_paths(details, &diff);
+        let patch = WorkflowPatch {
+            id: format!("wfpatch-{step_id}"),
+            run_id: run.id.clone(),
+            step_id,
+            label: result.label.clone(),
+            phase: result.phase.clone(),
+            provider: result.provider.clone(),
+            status: WorkflowPatchStatus::PendingApply,
+            changed_paths,
+            patch_ref: patch_ref.display().to_string(),
+            base_sha: base_sha.clone(),
+            owned_paths,
+            persist_changes,
+            created_at: now_string(),
+            updated_at: None,
+            actor: None,
+            reason: None,
+            conflict_detail: None,
+            applied_at: None,
+            rejected_at: None,
+        };
+        store.append_workflow_patch(&patch)?;
+        patches.push(patch);
+    }
+    Ok(patches)
+}
+
+fn persist_step_artifact_manifests(
+    store: &HarnessStore,
+    run: &WorkflowRun,
+    outcome: &workflow::WorkflowOutcome,
+    steps_json: &[serde_json::Value],
+) -> CliResult<Vec<WorkflowArtifactManifest>> {
+    let mut manifests = Vec::new();
+    for (idx, result) in outcome.steps.iter().enumerate() {
+        let Some(details) = result.details.as_ref() else {
+            continue;
+        };
+        let declared = details
+            .get("expected_artifacts")
+            .and_then(|v| v.get("declared"))
+            .map(|v| string_array(Some(v)))
+            .unwrap_or_default();
+        let artifact_root = details
+            .get("artifact_root")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        let write_roots = string_array(details.get("write_roots"));
+        if declared.is_empty() && artifact_root.is_none() && write_roots.is_empty() {
+            continue;
+        }
+        if declared.is_empty() {
+            continue;
+        }
+        let step_id = steps_json
+            .get(idx)
+            .and_then(|v| v.get("id"))
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .or_else(|| result.step_id.clone());
+        manifests.push(append_artifact_manifest(
+            store,
+            &run.id,
+            step_id,
+            Some(result.label.clone()),
+            artifact_root,
+            write_roots,
+            declared,
+        )?);
+    }
+    Ok(manifests)
+}
+
+fn persist_declared_artifact_manifests(
+    store: &HarnessStore,
+    run: &WorkflowRun,
+    steps_json: &[serde_json::Value],
+) -> CliResult<Vec<WorkflowArtifactManifest>> {
+    let mut out = Vec::new();
+    let Some(items) = run
+        .final_output
+        .as_ref()
+        .and_then(|v| v.get("artifact_manifests"))
+        .and_then(|v| v.as_array())
+    else {
+        return Ok(out);
+    };
+    for item in items {
+        let paths = string_array(item.get("paths"));
+        if paths.is_empty() {
+            continue;
+        }
+        let label = item
+            .get("label")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        let step_id = label.as_ref().and_then(|label| {
+            steps_json.iter().find_map(|step| {
+                let step_label = step.get("label").and_then(|v| v.as_str())?;
+                if step_label == label {
+                    step.get("id").and_then(|v| v.as_str()).map(str::to_string)
+                } else {
+                    None
+                }
+            })
+        });
+        out.push(append_artifact_manifest(
+            store,
+            &run.id,
+            step_id,
+            label,
+            item.get("artifact_root")
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
+            string_array(item.get("write_roots")),
+            paths,
+        )?);
+    }
+    Ok(out)
+}
+
+fn run_verdict_ok(run: &WorkflowRun) -> bool {
+    run.final_output
+        .as_ref()
+        .and_then(|v| v.get("verdict"))
+        .and_then(|v| v.get("ok"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(run.status == WorkflowRunStatus::Completed)
+}
+
+/// Look up a run's journaled step by `label` in `final_output.steps` and read its
+/// `ok` / `writable` flags. Returns `None` when no such step is present. Used to
+/// guard in-script `apply_patch()` and `auto_apply_on_verdict` against steps that
+/// failed or were not declared writable (D3b).
+fn outcome_step_ok_and_writable(run: &WorkflowRun, label: &str) -> Option<(bool, bool)> {
+    run.final_output
+        .as_ref()
+        .and_then(|v| v.get("steps"))
+        .and_then(|v| v.as_array())
+        .and_then(|steps| {
+            steps.iter().find_map(|step| {
+                if step.get("label").and_then(|v| v.as_str()) == Some(label) {
+                    let ok = step.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
+                    let writable = step
+                        .get("writable")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+                    Some((ok, writable))
+                } else {
+                    None
+                }
+            })
+        })
+}
+
+fn process_workflow_patch_actions(
+    store: &HarnessStore,
+    run: &WorkflowRun,
+    initial_patches: &[WorkflowPatch],
+) -> CliResult<Vec<WorkflowPatch>> {
+    let orchestrated = is_orchestrated_run(run);
+    let mut latest: BTreeMap<String, WorkflowPatch> = initial_patches
+        .iter()
+        .cloned()
+        .map(|patch| (patch.label.clone(), patch))
+        .collect();
+    let mut explicit_labels = BTreeSet::new();
+    let actions = run
+        .final_output
+        .as_ref()
+        .and_then(|v| v.get("patch_actions"))
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    for action in actions {
+        let Some(label) = action.get("label").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        explicit_labels.insert(label.to_string());
+        // D1b: an orchestrated run performs NO tree mutation here — phase landing
+        // is the landing authority. Record the intent clearly and move on (there
+        // are no pending patch rows to mutate anyway, D1a). `reject_patch()` intent
+        // is honored by landing, which reads it from `final_output.patch_actions`.
+        if orchestrated {
+            match action.get("action").and_then(|v| v.as_str()) {
+                Some("apply") => eprintln!(
+                    "orchestrated run {}: apply_patch intent recorded for step '{}'; \
+                     phase landing is the landing authority (no patch applied here)",
+                    run.id, label
+                ),
+                Some("reject") => eprintln!(
+                    "orchestrated run {}: reject_patch intent recorded for step '{}'; \
+                     phase landing will skip this step's diff",
+                    run.id, label
+                ),
+                _ => {}
+            }
+            continue;
+        }
+        let Some(patch) = latest.get(label).cloned() else {
+            // D3b: a standalone apply/reject targeting a step that produced no
+            // pending patch — it failed, was not writable, or discarded its diff.
+            let why = match outcome_step_ok_and_writable(run, label) {
+                Some((false, _)) => " (step failed — nothing to apply)",
+                Some((true, false)) => " (step is not writable — nothing to apply)",
+                _ => "",
+            };
+            eprintln!(
+                "workflow patch action ignored for run {}: no pending patch labeled '{}'{why}",
+                run.id, label
+            );
+            continue;
+        };
+        if !patch_status_is_pending(&patch) {
+            continue;
+        }
+        let reason = action
+            .get("reason")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        let updated = match action.get("action").and_then(|v| v.as_str()) {
+            Some("apply") => match apply_workflow_patch_record(
+                store,
+                &patch,
+                Some("workflow".to_string()),
+                reason,
+                false,
+            ) {
+                Ok(updated) => updated,
+                Err(error) => {
+                    eprintln!(
+                        "workflow patch auto-apply failed for run {} step '{}': {error}",
+                        run.id, label
+                    );
+                    latest_workflow_patches_in_append_order(store)?
+                        .into_iter()
+                        .find(|p| p.id == patch.id)
+                        .unwrap_or(patch)
+                }
+            },
+            Some("reject") => {
+                reject_workflow_patch_record(store, &patch, Some("workflow".to_string()), reason)?
+            }
+            _ => patch,
+        };
+        latest.insert(label.to_string(), updated);
+    }
+
+    // D1a/D1b: orchestrated runs never persist patches and never auto-apply here.
+    if !orchestrated && run_verdict_ok(run) {
+        for patch in initial_patches {
+            if explicit_labels.contains(&patch.label) {
+                continue;
+            }
+            let auto = outcome_step_auto_apply(run, &patch.label);
+            if !auto || !patch_status_is_pending(patch) {
+                continue;
+            }
+            let updated = match apply_workflow_patch_record(
+                store,
+                patch,
+                Some("workflow".to_string()),
+                Some("auto_apply_on_verdict".to_string()),
+                false,
+            ) {
+                Ok(updated) => updated,
+                Err(error) => {
+                    eprintln!(
+                        "workflow patch auto_apply_on_verdict failed for run {} step '{}': {error}",
+                        run.id, patch.label
+                    );
+                    latest_workflow_patches_in_append_order(store)?
+                        .into_iter()
+                        .find(|p| p.id == patch.id)
+                        .unwrap_or_else(|| patch.clone())
+                }
+            };
+            latest.insert(patch.label.clone(), updated);
+        }
+    }
+    Ok(latest.into_values().collect())
+}
+
+fn outcome_step_auto_apply(run: &WorkflowRun, label: &str) -> bool {
+    run.final_output
+        .as_ref()
+        .and_then(|v| v.get("steps"))
+        .and_then(|v| v.as_array())
+        .and_then(|steps| {
+            steps.iter().find_map(|step| {
+                if step.get("label").and_then(|v| v.as_str()) == Some(label) {
+                    step.get("auto_apply_on_verdict").and_then(|v| v.as_bool())
+                } else {
+                    None
+                }
+            })
+        })
+        .unwrap_or(false)
+}
+
 fn workflow_run_script_value(
     store: &HarnessStore,
     args: &[String],
@@ -10678,6 +12265,15 @@ fn journal_workflow_outcome(
     run.agents_spawned = outcome.agents_spawned;
     run.final_output = outcome.final_output.clone();
     store.append_workflow_run(&run)?;
+    let mut patches = persist_workflow_patches(store, &run, outcome, &steps_json)?;
+    let mut artifact_manifests =
+        persist_step_artifact_manifests(store, &run, outcome, &steps_json)?;
+    artifact_manifests.extend(persist_declared_artifact_manifests(
+        store,
+        &run,
+        &steps_json,
+    )?);
+    patches = process_workflow_patch_actions(store, &run, &patches)?;
     // The run has reached a terminal status — notify any configured completion hook
     // (no-op unless HARNESS_WORKFLOW_ON_COMPLETE is set). Fires here, inside the
     // run-owning process, so a backgrounded `run-script &` still notifies.
@@ -10686,6 +12282,8 @@ fn journal_workflow_outcome(
     Ok(serde_json::json!({
         "run": serde_json::to_value(&run)?,
         "steps": steps_json,
+        "patches": patches,
+        "artifact_manifests": artifact_manifests,
     }))
 }
 
@@ -12570,6 +14168,7 @@ fn goal_learning_status(store: &HarnessStore, goal_id: &str) -> CliResult<GoalLe
             item.task_id
                 .as_ref()
                 .is_some_and(|task_id| task_ids.contains(task_id))
+                || item.goal_id.as_deref() == Some(goal_id)
         })
         .collect();
     let goal_design = evidence_by_type(&evidence, "goal_design");
@@ -12876,7 +14475,7 @@ fn review_gate(store: &HarnessStore, args: &[String]) -> CliResult<()> {
         )?;
         if let Some(goal_id) = value(args, "--goal").or_else(|| task.goal_id.clone()) {
             let status = goal_learning_status(store, &goal_id)?;
-            if status.goal_design.is_empty() {
+            if !status.has_goal_design() {
                 if has_flag(args, "--allow-missing-goal-design") || allow_goal_learning_waiver {
                     status.require_valid_waiver(store, waiver_decision_id.as_deref())?;
                 } else {
@@ -12899,7 +14498,7 @@ fn review_gate(store: &HarnessStore, args: &[String]) -> CliResult<()> {
                     )
                 })?;
             let status = goal_learning_status(store, &goal_id)?;
-            if require_goal_design && status.goal_design.is_empty() {
+            if require_goal_design && !status.has_goal_design() {
                 if allow_goal_learning_waiver {
                     status.require_valid_waiver(store, waiver_decision_id.as_deref())?;
                 } else {
@@ -13322,6 +14921,8 @@ fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::Value> {
     let provider_child_threads = store.provider_child_threads()?;
     let workflow_runs = latest_workflow_runs_in_append_order(store)?;
     let workflow_steps = latest_workflow_steps_in_append_order(store)?;
+    let workflow_patches = latest_workflow_patches_in_append_order(store)?;
+    let workflow_artifact_manifests = latest_workflow_artifact_manifests_in_append_order(store)?;
     // The goal↔run orchestration checkpoints (Stage 0): each `goal run-phases`
     // execution, its per-phase `workflow_run_id` links, and status. Surfacing them
     // makes a real run-phases visible on the dashboard (the back link to the
@@ -13442,6 +15043,8 @@ fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::Value> {
         "provider_child_threads": provider_child_threads,
         "workflow_runs": workflow_runs,
         "workflow_steps": workflow_steps,
+        "workflow_patches": workflow_patches,
+        "workflow_artifact_manifests": workflow_artifact_manifests,
         "goal_orchestration_runs": goal_orchestration_runs
     }))
 }
@@ -15572,6 +17175,7 @@ fn spawn_kimi_ephemeral(
         &prompt_with_images
     };
     let mut cmd = Command::new(resolve_kimi_bin());
+    apply_workflow_child_store_guard(&mut cmd, session_dir, workflow_store_mutation_allowed());
     cmd.arg("-p")
         .arg(prompt)
         .arg("--output-format")
@@ -17960,8 +19564,13 @@ fn current_unix_ms() -> u128 {
 
 fn generated_id(prefix: &str) -> String {
     let millis = current_unix_ms();
+    let process_id = std::process::id();
     let counter = GENERATED_ID_COUNTER.fetch_add(1, Ordering::Relaxed);
-    format!("{prefix}-{millis}-{counter}")
+    generated_id_from_parts(prefix, millis, process_id, counter)
+}
+
+fn generated_id_from_parts(prefix: &str, millis: u128, process_id: u32, counter: u64) -> String {
+    format!("{prefix}-{millis}-p{process_id}-{counter}")
 }
 
 static GENERATED_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -18004,6 +19613,7 @@ fn print_help() {
   member register --name <name> --role <role> [--provider codex|claude] [--capability <cap>] [--worktree <path>] [--permission-profile <profile>] [--runtime-workspace-root <path>]
   member list
   goal create --title <title> --objective <text> --owner <agent> [--success <text>]
+  goal phase-add --id <goal> --phase-id <id> --name <name> --intent <text> [--execution-mode task_graph|workflow --workflow-ref repo:path/to/workflow.star]
   goal plan <goal> [--dry-run] [--trace durable|live] [--timeout-ms <ms>] [--model <m>] [--effort <e>]
   goal reconcile-phase --goal <goal> --phase <id> --to passed|failed [--landed-commit <sha>] [--note-file <md>] [--author <name>]
   goal learning-status --id <goal> [--strict] [--require-evaluation] [--allow-waiver] [--waiver-decision <decision>]
@@ -18042,6 +19652,10 @@ fn print_help() {
   workflow run --name <name> [--prompt <text>] [--start-runtime] [--dry-run] [--timeout-ms <ms>] [--model <m>] [--effort <e>]
   workflow run-script <prog.star> [--name <n>] [--args <json>] [--trace durable|live] [--dry-run] [--resume <prior_run_id>] [--timeout-ms <ms>] [--model <m>] [--effort <e>]
   workflow get-output <run_id> [--step <label>] [--text]
+  workflow patch list [--run <run_id>]
+  workflow patch show <patch_id|run_id> [--step <label|step_id>]
+  workflow patch apply <patch_id|run_id> [--step <label|step_id>] [--allow-dirty] [--reason <text>] [--actor <id>]
+  workflow patch reject <patch_id|run_id> [--step <label|step_id>] [--reason <text>] [--actor <id>]
   workflow gc-worktrees
   workflow reap-workers [--dry-run]
   workflow gc-trace [--keep-runs <n>] [--keep-days <d>] [--dry-run]
@@ -18297,30 +19911,38 @@ mod workflow_runtime_tests {
         // shared project cwd. Provider capability does not silently create a git
         // worktree requirement.
         assert!(
-            !step_needs_isolation(false, None),
+            !step_needs_isolation(false, None, None),
             "read-only leaf on an enforcing provider stays in the shared cwd"
         );
         assert!(
-            !step_needs_isolation(false, None),
-            "read-only leaf on a non-enforcing provider also stays in the shared cwd"
+            !step_needs_isolation(false, None, None),
+            "read-only leaf on a non-enforcing provider also stays in the shared cwd (#190)"
         );
         // Writable / explicit-isolation always isolate.
-        assert!(step_needs_isolation(true, None), "writable always isolates");
         assert!(
-            step_needs_isolation(false, Some("worktree")),
+            step_needs_isolation(true, None, None),
+            "writable always isolates"
+        );
+        assert!(
+            step_needs_isolation(false, Some("worktree"), None),
             "explicit isolation always isolates"
         );
         // Sanity: provider enforcement metadata remains honest, but no longer drives
-        // cwd isolation.
+        // cwd isolation (#190). Read-only leaves stay in the shared project root on
+        // enforcing (codex) and non-enforcing (kimi) providers alike.
         assert!(provider_enforces_read_only("codex"));
         assert!(!provider_enforces_read_only("kimi"));
         assert!(
-            !step_needs_isolation(false, None),
+            !step_needs_isolation(false, None, None),
             "codex read-only leaf does not need isolation"
         );
         assert!(
-            !step_needs_isolation(false, None),
-            "kimi read-only leaf does not need isolation"
+            !step_needs_isolation(false, None, None),
+            "kimi read-only leaf does not need isolation (#190 — no worktree from a capability gap)"
+        );
+        assert!(
+            !step_needs_isolation(true, None, Some(workflow::WRITE_MODE_DIRECT)),
+            "direct write mode writes shared cwd instead of creating a worktree"
         );
     }
 
@@ -18797,6 +20419,43 @@ mod workflow_runtime_tests {
     }
 
     #[test]
+    fn schema_correction_retry_limits_are_short_and_never_expand_existing_caps() {
+        assert_eq!(
+            schema_correction_retry_limits(900_000, None),
+            (
+                SCHEMA_CORRECTION_RETRY_TIMEOUT_MS,
+                Some(SCHEMA_CORRECTION_RETRY_TIMEOUT_MS)
+            )
+        );
+        assert_eq!(
+            schema_correction_retry_limits(5_000, Some(10_000)),
+            (5_000, Some(10_000))
+        );
+        assert_eq!(
+            schema_correction_retry_limits(900_000, Some(15_000)),
+            (SCHEMA_CORRECTION_RETRY_TIMEOUT_MS, Some(15_000))
+        );
+    }
+
+    #[test]
+    fn schema_failure_detail_distinguishes_retry_timeout_from_plain_schema_miss() {
+        let required = vec!["ok".to_string(), "summary".to_string()];
+
+        assert_eq!(
+            schema_failure_detail(&required, false, false),
+            "worker reply was not a JSON object with required keys [ok, summary]"
+        );
+        assert_eq!(
+            schema_failure_detail(&required, true, false),
+            "schema correction retry returned no valid JSON with required keys [ok, summary]"
+        );
+        assert_eq!(
+            schema_failure_detail(&required, true, true),
+            "schema correction retry timed out before producing valid JSON [ok, summary]"
+        );
+    }
+
+    #[test]
     fn schema_to_json_schema_wraps_flat_and_passes_real_through() {
         // Flat { key: hint } -> a string-property object schema with required keys.
         let flat = serde_json::json!({ "verdict": "the call", "score": "0-100" });
@@ -19101,6 +20760,12 @@ mod workflow_runtime_tests {
             image: Vec::new(),
             add_dir: Vec::new(),
             expected_artifacts: Vec::new(),
+            persist_changes: None,
+            write_mode: None,
+            owned_paths: Vec::new(),
+            artifact_root: None,
+            write_roots: Vec::new(),
+            auto_apply_on_verdict: false,
             isolation: None,
             prompt: "hi".into(),
             schema: None,
@@ -19125,7 +20790,7 @@ mod workflow_runtime_tests {
             cost_usd: None,
             warnings: Vec::new(),
         };
-        let details = build_step_details(&spec, &spawn, spec.model.as_deref(), 1234, None);
+        let details = build_step_details(&spec, &spawn, spec.model.as_deref(), 1234, None, None);
         // spec.model wins over the (absent) worker-reported model.
         assert_eq!(details["model"], serde_json::json!("gpt-5-codex"));
         assert_eq!(details["exit_code"], serde_json::json!(0));
@@ -19149,6 +20814,12 @@ mod workflow_runtime_tests {
             image: Vec::new(),
             add_dir: Vec::new(),
             expected_artifacts: Vec::new(),
+            persist_changes: None,
+            write_mode: None,
+            owned_paths: Vec::new(),
+            artifact_root: None,
+            write_roots: Vec::new(),
+            auto_apply_on_verdict: false,
             isolation: None,
             prompt: "hi".into(),
             schema: None,
@@ -19170,7 +20841,7 @@ mod workflow_runtime_tests {
             cost_usd: None,
             warnings: Vec::new(),
         };
-        let details = build_step_details(&spec, &spawn, spec.model.as_deref(), 50, None);
+        let details = build_step_details(&spec, &spawn, spec.model.as_deref(), 50, None, None);
         assert_eq!(details["model"], serde_json::json!("claude-opus-4-8"));
         assert_eq!(details["failure"]["failed"], serde_json::json!(true));
         assert_eq!(details["failure"]["reason"], serde_json::json!("exit"));
@@ -19194,6 +20865,12 @@ mod workflow_runtime_tests {
             image: Vec::new(),
             add_dir: Vec::new(),
             expected_artifacts: Vec::new(),
+            persist_changes: None,
+            write_mode: None,
+            owned_paths: Vec::new(),
+            artifact_root: None,
+            write_roots: Vec::new(),
+            auto_apply_on_verdict: false,
             isolation: Some("worktree".into()),
             prompt: "hi".into(),
             schema: None,
@@ -19215,14 +20892,15 @@ mod workflow_runtime_tests {
             warnings: Vec::new(),
         };
         let big = "x".repeat(WORKTREE_DIFF_CAP + 5_000);
-        let details = build_step_details(&spec, &spawn, spec.model.as_deref(), 1, Some(&big));
+        let details = build_step_details(&spec, &spawn, spec.model.as_deref(), 1, Some(&big), None);
         let stored = details["worktree_diff"].as_str().expect("diff string");
         assert_eq!(stored.len(), WORKTREE_DIFF_CAP);
         assert_eq!(details["worktree_diff_truncated"], serde_json::json!(true));
 
         // A small diff is stored whole and NOT flagged truncated.
         let small = "diff --git a b\n+added\n";
-        let details = build_step_details(&spec, &spawn, spec.model.as_deref(), 1, Some(small));
+        let details =
+            build_step_details(&spec, &spawn, spec.model.as_deref(), 1, Some(small), None);
         assert_eq!(details["worktree_diff"], serde_json::json!(small));
         assert_eq!(details["worktree_diff_truncated"], serde_json::json!(false));
     }
@@ -19328,6 +21006,12 @@ new file mode 100644
             image: Vec::new(),
             add_dir: Vec::new(),
             expected_artifacts: Vec::new(),
+            persist_changes: None,
+            write_mode: None,
+            owned_paths: Vec::new(),
+            artifact_root: None,
+            write_roots: Vec::new(),
+            auto_apply_on_verdict: false,
             isolation: None,
             prompt: "hi".into(),
             schema: None,
@@ -20921,6 +22605,12 @@ new file mode 100644
             image: Vec::new(),
             add_dir: Vec::new(),
             expected_artifacts: Vec::new(),
+            persist_changes: None,
+            write_mode: None,
+            owned_paths: Vec::new(),
+            artifact_root: None,
+            write_roots: Vec::new(),
+            auto_apply_on_verdict: false,
             isolation: None,
             prompt: "do the thing".into(),
             schema: None,
@@ -20985,6 +22675,12 @@ new file mode 100644
             image: Vec::new(),
             add_dir: Vec::new(),
             expected_artifacts: Vec::new(),
+            persist_changes: None,
+            write_mode: None,
+            owned_paths: Vec::new(),
+            artifact_root: None,
+            write_roots: Vec::new(),
+            auto_apply_on_verdict: false,
             isolation: None,
             prompt: "p".into(),
             schema: None,
@@ -21285,12 +22981,79 @@ new file mode 100644
             image: Vec::new(),
             add_dir: Vec::new(),
             expected_artifacts: Vec::new(),
+            persist_changes: None,
+            write_mode: None,
+            owned_paths: Vec::new(),
+            artifact_root: None,
+            write_roots: Vec::new(),
+            auto_apply_on_verdict: false,
             isolation: isolation.map(str::to_string),
             prompt: "noop".into(),
             schema: None,
             writable,
             ordinal: Some(0),
         }
+    }
+
+    #[test]
+    fn direct_write_mode_requires_writable_clean_git_project() {
+        let store = temp_store("direct-guards");
+        let project_root = init_gc_git_project("direct-guards", &store);
+        let project = workflow_project_context(&store);
+        let mut spec = cwd_test_spec("direct", true, None);
+        spec.write_mode = Some(workflow::WRITE_MODE_DIRECT.into());
+        ensure_direct_write_ready(&project, &project_root, &spec).expect("clean git repo allowed");
+
+        let mut read_only = spec.clone();
+        read_only.writable = false;
+        let err = ensure_direct_write_ready(&project, &project_root, &read_only)
+            .expect_err("direct mode requires writable");
+        assert!(err.to_string().contains("require writable=True"));
+
+        let non_git_root =
+            std::env::temp_dir().join(format!("harness-direct-nongit-{}", generated_id("ng")));
+        std::fs::create_dir_all(&non_git_root).expect("mk non git");
+        let non_git_project = ProjectContext {
+            id: "nongit".into(),
+            project_root: non_git_root.clone(),
+            store_root: store.root().to_path_buf(),
+            kind: ProjectKind::Repo,
+            is_git_repo: false,
+        };
+        let err = ensure_direct_write_ready(&non_git_project, &non_git_root, &spec)
+            .expect_err("non-git direct write rejected");
+        assert!(err.to_string().contains("not a git repository"));
+
+        std::fs::write(project_root.join("scratch.txt"), "dirty").expect("dirty file");
+        let err = ensure_direct_write_ready(&project, &project_root, &spec)
+            .expect_err("dirty repo rejected");
+        assert!(err.to_string().contains("uncommitted changes"));
+
+        let _ = std::fs::remove_dir_all(&project_root);
+        let _ = std::fs::remove_dir_all(&non_git_root);
+        let _ = std::fs::remove_dir_all(store.root());
+    }
+
+    #[test]
+    fn direct_write_diff_captures_shared_repo_changes_without_index_side_effects() {
+        let store = temp_store("direct-diff");
+        let project_root = init_gc_git_project("direct-diff", &store);
+        std::fs::write(project_root.join("README"), "changed\n").expect("change tracked");
+        std::fs::create_dir_all(project_root.join("src")).expect("mk src");
+        std::fs::write(project_root.join("src/direct.txt"), "new direct\n").expect("new file");
+
+        let diff = direct_write_diff(&project_root).expect("direct diff");
+        assert!(diff.contains("diff --git a/README b/README"));
+        assert!(diff.contains("diff --git a/src/direct.txt b/src/direct.txt"));
+        assert!(diff.contains("+new direct"));
+        let status = git_in(&project_root, &["status", "--porcelain"]).expect("status");
+        assert!(
+            status.contains(" M README") && status.contains("?? src/"),
+            "direct diff must not stage intent-to-add entries: {status}"
+        );
+
+        let _ = std::fs::remove_dir_all(&project_root);
+        let _ = std::fs::remove_dir_all(store.root());
     }
 
     #[test]
@@ -21347,6 +23110,1031 @@ new file mode 100644
             "a missing declared artifact must fail the step even when the provider succeeded"
         );
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn workflow_journaling_persists_patch_apply_reject_and_artifact_manifest() {
+        let store = temp_store("patch-artifact");
+        let project_root = init_gc_git_project("patch-artifact", &store);
+        std::fs::create_dir_all(project_root.join("out")).expect("mk out");
+        std::fs::write(project_root.join("out/summary.md"), "artifact").expect("artifact");
+        assert!(Command::new("git")
+            .arg("-C")
+            .arg(&project_root)
+            .args(["add", "-A"])
+            .status()
+            .expect("git add artifact")
+            .success());
+        assert!(Command::new("git")
+            .arg("-C")
+            .arg(&project_root)
+            .args(["commit", "-m", "artifact seed"])
+            .status()
+            .expect("git commit artifact")
+            .success());
+
+        let new_file_diff = |path: &str, content: &str| {
+            format!(
+                "diff --git a/{path} b/{path}\nnew file mode 100644\nindex 0000000..1111111\n--- /dev/null\n+++ b/{path}\n@@ -0,0 +1 @@\n+{content}\n"
+            )
+        };
+        let mk_step = |label: &str, path: &str, content: &str| workflow::StepResult {
+            phase: "develop".into(),
+            label: label.into(),
+            provider: "codex".into(),
+            isolation: Some("worktree".into()),
+            ok: true,
+            provider_session_id: Some(format!("session-{label}")),
+            output_summary: format!("{label} wrote {path}"),
+            step_id: None,
+            started_at: None,
+            details: Some(serde_json::json!({
+                "worktree_diff": new_file_diff(path, content),
+                "persist_changes": "patch",
+                "owned_paths": ["src"],
+                "writable": true,
+            })),
+            structured: None,
+            ordinal: None,
+        };
+        let run = WorkflowRun {
+            id: generated_id("wfrun"),
+            workflow_name: "patch-artifact-test".into(),
+            status: WorkflowRunStatus::Running,
+            step_ids: Vec::new(),
+            created_at: now_string(),
+            ended_at: None,
+            summary: None,
+            args: None,
+            agents_spawned: 0,
+            final_output: None,
+            initiated_by: Some("test".into()),
+            design_intent: Some("test writable patch and artifact manifest path".into()),
+            spec: None,
+            trace_retention: "durable".into(),
+            host_pid: None,
+            dry_run: false,
+            goal_id: None,
+            phase_id: None,
+        };
+        let outcome = workflow::WorkflowOutcome {
+            steps: vec![
+                mk_step("writer", "src/generated.txt", "hello"),
+                mk_step("reject-me", "src/rejected.txt", "bad"),
+            ],
+            status: WorkflowRunStatus::Completed,
+            summary: "patch artifact completed".into(),
+            agents_spawned: 2,
+            final_output: Some(serde_json::json!({
+                "result": null,
+                "steps": [],
+                "logs": [],
+                "patch_actions": [
+                    { "action": "reject", "label": "reject-me", "reason": "review failed" }
+                ],
+                "artifact_manifests": [
+                    { "paths": ["summary.md"], "artifact_root": "out", "write_roots": ["out"] }
+                ],
+                "verdict": { "ok": true, "reason": "test" },
+            })),
+        };
+
+        let value = journal_workflow_outcome(&store, run, &outcome).expect("journal");
+        assert_eq!(value["patches"].as_array().expect("patches").len(), 2);
+        let patches = latest_workflow_patches_in_append_order(&store).expect("patches");
+        let writer = patches
+            .iter()
+            .find(|patch| patch.label == "writer")
+            .expect("writer patch")
+            .clone();
+        assert_eq!(writer.status, WorkflowPatchStatus::PendingApply);
+        let rejected = patches
+            .iter()
+            .find(|patch| patch.label == "reject-me")
+            .expect("reject patch");
+        assert_eq!(rejected.status, WorkflowPatchStatus::Rejected);
+
+        let applied = apply_workflow_patch_record(
+            &store,
+            &writer,
+            Some("test".into()),
+            Some("manual accept".into()),
+            false,
+        )
+        .expect("apply patch");
+        assert_eq!(applied.status, WorkflowPatchStatus::Applied);
+        assert_eq!(
+            std::fs::read_to_string(project_root.join("src/generated.txt")).expect("applied file"),
+            "hello\n"
+        );
+
+        let manifests =
+            latest_workflow_artifact_manifests_in_append_order(&store).expect("manifests");
+        assert_eq!(manifests.len(), 1);
+        assert_eq!(manifests[0].status, WorkflowArtifactManifestStatus::Current);
+        assert_eq!(manifests[0].files[0].path, "out/summary.md");
+
+        let snapshot = dashboard_snapshot(&store).expect("snapshot");
+        assert_eq!(snapshot["workflow_patches"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            snapshot["workflow_artifact_manifests"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+
+        let _ = std::fs::remove_dir_all(&project_root);
+        let _ = std::fs::remove_dir_all(store.root());
+    }
+
+    #[test]
+    fn workflow_journaling_records_direct_diff_without_creating_patch() {
+        let store = temp_store("direct-journal");
+        let project_root = init_gc_git_project("direct-journal", &store);
+        let run = WorkflowRun {
+            id: generated_id("wfrun"),
+            workflow_name: "direct-write-test".into(),
+            status: WorkflowRunStatus::Running,
+            step_ids: Vec::new(),
+            created_at: now_string(),
+            ended_at: None,
+            summary: None,
+            args: None,
+            agents_spawned: 0,
+            final_output: None,
+            initiated_by: Some("test".into()),
+            design_intent: Some("test direct shared-repo write journaling".into()),
+            spec: None,
+            trace_retention: "durable".into(),
+            host_pid: None,
+            dry_run: false,
+            goal_id: None,
+            phase_id: None,
+        };
+        let outcome = workflow::WorkflowOutcome {
+            steps: vec![workflow::StepResult {
+                phase: "develop".into(),
+                label: "direct-writer".into(),
+                provider: "codex".into(),
+                isolation: None,
+                ok: true,
+                provider_session_id: Some("session-direct".into()),
+                output_summary: "direct edit [direct diff: 6 lines]".into(),
+                step_id: None,
+                started_at: None,
+                details: Some(serde_json::json!({
+                    "write_mode": "direct",
+                    "direct_diff": "diff --git a/README b/README\n--- a/README\n+++ b/README\n@@ -1 +1 @@\n-x\n+direct\n",
+                    "persist_changes": "patch",
+                })),
+                structured: None,
+                ordinal: Some(0),
+            }],
+            status: WorkflowRunStatus::Completed,
+            summary: "direct completed".into(),
+            agents_spawned: 1,
+            final_output: Some(serde_json::json!({
+                "result": null,
+                "steps": [],
+                "logs": [],
+                "patch_actions": [],
+                "artifact_manifests": [],
+                "verdict": { "ok": true, "reason": "test" },
+            })),
+        };
+
+        let value = journal_workflow_outcome(&store, run, &outcome).expect("journal");
+        assert!(
+            value["patches"].as_array().expect("patches").is_empty(),
+            "direct shared-repo diffs are evidence, not pending WorkflowPatch rows"
+        );
+        assert!(latest_workflow_patches_in_append_order(&store)
+            .expect("patches")
+            .is_empty());
+        let steps = store.workflow_steps().expect("steps");
+        let result = steps
+            .iter()
+            .find(|step| step.label == "direct-writer")
+            .and_then(|step| step.result.as_ref())
+            .expect("step result");
+        assert_eq!(result["write_mode"], serde_json::json!("direct"));
+        assert!(result["direct_diff"]
+            .as_str()
+            .expect("direct diff")
+            .contains("+direct"));
+
+        let _ = std::fs::remove_dir_all(&project_root);
+        let _ = std::fs::remove_dir_all(store.root());
+    }
+
+    #[test]
+    fn workflow_patch_apply_reject_edge_guards_hold() {
+        let store = temp_store("patch-edges");
+        let project_root = init_gc_git_project("patch-edges", &store);
+        std::fs::create_dir_all(project_root.join("src")).expect("mk src");
+        let patch_dir = store.root().join("workflow-patches").join("wfrun-edges");
+        std::fs::create_dir_all(&patch_dir).expect("mk patch dir");
+        let new_file_diff = |path: &str, content: &str| {
+            format!(
+                "diff --git a/{path} b/{path}\nnew file mode 100644\nindex 0000000..1111111\n--- /dev/null\n+++ b/{path}\n@@ -0,0 +1 @@\n+{content}\n"
+            )
+        };
+        let make_patch = |label: &str,
+                          diff: String,
+                          changed_paths: Vec<&str>,
+                          owned_paths: Vec<&str>|
+         -> WorkflowPatch {
+            let patch_ref = patch_dir.join(format!("{label}.patch"));
+            std::fs::write(&patch_ref, diff).expect("write patch");
+            let patch = WorkflowPatch {
+                id: format!("wfpatch-{label}"),
+                run_id: "wfrun-edges".into(),
+                step_id: format!("wfstep-{label}"),
+                label: label.into(),
+                phase: "develop".into(),
+                provider: "codex".into(),
+                status: WorkflowPatchStatus::PendingApply,
+                changed_paths: changed_paths.into_iter().map(str::to_string).collect(),
+                patch_ref: patch_ref.display().to_string(),
+                base_sha: None,
+                owned_paths: owned_paths.into_iter().map(str::to_string).collect(),
+                persist_changes: Some("patch".into()),
+                created_at: now_string(),
+                updated_at: None,
+                actor: None,
+                reason: None,
+                conflict_detail: None,
+                applied_at: None,
+                rejected_at: None,
+            };
+            store.append_workflow_patch(&patch).expect("append patch");
+            patch
+        };
+        let latest_status = |id: &str| {
+            latest_workflow_patches_in_append_order(&store)
+                .expect("read patches")
+                .into_iter()
+                .find(|patch| patch.id == id)
+                .expect("patch exists")
+                .status
+        };
+
+        let outside = make_patch(
+            "outside",
+            new_file_diff("docs/outside.txt", "outside"),
+            vec!["docs/outside.txt"],
+            vec!["src"],
+        );
+        let err = apply_workflow_patch_record(&store, &outside, Some("test".into()), None, false)
+            .expect_err("owned path violation must fail");
+        assert!(err.to_string().contains("outside owned_paths"));
+        assert_eq!(
+            latest_status(&outside.id),
+            WorkflowPatchStatus::Conflict,
+            "owned-path violations become conflict rows"
+        );
+
+        let rejected_first = make_patch(
+            "reject-first",
+            new_file_diff("src/reject-first.txt", "reject first"),
+            vec!["src/reject-first.txt"],
+            vec!["src"],
+        );
+        let rejected = reject_workflow_patch_record(
+            &store,
+            &rejected_first,
+            Some("test".into()),
+            Some("no".into()),
+        )
+        .expect("reject pending patch");
+        assert_eq!(rejected.status, WorkflowPatchStatus::Rejected);
+        assert!(
+            apply_workflow_patch_record(&store, &rejected, Some("test".into()), None, false)
+                .is_err(),
+            "rejected patches cannot be applied later"
+        );
+
+        // D6: an UNRELATED untracked file no longer blocks a patch that touches
+        // disjoint paths — the dirty guard is scoped to the patch's own paths.
+        let dirty = make_patch(
+            "dirty",
+            new_file_diff("src/dirty.txt", "dirty"),
+            vec!["src/dirty.txt"],
+            vec!["src"],
+        );
+        std::fs::write(project_root.join("untracked.tmp"), "unrelated").expect("dirty file");
+        let applied_dirty =
+            apply_workflow_patch_record(&store, &dirty, Some("test".into()), None, false)
+                .expect("unrelated dirt must not block a disjoint patch (D6)");
+        assert_eq!(applied_dirty.status, WorkflowPatchStatus::Applied);
+        assert_eq!(
+            std::fs::read_to_string(project_root.join("src/dirty.txt")).expect("applied file"),
+            "dirty\n"
+        );
+        std::fs::remove_file(project_root.join("untracked.tmp")).expect("clean dirty file");
+        // Remove just the untracked file this patch created; keep the src/ dir.
+        std::fs::remove_file(project_root.join("src/dirty.txt")).expect("clean applied file");
+
+        // D6: but a patch whose OWN target path is locally modified DOES block.
+        std::fs::create_dir_all(project_root.join("src")).expect("mk src");
+        std::fs::write(project_root.join("src/collide.txt"), "committed\n")
+            .expect("write collide seed");
+        git_in(&project_root, &["add", "-A"]).expect("add collide");
+        git_in(&project_root, &["commit", "-m", "collide seed"]).expect("commit collide");
+        std::fs::write(project_root.join("src/collide.txt"), "locally modified\n")
+            .expect("modify collide target");
+        let target_dirty = make_patch(
+            "target-dirty",
+            "diff --git a/src/collide.txt b/src/collide.txt\n\
+             index 1111111..2222222 100644\n\
+             --- a/src/collide.txt\n\
+             +++ b/src/collide.txt\n\
+             @@ -1 +1 @@\n\
+             -committed\n\
+             +from patch\n"
+                .to_string(),
+            vec!["src/collide.txt"],
+            vec!["src"],
+        );
+        let err =
+            apply_workflow_patch_record(&store, &target_dirty, Some("test".into()), None, false)
+                .expect_err("a modified target path must block without --allow-dirty (D6)");
+        assert!(
+            err.to_string().contains("uncommitted changes"),
+            "scoped dirty guard names the colliding path: {err}"
+        );
+        assert_eq!(
+            latest_status(&target_dirty.id),
+            WorkflowPatchStatus::PendingApply,
+            "dirty-target refusal leaves the patch pending for a later apply"
+        );
+        git_in(&project_root, &["checkout", "--", "src/collide.txt"]).expect("restore collide");
+
+        std::fs::write(project_root.join("src/existing.txt"), "existing\n")
+            .expect("write existing");
+        git_in(&project_root, &["add", "-A"]).expect("add existing");
+        git_in(&project_root, &["commit", "-m", "existing"]).expect("commit existing");
+        let conflict = make_patch(
+            "conflict",
+            new_file_diff("src/existing.txt", "conflict"),
+            vec!["src/existing.txt"],
+            vec!["src"],
+        );
+        assert!(
+            apply_workflow_patch_record(&store, &conflict, Some("test".into()), None, false)
+                .is_err(),
+            "git apply --check conflicts must fail"
+        );
+        assert_eq!(latest_status(&conflict.id), WorkflowPatchStatus::Conflict);
+
+        let good = make_patch(
+            "good",
+            new_file_diff("src/good.txt", "good"),
+            vec!["src/good.txt"],
+            vec!["src"],
+        );
+        let applied = apply_workflow_patch_record(&store, &good, Some("test".into()), None, false)
+            .expect("apply clean patch");
+        assert_eq!(applied.status, WorkflowPatchStatus::Applied);
+        assert!(
+            reject_workflow_patch_record(&store, &applied, Some("test".into()), None).is_err(),
+            "applied patches cannot be rewritten to rejected"
+        );
+
+        let _ = std::fs::remove_dir_all(&project_root);
+        let _ = std::fs::remove_dir_all(store.root());
+    }
+
+    #[test]
+    fn workflow_journaling_skips_discard_and_auto_applies_on_verdict() {
+        let store = temp_store("patch-auto");
+        let project_root = init_gc_git_project("patch-auto", &store);
+        let new_file_diff = |path: &str, content: &str| {
+            format!(
+                "diff --git a/{path} b/{path}\nnew file mode 100644\nindex 0000000..1111111\n--- /dev/null\n+++ b/{path}\n@@ -0,0 +1 @@\n+{content}\n"
+            )
+        };
+        let mk_step =
+            |label: &str, path: &str, persist_changes: &str, auto: bool| workflow::StepResult {
+                phase: "develop".into(),
+                label: label.into(),
+                provider: "codex".into(),
+                isolation: Some("worktree".into()),
+                ok: true,
+                provider_session_id: Some(format!("session-{label}")),
+                output_summary: format!("{label} wrote {path}"),
+                step_id: None,
+                started_at: None,
+                details: Some(serde_json::json!({
+                    "worktree_diff": new_file_diff(path, label),
+                    "persist_changes": persist_changes,
+                    "owned_paths": ["src"],
+                    "auto_apply_on_verdict": auto,
+                    "writable": true,
+                })),
+                structured: None,
+                ordinal: None,
+            };
+        let run = WorkflowRun {
+            id: generated_id("wfrun"),
+            workflow_name: "patch-auto-test".into(),
+            status: WorkflowRunStatus::Running,
+            step_ids: Vec::new(),
+            created_at: now_string(),
+            ended_at: None,
+            summary: None,
+            args: None,
+            agents_spawned: 0,
+            final_output: None,
+            initiated_by: Some("test".into()),
+            design_intent: Some("test discard and auto-apply patch behavior".into()),
+            spec: None,
+            trace_retention: "durable".into(),
+            host_pid: None,
+            dry_run: false,
+            goal_id: None,
+            phase_id: None,
+        };
+        let outcome = workflow::WorkflowOutcome {
+            steps: vec![
+                mk_step("discard", "src/discard.txt", "discard", false),
+                mk_step("auto", "src/auto.txt", "patch", true),
+            ],
+            status: WorkflowRunStatus::Completed,
+            summary: "patch auto completed".into(),
+            agents_spawned: 2,
+            final_output: Some(serde_json::json!({
+                "result": null,
+                "steps": [
+                    { "label": "discard", "auto_apply_on_verdict": false },
+                    { "label": "auto", "auto_apply_on_verdict": true }
+                ],
+                "logs": [],
+                "patch_actions": [],
+                "artifact_manifests": [],
+                "verdict": { "ok": true, "reason": "test" },
+            })),
+        };
+
+        journal_workflow_outcome(&store, run, &outcome).expect("journal");
+        let patches = latest_workflow_patches_in_append_order(&store).expect("patches");
+        assert_eq!(patches.len(), 1, "discarded diffs do not create patches");
+        assert_eq!(patches[0].label, "auto");
+        assert_eq!(patches[0].status, WorkflowPatchStatus::Applied);
+        assert_eq!(
+            std::fs::read_to_string(project_root.join("src/auto.txt")).expect("auto file"),
+            "auto\n"
+        );
+        assert!(
+            !project_root.join("src/discard.txt").exists(),
+            "discarded patch never lands"
+        );
+
+        let _ = std::fs::remove_dir_all(&project_root);
+        let _ = std::fs::remove_dir_all(store.root());
+    }
+
+    /// Build a new-file diff string for a path (test helper mirroring the ones in
+    /// the patch tests, shared across the D1/D3 additions).
+    fn new_file_diff_str(path: &str, content: &str) -> String {
+        format!(
+            "diff --git a/{path} b/{path}\nnew file mode 100644\nindex 0000000..1111111\n--- /dev/null\n+++ b/{path}\n@@ -0,0 +1 @@\n+{content}\n"
+        )
+    }
+
+    /// A WorkflowRun stamped `spec.orchestrated = true` (the run-phases path).
+    fn orchestrated_run(name: &str) -> WorkflowRun {
+        WorkflowRun {
+            id: generated_id("wfrun"),
+            workflow_name: name.into(),
+            status: WorkflowRunStatus::Running,
+            step_ids: Vec::new(),
+            created_at: now_string(),
+            ended_at: None,
+            summary: None,
+            args: None,
+            agents_spawned: 0,
+            final_output: None,
+            initiated_by: Some("test".into()),
+            design_intent: Some("orchestrated run patch/landing authority test".into()),
+            spec: Some(serde_json::json!({
+                "lang": "starlark", "script": "x", "orchestrated": true,
+            })),
+            trace_retention: "durable".into(),
+            host_pid: None,
+            dry_run: false,
+            goal_id: Some("g-orch".into()),
+            phase_id: Some("p1".into()),
+        }
+    }
+
+    // D1: the live-reproduced flagship failure. An ORCHESTRATED run whose writable
+    // leaf carries a diff AND an in-script apply_patch() intent must persist NO
+    // pending WorkflowPatch rows (D1a) and mutate NOTHING mid-run (D1b) — landing is
+    // the single authority. `land_phase_diffs` then lands the diff cleanly and the
+    // tree ends clean (no double-apply, no clean-tree-guard demotion).
+    #[test]
+    fn orchestrated_writable_apply_leaves_landing_the_sole_authority() {
+        let store = temp_store("orch-flagship");
+        let project_root = init_gc_git_project("orch-flagship", &store);
+        let run = orchestrated_run("flagship");
+        let step = workflow::StepResult {
+            phase: "p1".into(),
+            label: "writer".into(),
+            provider: "codex".into(),
+            isolation: Some("worktree".into()),
+            ok: true,
+            provider_session_id: Some("session-writer".into()),
+            output_summary: "writer wrote src/new.txt".into(),
+            step_id: Some("wfstep-writer".into()),
+            started_at: None,
+            details: Some(serde_json::json!({
+                "worktree_diff": new_file_diff_str("src/new.txt", "landed"),
+                "worktree_changed_paths": ["src/new.txt"],
+                "persist_changes": "patch",
+                "owned_paths": ["src"],
+                "writable": true,
+            })),
+            structured: None,
+            ordinal: Some(0),
+        };
+        let outcome = workflow::WorkflowOutcome {
+            steps: vec![step],
+            status: WorkflowRunStatus::Completed,
+            summary: "flagship completed".into(),
+            agents_spawned: 1,
+            final_output: Some(serde_json::json!({
+                "result": null,
+                "steps": [{ "label": "writer", "ok": true, "writable": true }],
+                "logs": [],
+                // The in-script apply_patch("writer") intent that used to dirty the
+                // tree mid-run and get the pass demoted.
+                "patch_actions": [{ "action": "apply", "label": "writer" }],
+                "artifact_manifests": [],
+                "verdict": { "ok": true, "reason": "test" },
+            })),
+        };
+
+        let value = journal_workflow_outcome(&store, run, &outcome).expect("journal");
+        // D1a/D1b: no pending patch rows; the tree is untouched by journaling.
+        assert!(
+            value["patches"].as_array().expect("patches").is_empty(),
+            "orchestrated runs persist NO WorkflowPatch rows (landing owns diffs)"
+        );
+        assert!(latest_workflow_patches_in_append_order(&store)
+            .expect("patches")
+            .is_empty());
+        assert!(
+            !project_root.join("src/new.txt").exists(),
+            "journaling an orchestrated apply_patch must NOT mutate the tree"
+        );
+        let status = git_in(&project_root, &["status", "--porcelain"]).expect("status");
+        assert!(
+            status.trim().is_empty(),
+            "tree stays clean after journaling an orchestrated run: {status}"
+        );
+
+        // Landing (the sole authority) now lands the writable diff → one commit,
+        // file present, tree clean.
+        let sha = land_phase_diffs("p1", &outcome, &project_root).expect("land");
+        assert!(sha.is_some(), "landing commits the writable diff");
+        assert_eq!(
+            std::fs::read_to_string(project_root.join("src/new.txt")).expect("landed file"),
+            "landed\n"
+        );
+        let after = git_in(&project_root, &["status", "--porcelain"]).expect("status2");
+        assert!(after.trim().is_empty(), "tree clean after landing: {after}");
+
+        let _ = std::fs::remove_dir_all(&project_root);
+        let _ = std::fs::remove_dir_all(store.root());
+    }
+
+    // D1c: a step the workflow `reject_patch()`ed under orchestration has its diff
+    // SKIPPED by landing (the reject intent rides on final_output.patch_actions).
+    // A sibling apply/default step still lands.
+    #[test]
+    fn landing_skips_rejected_and_discarded_steps_under_orchestration() {
+        let store = temp_store("orch-reject");
+        let project_root = init_gc_git_project("orch-reject", &store);
+
+        let mk = |label: &str, path: &str, persist: &str| workflow::StepResult {
+            phase: "p1".into(),
+            label: label.into(),
+            provider: "codex".into(),
+            isolation: Some("worktree".into()),
+            ok: true,
+            provider_session_id: None,
+            output_summary: "ok".into(),
+            step_id: Some(format!("wfstep-{label}")),
+            started_at: None,
+            details: Some(serde_json::json!({
+                "worktree_diff": new_file_diff_str(path, label),
+                "worktree_changed_paths": [path],
+                "persist_changes": persist,
+                "writable": true,
+            })),
+            structured: None,
+            ordinal: Some(0),
+        };
+        let outcome = workflow::WorkflowOutcome {
+            steps: vec![
+                mk("keep", "src/keep.txt", "patch"),
+                mk("nope", "src/nope.txt", "patch"),
+                mk("dropped", "src/dropped.txt", "discard"),
+            ],
+            status: WorkflowRunStatus::Completed,
+            summary: "reject mock".into(),
+            agents_spawned: 3,
+            final_output: Some(serde_json::json!({
+                "patch_actions": [{ "action": "reject", "label": "nope", "reason": "review said no" }],
+            })),
+        };
+
+        let sha = land_phase_diffs("p1", &outcome, &project_root).expect("land");
+        assert!(sha.is_some());
+        assert!(
+            project_root.join("src/keep.txt").is_file(),
+            "the un-rejected step lands"
+        );
+        assert!(
+            !project_root.join("src/nope.txt").exists(),
+            "a reject_patch()ed step's diff is NOT landed (D1c)"
+        );
+        assert!(
+            !project_root.join("src/dropped.txt").exists(),
+            "a persist_changes=discard step's diff is NOT landed (D1c)"
+        );
+
+        let _ = std::fs::remove_dir_all(&project_root);
+        let _ = std::fs::remove_dir_all(store.root());
+    }
+
+    // D3a (standalone): a FAILED writable step and a READ-ONLY step that produced a
+    // stray diff BOTH strand nothing — no pending WorkflowPatch is persisted. Post
+    // #190 a read-only kimi leaf runs on the project root (no worktree from a
+    // capability gap), but the `should_persist_workflow_patch` writable gate is the
+    // real guarantee: `writable=false` diffs are discarded whether or not the leaf
+    // isolated, so a read-only leaf can never persist a patch.
+    #[test]
+    fn standalone_run_does_not_persist_failed_or_readonly_isolated_diffs() {
+        let store = temp_store("standalone-d3a");
+        let project_root = init_gc_git_project("standalone-d3a", &store);
+        let run = WorkflowRun {
+            id: generated_id("wfrun"),
+            workflow_name: "standalone".into(),
+            status: WorkflowRunStatus::Running,
+            step_ids: Vec::new(),
+            created_at: now_string(),
+            ended_at: None,
+            summary: None,
+            args: None,
+            agents_spawned: 0,
+            final_output: None,
+            initiated_by: Some("test".into()),
+            design_intent: Some("standalone D3a persistence gate".into()),
+            spec: None, // NOT orchestrated
+            trace_retention: "durable".into(),
+            host_pid: None,
+            dry_run: false,
+            goal_id: None,
+            phase_id: None,
+        };
+        let failed_writable = workflow::StepResult {
+            phase: "p".into(),
+            label: "failed-writer".into(),
+            provider: "codex".into(),
+            isolation: Some("worktree".into()),
+            ok: false, // step FAILED
+            provider_session_id: None,
+            output_summary: "boom".into(),
+            step_id: Some("wfstep-failed".into()),
+            started_at: None,
+            details: Some(serde_json::json!({
+                "worktree_diff": new_file_diff_str("src/partial.txt", "partial"),
+                "worktree_changed_paths": ["src/partial.txt"],
+                "persist_changes": "patch",
+                "writable": true,
+            })),
+            structured: None,
+            ordinal: Some(0),
+        };
+        let readonly_isolated = workflow::StepResult {
+            phase: "p".into(),
+            label: "kimi-reader".into(),
+            provider: "kimi".into(),
+            isolation: Some("worktree".into()),
+            ok: true,
+            provider_session_id: None,
+            output_summary: "read but wrote anyway".into(),
+            step_id: Some("wfstep-kimi".into()),
+            started_at: None,
+            details: Some(serde_json::json!({
+                // A read-only leaf that produced a stray diff (unauthorized write).
+                // writable=false → the persistence gate discards it regardless of
+                // whether the leaf isolated (post #190 it would not).
+                "worktree_diff": new_file_diff_str("src/sneaky.txt", "sneaky"),
+                "worktree_changed_paths": ["src/sneaky.txt"],
+                "writable": false,
+            })),
+            structured: None,
+            ordinal: Some(1),
+        };
+        let outcome = workflow::WorkflowOutcome {
+            steps: vec![failed_writable, readonly_isolated],
+            status: WorkflowRunStatus::Completed,
+            summary: "standalone".into(),
+            agents_spawned: 2,
+            final_output: Some(serde_json::json!({
+                "steps": [
+                    { "label": "failed-writer", "ok": false, "writable": true },
+                    { "label": "kimi-reader", "ok": true, "writable": false }
+                ],
+                "patch_actions": [],
+                "verdict": { "ok": true, "reason": "test" },
+            })),
+        };
+
+        journal_workflow_outcome(&store, run, &outcome).expect("journal");
+        assert!(
+            latest_workflow_patches_in_append_order(&store)
+                .expect("patches")
+                .is_empty(),
+            "neither a failed writable step nor a read-only isolated leaf persists a patch (D3a)"
+        );
+
+        let _ = std::fs::remove_dir_all(&project_root);
+        let _ = std::fs::remove_dir_all(store.root());
+    }
+
+    // D3a: a SUCCESSFUL writable standalone step still persists its patch (the
+    // positive control for the gate above).
+    #[test]
+    fn standalone_run_persists_successful_writable_diff() {
+        let store = temp_store("standalone-ok");
+        let project_root = init_gc_git_project("standalone-ok", &store);
+        let run = WorkflowRun {
+            id: generated_id("wfrun"),
+            workflow_name: "standalone-ok".into(),
+            status: WorkflowRunStatus::Running,
+            step_ids: Vec::new(),
+            created_at: now_string(),
+            ended_at: None,
+            summary: None,
+            args: None,
+            agents_spawned: 0,
+            final_output: None,
+            initiated_by: Some("test".into()),
+            design_intent: Some("standalone D3a positive control".into()),
+            spec: None,
+            trace_retention: "durable".into(),
+            host_pid: None,
+            dry_run: false,
+            goal_id: None,
+            phase_id: None,
+        };
+        let outcome = workflow::WorkflowOutcome {
+            steps: vec![workflow::StepResult {
+                phase: "p".into(),
+                label: "ok-writer".into(),
+                provider: "codex".into(),
+                isolation: Some("worktree".into()),
+                ok: true,
+                provider_session_id: None,
+                output_summary: "ok".into(),
+                step_id: Some("wfstep-ok".into()),
+                started_at: None,
+                details: Some(serde_json::json!({
+                    "worktree_diff": new_file_diff_str("src/ok.txt", "ok"),
+                    "worktree_changed_paths": ["src/ok.txt"],
+                    "persist_changes": "patch",
+                    "writable": true,
+                })),
+                structured: None,
+                ordinal: Some(0),
+            }],
+            status: WorkflowRunStatus::Completed,
+            summary: "standalone ok".into(),
+            agents_spawned: 1,
+            final_output: Some(serde_json::json!({
+                "steps": [{ "label": "ok-writer", "ok": true, "writable": true }],
+                "patch_actions": [],
+                "verdict": { "ok": true, "reason": "test" },
+            })),
+        };
+        journal_workflow_outcome(&store, run, &outcome).expect("journal");
+        let patches = latest_workflow_patches_in_append_order(&store).expect("patches");
+        assert_eq!(
+            patches.len(),
+            1,
+            "a successful writable step persists a patch"
+        );
+        assert_eq!(patches[0].label, "ok-writer");
+        assert_eq!(patches[0].changed_paths, vec!["src/ok.txt".to_string()]);
+
+        let _ = std::fs::remove_dir_all(&project_root);
+        let _ = std::fs::remove_dir_all(store.root());
+    }
+
+    // D4/D5 unit tests: the robust changed-path enumeration and binary-safe capture.
+    #[test]
+    fn parse_name_status_z_records_both_rename_sides_and_cjk_paths() {
+        // R100\0a.txt\0b.txt\0M\0keep.txt\0A\0<cjk>.txt (raw UTF-8, NUL-delimited).
+        let bytes = b"R100\0a.txt\0b.txt\0M\0keep.txt\0A\0\xe6\x96\x87\xe4\xbb\xb6.txt\0";
+        let paths = parse_name_status_z(bytes);
+        assert!(
+            paths.contains(&"a.txt".to_string()),
+            "rename OLD side recorded"
+        );
+        assert!(
+            paths.contains(&"b.txt".to_string()),
+            "rename NEW side recorded"
+        );
+        assert!(paths.contains(&"keep.txt".to_string()));
+        assert!(
+            paths.contains(&"文件.txt".to_string()),
+            "CJK path decoded raw (no c-quoting) from -z output"
+        );
+        assert_eq!(paths.len(), 4);
+    }
+
+    #[test]
+    fn parse_numstat_z_handles_counts_paths_and_cjk() {
+        // `1\t1\trenamed.txt\0` `-\t-\timg.bin\0` `1\t0\t<cjk>.txt\0`.
+        let bytes = b"1\t1\trenamed.txt\0-\t-\timg.bin\x001\t0\t\xe6\x96\x87\xe4\xbb\xb6.txt\0";
+        let paths = parse_numstat_z(bytes);
+        assert!(paths.contains(&"renamed.txt".to_string()));
+        assert!(paths.contains(&"img.bin".to_string()));
+        assert!(paths.contains(&"文件.txt".to_string()));
+        assert_eq!(paths.len(), 3);
+    }
+
+    #[test]
+    fn worktree_diff_capture_is_binary_safe_and_enumerates_paths() {
+        // A real worktree: create a text file + a binary file, capture with the
+        // isolation-path helpers, and assert (a) the binary is captured as a
+        // GIT-binary-patch block (D5, not a "Binary files differ" stub) that
+        // `git apply` accepts, and (b) name-status enumerates both paths (D4a).
+        let seed_repo = |dir: &Path| {
+            std::fs::create_dir_all(dir).unwrap();
+            let git = |args: &[&str]| {
+                Command::new("git")
+                    .arg("-C")
+                    .arg(dir)
+                    .args(args)
+                    .output()
+                    .expect("git")
+            };
+            assert!(git(&["init"]).status.success());
+            let _ = git(&["config", "user.email", "t@t"]);
+            let _ = git(&["config", "user.name", "t"]);
+            std::fs::write(dir.join("README"), "seed").unwrap();
+            let _ = git(&["add", "-A"]);
+            assert!(git(&["commit", "-m", "seed"]).status.success());
+        };
+        let repo = std::env::temp_dir().join(format!("harness-bincap-{}", generated_id("bin")));
+        seed_repo(&repo);
+        std::fs::create_dir_all(repo.join("src")).unwrap();
+        std::fs::write(repo.join("src/text.txt"), "hello\n").unwrap();
+        std::fs::write(repo.join("src/blob.bin"), [0u8, 1, 2, 3, 255, 128, 7]).unwrap();
+
+        let diff = ephemeral_worktree_diff(&repo).expect("diff");
+        assert!(
+            diff.contains("GIT binary patch"),
+            "binary change captured as a git binary patch (D5), not a stub: {diff}"
+        );
+        assert!(
+            !diff.contains("Binary files"),
+            "no lossy 'Binary files differ' stub in a --binary capture"
+        );
+        let paths = ephemeral_worktree_changed_paths(&repo).expect("paths");
+        assert!(paths.contains(&"src/text.txt".to_string()));
+        assert!(paths.contains(&"src/blob.bin".to_string()));
+
+        // The captured diff applies cleanly onto a fresh clean checkout of the seed.
+        let fresh = std::env::temp_dir().join(format!("harness-bincap2-{}", generated_id("bin")));
+        seed_repo(&fresh);
+        std::fs::create_dir_all(fresh.join("src")).unwrap();
+        apply_patch_bytes(&fresh, diff.as_bytes(), true).expect("binary diff applies --check");
+        apply_patch_bytes(&fresh, diff.as_bytes(), false).expect("binary diff applies");
+        assert_eq!(
+            std::fs::read(fresh.join("src/blob.bin")).unwrap(),
+            vec![0u8, 1, 2, 3, 255, 128, 7],
+            "binary content round-trips through the captured patch"
+        );
+
+        std::fs::remove_dir_all(&repo).ok();
+        std::fs::remove_dir_all(&fresh).ok();
+    }
+
+    // D4b: owned_paths is enforced against `git apply --numstat` (the paths git
+    // actually touches), so a crafted `diff --git` header that names an in-bounds
+    // path but whose hunk edits an OUT-OF-BOUNDS file is caught.
+    #[test]
+    fn apply_enforces_owned_paths_via_numstat_not_headers() {
+        let store = temp_store("numstat-guard");
+        let project_root = init_gc_git_project("numstat-guard", &store);
+        std::fs::create_dir_all(project_root.join("src")).unwrap();
+        let patch_dir = store.root().join("workflow-patches").join("wfrun-ns");
+        std::fs::create_dir_all(&patch_dir).unwrap();
+        // The `diff --git` header lies (`src/ok.txt`), but the `+++` / hunk target
+        // is `docs/evil.txt` — git apply --numstat resolves to docs/evil.txt.
+        let crafted = "diff --git a/src/ok.txt b/src/ok.txt\nnew file mode 100644\nindex 0000000..1111111\n--- /dev/null\n+++ b/docs/evil.txt\n@@ -0,0 +1 @@\n+evil\n";
+        let patch_ref = patch_dir.join("crafted.patch");
+        std::fs::write(&patch_ref, crafted).unwrap();
+        let patch = WorkflowPatch {
+            id: "wfpatch-crafted".into(),
+            run_id: "wfrun-ns".into(),
+            step_id: "wfstep-crafted".into(),
+            label: "crafted".into(),
+            phase: "p".into(),
+            provider: "codex".into(),
+            status: WorkflowPatchStatus::PendingApply,
+            // The recorded (header-derived) changed_paths claim only src/ok.txt.
+            changed_paths: vec!["src/ok.txt".into()],
+            patch_ref: patch_ref.display().to_string(),
+            base_sha: None,
+            owned_paths: vec!["src".into()],
+            persist_changes: Some("patch".into()),
+            created_at: now_string(),
+            updated_at: None,
+            actor: None,
+            reason: None,
+            conflict_detail: None,
+            applied_at: None,
+            rejected_at: None,
+        };
+        store.append_workflow_patch(&patch).unwrap();
+        let err = apply_workflow_patch_record(&store, &patch, Some("test".into()), None, false)
+            .expect_err("crafted header must not slip past owned_paths");
+        // numstat sees docs/evil.txt which is neither in changed_paths nor owned —
+        // caught as an undisclosed-path mismatch (fail closed) OR an owned violation.
+        assert!(
+            err.to_string().contains("numstat") || err.to_string().contains("outside owned_paths"),
+            "crafted-header write is caught: {err}"
+        );
+        assert!(
+            !project_root.join("docs/evil.txt").exists(),
+            "the out-of-bounds write never touches the tree"
+        );
+
+        let _ = std::fs::remove_dir_all(&project_root);
+        let _ = std::fs::remove_dir_all(store.root());
+    }
+
+    #[test]
+    fn artifact_manifest_marks_missing_and_stale_outputs() {
+        let store = temp_store("artifact-edges");
+        let project_root = init_gc_git_project("artifact-edges", &store);
+        std::fs::create_dir_all(project_root.join("out")).expect("mk out");
+        std::fs::write(project_root.join("out/summary.md"), "artifact").expect("artifact");
+        std::fs::write(project_root.join("missing.md"), "wrong root").expect("root fallback trap");
+
+        let missing = append_artifact_manifest(
+            &store,
+            "wfrun-artifact-edges",
+            None,
+            Some("missing".into()),
+            Some("out".into()),
+            vec!["out".into()],
+            vec!["missing.md".into()],
+        )
+        .expect("missing manifest");
+        assert_eq!(missing.status, WorkflowArtifactManifestStatus::Missing);
+        assert!(missing.files[0].path.ends_with("out/missing.md"));
+
+        let prefixed = append_artifact_manifest(
+            &store,
+            "wfrun-artifact-edges",
+            None,
+            Some("prefixed".into()),
+            Some("out".into()),
+            vec!["out".into()],
+            vec!["out/summary.md".into()],
+        )
+        .expect("prefixed manifest");
+        assert_eq!(prefixed.status, WorkflowArtifactManifestStatus::Current);
+        assert_eq!(prefixed.files[0].path, "out/summary.md");
+
+        let stale = append_artifact_manifest(
+            &store,
+            "wfrun-artifact-edges",
+            None,
+            Some("stale".into()),
+            Some("out".into()),
+            vec!["reports".into()],
+            vec!["summary.md".into()],
+        )
+        .expect("stale manifest");
+        assert_eq!(stale.status, WorkflowArtifactManifestStatus::Stale);
+        assert_eq!(stale.files[0].path, "out/summary.md");
+        assert!(stale
+            .reason
+            .unwrap_or_default()
+            .contains("outside write_roots"));
+
+        let _ = std::fs::remove_dir_all(&project_root);
+        let _ = std::fs::remove_dir_all(store.root());
     }
 
     #[test]
@@ -21411,6 +24199,89 @@ new file mode 100644
         assert_eq!(ctx.store_root, store.root());
         assert!(!ctx.is_git_repo);
         let _ = std::fs::remove_dir_all(&project_root);
+    }
+
+    #[test]
+    fn workflow_child_store_guard_isolates_nested_harness_by_default() {
+        let session_dir =
+            std::env::temp_dir().join(format!("harness-child-env-{}", generated_id("guard")));
+        let mut cmd = Command::new("harness");
+        cmd.env("HARNESS_PROJECT", "real-project");
+
+        apply_workflow_child_store_guard(&mut cmd, &session_dir, false);
+
+        let envs: BTreeMap<String, Option<String>> = cmd
+            .get_envs()
+            .map(|(key, value)| {
+                (
+                    key.to_string_lossy().to_string(),
+                    value.map(|v| v.to_string_lossy().to_string()),
+                )
+            })
+            .collect();
+
+        assert_eq!(
+            envs.get(HARNESS_WORKFLOW_CHILD_STORE_ROOT_ENV)
+                .cloned()
+                .flatten(),
+            Some(
+                workflow_child_store_root(&session_dir)
+                    .to_string_lossy()
+                    .to_string()
+            )
+        );
+        assert_eq!(
+            envs.get("HARNESS_HOME").cloned().flatten(),
+            Some(
+                workflow_child_harness_home(&session_dir)
+                    .to_string_lossy()
+                    .to_string()
+            )
+        );
+        assert_eq!(
+            envs.get("HARNESS_WORKFLOW_STORE_GUARD")
+                .and_then(|v| v.as_deref()),
+            Some("isolated")
+        );
+        assert!(
+            matches!(envs.get("HARNESS_PROJECT"), Some(None)),
+            "project selector must be removed so the child store guard wins"
+        );
+    }
+
+    #[test]
+    fn workflow_child_store_guard_respects_explicit_store_mutation_opt_in() {
+        let session_dir =
+            std::env::temp_dir().join(format!("harness-child-env-{}", generated_id("allow")));
+        let mut cmd = Command::new("harness");
+        cmd.env("HARNESS_PROJECT", "real-project");
+
+        apply_workflow_child_store_guard(&mut cmd, &session_dir, true);
+
+        let envs: BTreeMap<String, Option<String>> = cmd
+            .get_envs()
+            .map(|(key, value)| {
+                (
+                    key.to_string_lossy().to_string(),
+                    value.map(|v| v.to_string_lossy().to_string()),
+                )
+            })
+            .collect();
+
+        assert!(
+            !envs.contains_key(HARNESS_WORKFLOW_CHILD_STORE_ROOT_ENV),
+            "explicit opt-in must not inject the child store override"
+        );
+        assert_eq!(
+            envs.get("HARNESS_PROJECT").and_then(|v| v.as_deref()),
+            Some("real-project")
+        );
+        assert_eq!(
+            envs.get("HARNESS_PARENT_WORKFLOW_SESSION_DIR")
+                .cloned()
+                .flatten(),
+            Some(session_dir.to_string_lossy().to_string())
+        );
     }
 
     #[test]
@@ -22195,6 +25066,8 @@ agent("a NEW second leaf that changes the ordinal alignment")
                 landed_commit: None,
                 kind: harness_core::PhaseKind::Execution,
                 builtin: None,
+                execution_mode: harness_core::PhaseExecutionMode::TaskGraph,
+                workflow_ref: None,
             }],
             knowledge: vec![Knowledge {
                 id: "knowledge-1".into(),
@@ -22444,11 +25317,29 @@ mod tests {
     fn read_allowed_doc_rejects_traversal_and_non_docs_paths() {
         // Missing parameter.
         assert!(read_allowed_doc("/v1/docs").is_err());
-        // Outside the docs/ allow-list.
+        // Outside the docs/ + root-doc allow-list.
         assert!(read_allowed_doc("/v1/docs?path=etc/passwd").is_err());
         assert!(read_allowed_doc("/v1/docs?path=Cargo.toml").is_err());
         // Path traversal, even under docs/.
         assert!(read_allowed_doc("/v1/docs?path=docs/../Cargo.toml").is_err());
+    }
+
+    #[test]
+    fn allowed_doc_path_kind_allows_docs_tree_and_root_entry_docs() {
+        assert_eq!(
+            allowed_doc_path_kind("docs/registry.json"),
+            Ok(AllowedDocPathKind::DocsTree)
+        );
+        assert_eq!(
+            allowed_doc_path_kind("README.md"),
+            Ok(AllowedDocPathKind::RootDoc)
+        );
+        assert_eq!(
+            allowed_doc_path_kind("AGENTS.md"),
+            Ok(AllowedDocPathKind::RootDoc)
+        );
+        assert!(allowed_doc_path_kind("Cargo.toml").is_err());
+        assert!(allowed_doc_path_kind("docs/../Cargo.toml").is_err());
     }
 
     #[test]
@@ -22481,6 +25372,14 @@ mod tests {
     fn generated_ids_are_unique_inside_one_exchange() {
         let ids: BTreeSet<_> = (0..64).map(|_| generated_id("rpc")).collect();
         assert_eq!(ids.len(), 64);
+    }
+
+    #[test]
+    fn generated_ids_do_not_collide_across_processes_with_same_millis_and_counter() {
+        let left = generated_id_from_parts("rpc", 1_782_832_612_114, 1001, 0);
+        let right = generated_id_from_parts("rpc", 1_782_832_612_114, 1002, 0);
+
+        assert_ne!(left, right);
     }
 
     #[test]
@@ -24812,6 +27711,83 @@ mod tests {
     }
 
     #[test]
+    fn review_gate_accepts_typed_goal_design() {
+        let root = std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("store")));
+        let store = HarnessStore::new(&root);
+        let goal = make_goal("goal-1");
+        let task = make_task("task-1", "goal-1");
+        store.append_goal(&goal).expect("append goal");
+        store.append_task(&task).expect("append task");
+        store
+            .append_goal_design(&GoalDesign {
+                id: "design-1".into(),
+                goal_id: "goal-1".into(),
+                scenario_summary: "Typed design gates review.".into(),
+                non_goals: vec![],
+                risk_and_permission_boundaries: "Test only.".into(),
+                required_infra: vec![],
+                agent_team: Some("Lead + Critic".into()),
+                task_graph: vec!["task-1".into()],
+                evidence_plan: vec!["review gate".into()],
+                acceptance_gates: vec!["accept".into()],
+                created_at: "unix-ms:100".into(),
+            })
+            .expect("append typed design");
+        store
+            .append_message(&make_timed_message(
+                "assign",
+                MessageKind::Task,
+                "leader",
+                Some("worker"),
+                "task-1",
+                "unix-ms:110",
+            ))
+            .expect("append assignment");
+        store
+            .append_message(&make_timed_message(
+                "report",
+                MessageKind::Report,
+                "worker",
+                Some("leader"),
+                "task-1",
+                "unix-ms:120",
+            ))
+            .expect("append report");
+        for evidence in [
+            make_timed_evidence("check", "check_passed", Some("task-1"), "unix-ms:121"),
+            make_timed_evidence("critic", "critic_findings", Some("task-1"), "unix-ms:122"),
+            make_timed_evidence("worker", "worker_report", Some("task-1"), "unix-ms:123"),
+        ] {
+            store.append_evidence(&evidence).expect("append evidence");
+        }
+        store
+            .append_proposal(&make_proposal("proposal-1", "task-1"))
+            .expect("append proposal");
+
+        let args = strings(&[
+            "gate",
+            "--task",
+            "task-1",
+            "--reviewer",
+            "critic",
+            "--decision",
+            "accept",
+            "--rationale",
+            "test",
+            "--evidence",
+            "check",
+            "--evidence",
+            "critic",
+            "--evidence",
+            "worker",
+        ]);
+        review_gate(&store, &args).expect("typed GoalDesign must satisfy review gate");
+        let latest = latest_task(&store, "task-1").expect("latest task");
+        assert_eq!(latest.status, TaskStatus::Done);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn review_create_persists_structured_verdict() {
         let root = std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("store")));
         let store = HarnessStore::new(&root);
@@ -24910,6 +27886,130 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
+    #[test]
+    fn task_assign_accepts_typed_goal_design() {
+        let root = std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("store")));
+        let store = HarnessStore::new(&root);
+        let goal = make_goal("goal-1");
+        let task = make_task("task-1", "goal-1");
+        store.append_goal(&goal).expect("append goal");
+        store.append_task(&task).expect("append task");
+        store
+            .append_goal_design(&GoalDesign {
+                id: "design-1".into(),
+                goal_id: "goal-1".into(),
+                scenario_summary: "Urgent local work is still designed.".into(),
+                non_goals: vec!["No broad refactor.".into()],
+                risk_and_permission_boundaries: "Lead-local change with review gate.".into(),
+                required_infra: vec![],
+                agent_team: Some("Lead + Critic".into()),
+                task_graph: vec!["task-1".into()],
+                evidence_plan: vec!["focused regression".into()],
+                acceptance_gates: vec!["task assign succeeds".into()],
+                created_at: "unix-ms:5".into(),
+            })
+            .expect("append typed design");
+
+        let args = strings(&["assign", "--id", "task-1", "--assignee", "worker"]);
+        task_command(&store, &args).expect("typed goal design must satisfy assignment gate");
+
+        let latest = latest_task(&store, "task-1").expect("latest task");
+        assert_eq!(latest.status, TaskStatus::Assigned);
+        assert_eq!(latest.assignee_agent_id.as_deref(), Some("worker"));
+        let assignment_messages: Vec<_> = store
+            .messages()
+            .expect("messages")
+            .into_iter()
+            .filter(|message| {
+                message.task_id.as_deref() == Some("task-1") && message.kind == MessageKind::Task
+            })
+            .collect();
+        assert_eq!(assignment_messages.len(), 1);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task_assign_accepts_goal_scoped_goal_design_evidence() {
+        let root = std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("store")));
+        let store = HarnessStore::new(&root);
+        let goal = make_goal("goal-1");
+        let task = make_task("task-1", "goal-1");
+        store.append_goal(&goal).expect("append goal");
+        store.append_task(&task).expect("append task");
+        let mut design = make_timed_evidence("design", "goal_design", None, "unix-ms:5");
+        design.goal_id = Some("goal-1".into());
+        store
+            .append_evidence(&design)
+            .expect("append goal-scoped design");
+
+        let args = strings(&["assign", "--id", "task-1", "--assignee", "worker"]);
+        task_command(&store, &args).expect("goal-scoped goal_design must satisfy assignment gate");
+
+        let latest = latest_task(&store, "task-1").expect("latest task");
+        assert_eq!(latest.status, TaskStatus::Assigned);
+        assert_eq!(latest.assignee_agent_id.as_deref(), Some("worker"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task_assign_accepts_valid_design_stage_waiver() {
+        let root = std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("store")));
+        let store = HarnessStore::new(&root);
+        let goal = make_goal("goal-1");
+        let task = make_task("task-1", "goal-1");
+        let follow_up = make_task("follow-up-task", "goal-1");
+        store.append_goal(&goal).expect("append goal");
+        store.append_task(&task).expect("append task");
+        store
+            .append_task(&follow_up)
+            .expect("append follow-up task");
+        store
+            .append_evidence(&Evidence {
+                id: "waiver-evidence".into(),
+                task_id: Some("task-1".into()),
+                source_type: "worker_report".into(),
+                source_ref: std::env::temp_dir().display().to_string(),
+                summary: "urgent local waiver evidence".into(),
+                created_at: "unix-ms:100".into(),
+                evidence_kind: None,
+                goal_id: None,
+            })
+            .expect("append evidence");
+        store
+            .append_decision(&Decision {
+                id: "design-waiver".into(),
+                task_id: "task-1".into(),
+                decision: "waiver".into(),
+                rationale:
+                    "stage waiver for urgent work; follow-up task follow-up-task will add GoalDesign evidence"
+                        .into(),
+                evidence_ids: vec!["waiver-evidence".into()],
+                created_at: "unix-ms:110".into(),
+                decision_kind: Some("waiver".into()),
+                goal_id: None,
+                is_waiver: true,
+                follow_up_task_id: Some("follow-up-task".into()),
+            })
+            .expect("append waiver decision");
+
+        let args = strings(&[
+            "assign",
+            "--id",
+            "task-1",
+            "--assignee",
+            "worker",
+            "--allow-missing-goal-design",
+            "--waiver-decision",
+            "design-waiver",
+        ]);
+        task_command(&store, &args).expect("valid waiver must satisfy assignment gate");
+
+        let latest = latest_task(&store, "task-1").expect("latest task");
+        assert_eq!(latest.status, TaskStatus::Assigned);
+        assert_eq!(latest.assignee_agent_id.as_deref(), Some("worker"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     fn make_evidence(source_type: &str, task_id: Option<&str>) -> Evidence {
         Evidence {
             id: generated_id("evidence"),
@@ -24989,8 +28089,10 @@ mod tests {
             landed_commit: None,
             kind: harness_core::PhaseKind::Building,
             builtin: Some("doc-sync".into()),
+            execution_mode: harness_core::PhaseExecutionMode::TaskGraph,
+            workflow_ref: None,
         };
-        let script = compile_phase_script(&goal, &phase, &[])
+        let script = compile_phase_script(&goal, &phase, &[], Path::new("."))
             .expect("building phase compiles with no tasks");
         assert!(
             script.contains("bootstrap-project-workflow"),
@@ -25011,7 +28113,7 @@ mod tests {
             ..phase.clone()
         };
         assert!(
-            compile_phase_script(&goal, &bad, &[]).is_err(),
+            compile_phase_script(&goal, &bad, &[], Path::new(".")).is_err(),
             "unknown builtin id must error"
         );
 
@@ -25019,12 +28121,68 @@ mod tests {
         let exec = harness_core::GoalPhase {
             kind: harness_core::PhaseKind::Execution,
             builtin: None,
+            execution_mode: harness_core::PhaseExecutionMode::TaskGraph,
+            workflow_ref: None,
             ..phase.clone()
         };
         assert!(
-            compile_phase_script(&goal, &exec, &[]).is_err(),
+            compile_phase_script(&goal, &exec, &[], Path::new(".")).is_err(),
             "execution phase with no tasks errors as before"
         );
+    }
+
+    #[test]
+    fn workflow_mode_phase_compiles_repo_ref_with_no_tasks() {
+        let repo_root =
+            std::env::temp_dir().join(format!("harness-wf-ref-{}", generated_id("repo")));
+        fs::create_dir_all(repo_root.join("workflows")).expect("mkdir workflows");
+        let workflow_path = repo_root.join("workflows/custom-phase.star");
+        let fixture = r#"workflow(
+    "custom-phase",
+    "Direct workflow-mode GoalPhase fixture for regression acceptance.",
+)
+verdict(True, "ok")
+"#;
+        fs::write(&workflow_path, fixture).expect("write workflow fixture");
+
+        let goal = make_goal("g-wf");
+        let phase = harness_core::GoalPhase {
+            id: "custom".into(),
+            name: "Custom".into(),
+            intent: "run the authored workflow".into(),
+            status: harness_core::GoalPhaseStatus::NotStarted,
+            acceptance: None,
+            verdict_decision_id: None,
+            created_at: "unix-ms:1".into(),
+            started_at: None,
+            ended_at: None,
+            outputs: Vec::new(),
+            inputs: Vec::new(),
+            retry: None,
+            landed_commit: None,
+            kind: harness_core::PhaseKind::Execution,
+            builtin: None,
+            execution_mode: harness_core::PhaseExecutionMode::Workflow,
+            workflow_ref: Some("repo:workflows/custom-phase.star".into()),
+        };
+
+        let script = compile_phase_script(&goal, &phase, &[], &repo_root)
+            .expect("workflow-mode phase loads repo workflow");
+        assert_eq!(script, fixture);
+        assert!(
+            !script.contains("Auto-generated by `harness phase compile`"),
+            "workflow-mode phases must not be rewritten as task graph scripts"
+        );
+
+        let unsafe_ref = harness_core::GoalPhase {
+            workflow_ref: Some("repo:../outside.star".into()),
+            ..phase.clone()
+        };
+        assert!(
+            compile_phase_script(&goal, &unsafe_ref, &[], &repo_root).is_err(),
+            "repo workflow refs must stay inside the project"
+        );
+        let _ = fs::remove_dir_all(repo_root);
     }
 
     fn make_task(id: &str, goal_id: &str) -> Task {
@@ -25080,6 +28238,8 @@ mod tests {
             landed_commit: None,
             kind: harness_core::PhaseKind::Execution,
             builtin: None,
+            execution_mode: harness_core::PhaseExecutionMode::TaskGraph,
+            workflow_ref: None,
         }];
         let mut a = make_task("t-a", "goal-compile");
         a.phase_id = Some("phase-1".into());
@@ -25160,6 +28320,8 @@ mod tests {
             landed_commit: None,
             kind: harness_core::PhaseKind::Execution,
             builtin: None,
+            execution_mode: harness_core::PhaseExecutionMode::TaskGraph,
+            workflow_ref: None,
         };
         goal.phases = vec![phase.clone()];
         let mut t = make_task("t-bad", "goal-revise");
@@ -25225,6 +28387,8 @@ mod tests {
             landed_commit: None,
             kind: harness_core::PhaseKind::Execution,
             builtin: None,
+            execution_mode: harness_core::PhaseExecutionMode::TaskGraph,
+            workflow_ref: None,
         }
     }
 
@@ -25314,6 +28478,30 @@ mod tests {
         Ok(serde_json::json!({ "revision": { "supersede": [], "new_tasks": [] } }))
     }
 
+    fn orch_workflow_phase(id: &str, workflow_ref: &str) -> harness_core::GoalPhase {
+        let mut phase = orch_phase(id);
+        phase.execution_mode = harness_core::PhaseExecutionMode::Workflow;
+        phase.workflow_ref = Some(workflow_ref.into());
+        phase
+    }
+
+    fn write_test_workflow(repo_root: &Path, rel: &str) {
+        let path = repo_root.join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).expect("workflow parent dir");
+        std::fs::write(
+            path,
+            r#"workflow(
+    "custom-phase",
+    "Direct workflow-mode GoalPhase fixture for orchestration acceptance.",
+)
+log("custom workflow-mode GoalPhase fixture started")
+output({"accepted": True, "surface": "goal-phase-workflow"})
+verdict(True, "custom workflow-mode phase direct run accepted")
+"#,
+        )
+        .expect("write workflow");
+    }
+
     #[test]
     fn orchestrate_runs_phases_sequentially_gates_and_advances() {
         let root = std::env::temp_dir().join(format!("harness-orch-{}", generated_id("ok")));
@@ -25383,6 +28571,257 @@ mod tests {
             .collect();
         assert_eq!(verdicts.len(), 2, "one phase_verdict decision per phase");
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn orchestrate_runs_custom_workflow_mode_phase_without_tasks() {
+        let root = std::env::temp_dir().join(format!("harness-orch-wf-{}", generated_id("ok")));
+        let store = HarnessStore::new(&root);
+        store.init().expect("init");
+        write_test_workflow(&root, "workflows/custom-phase.star");
+
+        let mut goal = make_goal("g-wf");
+        goal.phases = vec![orch_workflow_phase(
+            "custom",
+            "repo:workflows/custom-phase.star",
+        )];
+        persist_new_goal(&store, &goal).unwrap();
+
+        let run_phase = |script: &str,
+                         name: &str,
+                         phase_id: Option<&str>,
+                         _resume_from: Option<&str>|
+         -> CliResult<(String, workflow::WorkflowOutcome)> {
+            assert_eq!(name, "phase-custom");
+            assert_eq!(phase_id, Some("custom"));
+            assert!(
+                script.contains("custom workflow-mode GoalPhase fixture started"),
+                "orchestrator should pass the authored workflow body, got: {script}"
+            );
+            Ok(mock_outcome(&store, name, WorkflowRunStatus::Completed))
+        };
+        let report =
+            orchestrate_goal_phases(&store, "g-wf", &run_phase, &noop_reviser, 2, &root, false)
+                .expect("orchestrate workflow phase");
+        assert_eq!(report["status"], "completed");
+        assert_eq!(report["stage"], "verified");
+
+        let goal2 = goal_load(&store, "g-wf").unwrap();
+        assert_eq!(goal2.phases[0].status, GoalPhaseStatus::Passed);
+        assert!(
+            latest_tasks(&store).unwrap().is_empty(),
+            "workflow-mode phases do not require task rows"
+        );
+        let orch = store.goal_orchestration_runs().unwrap();
+        let last = orch.last().unwrap();
+        assert_eq!(last.status, OrchestrationStatus::Completed);
+        assert_eq!(last.phase_runs.len(), 1);
+        assert!(last.phase_runs[0].compiled_path.is_some());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn workflow_mode_failure_does_not_invoke_task_graph_reviser() {
+        use std::cell::Cell;
+
+        let root = std::env::temp_dir().join(format!("harness-orch-wf-{}", generated_id("fail")));
+        let store = HarnessStore::new(&root);
+        store.init().expect("init");
+        write_test_workflow(&root, "workflows/custom-phase.star");
+
+        let mut goal = make_goal("g-wf-fail");
+        goal.phases = vec![orch_workflow_phase(
+            "custom",
+            "repo:workflows/custom-phase.star",
+        )];
+        persist_new_goal(&store, &goal).unwrap();
+
+        let attempts = Cell::new(0);
+        let revised = Cell::new(0);
+        let run_phase = |_script: &str,
+                         name: &str,
+                         _phase_id: Option<&str>,
+                         _resume_from: Option<&str>|
+         -> CliResult<(String, workflow::WorkflowOutcome)> {
+            attempts.set(attempts.get() + 1);
+            Ok(mock_outcome(&store, name, WorkflowRunStatus::Failed))
+        };
+        let reviser = |_goal: &Goal,
+                       _phase: &harness_core::GoalPhase,
+                       _live_tasks: &[&Task],
+                       _knowledge: &Knowledge|
+         -> CliResult<serde_json::Value> {
+            revised.set(revised.get() + 1);
+            noop_reviser(_goal, _phase, _live_tasks, _knowledge)
+        };
+
+        let report =
+            orchestrate_goal_phases(&store, "g-wf-fail", &run_phase, &reviser, 2, &root, false)
+                .expect("orchestrate workflow failure");
+        assert_eq!(report["status"], "failed");
+        assert_eq!(report["failed_phase"], "custom");
+        assert_eq!(
+            attempts.get(),
+            1,
+            "workflow phases should not retry through task-graph repair"
+        );
+        assert_eq!(
+            revised.get(),
+            0,
+            "workflow phases should not invoke the task graph reviser"
+        );
+        let goal2 = goal_load(&store, "g-wf-fail").unwrap();
+        assert_eq!(goal2.phases[0].status, GoalPhaseStatus::Failed);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// A single-step outcome that COMPLETED overall but whose one leaf reports
+    /// `ok=false` (an authored workflow that tolerated a failure and still
+    /// verdict(True)ed). No worktree diff, so landing is a no-op.
+    fn completed_outcome_with_failed_step(phase_id: &str) -> workflow::WorkflowOutcome {
+        workflow::WorkflowOutcome {
+            steps: vec![workflow::StepResult {
+                phase: phase_id.into(),
+                label: "tolerated".into(),
+                provider: "codex".into(),
+                isolation: None,
+                ok: false,
+                provider_session_id: None,
+                output_summary: "leaf failed but the workflow recovered".into(),
+                step_id: Some("wfstep-tolerated".into()),
+                started_at: None,
+                details: None,
+                structured: None,
+                ordinal: Some(0),
+            }],
+            status: WorkflowRunStatus::Completed,
+            summary: "completed despite a failed leaf".into(),
+            agents_spawned: 1,
+            final_output: Some(serde_json::json!({ "verdict": { "ok": true } })),
+        }
+    }
+
+    // D2: a WORKFLOW-mode phase whose run Completed with verdict(True) PASSES even
+    // though one journaled leaf has ok=false — authored workflows may tolerate a
+    // failed leaf (return_status + retry). The gate must not require all-steps-ok.
+    #[test]
+    fn workflow_mode_phase_passes_with_a_tolerated_failed_step() {
+        let root = std::env::temp_dir().join(format!("harness-d2-wf-{}", generated_id("d2")));
+        let store = HarnessStore::new(&root);
+        store.init().expect("init");
+        write_test_workflow(&root, "workflows/custom-phase.star");
+        let mut goal = make_goal("g-d2-wf");
+        goal.phases = vec![orch_workflow_phase(
+            "custom",
+            "repo:workflows/custom-phase.star",
+        )];
+        persist_new_goal(&store, &goal).unwrap();
+
+        let run_phase = |_script: &str,
+                         name: &str,
+                         _phase_id: Option<&str>,
+                         _resume_from: Option<&str>|
+         -> CliResult<(String, workflow::WorkflowOutcome)> {
+            let phase_id = name.strip_prefix("phase-").unwrap_or(name);
+            Ok((
+                "wfrun-mock".into(),
+                completed_outcome_with_failed_step(phase_id),
+            ))
+        };
+        let report = orchestrate_goal_phases(
+            &store,
+            "g-d2-wf",
+            &run_phase,
+            &noop_reviser,
+            2,
+            &root,
+            false,
+        )
+        .expect("orchestrate");
+        assert_eq!(
+            report["status"], "completed",
+            "workflow-mode phase passes despite a failed leaf (D2)"
+        );
+        assert_eq!(
+            goal_load(&store, "g-d2-wf").unwrap().phases[0].status,
+            GoalPhaseStatus::Passed
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    // D2 regression guard: a TASK-GRAPH phase with a failed step still FAILS — the
+    // all-steps-ok clause is unchanged for task-graph mode (a bare parallel() block
+    // has no verdict, so a failed task must fail the phase).
+    #[test]
+    fn task_graph_phase_still_fails_on_a_failed_step() {
+        let root = std::env::temp_dir().join(format!("harness-d2-tg-{}", generated_id("d2")));
+        let store = HarnessStore::new(&root);
+        store.init().expect("init");
+        let mut goal = make_goal("g-d2-tg");
+        goal.phases = vec![orch_phase("p1")];
+        persist_new_goal(&store, &goal).unwrap();
+        let mut t = make_task("t1", "g-d2-tg");
+        t.phase_id = Some("p1".into());
+        t.owned_paths = vec!["a".into()];
+        persist_new_task(&store, &t).unwrap();
+
+        // The step Completed overall but its one leaf reports ok=false.
+        let run_phase = |_script: &str,
+                         name: &str,
+                         _phase_id: Option<&str>,
+                         _resume_from: Option<&str>|
+         -> CliResult<(String, workflow::WorkflowOutcome)> {
+            let phase_id = name.strip_prefix("phase-").unwrap_or(name).to_string();
+            let steps = store
+                .tasks()
+                .unwrap()
+                .into_iter()
+                .filter(|task| task.phase_id.as_deref() == Some(phase_id.as_str()))
+                .map(|task| workflow::StepResult {
+                    phase: phase_id.clone(),
+                    label: task.id.clone(),
+                    provider: "codex".into(),
+                    isolation: None,
+                    ok: false,
+                    provider_session_id: None,
+                    output_summary: "task failed".into(),
+                    step_id: Some(format!("wfstep-{}", task.id)),
+                    started_at: None,
+                    details: None,
+                    structured: None,
+                    ordinal: None,
+                })
+                .collect();
+            Ok((
+                "wfrun-mock".into(),
+                workflow::WorkflowOutcome {
+                    steps,
+                    status: WorkflowRunStatus::Completed,
+                    summary: "task-graph with a failed task".into(),
+                    agents_spawned: 1,
+                    final_output: None,
+                },
+            ))
+        };
+        let report = orchestrate_goal_phases(
+            &store,
+            "g-d2-tg",
+            &run_phase,
+            &noop_reviser,
+            0,
+            &root,
+            false,
+        )
+        .expect("orchestrate");
+        assert_eq!(
+            report["status"], "failed",
+            "task-graph phase still fails on a failed step (D2 regression guard)"
+        );
+        assert_eq!(
+            goal_load(&store, "g-d2-tg").unwrap().phases[0].status,
+            GoalPhaseStatus::Failed
+        );
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -27429,6 +30868,49 @@ mod tests {
     }
 
     #[test]
+    fn plan_into_goal_creates_workflow_mode_phase_without_tasks() {
+        let root = std::env::temp_dir().join(format!("harness-plan-{}", generated_id("wf")));
+        let store = HarnessStore::new(&root);
+        store.init().expect("init");
+        let mut goal = make_goal("g-plan-wf");
+        persist_new_goal(&store, &goal).unwrap();
+
+        let structured = serde_json::json!({
+            "phases": [
+                {
+                    "id": "direct-workflow",
+                    "name": "Direct Workflow",
+                    "intent": "run the authored Starlark workflow for this phase",
+                    "acceptance": "the workflow verdict passes",
+                    "execution_mode": "workflow",
+                    "workflow_ref": "repo:workflows/direct-workflow.star",
+                    "tasks": []
+                }
+            ]
+        });
+        let result = plan_into_goal(&store, &mut goal, &structured, "leader").expect("plan");
+        assert_eq!(result.phases_added, vec!["direct-workflow"]);
+        assert!(result.tasks_created.is_empty());
+
+        let g = goal_load(&store, "g-plan-wf").unwrap();
+        assert_eq!(g.phases.len(), 1);
+        let phase = &g.phases[0];
+        assert_eq!(
+            phase.execution_mode,
+            harness_core::PhaseExecutionMode::Workflow
+        );
+        assert_eq!(
+            phase.workflow_ref.as_deref(),
+            Some("repo:workflows/direct-workflow.star")
+        );
+        assert!(
+            latest_tasks(&store).unwrap().is_empty(),
+            "workflow-mode planner phases should not create task rows"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn plan_into_goal_maps_phase_and_task_outputs() {
         // goal-phase-artifacts S2: a planner object that declares `outputs` on a
         // phase AND a task must persist them as ArtifactSpec (the kind parsed
@@ -28052,6 +31534,8 @@ mod tests {
             landed_commit: None,
             kind: harness_core::PhaseKind::Execution,
             builtin: None,
+            execution_mode: harness_core::PhaseExecutionMode::TaskGraph,
+            workflow_ref: None,
         }];
         store.append_goal(&goal).expect("append goal");
     }

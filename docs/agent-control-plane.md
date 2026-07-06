@@ -7,7 +7,7 @@ as [integration/codex.md](integration/codex.md).
 
 The design reference is Claude Code Agent Teams: coordinated sessions with a
 shared task list, direct teammate messaging, separate contexts, and explicit
-team lifecycle. Multi-Agent Harness uses the same product lesson, but records
+team lifecycle. Star Harness uses the same product lesson, but records
 the coordination state in harness objects so it can be reviewed, replayed, and
 shown in the Agent Dashboard.
 
@@ -236,7 +236,7 @@ Team-generated work must be durable:
 - accepted proposals enter the same GoalDesign, assignment, review, decision,
   and evaluation flow as user-requested work.
 
-This is the difference between Multi-Agent Harness and one-shot subagents. A
+This is the difference between Star Harness and one-shot subagents. A
 subagent answers a prompt. A harness team maintains a backlog, a shared task
 graph, and an evidence-backed learning loop.
 

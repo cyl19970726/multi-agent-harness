@@ -5,15 +5,25 @@ This doc assembles the harness's central execution model in one place. The model
 ```text
 Goal
   -> Goal.phases[]        (sequential agent-planned phases)
-    -> per-phase Task DAG (depends_on + disjoint owned_paths)
-      -> compile_phase_to_starlark
+    -> GoalPhase.execution_mode
+      -> task_graph: per-phase Task DAG -> compile_phase_to_starlark
+      -> workflow: workflow_ref -> authored Starlark workflow
         -> harness goal run-phases
           -> verdict gate
             -> per-phase landing
               -> next phase
 ```
 
-A phase is the unit of planning, gating, and landing. A phase **compiles to a Dynamic Agent Workflow** (a `.star` program of `agent()` / `parallel()` / `verdict()` leaves) that the workflow runtime executes. The workflow runtime is documented separately at [`docs/workflow-runtime.md`](workflow-runtime.md), with locked decisions in [`docs/decisions/0022-dynamic-workflow-runtime-json-ir.md`](decisions/0022-dynamic-workflow-runtime-json-ir.md) and [`docs/decisions/0023-starlark-workflow-frontend.md`](decisions/0023-starlark-workflow-frontend.md).
+A phase is the unit of planning, gating, and landing. Each phase chooses one
+executor. `task_graph` phases compile their `Task` DAG into a Dynamic Agent
+Workflow. `workflow` phases load an authored `.star` program through
+`workflow_ref` and run it directly. The workflow runtime is documented
+separately at [`docs/workflow-runtime.md`](workflow-runtime.md), with locked
+decisions in
+[`docs/decisions/0022-dynamic-workflow-runtime-json-ir.md`](decisions/0022-dynamic-workflow-runtime-json-ir.md),
+[`docs/decisions/0023-starlark-workflow-frontend.md`](decisions/0023-starlark-workflow-frontend.md),
+and
+[`docs/decisions/0024-goal-phase-execution-modes.md`](decisions/0024-goal-phase-execution-modes.md).
 
 ## 1. Goal and phases
 
@@ -34,14 +44,21 @@ pub struct GoalPhase {
     pub inputs: Vec<ArtifactSpec>,        // required cross-phase inputs
     pub retry: Option<u32>,               // per-phase retry budget override
     pub landed_commit: Option<String>,    // commit where writable work landed
+    pub execution_mode: PhaseExecutionMode,
+    pub workflow_ref: Option<String>,      // repo:... or builtin:... for workflow mode
 }
 ```
 
 Phases are the source of truth for goal progress. The legacy `Goal.stage` field becomes a derived projection: `Goal.effective_stage()` (`lib.rs:400`) derives `Verified` when every phase is `Passed`, `Working` when any phase has started/failed/blocked, and `Draft` when all are `NotStarted`. `GoalPhaseStatus` (`lib.rs:100`) is `NotStarted | InProgress | Passed | Failed | Blocked`.
 
-A goal with no `phases` is **refused** by `goal run-phases` — it errors `goal has no phases to run` (`main.rs:2244`); plan it first (`goal phase-add` or the planner). Likewise `compile_phase_to_starlark` errors if a phase has no live tasks (`lib.rs:664`).
+A goal with no `phases` is **refused** by `goal run-phases`; plan it first
+(`goal phase-add` or the planner). A `task_graph` phase with no live tasks is
+also refused. A `workflow` phase can have zero tasks, but must have a safe
+`workflow_ref`.
 
 ## 2. Per-phase task DAG
+
+This section applies only to `execution_mode = "task_graph"`.
 
 Each phase owns the tasks whose `Task.phase_id` matches the phase's `id` (`lib.rs:1646`). A `Task` (`lib.rs:1608`) declares:
 
@@ -109,22 +126,24 @@ The CLI accepts `--max-phase-retries <n>` (default 1) and `--dry-run` (`main.rs:
 
 ## 6. Verdict gate
 
-A phase passes only when all of the following hold (`main.rs:2439-2441`):
+A phase passes only when all of the following hold (`main.rs:2439-2441`), and the gate is now **per execution mode** (the `let gate_passed = if effective_phase_execution_mode(...)` site in `main.rs`):
 
 1. The workflow run status is `Completed`.
-2. Every task step `ok` is true.
+2. Every task step `ok` is true. **This clause applies to `task_graph` phases only.** A bare compiled `parallel()` block has no `verdict()`, so a failed task inside it must be caught this way.
 3. Every required artifact (phase + live task `outputs`) is satisfied (`main.rs:2432-2433`, `unmet_required_artifacts` at `main.rs:1932`).
 4. Every required `RegisteredDoc` is present in `docs/registry.json` (`main.rs:2438`, `unmet_registered_docs` at `main.rs:1990`).
 
-If `phase.acceptance` is set, the compiled judge leaf returns structured `{"pass": bool, "reason": string}` and `verdict(...)` hard-gates the phase (`lib.rs:901-918`). If no acceptance is set, clauses 1–3 above form the gate.
+A `workflow`-mode phase gates on clauses 1, 3, and 4 only — it trusts the run's own status and verdict rather than requiring every step to be `ok`. An authored Starlark program can legitimately tolerate a failed leaf (e.g. `return_status=True` plus a retry/fallback that still reaches `verdict(True)`, per `skills/star-workflow/examples/failure-aware-retry.star`); the run still finalizes `Completed` even though one journaled step is `ok=false`, and that tolerated failure must not fail the phase. A `task_graph` phase keeps the strict all-steps-`ok` clause.
+
+If `phase.acceptance` is set, the compiled judge leaf returns structured `{"pass": bool, "reason": string}` and `verdict(...)` hard-gates the phase (`lib.rs:901-918`). If no acceptance is set, the applicable clauses above form the gate.
 
 The orchestrator records the verdict as a `Decision` with `decision_kind = "phase_verdict"` and points `GoalPhase.verdict_decision_id` at it (`main.rs:2493-2509`). This is the durable acceptance record for the phase.
 
 ## 7. Per-phase landing
 
-A passing phase lands its writable work onto the goal branch via `land_phase_diffs` (`main.rs:2119`):
+A passing phase lands its writable work onto the goal branch via `land_phase_diffs` (`main.rs:2119`). This is the phase's **single landing authority**: every `goal run-phases` run — task-graph or workflow-mode — is stamped `orchestrated: true` (`is_orchestrated_run`) and persists NO `WorkflowPatch` rows; `land_phase_diffs` applies the diffs directly out of the run's own outcome.
 
-1. Collects non-empty worktree diffs from task steps in deterministic order (by leaf `ordinal`, then journaled index) (`main.rs:2126-2136`).
+1. Collects non-empty worktree diffs from task steps in deterministic order (by leaf `ordinal`, then journaled index) (`main.rs:2126-2136`), **skipping** a step's diff when the workflow called `reject_patch(label, ...)` on it (`workflow_rejected_labels`, read from `final_output.patch_actions`) or when the leaf declared `persist_changes="discard"` (`step_discards_changes`). An in-script `apply_patch(label, ...)` call needs no special casing — apply is the default, so landing lands that step's diff same as any other non-excluded step.
 2. Refuses to start unless the repo index and working tree are clean, so unrelated pre-staged work is not swept into the phase commit (`main.rs:2152-2162`).
 3. Applies each diff with `git apply --index` (`main.rs:2173-2206`). A failed apply rolls back to the pre-landing HEAD with `git reset --hard` and converts the pass into a clean failure (`main.rs:2193-2204`).
 4. Makes one commit: `"phase <id> landed (run-phases)"` (`main.rs:2212-2218`).
@@ -154,7 +173,14 @@ After a phase run, `write_back_phase_tasks` (`main.rs:1325`) maps each step labe
 
 ## 11. Relation to the workflow runtime
 
-A phase **is** the plan; the workflow runtime **executes** the compiled phase. `compile_phase_to_starlark` emits a Dynamic Agent Workflow — a Starlark program that calls `agent()`, `parallel()`, and `verdict()` primitives provided by `crates/harness-workflow`. The runtime is provider-neutral, schedules leaves under a concurrency cap, journals `WorkflowRun` + `WorkflowStep` rows, and supports deterministic resume via step-identity caching. See the runtime design doc and ADRs cited at the top of this doc.
+A phase **is** the plan; the workflow runtime **executes** the selected executor.
+For `task_graph`, `compile_phase_to_starlark` emits a Dynamic Agent Workflow from
+the task DAG. For `workflow`, the authored Starlark program is already the plan
+and is loaded directly from `workflow_ref`. In both cases the runtime is
+provider-neutral, schedules leaves under a concurrency cap, journals
+`WorkflowRun` + `WorkflowStep` rows, and supports deterministic resume via
+step-identity caching. See the runtime design doc and ADRs cited at the top of
+this doc.
 
 In the product, every workflow run should carry `goal_id` and `phase_id` so the causal chain is machine-traversable. The compiler already emits `phase=<phase_id>` on every leaf; the runtime stores this on `WorkflowStep.phase`, and `link_workflow_steps_to_tasks` binds it back to `Task` records.
 
@@ -162,7 +188,9 @@ In the product, every workflow run should carry `goal_id` and `phase_id` so the 
 
 | Concept | Canonical location | Projection |
 | --- | --- | --- |
-| Phase plan | `Goal.phases[]` + `Task` DAG | Compiled `.star` script |
+| Phase executor | `GoalPhase.execution_mode` | Dashboard mode-specific rendering |
+| Task-graph phase plan | `Goal.phases[]` + `Task` DAG | Compiled `.star` script |
+| Workflow phase plan | `GoalPhase.workflow_ref` | Authored `.star` script |
 | Phase progress | `GoalPhase.status` | `Goal.stage` (derived) |
 | Verdict | `Decision(decision_kind=phase_verdict)` + `GoalPhase.verdict_decision_id` | Dashboard phase timeline |
 | Landed code | `GoalPhase.landed_commit` | Git commit `phase <id> landed (run-phases)` |

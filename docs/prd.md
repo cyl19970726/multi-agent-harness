@@ -2,7 +2,7 @@
 
 ## Vision
 
-Multi-Agent Harness turns a project or business domain into an
+Star Harness turns a project or business domain into an
 agent-operable and agent-progressable system.
 
 The product is not an agent runner and not a project-specific engine. It is a

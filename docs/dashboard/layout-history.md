@@ -29,7 +29,7 @@ accepted stack and module boundaries live in
 
 ## Product Context
 
-Multi-Agent Harness is a coordination layer for persistent Agent Teams. The
+Star Harness is a coordination layer for persistent Agent Teams. The
 Workbench must show that this workflow really happened:
 
 ```text
@@ -366,7 +366,7 @@ Team workspace shell
   + controlled graph/Kanban tabs
 ```
 
-Use Candidate 1 as the overall shell because Multi-Agent Harness is a persistent
+Use Candidate 1 as the overall shell because Star Harness is a persistent
 team product. Use Candidate 2 for Goal and Task detail because goals/tasks need
 auditable document-like surfaces. Use Candidate 3 only for relationship views:
 Vision goal graph, selected Goal task graph, blockers, follow-ups, and
@@ -518,7 +518,7 @@ Team workspace shell
 
 Rationale:
 
-- Multi-Agent Harness needs to feel like a persistent team control plane, not a
+- Star Harness needs to feel like a persistent team control plane, not a
   one-shot job runner or JSON report.
 - AgentMembers should read as durable teammates with status, queue, inbox,
   outbox, runtime health, current task, and activity history.
@@ -990,3 +990,180 @@ recorded in [frontend-architecture.md](frontend-architecture.md) and ADR
 [0016](../decisions/0016-tailwind-shadcn-adoption.md). This consolidated history
 is now the routing target for any future rejected-implementation records: append
 a dated entry to this ledger rather than creating a separate directory.
+
+### Decision 2026-07-03: Goal Workbench v1 Phase Spine
+
+Workflow evidence: `wfrun-1783013150649-0`; harness evidence:
+`evidence-1783013226770-p11384-0`.
+
+Selected direction:
+
+```text
+Goal detail as primary workbench
+  + phase-first vertical spine
+  + inline task/evidence/review/decision inspector
+  + unphased/follow-up task separation
+  + demoted derived lifecycle summary
+```
+
+Why this serves the Vision:
+
+- A selected Goal must prove the harness workflow happened; a filtered task board
+  cannot explain GoalDesign, phase gates, assignment messages, evidence,
+  proposal/review, Leader decision, and GoalEvaluation in one place.
+- `surface=tasks&goal=<id>` is useful as a projection, but it cannot be the
+  primary explanation surface for "which Goal is this and what spec is being
+  executed?"
+- Phase is now the sequential execution and gate model. The UI must center
+  `Goal.phases[]` and `Task.phase_id`, not the legacy stage strip.
+
+Rejected or demoted directions:
+
+- Stage-bar-first Goal: killed because `draft -> ... -> verified` is only a
+  derived lifecycle projection for phase-driven goals.
+- Task-board-first Goal: killed because it hides the Goal spec and closeout
+  proof chain.
+- Graph-first Goal: deferred because the current failure is orientation and
+  proof, not topology; graph remains a phase-local projection.
+
+Borrowed ideas:
+
+- From the Work board design, keep Goal collection as the Work index and keep
+  Task detail as an inspector/drawer rather than forcing a full route jump.
+- From evidence/review/decision page contracts, keep proof chain gaps visible as
+  object-local acceptance state.
+
+Screenshot gate:
+
+- Implementation is not accepted from code checks alone.
+- Browser evidence must include actual desktop, tablet, and mobile screenshots,
+  console checks, horizontal overflow checks, and at least one phase task detail
+  interaction while retaining Goal context.
+
+Current page contract:
+
+- [pages/goal.md](pages/goal.md)
+
+### Iteration 2026-07-03: Goal Workbench Polish Pass
+
+Browser evidence:
+
+- before: `.harness/screenshots/goal-workbench-polish/before-tasks-goal-content-desktop.png`
+- before: `.harness/screenshots/goal-workbench-polish/before-goal-content-desktop.png`
+- before: `.harness/screenshots/goal-workbench-polish/before-goal-content-mobile.png`
+- after: `.harness/screenshots/goal-workbench-polish/after-tasks-goal-content-desktop.png`
+- after: `.harness/screenshots/goal-workbench-polish/after-goal-content-desktop.png`
+- after: `.harness/screenshots/goal-workbench-polish/after-goal-content-mobile.png`
+
+Problems found from screenshots:
+
+- `surface=tasks&goal=<id>` still read as the generic Work board. It did not
+  expose the Goal spec or make the path back to the Goal Workbench visually
+  primary enough.
+- Goal detail opened with a table-like property block. On mobile this made the
+  first viewport spend too much space on metadata instead of the selected
+  Goal's workbench state.
+- The selected Goal page still labeled itself only as `Goal`, weakening the
+  intended product model: the Goal detail is the workbench, not just a document.
+
+Fixes:
+
+- Goal-scoped task projection now titles itself as `<Goal> tasks`, shows a
+  compact Goal context panel with status, priority, phase count, task count,
+  short spec, and a single primary `Open Goal Workbench` action.
+- Goal detail now uses `Goal Workbench` as the surface label and replaces the
+  document property table with compact metadata chips.
+- Desktop and mobile screenshots show no horizontal overflow and no console
+  errors after the polish pass.
+
+### Iteration 2026-07-03: Phase Inline Task Relationship View
+
+Browser evidence:
+
+- desktop: `.harness/screenshots/goal-phase-inline/desktop-phase-inline.png`
+- mobile phase top: `.harness/screenshots/goal-phase-inline/mobile-phase-inline.png`
+- mobile expanded task: `.harness/screenshots/goal-phase-inline/mobile-task-expanded.png`
+
+Problem found:
+
+- Phase-level tasks were rendered as small chips plus a Graph/Kanban toggle.
+  This forced the operator to choose between a status board and a route jump,
+  while the actual question inside a phase is relationship, detail, acceptance,
+  and proof.
+- Mobile verification showed that even after replacing the chip view, long
+  relationship rows could visually push beyond their card. The final fix hides
+  task ids on narrow screens and truncates long relation titles inside the row.
+
+Decision:
+
+- Keep Kanban as a Work-page / goal-scoped status projection only.
+- Inside a Goal phase, render a single relationship path with expandable task
+  nodes.
+- Each expanded task node shows objective, acceptance, ownership, owned paths,
+  depends-on, blocks, and proof counts inline. The full Task document remains a
+  secondary explicit icon action.
+
+Verification:
+
+- `npx pnpm@9.15.4 check:dashboard` passed.
+- Desktop `1440x900`: `kanbanButtonCount=0`, `graphButtonCount=0`,
+  `hasInlineDetail=true`, `hasHorizontalOverflow=false`, console errors/warnings
+  `0`.
+- Mobile `390x844`: `kanbanButtonCount=0`, `graphButtonCount=0`,
+  `hasInlineDetail=true`, `hasHorizontalOverflow=false`, overflowing relation
+  rows `0`, console errors/warnings `0`.
+
+Follow-up polish from mobile screenshot:
+
+- The old fixed left rail consumed too much mobile width and made phase task
+  details feel cramped even when the relationship rows technically fit.
+- On small screens the Workbench rail now becomes a bottom navigation bar, and
+  document padding drops from desktop spacing to mobile spacing.
+- Verification screenshot:
+  `.harness/screenshots/goal-phase-inline/mobile-bottom-rail-expanded.png`.
+  Mobile `390x844`: `navAtBottom=true`, `hasInlineDetail=true`,
+  `hasHorizontalOverflow=false`, console errors/warnings `0`.
+
+### Iteration 2026-07-03: Phase Plan To Workflow View
+
+Product correction:
+
+- Do not expose `Task Graph` as a Goal phase product concept, including as an
+  advanced/debug tab. The compiler may still use dependencies and owned-path
+  grouping internally, but the operator-facing model is phase plan -> compiled
+  workflow -> live workflow run -> gate.
+- A phase should show the plan steps and the Starlark workflow shape generated
+  from that plan. The latest `WorkflowRun` for the phase should be visible in
+  the same phase card and openable directly for realtime execution data.
+
+Decision:
+
+- Replace phase-internal graph language with `Phase plan`.
+- Add a `Compiled workflow` panel to every phase, showing the persisted run
+  script when available or a generated Starlark preview from the current phase
+  plan when no run has been recorded.
+- Add a `Live execution` panel beside it, showing the latest phase-linked
+  workflow run, step counts, attempts, verdict step, and a direct `Open
+  workflow run` action.
+- Keep `Task` as the internal assignment/evidence object and as the secondary
+  document opened from a step; do not make `Task Graph` a visible navigation or
+  debugging surface on the Goal page.
+
+Verification target:
+
+- Browser screenshots must show `Compiled workflow`, `Live execution`, and
+  `Phase plan` inside `?surface=goal&goal=goal-content-model-v1`.
+- Screenshots must show no visible `Task Graph`, no phase-local Graph/Kanban
+  toggle, no horizontal overflow, and no console errors or warnings.
+
+Implementation follow-up:
+
+- Workflow run selection and rollup logic now lives in shared workflow selectors
+  instead of `Surfaces.tsx`: phase-linked run lookup, step status counts,
+  progress, verdict-step lookup, persisted Starlark script extraction, and phase
+  preview compilation.
+- Goal phase and Workflow detail share `WorkflowRunSummary` for run status,
+  step counts, progress, verdict, attempts, and optional `Open workflow run`.
+- Goal phase and Workflow detail share `WorkflowDefinitionPreview` for the
+  Starlark source preview. Workflow detail keeps the full timeline, verdict,
+  patch/artifact/session drill-in, and Rust definition as the deep surface.

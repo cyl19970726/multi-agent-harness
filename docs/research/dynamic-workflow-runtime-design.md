@@ -18,7 +18,7 @@ source of truth where the two differ. The locked decisions live in
 > The dynamic authoring surface is now a **Starlark program** run via
 > `harness workflow run-script <prog.star>` (with a mandatory
 > `workflow(name, design_intent)` header), authored with the
-> [`skills/author-workflow`](../../skills/author-workflow) skill. The runtime
+> [`skills/star-workflow`](../../skills/star-workflow) skill. The runtime
 > primitives (`parallel()`/`pipeline()`/scheduler), the `crates/harness-workflow`
 > crate, the additive object fields, and the one-journal/one-dashboard contract
 > below all **still hold** — Starlark just replaced the JSON-IR as the producer.
@@ -32,7 +32,7 @@ any agent can author a workflow shape at runtime. The as-built decisions
 
 - **Trigger = skill + CLI, not MCP/plugin.** `harness workflow run-spec
   <spec.json>` is the contract, alongside the registry `workflow run --name`. An
-  `author-workflow` skill (`.agents/skills/author-workflow/SKILL.md`) teaches an
+  `star-workflow` skill (`skills/star-workflow/SKILL.md`) teaches an
   agent to write a spec, invoke the CLI, and read the run back. No plugin, no new
   transport; an MCP shim over the same CLI is an optional, unbuilt future.
 - **Dynamic spec = JSON-IR, not embedded JS.** A spec is a schema-validated JSON

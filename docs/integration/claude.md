@@ -1,6 +1,6 @@
 # Claude Integration
 
-本文档定义 Multi-Agent Harness 如何集成 Claude Code。重点是把 Claude 变成
+本文档定义 Star Harness 如何集成 Claude Code。重点是把 Claude 变成
 harness 里的持久 `AgentMember` provider：可以创建、投递消息、观察状态、回收
 运行时，并把执行过程转成 harness 的 `AgentEvent`、`Proposal`、`Evidence`、
 `Message` 和 `Decision`。

@@ -27,6 +27,7 @@ status:
   stack: React 18 + TypeScript + Vite + Tailwind v4 + shadcn/Radix + lucide + Geist
   theme: light, Notion-like document surface (ADR 0019, supersedes 0016 dark theme)
   vision_goal_task: unified Work board + Notion document detail (work-board-design.md)
+  goal_detail_contract: phase-first Goal Workbench (pages/goal.md)
   frontend_design_source: page specs + work-board-design.md + ADR 0019
   implementation_allowed: yes
 ```
@@ -42,9 +43,10 @@ recorded in [layout-history.md](layout-history.md). Further changes must:
   [frontend-architecture.md](frontend-architecture.md) and ADRs
   [0016](../decisions/0016-tailwind-shadcn-adoption.md) +
   [0019](../decisions/0019-vision-goal-task-workbench-redesign.md);
-- for Vision/Goal/Task surfaces, follow
+- for Vision/Task/Work-board surfaces, follow
   [work-board-design.md](work-board-design.md) (Notion document layout, unified
-  Work board) rather than the removed per-page specs;
+  Work board); for Goal detail, follow the active
+  [Goal Workbench page contract](pages/goal.md);
 - keep desktop/tablet/mobile ASCII diagrams in each changed page spec current;
 - pass screenshot-first acceptance in [acceptance.md](acceptance.md).
 
@@ -77,18 +79,19 @@ Vision -> Goal collection -> GoalDesign -> AgentTeam -> TaskGraph
 
 ## Page Specs
 
-The **Vision, Goal, Task, Work-board (graph/Kanban), and Docs** surfaces are now
-owned by [work-board-design.md](work-board-design.md) and ADR
+The **Vision, Task, Work-board (graph/Kanban), and Docs** surfaces are owned by
+[work-board-design.md](work-board-design.md) and ADR
 [0019](../decisions/0019-vision-goal-task-workbench-redesign.md): a light,
 Notion-like document layout, a unified `[Goals | Tasks]` Work board with a goal
-filter and derived ready/waiting chips, full-page Goal documents, a Task
-slide-over, and live docs rendering for Vision `source_refs`. Their old
-per-page specs were removed. The page specs below cover the surfaces not yet
-folded into that redesign.
+filter and derived ready/waiting chips, Task slide-over, and live docs rendering
+for Vision `source_refs`. The **Goal detail** surface now has an active
+page-local contract because Goal Workbench v1 makes it the phase-first execution
+and proof surface.
 
 | Page spec | Owns |
 | --- | --- |
 | [work-board-design.md](work-board-design.md) | Vision/Goal/Task structures + examples, unified Work board, Goal/Task/Vision detail document layout, derived task-graph. |
+| [Goal Workbench](pages/goal.md) | Phase-first Goal detail, proof chain, task grouping, stage demotion, and screenshot gate. |
 | [Team workspace](pages/team-workspace.md) | Persistent AgentTeam collaboration space, role groups, queues, activity, decision pressure. |
 | [AgentMember workbench](pages/agent-member-workbench.md) | One durable member as a teammate: current work, inbox/outbox, activity, runtime, prompt/skills, actions. |
 | [Evidence/Review/Decision](pages/evidence-review-decision.md) | Acceptance proof chain and decision queues. |

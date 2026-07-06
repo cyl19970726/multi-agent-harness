@@ -1,15 +1,17 @@
 # Agent Operating Rules
 
-This repository builds Multi-Agent Harness itself. Work in this repo must use
+This repository builds Star Harness itself. Work in this repo must use
 the harness objects as the canonical coordination state.
 
 ## Product We Are Building
 
-Multi-Agent Harness is a goal-task-multi-agent development system. Its purpose
+Star Harness is a goal-task-multi-agent development system. Its purpose
 is to turn a high-level goal into an executable, reviewable, reusable workflow:
 
 ```text
-Goal -> GoalDesign -> AgentTeam -> TaskGraph -> Message -> AgentMember work
+Goal -> GoalDesign -> AgentTeam -> GoalPhase
+  -> task_graph executor (Task -> Message -> AgentMember work)
+     OR workflow executor (WorkflowRun -> WorkflowStep)
   -> Evidence -> Proposal -> Critic/Gate -> Decision -> GoalEvaluation
   -> GoalCase / Follow-up Task
 ```
@@ -37,6 +39,10 @@ skills, not in the generic harness core.
 - `AgentMember`: a persistent or logically durable agent instance with id,
   name, role, prompt, skills, runtime state, current task, and provider session
   history.
+- `GoalPhase`: a sequential checkpoint inside a Goal. A phase chooses one
+  primary executor: `task_graph` for durable Task/Message/AgentMember work, or
+  `workflow` for direct WorkflowRun/WorkflowStep execution. It is not the same as
+  the Starlark workflow `phase("...")` label.
 - `Task`: a unit of work owned by an agent, with dependencies, worktree/branch
   refs, owned paths, reviewer, and acceptance criteria.
 - `Message`: the communication protocol. Assignment, handoff, review request,
@@ -83,11 +89,15 @@ The Lead Agent should use this sequence for every non-trivial change:
    `target/debug/harness agent list`, and relevant docs.
 3. Create or reuse a goal. If the goal is new, record `goal_design` evidence
    before assigning implementation tasks.
-4. Design the team. At minimum, substantial work needs a Lead, Worker, and
-   Critic/Gate. Add Dashboard, Schema, Provider, Adapter, or Docs agents only
-   when the scenario needs those roles.
-5. Create tasks with explicit owner, assignee, reviewer, dependencies, owned
-   paths, workspace or worktree refs, and acceptance criteria.
+4. Design the team and each phase's execution mode. Use `task_graph` when the
+   phase needs persistent AgentMember assignment and message/report proof. Use
+   `workflow` when the phase is naturally a direct Starlark workflow with
+   WorkflowRun/WorkflowStep as the runtime truth. Add Dashboard, Schema,
+   Provider, Adapter, or Docs agents only when the scenario needs those roles.
+5. For task_graph phases, create tasks with explicit owner, assignee, reviewer,
+   dependencies, owned paths, workspace or worktree refs, and acceptance
+   criteria. For workflow phases, author the workflow and record the
+   run/artifact evidence instead of inventing a duplicate task graph.
 6. Assign work through `task assign` or `agent send`; do not treat a private
    chat instruction as an assignment.
 7. For concurrent code work, give each implementation task a separate worktree
@@ -132,7 +142,7 @@ contract for the product itself: goal design, task graph design, message-first
 assignment, provider sessions, evidence, critic review, decisions, goal
 evaluation, and follow-up tasks.
 
-Load `.agents/skills/bootstrap-project-workflow/SKILL.md` only when the goal is about
+Load `skills/bootstrap-project-workflow/SKILL.md` only when the goal is about
 project bootstrapping or governance: docs and CI/CD design, directory reorg,
 new requirement workflow design, adapter boundaries, skill design, task-system
 design, or migrating a project into a harness-operable shape.

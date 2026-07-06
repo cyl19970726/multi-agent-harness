@@ -207,7 +207,7 @@ in its own worktree, so a separate implement-step and verify-step do _not_ share
 a tree.** The faithful build loop therefore lives **inside one writable worker**
 (implement → run the gate → fix → repeat), while the plan and the verdict stay in
 Starlark. Internal can split implement and verify across agents on the shared
-live tree. (See [`build-and-gate.star`](../../skills/author-workflow/examples/build-and-gate.star).)
+live tree. (See [`build-and-gate.star`](../../skills/star-workflow/examples/build-and-gate.star).)
 
 ---
 
@@ -238,7 +238,7 @@ live tree. (See [`build-and-gate.star`](../../skills/author-workflow/examples/bu
 finding, run an adversarial verification panel; keep only findings that survive;
 synthesize a triaged report. This is the canonical review pattern in the internal
 tool's own docs **and** the shape of
-[`bug-hunt-verify.star`](../../skills/author-workflow/examples/bug-hunt-verify.star).
+[`bug-hunt-verify.star`](../../skills/star-workflow/examples/bug-hunt-verify.star).
 
 ### 5a. Internal — JavaScript
 
@@ -410,7 +410,7 @@ not to a missing feature.
 
 ## 7. Implications for the skill
 
-The [`author-workflow`](../../skills/author-workflow/SKILL.md) skill already
+The [`star-workflow`](../../skills/star-workflow/SKILL.md) skill already
 teaches the transferable patterns (verify+repair, adversarial verify, judge
 panel, loop-until-dry, completeness critic) and the runtime mechanics
 (read-only default, `writable` worktree, budget, `verdict`). This doc adds the

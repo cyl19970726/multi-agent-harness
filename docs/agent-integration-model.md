@@ -1,7 +1,7 @@
 # Agent Integration Model
 
 This is the canonical answer to one question: **to integrate a new agent,
-provider, or platform into Multi-Agent Harness, what do you have to define?**
+provider, or platform into Star Harness, what do you have to define?**
 
 It sits above the provider-neutral runtime contract in
 [agent-runtime.md](agent-runtime.md) and the prompt/identity contract in

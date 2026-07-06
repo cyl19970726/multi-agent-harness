@@ -28,6 +28,8 @@ workflow(
 task = "add a --json flag to the `report` command that prints the report as JSON"
 gate = "cargo test -p report-cli && cargo clippy --all-targets -- -D warnings"
 artifact = "target/harness-workflow/build-report.json"
+artifact_root = "target/harness-workflow"
+owned_paths = ["crates/report-cli", "tests"]
 
 # ---- typed contracts ----------------------------------------------------------
 DESIGN = {
@@ -68,6 +70,8 @@ leave the changes in the working tree.
 
 TASK: {task}
 
+OWNED PATHS: {owned_paths}
+
 REPORT ARTIFACT: write a non-empty JSON report to this repo-relative path:
 {artifact}
 
@@ -91,15 +95,33 @@ re-run — up to 5 honest attempts. Never use --no-verify and never fake a pass.
 
 Report: gate_green (true ONLY if the gate exited 0), a one-line summary, the files
 you changed, artifact_path, and any blockers if it could not go green.""".format(
-        task=task, artifact=artifact, design_json=design_json, gate=gate,
+        task=task,
+        owned_paths=json.encode(owned_paths),
+        artifact=artifact,
+        design_json=design_json,
+        gate=gate,
     ),
     label = "build",
     writable = True,          # edits + shell run in its own worktree; the diff is the evidence
+    persist_changes = "patch",
+    owned_paths = owned_paths,
+    # Source edits become a WorkflowPatch; this report is the named file artifact
+    # copied back from the worktree and manifest-tracked below.
     expected_artifacts = [artifact],
+    artifact_root = artifact_root,
+    write_roots = [artifact_root],
     schema = BUILD_RESULT,
 )
 
+artifact_manifest(
+    [artifact],
+    label = "build",
+    artifact_root = artifact_root,
+    write_roots = [artifact_root],
+)
+
 # ---- verdict: status reflects the GATE, not merely that the worker ran -------
+output(result)
 green = type(result) == "dict" and result["gate_green"] == True
 verdict(
     green,

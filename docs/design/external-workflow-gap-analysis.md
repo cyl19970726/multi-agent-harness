@@ -112,7 +112,7 @@ that uses none of the structure that makes internal workflows valuable**
 
 1. **The skill teaches patterns the examples don't use.** `wf_4bb51aaf-3f9`
    added verify+repair, adversarial-verify, judge-panel, and loop-until-dry to
-   the `author-workflow` skill — but our actual `.star` examples use **none** of
+   the `star-workflow` skill — but our actual `.star` examples use **none** of
    them. The gap is between what is *taught* and what is *written*.
 2. **Eval tasks must reward these dimensions.** A task that needs none of
    closed-loop / gating / planning cannot distinguish a good workflow from a

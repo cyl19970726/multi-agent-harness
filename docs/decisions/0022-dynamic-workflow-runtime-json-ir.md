@@ -43,8 +43,8 @@ runtime *lives* so it stays provider-agnostic.
 
 1. **Trigger = skill + CLI, not MCP/plugin.** The entry point is the existing
    `harness` binary: a new subcommand `harness workflow run-spec <spec.json>`
-   alongside `workflow run --name`, plus an `author-workflow` skill
-   (`.agents/skills/author-workflow/SKILL.md`) that teaches an agent to write a
+   alongside `workflow run --name`, plus a `star-workflow` skill
+   (`skills/star-workflow/SKILL.md`) that teaches an agent to write a
    valid spec, invoke the CLI, and read the run back. Any shell-capable agent
    (Codex, Claude Code, other) can use it with no plugin install and no new
    transport. An MCP shim over the *same* CLI is an explicitly optional future

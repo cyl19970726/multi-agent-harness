@@ -1,5 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import {
+  Activity,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
@@ -23,9 +24,14 @@ import {
 } from "@/components/workbench/atoms";
 import { Avatar } from "@/components/workbench/Avatar";
 import { Markdown } from "@/components/workbench/Markdown";
+import {
+  WorkflowDefinitionPreview,
+  workflowStepDomId,
+} from "@/components/workbench/WorkflowPanels";
 import { workflowRunTone, workflowStepTone } from "@/components/workbench/tones";
 
 import { formatDuration, parseTs, type WorkbenchModel } from "../model/readModel";
+import { compactWorkflowScript, workflowScriptFromRun } from "../model/workflowSelectors";
 import {
   describeShape,
   inferWorkflowShape,
@@ -285,9 +291,13 @@ export function WorkflowRunDetail({ model, onSelectionChange, apiUrl }: Workflow
   const steps = model.selectedWorkflowSteps;
   const sessions = model.snapshot.provider_sessions ?? [];
   const tone = workflowRunTone(run.status);
+  const headerTone = run.status === "failed" ? "decision" : tone;
+  const headerStatus = run.status === "failed" ? "needs review" : run.status === "completed" ? "passed" : run.status;
   const running = tone === "running";
   const phases = inferWorkflowShape(steps);
   const duration = formatDuration(run.created_at, run.ended_at);
+  const specScript = workflowScriptFromRun(run);
+  const parsedVerdict = parseVerdictSummary(readableWorkflowOutput(run.summary) ?? run.summary ?? "");
 
   // Prev/next stepper over the (ordered) runs list, so cross-run scanning
   // survives without a standing rail.
@@ -298,11 +308,8 @@ export function WorkflowRunDetail({ model, onSelectionChange, apiUrl }: Workflow
     if (target) onSelectionChange({ surface: "workflows", workflowRunId: target.id });
   };
 
-  // The required serial step is the first step of the first serial phase.
-  const requiredStep = phases.find((p) => p.kind === "serial")?.steps[0];
-
   return (
-    <DocumentSurface>
+    <DocumentSurface className="max-w-[1120px]">
       <header className="space-y-3">
         <div className="flex items-center justify-between gap-2">
           <BackRow onBack={back} />
@@ -326,45 +333,113 @@ export function WorkflowRunDetail({ model, onSelectionChange, apiUrl }: Workflow
               >
                 <ChevronDown className="size-3.5" />
               </button>
-              <span className="hidden tabular-nums sm:inline">
-                {index >= 0 ? index + 1 : "—"} of {runs.length}
-              </span>
             </div>
           )}
         </div>
 
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="flex min-w-0 items-center gap-3">
-            <Avatar name={run.workflow_name} tone={tone} size="lg" />
+            <Avatar name={run.workflow_name} tone={headerTone} size="lg" />
             <div className="min-w-0">
               <h1 className="truncate text-2xl font-semibold tracking-tight text-foreground">
                 {run.workflow_name}
               </h1>
               <div className="mt-1 flex flex-wrap items-center gap-1.5">
-                <Badge tone={tone}>{run.status}</Badge>
+                <Badge tone={headerTone}>{headerStatus}</Badge>
                 {run.dry_run && <Badge tone="warn">dry-run</Badge>}
                 {run.goal_id && (
                   <Badge tone="idle">
                     {run.phase_id ? `${run.goal_id} · ${run.phase_id}` : run.goal_id}
                   </Badge>
                 )}
-                <MonoId>{run.id}</MonoId>
               </div>
             </div>
           </div>
         </div>
 
+      </header>
+
+      <div className="grid gap-3 xl:grid-cols-[minmax(0,1.35fr)_minmax(18rem,0.65fr)]">
+        {run.spec != null && (
+          specScript ? (
+            <WorkflowDefinitionPreview
+              script={compactWorkflowScript(specScript, 4000)}
+              steps={steps}
+              stepHref={(step) => `#${workflowStepDomId(step.label)}`}
+              heading="Workflow spec"
+              showPlanSummary
+              collapseExtraStepsOnMobile
+            />
+          ) : (
+            <SpecDisclosure spec={run.spec} />
+          )
+        )}
+
+        <div className="min-w-0 space-y-3">
+          <div className="rounded-md border border-border bg-card/70 px-3 py-2.5">
+            <WorkflowExecutionSnapshot run={run} steps={steps} />
+          </div>
+          <WorkflowRunVerdictBanner run={run} steps={steps} parsed={parsedVerdict} tone={headerTone} />
+        </div>
+      </div>
+
+      <div className="grid gap-3 lg:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)]">
+        <WorkflowRunContextStrip
+          run={run}
+          steps={steps}
+          parsed={parsedVerdict}
+        />
+        <section className="min-w-0 rounded-lg border border-border bg-card/70 p-3">
+          <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+            <Activity className="size-3" />
+            Execution summary
+          </div>
+          <div className="mt-2">
+            <TimelinePreview steps={steps} />
+          </div>
+        </section>
+      </div>
+
+      {!running && (
+        <details className="group rounded-lg border border-border/70 bg-card/50">
+          <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2 text-[11px] font-medium text-muted-foreground transition-colors hover:text-foreground">
+            <ChevronRight className="size-3.5 transition-transform group-open:rotate-90" />
+            Review gate details
+          </summary>
+          <div className="border-t border-border/70 p-3">
+            <VerdictCard run={run} steps={steps} tone={tone} />
+          </div>
+        </details>
+      )}
+
+      <DocSection label="Detailed workflow timeline">
+        {phases.length ? (
+          <Timeline phases={phases} sessions={sessions} model={model} apiUrl={apiUrl} run={run} onSelectionChange={onSelectionChange} />
+        ) : (
+          <EmptyState
+            icon={Workflow}
+            title="No steps yet"
+            description="Steps animate in here as the run progresses."
+          />
+        )}
+      </DocSection>
+
+      <DocSection label="Runtime metrics">
+        <RunSummary run={run} steps={steps} />
+      </DocSection>
+
+      {run.design_intent && (
+        <DocSection label="Design intent">
+          <div className="rounded-md border border-primary/25 bg-primary/5 p-3 text-[13px] leading-relaxed text-foreground">
+            {run.design_intent}
+          </div>
+        </DocSection>
+      )}
+
+      <DocSection label="Run metadata">
         <DocProperties
           items={[
-            {
-              label: "Status",
-              value: (
-                <span className="inline-flex items-center gap-1.5">
-                  <StatusDot tone={tone} pulse={running} /> {run.status}
-                </span>
-              ),
-            },
-            { label: "Verdict", value: running ? "—" : (run.summary ?? "—") },
+            { label: "Run id", value: <MonoId>{run.id}</MonoId> },
             {
               label: "Initiated by",
               value: run.initiated_by ? (
@@ -382,71 +457,362 @@ export function WorkflowRunDetail({ model, onSelectionChange, apiUrl }: Workflow
               label: "Ended",
               value: run.ended_at ? <Timestamp value={run.ended_at} /> : "running…",
             },
-            { label: "Duration", value: running ? "· running" : (duration ?? "—") },
+            { label: "Duration", value: running ? "running" : (duration ?? "—") },
             {
-              label: "Steps",
+              label: "Shape",
               value: phases.length ? describeShape(phases) : "—",
-            },
-            {
-              label: "Required step",
-              value: requiredStep ? (
-                <span className="inline-flex items-center gap-1.5">
-                  <StatusDot tone={workflowStepTone(requiredStep.status)} />
-                  {requiredStep.label} ({statusGloss(requiredStep.status)})
-                </span>
-              ) : (
-                "—"
-              ),
             },
           ]}
         />
-      </header>
-
-      {run.design_intent && (
-        <DocSection label="Design intent">
-          <div className="rounded-md border border-primary/25 bg-primary/5 p-3 text-[13px] leading-relaxed text-foreground">
-            {run.design_intent}
-          </div>
-        </DocSection>
-      )}
-
-      <DocSection label="Run summary">
-        <RunSummary run={run} steps={steps} />
       </DocSection>
-
-      {!running && (
-        <DocSection label="Verdict">
-          <VerdictCard run={run} steps={steps} tone={tone} />
-        </DocSection>
-      )}
-      {running && (
-        <DocSection label="Verdict">
-          <p className="text-[12px] text-muted-foreground">Verdict set at completion.</p>
-        </DocSection>
-      )}
-
-      <DocSection label="Timeline">
-        {phases.length ? (
-          <Timeline phases={phases} sessions={sessions} model={model} apiUrl={apiUrl} run={run} onSelectionChange={onSelectionChange} />
-        ) : (
-          <EmptyState
-            icon={Workflow}
-            title="No steps yet"
-            description="Steps animate in here as the run progresses."
-          />
-        )}
-      </DocSection>
-
-      {run.spec != null && (
-        <DocSection label="Spec">
-          <SpecDisclosure spec={run.spec} />
-        </DocSection>
-      )}
 
       <DocSection label="Definition">
         <Definition phases={phases} workflowName={run.workflow_name} apiUrl={apiUrl} />
       </DocSection>
     </DocumentSurface>
+  );
+}
+
+function WorkflowRunContextStrip({
+  run,
+  steps,
+  parsed,
+}: {
+  run: WorkflowRun;
+  steps: WorkflowStep[];
+  parsed: { result: string; criterion?: string; detail?: string };
+}) {
+  const finished = steps.filter((step) => isTerminal(step.status)).length;
+  const evidenceOutputs = steps.filter((step) => step.output_summary?.trim()).length;
+  const failed = steps.filter((step) => step.status === "failed").length;
+  const context = run.phase_id
+    ? `${run.goal_id ?? "goal"} / ${run.phase_id}`
+    : run.goal_id ?? "standalone run";
+  return (
+    <section className="grid gap-2 rounded-lg border border-border bg-card/70 p-3 text-[12px] sm:grid-cols-2 xl:grid-cols-[0.8fr_0.7fr_0.7fr_minmax(0,1.8fr)]">
+      <WorkflowContextItem label="Goal / phase" value={context} />
+      <WorkflowContextItem
+        label="Run stages"
+        value={steps.length ? `${finished}/${steps.length} passed` : "not started"}
+        detail={failed > 0 ? `${failed} failed` : formatDuration(run.created_at, run.ended_at) ?? "running"}
+      />
+      <WorkflowContextItem
+        label="Evidence"
+        value={evidenceOutputs > 0 ? `${evidenceOutputs} check artifact${evidenceOutputs === 1 ? "" : "s"}` : "none yet"}
+        detail={evidenceOutputs > 0 ? "review evidence recorded" : "waiting for run evidence"}
+      />
+      <WorkflowContextItem
+        label="Review criterion"
+        value={parsed.criterion ?? "not recorded"}
+        detail={run.status === "failed" ? "review outcome below" : plainVerdictResult(parsed.result)}
+      />
+    </section>
+  );
+}
+
+function WorkflowPlanOverview({
+  run,
+  steps,
+  parsed,
+  phases,
+}: {
+  run: WorkflowRun;
+  steps: WorkflowStep[];
+  parsed: { result: string; criterion?: string; detail?: string };
+  phases: WorkflowPhase[];
+}) {
+  const context = run.phase_id
+    ? `${run.goal_id ?? "goal"} / ${run.phase_id}`
+    : run.goal_id ?? "standalone run";
+  const purpose = run.design_intent ?? parsed.criterion ?? "Workflow run";
+  const shape = phases.length ? readableWorkflowShape(phases, steps.length) : `${steps.length} stage${steps.length === 1 ? "" : "s"}`;
+  const evidenceOutputs = steps.filter((step) => step.output_summary?.trim()).length;
+
+  return (
+    <section className="rounded-lg border border-border bg-card/70 px-3 py-2.5">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="inline-flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+          <Workflow className="size-3" />
+          Workflow spec
+        </span>
+        <Badge tone="idle">{context}</Badge>
+      </div>
+      <p className="mt-2 text-[13px] leading-relaxed text-foreground/85">
+        {purpose}
+      </p>
+      <div className="mt-2 grid gap-2 sm:grid-cols-3">
+        <WorkflowOverviewFact label="Execution plan" value={shape} />
+        <WorkflowOverviewFact
+          label="Evidence"
+          value={evidenceOutputs > 0 ? `${evidenceOutputs} check artifact${evidenceOutputs === 1 ? "" : "s"}` : "none yet"}
+        />
+        <WorkflowOverviewFact
+          label="Acceptance"
+          value={parsed.criterion ?? "not recorded"}
+        />
+      </div>
+    </section>
+  );
+}
+
+function readableWorkflowShape(phases: WorkflowPhase[], totalSteps: number): string {
+  const parallelGroups = phases.filter((phase) => phase.kind === "parallel").length;
+  const serialSteps = phases
+    .filter((phase) => phase.kind === "serial")
+    .reduce((sum, phase) => sum + phase.steps.length, 0);
+  if (parallelGroups > 0) {
+    return `${totalSteps} stages: ${serialSteps} serial, ${parallelGroups} parallel group${parallelGroups === 1 ? "" : "s"}`;
+  }
+  return `${totalSteps} serial stage${totalSteps === 1 ? "" : "s"}`;
+}
+
+function WorkflowExecutionSnapshot({ run, steps }: { run: WorkflowRun; steps: WorkflowStep[] }) {
+  const failed = steps.filter((step) => step.status === "failed").length;
+  const running = steps.filter((step) => step.status === "running").length;
+  const finished = steps.filter((step) => isTerminal(step.status)).length;
+  const currentStep = steps.find((step) => step.status === "running")
+    ?? steps.find((step) => step.status === "failed")
+    ?? steps.find((step) => step.status === "queued" || step.status === "planned")
+    ?? [...steps].reverse().find((step) => step.status);
+  const total = steps.length || finished;
+  const tone: StatusTone = failed > 0 || run.status === "failed"
+    ? "bad"
+    : running > 0
+      ? "running"
+      : run.status === "completed"
+        ? "good"
+        : "idle";
+  const title = failed > 0 || run.status === "failed"
+    ? "needs review"
+    : running > 0
+      ? "running"
+      : finished > 0
+        ? "passed"
+        : "not started";
+  const detail = failed > 0 || run.status === "failed"
+    ? "Live execution finished; the review verdict explains which acceptance criterion needs work."
+    : running > 0
+      ? `${running} run stage${running === 1 ? "" : "s"} running now.`
+      : total > 0
+        ? `${finished}/${total} run stages passed.`
+        : "Run stages are not started.";
+  const currentLabel = currentStep ? workflowTitleFromLabel(currentStep.label) : undefined;
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center gap-1.5 text-[11px] font-semibold text-muted-foreground">
+        <Activity className="size-3" />
+        Live execution
+      </div>
+      <div className="rounded-md border border-border/70 bg-background/50 px-2.5 py-2">
+        <div className="flex items-center gap-1.5 text-[12px] font-semibold text-foreground">
+          <StatusDot tone={tone} pulse={tone === "running"} />
+          {title}
+        </div>
+        <p className="mt-1 text-[12px] leading-relaxed text-foreground/80 max-sm:hidden">{detail}</p>
+        {currentLabel && (
+          <p className="mt-1 text-[11px] leading-snug text-muted-foreground">
+            Current stage: <span className="font-medium text-foreground/80">{currentLabel}</span>
+          </p>
+        )}
+      </div>
+      <div className="space-y-1">
+        <div className="flex items-center justify-between text-[10px] font-medium text-muted-foreground">
+          <span>Live execution progress</span>
+          <span>{finished}/{total}</span>
+        </div>
+        <div className="h-1 overflow-hidden rounded-full bg-muted">
+          <div
+            className={cn("h-full rounded-full", failed > 0 ? "bg-status-bad/65" : "bg-status-good")}
+            style={{ width: `${total ? Math.min(100, Math.round((finished / total) * 100)) : 0}%` }}
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function workflowTitleFromLabel(label: string): string {
+  return label
+    .split(/[-_\s]+/)
+    .filter(Boolean)
+    .map((part) => (part.toLowerCase() === "ux" ? "UX" : part.charAt(0).toUpperCase() + part.slice(1)))
+    .join(" ");
+}
+
+function WorkflowOverviewFact({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="min-w-0 rounded-md bg-muted/20 px-2 py-1.5">
+      <div className="text-[10px] font-medium text-muted-foreground">{label}</div>
+      <p className="mt-0.5 text-[12px] leading-snug text-foreground/85">{value}</p>
+    </div>
+  );
+}
+
+function WorkflowContextItem({
+  label,
+  value,
+  detail,
+}: {
+  label: string;
+  value: ReactNode;
+  detail?: string;
+}) {
+  return (
+    <div className="min-w-0">
+      <div className="text-[10px] font-medium text-muted-foreground">{label}</div>
+      <div className="mt-1 line-clamp-2 text-[13px] font-medium leading-snug text-foreground">{value}</div>
+      {detail && <div className="mt-0.5 text-[11px] leading-snug text-muted-foreground">{detail}</div>}
+    </div>
+  );
+}
+
+function WorkflowRunVerdictBanner({
+  run,
+  steps,
+  parsed,
+  tone,
+}: {
+  run: WorkflowRun;
+  steps: WorkflowStep[];
+  parsed: { result: string; criterion?: string; detail?: string };
+  tone: StatusTone;
+}) {
+  const finished = steps.filter((step) => isTerminal(step.status)).length;
+  const failed = steps.filter((step) => step.status === "failed").length;
+  const running = steps.filter((step) => step.status === "running").length;
+  const evidenceOutputs = steps.filter((step) => step.output_summary?.trim()).length;
+  const statusLabel = run.status === "failed"
+      ? "needs review"
+    : run.status === "completed"
+      ? "passed"
+    : run.status === "running"
+        ? "running"
+        : run.status || "not started";
+  const detail = run.status === "failed"
+    ? failed > 0
+      ? `${failed} run stage${failed === 1 ? "" : "s"} needs reviewer attention before acceptance.`
+      : `Waiting for reviewer approval: ${parsed.criterion ?? "review gate requested changes"}.`
+    : run.status === "completed"
+      ? `${finished}/${steps.length || finished} run stages passed.`
+    : running > 0
+      ? `${running} run stage${running === 1 ? "" : "s"} running now.`
+      : "The current run is waiting for execution data.";
+  const issue = parsed.detail ?? parsed.result;
+  const tint =
+    tone === "bad" || run.status === "failed"
+	      ? "border-status-bad/25 bg-status-bad/6"
+      : tone === "good"
+        ? "border-status-good/25 bg-status-good/8"
+        : "border-border bg-card/70";
+
+  return (
+    <section className={cn("rounded-md border px-3 py-2", tint)}>
+      <div className="grid gap-2">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge tone={tone}>{statusLabel}</Badge>
+            {run.status === "failed" && issue && <Badge tone="warn">acceptance issue</Badge>}
+            {evidenceOutputs > 0 && (
+              <Badge tone="good">{evidenceOutputs} check artifact{evidenceOutputs === 1 ? "" : "s"}</Badge>
+            )}
+            <span className="min-w-0 text-[13px] font-semibold leading-snug text-foreground">{detail}</span>
+          </div>
+          {run.status === "failed" && issue && (
+            <details className="group mt-2 rounded-md border border-status-bad/20 bg-background/45 px-2 py-1.5">
+              <summary className="flex cursor-pointer list-none flex-wrap items-center gap-1.5 text-[12px] leading-snug text-foreground/85 transition-colors hover:text-foreground">
+                <span className="shrink-0 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                  Acceptance issue
+                </span>
+                <span className="min-w-0 flex-1">{compactReviewIssueSummary(issue)}</span>
+                <span className="shrink-0 rounded-md border border-border/70 bg-background px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground group-open:hidden">
+                  Open evidence
+                </span>
+              </summary>
+              <div className="mt-2 border-t border-border/60 pt-2">
+                <VerdictIssueRows detail={issue} />
+              </div>
+            </details>
+          )}
+        </div>
+        <div className="grid gap-1">
+          <VerdictBannerFact
+            label="Workflow plan"
+            value={`${finished}/${steps.length || finished}`}
+            detail="run stages passed"
+            tone={failed > 0 ? "warn" : "good"}
+          />
+	          <VerdictBannerFact
+	            label="Checks"
+	            value={evidenceOutputs > 0 ? `${evidenceOutputs} check artifacts` : "not started"}
+	            detail={evidenceOutputs > 0 ? "review evidence recorded" : "waiting for stage output"}
+	            tone={evidenceOutputs > 0 ? "good" : "idle"}
+	          />
+          <VerdictBannerFact
+            label="Review gate"
+            value={run.status === "failed" ? "needs review" : parsed.result ? plainVerdictResult(parsed.result) : "pending"}
+            detail={parsed.criterion ? "acceptance criterion set" : "waiting for review"}
+            tone={run.status === "failed" ? "bad" : tone}
+          />
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function VerdictBannerFact({
+  label,
+  value,
+  detail,
+  tone,
+}: {
+  label: string;
+  value: string;
+  detail: string;
+  tone: StatusTone;
+}) {
+  return (
+    <div className="min-w-0 rounded-md bg-background/50 px-2 py-1">
+      <div className="flex items-center gap-1.5 text-[10px] font-medium text-muted-foreground">
+        <StatusDot tone={tone} pulse={tone === "running"} />
+        {label}
+      </div>
+      <p className="mt-0.5 truncate text-[12px] font-medium text-foreground">{value}</p>
+      <p className="truncate text-[10px] text-muted-foreground">{detail}</p>
+    </div>
+  );
+}
+
+function WorkflowFailureSummary({
+  run,
+  steps,
+  parsed,
+}: {
+  run: WorkflowRun;
+  steps: WorkflowStep[];
+  parsed: { result: string; criterion?: string; detail?: string };
+}) {
+  const finished = steps.filter((step) => isTerminal(step.status)).length;
+  const failed = steps.filter((step) => step.status === "failed").length;
+  const detail = compactVerdictDetail(parsed.detail ?? parsed.result);
+  return (
+    <section className="rounded-lg border border-status-bad/25 bg-card px-3 py-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <Badge tone="bad">needs review</Badge>
+        <span className="text-[13px] font-medium text-foreground">
+          {failed > 0
+            ? `${failed} action${failed === 1 ? "" : "s"} failed.`
+            : `${finished}/${steps.length || finished} actions finished; review gate requested changes.`}
+        </span>
+      </div>
+      <p className="mt-1 line-clamp-2 text-[12px] leading-relaxed text-foreground/80">
+        {detail}
+      </p>
+      {run.phase_id && (
+        <p className="mt-1 text-[11px] text-muted-foreground">
+          Next operator action: review the verdict evidence for phase {run.phase_id}.
+        </p>
+      )}
+    </section>
   );
 }
 
@@ -678,6 +1044,98 @@ function BackRow({ onBack }: { onBack: () => void }) {
   );
 }
 
+function TimelinePreview({ steps }: { steps: WorkflowStep[] }) {
+  if (steps.length === 0) {
+    return (
+      <div className="rounded-lg border border-dashed border-border bg-muted/20 px-3 py-2 text-[12px] text-muted-foreground">
+        Runtime steps will appear here when the workflow starts.
+      </div>
+    );
+  }
+  const preview = steps.slice(0, 4);
+  return (
+    <div className="grid gap-2">
+        {preview.map((step) => {
+          const tone = workflowStepTone(step.status);
+          const output = readableWorkflowOutput(step.output_summary);
+          const role = roleHintFromLabel(step.label);
+          return (
+            <a
+              key={step.id}
+              href={`#${workflowStepDomId(step.label)}`}
+              className="grid min-w-0 gap-2 rounded-lg border border-border bg-card/60 px-3 py-2 text-left transition-colors hover:border-input hover:bg-muted/20 sm:grid-cols-[auto_minmax(0,1fr)_auto]"
+            >
+              <span className="mt-0.5 flex items-center gap-1.5">
+                <StatusDot tone={tone} pulse={tone === "running"} />
+                <Badge tone={tone}>{shortStepStatusLabel(step.status)}</Badge>
+              </span>
+              <span className="min-w-0">
+                <span className="flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
+                  <Timestamp value={step.started_at} />
+                  {role && <span>{role}</span>}
+                </span>
+                <span className="mt-0.5 block truncate text-[12px] font-semibold text-foreground">
+                  {workflowStepEventTitle(step)}
+                </span>
+                {output && (
+                  <span className="mt-0.5 block line-clamp-2 text-[11px] leading-snug text-muted-foreground">
+                    {workflowStepEventDetail(output)}
+                  </span>
+                )}
+              </span>
+              <span className="self-center text-[11px] text-muted-foreground">{stepTiming(step)}</span>
+            </a>
+          );
+        })}
+      {steps.length > preview.length && (
+        <a
+          href={`#${workflowStepDomId(steps[preview.length].label)}`}
+          className="block rounded-md border border-border bg-muted/20 px-3 py-1.5 text-[11px] font-medium text-muted-foreground transition-colors hover:text-foreground"
+        >
+          +{steps.length - preview.length} more runtime event{steps.length - preview.length === 1 ? "" : "s"}
+        </a>
+      )}
+    </div>
+  );
+}
+
+function workflowStepEventTitle(step: WorkflowStep): string {
+  const label = step.label.replace(/[-_]+/g, " ").trim();
+  if (step.status === "running") return `${titleCase(label)} is running`;
+  if (step.status === "failed") return `${titleCase(label)} needs review`;
+  if (step.status === "queued") return `${titleCase(label)} is queued`;
+  if (step.status === "completed" || step.status === "cached") return `${titleCase(label)} finished`;
+  return titleCase(label);
+}
+
+function workflowStepEventDetail(output: string): string {
+  const lower = output.toLowerCase();
+  if (
+    lower.includes("next actions")
+    || lower.includes("next_action")
+    || lower.includes("findings")
+    || lower.includes("run plan")
+    || lower.includes("task graph")
+    || lower.includes("debug language")
+  ) {
+    return "Findings and next actions captured for review.";
+  }
+  return output
+    .split(/\n+/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .slice(0, 2)
+    .join(" ");
+}
+
+function shortStepStatusLabel(status: string): string {
+  const value = status.toLowerCase();
+  if (value === "completed" || value === "cached") return "passed";
+  if (value === "failed") return "blocked";
+  if (value === "queued" || value === "planned") return "not started";
+  return status;
+}
+
 /** Terminal-run verdict card, tinted by run tone, with a plain-English gloss. */
 function VerdictCard({
   run,
@@ -688,6 +1146,7 @@ function VerdictCard({
   steps: WorkflowStep[];
   tone: StatusTone;
 }) {
+  const parsed = parseVerdictSummary(readableWorkflowOutput(run.summary) ?? run.summary ?? "—");
   const tint =
     tone === "bad"
       ? "border-status-bad/30 bg-status-bad/12"
@@ -696,10 +1155,110 @@ function VerdictCard({
         : "border-border bg-muted/30";
   return (
     <div className={cn("space-y-1.5 rounded-lg border p-3", tint)}>
-      <p className="text-[13px] font-medium text-foreground">{run.summary ?? "—"}</p>
+      <div className="grid gap-2 sm:grid-cols-[minmax(0,0.75fr)_minmax(0,1.25fr)]">
+        <div>
+          <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+            Result
+          </p>
+          <p className="mt-0.5 text-[13px] font-medium text-foreground">{plainVerdictResult(parsed.result)}</p>
+        </div>
+        {parsed.criterion && (
+          <div>
+            <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+              Criterion
+            </p>
+            <p className="mt-0.5 text-[12px] leading-snug text-foreground/85">{parsed.criterion}</p>
+          </div>
+        )}
+      </div>
+      {parsed.detail && <VerdictIssueRows detail={parsed.detail} />}
       <p className="text-xs text-muted-foreground">{verdictGloss(run, steps)}</p>
     </div>
   );
+}
+
+function VerdictIssueRows({ detail }: { detail: string }) {
+  const normalizedDetail = normalizeWorkflowUiLanguage(detail);
+  const issues = splitVerdictIssues(normalizedDetail);
+  if (issues.length <= 1) {
+    const summary = compactVerdictDetail(normalizedDetail);
+    if (summary === normalizedDetail) {
+      return <p className="text-[12px] leading-relaxed text-foreground/85">{normalizedDetail}</p>;
+    }
+    return (
+      <details className="group rounded-md border border-border/70 bg-background/55 px-2 py-1.5">
+        <summary className="cursor-pointer list-none text-[12px] leading-snug text-foreground/85 transition-colors hover:text-foreground">
+          {summary}
+          <span className="ml-1 text-[10px] font-medium text-muted-foreground group-open:hidden">
+            more
+          </span>
+        </summary>
+        <p className="mt-1.5 border-t border-border/60 pt-1.5 text-[12px] leading-relaxed text-muted-foreground">
+          {normalizedDetail}
+        </p>
+      </details>
+    );
+  }
+  return (
+    <div className="space-y-1.5">
+      {issues.slice(0, 5).map((issue, index) => (
+        <div key={index} className="flex gap-2 rounded-md border border-border/70 bg-background/55 px-2 py-1.5">
+          <Badge tone={issue.severity === "P0" ? "bad" : issue.severity === "P1" ? "warn" : "idle"}>
+            {issue.severity}
+          </Badge>
+          <p className="min-w-0 text-[12px] leading-snug text-foreground/85">{issue.text}</p>
+        </div>
+      ))}
+      {issues.length > 5 && (
+        <p className="text-[10px] text-muted-foreground">+{issues.length - 5} more findings in step output</p>
+      )}
+    </div>
+  );
+}
+
+function compactVerdictDetail(detail: string): string {
+  if (detail.length <= 220) return detail;
+  const sentence = detail.match(/^(.{80,220}?[.!?])\s/)?.[1]?.trim();
+  return sentence ?? `${detail.slice(0, 210).trim()}...`;
+}
+
+function compactReviewIssueSummary(detail: string): string {
+  const issue = splitVerdictIssues(normalizeWorkflowUiLanguage(detail))[0];
+  const severity = issue?.severity?.match(/^P[0-3]$/) ? `${issue.severity} acceptance issue` : "acceptance issue";
+  return `Review found a ${severity}; open evidence and rationale.`;
+}
+
+function splitVerdictIssues(detail: string): { severity: string; text: string }[] {
+  const matches = Array.from(detail.matchAll(/(P[0-3]):\s*([\s\S]*?)(?=\s+P[0-3]:|$)/g));
+  if (!matches.length) return [{ severity: "note", text: detail }];
+  return matches.map((match) => ({
+    severity: match[1] ?? "note",
+    text: (match[2] ?? "").trim(),
+  })).filter((issue) => issue.text.length > 0);
+}
+
+function parseVerdictSummary(summary: string): { result: string; criterion?: string; detail?: string } {
+  const cleaned = summary.replace(/\s+/g, " ").trim();
+  const match = cleaned.match(/^(.*?)\s+\[criterion:\s*(.*?)\]\s+[—-]\s+(.*)$/);
+  if (match) {
+    return {
+      result: match[1]?.trim() || "Verdict recorded",
+      criterion: match[2]?.trim(),
+      detail: match[3]?.trim(),
+    };
+  }
+  const [head, ...rest] = cleaned.split(/\s+[—-]\s+/);
+  return {
+    result: head || "Verdict recorded",
+    detail: rest.join(" - ") || undefined,
+  };
+}
+
+function plainVerdictResult(result: string): string {
+  const cleaned = result.replace(/^.*verdict:\s*/i, "").trim();
+  if (/intent\s+NOT\s+met/i.test(cleaned)) return "acceptance failed";
+  if (/intent\s+met/i.test(cleaned)) return "acceptance passed";
+  return cleaned || "verdict recorded";
 }
 
 /* ================================================================== */
@@ -722,17 +1281,23 @@ function Timeline({
   onSelectionChange: (selection: Partial<SelectionState>) => void;
 }) {
   return (
-    <div className="space-y-4 border-l border-border pl-4">
+    <div className="space-y-3">
       {phases.map((phase) => (
-        <div key={phase.phase} className="space-y-2.5">
+        <div key={phase.phase} className="space-y-2.5 rounded-lg border border-border bg-card/45 p-3">
           <div className="flex items-center justify-between gap-2">
-            <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-              Phase · {phase.phase}
+            <span className="inline-flex min-w-0 items-center gap-2">
+              <StatusDot
+                tone={phase.steps.every((step) => isTerminal(step.status)) ? "good" : "running"}
+                pulse={phase.steps.some((step) => step.status === "running")}
+              />
+              <span className="truncate text-[12px] font-semibold text-foreground">
+                {titleCase(phase.phase)} phase
+              </span>
             </span>
             <Badge tone="idle">
               {phase.kind === "serial"
-                ? "serial"
-                : `parallel · ${phase.steps.length}`}
+                ? `${phase.steps.length} serial step${phase.steps.length === 1 ? "" : "s"}`
+                : `${phase.steps.length} parallel steps`}
             </Badge>
           </div>
 
@@ -804,6 +1369,14 @@ function toneBarClass(tone: StatusTone): string {
   }
 }
 
+function titleCase(value: string): string {
+  return value
+    .split(/[-_\s]+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
 /** The barrier join bar; settles when every step in the phase is terminal. */
 function JoinBar({ steps }: { steps: WorkflowStep[] }) {
   const allTerminal = steps.every((step) => isTerminal(step.status));
@@ -819,10 +1392,45 @@ function JoinBar({ steps }: { steps: WorkflowStep[] }) {
     >
       <StatusDot tone={tone} pulse={!allTerminal} />
       {allTerminal
-        ? `join · barrier — all ${steps.length} steps resolved`
-        : `join · barrier — waiting on ${steps.filter((s) => !isTerminal(s.status)).length} of ${steps.length}`}
+        ? `parallel group complete — all ${steps.length} steps resolved`
+        : `parallel group waiting — ${steps.filter((s) => !isTerminal(s.status)).length} of ${steps.length} unresolved`}
     </div>
   );
+}
+
+function readableWorkflowOutput(summary?: string | null): string | undefined {
+  const trimmed = summary?.trim();
+  if (!trimmed) return undefined;
+  if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) return normalizeWorkflowUiLanguage(trimmed);
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      const record = parsed as Record<string, unknown>;
+      for (const key of ["content", "summary", "result", "final_message", "message", "findings", "next_actions"]) {
+        const value = record[key];
+        if (typeof value === "string" && value.trim()) {
+          return normalizeWorkflowUiLanguage(value)
+            .split(/\n+/)
+            .map((line) => line.trim())
+            .filter(Boolean)
+            .slice(0, 4)
+            .join("\n");
+        }
+      }
+    }
+  } catch {
+    // Not JSON after all; keep the provider text.
+  }
+  return normalizeWorkflowUiLanguage(trimmed);
+}
+
+function normalizeWorkflowUiLanguage(value: string): string {
+  return value
+    .replace(/\bcompiled workflow runner\b/gi, "workflow runner")
+    .replace(/\bcompiled workflow\b/gi, "workflow plan")
+    .replace(/\breadable workflow steps\b/gi, "readable run stages")
+    .replace(/\bworkflow steps\b/gi, "run stages")
+    .replace(/\bFirst workflow step\b/gi, "First run stage");
 }
 
 /** One step card: status + "ran by" (via session) + output + turn drill-in. */
@@ -867,10 +1475,14 @@ function StepCard({
   const liveNormalizedEvents = session
     ? model.snapshot.live_normalized_events?.[session.id]
     : undefined;
+  const readableOutput = readableWorkflowOutput(step.output_summary);
 
   return (
     <>
-      <div className="rounded-lg border border-border bg-card transition-colors hover:border-input">
+      <div
+        id={workflowStepDomId(step.label)}
+        className="scroll-mt-20 rounded-lg border border-border bg-card transition-colors hover:border-input"
+      >
         {/* The whole card body (lines 1–3) is the click target that opens the
             node drill-in drawer; line 4 keeps the inline TurnDrillIn so the
             timeline still streams in place. */}
@@ -884,50 +1496,48 @@ function StepCard({
           )}
           aria-label={session ? `Open drill-in for ${step.label}` : undefined}
         >
-          {/* Line 1 — label, role hint, status, required/tolerated */}
+          {/* Line 1 — workflow action, role hint, status */}
           <div className="flex items-start justify-between gap-2">
-            <span className="flex min-w-0 items-center gap-2">
+            <span className="flex min-w-0 items-start gap-2">
               <StatusDot tone={tone} pulse={running} />
-              <span className="truncate text-[13px] font-medium text-foreground">{step.label}</span>
-              {roleHint && (
-                <span className="shrink-0 text-[11px] text-muted-foreground">{roleHint}</span>
-              )}
+              <span className="min-w-0">
+                <span className="block text-[13px] font-medium leading-snug text-foreground">
+                  {workflowStepEventTitle(step)}
+                </span>
+                {roleHint && (
+                  <span className="mt-0.5 block text-[11px] text-muted-foreground">{roleHint}</span>
+                )}
+              </span>
             </span>
             <span className="flex shrink-0 items-center gap-1.5">
-              <Badge tone={tone}>{step.status}</Badge>
+              <Badge tone={tone}>{shortStepStatusLabel(step.status)}</Badge>
               {isRequired && <Badge tone="info">required</Badge>}
               {isToleratedFail && <Badge tone="warn">tolerated</Badge>}
-              {isolation === "worktree" && <Badge tone="info">worktree</Badge>}
             </span>
           </div>
 
-          {/* Line 2 — provider chip (ephemeral worker) + timing */}
+          {/* Line 2 — owner/runtime + timing */}
           <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
-            <span>ran by</span>
+            <span>Owner</span>
             {provider ? (
               <span className="inline-flex items-center gap-1 text-foreground">
                 <Avatar name={provider} tone="idle" />
-                {provider} (ephemeral)
+                {provider}
               </span>
             ) : (
               <span>—</span>
             )}
             <span className="tabular-nums">{stepTiming(step)}</span>
-            {step.result?.model && (
-              <span className="text-foreground/70">· {step.result.model}</span>
-            )}
-            {step.result?.tokens && (
-              <span className="tabular-nums">
-                · {formatCount(step.result.tokens.total)} tok
-              </span>
-            )}
           </div>
 
-          {/* Line 3 — output summary */}
-          <div className="mt-1.5 text-[12px] text-foreground">
-            {step.output_summary ? (
-              <div className="line-clamp-3">
-                <Markdown source={step.output_summary} />
+          {/* Line 3 — latest readable result */}
+          <div className="mt-2 rounded-md bg-muted/20 px-2 py-1.5 text-[12px] text-foreground">
+            <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+              Latest result
+            </div>
+            {readableOutput ? (
+              <div className="leading-relaxed">
+                <Markdown source={workflowStepEventDetail(readableOutput)} />
               </div>
             ) : running ? (
               <span className="text-muted-foreground">Running…</span>
@@ -1018,6 +1628,7 @@ function StepDrawer({
   }, [onClose]);
 
   const running = tone === "running";
+  const readableOutput = readableWorkflowOutput(step.output_summary);
 
   return (
     <div className="fixed inset-0 z-50 flex justify-end">
@@ -1069,9 +1680,9 @@ function StepDrawer({
               )}
               <span className="tabular-nums">{stepTiming(step)}</span>
             </div>
-            {step.output_summary && (
+            {readableOutput && (
               <div className="rounded-md border border-border bg-muted/30 p-2 text-[12px] text-foreground">
-                <Markdown source={step.output_summary} />
+                <Markdown source={readableOutput} />
               </div>
             )}
             <StepObservability step={step} />
@@ -1430,13 +2041,13 @@ function verdictGloss(run: WorkflowRun, steps: WorkflowStep[]): string {
   const total = steps.length;
   const failed = steps.filter((s) => (s.status ?? "").toLowerCase() === "failed").length;
   if (status === "failed") {
-    return "Run failed: the required serial step (scope) did not succeed. The parallel audit steps were still collected (tolerated).";
+    return "Review gate needs evidence or rationale before this run can be accepted.";
   }
   if (status === "completed" && failed > 0) {
-    return `Completed (degraded): ${failed} of ${total} steps failed, but the required scope step succeeded, so the run completed.`;
+    return `Completed with concerns: ${failed} of ${total} steps failed and should be reviewed.`;
   }
   if (status === "completed") {
-    return `Completed because the required serial step (scope) succeeded. ${total}/${total} ok.`;
+    return `Review passed: all ${total} run stages finished.`;
   }
   return run.summary ?? "";
 }
@@ -1453,7 +2064,7 @@ function stepTiming(step: WorkflowStep): string {
 
 function fmtClock(value?: string | null): string {
   if (!value) return "—";
-  const ms = Date.parse(value);
+  const ms = parseTs(value);
   if (Number.isNaN(ms)) return value;
   return new Date(ms).toLocaleTimeString([], {
     hour: "2-digit",

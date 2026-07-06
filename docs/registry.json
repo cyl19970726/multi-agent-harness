@@ -459,7 +459,7 @@
         "check-doc-links",
         "check-doc-governance"
       ],
-      "reviewAfter": "2026-06-26",
+      "reviewAfter": "2026-08-03",
       "lastVerifiedWith": [
         "npx pnpm@9.15.4 check"
       ],
@@ -518,7 +518,7 @@
         "check-doc-links",
         "check-doc-governance"
       ],
-      "reviewAfter": "2026-06-26",
+      "reviewAfter": "2026-08-03",
       "lastVerifiedWith": [
         "npx pnpm@9.15.4 check"
       ],
@@ -551,7 +551,7 @@
         "check-doc-links",
         "check-doc-governance"
       ],
-      "reviewAfter": "2026-06-26",
+      "reviewAfter": "2026-08-03",
       "lastVerifiedWith": [
         "npx pnpm@9.15.4 check"
       ],
@@ -1035,11 +1035,42 @@
         "check-doc-links",
         "check-doc-governance"
       ],
-      "reviewAfter": "2026-06-26",
+      "reviewAfter": "2026-08-03",
       "lastVerifiedWith": [
         "npx pnpm@9.15.4 check"
       ],
       "reorgTrigger": "Core Workbench page list, page-spec template, page-local layout contract template, or page-spec boundary changes."
+    },
+    {
+      "path": "docs/dashboard/pages/goal.md",
+      "ownerRole": "product-design",
+      "status": "stable",
+      "lifecycle": "volatile",
+      "canonicalFor": [
+        "Goal Workbench page contract",
+        "phase-first Goal detail surface",
+        "Goal proof-chain screenshot gate"
+      ],
+      "dependsOn": [
+        "docs/prd.md",
+        "docs/concept-model.md",
+        "docs/dashboard.md",
+        "docs/dashboard/frontend-design.md",
+        "docs/dashboard/design-principles.md",
+        "docs/dashboard/layout-history.md",
+        "docs/dashboard/work-board-design.md",
+        "docs/dashboard/acceptance.md",
+        ".agents/skills/harness-frontend-product-design/SKILL.md"
+      ],
+      "machineConsumers": [
+        "check-doc-links",
+        "check-doc-governance"
+      ],
+      "reviewAfter": "2026-08-03",
+      "lastVerifiedWith": [
+        "wfrun-1783013150649-0"
+      ],
+      "reorgTrigger": "Goal detail page contract, phase spine layout, screenshot gate, or Goal proof-chain acceptance changes."
     },
     {
       "path": "docs/dashboard/pages/team-workspace.md",
@@ -1571,14 +1602,14 @@
       "status": "stable",
       "lifecycle": "volatile",
       "canonicalFor": [
-        "two-step quickstart (install author-workflow skill + start serve)",
+        "two-step quickstart (install star-workflow skill + start serve)",
         "skill install paths (script / npx skills / plugin)",
         "serve + run-script same-store invariant",
         "author + run + read-back a workflow"
       ],
       "dependsOn": [
         "README.md",
-        "skills/author-workflow/SKILL.md",
+        "skills/star-workflow/SKILL.md",
         "docs/multi-project.md"
       ],
       "machineConsumers": [
@@ -1658,7 +1689,7 @@
       "dependsOn": [
         "docs/research/dynamic-workflow-runtime-design.md",
         "docs/decisions/0023-starlark-workflow-frontend.md",
-        "skills/author-workflow/SKILL.md"
+        "skills/star-workflow/SKILL.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -1755,7 +1786,7 @@
       ],
       "dependsOn": [
         "docs/design/external-workflow-gap-analysis.md",
-        "skills/author-workflow/SKILL.md"
+        "skills/star-workflow/SKILL.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -1780,7 +1811,7 @@
       "dependsOn": [
         "docs/design/internal-vs-external-workflow.md",
         "docs/decisions/0023-starlark-workflow-frontend.md",
-        "skills/author-workflow/SKILL.md"
+        "skills/star-workflow/SKILL.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -1882,7 +1913,7 @@
         "crates/harness-workflow/src/lib.rs",
         "crates/harness-workflow/src/starlark_front.rs",
         "crates/harness-core/src/lib.rs",
-        "skills/author-workflow/SKILL.md"
+        "skills/star-workflow/SKILL.md"
       ],
       "machineConsumers": [
         "check-doc-links",

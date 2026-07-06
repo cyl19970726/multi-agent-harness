@@ -1,4 +1,0 @@
-interface:
-  display_name: "Author Goal"
-  short_description: "Write a markdown-first Goal, satisfy GoalDesign/closeout gates, and run it via the manual lifecycle or phased model."
-  default_prompt: "Author or advance a Goal: write description / design (key problems FIRST, grounded in file:line) / real acceptance, capture findings as an append-only knowledge[] ledger, and run multi-agent exploration. For harness-managed work, record typed GoalDesign (or legacy goal_design evidence) before task assignment/review, preserve the task message → report → evidence → proposal → review → decision chain, and close with closeout Decision + goal evaluate + strict learning-status + goal close. Drive simple goals through the manual lifecycle, or use the knowledge-driven phased model (knowledge-add → design-synthesize → plan → goal run-phases) for planned multi-worker builds."

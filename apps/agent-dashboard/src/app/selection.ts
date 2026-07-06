@@ -32,17 +32,8 @@ export interface SelectionState {
   /** Which tab is open on the agent detail page; defaults to "conversation". */
   agentTab?: AgentTab;
   taskId?: string;
-  /**
-   * The phase opened within a goal (Goal -> Phase drill-in), addressed as
-   * `?phase=<id>`. Scopes the per-phase Graph/Kanban view on the Goal document.
-   */
+  /** The phase opened within a goal (Goal -> Phase drill-in), addressed as `?phase=<id>`. */
   phaseId?: string;
-  /**
-   * Which view a phase's task subgraph renders in: "graph" (the DAG, default) or
-   * "kanban" (status lanes). Persisted as `?taskView=` so a chosen view is
-   * shareable. Defaults to "graph".
-   */
-  phaseView?: "graph" | "kanban";
   /**
    * The doc opened on the Docs surface, addressed by its repo path
    * (e.g. "docs/prd.md"); setting it implies the docs surface.
@@ -77,6 +68,22 @@ const surfaceIds: SurfaceId[] = [
   "workflows",
   "docs",
   "debug",
+];
+
+const selectionParamKeys = [
+  "surface",
+  "agent",
+  "member",
+  "agentTab",
+  "team",
+  "goal",
+  "task",
+  "phase",
+  "doc",
+  "taskTab",
+  "workflowRun",
+  "board",
+  "boardGoal",
 ];
 
 /**
@@ -119,8 +126,6 @@ export function selectionFromLocation(base: SelectionState): SelectionState {
   if (task) next.taskId = task;
   const phase = params.get("phase");
   if (phase) next.phaseId = phase;
-  const taskView = params.get("taskView");
-  if (taskView === "graph" || taskView === "kanban") next.phaseView = taskView;
   // Canonical doc address: ?doc=<path>; setting it implies the docs surface
   // (mirror of the ?agent= / ?workflowRun= rules).
   const doc = params.get("doc");
@@ -154,7 +159,8 @@ export function selectionFromLocation(base: SelectionState): SelectionState {
  */
 export function syncSelectionToLocation(selection: SelectionState): void {
   if (typeof window === "undefined") return;
-  const params = new URLSearchParams();
+  const params = new URLSearchParams(window.location.search);
+  for (const key of selectionParamKeys) params.delete(key);
   if (selection.surface && selection.surface !== "agents") {
     params.set("surface", selection.surface);
   }
@@ -167,10 +173,6 @@ export function syncSelectionToLocation(selection: SelectionState): void {
   if (selection.goalId) params.set("goal", selection.goalId);
   if (selection.taskId) params.set("task", selection.taskId);
   if (selection.phaseId) params.set("phase", selection.phaseId);
-  // Only persist a non-default phase view, and only when a phase is open.
-  if (selection.phaseId && selection.phaseView && selection.phaseView !== "graph") {
-    params.set("taskView", selection.phaseView);
-  }
   if (selection.docPath) params.set("doc", selection.docPath);
   // Only persist a non-default task tab, and only when a task is open.
   if (selection.taskId && selection.taskTab && selection.taskTab !== "overview") {

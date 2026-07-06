@@ -1,6 +1,6 @@
 ---
-name: author-workflow
-description: "Use when an agent needs to author a dynamic multi-agent workflow at runtime: write a Starlark program (loops, conditionals, data-driven fan-out) that calls agent()/parallel()/phase()/log() over the harness runtime, declare a mandatory workflow(name, design_intent) header, run it with `harness workflow run-script`, and read the resulting WorkflowRun/WorkflowStep records back from the dashboard snapshot or store."
+name: star-workflow
+description: "Use when an agent needs to author a dynamic multi-agent workflow at runtime, including workflow-mode GoalPhases: write a Starlark program (loops, conditionals, data-driven fan-out) that calls agent()/parallel()/phase()/log() over the harness runtime, declare a mandatory workflow(name, design_intent) header, run it with `harness workflow run-script`, and read the resulting WorkflowRun/WorkflowStep records back from the dashboard snapshot or store. For task_graph GoalPhases, use star-planner instead."
 ---
 
 # Author Workflow
@@ -16,17 +16,21 @@ write a .star program  ->  harness workflow run-script <prog.star>  ->  read the
 ```
 
 The runtime is provider-agnostic (`crates/harness-workflow`). Each `agent()` call
-names a PROVIDER (`"codex"` or `"claude"`); the CLI spins up a NEW one-shot
-ephemeral worker for that call (it does NOT deliver to a pre-existing member) and
-journals a `WorkflowRun` plus one `WorkflowStep` per agent call — identical to the
-built-in `workflow run --name` path, so the run shows up live on the Agent
-Dashboard Workflows surface.
+names a PROVIDER (`"codex"`, `"claude"`, or `"kimi"`); the CLI spins up a NEW
+one-shot ephemeral worker for that call (it does NOT deliver to a pre-existing
+member) and journals a `WorkflowRun` plus one `WorkflowStep` per agent call —
+identical to the built-in `workflow run --name` path, so the run shows up live on
+the Agent Dashboard Workflows surface.
 
 Each ephemeral worker is READ-ONLY by default and runs in the selected project
-root. A worker may edit only when the call sets `writable=True`; writable calls
-automatically use a throwaway worktree. A read-only call can still opt into
-`isolation="worktree"` when it explicitly needs an isolated checkout, but
-provider capability gaps do not silently create worktrees.
+root — even on a provider (like kimi) that cannot physically enforce read-only,
+provider capability gaps do not silently create worktrees (#190). A worker may
+edit only when the call sets `writable=True`; standalone `run-script` then uses a
+throwaway worktree and saves the diff as a pending `WorkflowPatch`, so the live
+repo is not changed until the patch is applied. A read-only call can still opt
+into `isolation="worktree"` when it explicitly needs an isolated checkout.
+`write_mode="direct"` is the explicit exception for a simple serial leaf that
+should edit the selected project root immediately.
 
 ## When To Use
 
@@ -39,6 +43,68 @@ provider capability gaps do not silently create worktrees.
 
 Do not use this skill to do the domain work yourself. Use it to author the
 program, run it, and then read the recorded run.
+
+## Harness Self-Hosting Boundary
+
+In the Multi-Agent Harness repo, a workflow run is execution evidence, not the
+canonical `Task` assignment. Before assigning implementation work for a harness
+goal, record a `GoalDesign` first. If urgent Lead-local work genuinely cannot
+wait, assignment must use the explicit waiver path:
+
+```bash
+harness task assign --id <task> --assignee <agent> \
+  --allow-missing-goal-design --waiver-decision <decision>
+```
+
+The waiver decision must have evidence, belong to a task in the same goal, and
+name a real follow-up task that will restore the missing design/evaluation
+chain. Do not run a workflow first and treat post-hoc design as equivalent.
+
+## Choose The Write Scenario
+
+Pick the landing mode before writing the program. Most bugs in workflow authoring
+come from mixing permission (`writable=True`) with landing semantics.
+
+| Scenario | Use | Do not use |
+| --- | --- | --- |
+| Read-only scan / review / synthesis | Omit `writable`; use `schema=` for any branch decision. | Do not assume a read-only leaf can run arbitrary shell on every provider; Kimi cannot physically enforce read-only, so choose codex/claude when hard read-only enforcement matters (read-only leaves still run on the project root regardless — #190). |
+| Failure-aware retry / fallback | Use `return_status=True` and inspect `ok`, `reason`, `detail`, and `structured` before retrying or aborting. | Do not parse prose to guess whether a leaf timed out, failed, or merely returned a negative domain verdict. |
+| Normal code implementation | `writable=True`, default worktree landing, `owned_paths=[...]`, leave `persist_changes` unset or `"patch"`. Operator or workflow later applies/rejects the pending `WorkflowPatch`. | Do not rely on `expected_artifacts` to preserve code edits; it is for named files, not source diffs. |
+| Workflow-internal apply/reject | Implement in one writable leaf, have that leaf return a compact diff/gate summary, review it with a schema'd read-only gate, then call `apply_patch(label, reason)` or `reject_patch(label, reason)`. | Do not auto-apply without a gate; if the reviewer cannot see the relevant evidence, leave the patch pending for manual review. |
+| Simple direct edit | One serial `agent(..., writable=True, write_mode="direct")` against a clean git project. Use for small docs/config edits the operator intends to land in the current tree now. | Do not use direct mode inside `parallel()` / `pipeline()`, and do not split direct edit/repair across multiple writable leaves: after the first leaf dirties the repo, another direct leaf is refused. |
+| Parallel fixes | `parallel([{..., "writable": True, "owned_paths": [...]}, ...])`; each slot gets its own worktree and patch. Use unique labels such as `fix:1`, `fix:2`. | Never use `write_mode="direct"` for concurrent mutations. Avoid duplicate labels if humans must apply/reject individual patches. |
+| File/artifact generation | `writable=True`, `expected_artifacts=[...]`, and `artifact_manifest([...], artifact_root=..., write_roots=[...])`. | Do not write artifacts to absolute paths or outside declared roots; those writes escape worktree cleanup/accounting. |
+| Goal phase execution | For a workflow-mode GoalPhase, author a repo `.star` workflow and attach it as `workflow_ref=repo:workflows/name.star`; `goal run-phases` loads that script directly and links the resulting `WorkflowRun` to the GoalPhase. TaskGraph phases remain owned by `star-planner`. | Do not put a TaskGraph in front of a workflow-mode phase, and do not assume standalone `run-script` auto-lands worktree diffs; goal-managed runs have separate landing semantics. |
+| Landing mode choice | Use `examples/landing-mode-chooser.star` when deciding between ad-hoc `run-script` and goal-managed `run-phases`. | Do not describe "writable" as one landing behavior; the same runtime has different landing semantics depending on the front-end. |
+
+Good starting points:
+[`examples/direct-doc-edit.star`](examples/direct-doc-edit.star),
+[`examples/patch-review-apply.star`](examples/patch-review-apply.star),
+[`examples/pending-manual-review.star`](examples/pending-manual-review.star),
+[`examples/failure-aware-retry.star`](examples/failure-aware-retry.star),
+[`examples/landing-mode-chooser.star`](examples/landing-mode-chooser.star),
+[`examples/artifact-manifest.star`](examples/artifact-manifest.star),
+[`examples/scan-then-parallel-fix.star`](examples/scan-then-parallel-fix.star).
+
+## Example Coverage Map
+
+Each bundled example exists to teach one decision shape. Do not add a new example
+unless it covers a scenario this map does not already make obvious.
+
+| Example | Unique purpose | Use when |
+| --- | --- | --- |
+| `closed-loop.star` | Canonical read-only plan -> draft -> bounded verify/refine -> `output()` -> `verdict()` skeleton. | You are producing an answer/artifact in variables, not editing files. |
+| `bug-hunt-verify.star` | Multi-modal bug finding plus skeptic-panel majority verification. | You need a review-quality defect hunt, not a single auditor. |
+| `design-tournament.star` | Divergent/convergent design: understand constraints, generate orthogonal proposals, judge/synthesize one winner. | The solution space is wide and design quality varies run-to-run. |
+| `assess-verify-synthesize.star` | Streaming `pipeline()` per item: assess -> adversarial verify -> synthesize, with no unnecessary barrier. | Each item should flow through stages independently. |
+| `failure-aware-retry.star` | `return_status=True` with explicit timeout/failure/structured-result branching and fallback. | The workflow must retry, degrade, or abort based on how a leaf failed. |
+| `direct-doc-edit.star` | The explicit `write_mode="direct"` exception for one small serial live-checkout edit. | The operator intentionally wants the current repo changed now. |
+| `patch-review-apply.star` | Default standalone code landing: writable worktree patch, schema'd review, apply/reject/pending decision. | Code should be reviewed before landing in the selected repo. |
+| `pending-manual-review.star` | Dedicated pending path: create a patch, make no internal apply/reject call, output operator commands. | Evidence is insufficient for an automated decision but the workflow should complete. |
+| `landing-mode-chooser.star` | Front-end choice: standalone `run-script` pending patches vs goal `run-phases` landing commits. | You need to explain or choose the correct landing surface before authoring. |
+| `build-and-gate.star` | One writable worker owns edit/test/repair inside its worktree; Starlark gates the worker report. | The edit and gate must share one temporary checkout. |
+| `artifact-manifest.star` | Generated file copy-back plus durable artifact manifest tracking. | The important output is a file/report/asset, not only a source diff. |
+| `scan-then-parallel-fix.star` | Runtime-determined fan-out into multiple isolated writable patches. | A scan decides how many independent fixes should run concurrently. |
 
 ## The Mandatory `workflow(name, design_intent)` Header
 
@@ -64,7 +130,7 @@ for reproducibility.
 ## Host API
 
 The interpreter is [Starlark](https://github.com/facebook/starlark-rust)
-([`crates/harness-workflow/src/starlark_front.rs`](../../../crates/harness-workflow/src/starlark_front.rs)),
+([`crates/harness-workflow/src/starlark_front.rs`](../../crates/harness-workflow/src/starlark_front.rs)),
 the same dialect Bazel uses. It is HERMETIC by design: the script has no clock, no
 randomness, and no IO. The orchestration (which agents run, in what order, with what
 prompts) is therefore deterministic — the ONLY nondeterminism lives in the journaled
@@ -82,9 +148,11 @@ A program calls these globals (no `import`; they are pre-bound):
 | Call | Returns | Meaning |
 | --- | --- | --- |
 | `workflow(name, design_intent, budget_usd=, success_criterion=)` | — | REQUIRED header. Declares the run name + the WHY behind its shape. Optional `budget_usd=N` caps the run's cumulative spend; `success_criterion="..."` declares the bar `verdict()` is judged against. Must run once before the body. |
-| `agent(prompt, provider="codex", label=, phase=, model=, effort=, service_tier=, fallback_model=, timeout_s=, image=, add_dir=, expected_artifacts=, isolation=, schema=, writable=False)` | output text, OR a dict (with `schema=`) | Run ONE ephemeral worker synchronously. `prompt` is positional; the rest are keyword args. `model=` overrides the provider default model; `effort=` overrides reasoning effort (see the rules below); `service_tier=` overrides the Codex CLI service tier for this leaf; `fallback_model=` sets a provider fallback model when supported; `timeout_s=` is a per-leaf wall-clock cap in seconds; `image=` is a list of image file paths; `add_dir=` is a list of extra directory paths; `expected_artifacts=` is a list of repo-relative output files to assert and copy back. READ-ONLY by default; `writable=True` lets it edit / run shell AND auto-isolates it into a throwaway worktree. With `schema={...}` it returns a parsed dict (or `None`) — see [Structured Output](#structured-output-the-foundation). Capture the return to chain: `scan = agent("...")`. |
-| `parallel([dict, ...])` | list (input order) | Barrier fan-out: run every spec concurrently, block until ALL finish. Each element is the parsed dict (if that spec had a `schema` that parsed) else its output string. Each dict needs a `prompt` and may set `provider` (default `"codex"`), `label`, `phase`, `model`, `effort`, `service_tier`, `fallback_model`, `timeout_s`, `image`, `add_dir`, `expected_artifacts`, `isolation`, `schema`, `writable`. |
-| `pipeline(items, stages)` | list (one per item) | No-barrier streaming: each item flows through every stage independently. `stages` is a list of dicts `{prompt, provider?, label?, phase?, model?, effort?, service_tier?, fallback_model?, timeout_s?, image?, add_dir?, expected_artifacts?, isolation?, schema?, writable?}` (or pass the stages as positional args: `pipeline(items, s1, s2)`) whose `prompt` is a TEMPLATE containing `{input}` — replaced with the item for stage 1, then the prior stage's output for each next stage (forward-injection). Returns each item's LAST stage result. |
+| `agent(prompt, provider="codex", label=, phase=, model=, effort=, service_tier=, fallback_model=, timeout_s=, image=, add_dir=, expected_artifacts=, persist_changes=, write_mode=, owned_paths=, artifact_root=, write_roots=, auto_apply_on_verdict=False, isolation=, schema=, return_status=False, writable=False)` | output text, dict, or status dict | Run ONE ephemeral worker synchronously. `prompt` is positional; the rest are keyword args. `model=` overrides the provider default model; `effort=` overrides reasoning effort (see the rules below); `service_tier=` overrides the Codex CLI service tier for this leaf; `fallback_model=` sets a provider fallback model when supported; `timeout_s=` is a per-leaf wall-clock cap in seconds; `image=` is a list of image file paths; `add_dir=` is a list of extra directory paths; `expected_artifacts=` is a list of repo-relative output files to assert and copy back; `persist_changes="discard"` opts out of default patch capture; `write_mode="direct"` makes a simple serial writable leaf edit the selected repo directly; `owned_paths=` guards patch apply. READ-ONLY by default; `writable=True` lets it edit / run shell AND normally auto-isolates it into a throwaway worktree. With `schema={...}` it returns a parsed dict (or `None`). With `return_status=True`, it returns an inspectable status dict instead — see [Error Tolerance](#error-tolerance). |
+| `parallel([dict, ...])` | list (input order) | Barrier fan-out: run every spec concurrently, block until ALL finish. Each element is the parsed dict (if that spec had a `schema` that parsed), a status dict (if `return_status=True`), else its output string. Each dict needs a `prompt` and may set `provider` (default `"codex"`), `label`, `phase`, `model`, `effort`, `service_tier`, `fallback_model`, `timeout_s`, `image`, `add_dir`, `expected_artifacts`, `persist_changes`, `owned_paths`, `artifact_root`, `write_roots`, `auto_apply_on_verdict`, `isolation`, `schema`, `return_status`, `writable`. `write_mode="direct"` is rejected here; use worktree isolation for concurrent edits. |
+| `pipeline(items, stages)` | list (one per item) | No-barrier streaming: each item flows through every stage independently. `stages` is a list of dicts `{prompt, provider?, label?, phase?, model?, effort?, service_tier?, fallback_model?, timeout_s?, image?, add_dir?, expected_artifacts?, persist_changes?, owned_paths?, artifact_root?, write_roots?, auto_apply_on_verdict?, isolation?, schema?, return_status?, writable?}` (or pass the stages as positional args: `pipeline(items, s1, s2)`) whose `prompt` is a TEMPLATE containing `{input}` — replaced with the item for stage 1, then the prior stage's output for each next stage (forward-injection). Returns each item's LAST stage result. `write_mode="direct"` is rejected here; keep pipeline stages read-only or worktree-isolated. |
+| `apply_patch(label, reason="")` / `reject_patch(label, reason="")` | — | Declare a workflow-internal decision over a captured patch. For a STANDALONE `run-script`, the CLI applies/rejects after the run journals durable `WorkflowPatch` rows, with the same guards as manual `workflow patch apply/reject`. Under `goal run-phases` (an orchestrated run), no `WorkflowPatch` rows exist to mutate: `apply_patch` is journaled as intent only (phase landing is the landing authority, [see below](#goal-layer-workflow-mode-goalphases)), and `reject_patch` excludes that step's diff from the phase's landing commit. |
+| `artifact_manifest(paths, label=, artifact_root=, write_roots=)` | — | Declare durable artifact files to validate into `WorkflowArtifactManifest` rows with exists/size/hash/status. |
 | `verdict(ok, reason="")` | — | Declare the run's TYPED outcome. `reason` may be positional or keyword (`verdict(ok, "why")` ≡ `verdict(ok, reason="why")`). `ok=False` finalizes the run `Failed` even if every worker ran — so "workers ran" ≠ "intent satisfied". A closed-loop program's final gate calls this. |
 | `output(value)` | — | Declare the run's RESULT — the one unambiguous answer the calling agent reads back. `value` (a string or dict) is persisted verbatim under `final_output.result`, UNCAPPED, so the caller reads one field instead of digging the answer out of a step by label. Last call wins; pass a `schema`'d dict when you want the answer typed (a free-text `agent()` return is the worker's FULL reply — not truncated). |
 | `json.encode(value)` / `json.decode(str)` | string / value | Serialize a prior `agent()`'s dict to inject it verbatim into the next prompt (forward-injection), or parse JSON back. |
@@ -134,6 +202,33 @@ Rules every call obeys:
   claude both receive repeatable `--add-dir <path>` args.
 - `expected_artifacts` is a list of repo-relative files the step must produce;
   the runtime rejects absolute paths and `..` components.
+- `persist_changes` controls writable diffs: the default saves non-empty diffs as
+  pending `WorkflowPatch` rows; set `persist_changes="discard"` only when the diff
+  is intentionally throwaway. Use `owned_paths=["src", "docs"]` on code-writing
+  leaves so patch apply can reject path escapes. Patch capture only happens for a
+  step that both SUCCEEDED (`ok`) and was declared `writable=True` — a failed
+  leaf's diff is discarded, and a read-only leaf never produces a patch (the
+  writable gate, not isolation, is the guarantee; read-only leaves run on the
+  project root even on a provider that can't enforce read-only — #190; see
+  [Workspace: read-only by default](#workspace-read-only-by-default-writabletrue-to-edit)).
+  Starlark validation
+  rejects `auto_apply_on_verdict=True` or `persist_changes="patch"` on a
+  `writable=False` leaf, and rejects any `persist_changes` other than
+  `"patch"`/`"discard"` or `write_mode` other than `"direct"`/absent, in
+  `agent()`, `parallel()`, and `pipeline()` specs alike.
+- `write_mode="direct"` is the explicit escape hatch for a simple SERIAL edit that
+  should modify the selected project root immediately. It requires
+  `writable=True`, a git-backed clean repo, and cannot be used in `parallel()` /
+  `pipeline()` specs. It records `direct_diff` evidence and does NOT create a
+  pending `WorkflowPatch` because the change is already in the working tree.
+- `artifact_root` and `write_roots` are metadata for artifact manifests. Use
+  `artifact_manifest([...], artifact_root="out", write_roots=["out"])` when a
+  workflow produces files that should be visible and validated after completion.
+- `return_status=True` changes the script-visible return into a dict with `ok`,
+  `reason`, `detail`, `text`, `structured`, `provider_session_id`, `label`,
+  `phase`, `provider`, `isolation`, and `ordinal`. Use it when the workflow needs
+  to branch on timeout/failure categories or retry/abort deliberately instead of
+  guessing from prose.
 - `fallback_model` is an optional fallback model override. Claude receives
   `--fallback-model <model>`; codex has no fallback-model flag, so it is not
   passed to codex.
@@ -211,8 +306,30 @@ A call that must EDIT files or run commands sets `writable=True`. That worker is
 automatically run in its own harness-owned throwaway git worktree under
 `.harness/worktrees/` (writes land in a discardable checkout, NOT the live repo);
 its `git diff` becomes the step's evidence, and the worktree is cleaned up after
-(auto-removed if unchanged, never auto-merged). So a `parallel()` block of several
-`writable` slots is automatically conflict-free — each gets its own worktree.
+(auto-removed if unchanged, never auto-merged directly). A non-empty writable diff
+is saved as a pending `WorkflowPatch` unless the step sets
+`persist_changes="discard"`. So a `parallel()` block of several `writable` slots is
+automatically conflict-free — each gets its own worktree and its own patch.
+
+For a deliberately simple serial edit, use direct mode:
+
+```python
+agent(
+    "Make the requested one-file docs edit. Do not touch unrelated files.",
+    label="direct-doc-edit",
+    writable=True,
+    write_mode="direct",
+)
+```
+
+Direct mode separates **permission** from **landing**: `writable=True` gives the
+provider edit/shell permission; `write_mode="direct"` says those edits land in
+the selected project root immediately. The runtime refuses direct mode if the repo
+is dirty before the step, if the project is non-git, or if the spec is inside
+`parallel()` / `pipeline()`. Use it for small operator-intended edits where
+normal git status/review is enough. Use the default worktree+patch path for code
+changes, parallel edits, uncertain prompts, or anything that needs review before
+landing.
 
 When a writable leaf PRODUCES FILES that must survive cleanup, declare
 `expected_artifacts=["repo/relative/path.ext", ...]`. At step end the CLI copies
@@ -222,6 +339,56 @@ list preserves legacy behavior. Use this for file-producing leaves such as image
 generation: it both asserts the output exists and persists it past the ephemeral
 worktree.
 
+For code-writing leaves, prefer this shape:
+
+```python
+IMPLEMENT = {
+    "gate_green": "bool",
+    "summary": "what changed and why",
+    "files_changed": "repo-relative files changed, one per line",
+    "diff_review_notes": "compact diff/gate notes for the reviewer",
+}
+impl = agent(
+    "Implement the focused change and do not touch unrelated files. Before " +
+    "reporting, run the relevant gate and include compact diff/gate notes.",
+    label="implement",
+    writable=True,
+    persist_changes="patch",
+    owned_paths=["src", "tests"],
+    schema=IMPLEMENT,
+)
+review = agent(
+    "Review whether this implementation should be applied, rejected, or left " +
+    "pending because evidence is insufficient:\n" + json.encode(impl),
+    label="review",
+    schema={
+        "action": "one of: apply | reject | pending",
+        "reason": "why this action is correct",
+    },
+)
+
+action = review["action"] if type(review) == "dict" else "pending"
+reason = review["reason"] if type(review) == "dict" else "review did not return JSON"
+if action == "apply":
+    apply_patch("implement", review["reason"])
+elif action == "reject":
+    reject_patch("implement", reason)
+else:
+    action = "pending"
+# action == "pending": make no patch call; the operator applies/rejects later.
+```
+
+Manual operator path: `harness workflow patch list`, `harness workflow patch show
+<run_id> --step implement`, then `harness workflow patch apply <run_id> --step
+implement` or `harness workflow patch reject <run_id> --step implement`. Without
+`--allow-dirty`, apply refuses only when a path THIS patch touches already has
+local modifications (or a to-be-created file already exists untracked) —
+unrelated dirty/untracked files elsewhere in the repo no longer block it.
+
+If the workflow-internal reviewer cannot see enough real evidence in the worker's
+structured report, do not call `apply_patch()`; leave the patch pending for manual
+inspection with `workflow patch show`.
+
 A `writable` worker runs with **FULL permissions** — codex `--sandbox
 danger-full-access`, claude `--permission-mode bypassPermissions` — so it can run
 arbitrary shell, **`git add`/`git commit`**, install deps, and reach the network.
@@ -230,6 +397,15 @@ so commits failed with "sandbox denied .git".) The throwaway worktree — not an
 sandbox — is the boundary: a `writable` prompt executes for real, so scope it, and
 never point a workflow with destructive/money-moving `writable` steps at a tree you
 care about.
+
+Nested harness commands from an ephemeral leaf are store-isolated by default. The
+runtime injects a session-local child store/home for `harness ...` commands run
+inside a provider leaf, so a worker cannot accidentally create tasks, evidence,
+proposals, or decisions in the parent project's central store. If a workflow
+intentionally needs a leaf to mutate the canonical harness store, invoke
+`run-script` with `HARNESS_WORKFLOW_ALLOW_STORE_MUTATION=1` and record that grant
+in the task/evidence; otherwise keep store writes in the Lead process after the
+workflow returns.
 
 `isolation="worktree"` is the explicit form of the same thing (a read-only call
 that still wants an isolated checkout); `writable=True` implies it. Do not set it
@@ -248,21 +424,50 @@ A writable / isolated leaf branches from the PROJECT-ROOT checkout's current
 (root + branch + short HEAD) when it creates one; keep the selected project root
 on the intended branch or a writable leaf can branch from a stale base.
 
-Standalone `run-script` still discards writable worktree diffs. At run end it now
-WARNS when a writable / isolated step had a non-empty discarded diff, naming the
-step, changed-file count, and recovery path (`harness workflow get-output ...` or
-land the work through the goal layer).
+Standalone `run-script` still discards the temporary worktree, but not the diff:
+the patch is durable in the store. Apply or reject it explicitly, or have the
+workflow declare `apply_patch()` / `reject_patch()` after a review leaf.
 
-## Goal layer: a second front-end onto this runtime
+## Goal layer: workflow-mode GoalPhases
 
-`goal run-phases` is a second front-end onto this exact runtime. It compiles each
-phase's task DAG to a `.star` program (`compile_phase_to_starlark`) and runs it on
-the same `run-script` runtime documented here. The one behavioral difference is
-landing: standalone `run-script` writable worktrees are discarded (the "never
-auto-merged" rule above holds for `run-script`), but under the goal layer a
-passing phase's writable diffs LAND on the branch via a per-phase landing commit.
-So the trap — "writable edits always vanish" — does not apply to phased goal
-execution.
+`GoalPhase` is the Goal checkpoint. It is not the same as the Starlark
+`phase("...")` grouping label inside a workflow.
+
+`goal run-phases` is a second front-end onto this exact runtime. Each
+`GoalPhase` chooses one executor:
+
+- `execution_mode="task_graph"`: compile the phase's task DAG to a `.star`
+  program (`compile_phase_to_starlark`) and run it here.
+- `execution_mode="workflow"`: load the authored Starlark program named by
+  `workflow_ref` (`repo:workflows/foo.star` or `builtin:<id>`) and run it here
+  directly. The primary truth is `WorkflowRun` / `WorkflowStep` / artifacts /
+  verdict, not a duplicate TaskGraph.
+
+The landing distinction still matters: standalone `run-script` creates pending
+patches that need explicit apply/reject, but under the goal layer a passing phase's
+writable diffs LAND on the branch via a per-phase landing commit. So the trap —
+"writable edits always vanish" — does not apply to phased goal execution.
+
+Any run `goal run-phases` executes — task-graph or workflow-mode — is an
+ORCHESTRATED run with a single landing authority: per-phase landing. It persists
+NO `WorkflowPatch` rows at all. `apply_patch(label, reason)` in an authored
+workflow-mode script performs no tree mutation there — it is journaled as intent
+only ("phase landing is the landing authority"), a no-op beyond the audit trail.
+`reject_patch(label, reason)` DOES have an effect: it excludes that step's diff
+from the phase's landing commit, same as a step that set
+`persist_changes="discard"`. Landing lands every other non-empty writable diff in
+one per-phase commit, same as before.
+
+The verdict gate is also per-mode. A task-graph phase keeps the strict clause
+"every task step `ok` is true" — a bare compiled `parallel()` has no `verdict()`,
+so a failed task inside it must fail the phase some other way. A workflow-mode
+phase instead trusts the run's own status: it passes when
+`run.status == Completed` and every required artifact is satisfied, full stop —
+it does NOT require every step to have succeeded. This lets an authored script
+legitimately tolerate a failed leaf (retry/fallback via `return_status=True`,
+landing a `verdict(True)` despite one journaled `ok=false` step — see
+[Error Tolerance](#error-tolerance)) without the phase gate second-guessing the
+script's own verdict.
 
 ## Structured Output: the foundation
 
@@ -274,15 +479,16 @@ Starlark dict:
 ```python
 res = agent(
     "Audit " + args["area"] + " and report whether it is safe to ship.",
-    schema={"ok": "bool", "findings": "list of strings"},
+    schema={"ok": "bool", "findings": "findings, one per line"},
 )
-# res is a real dict with native types: res["ok"] is a bool, res["findings"] a list.
+# res is a real dict with native scalar types: res["ok"] is a bool.
 if res == None:
     log("worker produced no valid JSON — skipping")
 elif res["ok"]:
     log("clean")
 else:
-    for f in res["findings"]:
+    raw = res["findings"] if type(res["findings"]) == "string" else ""
+    for f in [x.strip() for x in raw.splitlines() if x.strip()]:
         log("finding: " + f)
 ```
 
@@ -339,19 +545,26 @@ patterns below all lean on structured output. Each is a few lines of Starlark.
 
 ### verify + repair + stop
 
-Do the work, verify it with a SEPARATE schema'd worker, and on failure make
-exactly one repair pass — then stop. Bounded, not an open loop.
+Draft the answer, verify it with a SEPARATE schema'd worker, and on failure make
+exactly one repair pass — then stop. Bounded, not an open loop. For code edits,
+keep the edit/gate/repair loop inside one writable worktree worker, or use the
+patch review pattern; do not do `write_mode="direct"` build followed by a second
+direct repair leaf, because direct mode requires the repo to be clean before each
+direct leaf.
 
 ```python
-agent("Implement " + args["task"] + " on the shared tree.", label="build")
+artifact = agent("Draft the answer for " + args["task"], label="draft")
 v = agent(
-    "Verify the change for " + args["task"] + ". Did it pass?",
-    schema={"ok": "bool", "problems": "list of strings"},
+    "Verify this answer for " + args["task"] + ". Did it pass?\n" + artifact,
+    schema={"ok": "bool", "problems": "problems, one per line"},
     label="verify",
 )
 if v != None and not v["ok"]:
-    agent(
-        "Repair these problems in " + args["task"] + ":\n- " + "\n- ".join(v["problems"]),
+    raw = v["problems"] if type(v["problems"]) == "string" else ""
+    problems = [p.strip() for p in raw.splitlines() if p.strip()]
+    artifact = agent(
+        "Repair these problems in the answer:\n- " + "\n- ".join(problems) +
+        "\n\nCURRENT ANSWER:\n" + artifact,
         label="repair",
     )
 # else: it passed (or verify failed to report) — stop. No unbounded retry loop.
@@ -446,13 +659,13 @@ for _ in range(MAX_ROUNDS):
     rounds = parallel([
         {"prompt": "Find bugs in " + args["area"] + " NOT in this list:\n" +
                    "\n".join(seen.keys()),
-         "schema": {"findings": "list of strings"}, "label": "finder"}
+         "schema": {"findings": "findings, one per line"}, "label": "finder"}
         for _ in range(2)
     ])
     fresh = 0
     for r in rounds:
-        if type(r) == "dict" and type(r["findings"]) == "list":
-            for f in r["findings"]:
+        if type(r) == "dict" and type(r["findings"]) == "string":
+            for f in [x.strip() for x in r["findings"].splitlines() if x.strip()]:
                 if f not in seen:
                     seen[f] = True
                     fresh += 1
@@ -493,11 +706,13 @@ guard against a confident-but-incomplete result.
 gaps = agent(
     "Here is the finding set for " + args["area"] + ":\n- " + "\n- ".join(seen.keys()) +
     "\nWhat important cases are still MISSING?",
-    schema={"complete": "bool", "missing": "list of strings"},
+    schema={"complete": "bool", "missing": "missing cases, one per line"},
     label="completeness",
 )
 if gaps != None and not gaps["complete"]:
-    log("gaps remain: " + ", ".join(gaps["missing"]))
+    raw = gaps["missing"] if type(gaps["missing"]) == "string" else ""
+    missing = [x.strip() for x in raw.splitlines() if x.strip()]
+    log("gaps remain: " + ", ".join(missing))
 ```
 
 ## Error Tolerance
@@ -514,6 +729,28 @@ result means:
 
 Never assume every slot in a fan-out succeeded; a robust workflow tolerates a
 dead leaf and still reaches a verdict.
+
+When the workflow needs to branch on the failure class itself, use
+`return_status=True` instead of parsing text:
+
+```python
+status = agent(
+    "Run a quick verifier for " + args["target"],
+    label="verify",
+    timeout_s=120,
+    return_status=True,
+)
+if type(status) == "dict" and status["ok"] == False:
+    if status["reason"] == "timeout":
+        log("verifier timed out; run a cheaper fallback or mark coverage partial")
+    else:
+        log("verifier failed: " + status["reason"] + " " + status["detail"])
+elif type(status) == "dict":
+    log("verifier completed")
+```
+
+Use this for retry/abort/fallback logic. Use `schema={...}` when the worker
+completed and the workflow needs typed domain facts.
 
 ## Right-size it, and never cap silently
 
@@ -570,6 +807,60 @@ deliverables, the exact gate command, and a report contract.
 [`examples/build-and-gate.star`](examples/build-and-gate.star) — runs under
 `--dry-run`.
 
+## Worked Example: direct docs edit
+
+[`examples/direct-doc-edit.star`](examples/direct-doc-edit.star) shows the
+smallest direct-write shape: one serial writable leaf edits the selected project
+root with `write_mode="direct"`, then a read-only reviewer checks the requested
+target and the workflow declares a verdict. This is for small docs/config edits
+where the operator intentionally wants the current checkout changed now. It is
+not a review-before-apply flow; direct-mode changes are already in the working
+tree.
+
+## Worked Example: failure-aware retry
+
+[`examples/failure-aware-retry.star`](examples/failure-aware-retry.star) shows
+the P0 failure-control shape: a primary verifier uses `return_status=True`, the
+script checks `ok`, `reason`, `detail`, and `structured`, and only then chooses a
+fallback verifier. Use this whenever timeout/failure/malformed output should
+change control flow; a negative domain verdict is not the same thing as a dead
+leaf.
+
+## Worked Example: worktree patch, review, apply/reject
+
+[`examples/patch-review-apply.star`](examples/patch-review-apply.star) is the
+default code-development shape for standalone `run-script`: implement in a
+throwaway worktree, capture the diff as a pending `WorkflowPatch`, have a
+schema'd review gate inspect the worker's diff/gate summary, then call
+`apply_patch()`, `reject_patch()`, or no patch action. If the reviewer lacks
+enough evidence, leave the patch pending for manual `workflow patch show` rather
+than pretending reject means pending.
+
+[`examples/pending-manual-review.star`](examples/pending-manual-review.star) is
+the dedicated pending variant. It creates the same durable patch, but when the
+review evidence is incomplete or operator approval is still required, it makes
+no `apply_patch()` / `reject_patch()` call and outputs the exact
+`workflow patch list/show/apply/reject` commands for the operator. The workflow
+finishes; the patch state remains pending.
+
+## Worked Example: landing mode chooser
+
+[`examples/landing-mode-chooser.star`](examples/landing-mode-chooser.star)
+teaches the front-end distinction: standalone `workflow run-script` is the
+ad-hoc surface where writable leaves preserve patches for explicit review, while
+`goal run-phases` is the goal-managed surface where a passing phase lands its
+writable diff through the goal layer. Use it before authoring when the user is
+really asking "will this change land now, wait for review, or become a goal
+phase commit?"
+
+## Worked Example: artifact manifest
+
+[`examples/artifact-manifest.star`](examples/artifact-manifest.star) shows the
+file-producing shape: a writable worker creates a declared repo-relative artifact,
+`expected_artifacts` copies it out of the throwaway worktree, and
+`artifact_manifest()` records existence, size, hash, and current/missing/stale
+status for the dashboard.
+
 ## Worked Example: bug hunt with adversarial verify
 
 A quality workflow end to end: diverse schema'd finders fan out, every candidate
@@ -582,9 +873,10 @@ flattening, and runs end-to-end under `--dry-run`.
 
 ## Worked Example: data-driven scan, then parallel fix
 
-A serial scan call (shared cwd) whose output decides the fan-out width: one fix
-slot per defect line. Because the fix slots EDIT files in parallel, each opts into
-`isolation="worktree"` so they cannot collide. The runnable copy is
+A serial read-only scan call whose output decides the fan-out width: one fix
+slot per defect line. Because the fix slots EDIT files in parallel, each sets
+`writable=True`, which implies its own throwaway worktree and pending patch. The
+runnable copy is
 [`examples/scan-then-parallel-fix.star`](examples/scan-then-parallel-fix.star):
 
 ```python
@@ -598,24 +890,36 @@ phase("scan")
 scan = agent(
     "Scan " + args["area"] + " for defects. Return a numbered list, one per line.",
     provider="codex",
+    schema={"defects": "one defect per line"},
 )
+defects = []
+if type(scan) == "dict" and type(scan["defects"]) == "string":
+    defects = [x.strip() for x in scan["defects"].splitlines() if x.strip()]
 
 phase("fix")
-parallel([
+fix_results = parallel([
     {
-        "prompt": "Fix this defect in " + args["area"] + ": " + line + ". Make the minimal change and explain it.",
+        "prompt": "Fix this defect in " + args["area"] + ": " + defects[i] + ". Make the minimal change and explain it.",
         "provider": "codex",
-        "isolation": "worktree",
+        "label": "fix:" + str(i + 1),
+        "writable": True,
+        "persist_changes": "patch",
+        "owned_paths": [args["area"]],
     }
-    for line in scan.splitlines() if line
+    for i in range(len(defects))
 ])
+patch_labels = ["fix:" + str(i + 1) for i in range(len(defects))]
+output({"defects": "\n".join(defects), "pending_patch_labels": "\n".join(patch_labels)})
+verdict(type(scan) == "dict", reason="created " + str(len(patch_labels)) + " pending patch(es)")
 ```
 
-The `scan` phase completes (its edits land on the shared cwd) before the
+The `scan` phase completes before the
 `parallel` barrier fans out, and each fix slot then runs concurrently in its own
-worktree and joins before the run finalizes. The fan-out WIDTH is decided at
-runtime from the scan's output — a comprehension over its lines — which no static
-shape could express.
+worktree and joins before the run finalizes. Standalone `run-script` leaves one
+pending patch per fix label; worktrees prevent checkout collisions, but patches
+can still conflict later when applied to the live repo. The fan-out WIDTH is
+decided at runtime from the scan's output — a comprehension over its lines —
+which no static shape could express.
 
 ## Worked Example: a design tournament (divergent → convergent)
 
@@ -766,11 +1070,17 @@ its permission profile must allow it:
 - The runner's allowed-tool / command policy must permit running the `harness`
   binary (for Claude this is a `Bash(harness ...)` allowance; for Codex the
   sandbox/approval policy must let the shell call through).
-- Each agent call spins up a fresh ephemeral worker in the selected project root
-  by default. It can edit only when `writable=True`, in which case the runtime
-  uses a throwaway worktree. A `prompt` that writes files or runs
-  destructive/money-moving actions executes for real once writable — scope prompts
-  accordingly.
+- Each agent call spins up a fresh ephemeral worker that is READ-ONLY in the
+  selected project root by default (#190). `writable=True` grants edit tools/full
+  provider permission; by default those writes go to a throwaway worktree.
+  `write_mode="direct"` is the explicit choice to write the selected repo cwd
+  immediately. A prompt that writes files or runs destructive / money-moving
+  actions executes for real once writable — scope prompts accordingly and keep
+  parallel mutations in worktrees.
+- Nested `harness ...` commands inside an ephemeral worker write a session-local
+  child store by default, not the parent project's central store. Use
+  `HARNESS_WORKFLOW_ALLOW_STORE_MUTATION=1 harness workflow run-script ...` only
+  when the leaf is explicitly trusted to mutate canonical harness objects.
 - If `harness` is not on the runner's `PATH`, invoke it by absolute path and
   ensure that path is the allowed command.
 
@@ -780,11 +1090,34 @@ its permission profile must allow it:
 - [ ] Program calls only `workflow`/`agent`/`parallel`/`pipeline`/`phase`/`log`/`verdict`/`output`/`args`; no clock/random/IO assumed.
 - [ ] A program that produces an answer ends with `output(value)` so the caller reads `final_output.result` (a large answer goes through a `schema`'d dict, not capped free text).
 - [ ] Every agent leaf (`agent()` call / `parallel` spec) has a `provider` of `"codex"`, `"claude"`, or `"kimi"` (keep `schema=`-gated control-flow leaves on codex/claude).
-- [ ] Parallel slots that EDIT files use `isolation` `"worktree"`.
-- [ ] Writable leaves that produce files declare `expected_artifacts` with repo-relative paths.
+- [ ] Parallel slots that EDIT files use worktree isolation; never use direct mode in parallel/pipeline.
+- [ ] Writable code leaves declare `owned_paths`; leave default patch capture on unless the diff is intentionally throwaway.
+- [ ] Store mutation is explicit: ephemeral leaves do not write parent harness
+      objects unless the run is intentionally invoked with
+      `HARNESS_WORKFLOW_ALLOW_STORE_MUTATION=1`; otherwise the Lead records
+      evidence/proposals/decisions after reading the workflow result.
+- [ ] Writable file-producing leaves declare `expected_artifacts` and/or `artifact_manifest` with repo-relative paths.
+- [ ] If a workflow should decide landing internally, it has a review/gate leaf and calls `apply_patch(label, reason)` or `reject_patch(label, reason)` only for explicit apply/reject; insufficient evidence leaves the patch pending.
 - [ ] Every leaf whose output drives control flow uses `schema={...}` and the script handles a `None` (and, in fan-outs, a non-dict) result.
+- [ ] Any branch that depends on timeout/provider failure uses `return_status=True` and checks `ok` / `reason` / `detail` rather than parsing prose.
+- [ ] The chosen landing surface is explicit: standalone `run-script` creates pending patches unless the script applies/rejects them; `goal run-phases` lands passing phase diffs.
 - [ ] If the workflow has only one `agent()` call and no branch/fan-out/loop, it is NOT a workflow — collapse it to that one call.
 - [ ] Quality steps (verify / adversarial / judge / loop-until-dry / completeness) cross-check rather than trust a single pass, where the task warrants it.
 - [ ] Ran it: `harness workflow run-script <prog.star>` (no member binding needed).
 - [ ] The run is visible in `harness dashboard snapshot` (`workflow_runs` / `workflow_steps`) with its `design_intent`.
 - [ ] The runner's profile allows the `harness` binary and what each leaf's prompt does.
+
+## Maintaining This Skill
+
+When updating this repository's `skills/star-workflow` copy, sync the installed
+copies before accepting the task:
+
+```bash
+skills/star-workflow/scripts/sync-installed.sh
+```
+
+The script updates `$CODEX_HOME/skills/star-workflow` (or `~/.codex/skills` by
+default) and `~/.agents/skills/star-workflow`, diffs both installed copies
+against the repo copy, and runs `quick_validate.py` when the validator is
+available. If an update should not be installed, record that as explicit evidence
+and explain why.
