@@ -7,6 +7,9 @@ import { workflowRunTone } from "@/components/workbench/tones";
 import { formatDuration } from "@/model/readModel";
 import {
   countWorkflowStepStatuses,
+  isDirectWorkflowRun,
+  matchRuntimeSteps,
+  normalizeWorkflowLabel,
   plannedStepCount,
   workflowRunIsLive,
   workflowRunProgress,
@@ -37,6 +40,7 @@ export function WorkflowDefinitionPreview({
   className?: string;
 }) {
   const plan = workflowPlanFromScript(script);
+  const matchedSteps = matchRuntimeSteps(plan.steps, steps);
   return (
     <div className={cn("min-w-0 overflow-hidden rounded-md border border-border bg-card/70", className)}>
       <div className="flex flex-wrap items-center gap-2 border-b border-border bg-muted/20 px-3 py-2">
@@ -82,7 +86,7 @@ export function WorkflowDefinitionPreview({
             </div>
             <div className="space-y-1.5">
               {plan.steps.slice(0, 6).map((step, index) => {
-              const runtimeStep = matchRuntimeStep(step, steps, index);
+              const runtimeStep = matchedSteps[index];
               const tone: StatusTone = runtimeStep
                 ? workflowStepTone(runtimeStep.status)
                 : step.kind === "gate"
@@ -270,27 +274,6 @@ function workflowPlanOwners(steps: ReadableWorkflowStep[]): string {
   return Array.from(owners).join(", ");
 }
 
-function matchRuntimeStep(
-  planStep: ReadableWorkflowStep,
-  runtimeSteps: WorkflowStep[],
-  index: number,
-): WorkflowStep | undefined {
-  if (!runtimeSteps.length) return undefined;
-  const label = planStep.label?.trim();
-  if (label) {
-    const exact = runtimeSteps.find((step) => step.label === label);
-    if (exact) return exact;
-    const normalized = normalizeWorkflowLabel(label);
-    const fuzzy = runtimeSteps.find((step) => normalizeWorkflowLabel(step.label) === normalized);
-    if (fuzzy) return fuzzy;
-  }
-  return runtimeSteps[index];
-}
-
-function normalizeWorkflowLabel(value: string): string {
-  return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
-}
-
 function workflowStepStatusLabel(status: string): string {
   const value = status.toLowerCase();
   if (value === "completed" || value === "cached") return "passed";
@@ -381,6 +364,7 @@ export function WorkflowRunSummary({
   phaseId,
   plannedLayers,
   hasVerdictGate,
+  isWorkflowModePhase = false,
   onOpenRun,
   className,
 }: {
@@ -390,6 +374,8 @@ export function WorkflowRunSummary({
   phaseId?: string;
   plannedLayers?: PhaseDagLayer[];
   hasVerdictGate?: boolean;
+  /** Phase/run is workflow-mode or scripted (see `isDirectWorkflowRun`). */
+  isWorkflowModePhase?: boolean;
   onOpenRun?: (runId: string) => void;
   className?: string;
 }) {
@@ -397,7 +383,7 @@ export function WorkflowRunSummary({
   const rawProgress = workflowRunProgress(steps);
   const live = workflowRunIsLive(run, steps);
   const finalOutput = workflowRunFinalOutputSummary(run);
-  const directWorkflowRun = Boolean(run && steps.length === 0 && (run.final_output != null || run.status === "completed"));
+  const directWorkflowRun = isDirectWorkflowRun(run, steps, isWorkflowModePhase);
   const directWorkflowRejected = directWorkflowRun && finalOutput.verdictOk === false;
   const directWorkflowAccepted =
     directWorkflowRun && run?.status === "completed" && finalOutput.verdictOk !== false;
@@ -449,7 +435,9 @@ export function WorkflowRunSummary({
       : live
         ? `${titleFromLabel(currentStep?.label ?? "run stage")} is running.`
         : `${finishedSteps}/${totalSteps || finishedSteps} run stages passed.`
-    : `${totalSteps} run stage${totalSteps === 1 ? "" : "s"} not started.`;
+    : isWorkflowModePhase
+      ? "Workflow plan is ready. Run it to collect evidence."
+      : `${totalSteps} run stage${totalSteps === 1 ? "" : "s"} not started.`;
   const latestResult = currentStep?.output_summary
     ? readableWorkflowText(currentStep.output_summary)
     : directWorkflowRun && finalOutput.reason

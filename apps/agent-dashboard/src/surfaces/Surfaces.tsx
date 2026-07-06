@@ -109,6 +109,7 @@ import {
 import {
   buildPhaseWorkflowPreview,
   compactWorkflowScript,
+  isDirectWorkflowRun,
   selectPhaseWorkflowRuns,
   workflowScriptFromRun,
 } from "../model/workflowSelectors";
@@ -1811,8 +1812,27 @@ function GoalWorkbenchOverview({
   const proofComplete = proofItems.filter((item) => item.ok).length;
   const evidenceProof = proofItems.find((item) => item.label === "Evidence");
   const overviewLayers = currentPhase ? phaseTaskDag(currentPhase.id, model.goalTasks) : [];
+  // Same run/step data path as GoalPhasesTimeline -> PhaseWorkflowPanel: resolve
+  // the phase's runs via the shared selector and prefer the latest run's actual
+  // script + steps over the static plan preview, so this panel live-updates
+  // instead of rendering a fabricated "not started" script under a live/failed run.
+  const overviewPhaseRuns = currentPhase
+    ? selectPhaseWorkflowRuns({
+        goalId: goal.id,
+        phaseId: currentPhase.id,
+        workflowRuns: model.workflowRuns,
+        goalOrchestrationRuns: model.goalOrchestrationRuns,
+      })
+    : [];
+  const overviewLatestRun = overviewPhaseRuns[0];
+  const overviewLatestRunSteps = overviewLatestRun
+    ? orderStepsByRun(overviewLatestRun, model.workflowStepsByRun.get(overviewLatestRun.id) ?? [])
+    : [];
   const overviewWorkflowScript = currentPhase
-    ? compactWorkflowScript(buildPhaseWorkflowPreview(currentPhase, overviewLayers), 2200)
+    ? compactWorkflowScript(
+        workflowScriptFromRun(overviewLatestRun) ?? buildPhaseWorkflowPreview(currentPhase, overviewLayers),
+        2200,
+      )
     : undefined;
   const gateState = goalOverviewGateState({
     phases,
@@ -1854,6 +1874,12 @@ function GoalWorkbenchOverview({
                 <WorkflowDefinitionPreview
                   heading="Workflow plan"
                   script={overviewWorkflowScript}
+                  steps={overviewLatestRunSteps}
+                  sourceLabel={
+                    currentPhase?.workflow_ref
+                      ?? (currentPhase?.builtin ? `builtin:${currentPhase.builtin}` : undefined)
+                      ?? overviewLatestRun?.workflow_name
+                  }
                   collapseExtraStepsOnMobile
                 />
               )}
@@ -2694,13 +2720,14 @@ function PhaseWorkflowRunPanel({
   const objective = phase.intent?.trim();
   const workflowRef = phase.workflow_ref ?? (phase.builtin ? `builtin:${phase.builtin}` : undefined);
   const finalOutput = workflowRunFinalOutput(latestRun);
-  const directWorkflowRun = phase.execution_mode === "workflow" && latestRunSteps.length === 0;
+  const isWorkflowModePhase = phase.execution_mode === "workflow";
+  const directWorkflowRun = isDirectWorkflowRun(latestRun, latestRunSteps, isWorkflowModePhase);
   const firstPlannedTask = layers[0]?.groups[0]?.tasks[0];
   const firstStepLabel = latestRunSteps[0]?.label
     ? titleCaseLabel(latestRunSteps[0].label)
     : firstPlannedTask
       ? firstPlannedTask.title ?? firstPlannedTask.objective ?? firstPlannedTask.id
-      : directWorkflowRun || phase.execution_mode === "workflow"
+      : directWorkflowRun || isWorkflowModePhase
         ? "Direct workflow verdict"
         : undefined;
   const nextAction = latestRun
@@ -2716,7 +2743,7 @@ function PhaseWorkflowRunPanel({
   const plannedStageCount = latestRunSteps.length || layers.reduce(
     (total, layer) => total + layer.groups.reduce((inner, group) => inner + group.tasks.length, 0),
     0,
-  ) || (phase.execution_mode === "workflow" ? 1 : 0);
+  ) || (isWorkflowModePhase ? 1 : 0);
   const passedStages = directWorkflowRun && latestRun?.status === "completed"
     ? 1
     : latestRunSteps.filter((step) => ["completed", "cached"].includes(step.status)).length;
@@ -2801,6 +2828,7 @@ function PhaseWorkflowRunPanel({
             phaseId={phase.id}
             plannedLayers={layers}
             hasVerdictGate={Boolean(phase.acceptance?.trim())}
+            isWorkflowModePhase={isWorkflowModePhase}
             onOpenRun={latestRun ? onOpenRun : undefined}
           />
           <PhaseEvidenceOutcome

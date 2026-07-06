@@ -68,6 +68,25 @@ export function workflowRunIsLive(run?: WorkflowRun, steps: WorkflowStep[] = [])
   return run?.status === "running" || steps.some((step) => ["queued", "running"].includes(step.status));
 }
 
+/**
+ * A run counts as "direct workflow" (no recorded agent leaf steps, judged
+ * only by its verdict/final output) exactly when the phase/run is actually
+ * workflow-mode or scripted AND it has zero recorded steps. A completed run
+ * with zero steps that ISN'T workflow-mode is not a direct workflow (it's
+ * just an empty/degenerate run); a workflow-mode phase with no run yet is
+ * not a "direct workflow run" either (there is nothing to narrate as direct
+ * yet — the caller should render its own "not started" copy).
+ */
+export function isDirectWorkflowRun(
+  run: WorkflowRun | undefined,
+  steps: WorkflowStep[],
+  isWorkflowModePhase: boolean,
+): boolean {
+  return Boolean(
+    isWorkflowModePhase && run && steps.length === 0 && (run.final_output != null || run.status === "completed"),
+  );
+}
+
 export function workflowRunProgress(steps: WorkflowStep[]): { terminalSteps: number; totalSteps: number; percent: number } {
   const counts = countWorkflowStepStatuses(steps);
   const terminalSteps = counts.completed + counts.cached + counts.failed;
@@ -96,6 +115,62 @@ export function workflowScriptFromRun(run?: WorkflowRun): string | undefined {
   if (!spec || typeof spec !== "object") return undefined;
   const script = (spec as { script?: unknown }).script;
   return typeof script === "string" && script.trim() ? script : undefined;
+}
+
+/** Minimal shape a plan-step needs for runtime-step matching (see `matchRuntimeSteps`). */
+export interface LabeledPlanStep {
+  label?: string;
+}
+
+/**
+ * Match each plan row to at most one runtime step, in row order.
+ *
+ * Label matching (exact, then normalized-fuzzy) is tried first for every row
+ * that has a parseable label; a runtime step consumed by an earlier row can
+ * never be borrowed again by a later row. The positional fallback
+ * (`runtimeSteps[index]`) only fires when the WHOLE plan has no parseable
+ * labels at all — i.e. position is the only signal available. If even one
+ * plan row has a label, unmatched rows render as "not started" instead of
+ * guessing from position, because dynamic runs create step rows only as
+ * agents start and a parallel group can start out of textual order.
+ */
+export function matchRuntimeSteps<T extends LabeledPlanStep>(
+  planSteps: T[],
+  runtimeSteps: WorkflowStep[],
+): (WorkflowStep | undefined)[] {
+  if (!runtimeSteps.length) return planSteps.map(() => undefined);
+  const anyLabelParseable = planSteps.some((step) => Boolean(step.label?.trim()));
+  const consumedIds = new Set<string>();
+  const matches: (WorkflowStep | undefined)[] = planSteps.map((planStep) => {
+    const label = planStep.label?.trim();
+    if (label) {
+      const exact = runtimeSteps.find((step) => step.label === label && !consumedIds.has(step.id));
+      if (exact) {
+        consumedIds.add(exact.id);
+        return exact;
+      }
+      const normalized = normalizeWorkflowLabel(label);
+      const fuzzy = runtimeSteps.find(
+        (step) => normalizeWorkflowLabel(step.label) === normalized && !consumedIds.has(step.id),
+      );
+      if (fuzzy) {
+        consumedIds.add(fuzzy.id);
+        return fuzzy;
+      }
+    }
+    return undefined;
+  });
+
+  if (anyLabelParseable) return matches;
+
+  // Fully label-less plan: position is the only signal, so fall back to it
+  // for every row (still skipping steps already consumed above, though none
+  // would be at this point since no labels matched).
+  return matches.map((match, index) => match ?? runtimeSteps[index]);
+}
+
+export function normalizeWorkflowLabel(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 }
 
 export function compactWorkflowScript(script: string, limit = 1800): string {
