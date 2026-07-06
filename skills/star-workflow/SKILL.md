@@ -95,7 +95,7 @@ unless it covers a scenario this map does not already make obvious.
 | --- | --- | --- |
 | `closed-loop.star` | Canonical read-only plan -> draft -> bounded verify/refine -> `output()` -> `verdict()` skeleton. | You are producing an answer/artifact in variables, not editing files. |
 | `bug-hunt-verify.star` | Multi-modal bug finding plus skeptic-panel majority verification. | You need a review-quality defect hunt, not a single auditor. |
-| `design-tournament.star` | Divergent/convergent design: understand constraints, generate orthogonal proposals, judge/synthesize one winner. | The solution space is wide and design quality varies run-to-run. |
+| `design-tournament.star` | Divergent/convergent design with STRICT quality gates: understand constraints, generate orthogonal proposals as one prose field each, bound every leaf with `return_status`/`timeout_s`, retry-or-drop a failing leaf, gate the synthesized winner on content-quality checks, default-strict with an explicit `smoke` escape hatch. | The solution space is wide, design quality varies run-to-run, and a placeholder/mock/empty result must NOT read as a passing design. |
 | `assess-verify-synthesize.star` | Streaming `pipeline()` per item: assess -> adversarial verify -> synthesize, with no unnecessary barrier. | Each item should flow through stages independently. |
 | `failure-aware-retry.star` | `return_status=True` with explicit timeout/failure/structured-result branching and fallback. | The workflow must retry, degrade, or abort based on how a leaf failed. |
 | `direct-doc-edit.star` | The explicit `write_mode="direct"` exception for one small serial live-checkout edit. | The operator intentionally wants the current repo changed now. |
@@ -752,6 +752,66 @@ elif type(status) == "dict":
 Use this for retry/abort/fallback logic. Use `schema={...}` when the worker
 completed and the workflow needs typed domain facts.
 
+## Design-quality gates: creative outputs need a different contract
+
+A real Goal Workbench design run "passed" while producing nothing usable. The
+root cause was not one bug but a missing contract for CREATIVE leaves (designs,
+proposals, prose reports): too many structured sub-fields forced onto an
+open-ended output, no check that the extracted content was actually
+substantial after schema extraction, no `return_status`/`timeout_s` on
+expensive leaves, one slow/failed leaf blocking an entire `parallel()`
+tournament, no repair path before final synthesis, and — the sharpest trap —
+`--dry-run` treated as if it proved semantic quality.
+
+**`--dry-run`'s mock proves PLUMBING, not QUALITY.** The mock driver fills a
+`schema={"content": "..."}` hint with the literal string `"mock content"` (see
+[Field types](#structured-output-the-foundation)) — a workflow that does not
+gate on real content will show a green `--dry-run` verdict forever, even
+though no real model ever produced a single word. Strict-by-default is the
+only way `--dry-run` stays a useful smoke test instead of a false signal.
+
+The pattern, all demonstrated in
+[`examples/design-tournament.star`](examples/design-tournament.star):
+
+1. **One prose field for creative output.** Prefer `schema={"content": "..."}`
+   over a dozen typed sub-fields — a design/proposal/report is prose written
+   for a human, not a form. (Multi-field schemas are still right for FACTS —
+   the understand-phase probes in the same example keep several named keys.)
+2. **`return_status=True` + `timeout_s` on every expensive leaf**, so the
+   script can tell "timed out" from "produced garbage" from "produced a
+   placeholder" instead of guessing from prose.
+3. **Semantic content gates AFTER schema extraction** — schema success only
+   proves the worker returned valid JSON with the right keys, not that the
+   value inside is real. Check, at minimum: a minimum length, required
+   headings/sections present, and forbidden placeholder/mock markers absent
+   (the dry-run mock's own `"mock <key>"` echo, `"lorem ipsum"`, `"TODO: fill
+   in"`, or an empty/near-empty string).
+4. **Degrade a failing leaf instead of letting it sink the tournament.** A
+   barrier `parallel()` blocks on every slot; one dead or gate-failing leaf
+   should not fail the whole run. Retry that one leaf once with the concrete
+   gate failure fed back as a repair note, then DROP it (continue with fewer
+   surviving proposals) rather than letting it block synthesis indefinitely —
+   the same bounded-retry discipline as [verify + repair + stop](#verify--repair--stop),
+   applied per fan-out slot.
+5. **Gate the final synthesis too**, with the SAME content-quality function —
+   a judge that only grades its inputs can still emit a hollow synthesis.
+   `verdict(False, reason="...")` naming the concrete gate failure (not just
+   "quality insufficient") when the bar is not met.
+6. **An explicit, default-off `smoke` escape hatch.** An `args`-driven
+   `smoke` flag (default `False`) is the ONLY way placeholder/mock content is
+   allowed to pass — it relaxes the gates to a bare non-empty check so
+   `--dry-run` can still prove the workflow's WIRING. When `smoke` is true,
+   `log()` a loud warning up front and echo the smoke flag in the verdict
+   reason, so a smoke-mode green run can never be mistaken for a real
+   quality signal downstream (in a dashboard, a PR description, a goal
+   evidence trail).
+
+This is a SIBLING concern to [Error Tolerance](#error-tolerance) and
+[`examples/failure-aware-retry.star`](examples/failure-aware-retry.star), not
+a replacement: `return_status=True` tells you a leaf failed or timed out;
+the content-quality gate tells you a leaf SUCCEEDED but produced something
+worthless. A design/creative workflow needs both.
+
 ## Right-size it, and never cap silently
 
 Scale the STRUCTURE to what was asked. "find any bugs" wants a few finders and a
@@ -921,16 +981,24 @@ can still conflict later when applied to the live repo. The fan-out WIDTH is
 decided at runtime from the scan's output — a comprehension over its lines —
 which no static shape could express.
 
-## Worked Example: a design tournament (divergent → convergent)
+## Worked Example: a design tournament (divergent → convergent, quality-gated)
 
 The fullest **divergent-then-convergent** shape — the pattern the real internal
-design runs use. Two parallel TYPED probes map the domain + the constraints;
-three complete designs are generated from orthogonal philosophies, **each seeded
-with the understanding injected forward** (`json.encode`); then a judge scores
-them on named dimensions and grafts ONE winner. Every handoff is a multi-field
-schema, so each step reads typed fields, not prose.
-[`examples/design-tournament.star`](examples/design-tournament.star) — runs under
-`--dry-run`.
+design runs use, HARDENED with the [design-quality gates](#design-quality-gates-creative-outputs-need-a-different-contract)
+below after a real Goal Workbench run produced a "passing" result that was
+actually schema-shaped filler. Two parallel TYPED probes map the domain + the
+constraints (multi-field schemas are fine here — it is not the creative
+output); three complete designs are generated from orthogonal philosophies,
+**each seeded with the understanding injected forward** (`json.encode`) as ONE
+prose `content` field bounded by `return_status=True` + `timeout_s`; a leaf
+that fails the content-quality gate gets ONE repair retry before being dropped
+so it cannot sink the whole tournament; a judge synthesizes ONE winner from
+whichever proposals survived; then the SAME content-quality gate runs on the
+synthesis and `verdict(False, reason=...)` fires if it does not pass.
+[`examples/design-tournament.star`](examples/design-tournament.star) — under
+plain `--dry-run` the verdict correctly reports `Failed` (the mock's
+placeholder content cannot pass the gate); pass `--args '{"smoke": true, ...}'`
+to prove the wiring instead, which the run logs loudly as smoke-only.
 
 ## Worked Example: assess → adversarial-verify → synthesize (`pipeline`)
 
@@ -1103,6 +1171,7 @@ its permission profile must allow it:
 - [ ] The chosen landing surface is explicit: standalone `run-script` creates pending patches unless the script applies/rejects them; `goal run-phases` lands passing phase diffs.
 - [ ] If the workflow has only one `agent()` call and no branch/fan-out/loop, it is NOT a workflow — collapse it to that one call.
 - [ ] Quality steps (verify / adversarial / judge / loop-until-dry / completeness) cross-check rather than trust a single pass, where the task warrants it.
+- [ ] A workflow producing a CREATIVE artifact (design/proposal/report) gates the extracted content itself — min length, required structure, forbidden placeholder markers — not just schema-shape success; see [Design-quality gates](#design-quality-gates-creative-outputs-need-a-different-contract). Any escape hatch that lets mock/placeholder content pass (e.g. `smoke`) defaults OFF and logs loudly when on.
 - [ ] Ran it: `harness workflow run-script <prog.star>` (no member binding needed).
 - [ ] The run is visible in `harness dashboard snapshot` (`workflow_runs` / `workflow_steps`) with its `design_intent`.
 - [ ] The runner's profile allows the `harness` binary and what each leaf's prompt does.
