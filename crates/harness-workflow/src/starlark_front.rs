@@ -18,22 +18,26 @@
 //!   structured the way it is. The run is REJECTED if `workflow(...)` is never
 //!   called or `design_intent` is blank / shorter than [`MIN_DESIGN_INTENT_LEN`]
 //!   characters — every workflow must justify its shape.
-//! * `agent(prompt, provider="codex", label=None, phase=None, model=None, timeout_s=None, write_mode=None, isolation=None, schema=None, return_status=False)`
+//! * `agent(prompt, provider="codex", label=None, phase=None, model=None, timeout_s=None, write_mode=None, isolation=None, schema=None, schema_strict=False, return_status=False)`
 //!   — run ONE ephemeral worker synchronously. In text mode (no `schema`) it
 //!   returns the worker's output text (so the script can chain, e.g.
 //!   `scan = agent(...)` then `scan.splitlines()`). In STRUCTURED mode
 //!   (`schema={...}`) it forces the worker to reply with a single JSON object
 //!   carrying the schema's top-level keys, then returns the parsed dict
 //!   (`res["ok"]`), or `None` if the worker produced no valid JSON. With
-//!   `return_status=True`, it returns an inspectable status dict carrying
-//!   `ok`, `reason`, `detail`, `failure`, `text`, and `structured` so scripts can
-//!   branch on failed leaves.
+//!   `schema_strict=True`, a candidate object whose top-level string fields are
+//!   all empty is REJECTED (as if it did not parse) so a later meaningful object
+//!   is selected instead — top-level type success is not semantic acceptance
+//!   (#192). With `return_status=True`, it returns an inspectable status dict
+//!   carrying `ok`, `reason`, `detail`, `failure`, `text`, and `structured` so
+//!   scripts can branch on failed leaves.
 //! * `parallel(specs)` — a barrier fan-out: run every spec concurrently and block until
 //!   ALL finish, returning a list in input order where each element is the parsed
 //!   structured dict (if that spec had a `schema` and parsed) else its
 //!   output-summary string. `specs` is a list of dicts, each with a required
 //!   `prompt` and optional `provider` (default "codex"), `label`, `phase`,
-//!   `model`, `timeout_s`, `write_mode`, `isolation`, `schema`, and `return_status` — e.g.
+//!   `model`, `timeout_s`, `write_mode`, `isolation`, `schema`, `schema_strict`,
+//!   and `return_status` — e.g.
 //!   `parallel([{"prompt": "fix " + x} for x in args["items"]])`.
 //! * `pipeline(items, stages)` — a STREAMING fan-out: every item flows through ALL
 //!   `stages` in order with NO barrier between stages (item A may be in stage 3
@@ -41,8 +45,8 @@
 //!   per item: the LAST stage's parsed structured dict (if it had a `schema` and
 //!   parsed) else its output-summary string. `items` is a list of strings OR dicts;
 //!   `stages` is a list of stage dicts (`prompt` TEMPLATE + optional `provider`,
-//!   `label`, `phase`, `model`, `timeout_s`, `schema`, `writable`,
-//!   `return_status`). Each stage `prompt` may contain the literal `{input}`
+//!   `label`, `phase`, `model`, `timeout_s`, `schema`, `schema_strict`,
+//!   `writable`, `return_status`). Each stage `prompt` may contain the literal `{input}`
 //!   placeholder, FORWARD-INJECTED with the item
 //!   (stage 1) or the prior stage's output (stage N) — e.g.
 //!   `pipeline(args["files"], [{"prompt": "scan {input}"}, {"prompt": "fix per {input}"}])`.
@@ -222,6 +226,7 @@ impl StarlarkCtx<'_> {
         auto_apply_on_verdict: bool,
         isolation: Option<String>,
         schema: Option<serde_json::Value>,
+        schema_strict: bool,
         writable: bool,
     ) -> StepResult {
         // Assign this leaf's deterministic ordinal FIRST (before the replay lookup,
@@ -267,6 +272,7 @@ impl StarlarkCtx<'_> {
             isolation,
             prompt,
             schema,
+            schema_strict,
             writable,
             // Thread the ordinal onto the spec so a real driver that journals its
             // own terminal row stamps the ordinal onto the stored step.
@@ -498,6 +504,7 @@ impl StarlarkCtx<'_> {
                 isolation: None,
                 prompt: item.clone(),
                 schema: None,
+                schema_strict: false,
                 writable: false,
                 ordinal: None,
             })
@@ -729,6 +736,29 @@ fn validate_persistence_config(
     Ok(())
 }
 
+/// Reject `schema_strict=True` on a spec that carries no `schema` (#192). Strict
+/// mode only affects structured extraction, so requesting it without a schema is a
+/// silent no-op that hides a program error — fail fast like the other config
+/// hygiene checks. Same shape as [`validate_persistence_config`]'s `who` prefix.
+fn validate_schema_strict(
+    context: &str,
+    label: Option<&str>,
+    has_schema: bool,
+    schema_strict: bool,
+) -> anyhow::Result<()> {
+    if schema_strict && !has_schema {
+        let who = match label {
+            Some(l) => format!("{context} leaf `{l}`"),
+            None => context.to_string(),
+        };
+        return Err(anyhow::anyhow!(
+            "{who}: schema_strict=True requires a schema (strict mode only \
+             affects structured-output extraction)"
+        ));
+    }
+    Ok(())
+}
+
 /// Read an optional bool field off a spec dict. Absent / Starlark `None` → false;
 /// errors when present-but-not-a-bool.
 fn dict_bool(dict: &DictRef<'_>, key: &str) -> anyhow::Result<bool> {
@@ -848,6 +878,7 @@ fn read_parallel_specs(
         let auto_apply_on_verdict = dict_bool(&dict, "auto_apply_on_verdict")?;
         let isolation = dict_str(&dict, "isolation")?;
         let schema = dict_schema(&dict, "schema")?;
+        let schema_strict = dict_bool(&dict, "schema_strict")?;
         let writable = dict_bool(&dict, "writable")?;
         let return_status = dict_bool(&dict, "return_status")?;
         // D3c: reject nonsensical persistence config before the run starts.
@@ -858,6 +889,14 @@ fn read_parallel_specs(
             persist_changes.as_deref(),
             write_mode.as_deref(),
             auto_apply_on_verdict,
+        )?;
+        // #192: schema_strict without a schema is a no-op that hides a program
+        // error (the field only bites in structured mode), so reject it up front.
+        validate_schema_strict(
+            "parallel()",
+            label.as_deref(),
+            schema.is_some(),
+            schema_strict,
         )?;
         out.push(ParallelSpec {
             spec: AgentStepSpec {
@@ -881,6 +920,7 @@ fn read_parallel_specs(
                 isolation,
                 prompt,
                 schema,
+                schema_strict,
                 writable,
                 ordinal: None,
             },
@@ -923,6 +963,7 @@ struct StageTemplate {
     auto_apply_on_verdict: bool,
     isolation: Option<String>,
     schema: Option<serde_json::Value>,
+    schema_strict: bool,
     writable: bool,
     return_status: bool,
 }
@@ -956,6 +997,7 @@ impl StageTemplate {
             isolation: self.isolation.clone(),
             prompt,
             schema: self.schema.clone(),
+            schema_strict: self.schema_strict,
             writable: self.writable,
             ordinal: None,
         }
@@ -1027,6 +1069,7 @@ fn read_pipeline_stages(
         let auto_apply_on_verdict = dict_bool(&dict, "auto_apply_on_verdict")?;
         let isolation = dict_str(&dict, "isolation")?;
         let schema = dict_schema(&dict, "schema")?;
+        let schema_strict = dict_bool(&dict, "schema_strict")?;
         let writable = dict_bool(&dict, "writable")?;
         let return_status = dict_bool(&dict, "return_status")?;
         // D3c: reject nonsensical persistence config before the run starts.
@@ -1037,6 +1080,13 @@ fn read_pipeline_stages(
             persist_changes.as_deref(),
             write_mode.as_deref(),
             auto_apply_on_verdict,
+        )?;
+        // #192: schema_strict only bites in structured mode.
+        validate_schema_strict(
+            "pipeline()",
+            label.as_deref(),
+            schema.is_some(),
+            schema_strict,
         )?;
         out.push(StageTemplate {
             prompt_template,
@@ -1059,6 +1109,7 @@ fn read_pipeline_stages(
             auto_apply_on_verdict,
             isolation,
             schema,
+            schema_strict,
             writable,
             return_status,
         });
@@ -1136,6 +1187,7 @@ fn workflow_globals(builder: &mut GlobalsBuilder) {
         #[starlark(require = named, default = false)] auto_apply_on_verdict: bool,
         #[starlark(require = named)] isolation: Option<String>,
         #[starlark(require = named)] schema: Option<Value<'v>>,
+        #[starlark(require = named, default = false)] schema_strict: bool,
         #[starlark(require = named, default = false)] writable: bool,
         #[starlark(require = named, default = false)] return_status: bool,
         eval: &mut Evaluator<'v, '_, '_>,
@@ -1186,6 +1238,13 @@ fn workflow_globals(builder: &mut GlobalsBuilder) {
             write_mode.as_deref(),
             auto_apply_on_verdict,
         )?;
+        // #192: schema_strict only bites in structured mode.
+        validate_schema_strict(
+            "agent()",
+            label.as_deref(),
+            schema_json.is_some(),
+            schema_strict,
+        )?;
         let has_schema = schema_json.is_some();
         let result = ctx_of(eval).run_one(
             prompt,
@@ -1208,6 +1267,7 @@ fn workflow_globals(builder: &mut GlobalsBuilder) {
             auto_apply_on_verdict,
             isolation,
             schema_json,
+            schema_strict,
             writable,
         );
         Ok(result_value(
@@ -2431,6 +2491,57 @@ agent(
             run_starlark(&format!("{HEADER}{script}"), "demo", None, &driver)
                 .unwrap_or_else(|e| panic!("script `{script}` should parse: {e}"));
         }
+    }
+
+    // #192: schema_strict is accepted on agent()/parallel()/pipeline() when a
+    // schema is present, and rejected when it is not (strict mode is a no-op
+    // without a schema, which would silently hide a program error).
+    #[test]
+    fn schema_strict_accepted_with_schema_across_primitives() {
+        let schemas = Mutex::new(Vec::new());
+        let driver = structured_driver(&schemas);
+        for script in [
+            r#"agent("x", schema = {"winner": "who"}, schema_strict = True)"#,
+            r#"parallel([{"prompt": "x", "schema": {"winner": "who"}, "schema_strict": True}])"#,
+            r#"pipeline(["i"], [{"prompt": "{input}", "schema": {"winner": "who"}, "schema_strict": True}])"#,
+        ] {
+            run_starlark(&format!("{HEADER}{script}"), "demo", None, &driver)
+                .unwrap_or_else(|e| panic!("script `{script}` should parse: {e}"));
+        }
+    }
+
+    #[test]
+    fn schema_strict_without_schema_is_rejected() {
+        let seen = Mutex::new(Vec::new());
+        let driver = recording_driver(&seen);
+        for script in [
+            r#"agent("x", schema_strict = True)"#,
+            r#"parallel([{"prompt": "x", "schema_strict": True}])"#,
+            r#"pipeline(["i"], [{"prompt": "{input}", "schema_strict": True}])"#,
+        ] {
+            let err = run_starlark(&format!("{HEADER}{script}"), "demo", None, &driver)
+                .expect_err("schema_strict without a schema should be rejected");
+            assert!(
+                err.to_string()
+                    .contains("schema_strict=True requires a schema"),
+                "script `{script}` — unexpected error: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn schema_strict_non_bool_value_is_rejected() {
+        let seen = Mutex::new(Vec::new());
+        let driver = recording_driver(&seen);
+        // A non-bool schema_strict on a spec dict is a type error (dict_bool).
+        let script =
+            r#"parallel([{"prompt": "x", "schema": {"w": "who"}, "schema_strict": "yes"}])"#;
+        let err = run_starlark(&format!("{HEADER}{script}"), "demo", None, &driver)
+            .expect_err("non-bool schema_strict should be rejected");
+        assert!(
+            err.to_string().contains("schema_strict") && err.to_string().contains("must be a bool"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]

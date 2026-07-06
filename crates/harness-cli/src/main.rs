@@ -8093,6 +8093,26 @@ fn try_workflow_real_agent_step(
                 .collect();
             serde_json::Value::Object(obj)
         });
+        // No worker ran (dry-run), so there is no usage/exit telemetry; we still
+        // surface the requested model. For schema'd steps the mock synthesizes a
+        // single, non-empty candidate (index 0), so strict mode passes under
+        // --dry-run (#192 D6); mirror the real path's #192 metadata for parity.
+        let mut mock_details = serde_json::json!({ "model": spec.model });
+        if spec.schema.is_some() {
+            if let Some(map) = mock_details.as_object_mut() {
+                let empties = structured
+                    .as_ref()
+                    .map(empty_string_field_count)
+                    .unwrap_or(0);
+                map.insert("schema_attempt_count".into(), serde_json::json!(1));
+                map.insert("selected_json_index".into(), serde_json::json!(0));
+                map.insert("empty_field_count".into(), serde_json::json!(empties));
+                map.insert(
+                    "schema_strict".into(),
+                    serde_json::json!(spec.schema_strict),
+                );
+            }
+        }
         return Ok(workflow::StepResult {
             phase: spec.phase.clone(),
             label: spec.label.clone(),
@@ -8107,9 +8127,7 @@ fn try_workflow_real_agent_step(
             // journaled the `running` start row before this step began.
             step_id: None,
             started_at: None,
-            // No worker ran (dry-run), so there is no usage/exit telemetry; we
-            // still surface the requested model so the dashboard can label it.
-            details: Some(serde_json::json!({ "model": spec.model })),
+            details: Some(mock_details),
             structured,
             ordinal: spec.ordinal,
         });
@@ -8616,42 +8634,66 @@ fn spawn_ephemeral_worker(
     let mut structured: Option<serde_json::Value> = None;
     let mut schema_retry_limits: Option<(u64, Option<u64>)> = None;
     let mut schema_retry_timed_out = false;
+    // #192 journal metadata (recorded for ALL schema'd steps, not just strict):
+    // how many provider attempts ran, which JSON candidate was selected, and how
+    // many top-level string fields in the selected candidate were empty.
+    let mut schema_attempt_count: u64 = 0;
+    let mut selected_json_index: Option<u64> = None;
+    let mut empty_field_count: u64 = 0;
+    let mut schema_candidate_count: u64 = 0;
     let spawn = if let Some(schema) = &spec.schema {
         let instruction = schema_instruction(schema);
+        // The strict predicate reasons over the NORMALIZED JSON Schema (flat form
+        // wrapped into `properties`/`required`) so it can tell a plain required
+        // string prop from one already constrained by `minLength`/`enum` (#192 D3).
+        let normalized_schema = schema_json.clone().unwrap_or_else(|| schema.clone());
 
-        // First attempt: prompt + the JSON-only instruction. Prefer the
-        // provider-validated `structured` (native --json-schema/--output-schema);
-        // fall back to extracting JSON from the reply text (the prompt-hint path).
+        // First attempt: prompt + the JSON-only instruction. `select_structured`
+        // prefers the provider-validated `structured` (native flags); otherwise it
+        // enumerates the reply's JSON candidates and, under strict, skips a
+        // semantically-empty object to pick a later meaningful one (#192).
         let mut spawn = spawn_once_resilient(&format!("{}{instruction}", spec.prompt))?;
-        structured = spawn.structured.clone().or_else(|| {
-            spawn
-                .reply
-                .as_deref()
-                .and_then(extract_json_object)
-                .filter(|obj| object_has_required_keys(obj, &required_keys))
-        });
+        schema_attempt_count += 1;
+        let mut selection = select_structured(
+            spawn.structured.as_ref(),
+            spawn.reply.as_deref(),
+            &required_keys,
+            &normalized_schema,
+            spec.schema_strict,
+        );
 
-        // ONE corrective retry when the worker produced no valid JSON.
-        if structured.is_none() {
+        // ONE corrective retry when no candidate survived (no valid JSON with the
+        // required keys, or strict rejected every candidate as empty).
+        if selection.selected.is_none() {
             let (retry_timeout_ms, retry_wall_clock_ms) =
                 schema_correction_retry_limits(options.timeout_ms, default_wall_clock_ms);
             schema_retry_limits = Some((retry_timeout_ms, retry_wall_clock_ms));
             let retry_prompt = format!(
-                "{}{instruction}\n\nYour previous reply was not valid JSON with keys [{}]; \
+                "{}{instruction}\n\nYour previous reply was not valid JSON with keys [{}]{}; \
                  return ONLY that JSON object.",
                 spec.prompt,
                 required_keys.join(", "),
+                if spec.schema_strict {
+                    " (every string field must be non-empty)"
+                } else {
+                    ""
+                },
             );
             spawn = spawn_once_with_limits(&retry_prompt, retry_timeout_ms, retry_wall_clock_ms)?;
+            schema_attempt_count += 1;
             schema_retry_timed_out = spawn.timed_out;
-            structured = spawn.structured.clone().or_else(|| {
-                spawn
-                    .reply
-                    .as_deref()
-                    .and_then(extract_json_object)
-                    .filter(|obj| object_has_required_keys(obj, &required_keys))
-            });
+            selection = select_structured(
+                spawn.structured.as_ref(),
+                spawn.reply.as_deref(),
+                &required_keys,
+                &normalized_schema,
+                spec.schema_strict,
+            );
         }
+        structured = selection.selected;
+        selected_json_index = selection.selected_index;
+        empty_field_count = selection.empty_field_count;
+        schema_candidate_count = selection.candidate_count;
         spawn
     } else {
         spawn_once_resilient(&spec.prompt)?
@@ -8804,6 +8846,35 @@ fn spawn_ephemeral_worker(
                     "wall_clock_ms": retry_wall_clock_ms,
                     "timed_out": schema_retry_timed_out,
                 }),
+            );
+        }
+    }
+    // #192 (D4): journal the schema-extraction metadata for EVERY schema'd step —
+    // how many provider attempts ran, which JSON candidate was selected, the empty
+    // top-level string-field count in the selected candidate (visible even in
+    // permissive mode), and an echo of the strict flag. Serde-default on read so
+    // steps journaled before #192 still load.
+    if spec.schema.is_some() {
+        if let Some(map) = details.as_object_mut() {
+            map.insert(
+                "schema_attempt_count".into(),
+                serde_json::json!(schema_attempt_count),
+            );
+            map.insert(
+                "selected_json_index".into(),
+                serde_json::json!(selected_json_index),
+            );
+            map.insert(
+                "empty_field_count".into(),
+                serde_json::json!(empty_field_count),
+            );
+            map.insert(
+                "schema_candidate_count".into(),
+                serde_json::json!(schema_candidate_count),
+            );
+            map.insert(
+                "schema_strict".into(),
+                serde_json::json!(spec.schema_strict),
             );
         }
     }
@@ -9016,6 +9087,199 @@ fn object_has_required_keys(obj: &serde_json::Value, required: &[String]) -> boo
     match obj.as_object() {
         Some(map) => required.iter().all(|key| map.contains_key(key)),
         None => false,
+    }
+}
+
+/// Enumerate EVERY balanced `{ ... }` object substring of a worker reply, in text
+/// order, parsing each into a JSON object (#192). Where [`extract_json_object`]
+/// returns only the FIRST object, this returns them all so strict extraction can
+/// skip an early all-empty object and select a LATER meaningful one. Non-object
+/// balanced spans and unparseable spans are dropped. The whole reply (fence-
+/// stripped) is tried first as a single object, matching `extract_json_object`.
+fn all_json_object_candidates(reply: &str) -> Vec<serde_json::Value> {
+    let trimmed = reply.trim();
+    let mut out = Vec::new();
+
+    // Whole reply (fence-stripped) as one object — the common single-object case.
+    let unfenced = strip_code_fence(trimmed).trim();
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(unfenced) {
+        if value.is_object() {
+            out.push(value);
+        }
+    }
+
+    // Every balanced `{ ... }` span, so multiple concatenated objects each become a
+    // candidate. When the whole-reply parse above already succeeded it will usually
+    // be the same single span; we de-dupe exact repeats to avoid a phantom double.
+    let mut cursor = 0usize;
+    while cursor < trimmed.len() {
+        let Some(rel) = trimmed[cursor..].find('{') else {
+            break;
+        };
+        let start = cursor + rel;
+        match first_balanced_object(&trimmed[start..]) {
+            Some(slice) => {
+                if let Ok(value) = serde_json::from_str::<serde_json::Value>(slice) {
+                    if value.is_object() && !out.contains(&value) {
+                        out.push(value);
+                    }
+                }
+                cursor = start + slice.len();
+            }
+            None => break,
+        }
+    }
+    out
+}
+
+/// Count the top-level string-typed fields of `obj` that are EMPTY after trim
+/// (#192). This is the semantic-emptiness signal: `{"winner":"","reject":""}` has
+/// two empty fields. Non-string fields (numbers, bools, arrays, objects, null) are
+/// not counted. Recorded on EVERY schema'd step so permissive mode makes emptiness
+/// visible without failing. A non-object value has no countable fields.
+fn empty_string_field_count(obj: &serde_json::Value) -> u64 {
+    let Some(map) = obj.as_object() else {
+        return 0;
+    };
+    map.values()
+        .filter(|v| v.as_str().is_some_and(|s| s.trim().is_empty()))
+        .count() as u64
+}
+
+/// The set of top-level property names the JSON-Schema `schema` marks as string-
+/// typed AND required BUT that do NOT already declare their own `minLength`/`enum`
+/// (#192, D3). Strict mode adds the non-empty rule only to THESE — fields that
+/// already constrain their own content are left to the native validator, so we
+/// never double-constrain. Returns an empty set for the flat `{key:"hint"}` form
+/// (which has no `properties`), where the caller applies the all-strings rule
+/// instead. `schema` here is the NORMALIZED JSON Schema (post `schema_to_json_schema`).
+fn strict_required_string_props(schema: &serde_json::Value) -> Vec<String> {
+    let Some(obj) = schema.as_object() else {
+        return Vec::new();
+    };
+    let Some(props) = obj.get("properties").and_then(|p| p.as_object()) else {
+        return Vec::new();
+    };
+    let required: std::collections::HashSet<&str> = obj
+        .get("required")
+        .and_then(|r| r.as_array())
+        .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect())
+        .unwrap_or_default();
+    props
+        .iter()
+        .filter(|(name, def)| {
+            if !required.contains(name.as_str()) {
+                return false;
+            }
+            let Some(def) = def.as_object() else {
+                return false;
+            };
+            let is_string = def.get("type").and_then(|t| t.as_str()) == Some("string");
+            let self_constrained = def.contains_key("minLength") || def.contains_key("enum");
+            is_string && !self_constrained
+        })
+        .map(|(name, _)| name.clone())
+        .collect()
+}
+
+/// Whether STRICT mode REJECTS `candidate` as semantically empty (#192, D2/D3).
+/// * Flat `{key:"hint"}` form (normalized schema has no `properties`): EVERY
+///   top-level string-typed field must be non-empty after trim.
+/// * Full JSON-Schema form: the required string props that lack their own
+///   `minLength`/`enum` ([`strict_required_string_props`]) must be non-empty after
+///   trim; a required string prop that is absent or non-string also fails (the
+///   native validator would already reject those, but we stay defensive).
+///
+/// A candidate with no string fields at all (e.g. all-numeric) is NOT rejected —
+/// there is nothing empty to reject, and requiredness is a separate check.
+fn strict_rejects_candidate(
+    candidate: &serde_json::Value,
+    normalized_schema: &serde_json::Value,
+) -> bool {
+    let Some(map) = candidate.as_object() else {
+        return true;
+    };
+    let props = strict_required_string_props(normalized_schema);
+    if props.is_empty() {
+        // Flat form (or a schema declaring no plain required string props): every
+        // top-level string field present on the candidate must be non-empty.
+        map.values()
+            .any(|v| v.as_str().is_some_and(|s| s.trim().is_empty()))
+    } else {
+        // Full-schema form: only the plain required string props are checked.
+        props.iter().any(|name| match map.get(name) {
+            Some(v) => v.as_str().map(|s| s.trim().is_empty()).unwrap_or(true),
+            None => true,
+        })
+    }
+}
+
+/// The outcome of selecting a structured candidate from a worker reply (#192).
+struct StructuredSelection {
+    /// The selected structured object, or `None` when no candidate survived.
+    selected: Option<serde_json::Value>,
+    /// The 0-based index (in text order) of the selected candidate among ALL
+    /// parsed candidates, or `None` when none survived / the provider-validated
+    /// path supplied the object (index 0 is stamped for that path when accepted).
+    selected_index: Option<u64>,
+    /// Empty top-level string fields in the SELECTED candidate (0 when none).
+    empty_field_count: u64,
+    /// How many JSON object candidates were parsed from the reply text.
+    candidate_count: u64,
+}
+
+/// Select the structured object for a schema'd step from one spawn (#192).
+/// Prefers the provider-validated `structured` (native `--json-schema` /
+/// `--output-schema`) when present; otherwise enumerates the reply's JSON object
+/// candidates in text order and picks the FIRST that (a) carries every required
+/// key and (b) — under `strict` — is not semantically empty. Records which
+/// candidate was selected and its empty-field count so the caller can journal the
+/// #192 metadata and `get-output` can show it. `normalized_schema` is the
+/// post-[`schema_to_json_schema`] schema used by the strict predicate.
+fn select_structured(
+    provider_structured: Option<&serde_json::Value>,
+    reply: Option<&str>,
+    required_keys: &[String],
+    normalized_schema: &serde_json::Value,
+    strict: bool,
+) -> StructuredSelection {
+    // Provider-validated path: the native flag already enforced the schema shape.
+    // Accept it unless strict rejects it as semantically empty; index 0 marks that
+    // it came from the validated slot rather than a text candidate.
+    if let Some(validated) = provider_structured {
+        if !(strict && strict_rejects_candidate(validated, normalized_schema)) {
+            return StructuredSelection {
+                empty_field_count: empty_string_field_count(validated),
+                selected: Some(validated.clone()),
+                selected_index: Some(0),
+                candidate_count: 1,
+            };
+        }
+        // Strict rejected the validated object; fall through to reply candidates
+        // (there usually are none, so the step becomes a schema failure).
+    }
+
+    let candidates = reply.map(all_json_object_candidates).unwrap_or_default();
+    let candidate_count = candidates.len() as u64;
+    for (index, candidate) in candidates.iter().enumerate() {
+        if !object_has_required_keys(candidate, required_keys) {
+            continue;
+        }
+        if strict && strict_rejects_candidate(candidate, normalized_schema) {
+            continue;
+        }
+        return StructuredSelection {
+            empty_field_count: empty_string_field_count(candidate),
+            selected: Some(candidate.clone()),
+            selected_index: Some(index as u64),
+            candidate_count,
+        };
+    }
+    StructuredSelection {
+        selected: None,
+        selected_index: None,
+        empty_field_count: 0,
+        candidate_count,
     }
 }
 
@@ -10449,6 +10713,30 @@ fn prune_live_only_trace(store: &HarnessStore, session_id: &str) {
 /// it back, in `step_ids` order, falling back to the capped `output_summary` when
 /// the full artifact is absent (e.g. a `--trace live` run whose dir was pruned).
 /// `source` tells the caller which they got: `"reply"` (full) or `"summary"`.
+/// Extract the #192 schema-extraction metadata + selected candidate from a step's
+/// `result` JSON for `workflow get-output` (D5). Returns `None` for text-mode
+/// steps (no `schema_attempt_count` recorded). Reads with serde defaults so steps
+/// journaled before #192 that happen to carry a `structured` object still surface
+/// a minimal block. The `structured` field IS the selected candidate — printing it
+/// here makes it unambiguous which JSON object was chosen when `output` concatenates
+/// several.
+fn workflow_step_schema_selection(result: &serde_json::Value) -> Option<serde_json::Value> {
+    let map = result.as_object()?;
+    // Only schema'd steps record `schema_attempt_count`; its presence gates this
+    // block so text steps stay unaffected.
+    map.get("schema_attempt_count")?;
+    Some(serde_json::json!({
+        "schema_strict": map.get("schema_strict").cloned().unwrap_or(serde_json::Value::Bool(false)),
+        "schema_attempt_count": map.get("schema_attempt_count").cloned().unwrap_or(serde_json::Value::Null),
+        "selected_json_index": map.get("selected_json_index").cloned().unwrap_or(serde_json::Value::Null),
+        "schema_candidate_count": map.get("schema_candidate_count").cloned().unwrap_or(serde_json::Value::Null),
+        "empty_field_count": map.get("empty_field_count").cloned().unwrap_or(serde_json::json!(0)),
+        // The selected candidate itself, so the operator reads the chosen object
+        // directly rather than picking it out of the concatenated output.
+        "selected": map.get("structured").cloned().unwrap_or(serde_json::Value::Null),
+    }))
+}
+
 fn workflow_get_output_value(
     store: &HarnessStore,
     args: &[String],
@@ -10512,12 +10800,21 @@ fn workflow_get_output_value(
             .as_deref()
             .map(|sid| workflow_provider_session_summary(store, sid))
             .transpose()?;
+        // #192 (D5): surface the schema-extraction metadata + the SELECTED
+        // structured candidate as a dedicated block for schema'd steps, so the
+        // operator sees which JSON object was chosen and its empty-field count
+        // without hand-parsing the concatenated `output`. `None` for text steps.
+        let schema_meta = step
+            .result
+            .as_ref()
+            .and_then(workflow_step_schema_selection);
         out_steps.push(serde_json::json!({
             "label": step.label,
             "status": serde_json::to_value(step.status)?,
             "provider_session_id": step.provider_session_id,
             "source": source,
             "result": step.result,
+            "schema_selection": schema_meta,
             "session_summary": session_summary,
             "output": output,
         }));
@@ -20516,6 +20813,186 @@ mod workflow_runtime_tests {
         );
     }
 
+    // --- #192: strict schema selection over the reply candidates ---
+
+    #[test]
+    fn all_json_object_candidates_enumerates_concatenated_objects() {
+        // The exact evidence shape from #192: an all-empty object emitted before a
+        // meaningful one, concatenated in a single reply. Both must be enumerated
+        // in text order.
+        let reply =
+            "{\"winner\":\"\",\"reject\":\"\"}\n{\"winner\":\"codex\",\"reject\":\"claude\"}";
+        let cands = all_json_object_candidates(reply);
+        assert_eq!(cands.len(), 2);
+        assert_eq!(cands[0]["winner"], serde_json::json!(""));
+        assert_eq!(cands[1]["winner"], serde_json::json!("codex"));
+    }
+
+    #[test]
+    fn empty_string_field_count_counts_only_empty_top_level_strings() {
+        let obj = serde_json::json!({
+            "winner": "", "reject": "  ", "score": 0, "keep": "yes", "flag": true
+        });
+        // "winner" and "reject" (whitespace-only) count; score/keep/flag do not.
+        assert_eq!(empty_string_field_count(&obj), 2);
+        assert_eq!(empty_string_field_count(&serde_json::json!({})), 0);
+        assert_eq!(empty_string_field_count(&serde_json::json!("x")), 0);
+    }
+
+    // Test 1 (regression): all-empty object BEFORE a meaningful one → strict
+    // selects the meaningful candidate; index + empty-field-count reported.
+    #[test]
+    fn select_structured_strict_skips_all_empty_then_selects_meaningful() {
+        let schema = serde_json::json!({ "winner": "", "reject": "" });
+        let normalized = schema_to_json_schema(&schema);
+        let required = schema_required_keys(&schema);
+        let reply =
+            "{\"winner\":\"\",\"reject\":\"\"}\nthen: {\"winner\":\"codex\",\"reject\":\"claude\"}";
+
+        let strict = select_structured(None, Some(reply), &required, &normalized, true);
+        assert_eq!(
+            strict.selected,
+            Some(serde_json::json!({ "winner": "codex", "reject": "claude" }))
+        );
+        // The meaningful object is the SECOND candidate (index 1) and has no empties.
+        assert_eq!(strict.selected_index, Some(1));
+        assert_eq!(strict.empty_field_count, 0);
+        assert_eq!(strict.candidate_count, 2);
+
+        // Permissive mode selects the FIRST candidate (all-empty), but the empty
+        // count makes the emptiness visible without failing (D4).
+        let permissive = select_structured(None, Some(reply), &required, &normalized, false);
+        assert_eq!(
+            permissive.selected,
+            Some(serde_json::json!({ "winner": "", "reject": "" }))
+        );
+        assert_eq!(permissive.selected_index, Some(0));
+        assert_eq!(permissive.empty_field_count, 2);
+    }
+
+    // Test 2: ONLY all-empty objects → strict fails (no candidate survives);
+    // permissive returns the dict with empty_field_count > 0.
+    #[test]
+    fn select_structured_strict_fails_when_every_candidate_is_empty() {
+        let schema = serde_json::json!({ "winner": "", "reject": "" });
+        let normalized = schema_to_json_schema(&schema);
+        let required = schema_required_keys(&schema);
+        let reply = "{\"winner\":\"\",\"reject\":\"\"}\n{\"winner\":\"  \",\"reject\":\"\"}";
+
+        let strict = select_structured(None, Some(reply), &required, &normalized, true);
+        assert!(
+            strict.selected.is_none(),
+            "strict rejects every all-empty candidate → schema failure path"
+        );
+        assert_eq!(strict.selected_index, None);
+        assert_eq!(strict.candidate_count, 2);
+
+        // Permissive keeps the first and journals its empty count (visible-not-fatal).
+        let permissive = select_structured(None, Some(reply), &required, &normalized, false);
+        assert_eq!(
+            permissive.selected,
+            Some(serde_json::json!({ "winner": "", "reject": "" }))
+        );
+        assert_eq!(permissive.empty_field_count, 2);
+    }
+
+    #[test]
+    fn select_structured_strict_rejects_empty_provider_validated_object() {
+        // The native --json-schema path can hand back a type-valid but empty object;
+        // strict must reject it too, then fall through to reply candidates (none here).
+        let schema = serde_json::json!({ "winner": "", "reject": "" });
+        let normalized = schema_to_json_schema(&schema);
+        let required = schema_required_keys(&schema);
+        let validated = serde_json::json!({ "winner": "", "reject": "" });
+
+        let strict = select_structured(Some(&validated), None, &required, &normalized, true);
+        assert!(strict.selected.is_none());
+
+        // Permissive accepts the validated object (index 0) with the empty count.
+        let permissive = select_structured(Some(&validated), None, &required, &normalized, false);
+        assert_eq!(permissive.selected, Some(validated.clone()));
+        assert_eq!(permissive.selected_index, Some(0));
+        assert_eq!(permissive.empty_field_count, 2);
+    }
+
+    #[test]
+    fn strict_full_schema_only_constrains_plain_required_string_props() {
+        // A real JSON Schema: `winner` is a plain required string (strict enforces
+        // non-empty); `tag` declares its own minLength (native validator owns it —
+        // strict must NOT double-constrain); `score` is a non-string (ignored).
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "winner": { "type": "string" },
+                "tag": { "type": "string", "minLength": 1 },
+                "score": { "type": "integer" }
+            },
+            "required": ["winner", "tag", "score"]
+        });
+        let props = strict_required_string_props(&schema);
+        assert_eq!(props, vec!["winner".to_string()]);
+
+        // Empty `winner` → rejected; empty `tag` alone would NOT be our concern.
+        assert!(strict_rejects_candidate(
+            &serde_json::json!({ "winner": "", "tag": "x", "score": 1 }),
+            &schema
+        ));
+        assert!(!strict_rejects_candidate(
+            &serde_json::json!({ "winner": "codex", "tag": "x", "score": 1 }),
+            &schema
+        ));
+    }
+
+    // Test 4: dry-run mock + schema_strict passes end-to-end and journals the
+    // #192 metadata onto the step result.
+    #[test]
+    fn dry_run_schema_strict_passes_and_journals_metadata() {
+        let store = temp_store("strict-dryrun");
+        let script = r#"
+workflow("pick", "select one candidate strictly so an all-empty object cannot pass")
+_r = agent(
+    "choose",
+    label = "chooser",
+    schema = {"winner": "who", "reject": "who"},
+    schema_strict = True,
+)
+verdict(bool(_r), "chose a candidate")
+output(_r)
+"#;
+        let dir = std::env::temp_dir().join(format!("harness-strict-{}", generated_id("src")));
+        fs::create_dir_all(&dir).expect("mkdir");
+        let path = dir.join("pick.star");
+        fs::write(&path, script).expect("write script");
+
+        let args = vec![path.display().to_string(), "--dry-run".to_string()];
+        let result = workflow_run_script_value(&store, &args).expect("run script");
+        let run = result.get("run").expect("run key");
+        assert_eq!(
+            run.get("status").and_then(|s| s.as_str()),
+            Some("completed"),
+            "strict mode passes under dry-run (mock fills non-empty fields)"
+        );
+
+        // The journaled step's result carries the #192 metadata.
+        let out = workflow_get_output_value(
+            &store,
+            &[
+                run.get("id").and_then(|v| v.as_str()).unwrap().to_string(),
+                "--step".to_string(),
+                "chooser".to_string(),
+            ],
+        )
+        .expect("get-output");
+        let step = &out["steps"][0];
+        let sel = &step["schema_selection"];
+        assert_eq!(sel["schema_strict"], serde_json::json!(true));
+        assert_eq!(sel["schema_attempt_count"], serde_json::json!(1));
+        assert_eq!(sel["selected_json_index"], serde_json::json!(0));
+        assert_eq!(sel["empty_field_count"], serde_json::json!(0));
+        // The selected candidate is surfaced directly (D5), not just concatenated.
+        assert_eq!(sel["selected"]["winner"], serde_json::json!("mock winner"));
+    }
+
     #[test]
     fn parse_claude_result_extras_reads_structured_and_cost() {
         let events = vec![
@@ -20769,6 +21246,7 @@ mod workflow_runtime_tests {
             isolation: None,
             prompt: "hi".into(),
             schema: None,
+            schema_strict: false,
             writable: false,
             ordinal: None,
         };
@@ -20823,6 +21301,7 @@ mod workflow_runtime_tests {
             isolation: None,
             prompt: "hi".into(),
             schema: None,
+            schema_strict: false,
             writable: false,
             ordinal: None,
         };
@@ -20874,6 +21353,7 @@ mod workflow_runtime_tests {
             isolation: Some("worktree".into()),
             prompt: "hi".into(),
             schema: None,
+            schema_strict: false,
             writable: false,
             ordinal: None,
         };
@@ -21015,6 +21495,7 @@ new file mode 100644
             isolation: None,
             prompt: "hi".into(),
             schema: None,
+            schema_strict: false,
             writable: false,
             ordinal: None,
         };
@@ -22614,6 +23095,7 @@ new file mode 100644
             isolation: None,
             prompt: "do the thing".into(),
             schema: None,
+            schema_strict: false,
             writable: false,
             ordinal: Some(0),
         };
@@ -22684,6 +23166,7 @@ new file mode 100644
             isolation: None,
             prompt: "p".into(),
             schema: None,
+            schema_strict: false,
             writable: false,
             ordinal: Some(0),
         };
@@ -22990,6 +23473,7 @@ new file mode 100644
             isolation: isolation.map(str::to_string),
             prompt: "noop".into(),
             schema: None,
+            schema_strict: false,
             writable,
             ordinal: Some(0),
         }
