@@ -1,9 +1,9 @@
 ---
 name: star-goal
-description: "Use when creating or advancing a Goal in this harness: write the markdown sections (description / design / real acceptance), accumulate a knowledge ledger, run multi-agent exploration, and move the goal through its lifecycle. Covers BOTH the manual gated lifecycle (draft → exploring → explored → working → done → verifying → verified) and the knowledge-driven PHASED model (append-only knowledge[] + agent-planned sequential phases[] + a per-phase task graph, executed by `goal run-phases`). To decompose an explored goal into phases + a task DAG, hand off to [[star-planner]]."
+description: "Use when creating or advancing a Goal in this harness: write the markdown sections (description / design / real acceptance), accumulate a knowledge ledger, run multi-agent exploration, and move the goal through its lifecycle. Covers BOTH the manual gated lifecycle (draft → exploring → explored → working → done → verifying → verified) and the knowledge-driven PHASED model (append-only knowledge[] + agent-planned sequential phases[], each either a per-phase task graph or an authored workflow, executed by `goal run-phases`). To decompose an explored goal into phases + a task DAG, hand off to [[star-planner]]."
 ---
 
-# Author Goal
+# Star Goal
 
 A Goal in this harness is **markdown-first**, not a pile of typed fields. Its
 substance lives in three rich sections, and it advances through an explicit
@@ -23,12 +23,17 @@ goal. Do not fill sections to look complete — fill them because you explored.
 | `knowledge[]` | any | **Append-only ledger of findings** (the TRUTH), each with provenance: `phase_id` / `task_id` / `author` / `timestamp` / `tags` / `source`. Fed by exploration AND task execution. |
 | `design_md` | explored | **Key problems FIRST**, then the Big Picture / Overview, then the approach. Either hand-written, or **re-synthesized from `knowledge[]`** via `design-synthesize` (stamps `design_synthesis_at`). |
 | `acceptance_md` | before working | The REAL acceptance: criteria + scenario + how to verify *for real*. |
-| `phases[]` | when planning | Agent-planned, **sequential** checkpoints; each owns a task DAG (see [[star-planner]]). Optional — a simple goal needs none. |
+| `phases[]` | when planning | Agent-planned, **sequential** checkpoints; each is either `execution_mode=task_graph` (owns a task DAG, see [[star-planner]]) or `execution_mode=workflow` (runs an authored `workflow_ref`, no tasks). Optional — a simple goal needs none. |
 | `skill_refs[]` | any | Domain skills needed to DO the work (NOT this skill). |
 | `stage` | — | Lifecycle position. **Derived from `phases[]` when present** (the stored field is a legacy projection); the stored value is the truth only for goals with no phases. |
 
-`design_md` absorbs what the old GoalDesign split across scenario / non-goals /
-required-infra / evidence-plan / acceptance-gates. Write it as prose, not slots.
+`design_md` is the authoring surface for what the old GoalDesign field soup tried
+to capture: scenario, non-goals, required infra, evidence plan, and acceptance
+gates. Write it as prose, not slots. It does **not** by itself satisfy the
+self-hosting goal-learning gate: for harness-managed work, `task assign` and
+review acceptance still require either a typed `GoalDesign` (`harness goal-design
+create ...`) or legacy `Evidence(source_type=goal_design)`. Skipping that gate
+requires an explicit waiver Decision with evidence and a follow-up task.
 
 **Two ways to run a goal.** A *simple* goal uses the **manual lifecycle** below
 (you drive the stages by hand). A goal that needs a planned, gated, multi-worker
@@ -56,6 +61,11 @@ go fix it). Forward moves are one stage at a time.
 
 These two gates are the whole point. They are non-negotiable: the CLI refuses the
 transition with an explanatory error if the section is empty.
+
+These are lifecycle gates, not the whole harness acceptance chain. A non-trivial
+self-hosting goal also needs a design record before assignment, message-first task
+delivery, evidence-backed worker reports, review/critic output, a Leader Decision,
+and closeout with typed GoalEvaluation before the goal can be closed.
 
 ## Writing each section well
 
@@ -141,6 +151,39 @@ scenario, and the steps to run the real verification.
 harness goal acceptance-set --id <goal> --md-file acceptance.md
 ```
 
+### GoalDesign gate (before task assignment)
+For work managed by this harness, record the gate object before assigning tasks.
+The markdown design remains the substance; the typed object is the current
+machine-checkable gate for assignment/review:
+
+```bash
+harness goal-design create --goal <goal> \
+    --scenario "what workflow this goal is proving" \
+    --risk-boundaries "permissions, dirty-tree, provider, and write limits" \
+    --task <task-id> \
+    --evidence-plan "what evidence will prove the task" \
+    --acceptance-gate "what the reviewer must see"
+
+harness task assign --id <task-id> --assignee <agent> --channel <channel>
+```
+
+Only use `--allow-missing-goal-design --waiver-decision <decision>` for a real
+stage waiver. The waiver decision must cite evidence and name a follow-up task.
+
+### Non-trivial acceptance chain
+Moving a goal to `verified` is not enough for self-hosting acceptance. Preserve
+the durable chain:
+
+```text
+GoalDesign -> task assign message -> worker report message -> Evidence
+  -> Proposal (when paths changed) -> critic/review -> Leader Decision
+  -> closeout Decision -> GoalEvaluation -> goal learning-status -> goal close
+```
+
+Workflow leaves, subagents, or provider chats are evidence inputs. They count as
+canonical harness execution only after the Lead records them through Task,
+Message/report, Evidence, Proposal, review, and Decision objects.
+
 ## Driving the lifecycle (CLI)
 
 ```bash
@@ -161,10 +204,25 @@ harness goal stage --id <goal> --to explored          # gate: design_md non-empt
 harness goal acceptance-set --id <goal> --md-file acceptance.md
 harness goal stage --id <goal> --to working           # gate: acceptance_md non-empty
 
-# Work → done → verify against acceptance_md → verified
+# Record GoalDesign before assigning harness-managed tasks
+harness goal-design create --goal <goal> --scenario "..." \
+    --risk-boundaries "..." --task <task-id> \
+    --evidence-plan "..." --acceptance-gate "..."
+harness task assign --id <task-id> --assignee <agent> --channel <channel>
+
+# Work -> done -> verify against acceptance_md -> verified
 harness goal stage --id <goal> --to done
 harness goal stage --id <goal> --to verifying
 harness goal stage --id <goal> --to verified          # only after REAL acceptance passes
+
+# Closeout for a harness-managed goal
+harness decision record --task <task-id> --goal <goal> \
+    --decision-kind closeout --decision goal_complete \
+    --rationale "why the goal is complete" --evidence <evidence-id>
+harness goal evaluate --goal <goal> --evaluator <agent> \
+    --outcome success --what-worked "..." --what-failed "..."
+harness goal learning-status --goal <goal> --strict --require-evaluation
+harness goal close --goal <goal>
 
 # Inspect
 harness goal show --id <goal>
@@ -179,8 +237,10 @@ safe for a single short line with no newlines.
 
 Beyond the manual lifecycle, a goal can carry an **agent-planned plan** and be run
 by the orchestrator. The model: `knowledge[]` is the truth, `design_md` is a
-re-synthesizable view of it, and `phases[]` (sequential) each own a **task DAG**.
-The full loop:
+re-synthesizable view of it, and `phases[]` (sequential) each choose one
+`execution_mode`: **`task_graph`** (the phase owns a **task DAG**) or
+**`workflow`** (the phase runs an authored `workflow_ref` Starlark program with no
+tasks at all). The full loop (shown here for the default `task_graph` mode):
 
 ```bash
 # 1. Capture findings + (re)synthesize the design from them
@@ -204,38 +264,62 @@ harness phase compile <goal> --phase p1
 # 4. Run the plan: phases SEQUENTIALLY, gated, LANDED on the branch, and the goal
 #    AUTO-FINALIZES — you do NOT hand-walk the stages anymore.
 harness goal run-phases <goal>              # --dry-run for the mock-worker path
-harness goal run-phases <goal> --resume     # re-enter without re-spending done work
+harness goal run-phases <goal> --resume     # explicit re-entry intent
 harness goal run-phases <goal> --max-phase-retries 2   # replan loop on failure
 
-# 5. Reconcile / finalize the STATUS (when work shipped out-of-band, e.g. via a PR)
+# 5. Reconcile / structurally finalize the stage/status (when work shipped
+#    out-of-band, e.g. via a PR). This is not the learning closeout gate.
 harness goal reconcile-phase --goal <goal> --phase p1 --to passed --landed-commit <sha>
 harness goal finalize <goal> [--force --landed-commit <sha>]
+
+# 6. Close out the goal through the learning gate
+harness decision record --task <task-id> --goal <goal> \
+    --decision-kind closeout --decision goal_complete \
+    --rationale "phase work accepted" --evidence <evidence-id>
+harness goal evaluate --goal <goal> --evaluator <agent> \
+    --outcome success --what-worked "..." --what-failed "..."
+harness goal learning-status --goal <goal> --strict --require-evaluation
+harness goal close --goal <goal>
 ```
 
-What `run-phases` does per phase: compile the phase's live tasks → a `.star`
-(disjoint-`owned_paths` no-dep tasks → `parallel()`, writable tasks → worktree
-isolation, phase `acceptance` → a `verdict()` gate), run it, and pass **only if the
-run completed, every task step is ok, AND every `required` declared output artifact
-exists** (the verifying gate). A passing phase then **lands** its writable tasks'
-diffs onto the branch (a per-phase landing commit + `landed_commit`; clean-tree
-guard + rollback, never a force-merge). On a failure with retries left it
-**replans**: appends a `Knowledge` entry, asks the planner to revise (supersede dead
-tasks → `TaskStatus::Superseded` + new ones), recompiles, reruns — capped by the
-phase's `retry` (else `--max-phase-retries`).
+What `run-phases` does per phase depends on `execution_mode`. For a `task_graph`
+phase: compile the phase's live tasks → a `.star` (disjoint-`owned_paths` no-dep
+tasks → `parallel()`, writable tasks → worktree isolation, phase `acceptance` →
+a `verdict()` gate), run it, and pass **only if the run completed, every task
+step is ok, AND every `required` declared output artifact exists**. For a
+`workflow` phase: load the authored `.star` named by `workflow_ref`
+(`repo:workflows/foo.star` or `builtin:<id>`) and run it as-is — it passes when
+the run's status is `Completed` and every `required` declared output artifact
+exists; there is no per-step "every step ok" clause, so an authored script that
+deliberately tolerates a failed leaf (e.g. a retry/fallback pattern) is not
+wrongly failed by the gate. Either way, a passing phase then **lands** its
+writable work's diffs onto the branch (a per-phase landing commit +
+`landed_commit`; clean-tree guard + rollback, never a force-merge) — this is the
+run's sole landing authority: `goal run-phases` persists no `WorkflowPatch` rows,
+and an in-script `apply_patch()` is journaled intent only, while `reject_patch()`
+/ `persist_changes="discard"` exclude that step's diff from the phase's landing
+commit. On a failure with retries left, a `task_graph` phase **replans**: appends
+a `Knowledge` entry, asks the planner to revise (supersede dead tasks →
+`TaskStatus::Superseded` + new ones), recompiles, reruns — capped by the phase's
+`retry` (else `--max-phase-retries`). A `workflow` phase has no task graph to
+revise, so a failure simply stops the orchestration at that phase.
 
 **You no longer advance the stage by hand.** A goal's stage is **derived** from its
 constituent work (phases, else tasks) and auto-synced on every completion seam — so
 finishing the last phase/task moves the goal to `verified` (done) on its own. Use
 `goal reconcile-phase` to true up a phase whose work shipped out-of-band (sets status
 + `landed_commit` + a knowledge entry + re-syncs the goal stage), and `goal finalize`
-to close a goal (refuses an incomplete one; `--force --landed-commit` closes a goal
-whose work merged entirely outside `run-phases`).
+to structurally finalize stage/status for complete or out-of-band work. It is not
+the learning closeout command. A goal is closed only by `goal close`, which requires
+a closeout Decision plus typed GoalEvaluation, or a valid waiver.
 
 A **simple goal needs none of this** — one phase, or just the manual lifecycle.
 Reach for phases when the work is a real multi-step, multi-worker build that
-benefits from gated checkpoints and a living task graph. The decomposition rules,
-the artifact manifest (`outputs`), cross-phase `inputs`, and per-phase `retry` live
-in [[star-planner]]; the Starlark runtime each phase compiles to is [[star-workflow]].
+benefits from gated checkpoints and a living task graph (or, for `workflow`-mode
+phases, a hand-authored orchestration). The decomposition rules, the artifact
+manifest (`outputs`), cross-phase `inputs`, and per-phase `retry` live in
+[[star-planner]]; the Starlark runtime a `task_graph` phase compiles to (and a
+`workflow` phase runs directly via `workflow_ref`) is [[star-workflow]].
 
 ### The task ↔ phase field model (what changed)
 - **`phase_id` is the canonical join key.** A task belongs to a goal's phase via
@@ -268,3 +352,28 @@ in [[star-planner]]; the Starlark runtime each phase compiles to is [[star-workf
   multi-worker checkpoints earn their keep (the rules are in [[star-planner]]).
 - **Editing the compiled `.star` by hand.** It is a derived, throwaway view of the
   task graph; change the tasks and recompile, never the `.star`.
+- **Treating `goal finalize` as closeout.** `finalize` is structural stage sync.
+  Use closeout Decision + `goal evaluate` + strict `goal learning-status` +
+  `goal close` for goal completion.
+- **Assigning before GoalDesign.** `design_md` is necessary substance, but current
+  assignment/review gates require typed GoalDesign or legacy `goal_design`
+  evidence unless a valid waiver decision is supplied.
+
+## Maintaining This Skill
+
+After changing this repo copy, sync every installed runtime copy and validate
+them. Codex discovers `~/.codex/skills`; Claude discovers `~/.claude/skills`;
+the shared agent bundle lives in `~/.agents/skills`.
+
+```bash
+rsync -a --delete skills/star-goal/ ~/.agents/skills/star-goal/
+rsync -a --delete skills/star-goal/ ~/.codex/skills/star-goal/
+rsync -a --delete skills/star-goal/ ~/.claude/skills/star-goal/
+python3 ~/.codex/skills/.system/skill-creator/scripts/quick_validate.py skills/star-goal
+python3 ~/.codex/skills/.system/skill-creator/scripts/quick_validate.py ~/.agents/skills/star-goal
+python3 ~/.codex/skills/.system/skill-creator/scripts/quick_validate.py ~/.codex/skills/star-goal
+python3 ~/.codex/skills/.system/skill-creator/scripts/quick_validate.py ~/.claude/skills/star-goal
+diff -qr skills/star-goal ~/.agents/skills/star-goal
+diff -qr skills/star-goal ~/.codex/skills/star-goal
+diff -qr skills/star-goal ~/.claude/skills/star-goal
+```
