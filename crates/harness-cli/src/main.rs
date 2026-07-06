@@ -23,7 +23,7 @@ use harness_core::{
     ProviderSession, ProviderSessionStatus, Review, ReviewVerdict, SenderKind, Task, TaskStatus,
     VerdictOutcome, Vision, WorkflowArtifactFile, WorkflowArtifactManifest,
     WorkflowArtifactManifestStatus, WorkflowPatch, WorkflowPatchStatus, WorkflowRun,
-    WorkflowRunStatus, WorkflowStep, WorkflowStepStatus,
+    WorkflowRunStatus, WorkflowStep, WorkflowStepStatus, WorkflowTerminalReason,
 };
 use harness_store::{HarnessStore, MessageDeliveryClaimResult};
 use thiserror::Error;
@@ -1439,6 +1439,10 @@ fn run_phase_compiled_script(
         dry_run: options.dry_run,
         goal_id: link.goal_id.clone(),
         phase_id: link.phase_id.clone(),
+        // A fresh Running row carries no terminal classification yet; a terminal
+        // journal / reaper / cancel path stamps it (issue #193).
+        terminal_reason: None,
+        partial_output_available: false,
     };
     store.append_workflow_run(&run)?;
 
@@ -7895,6 +7899,54 @@ fn workflow_effective_effort<'a>(
 /// the same `now`, which would make a serial step falsely overlap the later
 /// parallel ones. Shared by the live per-step journal (in the driver) and the
 /// finalize journal (for mock/test drivers).
+/// Classify a completed [`workflow::StepResult`] into a machine-readable
+/// [`WorkflowTerminalReason`] (issue #193 G1). A successful step is `Completed`;
+/// a failed one is disambiguated from its `details`: a per-leaf wall-clock kill
+/// (`wall_timed_out`) → `LeafTimeout`; an idle-since-output kill
+/// (`failure.reason == "timeout"`) → `IdleTimeout`; anything else that failed →
+/// `ProviderFailed`. (A `verdict()`-false step is journaled separately via the
+/// orchestrator's `verdict_outcome`, which the caller may override afterwards.)
+fn classify_step_terminal_reason(result: &workflow::StepResult) -> WorkflowTerminalReason {
+    if result.ok {
+        return WorkflowTerminalReason::Completed;
+    }
+    let details = result.details.as_ref();
+    let wall_timed_out = details
+        .and_then(|d| d.get("wall_timed_out"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    if wall_timed_out {
+        return WorkflowTerminalReason::LeafTimeout;
+    }
+    let idle_timeout = details
+        .and_then(|d| d.get("failure"))
+        .and_then(|f| f.get("reason"))
+        .and_then(|v| v.as_str())
+        == Some("timeout");
+    if idle_timeout {
+        return WorkflowTerminalReason::IdleTimeout;
+    }
+    WorkflowTerminalReason::ProviderFailed
+}
+
+/// Classify a normally-finalized [`workflow::WorkflowOutcome`] into a run-level
+/// [`WorkflowTerminalReason`] (issue #193 G1). A completed run is `Completed`; a
+/// failed finalize adopts the class of its FIRST failed step (a wall/idle timeout
+/// or a provider failure), falling back to `ProviderFailed`. This is the CLEAN
+/// finalize path — driver-death / operator-cancel / orphan reasons are stamped by
+/// their own reaper / signal paths, not here.
+fn classify_run_terminal_reason(outcome: &workflow::WorkflowOutcome) -> WorkflowTerminalReason {
+    if outcome.status == WorkflowRunStatus::Completed {
+        return WorkflowTerminalReason::Completed;
+    }
+    outcome
+        .steps
+        .iter()
+        .find(|s| !s.ok)
+        .map(classify_step_terminal_reason)
+        .unwrap_or(WorkflowTerminalReason::ProviderFailed)
+}
+
 fn build_terminal_step(
     run_id: &str,
     step_id: String,
@@ -7928,6 +7980,12 @@ fn build_terminal_step(
         result: Some(workflow::step_result_json(result)),
         started_at,
         ended_at: Some(ended_at),
+        // Machine-readable class of this step's outcome, alongside the prose
+        // summary (issue #193 G1).
+        terminal_reason: Some(classify_step_terminal_reason(result)),
+        // A cleanly-journaled terminal step is not "partial" — that flag is set
+        // only when a reaper/cancel path closes a step that had produced output.
+        partial: false,
     }
 }
 
@@ -7961,6 +8019,10 @@ fn workflow_real_agent_step(
         result: None,
         started_at: started_at.clone(),
         ended_at: None,
+        // A start row carries no terminal classification yet; the terminal row
+        // (build_terminal_step) or a reaper/cancel path stamps it (issue #193).
+        terminal_reason: None,
+        partial: false,
     };
     // A failure to journal the start row must not abort the step; the terminal
     // row still records the outcome. Best-effort, like the rest of this seam.
@@ -10811,6 +10873,10 @@ fn workflow_get_output_value(
         out_steps.push(serde_json::json!({
             "label": step.label,
             "status": serde_json::to_value(step.status)?,
+            // Machine-readable cancellation/terminal class + partial-output marking
+            // (issue #193 G1/G4) surfaced alongside the deliverable.
+            "terminal_reason": step.terminal_reason.map(|r| r.as_str()),
+            "partial": step.partial,
             "provider_session_id": step.provider_session_id,
             "source": source,
             "result": step.result,
@@ -10831,7 +10897,158 @@ fn workflow_get_output_value(
     Ok(serde_json::json!({
         "run_id": run_id,
         "workflow_name": run.workflow_name,
+        // Run-level terminal state so a caller can tell whether the deliverables are
+        // complete, partial (crash/cancel), or a clean failure (issue #193 G1/G4).
+        "status": serde_json::to_value(run.status)?,
+        "terminal_reason": run.terminal_reason.map(|r| r.as_str()),
+        "partial_output_available": run.partial_output_available,
         "steps": out_steps,
+    }))
+}
+
+/// `workflow status <run_id>` — a NON-DESTRUCTIVE health report for one run (issue
+/// #193 G5). Reports the run's status + terminal_reason, each step's
+/// status/terminal_reason/partial, each leaf's ProviderSession status, the driver's
+/// and each registered worker's pid LIVENESS, and STALE-session detection — WITHOUT
+/// terminating, reaping, or reconciling anything. It reads the store and probes pid
+/// liveness only; unlike `reap`/`reap-workers` it appends no rows and kills nothing,
+/// so an operator can inspect run health (and answer "was the worker canceled, still
+/// running, stale, or reconciled?") without perturbing state.
+fn workflow_status_value(store: &HarnessStore, args: &[String]) -> CliResult<serde_json::Value> {
+    let run_id = args
+        .iter()
+        .find(|a| !a.starts_with("--"))
+        .cloned()
+        .ok_or_else(|| CliError::Usage("workflow status requires a <run_id>".into()))?;
+
+    let run = latest_workflow_runs_in_append_order(store)?
+        .into_iter()
+        .find(|r| r.id == run_id)
+        .ok_or_else(|| CliError::Usage(format!("workflow run not found: {run_id}")))?;
+
+    let run_terminal = matches!(
+        run.status,
+        WorkflowRunStatus::Completed | WorkflowRunStatus::Failed
+    );
+    let host_pid_alive = run.host_pid.map(pid_exists_libc);
+    // The run is considered abandoned-but-not-yet-reaped when it still reads
+    // `Running` in the store but its driver pid is dead on this host.
+    let driver_abandoned = !run_terminal && host_pid_alive == Some(false);
+
+    // Latest-wins projection of this run's provider sessions, keyed by id, so a
+    // step can report its session's CURRENT status.
+    let sessions: BTreeMap<String, ProviderSession> =
+        latest_provider_sessions_in_append_order(store)?
+            .into_iter()
+            .map(|s| (s.id.clone(), s))
+            .collect();
+
+    // Latest-wins projection of this run's steps in journal order.
+    let mut by_id: BTreeMap<String, WorkflowStep> = BTreeMap::new();
+    let mut journal_order: Vec<String> = Vec::new();
+    for step in latest_workflow_steps_in_append_order(store)? {
+        if step.run_id == run_id {
+            if !by_id.contains_key(&step.id) {
+                journal_order.push(step.id.clone());
+            }
+            by_id.insert(step.id.clone(), step);
+        }
+    }
+    let order: Vec<String> = if run.step_ids.is_empty() {
+        journal_order
+    } else {
+        run.step_ids.clone()
+    };
+
+    let mut any_stale_session = false;
+    let mut out_steps = Vec::new();
+    for id in &order {
+        let Some(step) = by_id.get(id) else { continue };
+        let session = step
+            .provider_session_id
+            .as_deref()
+            .and_then(|sid| sessions.get(sid));
+        let session_status = session
+            .map(|s| serde_json::to_value(&s.status))
+            .transpose()?;
+        let session_open = session.is_some_and(|s| {
+            matches!(
+                s.status,
+                ProviderSessionStatus::Queued | ProviderSessionStatus::Running
+            )
+        });
+        // A leaf's session is STALE when it still reads open (queued/running) but the
+        // step itself is already terminal, OR the run is terminal, OR the driver is
+        // dead — i.e. the session row disagrees with reality and would be reconciled
+        // on the next reaper pass (but this command does NOT reconcile it).
+        let step_terminal = matches!(
+            step.status,
+            WorkflowStepStatus::Completed | WorkflowStepStatus::Failed | WorkflowStepStatus::Cached
+        );
+        let session_stale = session_open && (step_terminal || run_terminal || driver_abandoned);
+        if session_stale {
+            any_stale_session = true;
+        }
+        out_steps.push(serde_json::json!({
+            "label": step.label,
+            "status": serde_json::to_value(step.status)?,
+            "terminal_reason": step.terminal_reason.map(|r| r.as_str()),
+            "partial": step.partial,
+            "provider_session_id": step.provider_session_id,
+            "session_status": session_status,
+            "session_stale": session_stale,
+        }));
+    }
+
+    // Registered ephemeral workers for this run (orphan pidfiles), with LIVE pid
+    // status — so the operator sees whether a provider worker process is still
+    // alive after the driver died. Read-only: no pidfile is removed here.
+    let mut workers = Vec::new();
+    let pid_dir = worker_pid_dir(store);
+    if let Ok(read_dir) = fs::read_dir(&pid_dir) {
+        for entry in read_dir.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                continue;
+            }
+            let Some(pidfile) = fs::read_to_string(&path)
+                .ok()
+                .and_then(|c| serde_json::from_str::<OrphanPidfile>(&c).ok())
+            else {
+                continue;
+            };
+            if pidfile.run_id != run_id {
+                continue;
+            }
+            workers.push(serde_json::json!({
+                "pid": pidfile.pid,
+                "pgid": pidfile.pgid,
+                "cmd_marker": pidfile.cmd_marker,
+                "alive": pid_exists_libc(pidfile.pid),
+            }));
+        }
+    }
+    let any_worker_alive = workers
+        .iter()
+        .any(|w| w.get("alive").and_then(|v| v.as_bool()).unwrap_or(false));
+
+    Ok(serde_json::json!({
+        "run_id": run_id,
+        "workflow_name": run.workflow_name,
+        "status": serde_json::to_value(run.status)?,
+        "terminal_reason": run.terminal_reason.map(|r| r.as_str()),
+        "partial_output_available": run.partial_output_available,
+        "host_pid": run.host_pid,
+        "host_pid_alive": host_pid_alive,
+        // True when the run still reads Running but its driver pid is dead — the
+        // reaper would flip it on its next pass; reported here without mutating.
+        "driver_abandoned": driver_abandoned,
+        "steps": out_steps,
+        "workers": workers,
+        "worker_alive": any_worker_alive,
+        // Any leaf whose provider session disagrees with terminal reality — the
+        // operator can tell a run is unhealthy without killing anything.
+        "stale_sessions": any_stale_session,
     }))
 }
 
@@ -11038,7 +11255,7 @@ fn workflow_gc_trace(
 fn workflow_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     require_subcommand(
         args,
-        "workflow run|run-script|get-output|patch|list|reap|reap-workers|gc-worktrees|gc-trace",
+        "workflow run|run-script|get-output|status|patch|list|reap|reap-workers|gc-worktrees|gc-trace",
     )?;
     match args[0].as_str() {
         "patch" => {
@@ -11047,6 +11264,10 @@ fn workflow_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
         }
         "gc-worktrees" => {
             let result = workflow_gc_worktrees(store)?;
+            print_json(&result)?;
+        }
+        "status" => {
+            let result = workflow_status_value(store, &args[1..])?;
             print_json(&result)?;
         }
         "reap-workers" => {
@@ -12287,6 +12508,215 @@ fn outcome_step_auto_apply(run: &WorkflowRun, label: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Cancel a still-`Running` workflow run as an OPERATOR interruption (issue #193
+/// G2): kill any registered worker process groups, journal the run + its open steps
+/// with `terminal_reason = canceled_by_operator`, and reconcile their
+/// ProviderSessions to `Canceled`. Marks `partial_output_available` / per-step
+/// `partial` exactly like the reaper. Best-effort and IDEMPOTENT — a run already
+/// terminal is left untouched, so it is safe to call more than once. Returns `true`
+/// iff the run was moved from Running to canceled.
+///
+/// This is pure store + pid work (no signal-handler context), so both the SIGINT
+/// watcher thread and a unit test can drive it.
+fn cancel_active_run(store: &HarnessStore, run_id: &str) -> CliResult<bool> {
+    let Some(mut run) = latest_workflow_runs_in_append_order(store)?
+        .into_iter()
+        .find(|r| r.id == run_id)
+    else {
+        return Ok(false);
+    };
+    if run.status != WorkflowRunStatus::Running {
+        return Ok(false);
+    }
+
+    // Kill any live worker process groups this run registered (its ephemeral
+    // leaves), so a canceled driver does not leak provider workers.
+    if let Ok(read_dir) = fs::read_dir(worker_pid_dir(store)) {
+        for entry in read_dir.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                continue;
+            }
+            let Some(pidfile) = fs::read_to_string(&path)
+                .ok()
+                .and_then(|c| serde_json::from_str::<OrphanPidfile>(&c).ok())
+            else {
+                continue;
+            };
+            if pidfile.run_id != run_id {
+                continue;
+            }
+            let _ = kill_orphan_worker_group(pidfile.pid, pidfile.pgid);
+            let _ = fs::remove_file(&path);
+        }
+    }
+
+    // Close open steps + reconcile every leaf's provider session to Canceled.
+    let mut had_completed_step = false;
+    for step in latest_workflow_steps_in_append_order(store)? {
+        if step.run_id != run_id {
+            continue;
+        }
+        if matches!(step.status, WorkflowStepStatus::Completed) {
+            had_completed_step = true;
+        }
+        if let Some(sid) = step.provider_session_id.as_deref() {
+            let _ =
+                reconcile_workflow_session_terminal(store, sid, ProviderSessionStatus::Canceled)?;
+        }
+        if !matches!(
+            step.status,
+            WorkflowStepStatus::Running | WorkflowStepStatus::Queued
+        ) {
+            continue;
+        }
+        let produced_output = step
+            .output_summary
+            .as_deref()
+            .is_some_and(|s| !s.is_empty());
+        let mut closed = step.clone();
+        closed.status = WorkflowStepStatus::Failed;
+        closed.ended_at = Some(now_string());
+        closed.terminal_reason = Some(WorkflowTerminalReason::CanceledByOperator);
+        closed.partial = produced_output;
+        closed.output_summary = Some(match closed.output_summary.as_deref() {
+            Some(s) if !s.is_empty() => format!("{s} [canceled by operator]"),
+            _ => "canceled by operator".to_string(),
+        });
+        store.append_workflow_step(&closed)?;
+    }
+
+    run.status = WorkflowRunStatus::Failed;
+    run.ended_at = Some(now_string());
+    run.terminal_reason = Some(WorkflowTerminalReason::CanceledByOperator);
+    run.partial_output_available = had_completed_step;
+    run.summary = Some(match run.summary.take() {
+        Some(s) if !s.is_empty() => format!("{s} [canceled by operator]"),
+        _ => "canceled by operator (SIGINT/SIGTERM to the driver)".to_string(),
+    });
+    store.append_workflow_run(&run)?;
+    fire_workflow_completion_hook(&run);
+    Ok(true)
+}
+
+/// Operator-cancel (SIGINT/SIGTERM) handling for a synchronous `workflow run-script`
+/// driver (issue #193 G2). Unix only — matches the repo's existing `cfg(unix)`
+/// signal pattern (see `resident_daemon`). The `run-script` body blocks the main
+/// thread inside the Starlark runtime, so a signal handler cannot itself journal the
+/// store (not async-signal-safe). Instead the handler does the async-signal-safe
+/// minimum — set a flag + write one byte to a self-pipe — and a dedicated WATCHER
+/// thread blocked on that pipe wakes to do the heavy work: cancel the run
+/// (`cancel_active_run`) and exit nonzero. A [`CancelGuard`] deregisters the watcher
+/// on normal completion so a clean run never trips the cancel path.
+#[cfg(unix)]
+mod run_cancel {
+    use super::{cancel_active_run, HarnessStore};
+    use std::os::unix::io::RawFd;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+
+    const SIGINT: i32 = 2;
+    const SIGTERM: i32 = 15;
+
+    // Write end of the self-pipe the signal handler pokes. -1 when no run-script
+    // cancel handler is armed (so a stray signal is a no-op). A process runs one
+    // `run-script` at a time, so a single global slot suffices.
+    static PIPE_WRITE_FD: AtomicI32 = AtomicI32::new(-1);
+    // Set by the handler so the watcher (and any observer) can see a cancel was
+    // requested even if the pipe write raced.
+    static CANCEL_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+    extern "C" fn handle(_sig: i32) {
+        CANCEL_REQUESTED.store(true, Ordering::SeqCst);
+        let fd = PIPE_WRITE_FD.load(Ordering::SeqCst);
+        if fd >= 0 {
+            // `write(2)` is async-signal-safe; a single byte wakes the watcher.
+            let byte: u8 = 1;
+            unsafe {
+                libc::write(fd, &byte as *const u8 as *const libc::c_void, 1);
+            }
+        }
+    }
+
+    type SigHandler = extern "C" fn(i32);
+    extern "C" {
+        fn signal(signum: i32, handler: SigHandler) -> usize;
+    }
+
+    /// Armed cancel handling for the duration of one run. Dropping it deregisters
+    /// the watcher (clears the pipe fd) so a normally-finished run is never canceled.
+    pub struct CancelGuard {
+        read_fd: RawFd,
+        write_fd: RawFd,
+        watcher: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl CancelGuard {
+        /// Best-effort: on any setup failure returns `None` and the run proceeds
+        /// WITHOUT cancel handling (never worse than before this feature existed).
+        pub fn install(store_root: PathBuf, run_id: String) -> Option<CancelGuard> {
+            let mut fds = [0 as RawFd; 2];
+            // SAFETY: standard self-pipe; `pipe(2)` fills two fds we own.
+            if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
+                return None;
+            }
+            let (read_fd, write_fd) = (fds[0], fds[1]);
+            PIPE_WRITE_FD.store(write_fd, Ordering::SeqCst);
+            CANCEL_REQUESTED.store(false, Ordering::SeqCst);
+
+            let watcher = std::thread::Builder::new()
+                .name("run-cancel-watcher".into())
+                .spawn(move || {
+                    // Block until the handler pokes the pipe (or it closes on drop).
+                    let mut buf = [0u8; 1];
+                    let n =
+                        unsafe { libc::read(read_fd, buf.as_mut_ptr() as *mut libc::c_void, 1) };
+                    // A clean drop closes the write end → read returns 0 (EOF): the run
+                    // finished normally, so do nothing. A signal wrote 1 byte → n == 1.
+                    if n <= 0 || !CANCEL_REQUESTED.load(Ordering::SeqCst) {
+                        return;
+                    }
+                    let store = HarnessStore::new(&store_root);
+                    let _ = cancel_active_run(&store, &run_id);
+                    // Exit nonzero + cleanly: the driver was interrupted. 130 == the
+                    // conventional 128+SIGINT code.
+                    std::process::exit(130);
+                })
+                .ok()?;
+
+            // SAFETY: `handle` only touches an AtomicBool + async-signal-safe
+            // `write(2)`; `signal(2)` is a stable C ABI symbol on every unix target.
+            unsafe {
+                signal(SIGINT, handle);
+                signal(SIGTERM, handle);
+            }
+            Some(CancelGuard {
+                read_fd,
+                write_fd,
+                watcher: Some(watcher),
+            })
+        }
+    }
+
+    impl Drop for CancelGuard {
+        fn drop(&mut self) {
+            // Deregister first so a signal arriving during teardown is a no-op, then
+            // close the write end → the watcher's blocking read returns EOF and the
+            // thread exits without canceling.
+            PIPE_WRITE_FD.store(-1, Ordering::SeqCst);
+            unsafe {
+                libc::close(self.write_fd);
+            }
+            if let Some(watcher) = self.watcher.take() {
+                let _ = watcher.join();
+            }
+            unsafe {
+                libc::close(self.read_fd);
+            }
+        }
+    }
+}
+
 fn workflow_run_script_value(
     store: &HarnessStore,
     args: &[String],
@@ -12439,8 +12869,21 @@ fn workflow_run_script_value(
         // Standalone `run-script` is not goal-orchestrated — no goal↔run link.
         goal_id: None,
         phase_id: None,
+        // Classification/partial marking is stamped at the terminal journal, the
+        // reaper, or the operator-cancel path (issue #193).
+        terminal_reason: None,
+        partial_output_available: false,
     };
     store.append_workflow_run(&run)?;
+
+    // Arm operator-cancel handling (issue #193 G2): a SIGINT/SIGTERM to this
+    // synchronous driver now cancels active leaves, journals the run + open steps as
+    // `canceled_by_operator`, reconciles their sessions, and exits nonzero — instead
+    // of leaving the run to be reaped ambiguously as "driver gone". Best-effort +
+    // Unix only; the guard deregisters on normal completion (drop at end of fn).
+    #[cfg(unix)]
+    let _cancel_guard =
+        run_cancel::CancelGuard::install(store.root().to_path_buf(), run_id.clone());
 
     // Optional per-run spend ceiling: once cumulative step cost reaches it, the
     // runtime short-circuits further agent()/parallel() calls into failed `budget`
@@ -12510,6 +12953,9 @@ fn run_workflow_with_driver(
         // Registry runs are not goal-orchestrated — no goal↔run link.
         goal_id: None,
         phase_id: None,
+        // Stamped at the terminal journal / reaper / cancel path (issue #193).
+        terminal_reason: None,
+        partial_output_available: false,
     };
     store.append_workflow_run(&run)?;
 
@@ -12561,6 +13007,17 @@ fn journal_workflow_outcome(
     run.summary = Some(outcome.summary.clone());
     run.agents_spawned = outcome.agents_spawned;
     run.final_output = outcome.final_output.clone();
+    // Machine-readable terminal class + partial-output marking (issue #193 G1/G4).
+    // A cleanly-finalized run is `Completed`; a `Failed` finalize is disambiguated
+    // from its steps (a provider failure vs an authored verdict false).
+    run.terminal_reason = Some(classify_run_terminal_reason(outcome));
+    // A run that did NOT complete but whose steps include ≥1 clean success carries
+    // partial deliverables retrievable via `workflow get-output`.
+    run.partial_output_available = outcome.status != WorkflowRunStatus::Completed
+        && outcome
+            .steps
+            .iter()
+            .any(|s| s.ok && s.provider_session_id.is_some());
     store.append_workflow_run(&run)?;
     let mut patches = persist_workflow_patches(store, &run, outcome, &steps_json)?;
     let mut artifact_manifests =
@@ -15475,6 +15932,72 @@ fn latest_provider_session(
     Ok(sessions.remove(session_id))
 }
 
+/// Reconcile a workflow leaf's [`ProviderSession`] to a TERMINAL status when its
+/// owning step was reaped / canceled / timed out (issue #193 G3). Unlike the
+/// operator-facing `reconcile_provider_session_value`, this is the AUTOMATED reaper
+/// path: it does not require an agent-id match, records no operator evidence, and
+/// does not reset a member — it just trues the session row up so a run, its steps,
+/// and its sessions AGREE on terminal state.
+///
+/// IDEMPOTENT and NON-FLAPPING: a session already in ANY terminal status
+/// (`Succeeded` / `Failed` / `Canceled` / `Stale`) is left untouched, so re-running
+/// the reaper (e.g. `workflow reap-workers` twice) never rewrites a terminal row or
+/// oscillates its status. Only a still-open (`Queued` / `Running`) session is moved.
+/// Returns `true` iff the session existed and was moved (a fresh terminal write).
+/// `terminal_source` defaults to [`MessageTerminalSource::Failed`] to match how a
+/// killed worker is otherwise recorded.
+fn reconcile_workflow_session_terminal(
+    store: &HarnessStore,
+    session_id: &str,
+    status: ProviderSessionStatus,
+) -> CliResult<bool> {
+    debug_assert!(
+        !matches!(
+            status,
+            ProviderSessionStatus::Queued | ProviderSessionStatus::Running
+        ),
+        "reconcile target must be terminal"
+    );
+    let Some(mut session) = latest_provider_session(store, session_id)? else {
+        return Ok(false);
+    };
+    if !matches!(
+        session.status,
+        ProviderSessionStatus::Queued | ProviderSessionStatus::Running
+    ) {
+        // Already terminal — do not flap it.
+        return Ok(false);
+    }
+    session.status = status;
+    session.terminal_source = Some(MessageTerminalSource::Failed);
+    session.ended_at = Some(now_string());
+    store.append_provider_session(&session)?;
+    Ok(true)
+}
+
+/// Reconcile every still-open [`ProviderSession`] belonging to a run's steps to a
+/// terminal status (issue #193 G3), used by the orphan-worker reaper when it kills
+/// a worker whose owning run is already gone/terminal. Idempotent (delegates to
+/// [`reconcile_workflow_session_terminal`]). Returns the count of sessions moved.
+fn reconcile_run_sessions_terminal(
+    store: &HarnessStore,
+    run_id: &str,
+    status: ProviderSessionStatus,
+) -> CliResult<usize> {
+    let mut moved = 0;
+    for step in latest_workflow_steps_in_append_order(store)? {
+        if step.run_id != run_id {
+            continue;
+        }
+        if let Some(sid) = step.provider_session_id.as_deref() {
+            if reconcile_workflow_session_terminal(store, sid, status.clone())? {
+                moved += 1;
+            }
+        }
+    }
+    Ok(moved)
+}
+
 /// Read the RAW provider turn for one session, 1:1: each line of the persisted
 /// claude (`jsonl_ref`) or codex (`stdout_ref`) NDJSON stream parsed back into
 /// JSON. This is what powers the dashboard's "▸ turn" drill-in — the agent's
@@ -15996,10 +16519,19 @@ fn reap_orphaned_workers(store: &HarnessStore, dry_run: bool) -> CliResult<serde
         }
 
         let killed_worker = dry_run || kill_orphan_worker_group(pidfile.pid, pidfile.pgid);
+        let mut sessions_reconciled = 0usize;
         if killed_worker {
             killed += 1;
             if !dry_run {
                 let _ = fs::remove_file(&path);
+                // The killed orphan's owning run is already gone/terminal, so its
+                // leaf sessions must not sit `Running` forever — reconcile them to
+                // `Stale` (issue #193 G3). Idempotent + non-flapping.
+                sessions_reconciled = reconcile_run_sessions_terminal(
+                    store,
+                    &pidfile.run_id,
+                    ProviderSessionStatus::Stale,
+                )?;
             }
         }
         entries.push(serde_json::json!({
@@ -16009,6 +16541,7 @@ fn reap_orphaned_workers(store: &HarnessStore, dry_run: bool) -> CliResult<serde
             "pgid": pidfile.pgid,
             "cmd_marker": pidfile.cmd_marker,
             "command": command,
+            "sessions_reconciled": sessions_reconciled,
             "action": match (dry_run, killed_worker) {
                 (true, _) => "would_kill",
                 (false, true) => "killed",
@@ -16064,19 +16597,54 @@ fn reap_stale_workflow_runs(store: &HarnessStore) -> CliResult<usize> {
         if !pid_dead && !too_old {
             continue;
         }
+        // Terminal CLASS for an abandoned run (issue #193 G1): a dead driver pid is
+        // `driver_exited`; a legacy/age-backstop reap is `orphan_reaped`.
+        let run_reason = if pid_dead {
+            WorkflowTerminalReason::DriverExited
+        } else {
+            WorkflowTerminalReason::OrphanReaped
+        };
+        // Whether ANY step of this run had already completed OK before the driver
+        // died — drives the run-level `partial_output_available` flag (G4).
+        let mut had_completed_step = false;
         // Close any non-terminal steps so the dashboard's per-step status is not
-        // stuck at `running` after the run itself is failed.
+        // stuck at `running` after the run itself is failed. Every step of a reaped
+        // run also has its ProviderSession reconciled to terminal (G3), so the run,
+        // its steps, and its sessions AGREE on terminal state.
         if let Some(steps) = steps_by_run.get(&run.id) {
             for step in steps {
-                if !matches!(
+                let open = matches!(
                     step.status,
                     WorkflowStepStatus::Running | WorkflowStepStatus::Queued
-                ) {
+                );
+                if matches!(step.status, WorkflowStepStatus::Completed) {
+                    had_completed_step = true;
+                }
+                // Reconcile the leaf's provider session to a terminal status
+                // regardless of whether the step row was still open — a killed
+                // worker can leave a `Running` session behind a terminal step.
+                // Idempotent: an already-terminal session is left untouched.
+                if let Some(sid) = step.provider_session_id.as_deref() {
+                    let _ = reconcile_workflow_session_terminal(
+                        store,
+                        sid,
+                        ProviderSessionStatus::Failed,
+                    )?;
+                }
+                if !open {
                     continue;
                 }
+                // A step that had produced output (a summary) but was reaped mid-
+                // flight is PARTIAL, not a clean failure (G4).
+                let produced_output = step
+                    .output_summary
+                    .as_deref()
+                    .is_some_and(|s| !s.is_empty());
                 let mut closed = step.clone();
                 closed.status = WorkflowStepStatus::Failed;
                 closed.ended_at = Some(now_string());
+                closed.terminal_reason = Some(run_reason);
+                closed.partial = produced_output;
                 closed.output_summary = Some(match closed.output_summary.as_deref() {
                     Some(s) if !s.is_empty() => format!("{s} [reaped: driver process gone]"),
                     _ => "reaped: driver process gone".to_string(),
@@ -16086,6 +16654,10 @@ fn reap_stale_workflow_runs(store: &HarnessStore) -> CliResult<usize> {
         }
         run.status = WorkflowRunStatus::Failed;
         run.ended_at = Some(now_string());
+        run.terminal_reason = Some(run_reason);
+        // An abandoned run that had ≥1 completed step carries partial deliverables
+        // retrievable via `workflow get-output` (G4).
+        run.partial_output_available = had_completed_step;
         run.summary = Some(match run.host_pid {
             Some(pid) if pid_dead => format!(
                 "reaped: driver process (pid {pid}) is no longer alive — the run was abandoned before it finalized"
@@ -19949,6 +20521,7 @@ fn print_help() {
   workflow run --name <name> [--prompt <text>] [--start-runtime] [--dry-run] [--timeout-ms <ms>] [--model <m>] [--effort <e>]
   workflow run-script <prog.star> [--name <n>] [--args <json>] [--trace durable|live] [--dry-run] [--resume <prior_run_id>] [--timeout-ms <ms>] [--model <m>] [--effort <e>]
   workflow get-output <run_id> [--step <label>] [--text]
+  workflow status <run_id>   (read-only run health: terminal_reason, pid liveness, stale sessions)
   workflow patch list [--run <run_id>]
   workflow patch show <patch_id|run_id> [--step <label|step_id>]
   workflow patch apply <patch_id|run_id> [--step <label|step_id>] [--allow-dirty] [--reason <text>] [--actor <id>]
@@ -20042,6 +20615,8 @@ mod workflow_runtime_tests {
                 dry_run: false,
                 goal_id: None,
                 phase_id: None,
+                terminal_reason: None,
+                partial_output_available: false,
             })
             .expect("append gc run");
     }
@@ -22690,6 +23265,8 @@ new file mode 100644
                 dry_run: false,
                 goal_id: None,
                 phase_id: None,
+                terminal_reason: None,
+                partial_output_available: false,
             })
             .expect("append run");
         store
@@ -22706,6 +23283,8 @@ new file mode 100644
                 result: None,
                 started_at: format!("unix-ms:{created}"),
                 ended_at: Some(format!("unix-ms:{}", created + 1)),
+                terminal_reason: None,
+                partial: false,
             })
             .expect("append step");
         ndjson
@@ -22734,6 +23313,8 @@ new file mode 100644
             dry_run: false,
             goal_id: None,
             phase_id: None,
+            terminal_reason: None,
+            partial_output_available: false,
         };
         // One Running run 5h old -> reaped to Failed; one started "now" -> stays.
         store
@@ -22791,6 +23372,8 @@ new file mode 100644
                 dry_run: false,
                 goal_id: None,
                 phase_id: None,
+                terminal_reason: None,
+                partial_output_available: false,
             })
             .expect("append run");
         // A still-open step under it must be closed to Failed by the reaper too.
@@ -22808,6 +23391,8 @@ new file mode 100644
                 result: None,
                 started_at: format!("unix-ms:{now}"),
                 ended_at: None,
+                terminal_reason: None,
+                partial: false,
             })
             .expect("append step");
         // A run with a LIVE pid (this test process) must be left alone.
@@ -22831,6 +23416,8 @@ new file mode 100644
                 dry_run: false,
                 goal_id: None,
                 phase_id: None,
+                terminal_reason: None,
+                partial_output_available: false,
             })
             .expect("append live run");
 
@@ -22954,6 +23541,8 @@ new file mode 100644
                 dry_run: false,
                 goal_id: None,
                 phase_id: None,
+                terminal_reason: None,
+                partial_output_available: false,
             })
             .expect("append run");
     }
@@ -23297,6 +23886,8 @@ new file mode 100644
             })),
             started_at: "unix-ms:1".into(),
             ended_at: Some("unix-ms:2".into()),
+            terminal_reason: None,
+            partial: false,
         };
         store
             .append_workflow_run(&WorkflowRun {
@@ -23318,6 +23909,8 @@ new file mode 100644
                 dry_run: false,
                 goal_id: None,
                 phase_id: None,
+                terminal_reason: None,
+                partial_output_available: false,
             })
             .expect("append run");
         store
@@ -23660,6 +24253,8 @@ new file mode 100644
             dry_run: false,
             goal_id: None,
             phase_id: None,
+            terminal_reason: None,
+            partial_output_available: false,
         };
         let outcome = workflow::WorkflowOutcome {
             steps: vec![
@@ -23755,6 +24350,8 @@ new file mode 100644
             dry_run: false,
             goal_id: None,
             phase_id: None,
+            terminal_reason: None,
+            partial_output_available: false,
         };
         let outcome = workflow::WorkflowOutcome {
             steps: vec![workflow::StepResult {
@@ -24039,6 +24636,8 @@ new file mode 100644
             dry_run: false,
             goal_id: None,
             phase_id: None,
+            terminal_reason: None,
+            partial_output_available: false,
         };
         let outcome = workflow::WorkflowOutcome {
             steps: vec![
@@ -24110,6 +24709,8 @@ new file mode 100644
             dry_run: false,
             goal_id: Some("g-orch".into()),
             phase_id: Some("p1".into()),
+            terminal_reason: None,
+            partial_output_available: false,
         }
     }
 
@@ -24283,6 +24884,8 @@ new file mode 100644
             dry_run: false,
             goal_id: None,
             phase_id: None,
+            terminal_reason: None,
+            partial_output_available: false,
         };
         let failed_writable = workflow::StepResult {
             phase: "p".into(),
@@ -24376,6 +24979,8 @@ new file mode 100644
             dry_run: false,
             goal_id: None,
             phase_id: None,
+            terminal_reason: None,
+            partial_output_available: false,
         };
         let outcome = workflow::WorkflowOutcome {
             steps: vec![workflow::StepResult {
@@ -25717,6 +26322,8 @@ agent("a NEW second leaf that changes the ordinal alignment")
                 result: None,
                 started_at: started_at.clone(),
                 ended_at: None,
+                terminal_reason: None,
+                partial: false,
             };
             store
                 .append_workflow_step(&running)
@@ -30864,6 +31471,8 @@ verdict(True, "custom workflow-mode phase direct run accepted")
                     result: None,
                     started_at: "unix-ms:1".into(),
                     ended_at: Some("unix-ms:2".into()),
+                    terminal_reason: None,
+                    partial: false,
                 })
                 .unwrap();
         }

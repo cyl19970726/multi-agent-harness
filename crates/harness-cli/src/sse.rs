@@ -491,6 +491,8 @@ mod tests {
             dry_run: false,
             goal_id: None,
             phase_id: None,
+            terminal_reason: None,
+            partial_output_available: false,
         }
     }
 
@@ -508,6 +510,8 @@ mod tests {
             ended_at: None,
             task_id: None,
             verdict_outcome: None,
+            terminal_reason: None,
+            partial: false,
         }
     }
 
