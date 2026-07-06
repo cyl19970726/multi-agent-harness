@@ -255,7 +255,7 @@ pub struct GoalPhase {
     #[serde(default)]
     pub builtin: Option<String>,
     /// The primary execution backend for this phase. Defaults to `TaskGraph` for
-    /// legacy rows. Built-in building phases and directly-authored workflow
+    /// all legacy rows. Built-in building phases and directly-authored workflow
     /// phases set this to `Workflow` and must also set `workflow_ref`.
     #[serde(default)]
     pub execution_mode: PhaseExecutionMode,
@@ -2659,6 +2659,29 @@ pub enum WorkflowStepStatus {
     Cached,
 }
 
+/// Durable lifecycle for a patch captured from a writable workflow leaf.
+///
+/// A patch starts as `pending_apply` when the worker's throwaway worktree
+/// produced a diff. It then moves by latest-wins rows to `applied`, `rejected`,
+/// or `conflict` after an explicit operator/Lead/workflow decision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowPatchStatus {
+    PendingApply,
+    Applied,
+    Rejected,
+    Conflict,
+}
+
+/// Validation status of files recorded in a workflow artifact manifest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowArtifactManifestStatus {
+    Current,
+    Missing,
+    Stale,
+}
+
 /// One run of a built-in (registered) workflow. The `workflow_name` selects the
 /// registered Rust fn (option C in the design). `step_ids` orders the steps in
 /// the sequence they were started, so the journal alone reconstructs the run.
@@ -2781,6 +2804,84 @@ pub struct WorkflowStep {
     pub verdict_outcome: Option<VerdictOutcome>,
 }
 
+/// A durable patch captured from a writable workflow step.
+///
+/// The actual unified diff lives at `patch_ref` so dashboard snapshots stay
+/// compact while CLI `workflow patch show/apply` can still retrieve the complete
+/// patch text.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowPatch {
+    pub id: String,
+    pub run_id: String,
+    pub step_id: String,
+    pub label: String,
+    pub phase: String,
+    pub provider: String,
+    pub status: WorkflowPatchStatus,
+    #[serde(default)]
+    pub changed_paths: Vec<String>,
+    /// Absolute or store-relative path to the `.patch` file.
+    pub patch_ref: String,
+    #[serde(default)]
+    pub base_sha: Option<String>,
+    #[serde(default)]
+    pub owned_paths: Vec<String>,
+    #[serde(default)]
+    pub persist_changes: Option<String>,
+    pub created_at: String,
+    #[serde(default)]
+    pub updated_at: Option<String>,
+    #[serde(default)]
+    pub actor: Option<String>,
+    #[serde(default)]
+    pub reason: Option<String>,
+    #[serde(default)]
+    pub conflict_detail: Option<String>,
+    #[serde(default)]
+    pub applied_at: Option<String>,
+    #[serde(default)]
+    pub rejected_at: Option<String>,
+}
+
+/// One file entry inside a workflow artifact manifest.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowArtifactFile {
+    /// Repo-relative path when under the project root, else the absolute path the
+    /// workflow explicitly declared.
+    pub path: String,
+    #[serde(default)]
+    pub exists: bool,
+    #[serde(default)]
+    pub size_bytes: Option<u64>,
+    #[serde(default)]
+    pub hash: Option<String>,
+    #[serde(default)]
+    pub kind: Option<String>,
+}
+
+/// Durable manifest for files a workflow claims as artifacts.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowArtifactManifest {
+    pub id: String,
+    pub run_id: String,
+    #[serde(default)]
+    pub step_id: Option<String>,
+    #[serde(default)]
+    pub label: Option<String>,
+    #[serde(default)]
+    pub artifact_root: Option<String>,
+    pub status: WorkflowArtifactManifestStatus,
+    #[serde(default)]
+    pub files: Vec<WorkflowArtifactFile>,
+    #[serde(default)]
+    pub write_roots: Vec<String>,
+    pub created_at: String,
+    #[serde(default)]
+    pub updated_at: Option<String>,
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
 impl Validate for WorkflowRun {
     fn validate(&self) -> Result<(), ValidationError> {
         require_non_empty(&self.id, "WorkflowRun.id")?;
@@ -2795,6 +2896,35 @@ impl Validate for WorkflowStep {
         require_non_empty(&self.run_id, "WorkflowStep.run_id")?;
         require_non_empty(&self.label, "WorkflowStep.label")?;
         require_non_empty(&self.started_at, "WorkflowStep.started_at")
+    }
+}
+
+impl Validate for WorkflowPatch {
+    fn validate(&self) -> Result<(), ValidationError> {
+        require_non_empty(&self.id, "WorkflowPatch.id")?;
+        require_non_empty(&self.run_id, "WorkflowPatch.run_id")?;
+        require_non_empty(&self.step_id, "WorkflowPatch.step_id")?;
+        require_non_empty(&self.label, "WorkflowPatch.label")?;
+        require_non_empty(&self.patch_ref, "WorkflowPatch.patch_ref")?;
+        require_non_empty(&self.created_at, "WorkflowPatch.created_at")
+    }
+}
+
+impl Validate for WorkflowArtifactFile {
+    fn validate(&self) -> Result<(), ValidationError> {
+        require_non_empty(&self.path, "WorkflowArtifactFile.path")
+    }
+}
+
+impl Validate for WorkflowArtifactManifest {
+    fn validate(&self) -> Result<(), ValidationError> {
+        require_non_empty(&self.id, "WorkflowArtifactManifest.id")?;
+        require_non_empty(&self.run_id, "WorkflowArtifactManifest.run_id")?;
+        require_non_empty(&self.created_at, "WorkflowArtifactManifest.created_at")?;
+        for file in &self.files {
+            file.validate()?;
+        }
+        Ok(())
     }
 }
 

@@ -18,7 +18,7 @@
 //!   structured the way it is. The run is REJECTED if `workflow(...)` is never
 //!   called or `design_intent` is blank / shorter than [`MIN_DESIGN_INTENT_LEN`]
 //!   characters — every workflow must justify its shape.
-//! * `agent(prompt, provider="codex", label=None, phase=None, model=None, timeout_s=None, isolation=None, schema=None, return_status=False)`
+//! * `agent(prompt, provider="codex", label=None, phase=None, model=None, timeout_s=None, write_mode=None, isolation=None, schema=None, return_status=False)`
 //!   — run ONE ephemeral worker synchronously. In text mode (no `schema`) it
 //!   returns the worker's output text (so the script can chain, e.g.
 //!   `scan = agent(...)` then `scan.splitlines()`). In STRUCTURED mode
@@ -33,7 +33,7 @@
 //!   structured dict (if that spec had a `schema` and parsed) else its
 //!   output-summary string. `specs` is a list of dicts, each with a required
 //!   `prompt` and optional `provider` (default "codex"), `label`, `phase`,
-//!   `model`, `timeout_s`, `isolation`, `schema`, and `return_status` — e.g.
+//!   `model`, `timeout_s`, `write_mode`, `isolation`, `schema`, and `return_status` — e.g.
 //!   `parallel([{"prompt": "fix " + x} for x in args["items"]])`.
 //! * `pipeline(items, stages)` — a STREAMING fan-out: every item flows through ALL
 //!   `stages` in order with NO barrier between stages (item A may be in stage 3
@@ -66,7 +66,9 @@ use starlark::values::{Heap, Value};
 
 use harness_core::WorkflowRunStatus;
 
-use crate::{outcome_from_steps, run_agent_step, AgentStepFn, AgentStepSpec, StepResult};
+use crate::{
+    outcome_from_steps, run_agent_step, AgentStepFn, AgentStepSpec, StepResult, WRITE_MODE_DIRECT,
+};
 use crate::{scheduler_agents_spawned, WorkflowOutcome};
 
 /// Minimum length (in characters) a `design_intent` must reach to be accepted.
@@ -142,6 +144,10 @@ struct StarlarkCtx<'a> {
     steps: RefCell<Vec<StepResult>>,
     /// Progress lines emitted via `log()`.
     logs: RefCell<Vec<String>>,
+    /// Patch decisions declared by workflow code after it reviewed a step.
+    patch_actions: RefCell<Vec<serde_json::Value>>,
+    /// Artifact manifest requests declared by workflow code.
+    artifact_manifest_requests: RefCell<Vec<serde_json::Value>>,
     /// The `(name, design_intent)` captured by the mandatory `workflow()` header,
     /// or `None` until it is called. `run_starlark` enforces that it is set.
     meta: RefCell<Option<(String, String)>>,
@@ -208,6 +214,12 @@ impl StarlarkCtx<'_> {
         image: Vec<String>,
         add_dir: Vec<String>,
         expected_artifacts: Vec<String>,
+        persist_changes: Option<String>,
+        write_mode: Option<String>,
+        owned_paths: Vec<String>,
+        artifact_root: Option<String>,
+        write_roots: Vec<String>,
+        auto_apply_on_verdict: bool,
         isolation: Option<String>,
         schema: Option<serde_json::Value>,
         writable: bool,
@@ -246,6 +258,12 @@ impl StarlarkCtx<'_> {
             image,
             add_dir,
             expected_artifacts,
+            persist_changes,
+            write_mode,
+            owned_paths,
+            artifact_root,
+            write_roots,
+            auto_apply_on_verdict,
             isolation,
             prompt,
             schema,
@@ -471,6 +489,12 @@ impl StarlarkCtx<'_> {
                 image: Vec::new(),
                 add_dir: Vec::new(),
                 expected_artifacts: Vec::new(),
+                persist_changes: None,
+                write_mode: None,
+                owned_paths: Vec::new(),
+                artifact_root: None,
+                write_roots: Vec::new(),
+                auto_apply_on_verdict: false,
                 isolation: None,
                 prompt: item.clone(),
                 schema: None,
@@ -647,6 +671,15 @@ fn dict_str(dict: &DictRef<'_>, key: &str) -> anyhow::Result<Option<String>> {
     }
 }
 
+fn reject_direct_write_mode(write_mode: Option<&str>, context: &str) -> anyhow::Result<()> {
+    if write_mode == Some(WRITE_MODE_DIRECT) {
+        return Err(anyhow::anyhow!(
+            "{context} does not support write_mode=\"direct\"; use a single serial agent() step for direct shared-repo edits"
+        ));
+    }
+    Ok(())
+}
+
 /// Read an optional bool field off a spec dict. Absent / Starlark `None` → false;
 /// errors when present-but-not-a-bool.
 fn dict_bool(dict: &DictRef<'_>, key: &str) -> anyhow::Result<bool> {
@@ -757,6 +790,13 @@ fn read_parallel_specs(
         let image = dict_str_list(&dict, "image")?;
         let add_dir = dict_str_list(&dict, "add_dir")?;
         let expected_artifacts = dict_str_list(&dict, "expected_artifacts")?;
+        let persist_changes = dict_str(&dict, "persist_changes")?;
+        let write_mode = dict_str(&dict, "write_mode")?;
+        reject_direct_write_mode(write_mode.as_deref(), "parallel()")?;
+        let owned_paths = dict_str_list(&dict, "owned_paths")?;
+        let artifact_root = dict_str(&dict, "artifact_root")?;
+        let write_roots = dict_str_list(&dict, "write_roots")?;
+        let auto_apply_on_verdict = dict_bool(&dict, "auto_apply_on_verdict")?;
         let isolation = dict_str(&dict, "isolation")?;
         let schema = dict_schema(&dict, "schema")?;
         let writable = dict_bool(&dict, "writable")?;
@@ -774,6 +814,12 @@ fn read_parallel_specs(
                 image,
                 add_dir,
                 expected_artifacts,
+                persist_changes,
+                write_mode,
+                owned_paths,
+                artifact_root,
+                write_roots,
+                auto_apply_on_verdict,
                 isolation,
                 prompt,
                 schema,
@@ -811,6 +857,12 @@ struct StageTemplate {
     image: Vec<String>,
     add_dir: Vec<String>,
     expected_artifacts: Vec<String>,
+    persist_changes: Option<String>,
+    write_mode: Option<String>,
+    owned_paths: Vec<String>,
+    artifact_root: Option<String>,
+    write_roots: Vec<String>,
+    auto_apply_on_verdict: bool,
     isolation: Option<String>,
     schema: Option<serde_json::Value>,
     writable: bool,
@@ -837,6 +889,12 @@ impl StageTemplate {
             image: self.image.clone(),
             add_dir: self.add_dir.clone(),
             expected_artifacts: self.expected_artifacts.clone(),
+            persist_changes: self.persist_changes.clone(),
+            write_mode: self.write_mode.clone(),
+            owned_paths: self.owned_paths.clone(),
+            artifact_root: self.artifact_root.clone(),
+            write_roots: self.write_roots.clone(),
+            auto_apply_on_verdict: self.auto_apply_on_verdict,
             isolation: self.isolation.clone(),
             prompt,
             schema: self.schema.clone(),
@@ -902,6 +960,13 @@ fn read_pipeline_stages(
         let image = dict_str_list(&dict, "image")?;
         let add_dir = dict_str_list(&dict, "add_dir")?;
         let expected_artifacts = dict_str_list(&dict, "expected_artifacts")?;
+        let persist_changes = dict_str(&dict, "persist_changes")?;
+        let write_mode = dict_str(&dict, "write_mode")?;
+        reject_direct_write_mode(write_mode.as_deref(), "pipeline()")?;
+        let owned_paths = dict_str_list(&dict, "owned_paths")?;
+        let artifact_root = dict_str(&dict, "artifact_root")?;
+        let write_roots = dict_str_list(&dict, "write_roots")?;
+        let auto_apply_on_verdict = dict_bool(&dict, "auto_apply_on_verdict")?;
         let isolation = dict_str(&dict, "isolation")?;
         let schema = dict_schema(&dict, "schema")?;
         let writable = dict_bool(&dict, "writable")?;
@@ -919,6 +984,12 @@ fn read_pipeline_stages(
             image,
             add_dir,
             expected_artifacts,
+            persist_changes,
+            write_mode,
+            owned_paths,
+            artifact_root,
+            write_roots,
+            auto_apply_on_verdict,
             isolation,
             schema,
             writable,
@@ -990,6 +1061,12 @@ fn workflow_globals(builder: &mut GlobalsBuilder) {
         #[starlark(require = named)] image: Option<Value<'v>>,
         #[starlark(require = named)] add_dir: Option<Value<'v>>,
         #[starlark(require = named)] expected_artifacts: Option<Value<'v>>,
+        #[starlark(require = named)] persist_changes: Option<String>,
+        #[starlark(require = named)] write_mode: Option<String>,
+        #[starlark(require = named)] owned_paths: Option<Value<'v>>,
+        #[starlark(require = named)] artifact_root: Option<String>,
+        #[starlark(require = named)] write_roots: Option<Value<'v>>,
+        #[starlark(require = named, default = false)] auto_apply_on_verdict: bool,
         #[starlark(require = named)] isolation: Option<String>,
         #[starlark(require = named)] schema: Option<Value<'v>>,
         #[starlark(require = named, default = false)] writable: bool,
@@ -1019,6 +1096,14 @@ fn workflow_globals(builder: &mut GlobalsBuilder) {
             }
             _ => Vec::new(),
         };
+        let owned_paths = match owned_paths {
+            Some(value) if !value.is_none() => value_str_list(value, "agent() `owned_paths`")?,
+            _ => Vec::new(),
+        };
+        let write_roots = match write_roots {
+            Some(value) if !value.is_none() => value_str_list(value, "agent() `write_roots`")?,
+            _ => Vec::new(),
+        };
         let timeout_s = match timeout_s {
             Some(value) if !value.is_none() => {
                 Some(value_positive_u64(value, "agent() `timeout_s`")?)
@@ -1039,6 +1124,12 @@ fn workflow_globals(builder: &mut GlobalsBuilder) {
             image,
             add_dir,
             expected_artifacts,
+            persist_changes,
+            write_mode,
+            owned_paths,
+            artifact_root,
+            write_roots,
+            auto_apply_on_verdict,
             isolation,
             schema_json,
             writable,
@@ -1173,6 +1264,71 @@ fn workflow_globals(builder: &mut GlobalsBuilder) {
         Ok(NoneType)
     }
 
+    /// Ask the CLI post-processor to apply the patch produced by a prior step.
+    ///
+    /// `label` matches the step label. The actual git operation is performed
+    /// after the workflow has journaled its patches, so the operation is guarded
+    /// and auditable.
+    fn apply_patch<'v>(
+        #[starlark(require = pos)] label: String,
+        #[starlark(default = String::new())] reason: String,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<NoneType> {
+        ctx_of(eval)
+            .patch_actions
+            .borrow_mut()
+            .push(serde_json::json!({
+                "action": "apply",
+                "label": label,
+                "reason": reason,
+            }));
+        Ok(NoneType)
+    }
+
+    /// Ask the CLI post-processor to reject the patch produced by a prior step.
+    fn reject_patch<'v>(
+        #[starlark(require = pos)] label: String,
+        #[starlark(default = String::new())] reason: String,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<NoneType> {
+        ctx_of(eval)
+            .patch_actions
+            .borrow_mut()
+            .push(serde_json::json!({
+                "action": "reject",
+                "label": label,
+                "reason": reason,
+            }));
+        Ok(NoneType)
+    }
+
+    /// Declare workflow artifacts that should be validated into a durable manifest.
+    fn artifact_manifest<'v>(
+        #[starlark(require = pos)] paths: Value<'v>,
+        #[starlark(require = named)] label: Option<String>,
+        #[starlark(require = named)] artifact_root: Option<String>,
+        #[starlark(require = named)] write_roots: Option<Value<'v>>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<NoneType> {
+        let paths = value_str_list(paths, "artifact_manifest() `paths`")?;
+        let write_roots = match write_roots {
+            Some(value) if !value.is_none() => {
+                value_str_list(value, "artifact_manifest() `write_roots`")?
+            }
+            _ => Vec::new(),
+        };
+        ctx_of(eval)
+            .artifact_manifest_requests
+            .borrow_mut()
+            .push(serde_json::json!({
+                "paths": paths,
+                "label": label,
+                "artifact_root": artifact_root,
+                "write_roots": write_roots,
+            }));
+        Ok(NoneType)
+    }
+
     /// Emit a progress line (collected for the run's narration).
     fn log<'v>(
         #[starlark(require = pos)] message: String,
@@ -1303,6 +1459,8 @@ pub fn run_starlark_with_budget(
         current_phase: RefCell::new(None),
         steps: RefCell::new(Vec::new()),
         logs: RefCell::new(Vec::new()),
+        patch_actions: RefCell::new(Vec::new()),
+        artifact_manifest_requests: RefCell::new(Vec::new()),
         meta: RefCell::new(None),
         budget_usd: Cell::new(budget_usd),
         spent_usd: Cell::new(0.0),
@@ -1361,6 +1519,8 @@ pub fn run_starlark_with_budget(
 
     let steps = ctx.steps.into_inner();
     let logs = ctx.logs.into_inner();
+    let patch_actions = ctx.patch_actions.into_inner();
+    let artifact_manifest_requests = ctx.artifact_manifest_requests.into_inner();
     let verdict = ctx.verdict.into_inner();
     let success_criterion = ctx.success_criterion.into_inner();
     let output = ctx.output.into_inner();
@@ -1398,6 +1558,8 @@ pub fn run_starlark_with_budget(
         "result": output,
         "steps": steps_output,
         "logs": logs,
+        "patch_actions": patch_actions,
+        "artifact_manifests": artifact_manifest_requests,
         "verdict": verdict
             .as_ref()
             .map(|(ok, reason)| serde_json::json!({ "ok": ok, "reason": reason })),
@@ -1907,6 +2069,183 @@ pipeline(
         assert_eq!(seen["pipe"].4.as_deref(), Some("claude-opus"));
         assert_eq!(seen["pipe"].5, Some(13));
         assert_eq!(outcome.steps.len(), 3);
+    }
+
+    #[test]
+    fn patch_and_artifact_authoring_intents_round_trip() {
+        let seen = Mutex::new(Vec::<AgentStepSpec>::new());
+        let driver = |spec: &AgentStepSpec| {
+            seen.lock().unwrap().push(spec.clone());
+            StepResult {
+                phase: spec.phase.clone(),
+                label: spec.label.clone(),
+                provider: spec.provider.clone(),
+                isolation: spec.isolation.clone(),
+                ok: true,
+                provider_session_id: Some("s".to_string()),
+                output_summary: "ok".to_string(),
+                step_id: None,
+                started_at: None,
+                details: None,
+                structured: None,
+                ordinal: None,
+            }
+        };
+        let script = r#"
+agent(
+    "edit",
+    label = "writer",
+    writable = True,
+    persist_changes = "patch",
+    owned_paths = ["src"],
+    artifact_root = "out",
+    write_roots = ["out"],
+    auto_apply_on_verdict = True,
+)
+artifact_manifest(["summary.md"], label = "writer", artifact_root = "out", write_roots = ["out"])
+apply_patch("writer", "review passed")
+verdict(True, "patch reviewed inside workflow")
+"#;
+        let run =
+            run_starlark(&format!("{HEADER}{script}"), "demo", None, &driver).expect("run ok");
+        let seen = seen.into_inner().unwrap();
+        assert_eq!(seen.len(), 1);
+        let spec = &seen[0];
+        assert_eq!(spec.persist_changes.as_deref(), Some("patch"));
+        assert_eq!(spec.owned_paths, vec!["src"]);
+        assert_eq!(spec.artifact_root.as_deref(), Some("out"));
+        assert_eq!(spec.write_roots, vec!["out"]);
+        assert!(spec.auto_apply_on_verdict);
+
+        let final_output = run.outcome.final_output.expect("final_output");
+        assert_eq!(
+            final_output["patch_actions"][0]["action"],
+            serde_json::json!("apply")
+        );
+        assert_eq!(
+            final_output["patch_actions"][0]["label"],
+            serde_json::json!("writer")
+        );
+        assert_eq!(
+            final_output["artifact_manifests"][0]["paths"],
+            serde_json::json!(["summary.md"])
+        );
+    }
+
+    #[test]
+    fn patch_artifact_kwargs_flow_through_parallel_and_pipeline_specs() {
+        let seen = Mutex::new(Vec::<AgentStepSpec>::new());
+        let driver = |spec: &AgentStepSpec| {
+            seen.lock().unwrap().push(spec.clone());
+            StepResult {
+                phase: spec.phase.clone(),
+                label: spec.label.clone(),
+                provider: spec.provider.clone(),
+                isolation: spec.isolation.clone(),
+                ok: true,
+                provider_session_id: Some("s".to_string()),
+                output_summary: "ok".to_string(),
+                step_id: None,
+                started_at: None,
+                details: None,
+                structured: None,
+                ordinal: None,
+            }
+        };
+        let script = r#"
+parallel([
+    {
+        "prompt": "fan",
+        "label": "fan",
+        "persist_changes": "patch",
+        "owned_paths": ["src"],
+        "artifact_root": "out",
+        "write_roots": ["out"],
+        "auto_apply_on_verdict": True,
+    },
+])
+pipeline(
+    ["item"],
+    [{
+        "prompt": "pipe {input}",
+        "label": "pipe",
+        "persist_changes": "discard",
+        "owned_paths": ["docs"],
+        "artifact_root": "reports",
+        "write_roots": ["reports"],
+        "auto_apply_on_verdict": True,
+    }],
+)
+"#;
+        run_starlark(&format!("{HEADER}{script}"), "demo", None, &driver).expect("run ok");
+        let seen = seen.into_inner().unwrap();
+        let fan = seen.iter().find(|spec| spec.label == "fan").unwrap();
+        assert_eq!(fan.persist_changes.as_deref(), Some("patch"));
+        assert_eq!(fan.owned_paths, vec!["src"]);
+        assert_eq!(fan.artifact_root.as_deref(), Some("out"));
+        assert_eq!(fan.write_roots, vec!["out"]);
+        assert!(fan.auto_apply_on_verdict);
+        let pipe = seen.iter().find(|spec| spec.label == "pipe").unwrap();
+        assert_eq!(pipe.persist_changes.as_deref(), Some("discard"));
+        assert_eq!(pipe.owned_paths, vec!["docs"]);
+        assert_eq!(pipe.artifact_root.as_deref(), Some("reports"));
+        assert_eq!(pipe.write_roots, vec!["reports"]);
+        assert!(pipe.auto_apply_on_verdict);
+    }
+
+    #[test]
+    fn direct_write_mode_flows_through_serial_agent_only() {
+        let seen = Mutex::new(Vec::<AgentStepSpec>::new());
+        let driver = |spec: &AgentStepSpec| {
+            seen.lock().unwrap().push(spec.clone());
+            StepResult {
+                phase: spec.phase.clone(),
+                label: spec.label.clone(),
+                provider: spec.provider.clone(),
+                isolation: spec.isolation.clone(),
+                ok: true,
+                provider_session_id: Some("s".to_string()),
+                output_summary: "ok".to_string(),
+                step_id: None,
+                started_at: None,
+                details: None,
+                structured: None,
+                ordinal: None,
+            }
+        };
+        let script = r#"
+agent(
+    "make a simple edit directly in the selected repo",
+    label = "direct-writer",
+    writable = True,
+    write_mode = "direct",
+)
+"#;
+        run_starlark(&format!("{HEADER}{script}"), "demo", None, &driver).expect("run ok");
+        let seen = seen.into_inner().unwrap();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(
+            seen[0].write_mode.as_deref(),
+            Some(crate::WRITE_MODE_DIRECT)
+        );
+        assert!(seen[0].writable);
+    }
+
+    #[test]
+    fn direct_write_mode_is_rejected_in_parallel_and_pipeline_specs() {
+        let seen = Mutex::new(Vec::new());
+        let driver = recording_driver(&seen);
+        for script in [
+            r#"parallel([{"prompt": "edit", "writable": True, "write_mode": "direct"}])"#,
+            r#"pipeline(["x"], [{"prompt": "edit {input}", "writable": True, "write_mode": "direct"}])"#,
+        ] {
+            let err = run_starlark(&format!("{HEADER}{script}"), "demo", None, &driver)
+                .expect_err("direct write mode should be rejected in concurrent specs");
+            assert!(
+                err.to_string().contains("write_mode=\"direct\""),
+                "unexpected error: {err}"
+            );
+        }
     }
 
     #[test]

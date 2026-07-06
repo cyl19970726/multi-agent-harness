@@ -29,8 +29,10 @@ pub mod starlark_front;
 /// `isolation: "worktree"` (exactly like Claude Code's Workflow `isolation:
 /// 'worktree'`): that node runs in its own throwaway git worktree whose diff is
 /// the node's evidence. The worktree is auto-removed if unchanged and is NOT
-/// auto-merged back. Absent isolation, the node edits the shared repo cwd.
+/// auto-merged back. Writable leaves also default to this worktree path; only
+/// `write_mode="direct"` writes the selected project root immediately.
 pub const ISOLATION_WORKTREE: &str = "worktree";
+pub const WRITE_MODE_DIRECT: &str = "direct";
 
 /// A single agent step to run: spin up an ephemeral `provider` worker, deliver
 /// `prompt`, grouped under `phase` and named by `label`. This is the
@@ -71,8 +73,33 @@ pub struct AgentStepSpec {
     /// Artifact paths the step must produce. Empty preserves the legacy behavior.
     #[serde(default)]
     pub expected_artifacts: Vec<String>,
+    /// How to persist writes from an isolated leaf. `None` defaults to durable
+    /// patch capture for writable leaves; `"discard"` preserves throwaway-only
+    /// behavior.
+    #[serde(default)]
+    pub persist_changes: Option<String>,
+    /// Where an editable leaf writes. `None` preserves the safe default:
+    /// `writable=true` runs in a throwaway worktree. `"direct"` runs the editable
+    /// worker in the selected project root and leaves its diff there immediately.
+    #[serde(default)]
+    pub write_mode: Option<String>,
+    /// Optional repo-relative path guard for the captured patch.
+    #[serde(default)]
+    pub owned_paths: Vec<String>,
+    /// Optional artifact root for manifest validation.
+    #[serde(default)]
+    pub artifact_root: Option<String>,
+    /// Optional repo-relative/absolute roots the step is allowed to write
+    /// artifact files under.
+    #[serde(default)]
+    pub write_roots: Vec<String>,
+    /// If true, a successful workflow verdict asks the CLI to apply this step's
+    /// captured patch automatically through the same guarded patch path.
+    #[serde(default)]
+    pub auto_apply_on_verdict: bool,
     /// Optional per-node isolation. `Some("worktree")` runs the step in its own
-    /// throwaway git worktree; `None` edits the shared repo cwd.
+    /// throwaway git worktree; `None` keeps the default selected-project cwd
+    /// behavior, which is read-only unless `write_mode="direct"` is explicit.
     pub isolation: Option<String>,
     pub prompt: String,
     /// Optional output schema. `Some(obj)` puts the step into STRUCTURED mode:
@@ -523,6 +550,12 @@ pub fn investigate(driver: &AgentStepFn<'_>, topic: &str) -> WorkflowOutcome {
             image: Vec::new(),
             add_dir: Vec::new(),
             expected_artifacts: Vec::new(),
+            persist_changes: None,
+            write_mode: None,
+            owned_paths: Vec::new(),
+            artifact_root: None,
+            write_roots: Vec::new(),
+            auto_apply_on_verdict: false,
             isolation: None,
             prompt: format!("Scope the investigation of: {topic}. List the modules to audit."),
             schema: None,
@@ -547,6 +580,12 @@ pub fn investigate(driver: &AgentStepFn<'_>, topic: &str) -> WorkflowOutcome {
             image: Vec::new(),
             add_dir: Vec::new(),
             expected_artifacts: Vec::new(),
+            persist_changes: None,
+            write_mode: None,
+            owned_paths: Vec::new(),
+            artifact_root: None,
+            write_roots: Vec::new(),
+            auto_apply_on_verdict: false,
             isolation: None,
             prompt: format!("Audit the code paths involved in: {topic}."),
             schema: None,
@@ -565,6 +604,12 @@ pub fn investigate(driver: &AgentStepFn<'_>, topic: &str) -> WorkflowOutcome {
             image: Vec::new(),
             add_dir: Vec::new(),
             expected_artifacts: Vec::new(),
+            persist_changes: None,
+            write_mode: None,
+            owned_paths: Vec::new(),
+            artifact_root: None,
+            write_roots: Vec::new(),
+            auto_apply_on_verdict: false,
             isolation: None,
             prompt: format!("Audit the recent diffs related to: {topic}."),
             schema: None,
@@ -769,6 +814,12 @@ mod tests {
             image: Vec::new(),
             add_dir: Vec::new(),
             expected_artifacts: vec!["out/image.png".into()],
+            persist_changes: Some("patch".into()),
+            write_mode: Some(WRITE_MODE_DIRECT.into()),
+            owned_paths: vec!["src".into()],
+            artifact_root: Some("out".into()),
+            write_roots: vec!["out".into()],
+            auto_apply_on_verdict: true,
             isolation: Some(ISOLATION_WORKTREE.into()),
             prompt: "write it".into(),
             schema: None,
@@ -778,6 +829,12 @@ mod tests {
         let encoded = serde_json::to_string(&spec).expect("serialize");
         let decoded: AgentStepSpec = serde_json::from_str(&encoded).expect("deserialize");
         assert_eq!(decoded.expected_artifacts, vec!["out/image.png"]);
+        assert_eq!(decoded.persist_changes.as_deref(), Some("patch"));
+        assert_eq!(decoded.write_mode.as_deref(), Some(WRITE_MODE_DIRECT));
+        assert_eq!(decoded.owned_paths, vec!["src"]);
+        assert_eq!(decoded.artifact_root.as_deref(), Some("out"));
+        assert_eq!(decoded.write_roots, vec!["out"]);
+        assert!(decoded.auto_apply_on_verdict);
         assert_eq!(decoded.service_tier.as_deref(), Some("priority"));
         assert_eq!(decoded.timeout_s, None);
 
@@ -799,6 +856,12 @@ mod tests {
         });
         let decoded: AgentStepSpec = serde_json::from_value(legacy).expect("legacy decode");
         assert!(decoded.expected_artifacts.is_empty());
+        assert_eq!(decoded.persist_changes, None);
+        assert_eq!(decoded.write_mode, None);
+        assert!(decoded.owned_paths.is_empty());
+        assert_eq!(decoded.artifact_root, None);
+        assert!(decoded.write_roots.is_empty());
+        assert!(!decoded.auto_apply_on_verdict);
         assert_eq!(decoded.service_tier, None);
         assert_eq!(decoded.timeout_s, None);
     }
@@ -852,6 +915,12 @@ mod tests {
                 image: Vec::new(),
                 add_dir: Vec::new(),
                 expected_artifacts: Vec::new(),
+                persist_changes: None,
+                write_mode: None,
+                owned_paths: Vec::new(),
+                artifact_root: None,
+                write_roots: Vec::new(),
+                auto_apply_on_verdict: false,
                 isolation: None,
                 prompt: format!("prompt {i}"),
                 schema: None,
@@ -918,6 +987,12 @@ mod tests {
                 image: Vec::new(),
                 add_dir: Vec::new(),
                 expected_artifacts: Vec::new(),
+                persist_changes: None,
+                write_mode: None,
+                owned_paths: Vec::new(),
+                artifact_root: None,
+                write_roots: Vec::new(),
+                auto_apply_on_verdict: false,
                 isolation: None,
                 prompt: "x".to_string(),
                 schema: None,
@@ -996,6 +1071,12 @@ mod tests {
                 image: Vec::new(),
                 add_dir: Vec::new(),
                 expected_artifacts: Vec::new(),
+                persist_changes: None,
+                write_mode: None,
+                owned_paths: Vec::new(),
+                artifact_root: None,
+                write_roots: Vec::new(),
+                auto_apply_on_verdict: false,
                 isolation: None,
                 prompt: format!("prompt {i}"),
                 schema: None,
@@ -1047,6 +1128,12 @@ mod tests {
             image: Vec::new(),
             add_dir: Vec::new(),
             expected_artifacts: Vec::new(),
+            persist_changes: None,
+            write_mode: None,
+            owned_paths: Vec::new(),
+            artifact_root: None,
+            write_roots: Vec::new(),
+            auto_apply_on_verdict: false,
             isolation: None,
             prompt: "x".to_string(),
             schema: None,

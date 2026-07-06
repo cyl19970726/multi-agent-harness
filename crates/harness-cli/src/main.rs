@@ -21,7 +21,9 @@ use harness_core::{
     OrchestrationPhaseRun, OrchestrationStatus, ProjectContext, ProjectKind, Proposal,
     ProposalStatus, ProviderCapabilities, ProviderChildThread, ProviderChildThreadStatus,
     ProviderSession, ProviderSessionStatus, Review, ReviewVerdict, SenderKind, Task, TaskStatus,
-    VerdictOutcome, Vision, WorkflowRun, WorkflowRunStatus, WorkflowStep, WorkflowStepStatus,
+    VerdictOutcome, Vision, WorkflowArtifactFile, WorkflowArtifactManifest,
+    WorkflowArtifactManifestStatus, WorkflowPatch, WorkflowPatchStatus, WorkflowRun,
+    WorkflowRunStatus, WorkflowStep, WorkflowStepStatus,
 };
 use harness_store::{HarnessStore, MessageDeliveryClaimResult};
 use thiserror::Error;
@@ -60,6 +62,10 @@ fn main() {
 enum StoreSource {
     /// `--store <path>` override (deprecated, kept for tests/back-compat).
     StoreFlag,
+    /// Internal guard for workflow child processes. A workflow leaf may run with
+    /// full provider permissions, so nested `harness ...` commands default to a
+    /// session-local store unless the operator explicitly opts out.
+    WorkflowChildEnv,
     /// `HARNESS_ROOT` env override (deprecated, kept for tests/back-compat).
     HarnessRootEnv,
     /// `--project <id|path>` explicit selector.
@@ -114,6 +120,18 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> ResolvedStore
             source: StoreSource::StoreFlag,
             context: None,
         };
+    }
+    // Internal workflow-child guard. This intentionally wins over `--project` /
+    // `HARNESS_PROJECT`, so a worker in a writable leaf cannot accidentally write
+    // the parent project's central store just by running `harness ...`.
+    if let Ok(root) = env::var(HARNESS_WORKFLOW_CHILD_STORE_ROOT_ENV) {
+        if !root.is_empty() {
+            return ResolvedStore {
+                root: PathBuf::from(root),
+                source: StoreSource::WorkflowChildEnv,
+                context: None,
+            };
+        }
     }
     // 2. HARNESS_ROOT env override (deprecated).
     if let Ok(root) = env::var("HARNESS_ROOT") {
@@ -374,7 +392,7 @@ fn init_routed(store: &HarnessStore, resolved: &ResolvedStore) -> CliResult<()> 
     // Override path (`--store`/`HARNESS_ROOT`): historical raw-path behavior.
     if matches!(
         resolved.source,
-        StoreSource::StoreFlag | StoreSource::HarnessRootEnv
+        StoreSource::StoreFlag | StoreSource::WorkflowChildEnv | StoreSource::HarnessRootEnv
     ) {
         store.init()?;
         println!("initialized {}", store.root().display());
@@ -6838,7 +6856,7 @@ fn assign_task(
     let mut task = latest_task(store, task_id)?;
     if let Some(goal_id) = task.goal_id.as_deref() {
         let status = goal_learning_status(store, goal_id)?;
-        if status.goal_design.is_empty() {
+        if !status.has_goal_design() {
             if assignment.allow_missing_goal_design {
                 status.require_valid_waiver(store, assignment.waiver_decision_id.as_deref())?;
             } else {
@@ -7754,6 +7772,39 @@ struct WorkflowDeliveryOptions {
     project: ProjectContext,
 }
 
+const HARNESS_WORKFLOW_CHILD_STORE_ROOT_ENV: &str = "HARNESS_WORKFLOW_CHILD_STORE_ROOT";
+const HARNESS_WORKFLOW_ALLOW_STORE_MUTATION_ENV: &str = "HARNESS_WORKFLOW_ALLOW_STORE_MUTATION";
+
+fn workflow_child_store_root(session_dir: &Path) -> PathBuf {
+    session_dir.join("nested-harness-store")
+}
+
+fn workflow_child_harness_home(session_dir: &Path) -> PathBuf {
+    session_dir.join("nested-harness-home")
+}
+
+fn workflow_store_mutation_allowed() -> bool {
+    env::var(HARNESS_WORKFLOW_ALLOW_STORE_MUTATION_ENV).as_deref() == Ok("1")
+}
+
+fn apply_workflow_child_store_guard(
+    cmd: &mut Command,
+    session_dir: &Path,
+    allow_store_mutation: bool,
+) {
+    cmd.env("HARNESS_PARENT_WORKFLOW_SESSION_DIR", session_dir);
+    if allow_store_mutation {
+        return;
+    }
+    cmd.env(
+        HARNESS_WORKFLOW_CHILD_STORE_ROOT_ENV,
+        workflow_child_store_root(session_dir),
+    )
+    .env("HARNESS_HOME", workflow_child_harness_home(session_dir))
+    .env("HARNESS_WORKFLOW_STORE_GUARD", "isolated")
+    .env_remove("HARNESS_PROJECT");
+}
+
 /// Emit one compact NDJSON progress event to STDERR (used when `--progress` is on).
 /// Stderr — not stdout — so stdout stays a single parseable JSON document; an agent
 /// caller's shell tool captures both streams, so it still sees the live timeline.
@@ -8245,6 +8296,10 @@ fn provider_enforces_read_only(provider: &str) -> bool {
         .unwrap_or(false)
 }
 
+fn step_write_mode_direct(spec: &workflow::AgentStepSpec) -> bool {
+    spec.write_mode.as_deref() == Some(workflow::WRITE_MODE_DIRECT)
+}
+
 /// Whether an ephemeral leaf must run in a throwaway git worktree instead of the
 /// shared repo cwd. A leaf isolates when it explicitly opts into
 /// `isolation="worktree"`, when it is `writable` (edits must land in a discardable
@@ -8255,20 +8310,92 @@ fn provider_enforces_read_only(provider: &str) -> bool {
 fn step_needs_isolation(
     writable: bool,
     isolation: Option<&str>,
+    write_mode: Option<&str>,
     provider_enforces_read_only: bool,
 ) -> bool {
+    if write_mode == Some(workflow::WRITE_MODE_DIRECT) {
+        return false;
+    }
     isolation == Some("worktree") || writable || !provider_enforces_read_only
+}
+
+fn direct_write_diff(repo_root: &Path) -> Option<String> {
+    let repo = repo_root.display().to_string();
+    let mut diff =
+        command_stdout("git", &["-C", &repo, "diff", "--no-ext-diff", "HEAD"]).unwrap_or_default();
+    let untracked = command_stdout(
+        "git",
+        &["-C", &repo, "ls-files", "--others", "--exclude-standard"],
+    )
+    .unwrap_or_default();
+    for path in untracked.lines().map(str::trim).filter(|p| !p.is_empty()) {
+        let abs = repo_root.join(path);
+        let Ok(bytes) = fs::read(&abs) else {
+            continue;
+        };
+        let text = String::from_utf8_lossy(&bytes);
+        diff.push_str(&format!(
+            "diff --git a/{path} b/{path}\nnew file mode 100644\n--- /dev/null\n+++ b/{path}\n@@ -0,0 +1,{} @@\n",
+            text.lines().count().max(1)
+        ));
+        for line in text.lines() {
+            diff.push('+');
+            diff.push_str(line);
+            diff.push('\n');
+        }
+        if text.is_empty() {
+            diff.push_str("+\n");
+        }
+    }
+    Some(diff)
+}
+
+fn ensure_direct_write_ready(
+    project: &ProjectContext,
+    repo_root: &Path,
+    spec: &workflow::AgentStepSpec,
+) -> CliResult<()> {
+    if !spec.writable {
+        return Err(CliError::Usage(format!(
+            "node '{}' sets write_mode=\"direct\" but is not writable. Direct shared-repo edits require writable=True so the provider receives edit permissions.",
+            spec.label
+        )));
+    }
+    if spec.isolation.as_deref() == Some("worktree") {
+        return Err(CliError::Usage(format!(
+            "node '{}' sets both write_mode=\"direct\" and isolation=\"worktree\". Choose direct shared-repo writes or an isolated worktree, not both.",
+            spec.label
+        )));
+    }
+    if !project.is_git_repo {
+        return Err(CliError::Usage(format!(
+            "node '{}' sets write_mode=\"direct\", but project '{}' ({}) is not a git repository. Direct writes require a git-backed project so the harness can attribute the resulting diff.",
+            spec.label,
+            project.id,
+            repo_root.display()
+        )));
+    }
+    let status = git_in(repo_root, &["status", "--porcelain"])?;
+    if !status.trim().is_empty() {
+        return Err(CliError::Usage(format!(
+            "node '{}' sets write_mode=\"direct\", but {} has uncommitted changes before the step:\n{}\nDirect writes require a clean repo so the harness can attribute the resulting diff.",
+            spec.label,
+            repo_root.display(),
+            status.trim()
+        )));
+    }
+    Ok(())
 }
 
 /// Spin up a NEW one-shot EDITABLE ephemeral worker for one `agent()` node and
 /// reduce its result into a [`workflow::StepResult`].
 ///
-/// Workspace: the shared repo cwd by default (serial nodes' edits compose on the
-/// same tree, exactly like Claude Code's Workflow). When the node opts into
-/// `isolation:"worktree"` the HARNESS creates a throwaway worktree (uniform for
-/// both providers) and runs the worker there; its `git diff` is collected as the
-/// node's evidence and the worktree is NOT auto-merged. Cleanup is the
-/// `WorktreeGuard`'s Drop (bulletproof across success/failure/timeout).
+/// Workspace: read-only leaves run in the selected project root when their
+/// provider can enforce read-only. Editable leaves default to a harness-owned
+/// throwaway worktree; `write_mode="direct"` is the explicit simple serial path
+/// that writes the selected project root immediately. Worktree diffs are captured
+/// as pending patches; direct diffs are recorded as evidence because the change is
+/// already in the repo working tree.
 fn spawn_ephemeral_worker(
     store: &HarnessStore,
     options: &WorkflowDeliveryOptions,
@@ -8292,10 +8419,15 @@ fn spawn_ephemeral_worker(
     // cannot enforce read-only — kimi's `kimi -p` has no read-only mode, so a
     // "read-only" kimi leaf could otherwise edit the live repo; the worktree is the
     // only boundary. See `step_needs_isolation` / `provider_enforces_read_only`.
+    let direct_write = step_write_mode_direct(spec);
+    if direct_write {
+        ensure_direct_write_ready(project, &repo_root, spec)?;
+    }
     let explicit_or_writable = spec.isolation.as_deref() == Some("worktree") || spec.writable;
     let mut isolate = step_needs_isolation(
         spec.writable,
         spec.isolation.as_deref(),
+        spec.write_mode.as_deref(),
         provider_enforces_read_only(&spec.provider),
     );
 
@@ -8388,26 +8520,31 @@ fn spawn_ephemeral_worker(
     // Factored into a closure so structured mode can re-run it once for the retry.
     let effective_model = workflow_effective_model(options, spec);
     let effective_effort = workflow_effective_effort(options, spec);
-    let spawn_once = |prompt: &str| -> CliResult<EphemeralSpawn> {
-        let ctx = EphemeralSpawnContext {
-            session_dir: &session_dir,
-            session_id: &session_id,
-            run_id,
-            spec,
-            schema_json: schema_json.as_ref(),
-            prompt,
-            cwd: &cwd,
-            model: effective_model,
-            effort: effective_effort,
-            service_tier: spec.service_tier.as_deref(),
-            timeout_ms: options.timeout_ms,
-            wall_clock_ms: spec.timeout_s.map(|seconds| seconds.saturating_mul(1_000)),
-            max_budget_usd: options.max_budget_usd,
+    let default_wall_clock_ms = spec.timeout_s.map(|seconds| seconds.saturating_mul(1_000));
+    let spawn_once_with_limits =
+        |prompt: &str, timeout_ms: u64, wall_clock_ms: Option<u64>| -> CliResult<EphemeralSpawn> {
+            let ctx = EphemeralSpawnContext {
+                session_dir: &session_dir,
+                session_id: &session_id,
+                run_id,
+                spec,
+                schema_json: schema_json.as_ref(),
+                prompt,
+                cwd: &cwd,
+                model: effective_model,
+                effort: effective_effort,
+                service_tier: spec.service_tier.as_deref(),
+                timeout_ms,
+                wall_clock_ms,
+                max_budget_usd: options.max_budget_usd,
+            };
+            match provider_adapter(spec.provider.as_str()) {
+                Some(adapter) => adapter.spawn_ephemeral(&ctx),
+                None => Err(unknown_provider_error(&spec.provider, "ephemeral worker")),
+            }
         };
-        match provider_adapter(spec.provider.as_str()) {
-            Some(adapter) => adapter.spawn_ephemeral(&ctx),
-            None => Err(unknown_provider_error(&spec.provider, "ephemeral worker")),
-        }
+    let spawn_once = |prompt: &str| -> CliResult<EphemeralSpawn> {
+        spawn_once_with_limits(prompt, options.timeout_ms, default_wall_clock_ms)
     };
 
     // Retry ONCE on a transient PROCESS crash — a non-zero / signalled exit that
@@ -8440,6 +8577,8 @@ fn spawn_ephemeral_worker(
     // Wall-clock span of the worker process itself, for the step's `duration_ms`.
     let worker_start = Instant::now();
     let mut structured: Option<serde_json::Value> = None;
+    let mut schema_retry_limits: Option<(u64, Option<u64>)> = None;
+    let mut schema_retry_timed_out = false;
     let spawn = if let Some(schema) = &spec.schema {
         let instruction = schema_instruction(schema);
 
@@ -8457,13 +8596,17 @@ fn spawn_ephemeral_worker(
 
         // ONE corrective retry when the worker produced no valid JSON.
         if structured.is_none() {
+            let (retry_timeout_ms, retry_wall_clock_ms) =
+                schema_correction_retry_limits(options.timeout_ms, default_wall_clock_ms);
+            schema_retry_limits = Some((retry_timeout_ms, retry_wall_clock_ms));
             let retry_prompt = format!(
                 "{}{instruction}\n\nYour previous reply was not valid JSON with keys [{}]; \
                  return ONLY that JSON object.",
                 spec.prompt,
                 required_keys.join(", "),
             );
-            spawn = spawn_once(&retry_prompt)?;
+            spawn = spawn_once_with_limits(&retry_prompt, retry_timeout_ms, retry_wall_clock_ms)?;
+            schema_retry_timed_out = spawn.timed_out;
             structured = spawn.structured.clone().or_else(|| {
                 spawn
                     .reply
@@ -8490,6 +8633,11 @@ fn spawn_ephemeral_worker(
     // them — read-only `_global` nodes simply carry no diff (P5, documented).
     let diff = if isolate {
         ephemeral_worktree_diff(&cwd)
+    } else {
+        None
+    };
+    let direct_diff = if direct_write {
+        direct_write_diff(&repo_root)
     } else {
         None
     };
@@ -8539,6 +8687,14 @@ fn spawn_ephemeral_worker(
             output_summary.push_str(&format!(" [worktree diff: {lines} lines]"));
         }
     }
+    if let Some(diff) = &direct_diff {
+        if diff.trim().is_empty() {
+            output_summary.push_str(" [direct diff: empty]");
+        } else {
+            let lines = diff.lines().count();
+            output_summary.push_str(&format!(" [direct diff: {lines} lines]"));
+        }
+    }
     if !spawn.ok && !spawn.stderr.trim().is_empty() {
         let err = spawn.stderr.replace('\n', " ");
         let err = truncate_on_char_boundary(&err, 160);
@@ -8567,6 +8723,39 @@ fn spawn_ephemeral_worker(
 
     let mut details =
         build_step_details(spec, &spawn, effective_model, duration_ms, diff.as_deref());
+    if let Some(direct_diff) = direct_diff.as_deref() {
+        if let Some(map) = details.as_object_mut() {
+            let (text, truncated) = if direct_diff.len() > WORKTREE_DIFF_CAP {
+                (
+                    truncate_on_char_boundary(direct_diff, WORKTREE_DIFF_CAP),
+                    true,
+                )
+            } else {
+                (direct_diff, false)
+            };
+            map.insert(
+                "direct_diff".into(),
+                serde_json::Value::String(text.to_string()),
+            );
+            map.insert(
+                "direct_diff_truncated".into(),
+                serde_json::Value::Bool(truncated),
+            );
+        }
+    }
+    if let Some((retry_timeout_ms, retry_wall_clock_ms)) = schema_retry_limits {
+        if let Some(map) = details.as_object_mut() {
+            map.insert(
+                "schema_retry".into(),
+                serde_json::json!({
+                    "attempted": true,
+                    "idle_timeout_ms": retry_timeout_ms,
+                    "wall_clock_ms": retry_wall_clock_ms,
+                    "timed_out": schema_retry_timed_out,
+                }),
+            );
+        }
+    }
     // Record a "schema" failure (reusing the same failure shape build_step_details
     // emits for worker failures) so the dashboard renders the schema miss.
     if schema_failed {
@@ -8576,9 +8765,10 @@ fn spawn_ephemeral_worker(
                 serde_json::json!({
                     "failed": true,
                     "reason": "schema",
-                    "detail": format!(
-                        "worker reply was not a JSON object with required keys [{}]",
-                        required_keys.join(", "),
+                    "detail": schema_failure_detail(
+                        &required_keys,
+                        schema_retry_limits.is_some(),
+                        schema_retry_timed_out,
                     ),
                 }),
             );
@@ -8782,6 +8972,35 @@ fn object_has_required_keys(obj: &serde_json::Value, required: &[String]) -> boo
 /// truncated to the cap and flagged with `worktree_diff_truncated: true` so the
 /// dashboard can render a "diff truncated" hint without choking on a huge blob.
 const WORKTREE_DIFF_CAP: usize = 20_000;
+const SCHEMA_CORRECTION_RETRY_TIMEOUT_MS: u64 = 60_000;
+
+fn schema_correction_retry_limits(
+    idle_timeout_ms: u64,
+    leaf_wall_clock_ms: Option<u64>,
+) -> (u64, Option<u64>) {
+    let retry_idle_timeout_ms = idle_timeout_ms.min(SCHEMA_CORRECTION_RETRY_TIMEOUT_MS);
+    let retry_wall_clock_ms = Some(
+        leaf_wall_clock_ms
+            .unwrap_or(SCHEMA_CORRECTION_RETRY_TIMEOUT_MS)
+            .min(SCHEMA_CORRECTION_RETRY_TIMEOUT_MS),
+    );
+    (retry_idle_timeout_ms, retry_wall_clock_ms)
+}
+
+fn schema_failure_detail(
+    required_keys: &[String],
+    retry_attempted: bool,
+    retry_timed_out: bool,
+) -> String {
+    let retry_detail = if retry_timed_out {
+        "schema correction retry timed out before producing valid JSON"
+    } else if retry_attempted {
+        "schema correction retry returned no valid JSON with required keys"
+    } else {
+        "worker reply was not a JSON object with required keys"
+    };
+    format!("{retry_detail} [{}]", required_keys.join(", "))
+}
 
 /// Assemble the observability `details` object merged onto the step's `result`
 /// JSON (see `workflow::step_result_json`): the model the worker ran, exit code,
@@ -8804,6 +9023,12 @@ fn build_step_details(
         "model": model,
         "exit_code": spawn.exit_code,
         "duration_ms": duration_ms,
+        "persist_changes": spec.persist_changes.clone(),
+        "write_mode": spec.write_mode.clone(),
+        "owned_paths": spec.owned_paths.clone(),
+        "artifact_root": spec.artifact_root.clone(),
+        "write_roots": spec.write_roots.clone(),
+        "auto_apply_on_verdict": spec.auto_apply_on_verdict,
     });
     let map = details
         .as_object_mut()
@@ -9165,6 +9390,7 @@ fn spawn_codex_ephemeral(
         "read-only"
     };
     let mut cmd = Command::new("codex");
+    apply_workflow_child_store_guard(&mut cmd, session_dir, workflow_store_mutation_allowed());
     cmd.arg("exec")
         .arg("--cd")
         .arg(cwd)
@@ -9312,6 +9538,7 @@ fn spawn_claude_ephemeral(
         "Read,Grep,Glob"
     };
     let mut cmd = Command::new("claude");
+    apply_workflow_child_store_guard(&mut cmd, session_dir, workflow_store_mutation_allowed());
     cmd.arg("-p")
         .arg(prompt)
         .arg("--output-format")
@@ -10336,9 +10563,13 @@ fn workflow_gc_trace(
 fn workflow_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     require_subcommand(
         args,
-        "workflow run|run-script|get-output|list|reap|reap-workers|gc-worktrees|gc-trace",
+        "workflow run|run-script|get-output|patch|list|reap|reap-workers|gc-worktrees|gc-trace",
     )?;
     match args[0].as_str() {
+        "patch" => {
+            let result = workflow_patch_command(store, &args[1..])?;
+            print_json(&result)?;
+        }
         "gc-worktrees" => {
             let result = workflow_gc_worktrees(store)?;
             print_json(&result)?;
@@ -10633,6 +10864,736 @@ fn warn_discarded_worktree_diffs(run_id: &str, outcome: &workflow::WorkflowOutco
     }
 }
 
+fn diff_changed_paths(diff: &str) -> Vec<String> {
+    let mut paths = BTreeSet::new();
+    for line in diff.lines() {
+        let Some(rest) = line.strip_prefix("diff --git ") else {
+            continue;
+        };
+        let mut parts = rest.split_whitespace();
+        let _a = parts.next();
+        let Some(b_path) = parts.next() else {
+            continue;
+        };
+        let path = b_path
+            .strip_prefix("b/")
+            .unwrap_or(b_path)
+            .trim_matches('"')
+            .to_string();
+        if !path.is_empty() && path != "/dev/null" {
+            paths.insert(path);
+        }
+    }
+    paths.into_iter().collect()
+}
+
+fn should_persist_workflow_patch(details: Option<&serde_json::Value>, diff: &str) -> bool {
+    if diff.trim().is_empty() {
+        return false;
+    }
+    let persist = details
+        .and_then(|d| d.get("persist_changes"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("patch");
+    persist != "discard"
+}
+
+fn string_array(value: Option<&serde_json::Value>) -> Vec<String> {
+    value
+        .and_then(|v| v.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn latest_workflow_patches_in_append_order(store: &HarnessStore) -> CliResult<Vec<WorkflowPatch>> {
+    let mut latest: BTreeMap<String, WorkflowPatch> = BTreeMap::new();
+    for patch in store.workflow_patches()? {
+        latest.insert(patch.id.clone(), patch);
+    }
+    Ok(latest.into_values().collect())
+}
+
+fn latest_workflow_artifact_manifests_in_append_order(
+    store: &HarnessStore,
+) -> CliResult<Vec<WorkflowArtifactManifest>> {
+    let mut latest: BTreeMap<String, WorkflowArtifactManifest> = BTreeMap::new();
+    for manifest in store.workflow_artifact_manifests()? {
+        latest.insert(manifest.id.clone(), manifest);
+    }
+    Ok(latest.into_values().collect())
+}
+
+fn patch_file_path(store: &HarnessStore, patch: &WorkflowPatch) -> PathBuf {
+    let path = PathBuf::from(&patch.patch_ref);
+    if path.is_absolute() {
+        path
+    } else {
+        store.root().join(path)
+    }
+}
+
+fn workflow_patch_update(
+    store: &HarnessStore,
+    patch: &WorkflowPatch,
+    status: WorkflowPatchStatus,
+    actor: Option<String>,
+    reason: Option<String>,
+    conflict_detail: Option<String>,
+) -> CliResult<WorkflowPatch> {
+    let now = now_string();
+    let mut updated = patch.clone();
+    updated.status = status;
+    updated.updated_at = Some(now.clone());
+    updated.actor = actor;
+    updated.reason = reason;
+    updated.conflict_detail = conflict_detail;
+    match status {
+        WorkflowPatchStatus::Applied => updated.applied_at = Some(now),
+        WorkflowPatchStatus::Rejected => updated.rejected_at = Some(now),
+        _ => {}
+    }
+    store.append_workflow_patch(&updated)?;
+    Ok(updated)
+}
+
+fn apply_patch_bytes(repo_root: &Path, bytes: &[u8], check_only: bool) -> CliResult<()> {
+    let mut child = Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args(if check_only {
+            vec!["apply", "--check", "--whitespace=nowarn", "-"]
+        } else {
+            vec!["apply", "--whitespace=nowarn", "-"]
+        })
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()?;
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(bytes)?;
+    }
+    let out = child.wait_with_output()?;
+    if !out.status.success() {
+        return Err(CliError::Usage(
+            String::from_utf8_lossy(&out.stderr).trim().to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn apply_workflow_patch_record(
+    store: &HarnessStore,
+    patch: &WorkflowPatch,
+    actor: Option<String>,
+    reason: Option<String>,
+    allow_dirty: bool,
+) -> CliResult<WorkflowPatch> {
+    if patch.status != WorkflowPatchStatus::PendingApply {
+        return Err(CliError::Usage(format!(
+            "workflow patch {} is {:?}, not pending_apply",
+            patch.id, patch.status
+        )));
+    }
+    let project = workflow_project_context(store);
+    let repo_root = workflow_repo_root(&project);
+    let changed_paths = if patch.changed_paths.is_empty() {
+        let bytes = fs::read(patch_file_path(store, patch))?;
+        diff_changed_paths(&String::from_utf8_lossy(&bytes))
+    } else {
+        patch.changed_paths.clone()
+    };
+    let violations = owned_path_violations(&changed_paths, &patch.owned_paths);
+    if !violations.is_empty() {
+        let detail = format!(
+            "patch touches paths outside owned_paths {:?}: {:?}",
+            patch.owned_paths, violations
+        );
+        let _ = workflow_patch_update(
+            store,
+            patch,
+            WorkflowPatchStatus::Conflict,
+            actor,
+            reason,
+            Some(detail.clone()),
+        )?;
+        return Err(CliError::Usage(detail));
+    }
+    if !allow_dirty {
+        let status = git_in(&repo_root, &["status", "--porcelain"])?;
+        if !status.trim().is_empty() {
+            return Err(CliError::Usage(format!(
+                "cannot apply workflow patch {} because {} has uncommitted changes:\n{}\n\
+                 rerun with --allow-dirty after checking the patch is independent",
+                patch.id,
+                repo_root.display(),
+                status.trim()
+            )));
+        }
+    }
+    let path = patch_file_path(store, patch);
+    let bytes = fs::read(&path)?;
+    if let Err(error) = apply_patch_bytes(&repo_root, &bytes, true) {
+        let detail = error.to_string();
+        let _ = workflow_patch_update(
+            store,
+            patch,
+            WorkflowPatchStatus::Conflict,
+            actor,
+            reason,
+            Some(detail.clone()),
+        )?;
+        return Err(CliError::Usage(detail));
+    }
+    apply_patch_bytes(&repo_root, &bytes, false)?;
+    workflow_patch_update(
+        store,
+        patch,
+        WorkflowPatchStatus::Applied,
+        actor,
+        reason,
+        None,
+    )
+}
+
+fn reject_workflow_patch_record(
+    store: &HarnessStore,
+    patch: &WorkflowPatch,
+    actor: Option<String>,
+    reason: Option<String>,
+) -> CliResult<WorkflowPatch> {
+    if patch.status != WorkflowPatchStatus::PendingApply {
+        return Err(CliError::Usage(format!(
+            "workflow patch {} is {:?}, not pending_apply",
+            patch.id, patch.status
+        )));
+    }
+    workflow_patch_update(
+        store,
+        patch,
+        WorkflowPatchStatus::Rejected,
+        actor,
+        reason,
+        None,
+    )
+}
+
+fn patch_status_is_pending(patch: &WorkflowPatch) -> bool {
+    patch.status == WorkflowPatchStatus::PendingApply
+}
+
+fn resolve_workflow_patch(store: &HarnessStore, args: &[String]) -> CliResult<WorkflowPatch> {
+    let key = value(args, "--patch")
+        .or_else(|| args.iter().find(|arg| !arg.starts_with("--")).cloned())
+        .ok_or_else(|| {
+            CliError::Usage(
+                "workflow patch command requires <patch_id|run_id> or --patch <id>".to_string(),
+            )
+        })?;
+    let step = value(args, "--step");
+    let patches = latest_workflow_patches_in_append_order(store)?;
+    if let Some(step) = step {
+        return patches
+            .into_iter()
+            .rev()
+            .find(|patch| patch.run_id == key && (patch.step_id == step || patch.label == step))
+            .ok_or_else(|| {
+                CliError::Usage(format!("no workflow patch for run {key} step {step}"))
+            });
+    }
+    let exact: Vec<_> = patches
+        .iter()
+        .filter(|patch| patch.id == key)
+        .cloned()
+        .collect();
+    if let Some(patch) = exact.into_iter().next() {
+        return Ok(patch);
+    }
+    let by_run: Vec<_> = patches
+        .into_iter()
+        .filter(|patch| patch.run_id == key)
+        .collect();
+    match by_run.len() {
+        1 => Ok(by_run.into_iter().next().expect("one patch")),
+        0 => Err(CliError::Usage(format!(
+            "no workflow patch found for {key}"
+        ))),
+        _ => Err(CliError::Usage(format!(
+            "run {key} has multiple patches; pass --step <label|step_id>"
+        ))),
+    }
+}
+
+fn workflow_patch_command(store: &HarnessStore, args: &[String]) -> CliResult<serde_json::Value> {
+    require_subcommand(args, "workflow patch list|show|apply|reject")?;
+    match args[0].as_str() {
+        "list" => {
+            let run = value(&args[1..], "--run");
+            let mut patches = latest_workflow_patches_in_append_order(store)?;
+            if let Some(run) = run {
+                patches.retain(|patch| patch.run_id == run);
+            }
+            Ok(serde_json::json!({ "patches": patches }))
+        }
+        "show" => {
+            let patch = resolve_workflow_patch(store, &args[1..])?;
+            let text = fs::read_to_string(patch_file_path(store, &patch)).unwrap_or_default();
+            Ok(serde_json::json!({ "patch": patch, "diff": text }))
+        }
+        "apply" => {
+            let patch = resolve_workflow_patch(store, &args[1..])?;
+            let actor = value(&args[1..], "--actor").or_else(|| Some("operator".to_string()));
+            let reason = value(&args[1..], "--reason");
+            let applied = apply_workflow_patch_record(
+                store,
+                &patch,
+                actor,
+                reason,
+                has_flag(&args[1..], "--allow-dirty"),
+            )?;
+            Ok(serde_json::json!({ "patch": applied }))
+        }
+        "reject" => {
+            let patch = resolve_workflow_patch(store, &args[1..])?;
+            let actor = value(&args[1..], "--actor").or_else(|| Some("operator".to_string()));
+            let reason = value(&args[1..], "--reason");
+            let rejected = reject_workflow_patch_record(store, &patch, actor, reason)?;
+            Ok(serde_json::json!({ "patch": rejected }))
+        }
+        other => Err(CliError::Usage(format!(
+            "unknown workflow patch command: {other}"
+        ))),
+    }
+}
+
+fn manifest_path_with_root(repo_root: &Path, artifact_root: Option<&str>, path: &str) -> PathBuf {
+    let raw = Path::new(path);
+    if raw.is_absolute() {
+        return raw.to_path_buf();
+    }
+    if let Some(root) = artifact_root.filter(|r| !r.trim().is_empty()) {
+        let root = root.trim_end_matches('/');
+        let root_path = Path::new(root);
+        if raw.starts_with(root_path) {
+            return repo_root.join(raw);
+        }
+        return repo_root.join(root_path).join(raw);
+    }
+    repo_root.join(raw)
+}
+
+fn manifest_display_path(
+    repo_root: &Path,
+    artifact_root: Option<&str>,
+    path: &str,
+    abs: &Path,
+) -> String {
+    if let Ok(rel) = abs.strip_prefix(repo_root) {
+        return rel.display().to_string();
+    }
+    if Path::new(path).is_absolute() {
+        path.to_string()
+    } else if let Some(root) = artifact_root.filter(|r| !r.trim().is_empty()) {
+        format!("{}/{}", root.trim_end_matches('/'), path)
+    } else {
+        path.to_string()
+    }
+}
+
+fn build_manifest_file(
+    repo_root: &Path,
+    artifact_root: Option<&str>,
+    path: &str,
+) -> WorkflowArtifactFile {
+    let abs = manifest_path_with_root(repo_root, artifact_root, path);
+    let display = manifest_display_path(repo_root, artifact_root, path, &abs);
+    let metadata = fs::metadata(&abs).ok();
+    let exists = metadata.as_ref().is_some_and(|m| m.is_file());
+    let (size_bytes, hash) = if exists {
+        let bytes = fs::read(&abs).unwrap_or_default();
+        let lossy = String::from_utf8_lossy(&bytes);
+        (Some(bytes.len() as u64), Some(content_hash_hex16(&lossy)))
+    } else {
+        (None, None)
+    };
+    WorkflowArtifactFile {
+        path: display,
+        exists,
+        size_bytes,
+        hash,
+        kind: None,
+    }
+}
+
+fn paths_outside_write_roots(paths: &[String], write_roots: &[String]) -> Vec<String> {
+    if write_roots.is_empty() {
+        return Vec::new();
+    }
+    paths
+        .iter()
+        .filter(|path| {
+            !write_roots.iter().any(|root| {
+                let root = root.trim_end_matches('/');
+                path.as_str() == root || path.starts_with(&format!("{root}/"))
+            })
+        })
+        .cloned()
+        .collect()
+}
+
+fn append_artifact_manifest(
+    store: &HarnessStore,
+    run_id: &str,
+    step_id: Option<String>,
+    label: Option<String>,
+    artifact_root: Option<String>,
+    write_roots: Vec<String>,
+    paths: Vec<String>,
+) -> CliResult<WorkflowArtifactManifest> {
+    if paths.is_empty() {
+        return Err(CliError::Usage(
+            "artifact manifest requires at least one path".to_string(),
+        ));
+    }
+    let project = workflow_project_context(store);
+    let repo_root = workflow_repo_root(&project);
+    let files: Vec<_> = paths
+        .iter()
+        .map(|path| build_manifest_file(&repo_root, artifact_root.as_deref(), path))
+        .collect();
+    let display_paths: Vec<String> = files.iter().map(|file| file.path.clone()).collect();
+    let missing: Vec<_> = files
+        .iter()
+        .filter(|file| !file.exists)
+        .map(|file| file.path.clone())
+        .collect();
+    let outside = paths_outside_write_roots(&display_paths, &write_roots);
+    let (status, reason) = if !missing.is_empty() {
+        (
+            WorkflowArtifactManifestStatus::Missing,
+            Some(format!("missing artifact files: {}", missing.join(", "))),
+        )
+    } else if !outside.is_empty() {
+        (
+            WorkflowArtifactManifestStatus::Stale,
+            Some(format!(
+                "artifact files outside write_roots {:?}: {}",
+                write_roots,
+                outside.join(", ")
+            )),
+        )
+    } else {
+        (WorkflowArtifactManifestStatus::Current, None)
+    };
+    let manifest = WorkflowArtifactManifest {
+        id: generated_id("wfartifact"),
+        run_id: run_id.to_string(),
+        step_id,
+        label,
+        artifact_root,
+        status,
+        files,
+        write_roots,
+        created_at: now_string(),
+        updated_at: None,
+        reason,
+    };
+    store.append_workflow_artifact_manifest(&manifest)?;
+    Ok(manifest)
+}
+
+fn persist_workflow_patches(
+    store: &HarnessStore,
+    run: &WorkflowRun,
+    outcome: &workflow::WorkflowOutcome,
+    steps_json: &[serde_json::Value],
+) -> CliResult<Vec<WorkflowPatch>> {
+    let project = workflow_project_context(store);
+    let repo_root = workflow_repo_root(&project);
+    let base_sha = git_in(&repo_root, &["rev-parse", "HEAD"])
+        .ok()
+        .map(|sha| sha.trim().to_string())
+        .filter(|sha| !sha.is_empty());
+    let patch_dir = store.root().join("workflow-patches").join(&run.id);
+    fs::create_dir_all(&patch_dir)?;
+
+    let mut patches = Vec::new();
+    for (idx, result) in outcome.steps.iter().enumerate() {
+        let Some(diff) = step_landing_diff(result) else {
+            continue;
+        };
+        let details = result.details.as_ref();
+        if !should_persist_workflow_patch(details, &diff) {
+            continue;
+        }
+        let step_id = steps_json
+            .get(idx)
+            .and_then(|v| v.get("id"))
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .or_else(|| result.step_id.clone())
+            .unwrap_or_else(|| format!("step-{idx}"));
+        let patch_ref = patch_dir.join(format!("{step_id}.patch"));
+        fs::write(&patch_ref, diff.as_bytes())?;
+        let owned_paths = string_array(details.and_then(|d| d.get("owned_paths")));
+        let persist_changes = details
+            .and_then(|d| d.get("persist_changes"))
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        let changed_paths = diff_changed_paths(&diff);
+        let patch = WorkflowPatch {
+            id: format!("wfpatch-{step_id}"),
+            run_id: run.id.clone(),
+            step_id,
+            label: result.label.clone(),
+            phase: result.phase.clone(),
+            provider: result.provider.clone(),
+            status: WorkflowPatchStatus::PendingApply,
+            changed_paths,
+            patch_ref: patch_ref.display().to_string(),
+            base_sha: base_sha.clone(),
+            owned_paths,
+            persist_changes,
+            created_at: now_string(),
+            updated_at: None,
+            actor: None,
+            reason: None,
+            conflict_detail: None,
+            applied_at: None,
+            rejected_at: None,
+        };
+        store.append_workflow_patch(&patch)?;
+        patches.push(patch);
+    }
+    Ok(patches)
+}
+
+fn persist_step_artifact_manifests(
+    store: &HarnessStore,
+    run: &WorkflowRun,
+    outcome: &workflow::WorkflowOutcome,
+    steps_json: &[serde_json::Value],
+) -> CliResult<Vec<WorkflowArtifactManifest>> {
+    let mut manifests = Vec::new();
+    for (idx, result) in outcome.steps.iter().enumerate() {
+        let Some(details) = result.details.as_ref() else {
+            continue;
+        };
+        let declared = details
+            .get("expected_artifacts")
+            .and_then(|v| v.get("declared"))
+            .map(|v| string_array(Some(v)))
+            .unwrap_or_default();
+        let artifact_root = details
+            .get("artifact_root")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        let write_roots = string_array(details.get("write_roots"));
+        if declared.is_empty() && artifact_root.is_none() && write_roots.is_empty() {
+            continue;
+        }
+        if declared.is_empty() {
+            continue;
+        }
+        let step_id = steps_json
+            .get(idx)
+            .and_then(|v| v.get("id"))
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .or_else(|| result.step_id.clone());
+        manifests.push(append_artifact_manifest(
+            store,
+            &run.id,
+            step_id,
+            Some(result.label.clone()),
+            artifact_root,
+            write_roots,
+            declared,
+        )?);
+    }
+    Ok(manifests)
+}
+
+fn persist_declared_artifact_manifests(
+    store: &HarnessStore,
+    run: &WorkflowRun,
+    steps_json: &[serde_json::Value],
+) -> CliResult<Vec<WorkflowArtifactManifest>> {
+    let mut out = Vec::new();
+    let Some(items) = run
+        .final_output
+        .as_ref()
+        .and_then(|v| v.get("artifact_manifests"))
+        .and_then(|v| v.as_array())
+    else {
+        return Ok(out);
+    };
+    for item in items {
+        let paths = string_array(item.get("paths"));
+        if paths.is_empty() {
+            continue;
+        }
+        let label = item
+            .get("label")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        let step_id = label.as_ref().and_then(|label| {
+            steps_json.iter().find_map(|step| {
+                let step_label = step.get("label").and_then(|v| v.as_str())?;
+                if step_label == label {
+                    step.get("id").and_then(|v| v.as_str()).map(str::to_string)
+                } else {
+                    None
+                }
+            })
+        });
+        out.push(append_artifact_manifest(
+            store,
+            &run.id,
+            step_id,
+            label,
+            item.get("artifact_root")
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
+            string_array(item.get("write_roots")),
+            paths,
+        )?);
+    }
+    Ok(out)
+}
+
+fn run_verdict_ok(run: &WorkflowRun) -> bool {
+    run.final_output
+        .as_ref()
+        .and_then(|v| v.get("verdict"))
+        .and_then(|v| v.get("ok"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(run.status == WorkflowRunStatus::Completed)
+}
+
+fn process_workflow_patch_actions(
+    store: &HarnessStore,
+    run: &WorkflowRun,
+    initial_patches: &[WorkflowPatch],
+) -> CliResult<Vec<WorkflowPatch>> {
+    let mut latest: BTreeMap<String, WorkflowPatch> = initial_patches
+        .iter()
+        .cloned()
+        .map(|patch| (patch.label.clone(), patch))
+        .collect();
+    let mut explicit_labels = BTreeSet::new();
+    let actions = run
+        .final_output
+        .as_ref()
+        .and_then(|v| v.get("patch_actions"))
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    for action in actions {
+        let Some(label) = action.get("label").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        explicit_labels.insert(label.to_string());
+        let Some(patch) = latest.get(label).cloned() else {
+            eprintln!(
+                "workflow patch action ignored for run {}: no patch labeled '{}'",
+                run.id, label
+            );
+            continue;
+        };
+        if !patch_status_is_pending(&patch) {
+            continue;
+        }
+        let reason = action
+            .get("reason")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        let updated = match action.get("action").and_then(|v| v.as_str()) {
+            Some("apply") => match apply_workflow_patch_record(
+                store,
+                &patch,
+                Some("workflow".to_string()),
+                reason,
+                false,
+            ) {
+                Ok(updated) => updated,
+                Err(error) => {
+                    eprintln!(
+                        "workflow patch auto-apply failed for run {} step '{}': {error}",
+                        run.id, label
+                    );
+                    latest_workflow_patches_in_append_order(store)?
+                        .into_iter()
+                        .find(|p| p.id == patch.id)
+                        .unwrap_or(patch)
+                }
+            },
+            Some("reject") => {
+                reject_workflow_patch_record(store, &patch, Some("workflow".to_string()), reason)?
+            }
+            _ => patch,
+        };
+        latest.insert(label.to_string(), updated);
+    }
+
+    if run_verdict_ok(run) {
+        for patch in initial_patches {
+            if explicit_labels.contains(&patch.label) {
+                continue;
+            }
+            let auto = outcome_step_auto_apply(run, &patch.label);
+            if !auto || !patch_status_is_pending(patch) {
+                continue;
+            }
+            let updated = match apply_workflow_patch_record(
+                store,
+                patch,
+                Some("workflow".to_string()),
+                Some("auto_apply_on_verdict".to_string()),
+                false,
+            ) {
+                Ok(updated) => updated,
+                Err(error) => {
+                    eprintln!(
+                        "workflow patch auto_apply_on_verdict failed for run {} step '{}': {error}",
+                        run.id, patch.label
+                    );
+                    latest_workflow_patches_in_append_order(store)?
+                        .into_iter()
+                        .find(|p| p.id == patch.id)
+                        .unwrap_or_else(|| patch.clone())
+                }
+            };
+            latest.insert(patch.label.clone(), updated);
+        }
+    }
+    Ok(latest.into_values().collect())
+}
+
+fn outcome_step_auto_apply(run: &WorkflowRun, label: &str) -> bool {
+    run.final_output
+        .as_ref()
+        .and_then(|v| v.get("steps"))
+        .and_then(|v| v.as_array())
+        .and_then(|steps| {
+            steps.iter().find_map(|step| {
+                if step.get("label").and_then(|v| v.as_str()) == Some(label) {
+                    step.get("auto_apply_on_verdict").and_then(|v| v.as_bool())
+                } else {
+                    None
+                }
+            })
+        })
+        .unwrap_or(false)
+}
+
 fn workflow_run_script_value(
     store: &HarnessStore,
     args: &[String],
@@ -10908,6 +11869,15 @@ fn journal_workflow_outcome(
     run.agents_spawned = outcome.agents_spawned;
     run.final_output = outcome.final_output.clone();
     store.append_workflow_run(&run)?;
+    let mut patches = persist_workflow_patches(store, &run, outcome, &steps_json)?;
+    let mut artifact_manifests =
+        persist_step_artifact_manifests(store, &run, outcome, &steps_json)?;
+    artifact_manifests.extend(persist_declared_artifact_manifests(
+        store,
+        &run,
+        &steps_json,
+    )?);
+    patches = process_workflow_patch_actions(store, &run, &patches)?;
     // The run has reached a terminal status — notify any configured completion hook
     // (no-op unless HARNESS_WORKFLOW_ON_COMPLETE is set). Fires here, inside the
     // run-owning process, so a backgrounded `run-script &` still notifies.
@@ -10916,6 +11886,8 @@ fn journal_workflow_outcome(
     Ok(serde_json::json!({
         "run": serde_json::to_value(&run)?,
         "steps": steps_json,
+        "patches": patches,
+        "artifact_manifests": artifact_manifests,
     }))
 }
 
@@ -12800,6 +13772,7 @@ fn goal_learning_status(store: &HarnessStore, goal_id: &str) -> CliResult<GoalLe
             item.task_id
                 .as_ref()
                 .is_some_and(|task_id| task_ids.contains(task_id))
+                || item.goal_id.as_deref() == Some(goal_id)
         })
         .collect();
     let goal_design = evidence_by_type(&evidence, "goal_design");
@@ -13106,7 +14079,7 @@ fn review_gate(store: &HarnessStore, args: &[String]) -> CliResult<()> {
         )?;
         if let Some(goal_id) = value(args, "--goal").or_else(|| task.goal_id.clone()) {
             let status = goal_learning_status(store, &goal_id)?;
-            if status.goal_design.is_empty() {
+            if !status.has_goal_design() {
                 if has_flag(args, "--allow-missing-goal-design") || allow_goal_learning_waiver {
                     status.require_valid_waiver(store, waiver_decision_id.as_deref())?;
                 } else {
@@ -13129,7 +14102,7 @@ fn review_gate(store: &HarnessStore, args: &[String]) -> CliResult<()> {
                     )
                 })?;
             let status = goal_learning_status(store, &goal_id)?;
-            if require_goal_design && status.goal_design.is_empty() {
+            if require_goal_design && !status.has_goal_design() {
                 if allow_goal_learning_waiver {
                     status.require_valid_waiver(store, waiver_decision_id.as_deref())?;
                 } else {
@@ -13552,6 +14525,8 @@ fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::Value> {
     let provider_child_threads = store.provider_child_threads()?;
     let workflow_runs = latest_workflow_runs_in_append_order(store)?;
     let workflow_steps = latest_workflow_steps_in_append_order(store)?;
+    let workflow_patches = latest_workflow_patches_in_append_order(store)?;
+    let workflow_artifact_manifests = latest_workflow_artifact_manifests_in_append_order(store)?;
     // The goal↔run orchestration checkpoints (Stage 0): each `goal run-phases`
     // execution, its per-phase `workflow_run_id` links, and status. Surfacing them
     // makes a real run-phases visible on the dashboard (the back link to the
@@ -13672,6 +14647,8 @@ fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::Value> {
         "provider_child_threads": provider_child_threads,
         "workflow_runs": workflow_runs,
         "workflow_steps": workflow_steps,
+        "workflow_patches": workflow_patches,
+        "workflow_artifact_manifests": workflow_artifact_manifests,
         "goal_orchestration_runs": goal_orchestration_runs
     }))
 }
@@ -15802,6 +16779,7 @@ fn spawn_kimi_ephemeral(
         &prompt_with_images
     };
     let mut cmd = Command::new(resolve_kimi_bin());
+    apply_workflow_child_store_guard(&mut cmd, session_dir, workflow_store_mutation_allowed());
     cmd.arg("-p")
         .arg(prompt)
         .arg("--output-format")
@@ -18190,8 +19168,13 @@ fn current_unix_ms() -> u128 {
 
 fn generated_id(prefix: &str) -> String {
     let millis = current_unix_ms();
+    let process_id = std::process::id();
     let counter = GENERATED_ID_COUNTER.fetch_add(1, Ordering::Relaxed);
-    format!("{prefix}-{millis}-{counter}")
+    generated_id_from_parts(prefix, millis, process_id, counter)
+}
+
+fn generated_id_from_parts(prefix: &str, millis: u128, process_id: u32, counter: u64) -> String {
+    format!("{prefix}-{millis}-p{process_id}-{counter}")
 }
 
 static GENERATED_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -18273,6 +19256,10 @@ fn print_help() {
   workflow run --name <name> [--prompt <text>] [--start-runtime] [--dry-run] [--timeout-ms <ms>] [--model <m>] [--effort <e>]
   workflow run-script <prog.star> [--name <n>] [--args <json>] [--trace durable|live] [--dry-run] [--resume <prior_run_id>] [--timeout-ms <ms>] [--model <m>] [--effort <e>]
   workflow get-output <run_id> [--step <label>] [--text]
+  workflow patch list [--run <run_id>]
+  workflow patch show <patch_id|run_id> [--step <label|step_id>]
+  workflow patch apply <patch_id|run_id> [--step <label|step_id>] [--allow-dirty] [--reason <text>] [--actor <id>]
+  workflow patch reject <patch_id|run_id> [--step <label|step_id>] [--reason <text>] [--actor <id>]
   workflow gc-worktrees
   workflow reap-workers [--dry-run]
   workflow gc-trace [--keep-runs <n>] [--keep-days <d>] [--dry-run]
@@ -18527,34 +19514,43 @@ mod workflow_runtime_tests {
         // A read-only leaf (writable=false, no explicit isolation) on a provider that
         // ENFORCES read-only (codex/claude) runs in the shared cwd — no worktree.
         assert!(
-            !step_needs_isolation(false, None, true),
+            !step_needs_isolation(false, None, None, true),
             "read-only leaf on an enforcing provider stays in the shared cwd"
         );
         // The same read-only leaf on a provider that CANNOT enforce read-only (kimi)
         // MUST be worktree-isolated — the regression this fix closes (a read-only kimi
         // leaf edited the live repo).
         assert!(
-            step_needs_isolation(false, None, false),
+            step_needs_isolation(false, None, None, false),
             "read-only leaf on a non-enforcing provider must be isolated"
         );
         // Writable / explicit-isolation always isolate, regardless of the provider's
         // read-only enforcement.
         assert!(
-            step_needs_isolation(true, None, true),
+            step_needs_isolation(true, None, None, true),
             "writable always isolates"
         );
         assert!(
-            step_needs_isolation(false, Some("worktree"), true),
+            step_needs_isolation(false, Some("worktree"), None, true),
             "explicit isolation always isolates"
         );
         // Sanity: the live wiring resolves real providers to the right enforcement.
         assert!(
-            !step_needs_isolation(false, None, provider_enforces_read_only("codex")),
+            !step_needs_isolation(false, None, None, provider_enforces_read_only("codex")),
             "codex read-only leaf does not need isolation"
         );
         assert!(
-            step_needs_isolation(false, None, provider_enforces_read_only("kimi")),
+            step_needs_isolation(false, None, None, provider_enforces_read_only("kimi")),
             "kimi read-only leaf needs isolation"
+        );
+        assert!(
+            !step_needs_isolation(
+                true,
+                None,
+                Some(workflow::WRITE_MODE_DIRECT),
+                provider_enforces_read_only("codex")
+            ),
+            "direct write mode writes shared cwd instead of creating a worktree"
         );
     }
 
@@ -19031,6 +20027,43 @@ mod workflow_runtime_tests {
     }
 
     #[test]
+    fn schema_correction_retry_limits_are_short_and_never_expand_existing_caps() {
+        assert_eq!(
+            schema_correction_retry_limits(900_000, None),
+            (
+                SCHEMA_CORRECTION_RETRY_TIMEOUT_MS,
+                Some(SCHEMA_CORRECTION_RETRY_TIMEOUT_MS)
+            )
+        );
+        assert_eq!(
+            schema_correction_retry_limits(5_000, Some(10_000)),
+            (5_000, Some(10_000))
+        );
+        assert_eq!(
+            schema_correction_retry_limits(900_000, Some(15_000)),
+            (SCHEMA_CORRECTION_RETRY_TIMEOUT_MS, Some(15_000))
+        );
+    }
+
+    #[test]
+    fn schema_failure_detail_distinguishes_retry_timeout_from_plain_schema_miss() {
+        let required = vec!["ok".to_string(), "summary".to_string()];
+
+        assert_eq!(
+            schema_failure_detail(&required, false, false),
+            "worker reply was not a JSON object with required keys [ok, summary]"
+        );
+        assert_eq!(
+            schema_failure_detail(&required, true, false),
+            "schema correction retry returned no valid JSON with required keys [ok, summary]"
+        );
+        assert_eq!(
+            schema_failure_detail(&required, true, true),
+            "schema correction retry timed out before producing valid JSON [ok, summary]"
+        );
+    }
+
+    #[test]
     fn schema_to_json_schema_wraps_flat_and_passes_real_through() {
         // Flat { key: hint } -> a string-property object schema with required keys.
         let flat = serde_json::json!({ "verdict": "the call", "score": "0-100" });
@@ -19335,6 +20368,12 @@ mod workflow_runtime_tests {
             image: Vec::new(),
             add_dir: Vec::new(),
             expected_artifacts: Vec::new(),
+            persist_changes: None,
+            write_mode: None,
+            owned_paths: Vec::new(),
+            artifact_root: None,
+            write_roots: Vec::new(),
+            auto_apply_on_verdict: false,
             isolation: None,
             prompt: "hi".into(),
             schema: None,
@@ -19383,6 +20422,12 @@ mod workflow_runtime_tests {
             image: Vec::new(),
             add_dir: Vec::new(),
             expected_artifacts: Vec::new(),
+            persist_changes: None,
+            write_mode: None,
+            owned_paths: Vec::new(),
+            artifact_root: None,
+            write_roots: Vec::new(),
+            auto_apply_on_verdict: false,
             isolation: None,
             prompt: "hi".into(),
             schema: None,
@@ -19428,6 +20473,12 @@ mod workflow_runtime_tests {
             image: Vec::new(),
             add_dir: Vec::new(),
             expected_artifacts: Vec::new(),
+            persist_changes: None,
+            write_mode: None,
+            owned_paths: Vec::new(),
+            artifact_root: None,
+            write_roots: Vec::new(),
+            auto_apply_on_verdict: false,
             isolation: Some("worktree".into()),
             prompt: "hi".into(),
             schema: None,
@@ -19562,6 +20613,12 @@ new file mode 100644
             image: Vec::new(),
             add_dir: Vec::new(),
             expected_artifacts: Vec::new(),
+            persist_changes: None,
+            write_mode: None,
+            owned_paths: Vec::new(),
+            artifact_root: None,
+            write_roots: Vec::new(),
+            auto_apply_on_verdict: false,
             isolation: None,
             prompt: "hi".into(),
             schema: None,
@@ -21155,6 +22212,12 @@ new file mode 100644
             image: Vec::new(),
             add_dir: Vec::new(),
             expected_artifacts: Vec::new(),
+            persist_changes: None,
+            write_mode: None,
+            owned_paths: Vec::new(),
+            artifact_root: None,
+            write_roots: Vec::new(),
+            auto_apply_on_verdict: false,
             isolation: None,
             prompt: "do the thing".into(),
             schema: None,
@@ -21219,6 +22282,12 @@ new file mode 100644
             image: Vec::new(),
             add_dir: Vec::new(),
             expected_artifacts: Vec::new(),
+            persist_changes: None,
+            write_mode: None,
+            owned_paths: Vec::new(),
+            artifact_root: None,
+            write_roots: Vec::new(),
+            auto_apply_on_verdict: false,
             isolation: None,
             prompt: "p".into(),
             schema: None,
@@ -21519,12 +22588,79 @@ new file mode 100644
             image: Vec::new(),
             add_dir: Vec::new(),
             expected_artifacts: Vec::new(),
+            persist_changes: None,
+            write_mode: None,
+            owned_paths: Vec::new(),
+            artifact_root: None,
+            write_roots: Vec::new(),
+            auto_apply_on_verdict: false,
             isolation: isolation.map(str::to_string),
             prompt: "noop".into(),
             schema: None,
             writable,
             ordinal: Some(0),
         }
+    }
+
+    #[test]
+    fn direct_write_mode_requires_writable_clean_git_project() {
+        let store = temp_store("direct-guards");
+        let project_root = init_gc_git_project("direct-guards", &store);
+        let project = workflow_project_context(&store);
+        let mut spec = cwd_test_spec("direct", true, None);
+        spec.write_mode = Some(workflow::WRITE_MODE_DIRECT.into());
+        ensure_direct_write_ready(&project, &project_root, &spec).expect("clean git repo allowed");
+
+        let mut read_only = spec.clone();
+        read_only.writable = false;
+        let err = ensure_direct_write_ready(&project, &project_root, &read_only)
+            .expect_err("direct mode requires writable");
+        assert!(err.to_string().contains("require writable=True"));
+
+        let non_git_root =
+            std::env::temp_dir().join(format!("harness-direct-nongit-{}", generated_id("ng")));
+        std::fs::create_dir_all(&non_git_root).expect("mk non git");
+        let non_git_project = ProjectContext {
+            id: "nongit".into(),
+            project_root: non_git_root.clone(),
+            store_root: store.root().to_path_buf(),
+            kind: ProjectKind::Repo,
+            is_git_repo: false,
+        };
+        let err = ensure_direct_write_ready(&non_git_project, &non_git_root, &spec)
+            .expect_err("non-git direct write rejected");
+        assert!(err.to_string().contains("not a git repository"));
+
+        std::fs::write(project_root.join("scratch.txt"), "dirty").expect("dirty file");
+        let err = ensure_direct_write_ready(&project, &project_root, &spec)
+            .expect_err("dirty repo rejected");
+        assert!(err.to_string().contains("uncommitted changes"));
+
+        let _ = std::fs::remove_dir_all(&project_root);
+        let _ = std::fs::remove_dir_all(&non_git_root);
+        let _ = std::fs::remove_dir_all(store.root());
+    }
+
+    #[test]
+    fn direct_write_diff_captures_shared_repo_changes_without_index_side_effects() {
+        let store = temp_store("direct-diff");
+        let project_root = init_gc_git_project("direct-diff", &store);
+        std::fs::write(project_root.join("README"), "changed\n").expect("change tracked");
+        std::fs::create_dir_all(project_root.join("src")).expect("mk src");
+        std::fs::write(project_root.join("src/direct.txt"), "new direct\n").expect("new file");
+
+        let diff = direct_write_diff(&project_root).expect("direct diff");
+        assert!(diff.contains("diff --git a/README b/README"));
+        assert!(diff.contains("diff --git a/src/direct.txt b/src/direct.txt"));
+        assert!(diff.contains("+new direct"));
+        let status = git_in(&project_root, &["status", "--porcelain"]).expect("status");
+        assert!(
+            status.contains(" M README") && status.contains("?? src/"),
+            "direct diff must not stage intent-to-add entries: {status}"
+        );
+
+        let _ = std::fs::remove_dir_all(&project_root);
+        let _ = std::fs::remove_dir_all(store.root());
     }
 
     #[test]
@@ -21581,6 +22717,503 @@ new file mode 100644
             "a missing declared artifact must fail the step even when the provider succeeded"
         );
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn workflow_journaling_persists_patch_apply_reject_and_artifact_manifest() {
+        let store = temp_store("patch-artifact");
+        let project_root = init_gc_git_project("patch-artifact", &store);
+        std::fs::create_dir_all(project_root.join("out")).expect("mk out");
+        std::fs::write(project_root.join("out/summary.md"), "artifact").expect("artifact");
+        assert!(Command::new("git")
+            .arg("-C")
+            .arg(&project_root)
+            .args(["add", "-A"])
+            .status()
+            .expect("git add artifact")
+            .success());
+        assert!(Command::new("git")
+            .arg("-C")
+            .arg(&project_root)
+            .args(["commit", "-m", "artifact seed"])
+            .status()
+            .expect("git commit artifact")
+            .success());
+
+        let new_file_diff = |path: &str, content: &str| {
+            format!(
+                "diff --git a/{path} b/{path}\nnew file mode 100644\nindex 0000000..1111111\n--- /dev/null\n+++ b/{path}\n@@ -0,0 +1 @@\n+{content}\n"
+            )
+        };
+        let mk_step = |label: &str, path: &str, content: &str| workflow::StepResult {
+            phase: "develop".into(),
+            label: label.into(),
+            provider: "codex".into(),
+            isolation: Some("worktree".into()),
+            ok: true,
+            provider_session_id: Some(format!("session-{label}")),
+            output_summary: format!("{label} wrote {path}"),
+            step_id: None,
+            started_at: None,
+            details: Some(serde_json::json!({
+                "worktree_diff": new_file_diff(path, content),
+                "persist_changes": "patch",
+                "owned_paths": ["src"],
+            })),
+            structured: None,
+            ordinal: None,
+        };
+        let run = WorkflowRun {
+            id: generated_id("wfrun"),
+            workflow_name: "patch-artifact-test".into(),
+            status: WorkflowRunStatus::Running,
+            step_ids: Vec::new(),
+            created_at: now_string(),
+            ended_at: None,
+            summary: None,
+            args: None,
+            agents_spawned: 0,
+            final_output: None,
+            initiated_by: Some("test".into()),
+            design_intent: Some("test writable patch and artifact manifest path".into()),
+            spec: None,
+            trace_retention: "durable".into(),
+            host_pid: None,
+            dry_run: false,
+            goal_id: None,
+            phase_id: None,
+        };
+        let outcome = workflow::WorkflowOutcome {
+            steps: vec![
+                mk_step("writer", "src/generated.txt", "hello"),
+                mk_step("reject-me", "src/rejected.txt", "bad"),
+            ],
+            status: WorkflowRunStatus::Completed,
+            summary: "patch artifact completed".into(),
+            agents_spawned: 2,
+            final_output: Some(serde_json::json!({
+                "result": null,
+                "steps": [],
+                "logs": [],
+                "patch_actions": [
+                    { "action": "reject", "label": "reject-me", "reason": "review failed" }
+                ],
+                "artifact_manifests": [
+                    { "paths": ["summary.md"], "artifact_root": "out", "write_roots": ["out"] }
+                ],
+                "verdict": { "ok": true, "reason": "test" },
+            })),
+        };
+
+        let value = journal_workflow_outcome(&store, run, &outcome).expect("journal");
+        assert_eq!(value["patches"].as_array().expect("patches").len(), 2);
+        let patches = latest_workflow_patches_in_append_order(&store).expect("patches");
+        let writer = patches
+            .iter()
+            .find(|patch| patch.label == "writer")
+            .expect("writer patch")
+            .clone();
+        assert_eq!(writer.status, WorkflowPatchStatus::PendingApply);
+        let rejected = patches
+            .iter()
+            .find(|patch| patch.label == "reject-me")
+            .expect("reject patch");
+        assert_eq!(rejected.status, WorkflowPatchStatus::Rejected);
+
+        let applied = apply_workflow_patch_record(
+            &store,
+            &writer,
+            Some("test".into()),
+            Some("manual accept".into()),
+            false,
+        )
+        .expect("apply patch");
+        assert_eq!(applied.status, WorkflowPatchStatus::Applied);
+        assert_eq!(
+            std::fs::read_to_string(project_root.join("src/generated.txt")).expect("applied file"),
+            "hello\n"
+        );
+
+        let manifests =
+            latest_workflow_artifact_manifests_in_append_order(&store).expect("manifests");
+        assert_eq!(manifests.len(), 1);
+        assert_eq!(manifests[0].status, WorkflowArtifactManifestStatus::Current);
+        assert_eq!(manifests[0].files[0].path, "out/summary.md");
+
+        let snapshot = dashboard_snapshot(&store).expect("snapshot");
+        assert_eq!(snapshot["workflow_patches"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            snapshot["workflow_artifact_manifests"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+
+        let _ = std::fs::remove_dir_all(&project_root);
+        let _ = std::fs::remove_dir_all(store.root());
+    }
+
+    #[test]
+    fn workflow_journaling_records_direct_diff_without_creating_patch() {
+        let store = temp_store("direct-journal");
+        let project_root = init_gc_git_project("direct-journal", &store);
+        let run = WorkflowRun {
+            id: generated_id("wfrun"),
+            workflow_name: "direct-write-test".into(),
+            status: WorkflowRunStatus::Running,
+            step_ids: Vec::new(),
+            created_at: now_string(),
+            ended_at: None,
+            summary: None,
+            args: None,
+            agents_spawned: 0,
+            final_output: None,
+            initiated_by: Some("test".into()),
+            design_intent: Some("test direct shared-repo write journaling".into()),
+            spec: None,
+            trace_retention: "durable".into(),
+            host_pid: None,
+            dry_run: false,
+            goal_id: None,
+            phase_id: None,
+        };
+        let outcome = workflow::WorkflowOutcome {
+            steps: vec![workflow::StepResult {
+                phase: "develop".into(),
+                label: "direct-writer".into(),
+                provider: "codex".into(),
+                isolation: None,
+                ok: true,
+                provider_session_id: Some("session-direct".into()),
+                output_summary: "direct edit [direct diff: 6 lines]".into(),
+                step_id: None,
+                started_at: None,
+                details: Some(serde_json::json!({
+                    "write_mode": "direct",
+                    "direct_diff": "diff --git a/README b/README\n--- a/README\n+++ b/README\n@@ -1 +1 @@\n-x\n+direct\n",
+                    "persist_changes": "patch",
+                })),
+                structured: None,
+                ordinal: Some(0),
+            }],
+            status: WorkflowRunStatus::Completed,
+            summary: "direct completed".into(),
+            agents_spawned: 1,
+            final_output: Some(serde_json::json!({
+                "result": null,
+                "steps": [],
+                "logs": [],
+                "patch_actions": [],
+                "artifact_manifests": [],
+                "verdict": { "ok": true, "reason": "test" },
+            })),
+        };
+
+        let value = journal_workflow_outcome(&store, run, &outcome).expect("journal");
+        assert!(
+            value["patches"].as_array().expect("patches").is_empty(),
+            "direct shared-repo diffs are evidence, not pending WorkflowPatch rows"
+        );
+        assert!(latest_workflow_patches_in_append_order(&store)
+            .expect("patches")
+            .is_empty());
+        let steps = store.workflow_steps().expect("steps");
+        let result = steps
+            .iter()
+            .find(|step| step.label == "direct-writer")
+            .and_then(|step| step.result.as_ref())
+            .expect("step result");
+        assert_eq!(result["write_mode"], serde_json::json!("direct"));
+        assert!(result["direct_diff"]
+            .as_str()
+            .expect("direct diff")
+            .contains("+direct"));
+
+        let _ = std::fs::remove_dir_all(&project_root);
+        let _ = std::fs::remove_dir_all(store.root());
+    }
+
+    #[test]
+    fn workflow_patch_apply_reject_edge_guards_hold() {
+        let store = temp_store("patch-edges");
+        let project_root = init_gc_git_project("patch-edges", &store);
+        std::fs::create_dir_all(project_root.join("src")).expect("mk src");
+        let patch_dir = store.root().join("workflow-patches").join("wfrun-edges");
+        std::fs::create_dir_all(&patch_dir).expect("mk patch dir");
+        let new_file_diff = |path: &str, content: &str| {
+            format!(
+                "diff --git a/{path} b/{path}\nnew file mode 100644\nindex 0000000..1111111\n--- /dev/null\n+++ b/{path}\n@@ -0,0 +1 @@\n+{content}\n"
+            )
+        };
+        let make_patch = |label: &str,
+                          diff: String,
+                          changed_paths: Vec<&str>,
+                          owned_paths: Vec<&str>|
+         -> WorkflowPatch {
+            let patch_ref = patch_dir.join(format!("{label}.patch"));
+            std::fs::write(&patch_ref, diff).expect("write patch");
+            let patch = WorkflowPatch {
+                id: format!("wfpatch-{label}"),
+                run_id: "wfrun-edges".into(),
+                step_id: format!("wfstep-{label}"),
+                label: label.into(),
+                phase: "develop".into(),
+                provider: "codex".into(),
+                status: WorkflowPatchStatus::PendingApply,
+                changed_paths: changed_paths.into_iter().map(str::to_string).collect(),
+                patch_ref: patch_ref.display().to_string(),
+                base_sha: None,
+                owned_paths: owned_paths.into_iter().map(str::to_string).collect(),
+                persist_changes: Some("patch".into()),
+                created_at: now_string(),
+                updated_at: None,
+                actor: None,
+                reason: None,
+                conflict_detail: None,
+                applied_at: None,
+                rejected_at: None,
+            };
+            store.append_workflow_patch(&patch).expect("append patch");
+            patch
+        };
+        let latest_status = |id: &str| {
+            latest_workflow_patches_in_append_order(&store)
+                .expect("read patches")
+                .into_iter()
+                .find(|patch| patch.id == id)
+                .expect("patch exists")
+                .status
+        };
+
+        let outside = make_patch(
+            "outside",
+            new_file_diff("docs/outside.txt", "outside"),
+            vec!["docs/outside.txt"],
+            vec!["src"],
+        );
+        let err = apply_workflow_patch_record(&store, &outside, Some("test".into()), None, false)
+            .expect_err("owned path violation must fail");
+        assert!(err.to_string().contains("outside owned_paths"));
+        assert_eq!(
+            latest_status(&outside.id),
+            WorkflowPatchStatus::Conflict,
+            "owned-path violations become conflict rows"
+        );
+
+        let rejected_first = make_patch(
+            "reject-first",
+            new_file_diff("src/reject-first.txt", "reject first"),
+            vec!["src/reject-first.txt"],
+            vec!["src"],
+        );
+        let rejected = reject_workflow_patch_record(
+            &store,
+            &rejected_first,
+            Some("test".into()),
+            Some("no".into()),
+        )
+        .expect("reject pending patch");
+        assert_eq!(rejected.status, WorkflowPatchStatus::Rejected);
+        assert!(
+            apply_workflow_patch_record(&store, &rejected, Some("test".into()), None, false)
+                .is_err(),
+            "rejected patches cannot be applied later"
+        );
+
+        let dirty = make_patch(
+            "dirty",
+            new_file_diff("src/dirty.txt", "dirty"),
+            vec!["src/dirty.txt"],
+            vec!["src"],
+        );
+        std::fs::write(project_root.join("untracked.tmp"), "dirty").expect("dirty file");
+        let err = apply_workflow_patch_record(&store, &dirty, Some("test".into()), None, false)
+            .expect_err("dirty worktree must fail without --allow-dirty");
+        assert!(err.to_string().contains("uncommitted changes"));
+        assert_eq!(
+            latest_status(&dirty.id),
+            WorkflowPatchStatus::PendingApply,
+            "dirty-worktree refusal leaves the patch pending for a later apply"
+        );
+        std::fs::remove_file(project_root.join("untracked.tmp")).expect("clean dirty file");
+
+        std::fs::write(project_root.join("src/existing.txt"), "existing\n")
+            .expect("write existing");
+        git_in(&project_root, &["add", "-A"]).expect("add existing");
+        git_in(&project_root, &["commit", "-m", "existing"]).expect("commit existing");
+        let conflict = make_patch(
+            "conflict",
+            new_file_diff("src/existing.txt", "conflict"),
+            vec!["src/existing.txt"],
+            vec!["src"],
+        );
+        assert!(
+            apply_workflow_patch_record(&store, &conflict, Some("test".into()), None, false)
+                .is_err(),
+            "git apply --check conflicts must fail"
+        );
+        assert_eq!(latest_status(&conflict.id), WorkflowPatchStatus::Conflict);
+
+        let good = make_patch(
+            "good",
+            new_file_diff("src/good.txt", "good"),
+            vec!["src/good.txt"],
+            vec!["src"],
+        );
+        let applied = apply_workflow_patch_record(&store, &good, Some("test".into()), None, false)
+            .expect("apply clean patch");
+        assert_eq!(applied.status, WorkflowPatchStatus::Applied);
+        assert!(
+            reject_workflow_patch_record(&store, &applied, Some("test".into()), None).is_err(),
+            "applied patches cannot be rewritten to rejected"
+        );
+
+        let _ = std::fs::remove_dir_all(&project_root);
+        let _ = std::fs::remove_dir_all(store.root());
+    }
+
+    #[test]
+    fn workflow_journaling_skips_discard_and_auto_applies_on_verdict() {
+        let store = temp_store("patch-auto");
+        let project_root = init_gc_git_project("patch-auto", &store);
+        let new_file_diff = |path: &str, content: &str| {
+            format!(
+                "diff --git a/{path} b/{path}\nnew file mode 100644\nindex 0000000..1111111\n--- /dev/null\n+++ b/{path}\n@@ -0,0 +1 @@\n+{content}\n"
+            )
+        };
+        let mk_step =
+            |label: &str, path: &str, persist_changes: &str, auto: bool| workflow::StepResult {
+                phase: "develop".into(),
+                label: label.into(),
+                provider: "codex".into(),
+                isolation: Some("worktree".into()),
+                ok: true,
+                provider_session_id: Some(format!("session-{label}")),
+                output_summary: format!("{label} wrote {path}"),
+                step_id: None,
+                started_at: None,
+                details: Some(serde_json::json!({
+                    "worktree_diff": new_file_diff(path, label),
+                    "persist_changes": persist_changes,
+                    "owned_paths": ["src"],
+                    "auto_apply_on_verdict": auto,
+                })),
+                structured: None,
+                ordinal: None,
+            };
+        let run = WorkflowRun {
+            id: generated_id("wfrun"),
+            workflow_name: "patch-auto-test".into(),
+            status: WorkflowRunStatus::Running,
+            step_ids: Vec::new(),
+            created_at: now_string(),
+            ended_at: None,
+            summary: None,
+            args: None,
+            agents_spawned: 0,
+            final_output: None,
+            initiated_by: Some("test".into()),
+            design_intent: Some("test discard and auto-apply patch behavior".into()),
+            spec: None,
+            trace_retention: "durable".into(),
+            host_pid: None,
+            dry_run: false,
+            goal_id: None,
+            phase_id: None,
+        };
+        let outcome = workflow::WorkflowOutcome {
+            steps: vec![
+                mk_step("discard", "src/discard.txt", "discard", false),
+                mk_step("auto", "src/auto.txt", "patch", true),
+            ],
+            status: WorkflowRunStatus::Completed,
+            summary: "patch auto completed".into(),
+            agents_spawned: 2,
+            final_output: Some(serde_json::json!({
+                "result": null,
+                "steps": [
+                    { "label": "discard", "auto_apply_on_verdict": false },
+                    { "label": "auto", "auto_apply_on_verdict": true }
+                ],
+                "logs": [],
+                "patch_actions": [],
+                "artifact_manifests": [],
+                "verdict": { "ok": true, "reason": "test" },
+            })),
+        };
+
+        journal_workflow_outcome(&store, run, &outcome).expect("journal");
+        let patches = latest_workflow_patches_in_append_order(&store).expect("patches");
+        assert_eq!(patches.len(), 1, "discarded diffs do not create patches");
+        assert_eq!(patches[0].label, "auto");
+        assert_eq!(patches[0].status, WorkflowPatchStatus::Applied);
+        assert_eq!(
+            std::fs::read_to_string(project_root.join("src/auto.txt")).expect("auto file"),
+            "auto\n"
+        );
+        assert!(
+            !project_root.join("src/discard.txt").exists(),
+            "discarded patch never lands"
+        );
+
+        let _ = std::fs::remove_dir_all(&project_root);
+        let _ = std::fs::remove_dir_all(store.root());
+    }
+
+    #[test]
+    fn artifact_manifest_marks_missing_and_stale_outputs() {
+        let store = temp_store("artifact-edges");
+        let project_root = init_gc_git_project("artifact-edges", &store);
+        std::fs::create_dir_all(project_root.join("out")).expect("mk out");
+        std::fs::write(project_root.join("out/summary.md"), "artifact").expect("artifact");
+        std::fs::write(project_root.join("missing.md"), "wrong root").expect("root fallback trap");
+
+        let missing = append_artifact_manifest(
+            &store,
+            "wfrun-artifact-edges",
+            None,
+            Some("missing".into()),
+            Some("out".into()),
+            vec!["out".into()],
+            vec!["missing.md".into()],
+        )
+        .expect("missing manifest");
+        assert_eq!(missing.status, WorkflowArtifactManifestStatus::Missing);
+        assert!(missing.files[0].path.ends_with("out/missing.md"));
+
+        let prefixed = append_artifact_manifest(
+            &store,
+            "wfrun-artifact-edges",
+            None,
+            Some("prefixed".into()),
+            Some("out".into()),
+            vec!["out".into()],
+            vec!["out/summary.md".into()],
+        )
+        .expect("prefixed manifest");
+        assert_eq!(prefixed.status, WorkflowArtifactManifestStatus::Current);
+        assert_eq!(prefixed.files[0].path, "out/summary.md");
+
+        let stale = append_artifact_manifest(
+            &store,
+            "wfrun-artifact-edges",
+            None,
+            Some("stale".into()),
+            Some("out".into()),
+            vec!["reports".into()],
+            vec!["summary.md".into()],
+        )
+        .expect("stale manifest");
+        assert_eq!(stale.status, WorkflowArtifactManifestStatus::Stale);
+        assert_eq!(stale.files[0].path, "out/summary.md");
+        assert!(stale
+            .reason
+            .unwrap_or_default()
+            .contains("outside write_roots"));
+
+        let _ = std::fs::remove_dir_all(&project_root);
+        let _ = std::fs::remove_dir_all(store.root());
     }
 
     #[test]
@@ -21645,6 +23278,89 @@ new file mode 100644
         assert_eq!(ctx.store_root, store.root());
         assert!(!ctx.is_git_repo);
         let _ = std::fs::remove_dir_all(&project_root);
+    }
+
+    #[test]
+    fn workflow_child_store_guard_isolates_nested_harness_by_default() {
+        let session_dir =
+            std::env::temp_dir().join(format!("harness-child-env-{}", generated_id("guard")));
+        let mut cmd = Command::new("harness");
+        cmd.env("HARNESS_PROJECT", "real-project");
+
+        apply_workflow_child_store_guard(&mut cmd, &session_dir, false);
+
+        let envs: BTreeMap<String, Option<String>> = cmd
+            .get_envs()
+            .map(|(key, value)| {
+                (
+                    key.to_string_lossy().to_string(),
+                    value.map(|v| v.to_string_lossy().to_string()),
+                )
+            })
+            .collect();
+
+        assert_eq!(
+            envs.get(HARNESS_WORKFLOW_CHILD_STORE_ROOT_ENV)
+                .cloned()
+                .flatten(),
+            Some(
+                workflow_child_store_root(&session_dir)
+                    .to_string_lossy()
+                    .to_string()
+            )
+        );
+        assert_eq!(
+            envs.get("HARNESS_HOME").cloned().flatten(),
+            Some(
+                workflow_child_harness_home(&session_dir)
+                    .to_string_lossy()
+                    .to_string()
+            )
+        );
+        assert_eq!(
+            envs.get("HARNESS_WORKFLOW_STORE_GUARD")
+                .and_then(|v| v.as_deref()),
+            Some("isolated")
+        );
+        assert!(
+            matches!(envs.get("HARNESS_PROJECT"), Some(None)),
+            "project selector must be removed so the child store guard wins"
+        );
+    }
+
+    #[test]
+    fn workflow_child_store_guard_respects_explicit_store_mutation_opt_in() {
+        let session_dir =
+            std::env::temp_dir().join(format!("harness-child-env-{}", generated_id("allow")));
+        let mut cmd = Command::new("harness");
+        cmd.env("HARNESS_PROJECT", "real-project");
+
+        apply_workflow_child_store_guard(&mut cmd, &session_dir, true);
+
+        let envs: BTreeMap<String, Option<String>> = cmd
+            .get_envs()
+            .map(|(key, value)| {
+                (
+                    key.to_string_lossy().to_string(),
+                    value.map(|v| v.to_string_lossy().to_string()),
+                )
+            })
+            .collect();
+
+        assert!(
+            !envs.contains_key(HARNESS_WORKFLOW_CHILD_STORE_ROOT_ENV),
+            "explicit opt-in must not inject the child store override"
+        );
+        assert_eq!(
+            envs.get("HARNESS_PROJECT").and_then(|v| v.as_deref()),
+            Some("real-project")
+        );
+        assert_eq!(
+            envs.get("HARNESS_PARENT_WORKFLOW_SESSION_DIR")
+                .cloned()
+                .flatten(),
+            Some(session_dir.to_string_lossy().to_string())
+        );
     }
 
     #[test]
@@ -22735,6 +24451,14 @@ mod tests {
     fn generated_ids_are_unique_inside_one_exchange() {
         let ids: BTreeSet<_> = (0..64).map(|_| generated_id("rpc")).collect();
         assert_eq!(ids.len(), 64);
+    }
+
+    #[test]
+    fn generated_ids_do_not_collide_across_processes_with_same_millis_and_counter() {
+        let left = generated_id_from_parts("rpc", 1_782_832_612_114, 1001, 0);
+        let right = generated_id_from_parts("rpc", 1_782_832_612_114, 1002, 0);
+
+        assert_ne!(left, right);
     }
 
     #[test]
@@ -25066,6 +26790,83 @@ mod tests {
     }
 
     #[test]
+    fn review_gate_accepts_typed_goal_design() {
+        let root = std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("store")));
+        let store = HarnessStore::new(&root);
+        let goal = make_goal("goal-1");
+        let task = make_task("task-1", "goal-1");
+        store.append_goal(&goal).expect("append goal");
+        store.append_task(&task).expect("append task");
+        store
+            .append_goal_design(&GoalDesign {
+                id: "design-1".into(),
+                goal_id: "goal-1".into(),
+                scenario_summary: "Typed design gates review.".into(),
+                non_goals: vec![],
+                risk_and_permission_boundaries: "Test only.".into(),
+                required_infra: vec![],
+                agent_team: Some("Lead + Critic".into()),
+                task_graph: vec!["task-1".into()],
+                evidence_plan: vec!["review gate".into()],
+                acceptance_gates: vec!["accept".into()],
+                created_at: "unix-ms:100".into(),
+            })
+            .expect("append typed design");
+        store
+            .append_message(&make_timed_message(
+                "assign",
+                MessageKind::Task,
+                "leader",
+                Some("worker"),
+                "task-1",
+                "unix-ms:110",
+            ))
+            .expect("append assignment");
+        store
+            .append_message(&make_timed_message(
+                "report",
+                MessageKind::Report,
+                "worker",
+                Some("leader"),
+                "task-1",
+                "unix-ms:120",
+            ))
+            .expect("append report");
+        for evidence in [
+            make_timed_evidence("check", "check_passed", Some("task-1"), "unix-ms:121"),
+            make_timed_evidence("critic", "critic_findings", Some("task-1"), "unix-ms:122"),
+            make_timed_evidence("worker", "worker_report", Some("task-1"), "unix-ms:123"),
+        ] {
+            store.append_evidence(&evidence).expect("append evidence");
+        }
+        store
+            .append_proposal(&make_proposal("proposal-1", "task-1"))
+            .expect("append proposal");
+
+        let args = strings(&[
+            "gate",
+            "--task",
+            "task-1",
+            "--reviewer",
+            "critic",
+            "--decision",
+            "accept",
+            "--rationale",
+            "test",
+            "--evidence",
+            "check",
+            "--evidence",
+            "critic",
+            "--evidence",
+            "worker",
+        ]);
+        review_gate(&store, &args).expect("typed GoalDesign must satisfy review gate");
+        let latest = latest_task(&store, "task-1").expect("latest task");
+        assert_eq!(latest.status, TaskStatus::Done);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn review_create_persists_structured_verdict() {
         let root = std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("store")));
         let store = HarnessStore::new(&root);
@@ -25161,6 +26962,130 @@ mod tests {
         ]);
         let error = task_command(&store, &args).expect_err("bare waiver flag must fail");
         assert!(error.to_string().contains("--waiver-decision"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task_assign_accepts_typed_goal_design() {
+        let root = std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("store")));
+        let store = HarnessStore::new(&root);
+        let goal = make_goal("goal-1");
+        let task = make_task("task-1", "goal-1");
+        store.append_goal(&goal).expect("append goal");
+        store.append_task(&task).expect("append task");
+        store
+            .append_goal_design(&GoalDesign {
+                id: "design-1".into(),
+                goal_id: "goal-1".into(),
+                scenario_summary: "Urgent local work is still designed.".into(),
+                non_goals: vec!["No broad refactor.".into()],
+                risk_and_permission_boundaries: "Lead-local change with review gate.".into(),
+                required_infra: vec![],
+                agent_team: Some("Lead + Critic".into()),
+                task_graph: vec!["task-1".into()],
+                evidence_plan: vec!["focused regression".into()],
+                acceptance_gates: vec!["task assign succeeds".into()],
+                created_at: "unix-ms:5".into(),
+            })
+            .expect("append typed design");
+
+        let args = strings(&["assign", "--id", "task-1", "--assignee", "worker"]);
+        task_command(&store, &args).expect("typed goal design must satisfy assignment gate");
+
+        let latest = latest_task(&store, "task-1").expect("latest task");
+        assert_eq!(latest.status, TaskStatus::Assigned);
+        assert_eq!(latest.assignee_agent_id.as_deref(), Some("worker"));
+        let assignment_messages: Vec<_> = store
+            .messages()
+            .expect("messages")
+            .into_iter()
+            .filter(|message| {
+                message.task_id.as_deref() == Some("task-1") && message.kind == MessageKind::Task
+            })
+            .collect();
+        assert_eq!(assignment_messages.len(), 1);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task_assign_accepts_goal_scoped_goal_design_evidence() {
+        let root = std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("store")));
+        let store = HarnessStore::new(&root);
+        let goal = make_goal("goal-1");
+        let task = make_task("task-1", "goal-1");
+        store.append_goal(&goal).expect("append goal");
+        store.append_task(&task).expect("append task");
+        let mut design = make_timed_evidence("design", "goal_design", None, "unix-ms:5");
+        design.goal_id = Some("goal-1".into());
+        store
+            .append_evidence(&design)
+            .expect("append goal-scoped design");
+
+        let args = strings(&["assign", "--id", "task-1", "--assignee", "worker"]);
+        task_command(&store, &args).expect("goal-scoped goal_design must satisfy assignment gate");
+
+        let latest = latest_task(&store, "task-1").expect("latest task");
+        assert_eq!(latest.status, TaskStatus::Assigned);
+        assert_eq!(latest.assignee_agent_id.as_deref(), Some("worker"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task_assign_accepts_valid_design_stage_waiver() {
+        let root = std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("store")));
+        let store = HarnessStore::new(&root);
+        let goal = make_goal("goal-1");
+        let task = make_task("task-1", "goal-1");
+        let follow_up = make_task("follow-up-task", "goal-1");
+        store.append_goal(&goal).expect("append goal");
+        store.append_task(&task).expect("append task");
+        store
+            .append_task(&follow_up)
+            .expect("append follow-up task");
+        store
+            .append_evidence(&Evidence {
+                id: "waiver-evidence".into(),
+                task_id: Some("task-1".into()),
+                source_type: "worker_report".into(),
+                source_ref: std::env::temp_dir().display().to_string(),
+                summary: "urgent local waiver evidence".into(),
+                created_at: "unix-ms:100".into(),
+                evidence_kind: None,
+                goal_id: None,
+            })
+            .expect("append evidence");
+        store
+            .append_decision(&Decision {
+                id: "design-waiver".into(),
+                task_id: "task-1".into(),
+                decision: "waiver".into(),
+                rationale:
+                    "stage waiver for urgent work; follow-up task follow-up-task will add GoalDesign evidence"
+                        .into(),
+                evidence_ids: vec!["waiver-evidence".into()],
+                created_at: "unix-ms:110".into(),
+                decision_kind: Some("waiver".into()),
+                goal_id: None,
+                is_waiver: true,
+                follow_up_task_id: Some("follow-up-task".into()),
+            })
+            .expect("append waiver decision");
+
+        let args = strings(&[
+            "assign",
+            "--id",
+            "task-1",
+            "--assignee",
+            "worker",
+            "--allow-missing-goal-design",
+            "--waiver-decision",
+            "design-waiver",
+        ]);
+        task_command(&store, &args).expect("valid waiver must satisfy assignment gate");
+
+        let latest = latest_task(&store, "task-1").expect("latest task");
+        assert_eq!(latest.status, TaskStatus::Assigned);
+        assert_eq!(latest.assignee_agent_id.as_deref(), Some("worker"));
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -25546,30 +27471,6 @@ verdict(True, "ok")
         }
     }
 
-    fn orch_workflow_phase(id: &str, workflow_ref: &str) -> harness_core::GoalPhase {
-        let mut phase = orch_phase(id);
-        phase.execution_mode = harness_core::PhaseExecutionMode::Workflow;
-        phase.workflow_ref = Some(workflow_ref.into());
-        phase
-    }
-
-    fn write_test_workflow(repo_root: &Path, rel: &str) {
-        let path = repo_root.join(rel);
-        fs::create_dir_all(path.parent().expect("workflow parent")).expect("mkdir workflow parent");
-        fs::write(
-            path,
-            r#"workflow(
-    "custom-phase",
-    "Direct workflow-mode GoalPhase fixture for orchestration acceptance.",
-)
-log("custom workflow-mode GoalPhase fixture started")
-output({"accepted": True, "surface": "goal-phase-workflow"})
-verdict(True, "custom workflow-mode phase direct run accepted")
-"#,
-        )
-        .expect("write workflow fixture");
-    }
-
     /// Init a real git repo at `dir` with one seed commit so `git apply` + commit
     /// (the durable-landing path) and `git worktree add HEAD` both work in tests.
     fn init_git_repo(dir: &Path) {
@@ -25654,6 +27555,30 @@ verdict(True, "custom workflow-mode phase direct run accepted")
         _knowledge: &Knowledge,
     ) -> CliResult<serde_json::Value> {
         Ok(serde_json::json!({ "revision": { "supersede": [], "new_tasks": [] } }))
+    }
+
+    fn orch_workflow_phase(id: &str, workflow_ref: &str) -> harness_core::GoalPhase {
+        let mut phase = orch_phase(id);
+        phase.execution_mode = harness_core::PhaseExecutionMode::Workflow;
+        phase.workflow_ref = Some(workflow_ref.into());
+        phase
+    }
+
+    fn write_test_workflow(repo_root: &Path, rel: &str) {
+        let path = repo_root.join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).expect("workflow parent dir");
+        std::fs::write(
+            path,
+            r#"workflow(
+    "custom-phase",
+    "Direct workflow-mode GoalPhase fixture for orchestration acceptance.",
+)
+log("custom workflow-mode GoalPhase fixture started")
+output({"accepted": True, "surface": "goal-phase-workflow"})
+verdict(True, "custom workflow-mode phase direct run accepted")
+"#,
+        )
+        .expect("write workflow");
     }
 
     #[test]
@@ -27893,7 +29818,6 @@ verdict(True, "custom workflow-mode phase direct run accepted")
                 }
             ]
         });
-
         let result = plan_into_goal(&store, &mut goal, &structured, "leader").expect("plan");
         assert_eq!(result.phases_added, vec!["direct-workflow"]);
         assert!(result.tasks_created.is_empty());
