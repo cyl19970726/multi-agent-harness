@@ -51,6 +51,19 @@ Existing built-in building phases remain compatible: old records with
 `kind=Building` and `builtin=<id>` can still compile even if they do not have a
 new `workflow_ref` field.
 
+## Consequences
+
+Because both modes run under the same `goal run-phases` orchestrator, both are
+ORCHESTRATED runs with one landing authority: per-phase landing. Neither mode
+persists `WorkflowPatch` rows; an authored `workflow`-mode script's
+`apply_patch()` is journaled intent only, and `reject_patch()` /
+`persist_changes="discard"` exclude a step's diff from the phase's landing
+commit. The verdict gate is also per-mode: `task_graph` phases keep the strict
+"every step `ok`" clause, while `workflow`-mode phases gate on the run's own
+`Completed` status plus required artifacts, so an authored script that
+deliberately tolerates a failed leaf (retry/fallback via `return_status=True`)
+is not wrongly failed by the phase gate.
+
 ## Validation
 
 - `cargo check -p harness-core -p harness-cli`

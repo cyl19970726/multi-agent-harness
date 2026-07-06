@@ -5,6 +5,12 @@
 # leave it pending for manual `workflow patch show`. The CLI performs apply/reject
 # after the run journals patch rows; no action means the patch remains pending.
 #
+# This standalone-run shape assumes no orchestration. Under `goal run-phases`
+# (this script attached to a workflow-mode phase via workflow_ref), no
+# WorkflowPatch rows are created at all: apply_patch()/reject_patch() become
+# landing INTENTS (apply = no-op beyond the audit trail, reject = exclude this
+# step's diff), and phase landing is the sole landing authority.
+#
 # Run:
 #   harness workflow run-script ./patch-review-apply.star \
 #     --args '{"task":"add focused behavior X","owned_paths":["src","tests"],"gate":"cargo test -q"}'

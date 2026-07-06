@@ -147,7 +147,7 @@ A program calls these globals (no `import`; they are pre-bound):
 | `agent(prompt, provider="codex", label=, phase=, model=, effort=, service_tier=, fallback_model=, timeout_s=, image=, add_dir=, expected_artifacts=, persist_changes=, write_mode=, owned_paths=, artifact_root=, write_roots=, auto_apply_on_verdict=False, isolation=, schema=, return_status=False, writable=False)` | output text, dict, or status dict | Run ONE ephemeral worker synchronously. `prompt` is positional; the rest are keyword args. `model=` overrides the provider default model; `effort=` overrides reasoning effort (see the rules below); `service_tier=` overrides the Codex CLI service tier for this leaf; `fallback_model=` sets a provider fallback model when supported; `timeout_s=` is a per-leaf wall-clock cap in seconds; `image=` is a list of image file paths; `add_dir=` is a list of extra directory paths; `expected_artifacts=` is a list of repo-relative output files to assert and copy back; `persist_changes="discard"` opts out of default patch capture; `write_mode="direct"` makes a simple serial writable leaf edit the selected repo directly; `owned_paths=` guards patch apply. READ-ONLY by default; `writable=True` lets it edit / run shell AND normally auto-isolates it into a throwaway worktree. With `schema={...}` it returns a parsed dict (or `None`). With `return_status=True`, it returns an inspectable status dict instead — see [Error Tolerance](#error-tolerance). |
 | `parallel([dict, ...])` | list (input order) | Barrier fan-out: run every spec concurrently, block until ALL finish. Each element is the parsed dict (if that spec had a `schema` that parsed), a status dict (if `return_status=True`), else its output string. Each dict needs a `prompt` and may set `provider` (default `"codex"`), `label`, `phase`, `model`, `effort`, `service_tier`, `fallback_model`, `timeout_s`, `image`, `add_dir`, `expected_artifacts`, `persist_changes`, `owned_paths`, `artifact_root`, `write_roots`, `auto_apply_on_verdict`, `isolation`, `schema`, `return_status`, `writable`. `write_mode="direct"` is rejected here; use worktree isolation for concurrent edits. |
 | `pipeline(items, stages)` | list (one per item) | No-barrier streaming: each item flows through every stage independently. `stages` is a list of dicts `{prompt, provider?, label?, phase?, model?, effort?, service_tier?, fallback_model?, timeout_s?, image?, add_dir?, expected_artifacts?, persist_changes?, owned_paths?, artifact_root?, write_roots?, auto_apply_on_verdict?, isolation?, schema?, return_status?, writable?}` (or pass the stages as positional args: `pipeline(items, s1, s2)`) whose `prompt` is a TEMPLATE containing `{input}` — replaced with the item for stage 1, then the prior stage's output for each next stage (forward-injection). Returns each item's LAST stage result. `write_mode="direct"` is rejected here; keep pipeline stages read-only or worktree-isolated. |
-| `apply_patch(label, reason="")` / `reject_patch(label, reason="")` | — | Declare a workflow-internal decision over a captured patch. The CLI applies/rejects after the run journals durable `WorkflowPatch` rows, with the same guards as manual `workflow patch apply/reject`. |
+| `apply_patch(label, reason="")` / `reject_patch(label, reason="")` | — | Declare a workflow-internal decision over a captured patch. For a STANDALONE `run-script`, the CLI applies/rejects after the run journals durable `WorkflowPatch` rows, with the same guards as manual `workflow patch apply/reject`. Under `goal run-phases` (an orchestrated run), no `WorkflowPatch` rows exist to mutate: `apply_patch` is journaled as intent only (phase landing is the landing authority, [see below](#goal-layer-workflow-mode-goalphases)), and `reject_patch` excludes that step's diff from the phase's landing commit. |
 | `artifact_manifest(paths, label=, artifact_root=, write_roots=)` | — | Declare durable artifact files to validate into `WorkflowArtifactManifest` rows with exists/size/hash/status. |
 | `verdict(ok, reason="")` | — | Declare the run's TYPED outcome. `reason` may be positional or keyword (`verdict(ok, "why")` ≡ `verdict(ok, reason="why")`). `ok=False` finalizes the run `Failed` even if every worker ran — so "workers ran" ≠ "intent satisfied". A closed-loop program's final gate calls this. |
 | `output(value)` | — | Declare the run's RESULT — the one unambiguous answer the calling agent reads back. `value` (a string or dict) is persisted verbatim under `final_output.result`, UNCAPPED, so the caller reads one field instead of digging the answer out of a step by label. Last call wins; pass a `schema`'d dict when you want the answer typed (a free-text `agent()` return is the worker's FULL reply — not truncated). |
@@ -198,7 +198,16 @@ Rules every call obeys:
 - `persist_changes` controls writable diffs: the default saves non-empty diffs as
   pending `WorkflowPatch` rows; set `persist_changes="discard"` only when the diff
   is intentionally throwaway. Use `owned_paths=["src", "docs"]` on code-writing
-  leaves so patch apply can reject path escapes.
+  leaves so patch apply can reject path escapes. Patch capture only happens for a
+  step that both SUCCEEDED (`ok`) and was declared `writable=True` — a failed
+  leaf's diff is discarded, and a read-only leaf that was worktree-isolated
+  because its provider can't enforce read-only (the Kimi case; see
+  [Workspace: read-only by default](#workspace-read-only-by-default-writabletrue-to-edit))
+  never produces a patch even though it ran in a worktree. Starlark validation
+  rejects `auto_apply_on_verdict=True` or `persist_changes="patch"` on a
+  `writable=False` leaf, and rejects any `persist_changes` other than
+  `"patch"`/`"discard"` or `write_mode` other than `"direct"`/absent, in
+  `agent()`, `parallel()`, and `pipeline()` specs alike.
 - `write_mode="direct"` is the explicit escape hatch for a simple SERIAL edit that
   should modify the selected project root immediately. It requires
   `writable=True`, a git-backed clean repo, and cannot be used in `parallel()` /
@@ -360,7 +369,10 @@ else:
 
 Manual operator path: `harness workflow patch list`, `harness workflow patch show
 <run_id> --step implement`, then `harness workflow patch apply <run_id> --step
-implement` or `harness workflow patch reject <run_id> --step implement`.
+implement` or `harness workflow patch reject <run_id> --step implement`. Without
+`--allow-dirty`, apply refuses only when a path THIS patch touches already has
+local modifications (or a to-be-created file already exists untracked) —
+unrelated dirty/untracked files elsewhere in the repo no longer block it.
 
 If the workflow-internal reviewer cannot see enough real evidence in the worker's
 structured report, do not call `apply_patch()`; leave the patch pending for manual
@@ -423,6 +435,27 @@ The landing distinction still matters: standalone `run-script` creates pending
 patches that need explicit apply/reject, but under the goal layer a passing phase's
 writable diffs LAND on the branch via a per-phase landing commit. So the trap —
 "writable edits always vanish" — does not apply to phased goal execution.
+
+Any run `goal run-phases` executes — task-graph or workflow-mode — is an
+ORCHESTRATED run with a single landing authority: per-phase landing. It persists
+NO `WorkflowPatch` rows at all. `apply_patch(label, reason)` in an authored
+workflow-mode script performs no tree mutation there — it is journaled as intent
+only ("phase landing is the landing authority"), a no-op beyond the audit trail.
+`reject_patch(label, reason)` DOES have an effect: it excludes that step's diff
+from the phase's landing commit, same as a step that set
+`persist_changes="discard"`. Landing lands every other non-empty writable diff in
+one per-phase commit, same as before.
+
+The verdict gate is also per-mode. A task-graph phase keeps the strict clause
+"every task step `ok` is true" — a bare compiled `parallel()` has no `verdict()`,
+so a failed task inside it must fail the phase some other way. A workflow-mode
+phase instead trusts the run's own status: it passes when
+`run.status == Completed` and every required artifact is satisfied, full stop —
+it does NOT require every step to have succeeded. This lets an authored script
+legitimately tolerate a failed leaf (retry/fallback via `return_status=True`,
+landing a `verdict(True)` despite one journaled `ok=false` step — see
+[Error Tolerance](#error-tolerance)) without the phase gate second-guessing the
+script's own verdict.
 
 ## Structured Output: the foundation
 

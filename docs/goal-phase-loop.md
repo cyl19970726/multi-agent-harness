@@ -126,22 +126,24 @@ The CLI accepts `--max-phase-retries <n>` (default 1) and `--dry-run` (`main.rs:
 
 ## 6. Verdict gate
 
-A phase passes only when all of the following hold (`main.rs:2439-2441`):
+A phase passes only when all of the following hold (`main.rs:2439-2441`), and the gate is now **per execution mode** (the `let gate_passed = if effective_phase_execution_mode(...)` site in `main.rs`):
 
 1. The workflow run status is `Completed`.
-2. Every task step `ok` is true.
+2. Every task step `ok` is true. **This clause applies to `task_graph` phases only.** A bare compiled `parallel()` block has no `verdict()`, so a failed task inside it must be caught this way.
 3. Every required artifact (phase + live task `outputs`) is satisfied (`main.rs:2432-2433`, `unmet_required_artifacts` at `main.rs:1932`).
 4. Every required `RegisteredDoc` is present in `docs/registry.json` (`main.rs:2438`, `unmet_registered_docs` at `main.rs:1990`).
 
-If `phase.acceptance` is set, the compiled judge leaf returns structured `{"pass": bool, "reason": string}` and `verdict(...)` hard-gates the phase (`lib.rs:901-918`). If no acceptance is set, clauses 1–3 above form the gate.
+A `workflow`-mode phase gates on clauses 1, 3, and 4 only — it trusts the run's own status and verdict rather than requiring every step to be `ok`. An authored Starlark program can legitimately tolerate a failed leaf (e.g. `return_status=True` plus a retry/fallback that still reaches `verdict(True)`, per `skills/author-workflow/examples/failure-aware-retry.star`); the run still finalizes `Completed` even though one journaled step is `ok=false`, and that tolerated failure must not fail the phase. A `task_graph` phase keeps the strict all-steps-`ok` clause.
+
+If `phase.acceptance` is set, the compiled judge leaf returns structured `{"pass": bool, "reason": string}` and `verdict(...)` hard-gates the phase (`lib.rs:901-918`). If no acceptance is set, the applicable clauses above form the gate.
 
 The orchestrator records the verdict as a `Decision` with `decision_kind = "phase_verdict"` and points `GoalPhase.verdict_decision_id` at it (`main.rs:2493-2509`). This is the durable acceptance record for the phase.
 
 ## 7. Per-phase landing
 
-A passing phase lands its writable work onto the goal branch via `land_phase_diffs` (`main.rs:2119`):
+A passing phase lands its writable work onto the goal branch via `land_phase_diffs` (`main.rs:2119`). This is the phase's **single landing authority**: every `goal run-phases` run — task-graph or workflow-mode — is stamped `orchestrated: true` (`is_orchestrated_run`) and persists NO `WorkflowPatch` rows; `land_phase_diffs` applies the diffs directly out of the run's own outcome.
 
-1. Collects non-empty worktree diffs from task steps in deterministic order (by leaf `ordinal`, then journaled index) (`main.rs:2126-2136`).
+1. Collects non-empty worktree diffs from task steps in deterministic order (by leaf `ordinal`, then journaled index) (`main.rs:2126-2136`), **skipping** a step's diff when the workflow called `reject_patch(label, ...)` on it (`workflow_rejected_labels`, read from `final_output.patch_actions`) or when the leaf declared `persist_changes="discard"` (`step_discards_changes`). An in-script `apply_patch(label, ...)` call needs no special casing — apply is the default, so landing lands that step's diff same as any other non-excluded step.
 2. Refuses to start unless the repo index and working tree are clean, so unrelated pre-staged work is not swept into the phase commit (`main.rs:2152-2162`).
 3. Applies each diff with `git apply --index` (`main.rs:2173-2206`). A failed apply rolls back to the pre-landing HEAD with `git reset --hard` and converts the pass into a clean failure (`main.rs:2193-2204`).
 4. Makes one commit: `"phase <id> landed (run-phases)"` (`main.rs:2212-2218`).

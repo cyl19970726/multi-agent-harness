@@ -2,7 +2,9 @@
 #
 # The same Starlark runtime powers both surfaces, but landing differs:
 # standalone run-script preserves writable diffs as pending WorkflowPatch rows;
-# goal run-phases lands passing phase diffs via a per-phase commit.
+# goal run-phases persists NO WorkflowPatch rows and lands passing phase diffs
+# directly via a per-phase commit — the single landing authority for any
+# orchestrated run (task-graph or workflow-mode).
 #
 # Run:
 #   harness workflow run-script ./landing-mode-chooser.star \

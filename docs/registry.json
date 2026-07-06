@@ -459,7 +459,7 @@
         "check-doc-links",
         "check-doc-governance"
       ],
-      "reviewAfter": "2026-06-26",
+      "reviewAfter": "2026-08-03",
       "lastVerifiedWith": [
         "npx pnpm@9.15.4 check"
       ],
@@ -518,7 +518,7 @@
         "check-doc-links",
         "check-doc-governance"
       ],
-      "reviewAfter": "2026-06-26",
+      "reviewAfter": "2026-08-03",
       "lastVerifiedWith": [
         "npx pnpm@9.15.4 check"
       ],
@@ -551,7 +551,7 @@
         "check-doc-links",
         "check-doc-governance"
       ],
-      "reviewAfter": "2026-06-26",
+      "reviewAfter": "2026-08-03",
       "lastVerifiedWith": [
         "npx pnpm@9.15.4 check"
       ],
@@ -1035,7 +1035,7 @@
         "check-doc-links",
         "check-doc-governance"
       ],
-      "reviewAfter": "2026-06-26",
+      "reviewAfter": "2026-08-03",
       "lastVerifiedWith": [
         "npx pnpm@9.15.4 check"
       ],
@@ -1044,7 +1044,7 @@
     {
       "path": "docs/dashboard/pages/goal.md",
       "ownerRole": "product-design",
-      "status": "active",
+      "status": "stable",
       "lifecycle": "volatile",
       "canonicalFor": [
         "Goal Workbench page contract",
