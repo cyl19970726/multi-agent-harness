@@ -384,15 +384,18 @@
         "docs/agent-control-plane.md",
         "docs/integration/README.md",
         "docs/integration/claude.md",
-        "docs/schemas.md"
+        "docs/schemas.md",
+        "docs/integration/kimi.md",
+        "crates/harness-cli/src/sse.rs"
       ],
       "machineConsumers": [
         "check-doc-links",
         "check-doc-governance"
       ],
-      "reviewAfter": "2026-06-26",
+      "reviewAfter": "2026-08-03",
       "lastVerifiedWith": [
-        "npx pnpm@9.15.4 check"
+        "npx pnpm@9.15.4 check",
+        "harness governance check"
       ],
       "reorgTrigger": "Provider-neutral runtime, message delivery, queue policy, or provider interface changes."
     },
@@ -421,15 +424,17 @@
         "docs/dashboard/read-model.md",
         "docs/dashboard/acceptance.md",
         "docs/dashboard/runbook.md",
-        "docs/dashboard/pages/README.md"
+        "docs/dashboard/pages/README.md",
+        "apps/agent-dashboard/src/app/selection.ts"
       ],
       "machineConsumers": [
         "check-doc-links",
         "check-doc-governance"
       ],
-      "reviewAfter": "2026-06-26",
+      "reviewAfter": "2026-08-03",
       "lastVerifiedWith": [
-        "npx pnpm@9.15.4 check"
+        "npx pnpm@9.15.4 check",
+        "harness governance check"
       ],
       "reorgTrigger": "Workbench views, read models, safe actions, or workflow visibility requirements change."
     },
@@ -482,15 +487,17 @@
         "docs/dashboard.md",
         "docs/agent-control-plane.md",
         "docs/workflow-git-pr.md",
-        "docs/goal-learning-loop.md"
+        "docs/goal-learning-loop.md",
+        "docs/dashboard/work-board-design.md"
       ],
       "machineConsumers": [
         "check-doc-links",
         "check-doc-governance"
       ],
-      "reviewAfter": "2026-06-26",
+      "reviewAfter": "2026-08-03",
       "lastVerifiedWith": [
-        "npx pnpm@9.15.4 check"
+        "npx pnpm@9.15.4 check",
+        "harness governance check"
       ],
       "reorgTrigger": "Workbench frontend principles, graph/Kanban policy, or AgentTeam/AgentMember UI doctrine changes."
     },
@@ -603,15 +610,18 @@
         "docs/dashboard/acceptance.md",
         "docs/decisions/0014-react-vite-agent-dashboard.md",
         "apps/agent-dashboard/vite.config.ts",
-        "apps/agent-dashboard/src/types.ts"
+        "apps/agent-dashboard/src/types.ts",
+        "docs/decisions/0016-tailwind-shadcn-adoption.md",
+        "package.json"
       ],
       "machineConsumers": [
         "check-doc-links",
         "check-doc-governance"
       ],
-      "reviewAfter": "2026-06-26",
+      "reviewAfter": "2026-08-03",
       "lastVerifiedWith": [
-        "npx pnpm@9.15.4 check"
+        "npx pnpm@9.15.4 check",
+        "harness governance check"
       ],
       "reorgTrigger": "Frontend stack, dependency policy, primitive boundaries, graph strategy, or old-code disposition changes."
     },
@@ -631,15 +641,18 @@
         "docs/dashboard/design-principles.md",
         "docs/dashboard/frontend-architecture.md",
         "docs/data-model.md",
-        "apps/agent-dashboard/src/types.ts"
+        "apps/agent-dashboard/src/types.ts",
+        "apps/agent-dashboard/src/model/warnings.ts",
+        "apps/agent-dashboard/src/model/readModel.ts"
       ],
       "machineConsumers": [
         "check-doc-links",
         "check-doc-governance"
       ],
-      "reviewAfter": "2026-06-26",
+      "reviewAfter": "2026-08-03",
       "lastVerifiedWith": [
-        "npx pnpm@9.15.4 check"
+        "npx pnpm@9.15.4 check",
+        "harness governance check"
       ],
       "reorgTrigger": "Workbench warning logic, read-model selectors, or canonical promotion rules change."
     },
@@ -667,9 +680,10 @@
         "check-doc-links",
         "check-doc-governance"
       ],
-      "reviewAfter": "2026-06-26",
+      "reviewAfter": "2026-08-03",
       "lastVerifiedWith": [
-        "npx pnpm@9.15.4 check"
+        "npx pnpm@9.15.4 check",
+        "harness governance check"
       ],
       "reorgTrigger": "Browser evidence, PM/User subagent gates, screenshot policy, rejected implementation rules, or web-quality acceptance changes."
     },
@@ -691,15 +705,18 @@
         "docs/dashboard/frontend-architecture.md",
         "docs/dashboard/acceptance.md",
         "apps/agent-dashboard/vite.config.ts",
-        "package.json"
+        "package.json",
+        "apps/agent-dashboard/src/api.ts",
+        "apps/agent-dashboard/src/api/actions.ts"
       ],
       "machineConsumers": [
         "check-doc-links",
         "check-doc-governance"
       ],
-      "reviewAfter": "2026-06-26",
+      "reviewAfter": "2026-08-03",
       "lastVerifiedWith": [
-        "npx pnpm@9.15.4 check"
+        "npx pnpm@9.15.4 check",
+        "harness governance check"
       ],
       "reorgTrigger": "Workbench run commands, API port, build output, or static artifact workflow changes."
     },
@@ -718,15 +735,18 @@
         "docs/concept-model.md",
         "docs/data-model.md",
         "docs/architecture.md",
-        "docs/decisions/README.md"
+        "docs/decisions/README.md",
+        "docs/goal-phase-loop.md",
+        "docs/workflow-runtime.md"
       ],
       "machineConsumers": [
         "check-doc-links",
         "check-doc-governance"
       ],
-      "reviewAfter": "2026-06-26",
+      "reviewAfter": "2026-08-03",
       "lastVerifiedWith": [
-        "npx pnpm@9.15.4 check"
+        "npx pnpm@9.15.4 check",
+        "harness governance check"
       ],
       "reorgTrigger": "Task concurrency, worktree, PR, proposal, review, or decision workflow changes."
     },
@@ -757,10 +777,11 @@
         "check-doc-links",
         "check-doc-governance"
       ],
-      "reviewAfter": "2026-06-26",
+      "reviewAfter": "2026-08-03",
       "lastVerifiedWith": [
         "npx pnpm@9.15.4 check",
-        "https://code.claude.com/docs/en/agent-teams"
+        "https://code.claude.com/docs/en/agent-teams",
+        "harness governance check"
       ],
       "reorgTrigger": "Agent lifecycle, queue semantics, peer messaging, provider reducer, or Dashboard control actions stabilize enough to move from roadmap into schema/CLI/API contracts."
     },
@@ -808,15 +829,18 @@
         "docs/agent-runtime.md",
         "docs/architecture.md",
         "docs/integration/codex.md",
-        "docs/integration/codex-message-delivery.md"
+        "docs/integration/codex-message-delivery.md",
+        "docs/integration/kimi.md",
+        "docs/decisions/0018-exec-stream-primary-substrate.md"
       ],
       "machineConsumers": [
         "check-doc-links",
         "check-doc-governance"
       ],
-      "reviewAfter": "2026-06-26",
+      "reviewAfter": "2026-08-03",
       "lastVerifiedWith": [
-        "npx pnpm@9.15.4 check"
+        "npx pnpm@9.15.4 check",
+        "harness governance check"
       ],
       "reorgTrigger": "Provider integration template, provider-neutral boundary, or provider roster changes."
     },
@@ -837,19 +861,21 @@
         "docs/integration/codex-message-delivery.md",
         "docs/integration/codex-source-audit.md",
         "docs/mvp.md",
-        "docs/schemas.md"
+        "docs/schemas.md",
+        "docs/decisions/0018-exec-stream-primary-substrate.md"
       ],
       "machineConsumers": [
         "check-doc-links",
         "check-doc-governance"
       ],
-      "reviewAfter": "2026-06-26",
+      "reviewAfter": "2026-08-03",
       "lastVerifiedWith": [
         "https://developers.openai.com/codex/app-server",
         "https://developers.openai.com/codex/hooks",
         "https://developers.openai.com/codex/plugins",
         "https://developers.openai.com/codex/cli/features",
-        "cargo test -p harness-cli"
+        "cargo test -p harness-cli",
+        "harness governance check"
       ],
       "reorgTrigger": "Codex provider surfaces, app-server protocol, hook behavior, plugin packaging, or fallback strategy changes."
     },
@@ -868,16 +894,18 @@
         "docs/agent-runtime.md",
         "docs/integration/codex.md",
         "docs/dashboard/read-model.md",
-        "crates/harness-cli/src/main.rs"
+        "crates/harness-cli/src/main.rs",
+        "docs/decisions/0018-exec-stream-primary-substrate.md"
       ],
       "machineConsumers": [
         "check-doc-links",
         "check-doc-governance"
       ],
-      "reviewAfter": "2026-06-26",
+      "reviewAfter": "2026-08-03",
       "lastVerifiedWith": [
         "cargo test -p harness-cli",
-        "npx pnpm@9.15.4 check"
+        "npx pnpm@9.15.4 check",
+        "harness governance check"
       ],
       "reorgTrigger": "Codex delivery queue, provider gateway, MessageDelivery schema, app-server protocol, or Dashboard projection behavior changes."
     },
@@ -894,16 +922,18 @@
       "dependsOn": [
         "docs/agent-runtime.md",
         "docs/integration/codex.md",
-        "docs/decisions/README.md"
+        "docs/decisions/README.md",
+        "docs/decisions/0018-exec-stream-primary-substrate.md"
       ],
       "machineConsumers": [
         "check-doc-links",
         "check-doc-governance"
       ],
-      "reviewAfter": "2026-06-26",
+      "reviewAfter": "2026-08-03",
       "lastVerifiedWith": [
         "Codex source audit",
-        "npx pnpm@9.15.4 check"
+        "npx pnpm@9.15.4 check",
+        "harness governance check"
       ],
       "reorgTrigger": "Codex app-server protocol, hooks, plugins, native subagents, or permission behavior changes."
     },
@@ -923,16 +953,19 @@
         "docs/integration/README.md",
         "docs/architecture.md",
         "docs/mvp.md",
-        "docs/schemas.md"
+        "docs/schemas.md",
+        "crates/harness-cli/src/resident.rs",
+        "docs/decisions/0021-resident-daemon.md"
       ],
       "machineConsumers": [
         "check-doc-links",
         "check-doc-governance"
       ],
-      "reviewAfter": "2026-06-26",
+      "reviewAfter": "2026-08-03",
       "lastVerifiedWith": [
         "https://code.claude.com/docs",
-        "cargo test -p harness-cli"
+        "cargo test -p harness-cli",
+        "harness governance check"
       ],
       "reorgTrigger": "Claude provider surfaces, CLI shape, session protocol, subagent lifecycle, or fallback strategy changes."
     },
@@ -1096,9 +1129,10 @@
         "check-doc-links",
         "check-doc-governance"
       ],
-      "reviewAfter": "2026-06-26",
+      "reviewAfter": "2026-08-03",
       "lastVerifiedWith": [
-        "npx pnpm@9.15.4 check"
+        "npx pnpm@9.15.4 check",
+        "harness governance check"
       ],
       "reorgTrigger": "Team workspace page contract, layout contract dimensions, ASCII diagrams, first viewport, or scroll ownership changes."
     },
@@ -1126,9 +1160,10 @@
         "check-doc-links",
         "check-doc-governance"
       ],
-      "reviewAfter": "2026-06-26",
+      "reviewAfter": "2026-08-03",
       "lastVerifiedWith": [
-        "npx pnpm@9.15.4 check"
+        "npx pnpm@9.15.4 check",
+        "harness governance check"
       ],
       "reorgTrigger": "AgentMember workbench page contract, layout contract dimensions, ASCII diagrams, first viewport, or scroll ownership changes."
     },
@@ -1157,9 +1192,10 @@
         "check-doc-links",
         "check-doc-governance"
       ],
-      "reviewAfter": "2026-06-26",
+      "reviewAfter": "2026-08-03",
       "lastVerifiedWith": [
-        "npx pnpm@9.15.4 check"
+        "npx pnpm@9.15.4 check",
+        "harness governance check"
       ],
       "reorgTrigger": "Evidence review decision page contract, layout contract dimensions, ASCII diagrams, first viewport, or scroll ownership changes."
     },
@@ -1188,9 +1224,10 @@
         "check-doc-links",
         "check-doc-governance"
       ],
-      "reviewAfter": "2026-06-26",
+      "reviewAfter": "2026-08-03",
       "lastVerifiedWith": [
-        "npx pnpm@9.15.4 check"
+        "npx pnpm@9.15.4 check",
+        "harness governance check"
       ],
       "reorgTrigger": "Warnings and repair page contract, layout contract dimensions, ASCII diagrams, first viewport, or scroll ownership changes."
     },
@@ -1218,9 +1255,10 @@
         "check-doc-links",
         "check-doc-governance"
       ],
-      "reviewAfter": "2026-06-26",
+      "reviewAfter": "2026-08-03",
       "lastVerifiedWith": [
-        "npx pnpm@9.15.4 check"
+        "npx pnpm@9.15.4 check",
+        "harness governance check"
       ],
       "reorgTrigger": "Debug page contract, layout contract dimensions, ASCII diagrams, first viewport, or scroll ownership changes."
     },
@@ -1306,15 +1344,19 @@
         "docs/decisions/0011-provider-neutral-runtime.md",
         "crates/harness-cli/src/sse.rs",
         "crates/harness-cli/src/main.rs",
-        "apps/agent-dashboard/src/api.ts"
+        "apps/agent-dashboard/src/api.ts",
+        "docs/integration/kimi.md",
+        "apps/agent-dashboard/src/app/useEventStream.ts",
+        "apps/agent-dashboard/src/app/App.tsx"
       ],
       "machineConsumers": [
         "check-doc-links",
         "check-doc-governance"
       ],
-      "reviewAfter": "2026-06-26",
+      "reviewAfter": "2026-08-03",
       "lastVerifiedWith": [
-        "npx pnpm@9.15.4 check"
+        "npx pnpm@9.15.4 check",
+        "harness governance check"
       ],
       "reorgTrigger": "The three-signal model, runtime_health layers, /v1/events SSE frame contract, watcher/broadcast mechanism, or the frontend live/polling/offline mode logic changes."
     },
@@ -1327,7 +1369,7 @@
         "agent integration model",
         "three pillars (base configuration, environment, platform adaptation)",
         "provider-neutral launch spec",
-        "skill contract / MCP / provider capability declaration gaps",
+        "skill contract / MCP / provider capability declaration",
         "new-provider integration checklist"
       ],
       "dependsOn": [
@@ -1340,15 +1382,17 @@
         "docs/decisions/0018-exec-stream-primary-substrate.md",
         "examples/adapters/earning-engine/adapter.json",
         "crates/harness-core/src/lib.rs",
-        "schemas/agent-member.schema.json"
+        "schemas/agent-member.schema.json",
+        "docs/integration/kimi.md"
       ],
       "machineConsumers": [
         "check-doc-links",
         "check-doc-governance"
       ],
-      "reviewAfter": "2026-06-26",
+      "reviewAfter": "2026-08-03",
       "lastVerifiedWith": [
-        "npx pnpm@9.15.4 check"
+        "npx pnpm@9.15.4 check",
+        "harness governance check"
       ],
       "reorgTrigger": "The three pillars, the neutral launch-spec field set, the skill/MCP/capability-declaration contracts, or the new-provider integration checklist change."
     },
