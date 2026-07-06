@@ -49,6 +49,13 @@ The Starlark front-end is the sole dynamic authoring surface: it lets an agent w
 | `timeout_s` | Optional per-leaf wall-clock timeout in seconds |
 | `image` | Image file paths passed or described to the worker |
 | `add_dir` | Extra directory paths the worker may access |
+| `expected_artifacts` | Repo-relative files the step must produce and copy back |
+| `persist_changes` | Writable diff policy; `discard` opts out of default patch capture |
+| `write_mode` | Optional landing mode; `direct` writes to the selected project root immediately |
+| `owned_paths` | Repo-relative path guard for captured/applied patches |
+| `artifact_root` | Optional root for artifact manifest validation |
+| `write_roots` | Optional roots artifact files are allowed to land under |
+| `auto_apply_on_verdict` | Apply the captured patch automatically when the run verdict is ok |
 | `isolation` | Optional isolation mode; only `worktree` is supported |
 | `prompt` | Worker prompt |
 | `schema` | Optional structured-output schema |
@@ -92,6 +99,12 @@ agent(
     timeout_s=None,
     image=None,
     add_dir=None,
+    expected_artifacts=None,
+    persist_changes=None,
+    owned_paths=None,
+    artifact_root=None,
+    write_roots=None,
+    auto_apply_on_verdict=False,
     isolation=None,
     schema=None,
     writable=False,
@@ -114,6 +127,16 @@ else:
 
 The status dict carries `ok`, `reason`, `detail`, `failure`, `text`, `structured`, `provider_session_id`, `label`, `phase`, `provider`, `isolation`, and `ordinal`. `reason` and `detail` come from `StepResult.details.failure.reason/detail` when the provider classified the failure. If a failed step has no classified failure object, `reason` falls back to `"failed"` and `detail` falls back to the step output summary. Successful steps return `reason=None`, `detail=None`, and still carry `text` plus any parsed `structured` payload.
 
+Patch and artifact host calls:
+
+```python
+apply_patch("writer", "review passed")
+reject_patch("writer", "review failed")
+artifact_manifest(["summary.md"], label="writer", artifact_root="out", write_roots=["out"])
+```
+
+`apply_patch()` and `reject_patch()` record workflow-internal patch decisions. The Starlark interpreter stays hermetic; the CLI post-processor performs the actual git apply/reject after the run has journaled durable `WorkflowPatch` rows. `artifact_manifest()` records files into durable `WorkflowArtifactManifest` rows with existence, size, hash, and `current|missing|stale` status.
+
 Argument semantics:
 
 | Argument | Meaning |
@@ -129,6 +152,13 @@ Argument semantics:
 | `timeout_s` | Per-leaf wall-clock timeout in seconds; a fired timeout fails the step |
 | `image` | List of image paths |
 | `add_dir` | List of additional directory paths |
+| `expected_artifacts` | Repo-relative files to assert and copy back |
+| `persist_changes` | Defaults to patch capture for writable diffs; set `discard` to opt out |
+| `write_mode` | Optional `direct` for a simple serial writable leaf that should edit the selected project root immediately |
+| `owned_paths` | Optional changed-path guard for patch apply |
+| `artifact_root` | Optional root for artifact manifests |
+| `write_roots` | Optional roots artifact manifests should stay under |
+| `auto_apply_on_verdict` | Auto-apply this step's patch after an ok verdict |
 | `isolation` | Optional `worktree` |
 | `schema` | Dict converted to JSON schema / structured-output contract |
 | `writable` | Enables edit/shell behavior and implies worktree isolation |
@@ -201,7 +231,18 @@ The dynamic authoring command is:
 harness workflow run-script <prog.star> [flags]
 ```
 
-The script path can be positional or supplied as `--script <path>` (`crates/harness-cli/src/main.rs:9604`). The command is routed through `workflow_command`, which also exposes `workflow run`, `get-output`, `list`, `reap`, `gc-worktrees`, and `gc-trace` (`crates/harness-cli/src/main.rs:9333`, `crates/harness-cli/src/main.rs:9336`, `crates/harness-cli/src/main.rs:9393`).
+The script path can be positional or supplied as `--script <path>` (`crates/harness-cli/src/main.rs:9604`). The command is routed through `workflow_command`, which also exposes `workflow run`, `get-output`, `patch`, `list`, `reap`, `gc-worktrees`, and `gc-trace` (`crates/harness-cli/src/main.rs:9333`, `crates/harness-cli/src/main.rs:9336`, `crates/harness-cli/src/main.rs:9393`).
+
+Writable patch commands:
+
+```bash
+harness workflow patch list [--run <run_id>]
+harness workflow patch show <patch_id|run_id> [--step <label|step_id>]
+harness workflow patch apply <patch_id|run_id> [--step <label|step_id>] [--allow-dirty]
+harness workflow patch reject <patch_id|run_id> [--step <label|step_id>]
+```
+
+`apply` checks owned-path boundaries, refuses a dirty worktree unless `--allow-dirty` is explicit, runs `git apply --check`, and records `applied` or `conflict`. `reject` records `rejected`. Both update the same append-only `WorkflowPatch` id by latest-wins rows.
 
 Key `run-script` flags:
 
@@ -311,7 +352,7 @@ Before killing a recorded pid group, the reaper checks the live process argv wit
 
 ## Worktree Isolation
 
-Workflow leaves are read-only by default: `writable=False` is the Starlark default (`crates/harness-workflow/src/starlark_front.rs:866`). A writable leaf may edit files and run shell, and it automatically isolates into a harness-owned throwaway git worktree (`crates/harness-workflow/src/lib.rs:70`, `crates/harness-workflow/src/lib.rs:72`).
+Workflow leaves are read-only by default: `writable=False` is the Starlark default. A writable leaf may edit files and run shell. By default, `writable=True` automatically isolates into a harness-owned throwaway git worktree; `write_mode="direct"` is the explicit exception for a simple serial leaf that should write the selected project root immediately.
 
 Read-only is enforced per provider, not assumed. codex (`--sandbox read-only`) and claude (the `Read,Grep,Glob` tool allowlist) physically prevent a read-only leaf from writing, so they run in the shared cwd. kimi's `kimi -p` has no read-only mode (it rejects every permission flag), so a "read-only" kimi leaf could otherwise edit the live tree. The leaf runner reads each provider's `enforces_read_only` capability and isolates a read-only leaf into a throwaway worktree when its provider can't enforce read-only — so the worktree, not provider trust, is the boundary (`step_needs_isolation`, `provider_enforces_read_only`).
 
@@ -321,13 +362,15 @@ The writable worktree base is the project-root checkout's HEAD, not the cwd used
 
 Writable or isolated leaves require a git-backed project. Non-git projects fail before worktree creation with an actionable message; read-only leaves can still run (`crates/harness-cli/src/main.rs:7646`, `crates/harness-cli/src/main.rs:7652`). `WorktreeGuard::create` also checks git-ness and reports how to recover by making the step read-only or running from a git repo (`crates/harness-cli/src/main.rs:7436`, `crates/harness-cli/src/main.rs:7441`, `crates/harness-cli/src/main.rs:7443`).
 
-Standalone `run-script` writable work is EPHEMERAL. It records the diff and discards the worktree, so in-repo artifacts are not present in the project after the run. Use the goal layer (`goal run-phases`) when writable task output must land on the branch, or retrieve captured text with `harness workflow get-output <run_id> --step <label>`.
+Standalone `run-script` writable work is durable-but-not-implicitly-landed. The throwaway worktree is still discarded, but any non-empty writable diff is saved as a pending `WorkflowPatch` unless the step sets `persist_changes="discard"`. Apply it explicitly with `harness workflow patch apply ...`, reject it with `harness workflow patch reject ...`, or let workflow code declare `apply_patch()` / `reject_patch()` after an internal review. Use the goal layer (`goal run-phases`) when a passing phase should land and commit automatically.
+
+Direct write mode is for the opposite case: a small serial edit where the caller intentionally wants the worker to modify the selected project root now. A direct leaf must set both `writable=True` and `write_mode="direct"`, cannot also set `isolation="worktree"`, requires a git-backed clean project root before the step starts, and records the resulting shared-cwd diff as `direct_diff` evidence. It does not create a pending `WorkflowPatch` because the change is already in the working tree. The Starlark front-end rejects `write_mode="direct"` inside `parallel()` and `pipeline()` specs for now, because concurrent shared-tree mutations are not attributable or conflict-safe.
 
 Security note: the throwaway worktree only contains writes made inside that checkout. Absolute-path writes escape the worktree boundary and persist wherever that absolute path points, so workflows should not treat worktree isolation as a whole-machine sandbox.
 
 ## `run-script` Vs `goal run-phases`
 
-`harness workflow run-script` is the raw dynamic runtime. It evaluates an authored `.star` file, journals a `WorkflowRun` plus `WorkflowStep` rows, and discards writable worktrees after capturing diffs.
+`harness workflow run-script` is the raw dynamic runtime. It evaluates an authored `.star` file, journals a `WorkflowRun` plus `WorkflowStep` rows, saves writable diffs as `WorkflowPatch` rows, and discards writable worktrees after capture.
 
 `harness goal run-phases` is the goal-layer front-end onto the same runtime. It compiles each goal phase's task DAG into a Starlark program with `compile_phase_to_starlark()` (`crates/harness-core/src/lib.rs:651`). The compiler layers dependencies, groups pairwise-disjoint writable tasks into `parallel([...])`, emits singleton `agent(...)` calls, marks tasks with owned paths as `writable=True, isolation="worktree"`, and adds a structured acceptance judge plus `verdict(...)` when the phase has acceptance criteria (`crates/harness-core/src/lib.rs:640`, `crates/harness-core/src/lib.rs:641`, `crates/harness-core/src/lib.rs:643`, `crates/harness-core/src/lib.rs:645`, `crates/harness-core/src/lib.rs:770`, `crates/harness-core/src/lib.rs:775`, `crates/harness-core/src/lib.rs:790`, `crates/harness-core/src/lib.rs:908`, `crates/harness-core/src/lib.rs:916`).
 
@@ -337,7 +380,7 @@ The distinction is deliberate:
 
 | Surface | Executes with | Writable leaf behavior | Landing authority |
 | --- | --- | --- | --- |
-| `workflow run-script` | Authored Starlark program | Capture diff, discard worktree | None |
+| `workflow run-script` | Authored Starlark program | Capture worktree diff as pending `WorkflowPatch`, discard worktree; or leave direct-mode diff in the selected project root | Explicit patch apply/reject or workflow patch action for worktree mode; normal git review for direct mode |
 | `goal run-phases` | Compiled phase DAG Starlark | Capture diff per task leaf | Goal layer applies and commits passing phase diffs |
 
 ## Invariants
@@ -348,7 +391,8 @@ The distinction is deliberate:
 4. Host control flow is deterministic; only `agent()` leaves are nondeterministic.
 5. `WorkflowRun` and `WorkflowStep` are the canonical journal for workflow execution.
 6. A provider leaf names a provider, not a pre-existing durable `AgentMember`.
-7. `writable=True` implies throwaway worktree isolation.
-8. Standalone workflow worktrees are evidence, not landing.
-9. Goal-phase execution may land only after the goal layer's gates pass.
-10. The selected project root defines worker cwd and worktree base; the store root defines journal location.
+7. `writable=True` implies throwaway worktree isolation unless `write_mode="direct"` is explicit.
+8. Standalone workflow worktrees become durable pending patches, not implicit landing.
+9. Direct write mode requires a clean git project root and records `direct_diff` rather than `WorkflowPatch`.
+10. Goal-phase execution may land only after the goal layer's gates pass.
+11. The selected project root defines worker cwd and worktree base; the store root defines journal location.
