@@ -115,14 +115,17 @@ shapes, and it must not redefine core object meaning.
   generation-completed, turn-completed, subagent-spawn). Hook dispatch is a
   **no-op for Claude**; the parser is the event source. See
   [integration/claude.md](integration/claude.md).
+- **Kimi** likewise has no hook surface. Its events come from parsing the flat
+  `kimi -p --output-format stream-json` NDJSON (one frame per line, reduced to
+  `AgentEvent`s). See [integration/kimi.md](integration/kimi.md).
 
 | Concern | Provider-neutral (core) | Provider-specific (CLI layer) |
 | --- | --- | --- |
-| Event production | — | Codex hook push; Claude CLI/session-output parsing |
+| Event production | — | Codex hook push; Claude/Kimi CLI stream parsing |
 | Hook dispatch | — | Codex hooks fire; **Claude hooks no-op** |
 | Landed event | `AgentEvent` | provider event_type strings |
 | Child thread | `ProviderChildThread` | Codex `collab_agent_spawn`; Claude `subagent-spawn` |
-| Turn record | `ProviderSession` | terminal_source (`turn_completed`, `thread_read`, `hook_stop`, `claude_session_output`) |
+| Turn record | `ProviderSession` | terminal_source (`turn_completed`, `thread_idle`, `thread_read`, `hook_stop`, `dry_run`, `failed`, `unknown`) |
 | Reply / report | `Message` | parsed stdout / rollout |
 | Health shape | `runtime_health` four layers | which layers are real vs `unknown` |
 
@@ -147,12 +150,20 @@ Frame kinds:
 | `agent_event` | on each new `AgentEvent` append | the `AgentEvent` JSON |
 | `message` | on `Message` create / delivery-status change | the `Message` JSON |
 | `provider_session` | on `ProviderSession` create / status change | the `ProviderSession` JSON |
+| `workflow_run` / `workflow_step` | on `WorkflowRun` / `WorkflowStep` append or update | the run / step JSON |
+| `provider_turn_event` / `provider_turn_event_normalized` | on each raw turn-event line teed to `provider_turn_events.jsonl` | the raw line / its normalized `HarnessTurnEvent` expansion |
 
-Mechanism: a background **watcher thread** polls the jsonl store files
-(`agent_events.jsonl`, `messages.jsonl`, `provider_sessions.jsonl`) for byte
-growth (~500ms), parses each newly appended line, and broadcasts a frame over a
-**crossbeam channel fan-out** to every connected client. End-to-end append→frame
-latency is **~1s**. A keepalive comment (`: keepalive`) is sent roughly every
+The stream is project-scoped (`?project=<id>`): a client subscribes to one
+project's channel and frames from other projects never leak in.
+
+Mechanism: a background **watcher thread** polls each project's jsonl store
+files (`agent_events.jsonl`, `messages.jsonl`, `provider_sessions.jsonl`,
+`workflow_runs.jsonl`, `workflow_steps.jsonl`, `provider_turn_events.jsonl`) for
+byte growth (~150ms), parses each newly appended line, and broadcasts a frame
+over a **crossbeam channel fan-out** to that project's subscribed clients. The
+project registry is re-scanned every poll, so post-startup projects stream live
+without a serve restart. End-to-end append→frame latency is **sub-second**. A
+keepalive comment (`: keepalive`) is sent roughly every
 15s of idle to defeat proxy/client timeouts. Each connection is handled on its
 **own thread**, so a long-lived stream (which blocks for the life of the client)
 cannot starve POST actions, snapshot polls, or other SSE clients.
@@ -179,7 +190,7 @@ the freshness chip reads fresh — **no full re-fetch per delta**.
 | --- | --- | --- |
 | `sse` | **live (SSE)** | stream connected and pushing deltas |
 | `polling` | **polling** | stream down; interval `/v1/snapshot` poll (~5s) took over |
-| — | **offline fixture** | no live source loaded; read-only design fixture |
+| — | **not connected** | no live source loaded; honest empty workspace (no baked-in fixture) |
 
 On error/close the source is torn down deliberately and a reconnect is scheduled
 with **exponential backoff** (1s, 2s, 4s, 8s, capped 15s); a clean reconnect
@@ -191,23 +202,24 @@ so SSE is an optimization over a polling floor, never a single point of failure.
 ```text
 provider activity
   ├── Codex: hook push (SessionStart/PostToolUse/Stop) + app-server notifications
-  └── Claude: CLI / session-output parsing  (hook dispatch no-ops)
+  └── Claude / Kimi: CLI stream parsing  (hook dispatch no-ops)
         |
         v
   reducer -> AgentEvent / Message / ProviderSession / ProviderChildThread
         |
         v
-  append to jsonl store  (agent_events / messages / provider_sessions .jsonl)
+  append to jsonl store  (agent_events / messages / provider_sessions /
+        |                  workflow_runs / workflow_steps / provider_turn_events .jsonl)
         |                                  ^ canonical store (source of truth)
         v
-  serve watcher thread   (poll ~500ms, detect byte growth, parse new lines)
+  serve watcher thread   (poll ~150ms per project, detect byte growth, parse new lines)
         |
         v
-  crossbeam broadcast    (fan-out to every subscribed client)
+  crossbeam broadcast    (fan-out to the project's subscribed clients)
         |
         v
   GET /v1/events (SSE)   per-connection thread; snapshot frame + keepalive
-        |   ~1s append->frame
+        |   sub-second append->frame
         v
   EventSource (browser)  openEventStream -> named frame handlers
         |
@@ -226,9 +238,9 @@ provider activity
 
 1. **The store stays canonical.** SSE is **advisory delivery**. If a frame is
    missed, the truth is still the jsonl store; `/v1/snapshot` reconstructs it.
-2. **Near-real-time, not hard-real-time.** The ~1s watcher poll and ~500ms
-   detection window are intentional. Do not build logic that assumes
-   millisecond delivery or guaranteed ordering across the three jsonl files.
+2. **Near-real-time, not hard-real-time.** The ~150ms watcher poll and
+   sub-second delivery window are intentional. Do not build logic that assumes
+   millisecond delivery or guaranteed ordering across the watched jsonl files.
 3. **Amber on unknown.** A layer that has not produced a positive probe is amber,
    never green. Process/socket alone never reads as "ready."
 4. **Per-provider reality of the four health layers:**
@@ -263,7 +275,8 @@ provider activity
   health.
 - [integration/claude.md](integration/claude.md) — Claude CLI-output parsing and
   no-op hook dispatch.
+- [integration/kimi.md](integration/kimi.md) — Kimi flat stream-json parsing and
+  degraded capability surface.
 - [decisions/0011-provider-neutral-runtime.md](decisions/0011-provider-neutral-runtime.md)
   and [decisions/0008-persistent-codex-agent-runtime.md](decisions/0008-persistent-codex-agent-runtime.md)
   — the provider-neutral seam and the canonical-store doctrine.
-```
