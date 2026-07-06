@@ -680,6 +680,55 @@ fn reject_direct_write_mode(write_mode: Option<&str>, context: &str) -> anyhow::
     Ok(())
 }
 
+/// Validate a leaf's persistence-related knobs at parse time (D3c), rejecting
+/// nonsensical or silently-ignored combinations before the run starts:
+/// * `auto_apply_on_verdict=True` or `persist_changes="patch"` on a `writable=False`
+///   leaf — a read-only leaf produces no authorized diff to persist/apply, so
+///   asking to capture or auto-apply one is a program error, not a silent no-op.
+/// * an unknown `persist_changes` (only `"patch"`/`"discard"` are meaningful) or
+///   `write_mode` (only `"direct"`, or absent) — arbitrary strings used to fall
+///   back to defaults silently, hiding typos like `persist_changes="patchh"`.
+fn validate_persistence_config(
+    context: &str,
+    label: Option<&str>,
+    writable: bool,
+    persist_changes: Option<&str>,
+    write_mode: Option<&str>,
+    auto_apply_on_verdict: bool,
+) -> anyhow::Result<()> {
+    let who = match label {
+        Some(l) => format!("{context} leaf `{l}`"),
+        None => context.to_string(),
+    };
+    if let Some(persist) = persist_changes {
+        if persist != "patch" && persist != "discard" {
+            return Err(anyhow::anyhow!(
+                "{who}: unknown persist_changes={persist:?} (allowed: \"patch\", \"discard\")"
+            ));
+        }
+    }
+    if let Some(mode) = write_mode {
+        if mode != WRITE_MODE_DIRECT {
+            return Err(anyhow::anyhow!(
+                "{who}: unknown write_mode={mode:?} (allowed: \"direct\", or omit)"
+            ));
+        }
+    }
+    if !writable {
+        if auto_apply_on_verdict {
+            return Err(anyhow::anyhow!(
+                "{who}: auto_apply_on_verdict=True requires writable=True (a read-only leaf produces no patch to apply)"
+            ));
+        }
+        if persist_changes == Some("patch") {
+            return Err(anyhow::anyhow!(
+                "{who}: persist_changes=\"patch\" requires writable=True (a read-only leaf produces no diff to persist)"
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Read an optional bool field off a spec dict. Absent / Starlark `None` → false;
 /// errors when present-but-not-a-bool.
 fn dict_bool(dict: &DictRef<'_>, key: &str) -> anyhow::Result<bool> {
@@ -801,6 +850,15 @@ fn read_parallel_specs(
         let schema = dict_schema(&dict, "schema")?;
         let writable = dict_bool(&dict, "writable")?;
         let return_status = dict_bool(&dict, "return_status")?;
+        // D3c: reject nonsensical persistence config before the run starts.
+        validate_persistence_config(
+            "parallel()",
+            label.as_deref(),
+            writable,
+            persist_changes.as_deref(),
+            write_mode.as_deref(),
+            auto_apply_on_verdict,
+        )?;
         out.push(ParallelSpec {
             spec: AgentStepSpec {
                 phase: ctx.phase_for(phase),
@@ -971,6 +1029,15 @@ fn read_pipeline_stages(
         let schema = dict_schema(&dict, "schema")?;
         let writable = dict_bool(&dict, "writable")?;
         let return_status = dict_bool(&dict, "return_status")?;
+        // D3c: reject nonsensical persistence config before the run starts.
+        validate_persistence_config(
+            "pipeline()",
+            label.as_deref(),
+            writable,
+            persist_changes.as_deref(),
+            write_mode.as_deref(),
+            auto_apply_on_verdict,
+        )?;
         out.push(StageTemplate {
             prompt_template,
             provider,
@@ -1110,6 +1177,15 @@ fn workflow_globals(builder: &mut GlobalsBuilder) {
             }
             _ => None,
         };
+        // D3c: reject nonsensical persistence config before the run starts.
+        validate_persistence_config(
+            "agent()",
+            label.as_deref(),
+            writable,
+            persist_changes.as_deref(),
+            write_mode.as_deref(),
+            auto_apply_on_verdict,
+        )?;
         let has_schema = schema_json.is_some();
         let result = ctx_of(eval).run_one(
             prompt,
@@ -2157,6 +2233,7 @@ parallel([
     {
         "prompt": "fan",
         "label": "fan",
+        "writable": True,
         "persist_changes": "patch",
         "owned_paths": ["src"],
         "artifact_root": "out",
@@ -2169,6 +2246,7 @@ pipeline(
     [{
         "prompt": "pipe {input}",
         "label": "pipe",
+        "writable": True,
         "persist_changes": "discard",
         "owned_paths": ["docs"],
         "artifact_root": "reports",
@@ -2263,6 +2341,95 @@ agent(
                 err.to_string().contains("greater than 0 seconds"),
                 "unexpected error: {err}"
             );
+        }
+    }
+
+    // D3c: auto_apply_on_verdict / persist_changes="patch" on a NON-writable leaf
+    // are program errors (a read-only leaf produces no authorized diff), rejected
+    // across all three surfaces (agent / parallel / pipeline).
+    #[test]
+    fn persistence_on_non_writable_leaf_is_rejected() {
+        let seen = Mutex::new(Vec::new());
+        let driver = recording_driver(&seen);
+        for (script, needle) in [
+            (
+                r#"agent("x", auto_apply_on_verdict = True)"#,
+                "auto_apply_on_verdict=True requires writable=True",
+            ),
+            (
+                r#"agent("x", persist_changes = "patch")"#,
+                "persist_changes=\"patch\" requires writable=True",
+            ),
+            (
+                r#"parallel([{"prompt": "x", "auto_apply_on_verdict": True}])"#,
+                "auto_apply_on_verdict=True requires writable=True",
+            ),
+            (
+                r#"parallel([{"prompt": "x", "persist_changes": "patch"}])"#,
+                "persist_changes=\"patch\" requires writable=True",
+            ),
+            (
+                r#"pipeline(["i"], [{"prompt": "{input}", "auto_apply_on_verdict": True}])"#,
+                "auto_apply_on_verdict=True requires writable=True",
+            ),
+        ] {
+            let err = run_starlark(&format!("{HEADER}{script}"), "demo", None, &driver)
+                .expect_err("persistence on non-writable leaf should be rejected");
+            assert!(
+                err.to_string().contains(needle),
+                "script `{script}` — unexpected error: {err}"
+            );
+        }
+    }
+
+    // D3c: an unknown persist_changes / write_mode value is rejected instead of
+    // silently falling back to defaults (which hid typos like "patchh").
+    #[test]
+    fn unknown_persist_changes_and_write_mode_values_are_rejected() {
+        let seen = Mutex::new(Vec::new());
+        let driver = recording_driver(&seen);
+        for (script, needle) in [
+            (
+                r#"agent("x", writable = True, persist_changes = "patchh")"#,
+                "unknown persist_changes",
+            ),
+            (
+                r#"agent("x", writable = True, write_mode = "sideways")"#,
+                "unknown write_mode",
+            ),
+            (
+                r#"parallel([{"prompt": "x", "writable": True, "persist_changes": "keepit"}])"#,
+                "unknown persist_changes",
+            ),
+            (
+                r#"pipeline(["i"], [{"prompt": "{input}", "writable": True, "persist_changes": "nope"}])"#,
+                "unknown persist_changes",
+            ),
+        ] {
+            let err = run_starlark(&format!("{HEADER}{script}"), "demo", None, &driver)
+                .expect_err("unknown enum value should be rejected");
+            assert!(
+                err.to_string().contains(needle),
+                "script `{script}` — unexpected error: {err}"
+            );
+        }
+    }
+
+    // D3c: the valid combinations still parse (positive control) — a writable leaf
+    // with persist_changes="discard" or "patch", and a read-only leaf with an
+    // explicit persist_changes="discard" (harmless: nothing is persisted anyway).
+    #[test]
+    fn valid_persistence_combinations_are_accepted() {
+        let seen = Mutex::new(Vec::new());
+        let driver = recording_driver(&seen);
+        for script in [
+            r#"agent("x", writable = True, persist_changes = "patch", auto_apply_on_verdict = True)"#,
+            r#"agent("x", writable = True, persist_changes = "discard")"#,
+            r#"agent("x", persist_changes = "discard")"#,
+            r#"parallel([{"prompt": "x", "writable": True, "persist_changes": "patch"}])"#,
+        ] {
+            run_starlark(&format!("{HEADER}{script}"), "demo", None, &driver)
+                .unwrap_or_else(|e| panic!("script `{script}` should parse: {e}"));
         }
     }
 
