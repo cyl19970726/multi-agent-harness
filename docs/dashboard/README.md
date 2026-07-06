@@ -17,7 +17,7 @@ surface owns the claim, then place it there.
 | `frontend-design.md` | Workbench frontend design index, reading order, page-spec map, and implementation readiness summary | Page-level details, React internals, or run commands |
 | `work-board-design.md` | Vision → Goal → Task structures (with examples), unified Work board, Goal/Task/Vision detail IA, and derived task-graph (ready/waiting). Paired with ADR 0019 | Schema field-of-record (see `../../schemas/`) or component implementation |
 | `pages/README.md` | Page-spec index and template | Hard dimensions, ASCII wireframes, or implementation internals |
-| `pages/*.md` | One page/workspace product, UX, and layout contract: purpose, object ownership, workflow proof, IA, actions, detailed desktop/tablet/mobile ASCII diagrams, dimensions, scroll ownership, failure modes, screenshot questions | Component implementation |
+| `pages/*.md` | One page/workspace product, UX, and layout contract: purpose, object ownership, workflow proof, IA, actions, detailed desktop/tablet/mobile ASCII diagrams, dimensions, scroll ownership, failure modes, screenshot questions. `pages/goal.md` is the active Goal detail contract for Goal Workbench v1. | Component implementation |
 | `frontend-architecture.md` | React/Vite + Tailwind v4 + shadcn/Radix architecture, component responsibilities, app-local boundaries | Product PRD, visual doctrine, or runbook commands |
 | `read-model.md` | Snapshot projections, selectors, advisory warnings, and required read-model fields | Canonical validation rules or Rust implementation |
 | `acceptance.md` | Browser screenshot evidence, web-quality gate, and frontend acceptance sequence | Product purpose or local development commands |

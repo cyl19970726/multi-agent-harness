@@ -7167,10 +7167,31 @@ fn json_string_array(body: &serde_json::Value, key: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// Resolve a `GET /v1/docs?path=docs/...` request to the markdown body, allow-listed
-/// to the repository's `docs/` tree. Returns `(canonical-relative-path, content)` or a
-/// human-readable error. Rejects anything outside `docs/` and any path traversal so the
-/// route can only serve committed docs (ADR 0019, Vision `source_refs` rendering).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AllowedDocPathKind {
+    DocsTree,
+    RootDoc,
+}
+
+fn allowed_doc_path_kind(decoded: &str) -> Result<AllowedDocPathKind, String> {
+    if decoded.contains("..") {
+        return Err(format!("path must contain no ..: {decoded}"));
+    }
+    if decoded.starts_with("docs/") {
+        return Ok(AllowedDocPathKind::DocsTree);
+    }
+    if matches!(decoded, "README.md" | "AGENTS.md") {
+        return Ok(AllowedDocPathKind::RootDoc);
+    }
+    Err(format!(
+        "path must be under docs/ or be README.md/AGENTS.md: {decoded}"
+    ))
+}
+
+/// Resolve a `GET /v1/docs?path=...` request to a repository doc body. The route
+/// serves the `docs/` tree plus root `README.md` / `AGENTS.md`, and rejects path
+/// traversal so Docs can expose project entrypoints without exposing arbitrary
+/// repository files.
 fn read_allowed_doc(request_target: &str) -> Result<(String, String), String> {
     let query = request_target.split('?').nth(1).unwrap_or("");
     let raw = query
@@ -7182,21 +7203,29 @@ fn read_allowed_doc(request_target: &str) -> Result<(String, String), String> {
         .replace("%2F", "/")
         .replace("%2f", "/")
         .replace("%20", " ");
-    if !decoded.starts_with("docs/") || decoded.contains("..") {
-        return Err(format!(
-            "path must be under docs/ and contain no ..: {decoded}"
-        ));
-    }
+    let path_kind = allowed_doc_path_kind(&decoded)?;
     let base = std::env::current_dir()
         .and_then(|dir| dir.canonicalize())
         .map_err(|error| format!("cannot resolve working dir: {error}"))?;
-    let docs_root = base.join("docs");
     let full = base
         .join(&decoded)
         .canonicalize()
         .map_err(|error| format!("doc not found: {decoded} ({error})"))?;
-    if !full.starts_with(&docs_root) {
-        return Err(format!("resolved path escapes docs/: {decoded}"));
+    match path_kind {
+        AllowedDocPathKind::DocsTree => {
+            let docs_root = base
+                .join("docs")
+                .canonicalize()
+                .map_err(|error| format!("cannot resolve docs/: {error}"))?;
+            if !full.starts_with(&docs_root) {
+                return Err(format!("resolved path escapes docs/: {decoded}"));
+            }
+        }
+        AllowedDocPathKind::RootDoc => {
+            if full.parent() != Some(base.as_path()) {
+                return Err(format!("resolved path escapes repository root: {decoded}"));
+            }
+        }
     }
     let content =
         std::fs::read_to_string(&full).map_err(|error| format!("read failed: {error}"))?;
@@ -22651,11 +22680,29 @@ mod tests {
     fn read_allowed_doc_rejects_traversal_and_non_docs_paths() {
         // Missing parameter.
         assert!(read_allowed_doc("/v1/docs").is_err());
-        // Outside the docs/ allow-list.
+        // Outside the docs/ + root-doc allow-list.
         assert!(read_allowed_doc("/v1/docs?path=etc/passwd").is_err());
         assert!(read_allowed_doc("/v1/docs?path=Cargo.toml").is_err());
         // Path traversal, even under docs/.
         assert!(read_allowed_doc("/v1/docs?path=docs/../Cargo.toml").is_err());
+    }
+
+    #[test]
+    fn allowed_doc_path_kind_allows_docs_tree_and_root_entry_docs() {
+        assert_eq!(
+            allowed_doc_path_kind("docs/registry.json"),
+            Ok(AllowedDocPathKind::DocsTree)
+        );
+        assert_eq!(
+            allowed_doc_path_kind("README.md"),
+            Ok(AllowedDocPathKind::RootDoc)
+        );
+        assert_eq!(
+            allowed_doc_path_kind("AGENTS.md"),
+            Ok(AllowedDocPathKind::RootDoc)
+        );
+        assert!(allowed_doc_path_kind("Cargo.toml").is_err());
+        assert!(allowed_doc_path_kind("docs/../Cargo.toml").is_err());
     }
 
     #[test]
