@@ -10,18 +10,18 @@ stay aligned with the provider-neutral runtime contract in
 Codex does not poll the harness store by itself.
 
 The harness owns the mailbox. A provider gateway or dispatcher reads durable
-`Message` objects from the harness store and pushes eligible messages into the
-member's Codex app-server thread as `turn/start` requests.
+`Message` objects from the harness store and pushes eligible messages to the
+member by spawning its headless exec-stream (`codex exec --json`); the
+app-server `turn/start` path is the retained fallback contract (ADR 0018).
 
 ```text
 Leader / AgentMember / API
   -> append Message(to_agent_id=<member>, delivery_status=queued)
   -> Provider Gateway selects latest queued messages for that member
-  -> start or probe Codex app-server runtime
-  -> initialize JSON-RPC connection
-  -> thread/start if member has no provider_thread_id
-  -> turn/start with harness message envelope
-  -> Codex notifications and responses
+  -> record or probe the member's exec-stream runtime
+  -> spawn `codex exec --json` with the harness message envelope
+     (`codex exec resume --json <provider_thread_id> ...` when known)
+  -> NDJSON events (thread.started / turn.started / item/* / turn.completed)
   -> ProviderSession + AgentEvent + Evidence candidates
   -> Message delivery update + provider-report Message
   -> AgentMember runtime/status projections
@@ -40,11 +40,11 @@ MVP delivery loop, but it is not yet a supervised production runtime.
 
 Implemented slices:
 
-- `agent start --id <member>` can start a Codex app-server runtime and record
-  `AgentRuntime` state.
+- `agent start --id <member>` records an exec-stream `AgentRuntime` for the
+  member (no persistent process; each delivery spawns `codex exec --json`).
 - `agent send --to-agent <member>` can append queued harness `Message` rows.
 - `agent deliver --agent <member>` can act as a manual gateway fixture for
-  app-server JSON-RPC delivery.
+  exec-stream delivery.
 - Delivery queue selection has a latest-message projection test so stale
   historical `queued` rows are not selected after a newer terminal row exists.
 - Delivery claim now happens under the store write lock: latest queued message
@@ -93,8 +93,8 @@ The current CLI implementation is the first gateway slice:
 
 ```text
 agent start --id <member>
-  -> starts one codex app-server process for that AgentMember
-  -> stores AgentRuntime pid/socket/control endpoint/health
+  -> records an exec-stream AgentRuntime for that AgentMember
+  -> control endpoint codex-exec-runtime://... (no persistent pid/socket)
 
 agent send --to-agent <member>
   -> appends Message(kind=task|message, delivery_status=queued)
@@ -102,9 +102,9 @@ agent send --to-agent <member>
 agent deliver --agent <member> [--start-runtime]
   -> reads latest queued messages for that member
   -> blocks if a previous provider session is unresolved
-  -> initializes app-server JSON-RPC
-  -> creates or reuses provider_thread_id
-  -> sends turn/start
+  -> spawns codex exec --json (null stdin)
+  -> reuses provider_thread_id via codex exec resume when known
+  -> parses the NDJSON event stream
   -> records ProviderSession and Message.delivery
 
 agent gateway [--once] [--start-runtime] [--dry-run] [--claim-ttl-ms <ms>]
@@ -150,8 +150,8 @@ This invariant is shared by:
 ## Claim And Lease Invariant
 
 A dispatcher must claim a deliverable message before provider side effects.
-Provider side effects include runtime start, provider thread creation, and
-`turn/start`.
+Provider side effects include runtime start, provider thread creation, and the
+provider spawn (`codex exec --json`; fallback contract: `turn/start`).
 
 The minimal safe order is:
 
@@ -206,8 +206,9 @@ AgentMember.id
   -> many MessageDelivery records
 ```
 
-The first delivery creates the provider thread with `thread/start`. Later
-deliveries reuse `member.provider_thread_id`. The thread is provider execution
+The first delivery's `thread.started` event supplies the provider thread id.
+Later deliveries reuse `member.provider_thread_id` via `codex exec resume`
+(fallback contract: `thread/start` + thread reuse). The thread is provider execution
 context, not harness identity. If the thread is lost, the member can be
 recovered by starting or binding a new provider thread while preserving harness
 messages, tasks, evidence, and decisions.
@@ -218,7 +219,11 @@ not automatically become harness `AgentMember` identities.
 
 ## JSON-RPC Delivery State Machine
 
-The Codex app-server path is:
+The primary exec-stream path is: spawn `codex exec --json` (null stdin), read
+NDJSON until the terminal `turn.completed` / `thread.idle` event or process
+exit; a timeout becomes running or stale, not silent success.
+
+The app-server fallback path (retained contract, ADR 0018) is:
 
 ```text
 connect WebSocket-over-Unix-socket

@@ -14,9 +14,10 @@ headless exec-stream, per
 
 ## Vision Link
 
-Star Harness must support Codex first while leaving room for other
-providers such as Claude Code, OpenClaw, cloud-hosted agents, or a Permission
-Agent. Provider integrations are successful only when they implement the same
+Star Harness must support Codex first — with Claude Code and Kimi now
+registered as further exec-stream providers — while leaving room for others
+such as OpenClaw, cloud-hosted agents, or a Permission Agent. Provider
+integrations are successful only when they implement the same
 harness objects and workflow without changing `Goal`, `Task`, `Message`,
 `Evidence`, `Proposal`, or `Decision` semantics.
 
@@ -29,6 +30,7 @@ docs/integration/codex.md    # Codex implementation
 docs/integration/codex-message-delivery.md
                                  # Codex mailbox and turn delivery detail
 docs/integration/claude.md       # Claude Code integration
+docs/integration/kimi.md     # Kimi (Moonshot) integration
 docs/integration/<name>.md   # future provider implementation
 ```
 
@@ -73,11 +75,11 @@ Provider
 
 | Provider | Doc | Status | Role |
 | --- | --- | --- | --- |
-| Codex | [codex.md](codex.md) | planned / implemented in slices | First persistent provider, app-server + hooks + skills + plugin path. |
+| Codex | [codex.md](codex.md) | planned / implemented in slices | First provider: headless exec-stream primary (app-server retained as fallback design) + hooks + skills + plugin path. |
 | Codex message delivery | [codex-message-delivery.md](codex-message-delivery.md) | planned / implemented in slices | Persistent member mailbox, dispatcher, queue policy, and delivery proof. |
 | Codex source audit | [codex-source-audit.md](codex-source-audit.md) | planned / reference | Source-level notes that support Codex integration decisions. |
 | Claude Code | [claude.md](claude.md) | planned / implemented in slices | On-demand provider via claude CLI, native subagent-to-child-thread mapping. |
-| Kimi (Moonshot) | not yet created | implemented in slices | Third registered exec-stream adapter (`kimi -p --output-format stream-json`); `KimiAdapter` in [crates/harness-cli/src/main.rs](../../crates/harness-cli/src/main.rs), capabilities `ProviderCapabilities::kimi_exec()`. Doc pending. |
+| Kimi (Moonshot) | [kimi.md](kimi.md) | implemented in slices | Third registered exec-stream adapter (`kimi -p --output-format stream-json`); `kimi -p` accepts no permission flags, so the harness worktree-isolates its read-only leaves. |
 | OpenClaw / cloud agent | not yet created | idea | Future remote or cloud-hosted provider implementation. |
 | Permission Agent | not yet created | idea | Future approval/safety specialist or provider-side permission service. |
 
