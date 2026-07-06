@@ -2659,6 +2659,57 @@ pub enum WorkflowStepStatus {
     Cached,
 }
 
+/// Machine-readable CLASS of terminal outcome for a [`WorkflowRun`] / [`WorkflowStep`]
+/// (issue #193). Complements — does NOT replace — the human `summary` /
+/// `output_summary` prose: the prose stays for operators, this enum is the truth a
+/// tool/dashboard branches on. Recorded at every terminal site: the reaper paths
+/// (driver died / orphan reaped), the per-leaf wall & idle timeout kills, a false
+/// `verdict()`, a provider failure, an operator SIGINT/SIGTERM cancel, and normal
+/// completion. `#[serde(default)]` on the carrying field → legacy rows that predate
+/// the field deserialize as `None` (reason unknown), never fail to load.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowTerminalReason {
+    /// Operator interrupted the driver (SIGINT/SIGTERM to `workflow run-script`);
+    /// active leaves' process groups were killed and journaled.
+    CanceledByOperator,
+    /// The driver process exited/crashed before finalizing; the abandoned-run
+    /// reaper (host-pid liveness) flipped the run to failed.
+    DriverExited,
+    /// An orphaned worker/pidfile was reaped by `workflow reap-workers` after its
+    /// owning run was already gone.
+    OrphanReaped,
+    /// A leaf hit its per-leaf wall-clock timeout (#183) and was killed.
+    LeafTimeout,
+    /// A leaf produced no output for the idle window and was killed.
+    IdleTimeout,
+    /// The provider worker itself failed (nonzero exit / spawn error / crash).
+    ProviderFailed,
+    /// The leaf's `verdict()` gate returned false (a clean logical failure, not a
+    /// crash).
+    VerdictFailed,
+    /// Reached its terminal state normally (run completed / step succeeded).
+    Completed,
+}
+
+impl WorkflowTerminalReason {
+    /// The canonical snake_case wire token (matches the serde representation).
+    /// Used by the CLI when composing JSON/summary strings without a round-trip
+    /// through serde.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            WorkflowTerminalReason::CanceledByOperator => "canceled_by_operator",
+            WorkflowTerminalReason::DriverExited => "driver_exited",
+            WorkflowTerminalReason::OrphanReaped => "orphan_reaped",
+            WorkflowTerminalReason::LeafTimeout => "leaf_timeout",
+            WorkflowTerminalReason::IdleTimeout => "idle_timeout",
+            WorkflowTerminalReason::ProviderFailed => "provider_failed",
+            WorkflowTerminalReason::VerdictFailed => "verdict_failed",
+            WorkflowTerminalReason::Completed => "completed",
+        }
+    }
+}
+
 /// Durable lifecycle for a patch captured from a writable workflow leaf.
 ///
 /// A patch starts as `pending_apply` when the worker's throwaway worktree
@@ -2764,6 +2815,17 @@ pub struct WorkflowRun {
     /// rows.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub phase_id: Option<String>,
+    /// Machine-readable class of how this run reached its terminal state (issue
+    /// #193), alongside the human `summary`. `None` while running and for legacy
+    /// rows that predate the field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal_reason: Option<WorkflowTerminalReason>,
+    /// True when the run did NOT complete (crashed / canceled / reaped) yet ≥1 of
+    /// its steps had already completed OK, so partial deliverables exist and are
+    /// retrievable with `workflow get-output`. `#[serde(default)]` → legacy rows
+    /// read as `false`.
+    #[serde(default)]
+    pub partial_output_available: bool,
 }
 
 /// Default retention policy for a [`WorkflowRun`]'s turn-event trace. Legacy rows
@@ -2802,6 +2864,16 @@ pub struct WorkflowStep {
     /// crash (carried by `status`). Drives the orchestrator's advance/replan choice.
     #[serde(default)]
     pub verdict_outcome: Option<VerdictOutcome>,
+    /// Machine-readable class of how this step reached its terminal state (issue
+    /// #193), alongside the human `output_summary`. `None` while running and for
+    /// legacy rows that predate the field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal_reason: Option<WorkflowTerminalReason>,
+    /// True when the step PRODUCED output but was then reaped/canceled before the
+    /// run finalized — i.e. its deliverable is partial (retrievable, but the step
+    /// did not cleanly complete). `#[serde(default)]` → legacy rows read as `false`.
+    #[serde(default)]
+    pub partial: bool,
 }
 
 /// A durable patch captured from a writable workflow step.
