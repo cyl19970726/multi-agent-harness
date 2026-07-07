@@ -1,8 +1,9 @@
-import { Activity, Terminal, Workflow } from "lucide-react";
+import { Activity, AlertTriangle, Terminal, Workflow } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
-import { StatusDot, type StatusTone } from "@/components/workbench/atoms";
+import { Badge } from "@/components/ui/badge";
+import { DocProperties, MonoId, StatusDot, type StatusTone } from "@/components/workbench/atoms";
 import { workflowRunTone } from "@/components/workbench/tones";
 import { formatDuration } from "@/model/readModel";
 import {
@@ -11,8 +12,12 @@ import {
   matchRuntimeSteps,
   normalizeWorkflowLabel,
   plannedStepCount,
+  schemaSelectionInfo,
+  splitPartialOutputSteps,
+  terminalReasonInfo,
   workflowRunIsLive,
   workflowRunProgress,
+  workflowRunVerdictInfo,
   workflowVerdictStep,
 } from "@/model/workflowSelectors";
 import type { PhaseDagLayer } from "@/model/readModel";
@@ -198,6 +203,213 @@ export function WorkflowDefinitionPreview({
         )}
       </div>
     </div>
+  );
+}
+
+/**
+ * Failure-diagnosis strip (issue #194): renders the run's `terminal_reason` as
+ * a human-readable class chip, the verdict ok/reason + success criterion, and
+ * a dry-run badge — the "why did this stop" story a run/step's raw JSON used
+ * to require archaeology for. Renders nothing for a run with no diagnosis-
+ * worthy signal (still running, completed cleanly, no terminal_reason and no
+ * verdict recorded) so a healthy run stays uncluttered. Shared by the
+ * Workflows surface run detail AND the Goal Workbench phase panel
+ * (`WorkflowRunSummary` below) so both read off the same classification.
+ */
+export function WorkflowFailureDiagnosisStrip({
+  run,
+  compact = false,
+  className,
+}: {
+  run?: WorkflowRun;
+  /** Compact mode: single-line chip row for a run CARD; full mode (default)
+   * adds the verdict reason / success-criterion detail lines for a run
+   * DETAIL page. */
+  compact?: boolean;
+  className?: string;
+}) {
+  if (!run) return null;
+  const info = terminalReasonInfo(run.terminal_reason);
+  const verdict = workflowRunVerdictInfo(run);
+  const isFailed = run.status === "failed";
+  const hasVerdictFailure = verdict.ok === false;
+  if (!info && !run.dry_run && !hasVerdictFailure) return null;
+  // Only surface the strip for a run that actually needs diagnosis (failed /
+  // canceled / a recorded verdict rejection) or is dry-run — a clean
+  // completed run with no verdict recorded stays quiet.
+  if (!isFailed && !info?.abandoned && !hasVerdictFailure && !run.dry_run) return null;
+
+  return (
+    <div className={cn("space-y-1.5", className)}>
+      <div className="flex flex-wrap items-center gap-1.5">
+        {info && (
+          <Badge tone={info.tone}>{info.label}</Badge>
+        )}
+        {hasVerdictFailure && <Badge tone="warn">verdict: not accepted</Badge>}
+        {run.dry_run && (
+          <Badge tone="warn" title="Plumbing validated only — no provider ran, no semantic acceptance.">
+            dry-run (plumbing only, not semantic acceptance)
+          </Badge>
+        )}
+      </div>
+      {!compact && (
+        <div className="space-y-1 text-[11px] leading-snug text-muted-foreground">
+          {info && <p>{info.gloss}</p>}
+          {verdict.successCriterion && (
+            <p>
+              <span className="font-medium text-foreground/80">Success criterion:</span>{" "}
+              {verdict.successCriterion}
+            </p>
+          )}
+          {verdict.reason && (
+            <p>
+              <span className="font-medium text-foreground/80">Verdict reason:</span> {verdict.reason}
+            </p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Partial-output section (issue #194 core ask): when `partial_output_available`,
+ * lists the run's steps split into USABLE (completed ok — safe to read as a
+ * partial deliverable) vs the rest (failed / reaped / canceled / still
+ * running) so an operator never mistakes an invalid gate step's output for a
+ * usable artifact. Renders nothing when the run did not mark partial output
+ * as available.
+ */
+export function WorkflowPartialOutputSection({
+  run,
+  steps,
+  stepHref,
+}: {
+  run?: WorkflowRun;
+  steps: WorkflowStep[];
+  stepHref?: (step: WorkflowStep) => string | undefined;
+}) {
+  if (!run?.partial_output_available) return null;
+  const { usable, invalid } = splitPartialOutputSteps(steps);
+  return (
+    <div className="space-y-2 rounded-md border border-status-warn/25 bg-status-warn/6 p-3">
+      <div className="flex items-center gap-1.5 text-[11px] font-semibold text-status-warn">
+        <AlertTriangle className="size-3.5" />
+        Partial output available
+      </div>
+      <p className="text-[11px] leading-snug text-muted-foreground">
+        This run did not complete cleanly, but some steps finished before it stopped. Their
+        output is usable; the rest is not.
+      </p>
+      <div className="grid gap-2 sm:grid-cols-2">
+        <PartialOutputStepList
+          title={`Usable (${usable.length})`}
+          tone="good"
+          steps={usable}
+          stepHref={stepHref}
+          emptyLabel="No step completed before the run stopped."
+        />
+        <PartialOutputStepList
+          title={`Invalid / incomplete (${invalid.length})`}
+          tone="bad"
+          steps={invalid}
+          stepHref={stepHref}
+          emptyLabel="No unresolved steps."
+        />
+      </div>
+    </div>
+  );
+}
+
+function PartialOutputStepList({
+  title,
+  tone,
+  steps,
+  stepHref,
+  emptyLabel,
+}: {
+  title: string;
+  tone: StatusTone;
+  steps: WorkflowStep[];
+  stepHref?: (step: WorkflowStep) => string | undefined;
+  emptyLabel: string;
+}) {
+  return (
+    <div className="min-w-0 rounded-md border border-border/70 bg-background/50 p-2">
+      <div className="mb-1.5 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+        <StatusDot tone={tone} />
+        {title}
+      </div>
+      {steps.length === 0 ? (
+        <p className="text-[11px] text-muted-foreground">{emptyLabel}</p>
+      ) : (
+        <ul className="space-y-1">
+          {steps.map((step) => {
+            const href = stepHref?.(step);
+            const content = (
+              <span className="flex min-w-0 items-center gap-1.5">
+                <span className="min-w-0 truncate text-[12px] font-medium text-foreground">{step.label}</span>
+                {step.partial && <Badge tone="warn">partial</Badge>}
+              </span>
+            );
+            return (
+              <li key={step.id}>
+                {href ? (
+                  <a href={href} className="block rounded px-1 py-0.5 transition-colors hover:bg-muted/40">
+                    {content}
+                  </a>
+                ) : (
+                  <div className="px-1 py-0.5">{content}</div>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Schema-quality badges (issue #194): attempt count / selected candidate
+ * index / empty-field count for a schema'd step, plus a loud flag when
+ * `empty_field_count > 0` — the "looked valid but empty" trap the issue calls
+ * out. Renders nothing for a text-mode step (no schema metadata recorded).
+ */
+export function WorkflowSchemaQualityBadges({ step }: { step: WorkflowStep }) {
+  const info = schemaSelectionInfo(step);
+  if (!info) return null;
+  return (
+    <div className="flex flex-wrap items-center gap-1.5">
+      {typeof info.attemptCount === "number" && (
+        <Badge tone="idle">{info.attemptCount} attempt{info.attemptCount === 1 ? "" : "s"}</Badge>
+      )}
+      {info.selectedIndex != null && (
+        <Badge tone="idle">candidate {info.selectedIndex}{info.candidateCount ? ` of ${info.candidateCount}` : ""}</Badge>
+      )}
+      <Badge tone={info.hasEmptyFields ? "bad" : "good"}>
+        {info.emptyFieldCount} empty field{info.emptyFieldCount === 1 ? "" : "s"}
+      </Badge>
+      {info.strict && <Badge tone="info">strict</Badge>}
+      {info.hasEmptyFields && (
+        <span className="text-[11px] font-medium text-status-bad">
+          looked valid but empty — inspect the selected candidate
+        </span>
+      )}
+    </div>
+  );
+}
+
+/** Compact provider-session id row (issue #194 step→ProviderSession link). No
+ * dedicated session drill-in exists on this shared panel (the Workflows
+ * surface's step card already opens its own drawer via `provider_session_id`
+ * matched against `provider_sessions`); this renders the id compactly for
+ * contexts — like the Goal Workbench phase panel — that don't have that
+ * drawer wired. */
+export function WorkflowStepSessionId({ step }: { step: WorkflowStep }) {
+  if (!step.provider_session_id) return null;
+  return (
+    <DocProperties items={[{ label: "Provider session", value: <MonoId>{step.provider_session_id}</MonoId> }]} />
   );
 }
 
@@ -464,6 +676,7 @@ export function WorkflowRunSummary({
             latestResult={latestResult}
             tone={currentTone}
           />
+          <WorkflowFailureDiagnosisStrip run={run} compact />
           <div className="space-y-1">
             <div className="flex items-center justify-between text-[10px] font-medium text-muted-foreground">
               <span>Live execution progress</span>
