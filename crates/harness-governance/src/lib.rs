@@ -248,7 +248,18 @@ pub fn check_links(root: &Path, doc_roots: &[String]) -> GateReport {
                 continue;
             }
             let target = normalize_posix(&join_posix(parent_posix(rel), without_hash));
-            if !root.join(&target).exists() {
+            if root.join(&target).exists() {
+                continue;
+            }
+            // A file reached through a symlinked doc root writes its relative
+            // links against its REAL location, not the symlink path — resolve
+            // once more from the canonicalized parent before failing.
+            let real_target_exists = std::fs::canonicalize(root.join(rel))
+                .ok()
+                .and_then(|real| real.parent().map(|p| p.join(without_hash)))
+                .map(|p| p.exists())
+                .unwrap_or(false);
+            if !real_target_exists {
                 failures.push(format!("{rel}: missing link target {raw}"));
             }
         }
@@ -878,6 +889,27 @@ mod tests {
         let p = root.join(rel);
         fs::create_dir_all(p.parent().unwrap()).unwrap();
         fs::write(p, body).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn links_resolve_against_real_location_for_symlinked_roots() {
+        let root = tmp("links-symlink");
+        // Real skill lives outside the scanned doc root; its relative link is
+        // written against the real location (../../crates/...).
+        write(
+            &root,
+            "skills/star-x/SKILL.md",
+            "[src](../../crates/lib.rs) [gone](../../crates/nope.rs)",
+        );
+        write(&root, "crates/lib.rs", "x");
+        fs::create_dir_all(root.join("linked")).unwrap();
+        std::os::unix::fs::symlink(root.join("skills/star-x"), root.join("linked/star-x")).unwrap();
+        let r = check_links(&root, &["linked".into()]);
+        assert_eq!(
+            r.failures,
+            vec!["linked/star-x/SKILL.md: missing link target ../../crates/nope.rs".to_string()]
+        );
     }
 
     #[test]
