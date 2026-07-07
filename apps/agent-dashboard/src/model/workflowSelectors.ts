@@ -1,4 +1,11 @@
-import type { GoalOrchestrationRun, GoalPhase, Task, WorkflowRun, WorkflowStep } from "../types";
+import type {
+  GoalOrchestrationRun,
+  GoalPhase,
+  Task,
+  WorkflowRun,
+  WorkflowStep,
+  WorkflowTerminalReason,
+} from "../types";
 import type { PhaseDagLayer } from "./readModel";
 import { parseTs } from "./readModel";
 
@@ -66,6 +73,160 @@ export function countWorkflowStepStatuses(steps: WorkflowStep[]): WorkflowStepSt
 
 export function workflowRunIsLive(run?: WorkflowRun, steps: WorkflowStep[] = []): boolean {
   return run?.status === "running" || steps.some((step) => ["queued", "running"].includes(step.status));
+}
+
+/* ================================================================== */
+/* Failure diagnosis (issue #194): terminal_reason -> human class chip, */
+/* partial-output split, schema-quality flags, dry-run gloss.           */
+/* ================================================================== */
+
+/** A short human label + longer gloss for a {@link WorkflowTerminalReason}. */
+export interface TerminalReasonInfo {
+  reason: WorkflowTerminalReason;
+  /** Short chip label, e.g. "canceled by operator". */
+  label: string;
+  /** One-line explanation of what this class means operationally. */
+  gloss: string;
+  /** Whether this class implies the run/step was actively STOPPED (not a
+   * clean pass/fail outcome the workflow author reasoned about). */
+  abandoned: boolean;
+  tone: "bad" | "warn" | "good" | "idle";
+}
+
+const TERMINAL_REASON_INFO: Record<WorkflowTerminalReason, Omit<TerminalReasonInfo, "reason">> = {
+  canceled_by_operator: {
+    label: "canceled by operator",
+    gloss: "An operator interrupted the driver (SIGINT/SIGTERM); active leaves were killed.",
+    abandoned: true,
+    tone: "warn",
+  },
+  driver_exited: {
+    label: "driver exited — abandoned",
+    gloss: "The driver process exited or crashed before the run finalized; the run was abandoned mid-flight.",
+    abandoned: true,
+    tone: "bad",
+  },
+  orphan_reaped: {
+    label: "orphan reaped",
+    gloss: "A worker was left running after its owning run was already gone and was reaped as an orphan.",
+    abandoned: true,
+    tone: "warn",
+  },
+  leaf_timeout: {
+    label: "leaf timeout",
+    gloss: "A leaf hit its per-leaf wall-clock timeout and was killed.",
+    abandoned: false,
+    tone: "bad",
+  },
+  idle_timeout: {
+    label: "idle timeout",
+    gloss: "A leaf produced no output for the idle window and was killed.",
+    abandoned: false,
+    tone: "bad",
+  },
+  provider_failed: {
+    label: "provider failed",
+    gloss: "The provider worker itself failed (nonzero exit / spawn error / crash) — a driver/provider problem, not a verdict.",
+    abandoned: false,
+    tone: "bad",
+  },
+  verdict_failed: {
+    label: "verdict failed",
+    gloss: "Every step ran, but the workflow's own verdict() gate returned false — a clean logical rejection, not a crash.",
+    abandoned: false,
+    tone: "warn",
+  },
+  completed: {
+    label: "completed",
+    gloss: "Reached its terminal state normally.",
+    abandoned: false,
+    tone: "good",
+  },
+};
+
+/** Look up the human class chip info for a raw `terminal_reason` wire value. */
+export function terminalReasonInfo(
+  reason?: string | null,
+): TerminalReasonInfo | undefined {
+  if (!reason) return undefined;
+  const known = TERMINAL_REASON_INFO[reason as WorkflowTerminalReason];
+  if (!known) return undefined;
+  return { reason: reason as WorkflowTerminalReason, ...known };
+}
+
+/** The run's verdict, read from `final_output.verdict` / `final_output.success_criterion`
+ * (the shape `verdict(ok, reason=...)` and `success_criterion=...` journal onto
+ * `final_output`, see harness-cli `run_verdict_ok`). `undefined` fields mean
+ * "not recorded yet" (e.g. the run never reached its verdict call). */
+export interface WorkflowRunVerdictInfo {
+  ok?: boolean;
+  reason?: string;
+  successCriterion?: string;
+}
+
+export function workflowRunVerdictInfo(run?: WorkflowRun): WorkflowRunVerdictInfo {
+  const out = run?.final_output;
+  if (!out || typeof out !== "object") return {};
+  const record = out as Record<string, unknown>;
+  const verdict = record.verdict;
+  const verdictRecord = verdict && typeof verdict === "object" ? (verdict as Record<string, unknown>) : undefined;
+  return {
+    ok: typeof verdictRecord?.ok === "boolean" ? verdictRecord.ok : undefined,
+    reason: typeof verdictRecord?.reason === "string" ? verdictRecord.reason : undefined,
+    successCriterion:
+      typeof record.success_criterion === "string" ? record.success_criterion : undefined,
+  };
+}
+
+/** Split a run's steps into "usable partial artifacts" (completed ok, safe to
+ * read) vs the rest (failed/reaped/canceled/still-running) — issue #194's core
+ * ask for `partial_output_available` runs: "separates usable partial artifacts
+ * from invalid gate output". Only meaningful when the run did not complete
+ * cleanly; callers should gate rendering on `run.partial_output_available`. */
+export interface PartialOutputSplit {
+  usable: WorkflowStep[];
+  invalid: WorkflowStep[];
+}
+
+export function splitPartialOutputSteps(steps: WorkflowStep[]): PartialOutputSplit {
+  const usable: WorkflowStep[] = [];
+  const invalid: WorkflowStep[] = [];
+  for (const step of steps) {
+    if (step.status === "completed" || step.status === "cached") {
+      usable.push(step);
+    } else {
+      invalid.push(step);
+    }
+  }
+  return { usable, invalid };
+}
+
+/** Schema-selection quality metadata read off a step's `result` (issue #192
+ * metadata, surfaced here for issue #194's "schema-quality visibility"
+ * ask). `undefined` for text-mode steps (no `schema_attempt_count` recorded). */
+export interface SchemaSelectionInfo {
+  attemptCount?: number;
+  selectedIndex?: number | null;
+  candidateCount?: number;
+  emptyFieldCount: number;
+  strict: boolean;
+  /** True when the selected candidate has ≥1 empty top-level string field —
+   * the "looked valid but empty" trap the issue calls out explicitly. */
+  hasEmptyFields: boolean;
+}
+
+export function schemaSelectionInfo(step: WorkflowStep): SchemaSelectionInfo | undefined {
+  const result = step.result;
+  if (!result || result.schema_attempt_count == null) return undefined;
+  const emptyFieldCount = result.empty_field_count ?? 0;
+  return {
+    attemptCount: result.schema_attempt_count,
+    selectedIndex: result.selected_json_index,
+    candidateCount: result.schema_candidate_count,
+    emptyFieldCount,
+    strict: Boolean(result.schema_strict),
+    hasEmptyFields: emptyFieldCount > 0,
+  };
 }
 
 /**

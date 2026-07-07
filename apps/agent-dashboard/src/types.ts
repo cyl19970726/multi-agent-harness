@@ -782,6 +782,25 @@ export type WorkflowStepStatus =
   | "cached";
 
 /**
+ * Machine-readable CLASS of terminal outcome for a {@link WorkflowRun} /
+ * {@link WorkflowStep} (issue #193; mirrors harness-core
+ * `WorkflowTerminalReason`, snake_case wire spelling). Complements — does NOT
+ * replace — the human `summary` / `output_summary` prose: this is what a
+ * dashboard branches on to answer "why did this stop" without JSON
+ * archaeology (issue #194). `undefined` while running and for legacy rows
+ * that predate the field.
+ */
+export type WorkflowTerminalReason =
+  | "canceled_by_operator"
+  | "driver_exited"
+  | "orphan_reaped"
+  | "leaf_timeout"
+  | "idle_timeout"
+  | "provider_failed"
+  | "verdict_failed"
+  | "completed";
+
+/**
  * One run of a built-in (registered) workflow. Mirrors harness-core
  * `WorkflowRun` (lib.rs:1261-1273) verbatim, snake_case. `step_ids` orders the
  * steps in the sequence they were started.
@@ -841,6 +860,20 @@ export interface WorkflowRun {
   goal_id?: string | null;
   /** The goal phase this run executed (`phase-*`) or revised (`revise-*`). */
   phase_id?: string | null;
+  /**
+   * Machine-readable class of how this run reached its terminal state (issue
+   * #193), alongside the human `summary`. `undefined` while running and for
+   * legacy rows that predate the field.
+   */
+  terminal_reason?: WorkflowTerminalReason | string | null;
+  /**
+   * True when the run did NOT complete (crashed / canceled / reaped) yet at
+   * least one of its steps had already completed OK, so partial deliverables
+   * exist and are retrievable with `workflow get-output` (issue #193 G4).
+   * `undefined`/false for legacy rows and runs with no salvageable step
+   * output.
+   */
+  partial_output_available?: boolean;
 }
 
 /**
@@ -933,6 +966,48 @@ export interface WorkflowStepResult {
   worktree_diff?: string;
   /** True when {@link worktree_diff} was truncated at the cap. */
   worktree_diff_truncated?: boolean;
+  /**
+   * The selected structured candidate for a schema'd step (issue #192). This
+   * is the SAME object as `structured` below; kept for readability at call
+   * sites that only care about the schema-selection story.
+   */
+  structured?: unknown;
+  /**
+   * How many provider attempts ran to produce this step's structured output
+   * (issue #192). Only present on schema'd steps; `undefined` for text-mode
+   * steps. `1` when the first attempt was accepted, `2` after the ONE
+   * corrective retry fired.
+   */
+  schema_attempt_count?: number;
+  /**
+   * The 0-based index (in text order) of the JSON object candidate that was
+   * SELECTED among all candidates parsed from the reply (issue #192).
+   * `undefined` when no candidate survived (a schema failure) or for
+   * text-mode steps.
+   */
+  selected_json_index?: number | null;
+  /**
+   * How many JSON object candidates were parsed from the reply text (issue
+   * #192). `1` is the common case; more than one means the worker's reply
+   * concatenated multiple JSON objects and the runtime had to choose among
+   * them.
+   */
+  schema_candidate_count?: number;
+  /**
+   * Count of top-level string fields in the SELECTED candidate that were
+   * EMPTY after trim (issue #192) — the "looked valid but empty" trap, e.g.
+   * `{"winner":"","reject":""}`. Visible even in permissive (non-strict)
+   * mode so emptiness is never silently hidden. `0` when the candidate had
+   * no empty fields (or for text-mode steps).
+   */
+  empty_field_count?: number;
+  /**
+   * Echo of the leaf's `schema_strict` option (issue #192): `true` rejects a
+   * semantically-empty candidate and looks for a later meaningful one;
+   * `false` (default) accepts the first candidate with the required keys
+   * regardless of emptiness.
+   */
+  schema_strict?: boolean;
 }
 
 /**
@@ -953,6 +1028,19 @@ export interface WorkflowStep {
   result?: WorkflowStepResult | null;
   started_at: string;
   ended_at?: string | null;
+  /**
+   * Machine-readable class of how this step reached its terminal state
+   * (issue #193), alongside the human `output_summary`. `undefined` while
+   * running and for legacy rows that predate the field.
+   */
+  terminal_reason?: WorkflowTerminalReason | string | null;
+  /**
+   * True when the step PRODUCED output but was then reaped/canceled before
+   * the run finalized — its deliverable is partial (retrievable, but the
+   * step did not cleanly complete) (issue #193 G4). `undefined`/false for
+   * legacy rows and steps that completed cleanly.
+   */
+  partial?: boolean;
 }
 
 export interface WorkflowWarning {
