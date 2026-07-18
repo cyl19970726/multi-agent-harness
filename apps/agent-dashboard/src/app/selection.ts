@@ -1,5 +1,6 @@
 export type SurfaceId =
   | "agents"
+  | "team"
   | "vision"
   | "goal"
   | "task"
@@ -22,9 +23,8 @@ export interface SelectionState {
   surface: SurfaceId;
   goalId?: string;
   /**
-   * Retained so the read model can still resolve an AgentTeam for data
-   * continuity (fixtures + historical jsonl keep the AgentTeam object). There is
-   * no Team concept in the UI; nothing sets this from a user gesture.
+   * The selected Agent Team run id (a team_run id), addressed as `?team=<id>`.
+   * Opens the Team surface's run detail when set; the list shows when absent.
    */
   teamId?: string;
   /** The selected agent id (the AgentMember opened on the agent detail page). */
@@ -61,6 +61,7 @@ export const defaultSelection: SelectionState = {
 
 const surfaceIds: SurfaceId[] = [
   "agents",
+  "team",
   "vision",
   "goal",
   "task",
@@ -119,7 +120,12 @@ export function selectionFromLocation(base: SelectionState): SelectionState {
     next.agentTab = agentTab as AgentTab;
   }
   const team = params.get("team");
-  if (team) next.teamId = team;
+  // Canonical team-run address: ?team=<run id>; setting it implies the Team
+  // surface (mirror of the ?agent= / ?workflowRun= rules).
+  if (team) {
+    next.teamId = team;
+    if (!surface) next.surface = "team";
+  }
   const goal = params.get("goal");
   if (goal) next.goalId = goal;
   const task = params.get("task");

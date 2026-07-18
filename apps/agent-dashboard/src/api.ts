@@ -6,6 +6,7 @@ import type {
   Message,
   Project,
   ProviderSession,
+  TeamRunEvent,
   WorkflowDef,
   WorkflowRun,
   WorkflowStep,
@@ -179,7 +180,10 @@ export type SseFrame =
   // re-normalizing at the render layer. Merged by `seq` against the snapshot.
   | { kind: "provider_turn_event_normalized"; sessionId: string; events: HarnessTurnEvent[] }
   | { kind: "workflow_run"; run: WorkflowRun }
-  | { kind: "workflow_step"; step: WorkflowStep };
+  | { kind: "workflow_step"; step: WorkflowStep }
+  // A single team-run log entry (team-console): appended to team_run_events,
+  // latest-wins by id so a replayed frame self-heals.
+  | { kind: "team_run_event"; event: TeamRunEvent };
 
 export interface EventStreamHandlers {
   /** Connection established (the initial `snapshot` frame arrived). */
@@ -258,6 +262,10 @@ export function openEventStream(
   source.addEventListener("workflow_step", (event) => {
     const data = parse<WorkflowStep>(event as MessageEvent);
     if (data) handlers.onFrame({ kind: "workflow_step", step: data });
+  });
+  source.addEventListener("team_run_event", (event) => {
+    const data = parse<TeamRunEvent>(event as MessageEvent);
+    if (data) handlers.onFrame({ kind: "team_run_event", event: data });
   });
   source.addEventListener("error", handlers.onError);
 
@@ -341,6 +349,12 @@ export function applyFrame(snapshot: DashboardSnapshot, frame: SseFrame): Dashbo
       return {
         ...snapshot,
         workflow_steps: upsertById(snapshot.workflow_steps, frame.step),
+        generated_at: new Date().toISOString(),
+      };
+    case "team_run_event":
+      return {
+        ...snapshot,
+        team_run_events: upsertById(snapshot.team_run_events, frame.event),
         generated_at: new Date().toISOString(),
       };
   }

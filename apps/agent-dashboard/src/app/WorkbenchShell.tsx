@@ -53,6 +53,7 @@ import {
   VisionOverview,
 } from "../surfaces/Surfaces";
 import { WorkflowRunDetail, WorkflowsList } from "../surfaces/Workflows";
+import { TeamRunDetail, TeamRunsList } from "../surfaces/TeamRuns";
 import { deliverQueued } from "../api/actions";
 import type { SelectionState, SurfaceId } from "./selection";
 
@@ -85,9 +86,10 @@ interface WorkbenchShellProps {
   onTogglePoll: () => void;
 }
 
-/** Primary navigation rail: Agents, Vision, Work, Workflows, Docs. */
+/** Primary navigation rail: Agents, Team, Vision, Work, Workflows, Docs. */
 const navItems: { id: SurfaceId; label: string; icon: typeof Users }[] = [
   { id: "agents", label: "Agents", icon: Bot },
+  { id: "team", label: "Team", icon: Users },
   { id: "vision", label: "Vision", icon: Target },
   { id: "tasks", label: "Work", icon: GitBranch },
   { id: "workflows", label: "Workflows", icon: Workflow },
@@ -128,7 +130,7 @@ export function WorkbenchShell({
   // needs full width for its columns; the Goal/Task detail pages are centered
   // Notion documents that read better without a competing rail. All suppress the
   // global Inspector; the rest keep it.
-  const noInspector: SurfaceId[] = ["agents", "tasks", "goal", "task", "workflows", "docs"];
+  const noInspector: SurfaceId[] = ["agents", "team", "tasks", "goal", "task", "workflows", "docs"];
   const showInspector = !noInspector.includes(selection.surface);
 
   return (
@@ -566,6 +568,13 @@ function SurfaceSwitch({
       );
     case "docs":
       return <DocsBrowser {...shared} docPath={selection.docPath} />;
+    case "team":
+      // One surface, self-splitting on the selected run (mirror of agents/memberId).
+      return selection.teamId ? (
+        <TeamRunDetail {...shared} teamRunId={selection.teamId} />
+      ) : (
+        <TeamRunsList {...shared} />
+      );
     case "debug":
       return <DebugSurface model={model} sourceLabel={sourceLabel} />;
     case "agents":

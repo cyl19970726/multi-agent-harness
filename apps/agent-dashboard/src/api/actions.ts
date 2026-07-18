@@ -294,3 +294,114 @@ export function requestReview(
     body,
   };
 }
+
+/* ------------------------------------------------------------------ */
+/* Agent Team runs (POST /v1/team-runs…, team-console)                 */
+/* ------------------------------------------------------------------ */
+
+/** One member slot of a {@link createTeamRun} request. */
+export interface TeamRunMemberSpec {
+  name: string;
+  role: string;
+  provider: string;
+  model?: string;
+  /** Paths the member may modify; empty/omitted means read-only. */
+  ownedPaths?: string[];
+}
+
+/**
+ * Create a new Agent Team run with its member roster (POST /v1/team-runs). The
+ * response carries the refreshed snapshot, which App's runAction adopts; the
+ * new run then appears at the top of the Team list.
+ */
+export function createTeamRun(params: {
+  objective: string;
+  waveIndex?: number;
+  budgetLimitUsd?: number;
+  /** Chain this run onto an earlier wave's run (re-plan lineage). */
+  previousRunId?: string;
+  members: TeamRunMemberSpec[];
+}): ActionDescriptor {
+  const body: Record<string, unknown> = {
+    objective: params.objective,
+    members: params.members.map((member) => {
+      const spec: Record<string, unknown> = {
+        name: member.name,
+        role: member.role,
+        provider: member.provider,
+      };
+      if (member.model) {
+        spec.model = member.model;
+      }
+      if (member.ownedPaths && member.ownedPaths.length) {
+        spec.owned_paths = member.ownedPaths;
+      }
+      return spec;
+    }),
+  };
+  if (params.waveIndex != null) {
+    body.wave_index = params.waveIndex;
+  }
+  if (params.budgetLimitUsd != null) {
+    body.budget_limit_usd = params.budgetLimitUsd;
+  }
+  if (params.previousRunId) {
+    body.previous_run_id = params.previousRunId;
+  }
+  return { method: "POST", path: "/v1/team-runs", body };
+}
+
+/**
+ * Send a message on a team run's handoff chain (POST /v1/team-runs/{id}/messages).
+ * `fromMemberId` is "host" or a member run id; `toMemberIds` lists recipients.
+ */
+export function sendTeamMessage(
+  teamRunId: string,
+  params: {
+    fromMemberId: string;
+    toMemberIds: string[];
+    kind: string;
+    body: string;
+    taskId?: string;
+  },
+): ActionDescriptor {
+  const body: Record<string, unknown> = {
+    from_member_id: params.fromMemberId,
+    to_member_ids: params.toMemberIds,
+    kind: params.kind,
+    body: params.body,
+  };
+  if (params.taskId) {
+    body.task_id = params.taskId;
+  }
+  return {
+    method: "POST",
+    path: `/v1/team-runs/${encodeId(teamRunId)}/messages`,
+    body,
+  };
+}
+
+/**
+ * Start a team run's orchestration loop (POST /v1/team-runs/{id}/start). v0
+ * answers 501 with the CLI hint in the error body; the UI surfaces that hint
+ * through the standard action-error banner.
+ */
+export function startTeamRun(teamRunId: string): ActionDescriptor {
+  return { method: "POST", path: `/v1/team-runs/${encodeId(teamRunId)}/start`, body: {} };
+}
+
+/**
+ * Drive a team run through the wave gate (POST /v1/team-runs/{id}/transition).
+ * The backend only allows `reviewing → completed` (gate pass) and
+ * `planning|running|waiting → cancelled`; anything else 400s.
+ */
+export function transitionTeamRun(
+  teamRunId: string,
+  status: "completed" | "cancelled",
+): ActionDescriptor {
+  return {
+    method: "POST",
+    path: `/v1/team-runs/${encodeId(teamRunId)}/transition`,
+    body: { status },
+  };
+}

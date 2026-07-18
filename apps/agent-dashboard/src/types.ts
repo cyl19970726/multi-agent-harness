@@ -711,6 +711,170 @@ export interface HarnessTurnEvent {
   raw_provider_event: unknown;
 }
 
+/* ------------------------------------------------------------------ */
+/* Agent Team runs (team-run orchestration, WP team-console)           */
+/* ------------------------------------------------------------------ */
+
+/** Lifecycle of a {@link TeamRun} (mirrors the harness team-run status). */
+export type TeamRunStatus =
+  | "planning"
+  | "running"
+  | "waiting"
+  | "reviewing"
+  | "completed"
+  | "failed"
+  | "cancelled";
+
+/**
+ * One Agent Team run: a host-orchestrated group of member runs working one
+ * objective in waves. Wire shape is snake_case; timestamps are "unix-ms:<ms>"
+ * strings like the rest of the snapshot.
+ */
+export interface TeamRun {
+  id: string;
+  definition_id?: string | null;
+  /** Wave lineage: the previous wave's run this one re-plans from, if any. */
+  previous_run_id?: string | null;
+  host_surface?: string | null;
+  host_thread_id?: string | null;
+  objective?: string | null;
+  status?: TeamRunStatus | string;
+  wave_index?: number;
+  member_run_ids?: string[];
+  task_ids?: string[];
+  budget_limit_usd?: number | null;
+  created_at?: string;
+  updated_at?: string;
+  completed_at?: string | null;
+}
+
+/** Lifecycle of a {@link MemberRun} (mirrors the harness member-run status). */
+export type MemberRunStatus =
+  | "starting"
+  | "idle"
+  | "queued"
+  | "running"
+  | "waiting"
+  | "reviewing"
+  | "blocked"
+  | "completed"
+  | "failed"
+  | "stopped";
+
+/** One member's participation in a {@link TeamRun}. */
+export interface MemberRun {
+  id: string;
+  team_run_id?: string;
+  slot_id?: string | null;
+  name?: string | null;
+  role?: string | null;
+  provider?: "codex" | "claude" | "kimi" | string;
+  model?: string | null;
+  status?: MemberRunStatus | string;
+  provider_session_id?: string | null;
+  acp_session_id?: string | null;
+  current_task_id?: string | null;
+  worktree_ref?: string | null;
+  owned_paths?: string[];
+  started_at?: string;
+  last_event_at?: string | null;
+  finished_at?: string | null;
+}
+
+/** Delivery of a {@link TeamMessage} to one recipient. */
+export interface TeamMessageDelivery {
+  member_id?: string;
+  policy?: string;
+  status?: "queued" | "delivered" | "acknowledged" | "failed" | "expired" | string;
+  attempt?: number;
+  updated_at?: string;
+}
+
+/** Kind of a {@link TeamMessage} (open enum; rendered as a colored pill). */
+export type TeamMessageKind =
+  | "assignment"
+  | "question"
+  | "answer"
+  | "progress"
+  | "blocker"
+  | "handoff"
+  | "review_request"
+  | "review_result"
+  | "control"
+  | "broadcast";
+
+/**
+ * One message on a team run's handoff chain. `from_member_id` is `"host"` or a
+ * member run id; `deliveries` tracks per-recipient ack state (an unacknowledged
+ * delivery is a needs-you signal for the operator).
+ */
+export interface TeamMessage {
+  id: string;
+  team_run_id?: string;
+  task_id?: string | null;
+  from_member_id?: string;
+  to_member_ids?: string[];
+  kind?: TeamMessageKind | string;
+  body?: string;
+  correlation_id?: string | null;
+  causation_id?: string | null;
+  evidence_refs?: string[];
+  deliveries?: TeamMessageDelivery[];
+  created_at?: string;
+}
+
+/** One recorded action of a member run (tool call, progress note, …). */
+export interface MemberAction {
+  id: string;
+  seq?: number;
+  team_run_id?: string;
+  member_run_id?: string;
+  task_id?: string | null;
+  action_type?: string;
+  status?: "started" | "progress" | "succeeded" | "failed" | "cancelled" | string;
+  title?: string;
+  summary?: string;
+  evidence_refs?: string[];
+  started_at?: string;
+  completed_at?: string | null;
+}
+
+/**
+ * A delegation spawned from a member run. `mode === "provider_native"` means the
+ * provider spawned it on its own and the harness only CAPTURED it; every other
+ * mode is orchestrated BY the harness.
+ */
+export interface DelegationRun {
+  id: string;
+  team_run_id?: string;
+  parent_member_run_id?: string;
+  parent_task_id?: string | null;
+  mode?: "provider_native" | "harness_worker" | "dynamic_workflow" | string;
+  provider?: string | null;
+  provider_child_thread_id?: string | null;
+  workflow_run_id?: string | null;
+  objective?: string | null;
+  status?: string;
+  evidence_ids?: string[];
+  created_at?: string;
+  updated_at?: string;
+}
+
+/** One entry in a team run's event log (created/updated/completed on run entities). */
+export interface TeamRunEvent {
+  id: string;
+  seq?: number;
+  team_run_id?: string;
+  source_kind?: "host" | "member" | "delegation" | string;
+  member_run_id?: string | null;
+  delegation_run_id?: string | null;
+  entity_type?: string;
+  entity_id?: string;
+  operation?: "created" | "updated" | "completed" | string;
+  summary?: string;
+  occurred_at?: string;
+}
+
 export interface DashboardSnapshot {
   generated_at?: string;
   goals?: Goal[];
@@ -754,6 +918,13 @@ export interface DashboardSnapshot {
    * forward `goal_id`/`phase_id` now stamped on each {@link WorkflowRun}.
    */
   goal_orchestration_runs?: GoalOrchestrationRun[];
+  /** Agent Team runs (team-console): host-orchestrated member groups. */
+  team_runs?: TeamRun[];
+  member_runs?: MemberRun[];
+  team_messages?: TeamMessage[];
+  member_actions?: MemberAction[];
+  delegation_runs?: DelegationRun[];
+  team_run_events?: TeamRunEvent[];
 }
 
 /**
