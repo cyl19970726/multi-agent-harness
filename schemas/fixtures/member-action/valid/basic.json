@@ -1,0 +1,14 @@
+{
+  "id": "mact-1",
+  "seq": 7,
+  "team_run_id": "trun-1",
+  "member_run_id": "mrun-1",
+  "task_id": "task-1",
+  "action_type": "tool_completed",
+  "status": "succeeded",
+  "title": "cargo test -p harness-store",
+  "summary": "All tests passed.",
+  "evidence_refs": ["ev-1"],
+  "started_at": "2026-07-18T00:00:00Z",
+  "completed_at": "2026-07-18T00:01:00Z"
+}

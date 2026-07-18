@@ -1,0 +1,21 @@
+{
+  "id": "trun-1",
+  "definition_id": "tdef-1",
+  "previous_run_id": "trun-0",
+  "host_surface": "kimi-cli",
+  "host_thread_id": "thread-9",
+  "objective": "Ship the team run ledger.",
+  "status": "running",
+  "wave_index": 2,
+  "member_run_ids": [
+    "mrun-1",
+    "mrun-2"
+  ],
+  "task_ids": [
+    "task-1"
+  ],
+  "budget_limit_usd": 12.5,
+  "created_at": "2026-07-18T00:00:00Z",
+  "updated_at": "2026-07-18T00:01:00Z",
+  "completed_at": null
+}

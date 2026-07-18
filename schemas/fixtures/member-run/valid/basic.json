@@ -1,0 +1,18 @@
+{
+  "id": "mrun-1",
+  "team_run_id": "trun-1",
+  "slot_id": "slot-worker-1",
+  "name": "worker-1",
+  "role": "worker",
+  "provider": "kimi",
+  "model": "kimi-k2",
+  "status": "running",
+  "provider_session_id": "ps-1",
+  "acp_session_id": "acp-session-1",
+  "current_task_id": "task-1",
+  "worktree_ref": "wt://mrun-1",
+  "owned_paths": ["crates/harness-core/"],
+  "started_at": "2026-07-18T00:00:00Z",
+  "last_event_at": "2026-07-18T00:01:00Z",
+  "finished_at": null
+}

@@ -5,6 +5,12 @@
 | Goal | [goal.schema.json](goal.schema.json) |
 | Agent team | [agent-team.schema.json](agent-team.schema.json) |
 | Agent member | [agent-member.schema.json](agent-member.schema.json) |
+| Agent team run | [agent-team-run.schema.json](agent-team-run.schema.json) |
+| Member run | [member-run.schema.json](member-run.schema.json) |
+| Team message | [team-message.schema.json](team-message.schema.json) |
+| Member action | [member-action.schema.json](member-action.schema.json) |
+| Delegation run | [delegation-run.schema.json](delegation-run.schema.json) |
+| Team run event | [team-run-event.schema.json](team-run-event.schema.json) |
 | Task | [task.schema.json](task.schema.json) |
 | Message | [message.schema.json](message.schema.json) |
 | Agent runtime | [agent-runtime.schema.json](agent-runtime.schema.json) |

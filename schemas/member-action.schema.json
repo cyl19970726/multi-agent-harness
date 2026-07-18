@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-harness.local/schemas/member-action.schema.json",
+  "title": "MemberAction",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "seq", "team_run_id", "member_run_id", "action_type", "status", "title", "summary", "started_at"],
+  "properties": {
+    "id": { "type": "string", "minLength": 1 },
+    "seq": { "type": "integer", "minimum": 0 },
+    "team_run_id": { "type": "string", "minLength": 1 },
+    "member_run_id": { "type": "string", "minLength": 1 },
+    "task_id": { "type": ["string", "null"], "minLength": 1 },
+    "action_type": { "type": "string", "minLength": 1 },
+    "status": {
+      "type": "string",
+      "enum": ["started", "progress", "succeeded", "failed", "cancelled"]
+    },
+    "title": { "type": "string", "minLength": 1 },
+    "summary": { "type": "string" },
+    "evidence_refs": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "started_at": { "type": "string", "minLength": 1 },
+    "completed_at": { "type": ["string", "null"], "minLength": 1 }
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "id": "mrun-1",
+  "slot_id": null,
+  "name": "worker-1",
+  "role": "worker",
+  "provider": "kimi",
+  "status": "running",
+  "owned_paths": [],
+  "started_at": "2026-07-18T00:00:00Z"
+}

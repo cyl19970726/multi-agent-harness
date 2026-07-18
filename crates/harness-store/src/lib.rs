@@ -6,11 +6,11 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use harness_core::{
-    AgentEvent, AgentMember, AgentRuntime, AgentTeam, Decision, Evidence, Gap, Goal, GoalCase,
-    GoalDesign, GoalEvaluation, GoalOrchestrationRun, Message, MessageDelivery,
-    MessageDeliveryStatus, MessageTerminalSource, Proposal, ProviderChildThread, ProviderSession,
-    ProviderSessionStatus, Review, Task, Vision, WorkflowArtifactManifest, WorkflowPatch,
-    WorkflowRun, WorkflowStep,
+    AgentEvent, AgentMember, AgentRuntime, AgentTeam, AgentTeamRun, Decision, DelegationRun,
+    Evidence, Gap, Goal, GoalCase, GoalDesign, GoalEvaluation, GoalOrchestrationRun, MemberAction,
+    MemberRun, Message, MessageDelivery, MessageDeliveryStatus, MessageTerminalSource, Proposal,
+    ProviderChildThread, ProviderSession, ProviderSessionStatus, Review, Task, TeamMessage,
+    TeamRunEvent, Vision, WorkflowArtifactManifest, WorkflowPatch, WorkflowRun, WorkflowStep,
 };
 use serde::{de::DeserializeOwned, Serialize};
 use thiserror::Error;
@@ -159,6 +159,30 @@ impl HarnessStore {
         self.append_jsonl("goal_orchestration_runs.jsonl", value)
     }
 
+    pub fn append_team_run(&self, value: &AgentTeamRun) -> StoreResult<()> {
+        self.append_jsonl("team_runs.jsonl", value)
+    }
+
+    pub fn append_member_run(&self, value: &MemberRun) -> StoreResult<()> {
+        self.append_jsonl("member_runs.jsonl", value)
+    }
+
+    pub fn append_team_message(&self, value: &TeamMessage) -> StoreResult<()> {
+        self.append_jsonl("team_messages.jsonl", value)
+    }
+
+    pub fn append_member_action(&self, value: &MemberAction) -> StoreResult<()> {
+        self.append_jsonl("member_actions.jsonl", value)
+    }
+
+    pub fn append_delegation_run(&self, value: &DelegationRun) -> StoreResult<()> {
+        self.append_jsonl("delegation_runs.jsonl", value)
+    }
+
+    pub fn append_team_run_event(&self, value: &TeamRunEvent) -> StoreResult<()> {
+        self.append_jsonl("team_run_events.jsonl", value)
+    }
+
     pub fn claim_queued_message_delivery(
         &self,
         agent_member_id: &str,
@@ -296,6 +320,30 @@ impl HarnessStore {
         self.read_jsonl("goal_orchestration_runs.jsonl")
     }
 
+    pub fn team_runs(&self) -> StoreResult<Vec<AgentTeamRun>> {
+        self.read_jsonl("team_runs.jsonl")
+    }
+
+    pub fn member_runs(&self) -> StoreResult<Vec<MemberRun>> {
+        self.read_jsonl("member_runs.jsonl")
+    }
+
+    pub fn team_messages(&self) -> StoreResult<Vec<TeamMessage>> {
+        self.read_jsonl("team_messages.jsonl")
+    }
+
+    pub fn member_actions(&self) -> StoreResult<Vec<MemberAction>> {
+        self.read_jsonl("member_actions.jsonl")
+    }
+
+    pub fn delegation_runs(&self) -> StoreResult<Vec<DelegationRun>> {
+        self.read_jsonl("delegation_runs.jsonl")
+    }
+
+    pub fn team_run_events(&self) -> StoreResult<Vec<TeamRunEvent>> {
+        self.read_jsonl("team_run_events.jsonl")
+    }
+
     fn append_jsonl<T: Serialize>(&self, file_name: &str, value: &T) -> StoreResult<()> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
@@ -417,7 +465,11 @@ mod tests {
     use std::sync::{Arc, Barrier};
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use harness_core::{Goal, GoalStage, GoalStatus, MessageKind, SenderKind};
+    use harness_core::{
+        DelegationMode, DelegationStatus, Goal, GoalStage, GoalStatus, MemberActionStatus,
+        MemberRunStatus, MessageKind, SenderKind, TeamDeliveryPolicy, TeamDeliveryStatus,
+        TeamMessageDelivery, TeamMessageKind, TeamRunEventSourceKind, TeamRunStatus,
+    };
 
     use super::*;
 
@@ -703,6 +755,295 @@ mod tests {
             !matches!(reclaim, MessageDeliveryClaimResult::Claimed(_)),
             "fsynced claim state must prevent a second delivery, got {reclaim:?}"
         );
+
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
+    fn team_test_root(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "harness-store-team-test-{name}-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock")
+                .as_millis()
+        ))
+    }
+
+    fn append_sparse_row(root: &Path, file_name: &str, row: &str) {
+        let mut file = OpenOptions::new()
+            .append(true)
+            .open(root.join(file_name))
+            .expect("open jsonl for sparse row");
+        writeln!(file, "{row}").expect("write sparse row");
+        file.sync_all().expect("sync sparse row");
+    }
+
+    #[test]
+    fn append_and_read_team_run_jsonl() {
+        let root = team_test_root("team-run");
+        let store = HarnessStore::new(&root);
+        let run = AgentTeamRun {
+            id: "tr-1".into(),
+            definition_id: Some("td-1".into()),
+            previous_run_id: Some("tr-0".into()),
+            host_surface: "codex-app".into(),
+            host_thread_id: Some("thread-1".into()),
+            objective: "Ship the feature".into(),
+            status: TeamRunStatus::Running,
+            wave_index: 2,
+            member_run_ids: vec!["mr-1".into()],
+            task_ids: vec!["task-1".into()],
+            budget_limit_usd: Some(12.5),
+            created_at: "unix-ms:1".into(),
+            updated_at: "unix-ms:2".into(),
+            completed_at: None,
+        };
+
+        store.append_team_run(&run).expect("append team run");
+        // A sparse row omitting every optional field must read back with defaults.
+        append_sparse_row(
+            &root,
+            "team_runs.jsonl",
+            r#"{"id":"tr-sparse","host_surface":"kimi-cli","objective":"obj","status":"planning","created_at":"unix-ms:3","updated_at":"unix-ms:3"}"#,
+        );
+
+        let runs = store.team_runs().expect("read team runs");
+        assert_eq!(runs.len(), 2);
+        assert_eq!(runs[0], run);
+        let sparse = &runs[1];
+        assert_eq!(sparse.id, "tr-sparse");
+        assert_eq!(sparse.wave_index, 1);
+        assert!(sparse.definition_id.is_none());
+        assert!(sparse.previous_run_id.is_none());
+        assert!(sparse.host_thread_id.is_none());
+        assert!(sparse.member_run_ids.is_empty());
+        assert!(sparse.task_ids.is_empty());
+        assert!(sparse.budget_limit_usd.is_none());
+        assert!(sparse.completed_at.is_none());
+
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
+    #[test]
+    fn append_and_read_member_run_jsonl() {
+        let root = team_test_root("member-run");
+        let store = HarnessStore::new(&root);
+        let member_run = MemberRun {
+            id: "mr-1".into(),
+            team_run_id: "tr-1".into(),
+            slot_id: Some("slot-1".into()),
+            name: "worker-1".into(),
+            role: "worker".into(),
+            provider: "kimi".into(),
+            model: Some("kimi-k2".into()),
+            status: MemberRunStatus::Running,
+            provider_session_id: Some("ps-1".into()),
+            acp_session_id: Some("acp-1".into()),
+            current_task_id: Some("task-1".into()),
+            worktree_ref: Some("wt-1".into()),
+            owned_paths: vec!["src/".into()],
+            started_at: "unix-ms:1".into(),
+            last_event_at: Some("unix-ms:2".into()),
+            finished_at: None,
+        };
+
+        store
+            .append_member_run(&member_run)
+            .expect("append member run");
+        append_sparse_row(
+            &root,
+            "member_runs.jsonl",
+            r#"{"id":"mr-sparse","team_run_id":"tr-1","name":"w","role":"worker","provider":"codex","status":"idle","started_at":"unix-ms:3"}"#,
+        );
+
+        let runs = store.member_runs().expect("read member runs");
+        assert_eq!(runs.len(), 2);
+        assert_eq!(runs[0], member_run);
+        let sparse = &runs[1];
+        assert_eq!(sparse.id, "mr-sparse");
+        assert_eq!(sparse.status, MemberRunStatus::Idle);
+        assert!(sparse.slot_id.is_none());
+        assert!(sparse.model.is_none());
+        assert!(sparse.provider_session_id.is_none());
+        assert!(sparse.acp_session_id.is_none());
+        assert!(sparse.current_task_id.is_none());
+        assert!(sparse.worktree_ref.is_none());
+        assert!(sparse.owned_paths.is_empty());
+        assert!(sparse.last_event_at.is_none());
+        assert!(sparse.finished_at.is_none());
+
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
+    #[test]
+    fn append_and_read_team_message_jsonl() {
+        let root = team_test_root("team-message");
+        let store = HarnessStore::new(&root);
+        let message = TeamMessage {
+            id: "tm-1".into(),
+            team_run_id: "tr-1".into(),
+            task_id: Some("task-1".into()),
+            from_member_id: "host".into(),
+            to_member_ids: vec!["mr-1".into()],
+            kind: TeamMessageKind::Assignment,
+            body: "Take task-1".into(),
+            correlation_id: "corr-1".into(),
+            causation_id: None,
+            evidence_refs: vec!["ev-1".into()],
+            deliveries: vec![TeamMessageDelivery {
+                member_id: "mr-1".into(),
+                policy: TeamDeliveryPolicy::Inject,
+                status: TeamDeliveryStatus::Delivered,
+                attempt: 1,
+                updated_at: "unix-ms:2".into(),
+            }],
+            created_at: "unix-ms:1".into(),
+        };
+
+        store
+            .append_team_message(&message)
+            .expect("append team message");
+        append_sparse_row(
+            &root,
+            "team_messages.jsonl",
+            r#"{"id":"tm-sparse","team_run_id":"tr-1","from_member_id":"host","kind":"broadcast","body":"hi","correlation_id":"corr-2","created_at":"unix-ms:3"}"#,
+        );
+
+        let messages = store.team_messages().expect("read team messages");
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0], message);
+        let sparse = &messages[1];
+        assert_eq!(sparse.id, "tm-sparse");
+        assert_eq!(sparse.kind, TeamMessageKind::Broadcast);
+        assert!(sparse.task_id.is_none());
+        assert!(sparse.to_member_ids.is_empty());
+        assert!(sparse.causation_id.is_none());
+        assert!(sparse.evidence_refs.is_empty());
+        assert!(sparse.deliveries.is_empty());
+
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
+    #[test]
+    fn append_and_read_member_action_jsonl() {
+        let root = team_test_root("member-action");
+        let store = HarnessStore::new(&root);
+        let action = MemberAction {
+            id: "ma-1".into(),
+            seq: 7,
+            team_run_id: "tr-1".into(),
+            member_run_id: "mr-1".into(),
+            task_id: Some("task-1".into()),
+            action_type: "tool_completed".into(),
+            status: MemberActionStatus::Succeeded,
+            title: "cargo test".into(),
+            summary: "all green".into(),
+            evidence_refs: vec!["ev-1".into()],
+            started_at: "unix-ms:1".into(),
+            completed_at: Some("unix-ms:2".into()),
+        };
+
+        store
+            .append_member_action(&action)
+            .expect("append member action");
+        append_sparse_row(
+            &root,
+            "member_actions.jsonl",
+            r#"{"id":"ma-sparse","seq":8,"team_run_id":"tr-1","member_run_id":"mr-1","action_type":"blocked","status":"started","title":"t","summary":"s","started_at":"unix-ms:3"}"#,
+        );
+
+        let actions = store.member_actions().expect("read member actions");
+        assert_eq!(actions.len(), 2);
+        assert_eq!(actions[0], action);
+        let sparse = &actions[1];
+        assert_eq!(sparse.id, "ma-sparse");
+        assert_eq!(sparse.seq, 8);
+        assert!(sparse.task_id.is_none());
+        assert!(sparse.evidence_refs.is_empty());
+        assert!(sparse.completed_at.is_none());
+
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
+    #[test]
+    fn append_and_read_delegation_run_jsonl() {
+        let root = team_test_root("delegation-run");
+        let store = HarnessStore::new(&root);
+        let delegation = DelegationRun {
+            id: "dr-1".into(),
+            team_run_id: "tr-1".into(),
+            parent_member_run_id: "mr-1".into(),
+            parent_task_id: Some("task-1".into()),
+            mode: DelegationMode::HarnessWorker,
+            provider: "claude".into(),
+            provider_child_thread_id: None,
+            workflow_run_id: Some("wfr-1".into()),
+            objective: "Research X".into(),
+            status: DelegationStatus::Running,
+            evidence_ids: vec!["ev-1".into()],
+            created_at: "unix-ms:1".into(),
+            updated_at: "unix-ms:2".into(),
+        };
+
+        store
+            .append_delegation_run(&delegation)
+            .expect("append delegation run");
+        append_sparse_row(
+            &root,
+            "delegation_runs.jsonl",
+            r#"{"id":"dr-sparse","team_run_id":"tr-1","parent_member_run_id":"mr-1","mode":"provider_native","provider":"codex","objective":"obj","status":"planned","created_at":"unix-ms:3","updated_at":"unix-ms:3"}"#,
+        );
+
+        let delegations = store.delegation_runs().expect("read delegation runs");
+        assert_eq!(delegations.len(), 2);
+        assert_eq!(delegations[0], delegation);
+        let sparse = &delegations[1];
+        assert_eq!(sparse.id, "dr-sparse");
+        assert_eq!(sparse.mode, DelegationMode::ProviderNative);
+        assert_eq!(sparse.status, DelegationStatus::Planned);
+        assert!(sparse.parent_task_id.is_none());
+        assert!(sparse.provider_child_thread_id.is_none());
+        assert!(sparse.workflow_run_id.is_none());
+        assert!(sparse.evidence_ids.is_empty());
+
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
+    #[test]
+    fn append_and_read_team_run_event_jsonl() {
+        let root = team_test_root("team-run-event");
+        let store = HarnessStore::new(&root);
+        let event = TeamRunEvent {
+            id: "tre-1".into(),
+            seq: 3,
+            team_run_id: "tr-1".into(),
+            source_kind: TeamRunEventSourceKind::Member,
+            member_run_id: Some("mr-1".into()),
+            delegation_run_id: None,
+            entity_type: "action".into(),
+            entity_id: "ma-1".into(),
+            operation: "completed".into(),
+            summary: "tool completed".into(),
+            occurred_at: "unix-ms:1".into(),
+        };
+
+        store
+            .append_team_run_event(&event)
+            .expect("append team run event");
+        append_sparse_row(
+            &root,
+            "team_run_events.jsonl",
+            r#"{"id":"tre-sparse","seq":4,"team_run_id":"tr-1","source_kind":"host","entity_type":"team_run","entity_id":"tr-1","operation":"created","summary":"run started","occurred_at":"unix-ms:3"}"#,
+        );
+
+        let events = store.team_run_events().expect("read team run events");
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0], event);
+        let sparse = &events[1];
+        assert_eq!(sparse.id, "tre-sparse");
+        assert_eq!(sparse.source_kind, TeamRunEventSourceKind::Host);
+        assert!(sparse.member_run_id.is_none());
+        assert!(sparse.delegation_run_id.is_none());
 
         std::fs::remove_dir_all(root).expect("remove temp store");
     }

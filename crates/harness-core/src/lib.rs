@@ -2928,6 +2928,304 @@ impl Validate for WorkflowArtifactManifest {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Agent Team v0 runtime ledger objects
+//
+// A team run is one execution of an agent team against an objective, hosted on
+// a single host surface (codex-app / kimi-cli / claude-cli). `MemberRun`s are
+// the per-member session rows inside it; `TeamMessage`s the routed mail;
+// `MemberAction`s the fine-grained action journal; `DelegationRun`s the
+// provider-native / harness-worker / dynamic-workflow child runs; and
+// `TeamRunEvent` the folded per-run event log. All journal to their own
+// append-only JSONL with latest-wins projection, like every other harness
+// object. All Option/Vec fields carry `#[serde(default)]` so v0 rows stay
+// forward-compatible as fields are added.
+// ---------------------------------------------------------------------------
+
+/// Lifecycle of an [`AgentTeamRun`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TeamRunStatus {
+    Planning,
+    Running,
+    Waiting,
+    Reviewing,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+fn default_wave_index() -> u32 {
+    1
+}
+
+/// One execution of an agent team against `objective`. `definition_id` links
+/// back to a TeamDefinition when one exists (v0 runs may be ad-hoc, so it is
+/// nullable). `host_surface` names the hosting surface ("codex-app" /
+/// "kimi-cli" / "claude-cli") and `host_thread_id` its native thread.
+/// `previous_run_id` chains waves: a wave-N+1 run points at the wave-N run it
+/// re-plans from, so the UI can render the wave lineage.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AgentTeamRun {
+    pub id: String,
+    #[serde(default)]
+    pub definition_id: Option<String>,
+    #[serde(default)]
+    pub previous_run_id: Option<String>,
+    pub host_surface: String,
+    #[serde(default)]
+    pub host_thread_id: Option<String>,
+    pub objective: String,
+    pub status: TeamRunStatus,
+    #[serde(default = "default_wave_index")]
+    pub wave_index: u32,
+    #[serde(default)]
+    pub member_run_ids: Vec<String>,
+    #[serde(default)]
+    pub task_ids: Vec<String>,
+    #[serde(default)]
+    pub budget_limit_usd: Option<f64>,
+    pub created_at: String,
+    pub updated_at: String,
+    #[serde(default)]
+    pub completed_at: Option<String>,
+}
+
+/// Lifecycle of a [`MemberRun`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MemberRunStatus {
+    Starting,
+    Idle,
+    Queued,
+    Running,
+    Waiting,
+    Reviewing,
+    Blocked,
+    Completed,
+    Failed,
+    Stopped,
+}
+
+/// One member's session inside an [`AgentTeamRun`]. `provider` is the neutral
+/// provider spelling (codex|claude|kimi). `provider_session_id` links the
+/// harness [`ProviderSession`] while `acp_session_id` is the provider-side
+/// session handle (e.g. a kimi ACP sessionId).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MemberRun {
+    pub id: String,
+    pub team_run_id: String,
+    #[serde(default)]
+    pub slot_id: Option<String>,
+    pub name: String,
+    pub role: String,
+    pub provider: String,
+    #[serde(default)]
+    pub model: Option<String>,
+    pub status: MemberRunStatus,
+    #[serde(default)]
+    pub provider_session_id: Option<String>,
+    #[serde(default)]
+    pub acp_session_id: Option<String>,
+    #[serde(default)]
+    pub current_task_id: Option<String>,
+    #[serde(default)]
+    pub worktree_ref: Option<String>,
+    #[serde(default)]
+    pub owned_paths: Vec<String>,
+    pub started_at: String,
+    #[serde(default)]
+    pub last_event_at: Option<String>,
+    #[serde(default)]
+    pub finished_at: Option<String>,
+}
+
+/// Kind of a routed [`TeamMessage`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TeamMessageKind {
+    Assignment,
+    Question,
+    Answer,
+    Progress,
+    Blocker,
+    Handoff,
+    ReviewRequest,
+    ReviewResult,
+    Control,
+    Broadcast,
+}
+
+/// How a [`TeamMessage`] should be delivered to one recipient.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TeamDeliveryPolicy {
+    Queue,
+    Inject,
+    Interrupt,
+    ManualAck,
+}
+
+/// Per-recipient delivery state of a [`TeamMessage`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TeamDeliveryStatus {
+    Queued,
+    Delivered,
+    Acknowledged,
+    Failed,
+    Expired,
+}
+
+/// One recipient's delivery record inside a [`TeamMessage`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TeamMessageDelivery {
+    pub member_id: String,
+    pub policy: TeamDeliveryPolicy,
+    pub status: TeamDeliveryStatus,
+    pub attempt: u32,
+    pub updated_at: String,
+}
+
+/// A routed message inside an [`AgentTeamRun`]. `from_member_id` is either the
+/// reserved `"host"` id or a `MemberRun` id. `correlation_id` groups a message
+/// with its replies; `causation_id` points at the message this one answers.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TeamMessage {
+    pub id: String,
+    pub team_run_id: String,
+    #[serde(default)]
+    pub task_id: Option<String>,
+    pub from_member_id: String,
+    #[serde(default)]
+    pub to_member_ids: Vec<String>,
+    pub kind: TeamMessageKind,
+    pub body: String,
+    pub correlation_id: String,
+    #[serde(default)]
+    pub causation_id: Option<String>,
+    #[serde(default)]
+    pub evidence_refs: Vec<String>,
+    #[serde(default)]
+    pub deliveries: Vec<TeamMessageDelivery>,
+    pub created_at: String,
+}
+
+/// Status of a single [`MemberAction`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MemberActionStatus {
+    Started,
+    Progress,
+    Succeeded,
+    Failed,
+    Cancelled,
+}
+
+/// One journaled action by a member inside an [`AgentTeamRun`]. `seq` is
+/// monotonically increasing per team run and is assigned by the caller.
+/// `action_type` is a free-form string in v0 (conventional values:
+/// plan_updated, message_sent, message_received, tool_started, tool_completed,
+/// file_changed, command_started, command_completed, test_started,
+/// test_completed, delegation_started, delegation_completed, review_started,
+/// review_completed, waiting_for_input, waiting_for_approval, blocked, error,
+/// completed).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MemberAction {
+    pub id: String,
+    pub seq: u64,
+    pub team_run_id: String,
+    pub member_run_id: String,
+    #[serde(default)]
+    pub task_id: Option<String>,
+    pub action_type: String,
+    pub status: MemberActionStatus,
+    pub title: String,
+    pub summary: String,
+    #[serde(default)]
+    pub evidence_refs: Vec<String>,
+    pub started_at: String,
+    #[serde(default)]
+    pub completed_at: Option<String>,
+}
+
+/// How a [`DelegationRun`] is executed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DelegationMode {
+    ProviderNative,
+    HarnessWorker,
+    DynamicWorkflow,
+}
+
+/// Lifecycle of a [`DelegationRun`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DelegationStatus {
+    Planned,
+    Running,
+    Waiting,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+/// One delegation of work out of a [`MemberRun`]: a provider-native child
+/// thread, a harness worker, or a dynamic workflow run. Exactly one of
+/// `provider_child_thread_id` / `workflow_run_id` is typically set, matching
+/// `mode`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DelegationRun {
+    pub id: String,
+    pub team_run_id: String,
+    pub parent_member_run_id: String,
+    #[serde(default)]
+    pub parent_task_id: Option<String>,
+    pub mode: DelegationMode,
+    pub provider: String,
+    #[serde(default)]
+    pub provider_child_thread_id: Option<String>,
+    #[serde(default)]
+    pub workflow_run_id: Option<String>,
+    pub objective: String,
+    pub status: DelegationStatus,
+    #[serde(default)]
+    pub evidence_ids: Vec<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// Where a [`TeamRunEvent`] originated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TeamRunEventSourceKind {
+    Host,
+    Member,
+    Delegation,
+}
+
+/// One folded event in an [`AgentTeamRun`]'s per-run event log. `seq` is
+/// monotonically increasing per team run and is assigned by the caller.
+/// `entity_type` (team_run|member_run|task|action|message|delegation|
+/// artifact) + `entity_id` + `operation` (created|updated|completed) reference
+/// the ledger row this event summarizes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TeamRunEvent {
+    pub id: String,
+    pub seq: u64,
+    pub team_run_id: String,
+    pub source_kind: TeamRunEventSourceKind,
+    #[serde(default)]
+    pub member_run_id: Option<String>,
+    #[serde(default)]
+    pub delegation_run_id: Option<String>,
+    pub entity_type: String,
+    pub entity_id: String,
+    pub operation: String,
+    pub summary: String,
+    pub occurred_at: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
