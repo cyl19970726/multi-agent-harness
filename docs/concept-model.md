@@ -226,6 +226,44 @@ Rules:
 Failure mode this prevents: the provider becoming the hidden source of truth
 for task ownership, status, or acceptance.
 
+## Agent Team Run
+
+An `AgentTeamRun` is one ephemeral wave of cross-provider team execution
+attached to a `GoalPhase` (ADR
+[0025](decisions/0025-agent-team-run-control-plane.md)). It exists because a
+sub-agent is one function call — input task, returned result, stateless to
+the caller — while an Agent Team member is a living collaborator with its
+own state, mailbox, and responsibility domain, kept accountable for a lane
+until acceptance.
+
+| Object | Meaning | Rule |
+| --- | --- | --- |
+| `AgentTeamRun` | One team execution (a wave) created by the Host Session: objective, status, wave index, member/task ids, budget limit. | A run ends at its integration gate and becomes read-only history; it is not a standing organization. |
+| `MemberRun` | A member instance inside one run: role, provider, model, status, provider session, worktree, `owned_paths`. | Released when the run ends; an execution instance, not a durable `AgentMember`. Owns its lane (branch/PR/evidence) until acceptance. |
+| `TeamMessage` | Run-scoped communication envelope: kind, correlation/causation ids, evidence refs, plus one delivery record per recipient (policy queue/inject/interrupt/manual_ack, status, attempt count). | Semantics and delivery are separate facts; handoffs and key tasks must be acknowledged, and un-ACKed deliveries re-send and escalate. |
+| `MemberAction` | One normalized, auditable action reduced from raw provider output (plan/tool/file/command/test/delegation/review/message/waiting/blocked/completed) with status and evidence refs. | Carries no hidden reasoning; member live state is derived from these plus runtime, queue, and heartbeat — never provider self-report. |
+| `DelegationRun` | Attribution record for a member's re-delegation: mode (`provider_native` capture, `harness_worker`/`dynamic_workflow` orchestrated), provider, child thread or workflow run, objective, status, evidence. | The harness never schedules a member's sub-agents; capture mode audits after the fact, orchestrated mode enforces depth <= 2, child permissions <= parent, `owned_paths` subset, and budget limits. Unverified capabilities degrade to `dynamic_workflow` and say so. |
+| `TeamRunEvent` | Ordered event log for one run with monotonic `seq`, source (host/member/delegation), entity, operation, summary. | The SSE stream and reconnect resume both key on `seq`; payloads are sanitized before storage. |
+
+Relationship rules:
+
+- a wave attaches to a `GoalPhase`; the plan-vs-actual re-plan loop at a
+  wave boundary reuses `GoalEvaluation` -> `NextRoundPlan` — Agent Team
+  adds no new planning layer;
+- `MemberRun.current_task_id` points at ordinary `Task` records, so
+  assignment, evidence, and review keep their existing semantics;
+- `TeamMessage.evidence_refs` and `MemberAction.evidence_refs` point at
+  `Evidence`; nothing here replaces the `Evidence -> Proposal -> Review ->
+  Decision` chain.
+
+Failure mode this prevents: treating a fire-and-forget sub-agent pool as a
+team — context collapse in the main thread, lanes with no durable owner,
+and authorization boundaries crossed by default — or pretending unverified
+provider capabilities are unified.
+
+Field-level shapes, delegation guardrails, and the plugin/call-surface split
+are owned by ADR [0025](decisions/0025-agent-team-run-control-plane.md).
+
 ## Dashboard
 
 The Agent Dashboard is a control-plane projection over harness objects.

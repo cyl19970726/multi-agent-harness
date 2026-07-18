@@ -93,6 +93,7 @@ and proof surface.
 | [work-board-design.md](work-board-design.md) | Vision/Goal/Task structures + examples, unified Work board, Goal/Task/Vision detail document layout, derived task-graph. |
 | [Goal Workbench](pages/goal.md) | Phase-first Goal detail, proof chain, task grouping, stage demotion, and screenshot gate. |
 | [Team workspace](pages/team-workspace.md) | Persistent AgentTeam collaboration space, role groups, queues, activity, decision pressure. |
+| [Team Run Console](pages/team-run-console.md) | One AgentTeamRun's live observation console: four-axis member cockpit, task graph with gates, action timeline, honest capability degradation. |
 | [AgentMember workbench](pages/agent-member-workbench.md) | One durable member as a teammate: current work, inbox/outbox, activity, runtime, prompt/skills, actions. |
 | [Evidence/Review/Decision](pages/evidence-review-decision.md) | Acceptance proof chain and decision queues. |
 | [Warnings/repair](pages/warnings-repair.md) | Workflow risks, affected objects, navigation, repair metadata. |

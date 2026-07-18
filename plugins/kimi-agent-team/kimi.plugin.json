@@ -1,0 +1,41 @@
+{
+  "name": "agent-team",
+  "version": "0.1.0",
+  "description": "Cross-provider Agent Team orchestration for Kimi Code, backed by Multi-Agent Harness.",
+  "interface": {
+    "displayName": "Agent Team",
+    "shortDescription": "Form, drive, and observe cross-provider agent teams from a Kimi Code session.",
+    "longDescription": "Gives the host Kimi Code session the Agent Team capability from Multi-Agent Harness (ADR 0025): create an AgentTeamRun, configure and launch Codex/Claude/Kimi MemberRuns, exchange ACKed messages, and watch live member state. Ships the harness MCP server (team_run_* tools), orchestration and member skills, /agent-team:* commands, and SessionStart/Stop hooks that inject active-run status plus the Browser Team Console URL.",
+    "developerName": "Multi-Agent Harness",
+    "websiteURL": "https://github.com/cyl19970726/multi-agent-harness"
+  },
+  "skills": [
+    "./skills/agent-team-orchestrator",
+    "./skills/agent-team-member"
+  ],
+  "sessionStart": {
+    "skill": "agent-team-orchestrator"
+  },
+  "skillInstructions": "Agent Team is for work whose result should stay with a living executor while you keep a pointer; use a sub-agent when the result must come back into your own context. Never let a member deploy, delete remote resources, or make payment choices on its own — escalate to the user. Every status output must include the Team Console URL (http://127.0.0.1:8787/team-console).",
+  "mcpServers": {
+    "harness": {
+      "command": "harness",
+      "args": ["mcp"]
+    }
+  },
+  "hooks": [
+    {
+      "event": "SessionStart",
+      "matcher": "*",
+      "command": "$KIMI_PLUGIN_ROOT/hooks/team-events.sh",
+      "timeout": 10
+    },
+    {
+      "event": "Stop",
+      "matcher": "*",
+      "command": "$KIMI_PLUGIN_ROOT/hooks/team-events.sh",
+      "timeout": 10
+    }
+  ],
+  "commands": "./commands/"
+}

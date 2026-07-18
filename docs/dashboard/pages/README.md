@@ -59,6 +59,7 @@ phase-first workbench and screenshot-gated acceptance surface.
 | --- | --- | --- |
 | [Goal Workbench](goal.md) | active | page-local contract |
 | [Team workspace](team-workspace.md) | planned | page-local contract |
+| [Team Run Console](team-run-console.md) | planned | page-local contract |
 | [AgentMember workbench](agent-member-workbench.md) | planned | page-local contract |
 | [Evidence/Review/Decision](evidence-review-decision.md) | planned | page-local contract |
 | [Warnings/repair](warnings-repair.md) | planned | page-local contract |

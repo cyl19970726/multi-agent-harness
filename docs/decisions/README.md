@@ -32,6 +32,7 @@ consequences, affected modules, and validation path.
 | [0022](0022-dynamic-workflow-runtime-json-ir.md) | Dynamic Workflow Runtime — skill + CLI entry, JSON-IR spec (not embedded JS), new `harness-workflow` crate |
 | [0023](0023-starlark-workflow-frontend.md) | Starlark program front-end — third authoring surface (loops/conditionals/data-driven fan-out) via a hermetic interpreter; reuses the 0022 backend |
 | [0024](0024-goal-phase-execution-modes.md) | GoalPhase execution modes — each phase chooses task_graph or workflow, never both |
+| [0025](0025-agent-team-run-control-plane.md) | Agent Team run control plane — ephemeral AgentTeamRun waves of cross-provider MemberRuns; capture-vs-orchestrate delegation; Plugin/MCP/Skill/CLI/Hook call-surface split |
 
 ## Split Rule
 
