@@ -88,8 +88,8 @@ fn shell_single_quote(s: &str) -> String {
 /// line-delimited ACP JSON-RPC (stdio) for `team-run start` integration tests.
 ///
 /// The shim answers `initialize` / `session/new` with canned results, and for
-/// `session/prompt` streams (in order): one `agent_thought_chunk` (the
-/// orchestrator MUST ignore hidden reasoning), one `tool_call` + terminal
+/// `session/prompt` streams (in order): one `agent_thought_chunk` (journaled
+/// as a `thinking` MemberAction), one `tool_call` + terminal
 /// `tool_call_update`, one `agent_message_chunk` carrying a `## RESULT` /
 /// `## SUMMARY` report, then the terminal `{"result":{"stopReason":...}}`
 /// response. `FAKE_KIMI_RESULT` (done|blocked|failed, default done) selects

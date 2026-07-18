@@ -142,7 +142,10 @@ Rules:
   delivery record per recipient. Key messages (handoff, key tasks) must be
   ACKed; unacknowledged deliveries past threshold re-send and escalate.
 - `MemberAction` is the normalized, auditable action reduced from all three
-  providers' raw output. It never contains hidden reasoning.
+  providers' raw output. Thinking streams are captured as distinct
+  `thinking` actions (visible to operators, collapsed by default); they are
+  marked as derived reasoning and never used as execution evidence or
+  forwarded into other members' contexts.
 - `TeamRunEvent` is a single ordered event log per run with a monotonic
   `seq`. SSE pushes it live; a disconnected client resumes by `seq`
   (Last-Event-ID). Event payloads are sanitized before they enter the
@@ -222,7 +225,9 @@ callbacks report to the harness and are reduced into `DelegationRun` +
 
 - Standing agent organizations, org directories ("digital employee"
   address books), cross-task inboxes, long-term presence.
-- Displaying hidden model reasoning (chain-of-thought).
+- Treating reasoning streams as execution evidence, or forwarding them into
+  other members' contexts. (Thinking streams themselves are captured as
+  `thinking` actions and are visible to operators.)
 - Unlimited delegation depth, or a child with permissions above its
   parent.
 - Members deploying, merging, or creating durable members on their own:

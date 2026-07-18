@@ -224,14 +224,23 @@ fn team_run_start_completes_kimi_members() {
                 "member {member_id} missing action {expected}: {of_member:?}"
             );
         }
-    }
-    for action in &actions {
-        let haystack = format!("{} {}", action["title"], action["summary"]);
+        // Reasoning streams are journaled as `thinking` actions (not dropped).
         assert!(
-            !haystack.contains("hidden reasoning"),
-            "thought chunk leaked into the ledger: {action:?}"
+            of_member.contains(&"thinking"),
+            "member {member_id} missing thinking action: {of_member:?}"
         );
     }
+    // The round-end thinking action carries the full reasoning text.
+    let thinking_full = actions.iter().any(|action| {
+        action["action_type"].as_str() == Some("thinking")
+            && action["summary"]
+                .as_str()
+                .is_some_and(|s| s.contains("hidden reasoning"))
+    });
+    assert!(
+        thinking_full,
+        "expected a thinking action carrying the reasoning text: {actions:?}"
+    );
 
     // Events: seq strictly continuous 1..=N for the run.
     let events = store_rows(&home, &project_id, "team_run_events.jsonl");

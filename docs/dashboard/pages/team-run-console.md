@@ -5,7 +5,16 @@ status: planned
 owner_role: product-design
 canonical_for: AgentTeamRun live observation console (ADR 0025)
 route_or_surface: /team-console and /team-console/:runId
+superseded_by: docs/design/agent-team-goal-wave-layout.md (Goal/Wave IA: this
+  spec's war-room parts survive as the L1.5 Team page; the run-centric
+  single-page layout is replaced by the Goals vertical wave flow)
 ```
+
+> **Layout note (2026-07-18):** the information architecture in
+> [agent-team-goal-wave-layout.md](../../design/agent-team-goal-wave-layout.md)
+> supersedes this spec's layout sections. Mechanism inventories (message
+> kinds, delivery policies, member states, thought visibility) remain
+> canonical here; page structure defers to the Goal/Wave layout.
 
 ## Purpose
 

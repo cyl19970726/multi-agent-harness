@@ -2327,6 +2327,19 @@ fn run_kimi_member(
         let mut mapper = MemberUpdateMapper::new(ledger, member_row.clone());
         let outcome = client.prompt(&prompt_text, idle_timeout, |update| mapper.handle(update))?;
         let final_text = mapper.text().to_string();
+        // Journal the round's full reasoning stream as one `thinking` action
+        // (derived reasoning: visible to operators, never execution evidence).
+        let thinking_text = mapper.thinking_text().to_string();
+        if !thinking_text.trim().is_empty() {
+            let capped: String = thinking_text.chars().take(16_000).collect();
+            let _ = ledger.append_action(
+                &member.id,
+                "thinking",
+                MemberActionStatus::Succeeded,
+                &format!("round {round} reasoning"),
+                &capped,
+            );
+        }
         member_row = mapper.into_member();
         let result = parse_round_result(&final_text);
 
@@ -2542,13 +2555,16 @@ fn member_spawn_cwd(resolved: &ResolvedStore, member: &MemberRun) -> PathBuf {
 }
 
 /// Maps `session/update` frames of one prompt round onto the member ledger.
-/// Hidden reasoning (`agent_thought_chunk`) is deliberately dropped: the
-/// ledger never carries an agent's private chain-of-thought.
+/// Reasoning streams (`agent_thought_chunk`) are journaled as `thinking`
+/// actions: coalesced while streaming, full text at round end. They are
+/// derived reasoning — never execution evidence, never forwarded to members.
 struct MemberUpdateMapper<'a> {
     ledger: &'a TeamRunLedger,
     member: MemberRun,
     text: String,
+    thinking: String,
     last_progress_at: std::time::Instant,
+    last_thinking_at: std::time::Instant,
     /// toolCallId → title of tools we journaled `tool_started` for, so the
     /// completion action can carry a name even when the update frame omits it.
     open_tools: std::collections::HashMap<String, String>,
@@ -2560,10 +2576,12 @@ impl<'a> MemberUpdateMapper<'a> {
             ledger,
             member,
             text: String::new(),
+            thinking: String::new(),
             // Arm the throttle already expired so the FIRST chunk journals one
             // progress action immediately (the console shows life), then at
             // most one per TEAM_RUN_PROGRESS_THROTTLE window.
             last_progress_at: std::time::Instant::now() - TEAM_RUN_PROGRESS_THROTTLE,
+            last_thinking_at: std::time::Instant::now() - TEAM_RUN_PROGRESS_THROTTLE,
             open_tools: std::collections::HashMap::new(),
         }
     }
@@ -2573,6 +2591,32 @@ impl<'a> MemberUpdateMapper<'a> {
             return;
         };
         if kind.contains("thought") {
+            if let Some(text) = update
+                .get("content")
+                .and_then(|content| content.get("text"))
+                .and_then(|text| text.as_str())
+            {
+                self.thinking.push_str(text);
+            }
+            if !self.thinking.is_empty()
+                && self.last_thinking_at.elapsed() >= TEAM_RUN_PROGRESS_THROTTLE
+            {
+                self.last_thinking_at = std::time::Instant::now();
+                let summary = format!("{} chars of reasoning streamed", self.thinking.len());
+                if self
+                    .ledger
+                    .append_action(
+                        &self.member.id,
+                        "thinking",
+                        MemberActionStatus::Progress,
+                        "reasoning stream",
+                        &summary,
+                    )
+                    .is_ok()
+                {
+                    self.touch_member();
+                }
+            }
             return;
         }
         if kind == "agent_message_chunk" {
@@ -2661,6 +2705,11 @@ impl<'a> MemberUpdateMapper<'a> {
     /// The accumulated assistant text of this round (all message chunks).
     fn text(&self) -> &str {
         &self.text
+    }
+
+    /// The accumulated reasoning stream of this round (all thought chunks).
+    fn thinking_text(&self) -> &str {
+        &self.thinking
     }
 
     fn into_member(self) -> MemberRun {

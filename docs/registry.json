@@ -2118,9 +2118,15 @@
    "reorgTrigger": "The governance engine's commands, config schema, gate kinds, or the doc-sync integration change; or the full cut lands and the .mjs gates are retired."
   },
   {
+   "path": "docs/design/agent-team-goal-wave-layout.md",
    "ownerRole": "product-design",
-   "status": "planned",
+   "status": "accepted",
    "lifecycle": "volatile",
+   "canonicalFor": [
+    "agent team frontend information architecture (Goals / Agent Teams / member pages)",
+    "goal/wave model replacing goal-phase in the UI",
+    "thought visibility policy"
+   ],
    "dependsOn": [
     "docs/dashboard/pages/team-run-console.md",
     "docs/decisions/0025-agent-team-run-control-plane.md"
@@ -2133,77 +2139,7 @@
    "lastVerifiedWith": [
     "npx pnpm@9.15.4 check"
    ],
-   "reorgTrigger": "The Agent Team page IA, wave/team module split, or the three-track decision model changes.",
-   "path": "docs/design/agent-team-layout-v1.md",
-   "canonicalFor": [
-    "agent team page layout v1 (designer proposal)"
-   ]
-  },
-  {
-   "ownerRole": "product-design",
-   "status": "planned",
-   "lifecycle": "volatile",
-   "dependsOn": [
-    "docs/dashboard/pages/team-run-console.md",
-    "docs/decisions/0025-agent-team-run-control-plane.md"
-   ],
-   "machineConsumers": [
-    "check-doc-links",
-    "check-doc-governance"
-   ],
-   "reviewAfter": "2026-09-30",
-   "lastVerifiedWith": [
-    "npx pnpm@9.15.4 check"
-   ],
-   "reorgTrigger": "The Agent Team page IA, wave/team module split, or the three-track decision model changes.",
-   "path": "docs/design/agent-team-layout-v2.md",
-   "canonicalFor": [
-    "agent team page layout v2 (after critique round 1)"
-   ]
-  },
-  {
-   "ownerRole": "product-design",
-   "status": "planned",
-   "lifecycle": "volatile",
-   "dependsOn": [
-    "docs/dashboard/pages/team-run-console.md",
-    "docs/decisions/0025-agent-team-run-control-plane.md"
-   ],
-   "machineConsumers": [
-    "check-doc-links",
-    "check-doc-governance"
-   ],
-   "reviewAfter": "2026-09-30",
-   "lastVerifiedWith": [
-    "npx pnpm@9.15.4 check"
-   ],
-   "reorgTrigger": "The Agent Team page IA, wave/team module split, or the three-track decision model changes.",
-   "path": "docs/design/agent-team-layout-v3.md",
-   "canonicalFor": [
-    "agent team page layout v3 (after critique round 2)"
-   ]
-  },
-  {
-   "ownerRole": "product-design",
-   "status": "planned",
-   "lifecycle": "volatile",
-   "dependsOn": [
-    "docs/dashboard/pages/team-run-console.md",
-    "docs/decisions/0025-agent-team-run-control-plane.md"
-   ],
-   "machineConsumers": [
-    "check-doc-links",
-    "check-doc-governance"
-   ],
-   "reviewAfter": "2026-09-30",
-   "lastVerifiedWith": [
-    "npx pnpm@9.15.4 check"
-   ],
-   "reorgTrigger": "The Agent Team page IA, wave/team module split, or the three-track decision model changes.",
-   "path": "docs/design/agent-team-layout-final.md",
-   "canonicalFor": [
-    "agent team page layout final (after critique round 3, implementation-ready)"
-   ]
+   "reorgTrigger": "The goal/wave IA, wave executor model, member page structure, or thought visibility policy changes."
   }
  ]
 }

@@ -22,9 +22,10 @@
 //!   arrives (e.g. `session/request_permission`) is answered with a JSON-RPC
 //!   "method not implemented" error so the agent can never wedge waiting on
 //!   us — consistent with the v0 posture of no interactive approvals.
-//! - Hidden reasoning (`agent_thought_chunk`) is passed through to the caller
-//!   verbatim; the ORCHESTRATOR (team-run start) is responsible for dropping
-//!   it. The driver itself stays a faithful transport.
+//! - Reasoning streams (`agent_thought_chunk`) are passed through to the
+//!   caller verbatim; the ORCHESTRATOR (team-run start) journals them as
+//!   `thinking` MemberActions (derived reasoning, never execution evidence).
+//!   The driver itself stays a faithful transport.
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
