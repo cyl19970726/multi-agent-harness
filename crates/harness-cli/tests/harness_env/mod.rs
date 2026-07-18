@@ -170,6 +170,23 @@ impl ServeHandle {
         (status, json)
     }
 
+    /// GET a path, returning (status_code, raw response INCLUDING headers) —
+    /// for content-type assertions on non-JSON responses (e.g. HTML pages).
+    pub fn get_raw(&self, path: &str) -> (u16, String) {
+        let mut stream = TcpStream::connect(self.addr()).expect("connect get");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("timeout");
+        write!(
+            stream,
+            "GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+        )
+        .expect("write get");
+        let mut raw = String::new();
+        stream.read_to_string(&mut raw).expect("read get");
+        (split_status_body(&raw).0, raw)
+    }
+
     /// POST a JSON body to a path, returning (status_code, parsed JSON body).
     pub fn post_json(&self, path: &str, body: &serde_json::Value) -> (u16, serde_json::Value) {
         let payload = body.to_string();

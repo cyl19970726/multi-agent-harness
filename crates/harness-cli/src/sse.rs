@@ -9,7 +9,7 @@ use std::thread;
 use std::time::Duration;
 
 use crossbeam::channel::{bounded, Receiver, Sender};
-use harness_core::{AgentEvent, Message, ProviderSession, WorkflowRun, WorkflowStep};
+use harness_core::{AgentEvent, Message, ProviderSession, TeamRunEvent, WorkflowRun, WorkflowStep};
 
 /// An event frame sent to SSE clients (WP2: added WorkflowRun and WorkflowStep)
 #[derive(Clone, Debug)]
@@ -38,6 +38,8 @@ pub enum SseEventFrame {
     /// Normalized companion to ProviderTurnEvent for live Stage B consumers:
     /// {session_id, events: HarnessTurnEvent[]}.
     ProviderTurnEventNormalized(serde_json::Value),
+    /// A folded team-run event was recorded (Agent Team v0).
+    TeamRunEvent(TeamRunEvent),
 }
 
 /// Manages SSE client subscriptions and broadcasts, keyed by project id
@@ -197,6 +199,7 @@ const WATCHED_FILES: &[&str] = &[
     "workflow_runs.jsonl",
     "workflow_steps.jsonl",
     "provider_turn_events.jsonl",
+    "team_run_events.jsonl",
 ];
 
 /// Poll one project's ledgers once and broadcast any new rows to that project's
@@ -276,6 +279,23 @@ fn poll_project(
         |line| {
             if let Ok(step) = serde_json::from_str::<WorkflowStep>(line) {
                 vec![SseEventFrame::WorkflowStep(step)]
+            } else {
+                Vec::new()
+            }
+        },
+        manager,
+    );
+
+    // team_run_events.jsonl (Agent Team v0): the folded per-run event log; the
+    // team console merges these incrementally over SSE.
+    check_and_broadcast_appends(
+        project_id,
+        store_root,
+        "team_run_events.jsonl",
+        consumed_offsets,
+        |line| {
+            if let Ok(event) = serde_json::from_str::<TeamRunEvent>(line) {
+                vec![SseEventFrame::TeamRunEvent(event)]
             } else {
                 Vec::new()
             }

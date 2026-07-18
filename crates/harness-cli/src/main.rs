@@ -6,28 +6,32 @@ use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use harness_core::{
     build_launch_spec, compile_phase_to_starlark, compile_planner_script, content_hash_hex16,
     AgentEvent, AgentMember, AgentMemberStatus, AgentProviderConfig, AgentRuntime,
-    AgentRuntimeHealth, AgentRuntimeStatus, AgentTeam, AgentTeamStatus, ArtifactKind, ArtifactSpec,
-    Decision, EvaluationOutcome, Evidence, Exploration, Gap, GapSeverity, GapStatus, Goal,
-    GoalCase, GoalDesign, GoalEvaluation, GoalOrchestrationRun, GoalPhaseStatus, GoalStage,
-    GoalStatus, HarnessTokenUsage, HarnessToolCall, HarnessToolResult, HarnessTurnEvent,
-    HarnessTurnEventKind, Knowledge, KnowledgeSource, LaunchMcp, LaunchPermission, LaunchSpec,
+    AgentRuntimeHealth, AgentRuntimeStatus, AgentTeam, AgentTeamRun, AgentTeamStatus, ArtifactKind,
+    ArtifactSpec, Decision, DelegationRun, EvaluationOutcome, Evidence, Exploration, Gap,
+    GapSeverity, GapStatus, Goal, GoalCase, GoalDesign, GoalEvaluation, GoalOrchestrationRun,
+    GoalPhaseStatus, GoalStage, GoalStatus, HarnessTokenUsage, HarnessToolCall, HarnessToolResult,
+    HarnessTurnEvent, HarnessTurnEventKind, Knowledge, KnowledgeSource, LaunchMcp,
+    LaunchPermission, LaunchSpec, MemberAction, MemberActionStatus, MemberRun, MemberRunStatus,
     Message, MessageDelivery, MessageDeliveryStatus, MessageKind, MessageTerminalSource,
     OrchestrationPhaseRun, OrchestrationStatus, ProjectContext, ProjectKind, Proposal,
     ProposalStatus, ProviderCapabilities, ProviderChildThread, ProviderChildThreadStatus,
     ProviderSession, ProviderSessionStatus, Review, ReviewVerdict, SenderKind, Task, TaskStatus,
-    VerdictOutcome, Vision, WorkflowArtifactFile, WorkflowArtifactManifest,
-    WorkflowArtifactManifestStatus, WorkflowPatch, WorkflowPatchStatus, WorkflowRun,
-    WorkflowRunStatus, WorkflowStep, WorkflowStepStatus,
+    TeamDeliveryPolicy, TeamDeliveryStatus, TeamMessage, TeamMessageDelivery, TeamMessageKind,
+    TeamRunEvent, TeamRunEventSourceKind, TeamRunStatus, VerdictOutcome, Vision,
+    WorkflowArtifactFile, WorkflowArtifactManifest, WorkflowArtifactManifestStatus, WorkflowPatch,
+    WorkflowPatchStatus, WorkflowRun, WorkflowRunStatus, WorkflowStep, WorkflowStepStatus,
 };
 use harness_store::{HarnessStore, MessageDeliveryClaimResult};
 use thiserror::Error;
 
+mod kimi_acp;
+mod mcp;
 mod project;
 mod resident;
 #[cfg(unix)]
@@ -832,6 +836,7 @@ fn run() -> CliResult<()> {
         "project" => project_command(&args[1..])?,
         "agent" => agent_command(&store, &args[1..])?,
         "team" => team_command(&store, &args[1..])?,
+        "team-run" => team_run_command(&store, &resolved, &args[1..])?,
         "member" => member_command(&store, &args[1..])?,
         "goal" => goal_command(&store, &args[1..])?,
         "phase" => phase_command(&store, &args[1..])?,
@@ -855,6 +860,7 @@ fn run() -> CliResult<()> {
         "workflow" => workflow_command(&store, &args[1..])?,
         "hook" => hook_command(&store, &args[1..])?,
         "serve" => serve_command(&store, &resolved, &args[1..])?,
+        "mcp" => mcp::run(&store)?,
         #[cfg(unix)]
         "daemon" => daemon_command(&store, &args[1..])?,
         command => return Err(CliError::Usage(format!("unknown command: {command}"))),
@@ -1212,6 +1218,1539 @@ fn team_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
         other => return Err(CliError::Usage(format!("unknown team command: {other}"))),
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Agent Team v0 — `harness team-run` command group
+//
+// A team run (AgentTeamRun) is one execution of an agent team against an
+// objective; MemberRuns are its per-member session rows, TeamMessages the
+// routed mail, and TeamRunEvents the folded per-run event log (seq is
+// monotonically increasing per run, assigned by the writer). All rows journal
+// to their own append-only JSONL with latest-wins projection, like every
+// other harness object. The CLI arms and the HTTP routes
+// (POST /v1/team-runs[...]) share the create/send helpers below so behaviour
+// cannot diverge (same pattern as the WP-ii entity helpers). The `start` arm
+// is the v0 orchestrator (see the "team-run start orchestration" block below);
+// create/send only journal planning rows — a handoff/blocker message sent via
+// `send` is only folded into the event log, the MemberRun row is untouched.
+// ---------------------------------------------------------------------------
+
+/// Next event seq for a team run: max existing seq + 1 (1 when the run has no
+/// events yet). Scans the run's folded event log.
+fn next_team_run_seq(store: &HarnessStore, team_run_id: &str) -> CliResult<u64> {
+    let max_seq = store
+        .team_run_events()?
+        .into_iter()
+        .filter(|event| event.team_run_id == team_run_id)
+        .map(|event| event.seq)
+        .max()
+        .unwrap_or(0);
+    Ok(max_seq + 1)
+}
+
+/// Append one folded event to a team run's event log.
+#[allow(clippy::too_many_arguments)]
+fn append_team_run_event(
+    store: &HarnessStore,
+    team_run_id: &str,
+    seq: u64,
+    source_kind: TeamRunEventSourceKind,
+    member_run_id: Option<String>,
+    entity_type: &str,
+    entity_id: &str,
+    operation: &str,
+    summary: &str,
+) -> CliResult<TeamRunEvent> {
+    let event = TeamRunEvent {
+        id: generated_id("trev"),
+        seq,
+        team_run_id: team_run_id.to_string(),
+        source_kind,
+        member_run_id,
+        delegation_run_id: None,
+        entity_type: entity_type.to_string(),
+        entity_id: entity_id.to_string(),
+        operation: operation.to_string(),
+        summary: summary.to_string(),
+        occurred_at: now_string(),
+    };
+    store.append_team_run_event(&event)?;
+    Ok(event)
+}
+
+/// One member spec for team-run creation, parsed from either the CLI
+/// `--member name:role:provider[:model][@path1,path2]` spelling or the HTTP
+/// JSON body.
+struct TeamMemberSpec {
+    name: String,
+    role: String,
+    provider: String,
+    model: Option<String>,
+    owned_paths: Vec<String>,
+}
+
+/// Parse one `--member name:role:provider[:model][@path1,path2]` spec.
+fn parse_team_member_spec(raw: &str) -> CliResult<TeamMemberSpec> {
+    let (identity, owned_paths) = match raw.split_once('@') {
+        Some((identity, paths)) => (
+            identity,
+            paths
+                .split(',')
+                .map(str::trim)
+                .filter(|path| !path.is_empty())
+                .map(str::to_string)
+                .collect(),
+        ),
+        None => (raw, Vec::new()),
+    };
+    let parts: Vec<&str> = identity.split(':').collect();
+    if parts.len() < 3 || parts[0].is_empty() || parts[1].is_empty() || parts[2].is_empty() {
+        return Err(CliError::Usage(format!(
+            "invalid --member `{raw}` (expected name:role:provider[:model][@path1,path2])"
+        )));
+    }
+    Ok(TeamMemberSpec {
+        name: parts[0].to_string(),
+        role: parts[1].to_string(),
+        provider: parts[2].to_string(),
+        model: parts
+            .get(3)
+            .map(|model| model.to_string())
+            .filter(|model| !model.is_empty()),
+        owned_paths,
+    })
+}
+
+/// Everything `team-run create` journals, returned so the CLI/HTTP layers can
+/// render it.
+struct CreatedTeamRun {
+    team_run: AgentTeamRun,
+    member_runs: Vec<MemberRun>,
+    assignment_messages: Vec<TeamMessage>,
+}
+
+fn created_team_run_json(created: &CreatedTeamRun) -> serde_json::Value {
+    serde_json::json!({
+        "team_run": created.team_run,
+        "member_runs": created.member_runs,
+        "assignment_messages": created.assignment_messages,
+    })
+}
+
+/// Persist a new team run: the AgentTeamRun (status planning), one idle
+/// MemberRun per member, one queued assignment TeamMessage per member
+/// (from the reserved "host" sender), and a folded TeamRunEvent per created
+/// entity (host-sourced, seq increasing). Shared by the `team-run create` CLI
+/// arm and POST /v1/team-runs. `previous_run_id` chains the run onto an
+/// earlier wave (it must name an existing run).
+#[allow(clippy::too_many_arguments)]
+fn create_team_run(
+    store: &HarnessStore,
+    objective: &str,
+    wave_index: u32,
+    budget_limit_usd: Option<f64>,
+    host_surface: &str,
+    host_thread_id: Option<String>,
+    previous_run_id: Option<String>,
+    members: &[TeamMemberSpec],
+) -> CliResult<CreatedTeamRun> {
+    // A wave chained onto a previous run must name a run that exists — fail
+    // fast instead of journaling a dangling lineage link.
+    if let Some(previous) = previous_run_id.as_deref() {
+        latest_team_run(store, previous)?;
+    }
+    let run_id = generated_id("team-run");
+    let mut member_runs = Vec::new();
+    let mut member_run_ids = Vec::new();
+    for member in members {
+        let member_run = MemberRun {
+            id: generated_id("member-run"),
+            team_run_id: run_id.clone(),
+            slot_id: None,
+            name: member.name.clone(),
+            role: member.role.clone(),
+            provider: member.provider.clone(),
+            model: member.model.clone(),
+            status: MemberRunStatus::Idle,
+            provider_session_id: None,
+            acp_session_id: None,
+            current_task_id: None,
+            worktree_ref: None,
+            owned_paths: member.owned_paths.clone(),
+            started_at: now_string(),
+            last_event_at: None,
+            finished_at: None,
+        };
+        member_run_ids.push(member_run.id.clone());
+        member_runs.push(member_run);
+    }
+    let team_run = AgentTeamRun {
+        id: run_id.clone(),
+        definition_id: None,
+        previous_run_id,
+        host_surface: host_surface.to_string(),
+        host_thread_id,
+        objective: objective.to_string(),
+        status: TeamRunStatus::Planning,
+        wave_index,
+        member_run_ids,
+        task_ids: Vec::new(),
+        budget_limit_usd,
+        created_at: now_string(),
+        updated_at: now_string(),
+        completed_at: None,
+    };
+
+    // A freshly-generated run id has no events yet, so seq starts at 1.
+    let mut seq = next_team_run_seq(store, &run_id)?;
+    store.append_team_run(&team_run)?;
+    append_team_run_event(
+        store,
+        &run_id,
+        seq,
+        TeamRunEventSourceKind::Host,
+        None,
+        "team_run",
+        &team_run.id,
+        "created",
+        &format!("team run created: {objective}"),
+    )?;
+    seq += 1;
+
+    let mut assignment_messages = Vec::new();
+    for member_run in &member_runs {
+        store.append_member_run(member_run)?;
+        append_team_run_event(
+            store,
+            &run_id,
+            seq,
+            TeamRunEventSourceKind::Host,
+            Some(member_run.id.clone()),
+            "member_run",
+            &member_run.id,
+            "created",
+            &format!(
+                "member {} ({}/{}) joined",
+                member_run.name, member_run.role, member_run.provider
+            ),
+        )?;
+        seq += 1;
+
+        let message = TeamMessage {
+            id: generated_id("tmsg"),
+            team_run_id: run_id.clone(),
+            task_id: None,
+            from_member_id: "host".to_string(),
+            to_member_ids: vec![member_run.id.clone()],
+            kind: TeamMessageKind::Assignment,
+            body: format!(
+                "Assignment for {} ({}): {}",
+                member_run.name, member_run.role, objective
+            ),
+            correlation_id: generated_id("corr"),
+            causation_id: None,
+            evidence_refs: Vec::new(),
+            deliveries: vec![TeamMessageDelivery {
+                member_id: member_run.id.clone(),
+                policy: TeamDeliveryPolicy::Queue,
+                status: TeamDeliveryStatus::Queued,
+                attempt: 0,
+                updated_at: now_string(),
+            }],
+            created_at: now_string(),
+        };
+        store.append_team_message(&message)?;
+        append_team_run_event(
+            store,
+            &run_id,
+            seq,
+            TeamRunEventSourceKind::Host,
+            Some(member_run.id.clone()),
+            "message",
+            &message.id,
+            "created",
+            &format!("assignment queued for {}", member_run.name),
+        )?;
+        seq += 1;
+        assignment_messages.push(message);
+    }
+
+    Ok(CreatedTeamRun {
+        team_run,
+        member_runs,
+        assignment_messages,
+    })
+}
+
+/// Route a message inside a team run and fold it into the event log. Shared
+/// by the `team-run send` CLI arm and POST /v1/team-runs/{id}/messages. v0
+/// does not drive the member state machine: a handoff/blocker from a member is
+/// only recorded as an event — the member's MemberRun row is left untouched.
+fn send_team_message(
+    store: &HarnessStore,
+    team_run_id: &str,
+    from_member_id: &str,
+    to_member_ids: Vec<String>,
+    kind: TeamMessageKind,
+    body: &str,
+    task_id: Option<String>,
+) -> CliResult<TeamMessage> {
+    // Fail fast on an unknown run id rather than journaling an orphan message.
+    latest_team_run(store, team_run_id)?;
+    let message = TeamMessage {
+        id: generated_id("tmsg"),
+        team_run_id: team_run_id.to_string(),
+        task_id,
+        from_member_id: from_member_id.to_string(),
+        to_member_ids: to_member_ids.clone(),
+        kind,
+        body: body.to_string(),
+        correlation_id: generated_id("corr"),
+        causation_id: None,
+        evidence_refs: Vec::new(),
+        deliveries: to_member_ids
+            .iter()
+            .map(|member_id| TeamMessageDelivery {
+                member_id: member_id.clone(),
+                policy: TeamDeliveryPolicy::Queue,
+                status: TeamDeliveryStatus::Queued,
+                attempt: 0,
+                updated_at: now_string(),
+            })
+            .collect(),
+        created_at: now_string(),
+    };
+    store.append_team_message(&message)?;
+    let from_host = from_member_id == "host";
+    let seq = next_team_run_seq(store, team_run_id)?;
+    append_team_run_event(
+        store,
+        team_run_id,
+        seq,
+        if from_host {
+            TeamRunEventSourceKind::Host
+        } else {
+            TeamRunEventSourceKind::Member
+        },
+        if from_host {
+            None
+        } else {
+            Some(from_member_id.to_string())
+        },
+        "message",
+        &message.id,
+        "created",
+        &format!(
+            "{} from {} to [{}]",
+            team_message_kind_label(&message.kind),
+            from_member_id,
+            to_member_ids.join(",")
+        ),
+    )?;
+    Ok(message)
+}
+
+/// Load the latest row for a team run id, or a clear not-found error.
+fn latest_team_run(store: &HarnessStore, id: &str) -> CliResult<AgentTeamRun> {
+    latest_team_runs_in_append_order(store)?
+        .into_iter()
+        .find(|run| run.id == id)
+        .ok_or_else(|| CliError::Usage(format!("team run not found: {id}")))
+}
+
+/// Parse a team run status from its snake_case wire name.
+fn parse_team_run_status(s: &str) -> CliResult<TeamRunStatus> {
+    serde_json::from_value(serde_json::Value::String(s.to_string())).map_err(|_| {
+        CliError::Usage(format!(
+            "unknown team run status `{s}` (planning|running|waiting|reviewing|completed|failed|cancelled)"
+        ))
+    })
+}
+
+/// Transition a team run through the wave gate. Only two moves are legal:
+/// `reviewing → completed` (the integration gate passes) and
+/// `planning|running|waiting → cancelled`. Anything else is a usage error
+/// (HTTP 400) so a wave cannot skip its gate or resurrect a terminal run.
+/// Appends the new AgentTeamRun row (latest-wins) and folds a TeamRunEvent so
+/// the dashboard timeline narrates the gate decision. Shared by
+/// POST /v1/team-runs/{id}/transition and the `team-run complete|cancel` arms.
+fn transition_team_run(
+    store: &HarnessStore,
+    team_run_id: &str,
+    target: TeamRunStatus,
+) -> CliResult<AgentTeamRun> {
+    let current = latest_team_run(store, team_run_id)?;
+    let previous_status = current.status;
+    let allowed = matches!(
+        (previous_status, target),
+        (TeamRunStatus::Reviewing, TeamRunStatus::Completed)
+            | (TeamRunStatus::Planning, TeamRunStatus::Cancelled)
+            | (TeamRunStatus::Running, TeamRunStatus::Cancelled)
+            | (TeamRunStatus::Waiting, TeamRunStatus::Cancelled)
+    );
+    if !allowed {
+        return Err(CliError::Usage(format!(
+            "invalid team-run transition: {} → {} (allowed: reviewing → completed, planning|running|waiting → cancelled)",
+            serde_snake_label(&previous_status),
+            serde_snake_label(&target),
+        )));
+    }
+    let mut next = current;
+    next.status = target;
+    next.updated_at = now_string();
+    if target == TeamRunStatus::Completed {
+        next.completed_at = Some(now_string());
+    }
+    store.append_team_run(&next)?;
+    let seq = next_team_run_seq(store, team_run_id)?;
+    let (operation, summary) = match target {
+        TeamRunStatus::Completed => (
+            "completed",
+            format!(
+                "wave gate passed: reviewing → completed (wave {})",
+                next.wave_index
+            ),
+        ),
+        _ => (
+            "updated",
+            format!(
+                "team run cancelled: {} → cancelled",
+                serde_snake_label(&previous_status)
+            ),
+        ),
+    };
+    append_team_run_event(
+        store,
+        team_run_id,
+        seq,
+        TeamRunEventSourceKind::Host,
+        None,
+        "team_run",
+        &next.id,
+        operation,
+        &summary,
+    )?;
+    Ok(next)
+}
+
+/// Parse a team message kind from its snake_case wire name.
+fn parse_team_message_kind(s: &str) -> CliResult<TeamMessageKind> {
+    serde_json::from_value(serde_json::Value::String(s.to_string())).map_err(|_| {
+        CliError::Usage(format!(
+            "unknown team message kind `{s}` (assignment|question|answer|progress|blocker|handoff|review_request|review_result|control|broadcast)"
+        ))
+    })
+}
+
+fn team_message_kind_label(kind: &TeamMessageKind) -> &'static str {
+    match kind {
+        TeamMessageKind::Assignment => "assignment",
+        TeamMessageKind::Question => "question",
+        TeamMessageKind::Answer => "answer",
+        TeamMessageKind::Progress => "progress",
+        TeamMessageKind::Blocker => "blocker",
+        TeamMessageKind::Handoff => "handoff",
+        TeamMessageKind::ReviewRequest => "review_request",
+        TeamMessageKind::ReviewResult => "review_result",
+        TeamMessageKind::Control => "control",
+        TeamMessageKind::Broadcast => "broadcast",
+    }
+}
+
+/// The snake_case wire label of a serde `rename_all = "snake_case"` enum, for
+/// human-readable CLI output.
+fn serde_snake_label<T: serde::Serialize>(value: &T) -> String {
+    match serde_json::to_value(value) {
+        Ok(serde_json::Value::String(label)) => label,
+        _ => "unknown".to_string(),
+    }
+}
+
+fn team_run_command(
+    store: &HarnessStore,
+    resolved: &ResolvedStore,
+    args: &[String],
+) -> CliResult<()> {
+    require_subcommand(
+        args,
+        "team-run create|list|status|start|send|events|complete|cancel",
+    )?;
+    let json = has_flag(args, "--json");
+    match args[0].as_str() {
+        "create" => {
+            let members: Vec<TeamMemberSpec> = many(args, "--member")
+                .iter()
+                .map(|raw| parse_team_member_spec(raw))
+                .collect::<CliResult<_>>()?;
+            let created = create_team_run(
+                store,
+                &required(args, "--objective")?,
+                value(args, "--wave")
+                    .and_then(|raw| raw.parse::<u32>().ok())
+                    .unwrap_or(1),
+                value(args, "--budget-usd").and_then(|raw| raw.parse::<f64>().ok()),
+                &value(args, "--host-surface").unwrap_or_else(|| "cli".into()),
+                value(args, "--host-thread-id"),
+                value(args, "--previous"),
+                &members,
+            )?;
+            if json {
+                print_json(&created_team_run_json(&created))?;
+            } else {
+                println!("{}", created.team_run.id);
+            }
+        }
+        // complete / cancel share the HTTP wave-gate transition logic, so a
+        // CLI-driven gate decision is indistinguishable from a dashboard one.
+        "complete" => {
+            let id = required(args, "--id")?;
+            let run = transition_team_run(store, &id, TeamRunStatus::Completed)?;
+            if json {
+                print_json(&serde_json::json!(run))?;
+            } else {
+                println!("{}\t{}", run.id, serde_snake_label(&run.status));
+            }
+        }
+        "cancel" => {
+            let id = required(args, "--id")?;
+            let run = transition_team_run(store, &id, TeamRunStatus::Cancelled)?;
+            if json {
+                print_json(&serde_json::json!(run))?;
+            } else {
+                println!("{}\t{}", run.id, serde_snake_label(&run.status));
+            }
+        }
+        "list" => {
+            let runs = latest_team_runs_in_append_order(store)?;
+            if json {
+                print_json(&runs)?;
+            } else {
+                for run in &runs {
+                    println!(
+                        "{}\t{}\twave={}\tmembers={}\t{}\t{}",
+                        run.id,
+                        serde_snake_label(&run.status),
+                        run.wave_index,
+                        run.member_run_ids.len(),
+                        run.created_at,
+                        run.objective
+                    );
+                }
+            }
+        }
+        "status" => {
+            let id = required(args, "--id")?;
+            let run = latest_team_run(store, &id)?;
+            let member_runs: Vec<MemberRun> = latest_member_runs_in_append_order(store)?
+                .into_iter()
+                .filter(|member| member.team_run_id == id)
+                .collect();
+            let actions = latest_member_actions_in_append_order(store)?;
+            let messages = latest_team_messages_in_append_order(store)?;
+            let latest_action_of = |member_run_id: &str| {
+                actions
+                    .iter()
+                    .filter(|action| {
+                        action.team_run_id == id && action.member_run_id == member_run_id
+                    })
+                    .max_by_key(|action| action.seq)
+            };
+            let unacked_messages = messages
+                .iter()
+                .filter(|message| message.team_run_id == id)
+                .filter(|message| {
+                    message
+                        .deliveries
+                        .iter()
+                        .any(|delivery| delivery.status != TeamDeliveryStatus::Acknowledged)
+                })
+                .count();
+            if json {
+                let members: Vec<serde_json::Value> = member_runs
+                    .iter()
+                    .map(|member| {
+                        serde_json::json!({
+                            "member_run": member,
+                            "latest_action": latest_action_of(&member.id),
+                        })
+                    })
+                    .collect();
+                print_json(&serde_json::json!({
+                    "team_run": run,
+                    "members": members,
+                    "unacked_messages": unacked_messages,
+                }))?;
+            } else {
+                println!(
+                    "{}\t{}\twave={}\t{}",
+                    run.id,
+                    serde_snake_label(&run.status),
+                    run.wave_index,
+                    run.objective
+                );
+                for member in &member_runs {
+                    let last = match latest_action_of(&member.id) {
+                        Some(action) => format!("[{}] {}", action.action_type, action.title),
+                        None => "-".to_string(),
+                    };
+                    println!(
+                        "  {} ({}/{})\t{}\tlast: {}",
+                        member.name,
+                        member.role,
+                        member.provider,
+                        serde_snake_label(&member.status),
+                        last
+                    );
+                }
+                println!("unacked_messages: {unacked_messages}");
+            }
+        }
+        "send" => {
+            let to_member_ids: Vec<String> = required(args, "--to")?
+                .split(',')
+                .map(str::trim)
+                .filter(|id| !id.is_empty())
+                .map(str::to_string)
+                .collect();
+            if to_member_ids.is_empty() {
+                return Err(CliError::Usage(
+                    "--to must name at least one member id".to_string(),
+                ));
+            }
+            let message = send_team_message(
+                store,
+                &required(args, "--id")?,
+                &required(args, "--from")?,
+                to_member_ids,
+                parse_team_message_kind(&required(args, "--kind")?)?,
+                &required(args, "--body")?,
+                value(args, "--task-id"),
+            )?;
+            if json {
+                print_json(&message)?;
+            } else {
+                println!("{}", message.id);
+            }
+        }
+        "start" => {
+            // Foreground orchestration: this process is the WRITER driving
+            // member sessions; `harness serve` stays the read/broadcast side.
+            let id = required(args, "--id")?;
+            let max_concurrency = value(args, "--max-concurrency")
+                .and_then(|raw| raw.parse::<usize>().ok())
+                .filter(|n| *n > 0)
+                .unwrap_or(TEAM_RUN_START_DEFAULT_CONCURRENCY);
+            let idle_timeout_s = value(args, "--idle-timeout-s")
+                .and_then(|raw| raw.parse::<u64>().ok())
+                .filter(|n| *n > 0)
+                .unwrap_or(kimi_acp::DEFAULT_PROMPT_IDLE_TIMEOUT_SECS);
+            team_run_start(
+                store,
+                resolved,
+                &id,
+                max_concurrency,
+                Duration::from_secs(idle_timeout_s),
+            )?;
+        }
+        "events" => {
+            let id = required(args, "--id")?;
+            let after_seq = value(args, "--after-seq")
+                .and_then(|raw| raw.parse::<u64>().ok())
+                .unwrap_or(0);
+            let mut events: Vec<TeamRunEvent> = store
+                .team_run_events()?
+                .into_iter()
+                .filter(|event| event.team_run_id == id && event.seq > after_seq)
+                .collect();
+            events.sort_by_key(|event| event.seq);
+            if json {
+                print_json(&events)?;
+            } else {
+                for event in &events {
+                    println!(
+                        "seq={}\t{}\t{}:{}\t{}\t{}",
+                        event.seq,
+                        serde_snake_label(&event.source_kind),
+                        event.entity_type,
+                        event.entity_id,
+                        event.operation,
+                        event.summary
+                    );
+                }
+            }
+        }
+        other => {
+            return Err(CliError::Usage(format!(
+                "unknown team-run command: {other}"
+            )))
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// `harness team-run start` — Agent Team v0 orchestration loop.
+//
+// The orchestrator is a FOREGROUND CLI process and the single WRITER of member
+// state transitions; `harness serve` stays a pure read/broadcast surface (its
+// SSE watcher tails the same JSONL files, so a live console sees every row the
+// orchestrator journals). v0 implements exactly one member adapter — kimi over
+// ACP ([`kimi_acp::KimiAcpClient`]). Members of any other provider are
+// journaled as failed with an honest "adapter not implemented in v0" summary
+// instead of being silently skipped.
+//
+// Concurrency: one OS thread per member, bounded by a semaphore
+// (--max-concurrency, default 4). All seq-assigning ledger writes serialize
+// through one mutex — `next_team_run_seq` is a read-max-then-append pair that
+// would race across member threads otherwise.
+// ---------------------------------------------------------------------------
+
+/// Default cap on concurrently-running member ACP sessions.
+const TEAM_RUN_START_DEFAULT_CONCURRENCY: usize = 4;
+
+/// Hard cap on prompt rounds per member (round 1 = the assignment; later
+/// rounds deliver messages queued while the member worked). Prevents a
+/// message ping-pong from looping the orchestrator forever.
+const TEAM_RUN_START_MAX_ROUNDS: u32 = 5;
+
+/// Throttle for `progress` MemberActions while assistant text streams: at
+/// most one per member per window, no matter how chatty the chunks are.
+const TEAM_RUN_PROGRESS_THROTTLE: Duration = Duration::from_secs(5);
+
+/// Minimal counting semaphore (std has none) bounding how many member threads
+/// run an ACP session at once.
+struct Semaphore {
+    permits: Mutex<usize>,
+    condvar: Condvar,
+}
+
+impl Semaphore {
+    fn new(permits: usize) -> Self {
+        Self {
+            permits: Mutex::new(permits.max(1)),
+            condvar: Condvar::new(),
+        }
+    }
+
+    fn acquire(&self) -> SemaphorePermit<'_> {
+        let mut guard = self.permits.lock().unwrap_or_else(|e| e.into_inner());
+        while *guard == 0 {
+            guard = self.condvar.wait(guard).unwrap_or_else(|e| e.into_inner());
+        }
+        *guard -= 1;
+        SemaphorePermit { semaphore: self }
+    }
+
+    fn release(&self) {
+        let mut guard = self.permits.lock().unwrap_or_else(|e| e.into_inner());
+        *guard += 1;
+        drop(guard);
+        self.condvar.notify_one();
+    }
+}
+
+struct SemaphorePermit<'a> {
+    semaphore: &'a Semaphore,
+}
+
+impl Drop for SemaphorePermit<'_> {
+    fn drop(&mut self) {
+        self.semaphore.release();
+    }
+}
+
+/// The orchestrator's serialized view of one run's ledger. Read paths are
+/// unlocked (append-only JSONL); every "compute next seq + append" pair holds
+/// `write_lock` so concurrent member threads never allocate duplicate seqs.
+struct TeamRunLedger {
+    store: HarnessStore,
+    run_id: String,
+    write_lock: Mutex<()>,
+}
+
+impl TeamRunLedger {
+    fn new(store: &HarnessStore, run_id: &str) -> Self {
+        Self {
+            store: HarnessStore::new(store.root().to_path_buf()),
+            run_id: run_id.to_string(),
+            write_lock: Mutex::new(()),
+        }
+    }
+
+    fn write_lock(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.write_lock.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Fold one event into the run's event log (seq assigned under the lock).
+    #[allow(clippy::too_many_arguments)]
+    fn fold_event(
+        &self,
+        source_kind: TeamRunEventSourceKind,
+        member_run_id: Option<String>,
+        entity_type: &str,
+        entity_id: &str,
+        operation: &str,
+        summary: &str,
+    ) -> CliResult<TeamRunEvent> {
+        let _guard = self.write_lock();
+        let seq = next_team_run_seq(&self.store, &self.run_id)?;
+        append_team_run_event(
+            &self.store,
+            &self.run_id,
+            seq,
+            source_kind,
+            member_run_id,
+            entity_type,
+            entity_id,
+            operation,
+            summary,
+        )
+    }
+
+    /// Append one MemberAction (seq = max existing action seq for the run + 1,
+    /// assigned under the lock).
+    fn append_action(
+        &self,
+        member_run_id: &str,
+        action_type: &str,
+        status: MemberActionStatus,
+        title: &str,
+        summary: &str,
+    ) -> CliResult<MemberAction> {
+        let _guard = self.write_lock();
+        let seq = self
+            .store
+            .member_actions()?
+            .into_iter()
+            .filter(|action| action.team_run_id == self.run_id)
+            .map(|action| action.seq)
+            .max()
+            .unwrap_or(0)
+            + 1;
+        let action = MemberAction {
+            id: generated_id("mact"),
+            seq,
+            team_run_id: self.run_id.clone(),
+            member_run_id: member_run_id.to_string(),
+            task_id: None,
+            action_type: action_type.to_string(),
+            status,
+            title: title.to_string(),
+            summary: summary.to_string(),
+            evidence_refs: Vec::new(),
+            started_at: now_string(),
+            completed_at: Some(now_string()),
+        };
+        self.store.append_member_action(&action)?;
+        Ok(action)
+    }
+
+    fn save_member_run(&self, member: &MemberRun) -> CliResult<()> {
+        let _guard = self.write_lock();
+        Ok(self.store.append_member_run(member)?)
+    }
+
+    fn save_message(&self, message: &TeamMessage) -> CliResult<()> {
+        let _guard = self.write_lock();
+        Ok(self.store.append_team_message(message)?)
+    }
+
+    fn latest_member_run(&self, member_run_id: &str) -> CliResult<Option<MemberRun>> {
+        Ok(latest_member_runs_in_append_order(&self.store)?
+            .into_iter()
+            .find(|member| member.id == member_run_id))
+    }
+
+    /// Latest-wins messages of this run, in append order.
+    fn team_messages(&self) -> CliResult<Vec<TeamMessage>> {
+        Ok(latest_team_messages_in_append_order(&self.store)?
+            .into_iter()
+            .filter(|message| message.team_run_id == self.run_id)
+            .collect())
+    }
+
+    /// Messages with a still-queued delivery to `member_id` (excluding the
+    /// member's own sends, which it obviously already "has").
+    fn queued_messages_for(&self, member_id: &str) -> CliResult<Vec<TeamMessage>> {
+        Ok(self
+            .team_messages()?
+            .into_iter()
+            .filter(|message| message.from_member_id != member_id)
+            .filter(|message| {
+                message.deliveries.iter().any(|delivery| {
+                    delivery.member_id == member_id && delivery.status == TeamDeliveryStatus::Queued
+                })
+            })
+            .collect())
+    }
+}
+
+/// Terminal outcome of one member's orchestration, for the run summary.
+struct MemberOutcome {
+    name: String,
+    role: String,
+    provider: String,
+    status: MemberRunStatus,
+    summary: String,
+}
+
+impl MemberOutcome {
+    fn new(member: &MemberRun, status: MemberRunStatus, summary: String) -> Self {
+        Self {
+            name: member.name.clone(),
+            role: member.role.clone(),
+            provider: member.provider.clone(),
+            status,
+            summary,
+        }
+    }
+}
+
+/// `harness team-run start`: load the run, drive every member to a terminal
+/// state, then fold the run's own terminal status + a human summary.
+fn team_run_start(
+    store: &HarnessStore,
+    resolved: &ResolvedStore,
+    run_id: &str,
+    max_concurrency: usize,
+    idle_timeout: Duration,
+) -> CliResult<()> {
+    let run = latest_team_run(store, run_id)?;
+    if matches!(
+        run.status,
+        TeamRunStatus::Completed | TeamRunStatus::Cancelled
+    ) {
+        return Err(CliError::Usage(format!(
+            "team run {run_id} is already {} — refusing to re-orchestrate",
+            serde_snake_label(&run.status)
+        )));
+    }
+    let members: Vec<MemberRun> = latest_member_runs_in_append_order(store)?
+        .into_iter()
+        .filter(|member| member.team_run_id == run_id)
+        .collect();
+
+    let ledger = Arc::new(TeamRunLedger::new(store, run_id));
+    let mut running = run.clone();
+    running.status = TeamRunStatus::Running;
+    running.updated_at = now_string();
+    store.append_team_run(&running)?;
+    ledger.fold_event(
+        TeamRunEventSourceKind::Host,
+        None,
+        "team_run",
+        run_id,
+        "updated",
+        &format!(
+            "team run started ({} member(s), max-concurrency {max_concurrency})",
+            members.len()
+        ),
+    )?;
+
+    let semaphore = Arc::new(Semaphore::new(max_concurrency));
+    let mut handles = Vec::new();
+    for member in members {
+        let ledger = Arc::clone(&ledger);
+        let semaphore = Arc::clone(&semaphore);
+        let objective = run.objective.clone();
+        let cwd = member_spawn_cwd(resolved, &member);
+        let handle_member = member.clone();
+        let handle = std::thread::spawn(move || {
+            let _permit = semaphore.acquire();
+            run_member_orchestration(&ledger, &objective, handle_member, &cwd, idle_timeout)
+        });
+        handles.push((member, handle));
+    }
+
+    let mut outcomes = Vec::new();
+    for (member, handle) in handles {
+        match handle.join() {
+            Ok(outcome) => outcomes.push(outcome),
+            Err(_) => {
+                // A panicked member thread must not take the run down with it.
+                journal_member_failure(&ledger, &member, "orchestration thread panicked");
+                outcomes.push(MemberOutcome::new(
+                    &member,
+                    MemberRunStatus::Failed,
+                    "orchestration thread panicked".to_string(),
+                ));
+            }
+        }
+    }
+
+    // Terminal run status. The spec's reviewing condition ("member
+    // blocked/failed AND a waiting_for_approval-class signal exists") is
+    // satisfied by construction: every non-completed member journaled a
+    // blocked/error MemberAction, which IS the review signal.
+    let any_unfinished = outcomes
+        .iter()
+        .any(|outcome| outcome.status != MemberRunStatus::Completed);
+    let final_status = if any_unfinished {
+        TeamRunStatus::Reviewing
+    } else {
+        TeamRunStatus::Completed
+    };
+    let completed_count = outcomes
+        .iter()
+        .filter(|outcome| outcome.status == MemberRunStatus::Completed)
+        .count();
+    let mut finished = run.clone();
+    finished.status = final_status;
+    finished.updated_at = now_string();
+    if final_status == TeamRunStatus::Completed {
+        finished.completed_at = Some(now_string());
+    }
+    store.append_team_run(&finished)?;
+    ledger.fold_event(
+        TeamRunEventSourceKind::Host,
+        None,
+        "team_run",
+        run_id,
+        if final_status == TeamRunStatus::Completed {
+            "completed"
+        } else {
+            "updated"
+        },
+        &format!(
+            "team run {} ({completed_count}/{} members completed)",
+            serde_snake_label(&final_status),
+            outcomes.len()
+        ),
+    )?;
+
+    println!("team run {run_id}\t{}", serde_snake_label(&final_status));
+    for outcome in &outcomes {
+        println!(
+            "  {} ({}/{})\t{}",
+            outcome.name,
+            outcome.role,
+            outcome.provider,
+            serde_snake_label(&outcome.status)
+        );
+        for line in outcome.summary.lines().take(3) {
+            println!("    {line}");
+        }
+    }
+    Ok(())
+}
+
+/// One member thread: dispatch on provider, converting every failure into
+/// journaled member-failure state (never a crashed orchestrator).
+fn run_member_orchestration(
+    ledger: &TeamRunLedger,
+    objective: &str,
+    member: MemberRun,
+    cwd: &Path,
+    idle_timeout: Duration,
+) -> MemberOutcome {
+    if !member.provider.eq_ignore_ascii_case("kimi") {
+        let reason = format!(
+            "adapter not implemented in v0 (provider {})",
+            member.provider
+        );
+        journal_member_failure(ledger, &member, &reason);
+        return MemberOutcome::new(&member, MemberRunStatus::Failed, reason);
+    }
+    match run_kimi_member(ledger, objective, &member, cwd, idle_timeout) {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            let reason = error.to_string();
+            journal_member_failure(ledger, &member, &reason);
+            MemberOutcome::new(&member, MemberRunStatus::Failed, reason)
+        }
+    }
+}
+
+/// Drive one kimi member: spawn its ACP session, deliver the assignment as a
+/// contract prompt, journal streamed updates, then loop follow-up rounds for
+/// messages queued while it worked (capped at [`TEAM_RUN_START_MAX_ROUNDS`]).
+fn run_kimi_member(
+    ledger: &TeamRunLedger,
+    objective: &str,
+    member: &MemberRun,
+    cwd: &Path,
+    idle_timeout: Duration,
+) -> CliResult<MemberOutcome> {
+    let mut member_row = member.clone();
+    member_row.status = MemberRunStatus::Starting;
+    member_row.last_event_at = Some(now_string());
+    ledger.save_member_run(&member_row)?;
+    ledger.fold_event(
+        TeamRunEventSourceKind::Member,
+        Some(member.id.clone()),
+        "member_run",
+        &member.id,
+        "updated",
+        &format!(
+            "member {} starting (kimi acp, cwd {})",
+            member.name,
+            cwd.display()
+        ),
+    )?;
+
+    let mut client = kimi_acp::KimiAcpClient::spawn(cwd, member.model.as_deref())?;
+    member_row.status = MemberRunStatus::Running;
+    member_row.acp_session_id = client.session_id().map(str::to_string);
+    member_row.last_event_at = Some(now_string());
+    ledger.save_member_run(&member_row)?;
+    ledger.fold_event(
+        TeamRunEventSourceKind::Member,
+        Some(member.id.clone()),
+        "member_run",
+        &member.id,
+        "updated",
+        &format!(
+            "member {} running (acp session {})",
+            member.name,
+            member_row.acp_session_id.as_deref().unwrap_or("?")
+        ),
+    )?;
+
+    // The assignment is the newest Assignment-kind message with a still-queued
+    // delivery to this member; absent one, the run objective is the contract.
+    let assignment = latest_queued_assignment(ledger, &member.id)?;
+    let assignment_body = assignment
+        .as_ref()
+        .map(|message| message.body.clone())
+        .unwrap_or_else(|| objective.to_string());
+    if let Some(assignment) = &assignment {
+        mark_message_delivered(ledger, assignment, &member.id, &member.name)?;
+    }
+
+    let mut round = 0u32;
+    let mut next_prompt = Some(contract_prompt(objective, &member_row, &assignment_body));
+    let mut final_status = MemberRunStatus::Failed;
+    let mut final_summary = String::new();
+    while let Some(prompt_text) = next_prompt.take() {
+        round += 1;
+        let mut mapper = MemberUpdateMapper::new(ledger, member_row.clone());
+        let outcome = client.prompt(&prompt_text, idle_timeout, |update| mapper.handle(update))?;
+        let final_text = mapper.text().to_string();
+        member_row = mapper.into_member();
+        let result = parse_round_result(&final_text);
+
+        // Handoff to the host: the full final report, manual-ack delivery.
+        let handoff = TeamMessage {
+            id: generated_id("tmsg"),
+            team_run_id: ledger.run_id.clone(),
+            task_id: None,
+            from_member_id: member.id.clone(),
+            to_member_ids: vec!["host".to_string()],
+            kind: TeamMessageKind::Handoff,
+            body: final_text.clone(),
+            correlation_id: assignment
+                .as_ref()
+                .map(|message| message.correlation_id.clone())
+                .unwrap_or_else(|| generated_id("corr")),
+            causation_id: assignment.as_ref().map(|message| message.id.clone()),
+            evidence_refs: Vec::new(),
+            deliveries: vec![TeamMessageDelivery {
+                member_id: "host".to_string(),
+                policy: TeamDeliveryPolicy::ManualAck,
+                status: TeamDeliveryStatus::Delivered,
+                attempt: 1,
+                updated_at: now_string(),
+            }],
+            created_at: now_string(),
+        };
+        ledger.save_message(&handoff)?;
+        ledger.fold_event(
+            TeamRunEventSourceKind::Member,
+            Some(member.id.clone()),
+            "message",
+            &handoff.id,
+            "created",
+            &format!("handoff from {} to host (round {round})", member.name),
+        )?;
+
+        let (action_type, action_status, member_status) = match result {
+            MemberRoundResult::Done => (
+                "completed",
+                MemberActionStatus::Succeeded,
+                MemberRunStatus::Completed,
+            ),
+            MemberRoundResult::Blocked => (
+                "blocked",
+                MemberActionStatus::Failed,
+                MemberRunStatus::Blocked,
+            ),
+            MemberRoundResult::Failed => {
+                ("error", MemberActionStatus::Failed, MemberRunStatus::Failed)
+            }
+        };
+        let result_section =
+            extract_report_section(&final_text, "RESULT").unwrap_or_else(|| "done".to_string());
+        let action = ledger.append_action(
+            &member.id,
+            action_type,
+            action_status,
+            &format!("round {round} {action_type}"),
+            &result_section,
+        )?;
+        ledger.fold_event(
+            TeamRunEventSourceKind::Member,
+            Some(member.id.clone()),
+            "action",
+            &action.id,
+            "created",
+            &format!("{} round {round}: {action_type}", member.name),
+        )?;
+
+        member_row.status = member_status;
+        member_row.finished_at = Some(now_string());
+        member_row.last_event_at = Some(now_string());
+        ledger.save_member_run(&member_row)?;
+        ledger.fold_event(
+            TeamRunEventSourceKind::Member,
+            Some(member.id.clone()),
+            "member_run",
+            &member.id,
+            if member_status == MemberRunStatus::Completed {
+                "completed"
+            } else {
+                "updated"
+            },
+            &format!(
+                "member {} {} (round {round}, stop {})",
+                member.name,
+                serde_snake_label(&member_status),
+                outcome.stop_reason
+            ),
+        )?;
+        final_status = member_status;
+        final_summary = extract_report_section(&final_text, "SUMMARY")
+            .unwrap_or_else(|| final_text.lines().take(3).collect::<Vec<_>>().join("\n"));
+
+        // Follow-up rounds: deliver whatever queued up while the member worked.
+        if round >= TEAM_RUN_START_MAX_ROUNDS {
+            break;
+        }
+        let queued = ledger.queued_messages_for(&member.id)?;
+        if queued.is_empty() {
+            break;
+        }
+        let mut follow_up = format!(
+            "FOLLOW-UP MESSAGES arrived while you worked (round {round}). Address them, then report again in the SAME format (## RESULT / ## SUMMARY / ...).\n\n"
+        );
+        for message in &queued {
+            follow_up.push_str(&format!(
+                "--- {} ({}) ---\n{}\n\n",
+                message.from_member_id,
+                team_message_kind_label(&message.kind),
+                message.body
+            ));
+            mark_message_delivered(ledger, message, &member.id, &member.name)?;
+        }
+        member_row.status = MemberRunStatus::Running;
+        member_row.last_event_at = Some(now_string());
+        ledger.save_member_run(&member_row)?;
+        next_prompt = Some(follow_up);
+    }
+    client.shutdown();
+    Ok(MemberOutcome::new(member, final_status, final_summary))
+}
+
+/// Journal a member failure on any error path (best-effort: we are already on
+/// the failure path, so secondary journaling errors are dropped).
+fn journal_member_failure(ledger: &TeamRunLedger, member: &MemberRun, reason: &str) {
+    let mut failed = ledger
+        .latest_member_run(&member.id)
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| member.clone());
+    failed.status = MemberRunStatus::Failed;
+    failed.finished_at = Some(now_string());
+    failed.last_event_at = Some(now_string());
+    let _ = ledger.save_member_run(&failed);
+    let _ = ledger.append_action(
+        &member.id,
+        "error",
+        MemberActionStatus::Failed,
+        "member failed",
+        reason,
+    );
+    let _ = ledger.fold_event(
+        TeamRunEventSourceKind::Member,
+        Some(member.id.clone()),
+        "member_run",
+        &member.id,
+        "updated",
+        &format!("member {} failed: {reason}", member.name),
+    );
+}
+
+/// The most recent Assignment message with a still-queued delivery to
+/// `member_id` (append order is chronological under the single-writer v0).
+fn latest_queued_assignment(
+    ledger: &TeamRunLedger,
+    member_id: &str,
+) -> CliResult<Option<TeamMessage>> {
+    Ok(ledger.team_messages()?.into_iter().rfind(|message| {
+        message.kind == TeamMessageKind::Assignment
+            && message.deliveries.iter().any(|delivery| {
+                delivery.member_id == member_id && delivery.status == TeamDeliveryStatus::Queued
+            })
+    }))
+}
+
+/// Flip every queued delivery of `message` addressed to `member_id` to
+/// delivered (append a new TeamMessage row — the store is latest-wins) and
+/// fold the delivery event.
+fn mark_message_delivered(
+    ledger: &TeamRunLedger,
+    message: &TeamMessage,
+    member_id: &str,
+    member_name: &str,
+) -> CliResult<()> {
+    let mut updated = message.clone();
+    for delivery in &mut updated.deliveries {
+        if delivery.member_id == member_id && delivery.status == TeamDeliveryStatus::Queued {
+            delivery.status = TeamDeliveryStatus::Delivered;
+            delivery.attempt += 1;
+            delivery.updated_at = now_string();
+        }
+    }
+    ledger.save_message(&updated)?;
+    ledger.fold_event(
+        TeamRunEventSourceKind::Member,
+        Some(member_id.to_string()),
+        "message",
+        &message.id,
+        "updated",
+        &format!(
+            "{} delivered to {}",
+            team_message_kind_label(&message.kind),
+            member_name
+        ),
+    )?;
+    Ok(())
+}
+
+/// Where a member's ACP session runs: its pinned worktree when set, else the
+/// selected project's root, else (unrouted raw-store invocation) the CLI cwd.
+fn member_spawn_cwd(resolved: &ResolvedStore, member: &MemberRun) -> PathBuf {
+    if let Some(worktree) = &member.worktree_ref {
+        if !worktree.is_empty() {
+            return PathBuf::from(worktree);
+        }
+    }
+    if let Some(context) = &resolved.context {
+        return context.project_root.clone();
+    }
+    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+}
+
+/// Maps `session/update` frames of one prompt round onto the member ledger.
+/// Hidden reasoning (`agent_thought_chunk`) is deliberately dropped: the
+/// ledger never carries an agent's private chain-of-thought.
+struct MemberUpdateMapper<'a> {
+    ledger: &'a TeamRunLedger,
+    member: MemberRun,
+    text: String,
+    last_progress_at: std::time::Instant,
+    /// toolCallId → title of tools we journaled `tool_started` for, so the
+    /// completion action can carry a name even when the update frame omits it.
+    open_tools: std::collections::HashMap<String, String>,
+}
+
+impl<'a> MemberUpdateMapper<'a> {
+    fn new(ledger: &'a TeamRunLedger, member: MemberRun) -> Self {
+        Self {
+            ledger,
+            member,
+            text: String::new(),
+            // Arm the throttle already expired so the FIRST chunk journals one
+            // progress action immediately (the console shows life), then at
+            // most one per TEAM_RUN_PROGRESS_THROTTLE window.
+            last_progress_at: std::time::Instant::now() - TEAM_RUN_PROGRESS_THROTTLE,
+            open_tools: std::collections::HashMap::new(),
+        }
+    }
+
+    fn handle(&mut self, update: &serde_json::Value) {
+        let Some(kind) = update.get("sessionUpdate").and_then(|v| v.as_str()) else {
+            return;
+        };
+        if kind.contains("thought") {
+            return;
+        }
+        if kind == "agent_message_chunk" {
+            if let Some(text) = update
+                .get("content")
+                .and_then(|content| content.get("text"))
+                .and_then(|text| text.as_str())
+            {
+                self.text.push_str(text);
+            }
+            if self.last_progress_at.elapsed() >= TEAM_RUN_PROGRESS_THROTTLE {
+                self.last_progress_at = std::time::Instant::now();
+                let summary = format!("{} chars streamed", self.text.len());
+                if self
+                    .ledger
+                    .append_action(
+                        &self.member.id,
+                        "progress",
+                        MemberActionStatus::Progress,
+                        "assistant streaming",
+                        &summary,
+                    )
+                    .is_ok()
+                {
+                    self.touch_member();
+                }
+            }
+            return;
+        }
+        if kind.contains("tool") {
+            let tool_id = update
+                .get("toolCallId")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let title = update
+                .get("title")
+                .and_then(|v| v.as_str())
+                .or_else(|| update.get("kind").and_then(|v| v.as_str()))
+                .unwrap_or("tool call")
+                .to_string();
+            let status = update.get("status").and_then(|v| v.as_str()).unwrap_or("");
+            let terminal = matches!(status, "completed" | "failed" | "error" | "cancelled");
+            // Loose ACP mapping: `tool_call` starts; `tool_call_update` only
+            // completes when its status is terminal (a mid-flight "running"
+            // update journals nothing new); any other *tool* frame starts.
+            let journaled = if kind == "tool_call" || !kind.contains("update") {
+                self.open_tools.insert(tool_id, title.clone());
+                self.ledger.append_action(
+                    &self.member.id,
+                    "tool_started",
+                    MemberActionStatus::Started,
+                    &title,
+                    &format!("tool started: {title}"),
+                )
+            } else if terminal {
+                let title = self.open_tools.remove(&tool_id).unwrap_or(title);
+                self.ledger.append_action(
+                    &self.member.id,
+                    "tool_completed",
+                    if status == "completed" {
+                        MemberActionStatus::Succeeded
+                    } else {
+                        MemberActionStatus::Failed
+                    },
+                    &title,
+                    &format!("tool {status}: {title}"),
+                )
+            } else {
+                return;
+            };
+            if journaled.is_ok() {
+                self.touch_member();
+            }
+        }
+        // Anything else (available_commands_update, plan, ...): not journaled.
+    }
+
+    /// Refresh `last_event_at` whenever something was journaled for the member
+    /// (throttled to the journaling cadence, not per chunk).
+    fn touch_member(&mut self) {
+        self.member.last_event_at = Some(now_string());
+        let _ = self.ledger.save_member_run(&self.member);
+    }
+
+    /// The accumulated assistant text of this round (all message chunks).
+    fn text(&self) -> &str {
+        &self.text
+    }
+
+    fn into_member(self) -> MemberRun {
+        self.member
+    }
+}
+
+/// The round outcome parsed from the report's `## RESULT` section.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MemberRoundResult {
+    Done,
+    Blocked,
+    Failed,
+}
+
+/// Loose `## RESULT` parse: missing section defaults to done (the agent wrote
+/// a report without the contract heading — treat the work as finished, the
+/// report itself is journaled for review either way).
+fn parse_round_result(final_text: &str) -> MemberRoundResult {
+    match extract_report_section(final_text, "RESULT") {
+        Some(section) => {
+            let lower = section.to_lowercase();
+            if lower.contains("blocked") {
+                MemberRoundResult::Blocked
+            } else if lower.contains("fail") {
+                MemberRoundResult::Failed
+            } else {
+                MemberRoundResult::Done
+            }
+        }
+        None => MemberRoundResult::Done,
+    }
+}
+
+/// Loose `## <NAME>` section extractor: the trimmed body between the heading
+/// (matched case-insensitively) and the next `## ` heading or EOF.
+fn extract_report_section(text: &str, name: &str) -> Option<String> {
+    let marker = format!("## {name}").to_uppercase();
+    let mut in_section = false;
+    let mut body = Vec::new();
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.to_uppercase().starts_with(&marker) {
+            in_section = true;
+            continue;
+        }
+        if in_section && trimmed.starts_with("## ") {
+            break;
+        }
+        if in_section {
+            body.push(line);
+        }
+    }
+    if !in_section {
+        return None;
+    }
+    let joined = body.join("\n").trim().to_string();
+    (!joined.is_empty()).then_some(joined)
+}
+
+/// The delivery-contract prompt every member's first round runs on.
+fn contract_prompt(objective: &str, member: &MemberRun, assignment_body: &str) -> String {
+    let owned_paths = if member.owned_paths.is_empty() {
+        "(none — read-only)".to_string()
+    } else {
+        member.owned_paths.join(", ")
+    };
+    format!(
+        "You are {name}, the {role} member of agent team run \"{objective}\".\n\
+         \n\
+         CONTRACT\n\
+         - Owned paths (only modify files under these; empty = read-only): {owned_paths}\n\
+         - Definition of done: {assignment_body}\n\
+         - Evidence: every claim in your report must be backed by something another agent can re-run (commands, tests, file diffs).\n\
+         - Boundaries: do NOT deploy, push, merge, or delete anything; do not modify files outside owned paths. If the task needs an external change or an ambiguous product decision, STOP and report BLOCKER instead of deciding yourself.\n\
+         - You may use your own sub-agents freely; keep their permissions within yours.\n\
+         \n\
+         Report format (your final message MUST follow this):\n\
+         ## RESULT\n\
+         done | blocked | failed\n\
+         ## SUMMARY\n\
+         <=10 lines\n\
+         ## FILES CHANGED\n\
+         ## COMMANDS & TESTS\n\
+         ## EVIDENCE\n\
+         ## BLOCKERS / DECISIONS NEEDED\n\
+         ## SUGGESTED NEXT\n",
+        name = member.name,
+        role = member.role,
+    )
 }
 
 /// Read a markdown field value from either an inline `--<name>` flag or a
@@ -5941,6 +7480,15 @@ fn handle_sse_stream(
                             break; // Client disconnected
                         }
                     }
+                    // Agent Team v0: folded per-run events (team console merges
+                    // these incrementally).
+                    sse::SseEventFrame::TeamRunEvent(event) => {
+                        if let Ok(json) = serde_json::to_value(&event) {
+                            if sse::write_sse_frame(&mut stream, "team_run_event", &json).is_err() {
+                                break; // Client disconnected
+                            }
+                        }
+                    }
                 }
                 last_keepalive = std::time::Instant::now();
             }
@@ -6605,6 +8153,21 @@ fn handle_http_connection(
         return Ok(());
     }
 
+    // POST /v1/team-runs/{id}/start — orchestration execution lands in the
+    // next wave; v0 answers 501 with the CLI path so the team console can
+    // degrade gracefully (its UI treats 404/501 as "start via CLI").
+    if let Some(team_run_id) = path_only
+        .strip_prefix("/v1/team-runs/")
+        .and_then(|rest| rest.strip_suffix("/start"))
+    {
+        write_http_json(
+            &mut stream,
+            "501 Not Implemented",
+            &serde_json::json!({"error": format!("start via CLI: harness team-run start --id {team_run_id}")}),
+        )?;
+        return Ok(());
+    }
+
     match handle_http_action(store, &path_only, &body_json) {
         Ok(response) => write_http_json(
             &mut stream,
@@ -6674,6 +8237,21 @@ fn handle_http_action(
     path: &str,
     body: &serde_json::Value,
 ) -> CliResult<serde_json::Value> {
+    if path == "/v1/team-runs" {
+        return create_team_run_value(store, body);
+    }
+    if let Some(team_run_id) = path
+        .strip_prefix("/v1/team-runs/")
+        .and_then(|rest| rest.strip_suffix("/messages"))
+    {
+        return send_team_message_value(store, team_run_id, body);
+    }
+    if let Some(team_run_id) = path
+        .strip_prefix("/v1/team-runs/")
+        .and_then(|rest| rest.strip_suffix("/transition"))
+    {
+        return transition_team_run_value(store, team_run_id, body);
+    }
     if path == "/v1/messages" {
         return create_message_value(store, body);
     }
@@ -6972,6 +8550,82 @@ fn create_team_value(
     };
     persist_new_team(store, &team)?;
     Ok(serde_json::to_value(team)?)
+}
+
+/// POST /v1/team-runs — create a team run from the JSON body (same semantics
+/// as `team-run create`; the host surface defaults to "http").
+fn create_team_run_value(
+    store: &HarnessStore,
+    body: &serde_json::Value,
+) -> CliResult<serde_json::Value> {
+    let member_values = body
+        .get("members")
+        .and_then(|value| value.as_array())
+        .ok_or_else(|| CliError::Usage("missing JSON field: members".to_string()))?;
+    let mut members = Vec::new();
+    for member in member_values {
+        members.push(TeamMemberSpec {
+            name: required_json_string(member, "name")?,
+            role: required_json_string(member, "role")?,
+            provider: required_json_string(member, "provider")?,
+            model: json_string(member, "model"),
+            owned_paths: json_string_array(member, "owned_paths"),
+        });
+    }
+    let created = create_team_run(
+        store,
+        &required_json_string(body, "objective")?,
+        json_u64(body, "wave_index")
+            .and_then(|wave| u32::try_from(wave).ok())
+            .unwrap_or(1),
+        body.get("budget_limit_usd")
+            .and_then(|value| value.as_f64()),
+        json_string(body, "host_surface")
+            .as_deref()
+            .unwrap_or("http"),
+        json_string(body, "host_thread_id"),
+        json_string(body, "previous_run_id"),
+        &members,
+    )?;
+    Ok(created_team_run_json(&created))
+}
+
+/// POST /v1/team-runs/{id}/transition — the wave gate. Body `{status}`; only
+/// `reviewing → completed` and `planning|running|waiting → cancelled` are legal
+/// (same logic as `team-run complete|cancel`, so CLI and UI cannot diverge).
+fn transition_team_run_value(
+    store: &HarnessStore,
+    team_run_id: &str,
+    body: &serde_json::Value,
+) -> CliResult<serde_json::Value> {
+    let target = parse_team_run_status(&required_json_string(body, "status")?)?;
+    let run = transition_team_run(store, team_run_id, target)?;
+    Ok(serde_json::to_value(run)?)
+}
+
+/// POST /v1/team-runs/{id}/messages — route a message inside the run (same
+/// semantics as `team-run send`).
+fn send_team_message_value(
+    store: &HarnessStore,
+    team_run_id: &str,
+    body: &serde_json::Value,
+) -> CliResult<serde_json::Value> {
+    let to_member_ids = json_string_array(body, "to_member_ids");
+    if to_member_ids.is_empty() {
+        return Err(CliError::Usage(
+            "missing JSON field: to_member_ids".to_string(),
+        ));
+    }
+    let message = send_team_message(
+        store,
+        team_run_id,
+        &required_json_string(body, "from_member_id")?,
+        to_member_ids,
+        parse_team_message_kind(&required_json_string(body, "kind")?)?,
+        &required_json_string(body, "body")?,
+        json_string(body, "task_id"),
+    )?;
+    Ok(serde_json::to_value(message)?)
 }
 
 /// POST /v1/agents — build an Agent Member from the JSON body and persist it.
@@ -14923,6 +16577,14 @@ fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::Value> {
     let workflow_steps = latest_workflow_steps_in_append_order(store)?;
     let workflow_patches = latest_workflow_patches_in_append_order(store)?;
     let workflow_artifact_manifests = latest_workflow_artifact_manifests_in_append_order(store)?;
+    // Agent Team v0 ledger projections (append-only, latest-wins). The folded
+    // event log is capped per run so a chatty run cannot bloat the snapshot.
+    let team_runs = latest_team_runs_in_append_order(store)?;
+    let member_runs = latest_member_runs_in_append_order(store)?;
+    let team_messages = latest_team_messages_in_append_order(store)?;
+    let member_actions = latest_member_actions_in_append_order(store)?;
+    let delegation_runs = latest_delegation_runs_in_append_order(store)?;
+    let team_run_events = recent_team_run_events_in_append_order(store, 500)?;
     // The goal↔run orchestration checkpoints (Stage 0): each `goal run-phases`
     // execution, its per-phase `workflow_run_id` links, and status. Surfacing them
     // makes a real run-phases visible on the dashboard (the back link to the
@@ -15045,7 +16707,13 @@ fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::Value> {
         "workflow_steps": workflow_steps,
         "workflow_patches": workflow_patches,
         "workflow_artifact_manifests": workflow_artifact_manifests,
-        "goal_orchestration_runs": goal_orchestration_runs
+        "goal_orchestration_runs": goal_orchestration_runs,
+        "team_runs": team_runs,
+        "member_runs": member_runs,
+        "team_messages": team_messages,
+        "member_actions": member_actions,
+        "delegation_runs": delegation_runs,
+        "team_run_events": team_run_events
     }))
 }
 
@@ -15448,6 +17116,104 @@ fn latest_workflow_runs_in_append_order(store: &HarnessStore) -> CliResult<Vec<W
         by_id.insert(run.id.clone(), run);
     }
     Ok(ids.into_iter().filter_map(|id| by_id.remove(&id)).collect())
+}
+
+fn latest_team_runs_in_append_order(store: &HarnessStore) -> CliResult<Vec<AgentTeamRun>> {
+    let mut ids = Vec::new();
+    let mut by_id = BTreeMap::new();
+    for run in store.team_runs()? {
+        ids.retain(|id| id != &run.id);
+        ids.push(run.id.clone());
+        by_id.insert(run.id.clone(), run);
+    }
+    Ok(ids.into_iter().filter_map(|id| by_id.remove(&id)).collect())
+}
+
+fn latest_member_runs_in_append_order(store: &HarnessStore) -> CliResult<Vec<MemberRun>> {
+    let mut ids = Vec::new();
+    let mut by_id = BTreeMap::new();
+    for run in store.member_runs()? {
+        ids.retain(|id| id != &run.id);
+        ids.push(run.id.clone());
+        by_id.insert(run.id.clone(), run);
+    }
+    Ok(ids.into_iter().filter_map(|id| by_id.remove(&id)).collect())
+}
+
+fn latest_team_messages_in_append_order(store: &HarnessStore) -> CliResult<Vec<TeamMessage>> {
+    let mut ids = Vec::new();
+    let mut by_id = BTreeMap::new();
+    for message in store.team_messages()? {
+        ids.retain(|id| id != &message.id);
+        ids.push(message.id.clone());
+        by_id.insert(message.id.clone(), message);
+    }
+    Ok(ids.into_iter().filter_map(|id| by_id.remove(&id)).collect())
+}
+
+fn latest_member_actions_in_append_order(store: &HarnessStore) -> CliResult<Vec<MemberAction>> {
+    let mut ids = Vec::new();
+    let mut by_id = BTreeMap::new();
+    for action in store.member_actions()? {
+        ids.retain(|id| id != &action.id);
+        ids.push(action.id.clone());
+        by_id.insert(action.id.clone(), action);
+    }
+    Ok(ids.into_iter().filter_map(|id| by_id.remove(&id)).collect())
+}
+
+fn latest_delegation_runs_in_append_order(store: &HarnessStore) -> CliResult<Vec<DelegationRun>> {
+    let mut ids = Vec::new();
+    let mut by_id = BTreeMap::new();
+    for run in store.delegation_runs()? {
+        ids.retain(|id| id != &run.id);
+        ids.push(run.id.clone());
+        by_id.insert(run.id.clone(), run);
+    }
+    Ok(ids.into_iter().filter_map(|id| by_id.remove(&id)).collect())
+}
+
+fn latest_team_run_events_in_append_order(store: &HarnessStore) -> CliResult<Vec<TeamRunEvent>> {
+    let mut ids = Vec::new();
+    let mut by_id = BTreeMap::new();
+    for event in store.team_run_events()? {
+        ids.retain(|id| id != &event.id);
+        ids.push(event.id.clone());
+        by_id.insert(event.id.clone(), event);
+    }
+    Ok(ids.into_iter().filter_map(|id| by_id.remove(&id)).collect())
+}
+
+/// Snapshot projection of the folded team-run event log: latest-wins by id,
+/// then capped to the most recent `per_run_cap` events per team run (by seq)
+/// so a chatty run cannot bloat every dashboard snapshot.
+fn recent_team_run_events_in_append_order(
+    store: &HarnessStore,
+    per_run_cap: usize,
+) -> CliResult<Vec<TeamRunEvent>> {
+    let events = latest_team_run_events_in_append_order(store)?;
+    let mut seqs_by_run: BTreeMap<String, Vec<u64>> = BTreeMap::new();
+    for event in &events {
+        seqs_by_run
+            .entry(event.team_run_id.clone())
+            .or_default()
+            .push(event.seq);
+    }
+    // The seq floor per run: the cap-th largest seq (0 when the run has fewer
+    // than `per_run_cap` events, keeping all of them).
+    let mut min_kept_seq = BTreeMap::new();
+    for (run_id, mut seqs) in seqs_by_run {
+        seqs.sort_unstable_by(|a, b| b.cmp(a));
+        let floor = seqs
+            .get(per_run_cap.saturating_sub(1))
+            .copied()
+            .unwrap_or(0);
+        min_kept_seq.insert(run_id, floor);
+    }
+    Ok(events
+        .into_iter()
+        .filter(|event| event.seq >= min_kept_seq.get(&event.team_run_id).copied().unwrap_or(0))
+        .collect())
 }
 
 /// Age after which a `Running` WorkflowRun is assumed orphaned and reaped. The
@@ -19610,6 +21376,12 @@ fn print_help() {
   team list [--all]
   team show --id <team>
   team close --id <team>
+  team-run create --objective <text> [--wave <n>] [--budget-usd <x>] [--host-surface <surface>] [--host-thread-id <id>] [--member name:role:provider[:model][@path1,path2]]... [--json]
+  team-run list [--json]
+  team-run status --id <run> [--json]
+  team-run send --id <run> --from <member|host> --to <id1>[,<id2>] --kind assignment|question|answer|progress|blocker|handoff|review_request|review_result|control|broadcast --body <text> [--task-id <task>] [--json]
+  team-run start --id <run> [--max-concurrency <n>] [--idle-timeout-s <n>]
+  team-run events --id <run> [--after-seq <n>] [--json]
   member register --name <name> --role <role> [--provider codex|claude] [--capability <cap>] [--worktree <path>] [--permission-profile <profile>] [--runtime-workspace-root <path>]
   member list
   goal create --title <title> --objective <text> --owner <agent> [--success <text>]
@@ -19660,6 +21432,7 @@ fn print_help() {
   workflow reap-workers [--dry-run]
   workflow gc-trace [--keep-runs <n>] [--keep-days <d>] [--dry-run]
   serve [--addr 127.0.0.1:8787] [--once]
+  mcp                                          run the stdio MCP server (Agent Team v0 tools)
   daemon start [--socket <path>] [--idle-secs <n>]   (unix: resident warm-child host)
   daemon status
   daemon stop
