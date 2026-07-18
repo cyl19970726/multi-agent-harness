@@ -127,17 +127,80 @@ render-time projections only.
 
 ## Member page (L2)
 
+Design principle: the page must hold **as many member behaviors as
+possible** without redesign per behavior. `MemberAction.action_type` is an
+open vocabulary (free-form string); the page renders it through one
+protocol — every type maps to a pill/icon plus an expandable renderer, and
+unknown types fall back to a generic renderer. New behaviors become new
+vocabulary, not new pages.
+
+Behavior vocabulary (v0+): `thinking` (derived reasoning, collapsed),
+`plan_updated`, `tool_started/progress/completed`,
+`command_started/completed`, `file_read/file_changed`,
+`test_started/completed`, `message_sent/received` (all ten kinds),
+`delegation_started/completed`, `review_started/completed`,
+`waiting_for_input/approval`, `blocked`, `error`, `completed`.
+
 ```text
-← Team: delivery-run-2
-┌ ●E1 shop-journey · kimi/k3                            [testing] ───┐
-│ session: kimi-4d21 · worktree · owned: src/shops/** · heartbeat 2s │
-├─ Conversation (you ↔ this member) ──┬─ Real-time events ───────────┤
-│ messages involving this member      │ member's actions, seq desc   │
-│ kind pill · ACK · evidence          │ expand: command/file/test/   │
-│ [composer → this member]            │ evidence/thinking entries    │
+← Team: run-name
+┌ HEADER ────────────────────────────────────────────────────────────┐
+│ ●E1 shop-journey · role · kimi/k3 · [testing] · ♥ 2s               │
+│ session · worktree · owned: src/shops/** · [Re-drive] (waiting/    │
+│ blocked only) · current action card (latest action + elapsed)      │
+├─ Behavior timeline (left, main, max-h scroll) ─┬─ Conversation ────┤
+│ [filter: all types ▾] [show thinking ☐]        │ messages with this │
+│ one unified stream, newest first:              │ member (assignment/│
+│ time · type pill · title · ▸ expand            │ handoff/question/  │
+│ per-type renderers:                            │ control) + ACK     │
+│  thinking → muted full text (collapsed)        │ state + evidence   │
+│  command → cmdline + exit + output             │ ┌ composer → this  │
+│  file → path + diff                            │ │ member (from     │
+│  test → pass/fail + log                        │ │ operator) [Send] │
+│  message → kind + from→to + anchor link        │ └──────────────────│
+│  delegation → mode + objective + status        │                    │
 ├─ Contract (## Task / Done when / Boundaries verbatim) ─────────────┤
 ├─ Delegations (honest empty) · Raw provider stream (collapsed) ─────┤
 ```
+
+The behavior timeline is the page spine: every behavior lives in one
+unified stream; thinking entries are collapsed one-liners by default and
+expand to the full reasoning text (derived-reasoning badge, never
+evidence). The conversation column is fixed on the right with a composer
+addressed to this member (from operator).
+
+## Member lifecycle (create / delete — resource discipline)
+
+**Create (add member to a run)** — lazy acquisition:
+
+1. Ledger: `MemberRun(status=starting)` + event; config validated
+   (owned_paths, provider, model).
+2. v0 semantics: `create` only persists the roster; the provider session
+   is acquired lazily at `team-run start` / `start --member` (or eager
+   add-member later). At acquisition: worktree (optional) → provider
+   session (kimi ACP `session/new`) → `acp_session_id` written back →
+   `status=idle` (ready).
+3. Failure path: any step fails → release in reverse order →
+   `status=failed` + error action. No half-acquired member.
+
+**Delete / stop (remove member from a run)** — graceful release:
+
+1. `status=stopping`: refuse new assignments; the member's queued
+   deliveries are expired.
+2. Stop current work: ACP `session/cancel` (graceful); after a grace
+   window (~15s) kill the process group (`kill_worker_tree`).
+3. Release in reverse: ACP child kill+reap (Drop is the backstop) →
+   member thread joined → worktree released (if allocated) → session dir
+   (`wire.jsonl`) archived for audit, never deleted silently.
+4. Terminal: `status=stopped` + `finished_at` + event. Prior handoffs and
+   actions remain readable history.
+5. Guards: deleting a working member needs inline confirmation; the lead
+   cannot be removed; members of a finished run are read-only.
+
+**Process/thread discipline**: one ACP child + one orchestrator thread
+per member; `process_group(0)` isolation so kills take the whole tree;
+orchestrator exit kills and reaps everything via Drop. When `start` moves
+into `serve`, a member registry (`member_id → child handle`) is required,
+with reaping on run end and on serve shutdown — no orphan sessions.
 
 ## Thought visibility (policy change)
 
