@@ -1,5 +1,12 @@
 # Agent Workbench Design Principles
 
+> Migration note: the visual and interaction principles remain useful, but
+> Goal/Task graph and persistent-team examples below describe compatibility UI.
+> Mission/Wave and AgentTeamRun semantics are owned by
+> [the architecture map](../architecture-map.md),
+> [ADR 0026](../decisions/0026-mission-wave-architecture.md), and
+> [the Agent Team page spec](pages/team-run-console.md).
+
 This document owns the core UI/UX principles for the Agent Workbench. Concrete
 screen layout and page cards belong in
 [frontend-design.md](frontend-design.md). Frontend module boundaries belong in

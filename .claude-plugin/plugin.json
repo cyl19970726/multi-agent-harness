@@ -1,6 +1,7 @@
 {
-  "name": "author-workflow",
-  "description": "Teach a shell-capable agent (Claude Code or Codex) to author a dynamic multi-agent workflow at runtime — a Starlark program over the harness runtime — and run it with `harness workflow run-script`. Bundles the author-workflow skill from skills/.",
+  "name": "star-workflow",
+  "description": "Teach a shell-capable agent (Claude Code or Codex) to author a standalone Dynamic Workflow at runtime — a Starlark program over the harness runtime — and run it with `harness workflow run-script`. Bundles the star-workflow skill from skills/.",
+  "skills": "./skills/star-workflow",
   "version": "0.1.0",
   "author": { "name": "cyl19970726", "url": "https://github.com/cyl19970726/multi-agent-harness" },
   "homepage": "https://github.com/cyl19970726/multi-agent-harness",

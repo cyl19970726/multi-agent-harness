@@ -10,6 +10,14 @@ living collaborator with its own state, mailbox, and responsibility domain. The
 plugin ships the method (skills), the call surface (MCP), the plumbing (CLI
 commands), and the nerves (hooks) — it contains no runtime logic of its own.
 
+Product context is **Mission → ordered Wave → executor**. An `AgentTeamRun` is
+one attempt for an `agent_team` Wave. The target ownership chain starts from
+`TeamMessage(kind=assignment)` and its `correlation_id`; task ids remain v0
+compatibility fields where the current CLI exposes them. In current v0 only the
+automatic member handoff reuses that correlation; manual send creates a new
+one, so clients must carry the assignment reference in the body until the send
+surface accepts correlation/causation inputs.
+
 ## 前置要求 / Prerequisites
 
 - `harness` CLI 在 PATH 中（本仓库构建：`cargo install --path crates/harness-cli`）。
@@ -53,7 +61,7 @@ manifest 为 `kimi.plugin.json`（优先于 `.kimi-plugin/plugin.json`）。
 CLI 兜底（不经过插件也可用）：
 
 ```bash
-harness team-run create --objective "..." [--wave N] [--budget-usd X] \
+harness team-run create --objective "Mission: ...; Wave: ...; Objective: ..." [--wave N] [--budget-usd X] \
   [--member name:role:provider[:model][@path1,path2]]...
 harness team-run start --id <run-id>
 harness team-run status --id <run-id> [--json]
@@ -67,6 +75,10 @@ harness team-run events --id <run-id> [--after-seq N] [--json]
 - **授权闸**：部署、删除远端资源、支付选型等外部变更必须上报用户拍板，
   member 与 host 都不得自行决定。
 - **ACK 纪律**：handoff 与关键任务消息必须 ACK；超阈未 ACK 会重发并升级告警。
+- **归属**：`TeamMessage(kind=assignment)` 的 message id 与 `correlation_id`
+  是 lane 的目标主身份。当前 v0 自动 handoff 会复用它；手工 blocker /
+  progress / review 消息尚不能传入旧 correlation，必须在 body 中明确写出
+  assignment 引用。`task_id` 仅是兼容字段，不替代 assignment。
 - **判断标准**：结果需要回到我的上下文 → sub-agent；结果留在执行者那里、
   我只留指针 → Agent Team member。member 自主调用自己的原生 sub-agent，
   harness 只捕获归属、不调度。

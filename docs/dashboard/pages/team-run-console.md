@@ -1,345 +1,198 @@
-# Team Run Console Page Spec
+# Agent Team Page Spec
 
 ```text
 status: planned
 owner_role: product-design
-canonical_for: AgentTeamRun live observation console (ADR 0025)
-route_or_surface: /team-console and /team-console/:runId
-superseded_by: docs/design/agent-team-goal-wave-layout.md (Goal/Wave IA: this
-  spec's war-room parts survive as the L1.5 Team page; the run-centric
-  single-page layout is replaced by the Goals vertical wave flow)
+canonical_for: Agent Team war-room page for a Mission/Wave executed by
+  executor_kind=agent_team
+route_or_surface: ?team=<runId> (historical /team-console/:runId compatibility
+  alias may remain during migration)
+supersedes: run-centric Team Run Console layout; path retained for compatibility
 ```
-
-> **Layout note (2026-07-18):** the information architecture in
-> [agent-team-goal-wave-layout.md](../../design/agent-team-goal-wave-layout.md)
-> supersedes this spec's layout sections. Mechanism inventories (message
-> kinds, delivery policies, member states, thought visibility) remain
-> canonical here; page structure defers to the Goal/Wave layout.
 
 ## Purpose
 
-Primary user question: what is every member of this run doing right now —
-runtime, execution status, current task, current action — what is blocked
-or waiting on authorization, and what should the operator do next?
+Primary user question: what is every member of this Wave's Agent Team doing
+right now, what is blocked or waiting on approval, and what should the operator
+do next?
 
-Why it exists: what the page shows is decided by the problem it solves. An
-`AgentTeamRun` is the living version of a checkpoint report: the task
-graph, the assignment/handoff/blocker messages, the evidence ledger, and
-the ordered event stream of one wave of execution. The console must make
-those observable without raw JSON and without opening provider transcripts.
+Why it exists:
 
-The console is also where a run is born. Creating a Team Run must make
-member configuration explicit: for every Agent Member the operator sees
-and edits role, provider, model, `ownedPaths`, and budget before launch.
-"How do I configure each member" must never be a hidden prompt detail.
+- Agent Team is the collaborative executor for one Wave.
+- The operator needs live member state, explicit assignment/handoff/review
+  messages, and Wave-gate context without opening raw provider transcripts.
+- The page must show ownership through assignment-message correlation, not
+  through a first-class Task Graph concept.
 
 Non-goals:
 
-- not a standing-team workspace or org directory (that older direction
-  stays in [team-workspace.md](team-workspace.md); a run is ephemeral and
-  ends read-only);
-- not a metrics wall; summary counts never push the proof chain below the
-  fold;
-- raw provider stream is diagnostics, never default content;
-- no hidden model reasoning anywhere on the page.
+- not a standing-team directory or long-lived employee workspace;
+- not the top-level Mission page;
+- not a metrics wall;
+- not a transcript dump;
+- not a place that stores private reasoning as durable history.
 
-## Objects And Proof
+## Canonical Objects
 
-Canonical objects:
+- Mission / Goal compatibility object
+- Wave / GoalPhase compatibility object
+- AgentTeamRun
+- MemberRun
+- TeamMessage
+- MemberAction
+- DelegationRun
+- TeamRunEvent
+- Evidence / artifacts
 
-- AgentTeamRun;
-- MemberRun;
-- TeamMessage (with per-recipient delivery records);
-- MemberAction;
-- DelegationRun;
-- TeamRunEvent;
-- Task, Evidence, Goal, GoalPhase (the wave the run attaches to).
+## Workflow Proof
 
-Workflow proof:
-
-- member state is derived (`MemberLiveState` = runtime + latest
-  MemberAction + message queue + delegation + heartbeat), never provider
-  self-reported `running`;
-- every visible element maps back to a canonical object above, or is
-  explicitly marked advisory/debug;
-- handoff and key-task messages show ACK state; un-ACKed deliveries past
-  threshold surface as alerts;
-- authorization gates (deploy / merge / remote deletion) render as
-  first-class blocked tasks with an operator decision, not as log lines;
-- capability degradation is honest: `unverified` / `unsupported` badges
-  and degraded `dynamic_workflow` delegations are labeled, never
-  presented as unified capability;
-- a completed run renders the same page in read-only history mode.
-
-Source docs:
-
-- [../../decisions/0025-agent-team-run-control-plane.md](../../decisions/0025-agent-team-run-control-plane.md)
-- [../../concept-model.md](../../concept-model.md)
-- [../../dashboard.md](../../dashboard.md)
-- [../design-principles.md](../design-principles.md)
-
-Read-model inputs:
-
-- `teamRunConsole(runId)` — the single read model shared by the Codex App
-  console, the Browser Dashboard, and the CLI text view;
-- the run's `TeamRunEvent` stream over SSE (monotonic `seq`, resume via
-  Last-Event-ID);
-- the message/delivery ledger for the run.
-
-## Page-Level Agent Loop
-
-Designer options:
-
-- mission-control console: member rail, cockpit table + task graph +
-  live timeline, member inspector;
-- chat-centric team room: message stream first, members as participants;
-- graph-centric run map: task DAG as the full page, members on nodes.
-
-Questioner challenges:
-
-- Can the operator read all members' four-axis state in the first
-  viewport?
-- Is the next operator action (authorize, re-deliver, inject, interrupt)
-  reachable without opening a transcript?
-- Does the page show degradation honestly instead of pretending unified
-  capability?
-
-Reviewer decision: use mission-control console. The cockpit table answers
-"everyone's state at a glance"; the task graph carries owner / reviewer /
-deps / barrier / authorization gates; the inspector carries the drill-in.
-
-Rejected options:
-
-- chat-centric team room: hides the task graph and gates behind
-  conversation;
-- graph-centric run map: the DAG cannot show per-member live action and
-  message pressure.
-
-Borrowed ideas:
-
-- message pressure and queue density from the chat-centric option (folded
-  into cockpit columns and inspector tabs);
-- dependency emphasis from the graph-centric option (kept as the center
-  Task Graph panel, not a full canvas).
-
-## Information Architecture
-
-Selected IA:
+The page must expose this proof chain:
 
 ```text
-left rail
-  -> MemberRuns grouped by wave / role (an execution roster, not an
-     address book)
-center
-  -> Goal strip (objective, wave index, budget, elapsed)
-  -> team cockpit: one row per member, four-axis state
-  -> Task Graph (owner / reviewer / deps / barrier / authorization gate)
-  -> Live Timeline (ordered TeamRunEvent stream)
-right inspector
-  -> selected MemberRun: MemberLiveState summary
-  -> current action card
-  -> tabs: action timeline / delegations / messages / raw provider stream
+Wave context
+  -> TeamMessage(kind=assignment)
+  -> correlation_id
+  -> member actions / blockers / handoffs / reviews / delegations
+  -> artifacts and summaries
+  -> Wave gate
 ```
 
-Three-layer observation, in increasing detail:
+Rules:
 
-1. **Team cockpit** — one table row per member: runtime, execution
-   status, current task, current action, plus change/test counts,
-   delegation count, heartbeat, and unread deliveries.
-2. **Member action timeline** — the member's `MemberAction` list; each
-   row expands to input/output summaries, commands, file changes, test
-   results, linked messages, and evidence refs.
-3. **Raw provider stream** — the provider's own event frames, collapsed
-   by default, for adapter diagnostics only; sanitized before storage.
+- member state is derived from runtime, explicit actions, queue pressure, and
+  durable events, never from provider self-report alone;
+- assignment, handoff, blocker, and review messages show delivery state;
+- capability degradation is honest;
+- a completed Team page becomes read-only history;
+- thinking is never persisted as page history or evidence.
 
-Primary actions: create team run (opens the member configuration
-composer), select member, approve or reject an authorization gate, inject
-a message into the current turn, interrupt the current turn, re-deliver
-an un-ACKed message, pause/resume a member run, end the team run.
+## Selected Information Architecture
 
-Secondary actions: filter rail by wave/role, expand raw provider stream,
-open the run's dashboard URL from host software, open the linked Goal or
-Task document, open debug.
+The selected page is a war room with four regions:
 
-Member configuration composer (create flow):
+1. Header: Mission/Wave identity, run status, host surface, budget.
+2. Member cockpit: each member's provider/model, status, current action,
+   pressure, last update.
+3. External flow: host/operator <-> member message ledger with delivery state.
+4. Internal flow: newest-first action/event stream for the run.
 
-- one slot editor per member: role, provider (codex|claude|kimi), model,
-  `ownedPaths`, budget;
-- run-level fields: objective, wave index, budget limit, optional team
-  definition reference;
-- capability hints per provider shown from the adapter's declared
-  snapshot, with `unverified` / `unsupported` labels where applicable;
-- launch is blocked until every slot's required fields are explicit.
+The current Wave gate context stays visible in the same page. Operators should
+not need to leave the Team page to understand whether the team is close to the
+gate or blocked before it.
 
-Empty/loading/error states:
+## Primary Actions
 
-- empty: no active run — offer the create composer and the read-only
-  history list of past runs;
-- loading: preserve rail/center/inspector geometry;
-- error: show SSE/store failure with the last good `seq` cursor, never
-  replace the console with raw JSON;
-- degraded: SSE disconnected -> banner with reconnect/resume state; the
-  store stays the source of truth.
+- message one or more members;
+- acknowledge or re-deliver key messages;
+- review blocked or waiting-for-approval states;
+- open a member page;
+- open the parent Mission/Wave detail;
+- close or complete the Wave gate from the parent surface when permitted.
 
-Responsive requirements:
+## Responsive Requirements
 
-- desktop: member rail + center console + inspector;
-- tablet: rail collapses to a drawer, inspector becomes a second column;
-- mobile: cockpit-first single column — member rows with four-axis
-  state, blocked/authorization alerts, and the latest timeline entries.
+- Desktop: header + cockpit + two-column flow view.
+- Tablet: cockpit and flows stack, member filters remain visible.
+- Mobile: cockpit-first, then alerts, then message/action streams.
+- No horizontal overflow.
 
 ## Layout Contract
 
-Desktop target: `1440x1000`.
+### Desktop
+
+Target viewport: about `1440x960`.
 
 ```text
-+--------------------------------------------------------------------------------+
-| top 56: Workbench | live/source | run + wave | budget | search | debug         |
-+-----+----------------------+-----------------------------------+---------------+
-| app | member rail 264      | team run console 736              | inspector 376 |
-| 64  | +------------------+ | +-------------------------------+ | +-----------+ |
-|     | | run switcher     | | | goal strip 64                 | | | member    | |
-|     | +------------------+ | | | objective/wave/budget       | | | live state| |
-|     | | Wave 1           | | +-------------------------------+ | +-----------+ |
-|     | | - member row 60  | | | team cockpit 220              | | | current   | |
-|     | | Lead / Worker /  | | | 4-axis rows + heartbeat       | | | action    | |
-|     | | Reviewer groups  | | +-------------------------------+ | | card 96   | |
-|     | | Wave 2 (planned) | | | task graph 200                | | +-----------+ |
-|     | +------------------+ | | owner/reviewer/deps/gates     | | | tabs:     | |
-|     | | alerts: blocked  | | +-------------------------------+ | | timeline/ | |
-|     | | un-ACKed / gates | | | live timeline 220             | | | delegates | |
-|     | +------------------+ | +-------------------------------+ | | messages/ | |
-|     | rail scroll          | center scroll below goal strip    | | raw       | |
-+-----+----------------------+-----------------------------------+---------------+
++----------------------------------------------------------------------------+
+| Agent Team: Wave 2 "data verification"        running   budget   host kind  |
++----------------------------------------------------------------------------+
+| Cockpit                                                                    |
+| Member | Role | Provider/Model | Status | Current action | Pressure | Last |
++--------------------------------------+-------------------------------------+
+| External flow (messages)             | Internal flow (actions/events)       |
+| oldest-first ledger                  | newest-first stream                  |
+| kind, from->to, delivery state       | action type, summary, artifacts      |
+| composer                             | filter by member                     |
++--------------------------------------+-------------------------------------+
+| Wave context: objective, exit criteria, gate summary, deviations           |
++----------------------------------------------------------------------------+
 ```
 
-Region dimensions:
+### Tablet
 
-- app rail `64px`;
-- member rail `264px`;
-- center min `700px`;
-- inspector `360px` to `380px`;
-- member row fixed `60px` with four-axis chips;
-- goal strip `64px`;
-- cockpit row `40px` to `48px`;
-- task graph target `180px` to `220px`;
-- live timeline target `200px` to `240px`.
-
-First viewport content:
-
-- run identity, wave, status, budget used/limit, elapsed;
-- every member's four-axis state (runtime / execution status / current
-  task / current action) with live pulse on active members;
-- task graph with blocked/authorization-gate emphasis;
-- alerts: blocked gates, un-ACKed deliveries, degraded capabilities;
-- selected member's live state and current action.
-
-Tablet target: `900x1180`.
+Target viewport: about `900x1180`.
 
 ```text
-+------------------------------------------------------------------+
-| top 56: Workbench | live/source | run | budget | search | debug   |
-+-----+---------------------------------------+--------------------+
-| app | team run console 556               | inspector 280        |
-| 56  | +-----------------------------------+| +----------------+ |
-|     | | goal strip 64                    || | member live    | |
-|     | +-----------------------------------+| | current action | |
-|     | | team cockpit (4-axis rows)       || +----------------+ |
-|     | +-----------------------------------+| | tabs (compact) | |
-|     | | task graph                        || | timeline/msgs  | |
-|     | +-----------------------------------+| +----------------+ |
-|     | | live timeline                     || inspector scroll  |
-|     | +-----------------------------------+|                    |
-|     | center scroll                       |                    |
-+-----+---------------------------------------+--------------------+
-| member rail drawer 300 closed; opens over console                 |
-+------------------------------------------------------------------+
++--------------------------------------------------------------+
+| Agent Team: Wave 2                          running          |
++--------------------------------------------------------------+
+| Cockpit                                                      |
++--------------------------------------------------------------+
+| External flow                                                |
++--------------------------------------------------------------+
+| Internal flow                                                |
++--------------------------------------------------------------+
+| Wave context                                                 |
++--------------------------------------------------------------+
 ```
 
-Mobile target: `390x844`.
+### Mobile
+
+Target viewport: about `390x844`.
 
 ```text
 +--------------------------------------+
-| top 48: live/source | run | debug    |
+| Agent Team: Wave 2   running         |
 +--------------------------------------+
-| goal strip 64: objective + budget    |
+| Cockpit rows                         |
 +--------------------------------------+
-| alerts 56: gates / un-ACKed / degraded|
+| Alerts / blocked / approvals         |
 +--------------------------------------+
-| tabs 48: Cockpit Graph Timeline Msgs |
+| Messages                             |
 +--------------------------------------+
-| Cockpit tab 620                      |
-| +----------------------------------+ |
-| | member row: 4-axis state chips   | |
-| | member row: action + heartbeat   | |
-| +----------------------------------+ |
-| | blocked gate card w/ approve CTA | |
-| +----------------------------------+ |
-| | latest timeline entries          | |
+| Actions                              |
++--------------------------------------+
+| Wave context                         |
 +--------------------------------------+
 ```
 
-Scroll ownership:
+## Thinking Policy
 
-- desktop: member rail, center console, and inspector each scroll
-  internally; goal strip is pinned above center scroll;
-- tablet: rail is a drawer; center and inspector scroll separately;
-- mobile: only the active tab scrolls; alerts stay pinned.
+Thinking is transient live-only state.
 
-Visual system (per [../design-principles.md](../design-principles.md)):
+- If a provider exposes it, the host may render it live.
+- Refreshing the page must not resurrect prior thinking text from durable
+  storage.
+- Stored history shows explicit actions, blockers, summaries, artifacts, and
+  outcomes only.
 
-- live pulses on running members and active delegations;
-- explicit state colors for running / waiting / blocked / reviewing /
-  idle / completed / failed;
-- dense but readable; dark technical theme allowed only with strong
-  contrast;
-- capability badges (`verified` / `unverified` / `unsupported`) are
-  state, not decoration.
+## Member Lifecycle Surface
 
-Screenshot acceptance:
+The Team page must make lifecycle transitions honest without becoming a
+process manager UI:
 
-- first impression is a mission-control console for one run, not a roster
-  or a chat room;
-- cockpit rows expose the four-axis state without drill-in;
-- task graph shows owner/reviewer/deps and at least one gate state;
-- a degraded capability is visibly labeled as degraded;
-- member configuration composer shows per-member role/provider/model/
-  ownedPaths/budget;
-- no raw JSON and no raw provider stream in the default viewport.
+- `starting`, `idle`, `queued`, `running`, `waiting`, `reviewing`, `blocked`,
+  `completed`, `failed`, `stopping`, and `stopped` are visibly distinct;
+- add/start failures show what resource acquisition failed and what was
+  released;
+- stopping a working member requires confirmation and prevents new
+  assignments;
+- the lead cannot be removed;
+- finished runs are read-only, while preserved actions, messages, handoffs,
+  reviews, and artifacts remain inspectable.
 
-## Failure Modes
+## Failure Modes Prevented
 
-- Console as member roster or card wall with no task graph or gates;
-- member state taken from provider self-report instead of derived
-  `MemberLiveState`;
-- capability degradation hidden or rendered as if unified;
-- raw provider stream promoted to default content;
-- member configuration buried so users cannot perceive how each member is
-  set up;
-- message list with no ACK/delivery state or evidence refs;
-- a completed run still rendered as mutable;
-- metric cards pushing cockpit, graph, and timeline below the fold.
-
-## Screenshot Acceptance Questions
-
-- Does the first viewport answer "what is every member doing right now"
-  on all four axes?
-- Can the reviewer find the next operator action (authorize, re-deliver,
-  inject, interrupt) without opening a transcript?
-- Are blocked authorization gates and un-ACKed messages visible as
-  first-class alerts?
-- Is degraded provider capability labeled honestly (`unverified` /
-  `unsupported`)?
-- Does creating a run make each member's role, provider, model,
-  ownedPaths, and budget explicit before launch?
-- Does every visible element map back to AgentTeamRun, MemberRun,
-  TeamMessage, MemberAction, DelegationRun, or TeamRunEvent?
+- hiding ownership behind a task-graph-only explanation;
+- implying a Wave must be a Task Graph;
+- losing message delivery state;
+- presenting host-native delegation as fully controlled when it is only
+  observed;
+- storing private reasoning as audit history;
+- forcing operators into raw provider transcripts to answer basic Wave questions.
 
 ## Open Questions
 
-- Whether the member configuration composer is shared with future
-  TeamDefinition editing, or stays run-local in v0.
-- How much of the cockpit table the Codex App in-app console renders
-  versus linking out to the Browser Dashboard.
-- Whether the task graph panel reuses the existing goal/task graph
-  projection or takes a run-scoped read model of its own.
+- which Team-page actions should remain CLI-only in the first shipped slice;
+- how much Wave-gate mutation belongs directly in this page versus the parent
+  Mission page during the migration from Goal/GoalPhase surfaces.

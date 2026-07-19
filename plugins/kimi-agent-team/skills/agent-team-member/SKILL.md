@@ -16,6 +16,13 @@ the bracketed slots.
 
 ## Delivery contract
 
+- **Assignment identity**: your lane begins with a
+  `TeamMessage(kind=assignment)`. Its message id and `correlation_id` identify
+  the target work chain. Current v0 automatic handoff preserves that
+  correlation, but manual send generates a new one. Put the assignment message
+  id and correlation in every manual follow-up body until correlation inputs
+  are supported. A v0 `task_id`, when present, is compatibility context only;
+  it never replaces the assignment message as proof of ownership.
 - **Role**: `[role]` — what this lane owns end to end (e.g. "backend lane:
   store + core crates, unit tests green").
 - **ownedPaths**: `[path1, path2, ...]` — you may create/modify files **only**
@@ -47,20 +54,24 @@ When your lane reaches one of these, **stop and escalate**:
 ```text
 harness team-run send --id <run-id> --from <your-member-id> --to host \
   --kind blocker \
-  --body "AUTHORIZATION NEEDED: <exact change> — blast radius: <what it
+  --body "ASSIGNMENT CORRELATION: <correlation-id>
+          AUTHORIZATION NEEDED: <exact change> — blast radius: <what it
           touches, what breaks if wrong> — options: <A/B, with your
-          recommendation and why>" --task-id <task-id>
+          recommendation and why>" [--task-id <task-id>]
 ```
 
-Then wait. Do not "proceed with the reasonable default" — a reasonable
-default is not authorization.
+The optional `--task-id` is a v0 CLI compatibility association only. Then
+wait. Do not "proceed with the reasonable default" — a reasonable default is
+not authorization.
 
 ## Message discipline
 
 - **ACK assignments and handoffs.** When an `assignment` or `handoff`
   message arrives, acknowledge it before starting work (or immediately
   with the reason you cannot take it). Un-ACKed deliveries re-send and
-  escalate against you.
+  escalate against you. Prefix every manually sent follow-up body with
+  `ASSIGNMENT: <message-id>; CORRELATION: <correlation-id>`; the v0 send command
+  cannot preserve that correlation structurally yet.
 - **Progress**: send a short `progress` message when you finish a meaningful
   chunk or change plan — the host watches pointers, not your transcript.
 - **Blockers**: escalate early. A blocker held silently for an hour is worse

@@ -1,12 +1,12 @@
 # Star Harness
 
-Generic multi-agent harness for turning a project or business domain into an
-agent-operable system.
+Provider-neutral execution and collaboration tools for resident Host Agents.
 
-The harness starts from a goal, models the domain scenario workflow, identifies
-the missing infrastructure that would shorten agent work, designs the right
-agent team and task graph, and then drives execution through messages,
-evidence-backed reports, critic review, decisions, and follow-up requirements.
+The product direction is `Mission -> ordered Wave -> executor`. Each Wave uses
+an Agent Team, a Dynamic Workflow, or direct Host execution. Wave stays
+lightweight: executor-specific planning belongs to the executor, and Agent Team
+ownership is expressed through assignment-message correlation rather than a
+mandatory Task Graph.
 
 This repository is intentionally separate from any specific trading, research,
 or product codebase. A project such as Earning Engine should be integrated
@@ -17,9 +17,10 @@ that project's CLI, Dashboard, artifacts, and permission rules.
 
 ```text
 Star Harness
-  Goal / AgentTeam / AgentMember / AgentRuntime / AgentEvent / Task / Message
-  Proposal / Evidence / Decision / ProviderSession
-  Skill files / Tool descriptors / Agent Dashboard
+  Mission / Wave / executor selection
+  Agent Team / Dynamic Workflow / Host execution
+  Provider sessions / messages / artifacts / events
+  Plugin / MCP / CLI / Agent Dashboard
 
 Project Adapter
   CLI commands / Dashboard links / artifact readers / domain acceptance /
@@ -28,21 +29,20 @@ Project Adapter
 
 The generic core must not import project-specific runtime code.
 
-Future objects such as `Report`, `Claim`, `Blocker`, and `Permission` are not
-first-version gateable contracts until they have schemas, implementation, and
-checks.
+Current Goal, GoalPhase, Task, Evidence, and Decision objects remain
+self-hosting compatibility surfaces while the non-destructive Mission/Wave
+migration proceeds.
 
 ## Quickstart
 
-Install the authoring skill kit — `star-workflow` + `star-goal` +
-`star-planner` — into your agent, start the harness service, then ask your
-agent to author and run a goal/plan/workflow. Full walkthrough:
+Install the optional `star-workflow` authoring capability, start the harness
+service, then ask your agent to author and run a Dynamic Workflow. Full walkthrough:
 **[docs/getting-started.md](docs/getting-started.md)**.
 
 ```bash
-# 1. install the skill kit (Claude Code + Codex) — all three skills
+# 1. install the Dynamic Workflow authoring skill (Claude Code + Codex)
 scripts/install-skill.sh --agent both
-#    one skill only:  scripts/install-skill.sh --agent both --skill star-workflow
+#    explicit:         scripts/install-skill.sh --agent both --skill star-workflow
 #    or standalone:   curl -fsSL .../scripts/install-skill.sh | bash -s -- --agent both
 #    or:              npx skills add cyl19970726/multi-agent-harness --skill star-workflow --agent codex
 #    or (Claude):     /plugin marketplace add cyl19970726/multi-agent-harness && /plugin install star-workflow
@@ -78,7 +78,7 @@ reserved GLOBAL `~/` project. Register with `harness init`, switch with
 | `schemas/` | Stable JSON schemas shared by API, CLI, adapters, and Dashboard. |
 | `crates/` | Rust backend crates. |
 | `apps/agent-dashboard` | React/Vite Agent Dashboard control-plane app and static build output. |
-| `skills/` | Shipped, installable skills (the star-workflow + star-goal + star-planner kit). |
+| `skills/` | Optional shipped capabilities; currently Dynamic Workflow authoring plus compatibility governance material. |
 | `.agents/skills/` | This repo's internal runtime skills (auto-discovered by Codex / harness-spawned workers). |
 | `examples/adapters/earning-engine` | First project adapter example. |
 
@@ -108,31 +108,23 @@ reserved GLOBAL `~/` project. Register with `harness init`, switch with
 
 ## Skills
 
-**Shipped (install the kit into your own project — see the Quickstart):**
+**Shipped:**
 
-- [**Star goal**](skills/star-goal/SKILL.md): create or advance a Goal —
-  write its description / design / real-acceptance markdown, accumulate a
-  knowledge ledger, run multi-agent exploration, and move it through its
-  lifecycle (manual gated stages or the knowledge-driven phased model run by
-  `harness goal run-phases`).
-- [**Star planner**](skills/star-planner/SKILL.md): decompose an explored
-  Goal into an executable plan — ordered phases, each owning a task DAG where
-  tasks with disjoint `owned_paths` run in parallel — via `harness goal plan`,
-  feeding the phase→Starlark compiler and `goal run-phases` orchestrator.
 - [**Star workflow**](skills/star-workflow/SKILL.md): teach a shell-capable
   agent (Claude Code / Codex) to author a Starlark multi-agent workflow and run
   it with `harness workflow run-script`.
 
-Install the whole kit with `scripts/install-skill.sh --agent both` (add
-`--skill <name>` to pick a subset).
+Install it with `scripts/install-skill.sh --agent both`.
 
-**Internal (this repo's own agents use these via `.agents/skills/`):**
+**Compatibility and specialist capabilities (opt in only when explicitly
+needed):**
 
 - [Bootstrap project workflow](skills/bootstrap-project-workflow/SKILL.md):
-  create or audit a project's docs, CI/CD, diagrams, task workflow, and
-  evidence-backed governance.
-- [Generic agent harness](.agents/skills/generic-agent-harness/SKILL.md): operate and
-  extend the generic harness objects and workflow.
+  legacy doc-sync and project-governance guidance. It is retained for current
+  compatibility work, but is not installed by default and is not Lead policy.
+- [Multi-agent system design](.agents/skills/multi-agent-system-design/SKILL.md):
+  reusable runtime, mailbox, permission, recovery, and observability design
+  guidance; it is not a product orchestration authority.
 
 ## Initial Commands
 

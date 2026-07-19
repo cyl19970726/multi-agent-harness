@@ -18,6 +18,12 @@ decisions stay in [frontend-architecture.md](frontend-architecture.md) and ADRs
 theme + Vision→Goal→Task redesign). Acceptance gates stay in
 [acceptance.md](acceptance.md).
 
+Mission/Wave direction is canonical in
+[../architecture-map.md](../architecture-map.md) and
+[ADR 0026](../decisions/0026-mission-wave-architecture.md). Existing
+Vision/Goal/Task work-board and Goal Workbench contracts are compatibility
+surfaces during migration; they no longer define the top-level product IA.
+
 ## Current Design Status
 
 ```text
@@ -26,27 +32,26 @@ status:
   current_implementation: merged (PR #7)
   stack: React 18 + TypeScript + Vite + Tailwind v4 + shadcn/Radix + lucide + Geist
   theme: light, Notion-like document surface (ADR 0019, supersedes 0016 dark theme)
-  vision_goal_task: unified Work board + Notion document detail (work-board-design.md)
-  goal_detail_contract: phase-first Goal Workbench (pages/goal.md)
-  frontend_design_source: page specs + work-board-design.md + ADR 0019
-  implementation_allowed: yes
+  mission_wave_direction: planned; architecture-map.md + ADR 0026
+  agent_team_page: planned; pages/team-run-console.md
+  legacy_goal_task_ui: shipped compatibility surface
+  implementation_allowed: Mission/Wave work requires updated page contracts
 ```
 
-The Agent Workbench frontend was rebuilt and merged in PR #7 on the Tailwind v4
+The compatibility Agent Workbench frontend was rebuilt and merged in PR #7 on the Tailwind v4
 + shadcn/ui (Radix) + lucide-react + Geist stack. The earlier hand-rolled-CSS
 shell (PR #6) was rejected; that outcome and the full layout decision ledger are
-recorded in [layout-history.md](layout-history.md). Further changes must:
+recorded in [layout-history.md](layout-history.md). New Mission/Wave changes must:
 
-- start from the active page specs in [pages/](pages/) and their
-  `## Layout Contract` sections;
+- start from [the architecture map](../architecture-map.md), ADR 0026, and the
+  planned Agent Team page spec;
 - follow the architecture and stack decision in
   [frontend-architecture.md](frontend-architecture.md) and ADRs
   [0016](../decisions/0016-tailwind-shadcn-adoption.md) +
   [0019](../decisions/0019-vision-goal-task-workbench-redesign.md);
-- for Vision/Task/Work-board surfaces, follow
-  [work-board-design.md](work-board-design.md) (Notion document layout, unified
-  Work board); for Goal detail, follow the active
-  [Goal Workbench page contract](pages/goal.md);
+- use [work-board-design.md](work-board-design.md) and the
+  [Goal Workbench page contract](pages/goal.md) only for maintenance of shipped
+  compatibility surfaces;
 - keep desktop/tablet/mobile ASCII diagrams in each changed page spec current;
 - pass screenshot-first acceptance in [acceptance.md](acceptance.md).
 
@@ -56,11 +61,14 @@ The UI must make this workflow inspectable without raw JSON or hidden chat
 context:
 
 ```text
-Vision -> Goal collection -> GoalDesign -> AgentTeam -> TaskGraph
-  -> Message assignment -> AgentMember runtime -> Evidence -> Proposal
-  -> Review -> Decision -> GoalEvaluation -> distance-to-vision
-  -> next Goal / follow-up Task / GoalCase
+Mission -> ordered Wave -> executor attempt
+  -> assignment/actions/artifacts/outcome
+  -> Wave gate -> next Wave or Mission closeout
 ```
+
+Goal/GoalPhase/Task/Proposal/Decision views remain available for compatibility
+and stricter self-hosting governance, but are not mandatory product objects for
+every Wave.
 
 ## Reading Order
 
@@ -79,21 +87,19 @@ Vision -> Goal collection -> GoalDesign -> AgentTeam -> TaskGraph
 
 ## Page Specs
 
-The **Vision, Task, Work-board (graph/Kanban), and Docs** surfaces are owned by
-[work-board-design.md](work-board-design.md) and ADR
-[0019](../decisions/0019-vision-goal-task-workbench-redesign.md): a light,
-Notion-like document layout, a unified `[Goals | Tasks]` Work board with a goal
-filter and derived ready/waiting chips, Task slide-over, and live docs rendering
-for Vision `source_refs`. The **Goal detail** surface now has an active
-page-local contract because Goal Workbench v1 makes it the phase-first execution
-and proof surface.
+The shipped Vision/Goal/Task Work-board surfaces remain compatibility UI owned
+by [work-board-design.md](work-board-design.md) and ADR
+[0019](../decisions/0019-vision-goal-task-workbench-redesign.md). New product
+work starts from Mission detail, ordered Waves, and the Agent Team page. The
+compatibility documents remain useful for reading old state but must not be
+copied into Mission/Wave IA.
 
 | Page spec | Owns |
 | --- | --- |
-| [work-board-design.md](work-board-design.md) | Vision/Goal/Task structures + examples, unified Work board, Goal/Task/Vision detail document layout, derived task-graph. |
-| [Goal Workbench](pages/goal.md) | Phase-first Goal detail, proof chain, task grouping, stage demotion, and screenshot gate. |
-| [Team workspace](pages/team-workspace.md) | Persistent AgentTeam collaboration space, role groups, queues, activity, decision pressure. |
-| [Team Run Console](pages/team-run-console.md) | One AgentTeamRun's live observation console: four-axis member cockpit, task graph with gates, action timeline, honest capability degradation. |
+| [work-board-design.md](work-board-design.md) | Compatibility Vision/Goal/Task structures and shipped Work board. |
+| [Goal Workbench](pages/goal.md) | Compatibility GoalPhase/Task proof surface pending Mission/Wave dual-read. |
+| [Team workspace](pages/team-workspace.md) | Future Standing Agents workspace; not current AgentTeamRun IA. |
+| [Agent Team page](pages/team-run-console.md) | One AgentTeamRun attempt in its Mission/Wave context: assignment/message ownership, member cockpit, actions, artifacts, gate context, and honest capability degradation. |
 | [AgentMember workbench](pages/agent-member-workbench.md) | One durable member as a teammate: current work, inbox/outbox, activity, runtime, prompt/skills, actions. |
 | [Evidence/Review/Decision](pages/evidence-review-decision.md) | Acceptance proof chain and decision queues. |
 | [Warnings/repair](pages/warnings-repair.md) | Workflow risks, affected objects, navigation, repair metadata. |

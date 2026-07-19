@@ -1,292 +1,193 @@
 # Agent Workbench
 
-The Agent Workbench is the control-plane UI for Star Harness. It is not
-a decorative report, metrics dashboard, or replacement for project-specific
-dashboards. Its job is to make the harness workflow inspectable, operable, and
-repairable.
+The Agent Workbench is the operator UI for Star Harness. Its job is to make
+Mission/Wave planning, executor state, assignment ownership, artifacts, gates,
+and capability gaps inspectable without raw JSON or provider transcripts.
 
-Terminology: `Agent Workbench` is the product surface and user-facing mental
-model. `Agent Dashboard` remains a legacy technical/module name in paths,
-commands, snapshots, and existing package names such as `docs/dashboard/`,
-`dashboard snapshot`, and `apps/agent-dashboard`.
+`Agent Workbench` is the product name. `Agent Dashboard` remains a compatibility
+module/path name in `apps/agent-dashboard`, snapshots, and commands.
 
-## Vision Link
-
-The product is accepted only when users can see that the multi-agent workflow
-actually happened:
+## Product Flow
 
 ```text
-vision -> goal collection -> selected goal -> goal design
-  -> goal graph/Kanban -> goal phases -> task graph/Kanban
-  -> task message -> agent runtime
-  -> report/evidence -> proposal/review -> decision/evaluation
-  -> distance-to-vision assessment
-  -> next-round plan -> follow-up task / next goal / goal case
+Mission
+  -> ordered Wave
+  -> executor attempt (agent_team | dynamic_workflow | host)
+  -> observable actions/messages/artifacts/outcome
+  -> Wave gate (accept | revise | blocked)
+  -> next Wave or Mission closeout
 ```
 
-If the user must inspect raw JSON, provider transcripts, or chat history to
-know whether agents are working, the Workbench has failed.
+The Workbench must not require or introduce a Task Graph for Mission, Wave, or
+Agent Team. Current Goal/GoalPhase/Task pages remain labeled compatibility
+surfaces until their data is dual-read into Mission/Wave views.
 
 ## Key Questions
 
 | Question | Workbench answer |
 | --- | --- |
-| What goal is active and why? | Goal board with objective, success criteria, owner, and evaluation status. |
-| How does this goal serve the vision? | Vision context with final acceptance signals, goal collection, pilot/scenario, and distance-to-vision gaps. |
-| Which goals are complete or still open? | Vision goal collection grouped by complete, active, blocked, proposed, and archived/rejected states. |
-| What work should exist next? | Observer proposals for goals, blockers, graph changes, and follow-up tasks. |
-| What goal work can move now? | Goal graph and goal Kanban with generated goals, blockers, follow-ups, review/evaluation readiness, and Lead disposition. |
-| What task work can run now? | Task graph and task Kanban lanes with dependencies, blockers, execution state, and review state. |
-| Which team should this goal use? | GoalDesign team plan plus current AgentTeam roster, role gaps, and runtime changes. |
-| Who is working? | Agent team roster with role, permissions, runtime, current task, and latest event. |
-| Was work actually assigned? | Inbox/outbox and delivery state for `Message(kind=task)`. |
-| What is the agent doing now? | Runtime timeline, provider sessions, event age, queue state, and failures. |
-| What evidence supports the result? | Evidence lane linked to commands, diffs, artifacts, screenshots, or reviews. |
-| What decision was made? | Proposal, critic/review, Leader decision, and follow-up tasks. |
-| What threatens acceptance? | Warnings for stale runtimes, failed deliveries, missing evidence, path conflicts, and missing evaluations. |
+| What durable outcome are we pursuing? | Mission header with objective, status, Wave progress, and closeout summary. |
+| What should happen next? | Ordered Wave list with objective, executor, gate, deviation, and next action. |
+| Which attempt is accepted? | Attempt lineage with status, artifacts, outcome, and explicit accepted run. |
+| Who owns Agent Team work? | Assignment-message id/correlation, member lane, delivery/ACK, handoff, and review state. |
+| What is each member doing? | Provider/model, lifecycle, current explicit action, pressure, heartbeat, and blockers. |
+| What did a Dynamic Workflow produce? | Workflow steps, artifact manifests, typed result/verdict, and patch state. |
+| What did the Host do directly? | Observable actions, artifacts, and outcome without invented child ownership. |
+| What needs the user? | Authorization, blocker, failed delivery, budget, retry, and Wave-gate alerts. |
+| Can I trust the view? | Capability labels and compatibility gaps are explicit; unsupported joins are never fabricated. |
 
 ## Information Architecture
 
 ```mermaid
 flowchart TD
-  Vision[Vision Context]
-  Goal[Goal Board]
-  GoalView[Goal Graph / Kanban]
-  Task[Task Graph / Kanban]
-  Team[Agent Team]
-  Msg[Inbox / Outbox]
-  Runtime[Runtime Timeline]
-  Proposal[Proposals]
-  Evidence[Evidence]
-  Decision[Decision / Evaluation]
-  Warnings[Risk Warnings]
+  Missions[Mission list]
+  Mission[Mission detail]
+  Waves[Ordered Wave timeline]
+  Team[Agent Team war room]
+  Workflow[Dynamic Workflow run]
+  Host[Host execution summary]
+  Member[Member detail]
+  Artifacts[Artifacts and outcomes]
+  Gate[Wave gate]
+  Warnings[Approvals and warnings]
+  Compat[Goal/GoalPhase compatibility]
 
-  Vision --> Goal
-  Goal --> GoalView
-  GoalView --> Task
-  Task --> Msg
-  Msg --> Team
-  Team --> Runtime
-  Runtime --> Evidence
-  Task --> Proposal
-  Evidence --> Proposal
-  Proposal --> Decision
-  Decision --> Goal
-  Msg --> Warnings
-  Runtime --> Warnings
-  Proposal --> Warnings
+  Missions --> Mission
+  Mission --> Waves
+  Waves --> Team
+  Waves --> Workflow
+  Waves --> Host
+  Team --> Member
+  Team --> Artifacts
+  Workflow --> Artifacts
+  Host --> Artifacts
+  Artifacts --> Gate
+  Gate --> Waves
+  Team --> Warnings
+  Workflow --> Warnings
+  Compat -. dual read .-> Mission
 ```
-
-## Backward Data Requirements
-
-Workbench needs should force the data model to expose missing state.
-
-| Workbench need | Required state |
-| --- | --- |
-| Show real assignment | task-linked `Message(kind=task)` and delivery status |
-| Show member activity | `AgentMember.status`, `current_task_id`, `current_proposal_id`, latest `AgentEvent` |
-| Show runtime health | `AgentRuntime` process/socket/protocol/delivery health |
-| Show queue | undelivered or queued messages by member/channel |
-| Show proposal progress | proposal status, changed paths, evidence refs, review refs |
-| Show review quality | critic/reviewer report, missing evidence, path ownership checks |
-| Show acceptance | `Decision` plus rationale and evidence ids |
-| Show learning | `GoalEvaluation`, follow-up tasks, reusable goal case link |
-| Show orchestration | `WorkflowRun.goal_id`/`phase_id` forward links plus `goal_orchestration_runs` checkpoints |
-
-If a field is needed only for a visual label, it may remain a read model. If it
-changes acceptance or safety, it belongs in schema/CLI/API and eventually CI.
 
 ## Core Views
 
 | View | Purpose | Safe actions |
 | --- | --- | --- |
-| Goal board | Track active goals, acceptance, and evaluation. | create follow-up task, record evaluation |
-| Observer proposals | Show proposed goals, blockers, graph changes, evidence, and Lead disposition. | accept/reject/defer proposal |
-| Goal graph / Kanban | Show goal dependencies, generated goals, blockers, follow-ups, completion state, review/evaluation readiness, and Lead disposition. | propose/accept/reject/defer goal, create follow-up |
-| Task graph / Kanban | Show task work order, blockers, owner, assignee, reviewer, PR/workspace, graph changes, and execution state. Tasks are viewed under Goal -> Phase (per-phase task DAG plus goal-scoped lanes); the flat global task board is retired. | create/split/block/assign task |
-| Workflow runs | Show workflow runs and steps (codex/claude/kimi), including `goal run-phases` orchestration linked back to its goal and phase via `WorkflowRun.goal_id`/`phase_id`. | open run detail, drill to goal/phase context |
-| Agent team | Show member identity, role, skills, permissions, runtime state. Prefer roster/control-plane layout over graph by default. | create/start/stop/close member |
-| Inbox / outbox | Show messages, queued work, delivery success/failure. | send message, retry delivery, ask follow-up |
-| Runtime timeline | Show provider sessions, event age, failures, hooks, child threads. | interrupt, reconcile, close runtime |
-| Proposal and evidence | Show diffs, checks, artifacts, review, critic findings. | request review, attach evidence |
-| Decisions | Show Leader choices, waivers, follow-ups, acceptance state. | record decision, create follow-up |
+| Mission list | Find active, blocked, completed, and proposed Missions. | create/open Mission |
+| Mission detail | Read durable intent, ordered Waves, deviations, and outcome. | plan next Wave, open gate, close Mission |
+| Wave timeline | Compare executor attempts and accepted outcome. | launch attempt, revise, accept, block |
+| Agent Team | Operate one collaborative Wave attempt. | message, ACK/re-deliver, interrupt, open member, request review |
+| Member detail | Inspect one MemberRun lane and its assignments/actions. | send control/question, review handoff |
+| Dynamic Workflow | Inspect one WorkflowRun and its steps/artifacts/patches. | apply/reject patch, attach result to gate |
+| Host execution | Show direct Host outcome and optional observed delegation. | attach artifact/outcome |
+| Warnings/approvals | Surface unsafe or incomplete state. | approve/reject, retry, clarify, revise Wave |
+| Compatibility | Keep current Goal/GoalPhase/Task data usable during migration. | open legacy surface with explicit label |
 
-Workbench actions must update canonical harness objects. A UI action that only
-changes local display state cannot be the source of truth.
+## Agent Team Proof
 
-## Product Layout
-
-The first Workbench should be a work surface, not a landing page. The default
-screen should answer "what is happening now and what needs a decision?"
+The target ownership chain is:
 
 ```text
-top bar:
-  project picker (multi-project serve), live source state, refresh, debug toggle
-
-app rail:
-  vision, teams, goals, docs, warnings, debug
-
-team rail:
-  team spaces, role groups, members, queues, role gaps
-
-team workspace:
-  selected vision/goal strip, team activity, Goal/Task document tabs,
-  graph/Kanban relationship tabs, decision queue
-
-inspector:
-  Member, Task, Docs, Warnings, Evidence
+Wave
+  -> AgentTeamRun attempt
+  -> TeamMessage(kind=assignment)
+  -> correlation_id
+  -> explicit member actions / blocker / handoff / review / delegation
+  -> artifacts + outcome
+  -> Wave gate
 ```
 
-## Document Boundary
+Current v0 automatic handoff preserves assignment correlation, but manual send
+creates a new correlation id. Until correlation/causation inputs land, the UI
+must show the assignment reference carried in body text as a compatibility
+fallback and must not fabricate a structural join.
 
-Workbench knowledge is split by responsibility so product intent does not get
-mixed with frontend implementation details:
+## Backward Data Requirements
 
-| Document | Owns | Refuses |
-| --- | --- | --- |
-| `docs/dashboard.md` | product-level Workbench purpose, information architecture, backward data requirements, user-facing acceptance | component folder layout, package commands, framework internals |
-| `docs/dashboard/README.md` | Workbench docs placement map, change order, and docs/surface routing rules | product semantics or component implementation |
-| `docs/dashboard/design-principles.md` | core frontend design principles, graph/Kanban policy, AgentTeam/AgentMember UI doctrine, visual system, and the UX failure modes that gate layout changes | route-level layout details or React module boundaries |
-| `docs/dashboard/layout-history.md` | candidate Workbench layout directions, Designer/Questioner critique, scoring rubric, and the selected/killed/deprecated decision ledger including rejected-implementation outcomes | component internals or unscored future ideas |
-| `docs/dashboard/frontend-design.md` | frontend design index, reading order, page-spec map, and implementation-readiness summary | page-level details, framework internals, run commands |
-| `docs/dashboard/pages/*.md` | page/workspace purpose, canonical objects, workflow proof, IA, actions, detailed layout contract, ASCII diagrams, dimensions, scroll ownership, failure modes | component implementation |
-| `docs/dashboard/frontend-architecture.md` | Agent Workbench frontend architecture, component responsibilities, app-local source boundary | product PRD or runbook commands |
-| `docs/dashboard/read-model.md` | read-model projections, goal scope, warning promotion rules | canonical validation rules or Rust implementation |
-| `docs/dashboard/acceptance.md` | browser screenshot evidence, web-quality gate, and frontend acceptance sequence | product purpose or local development commands |
-| `docs/dashboard/runbook.md` | run, build, snapshot, and live API entry points | architecture rationale or acceptance policy |
-| `docs/decisions/0014-react-vite-agent-dashboard.md` | durable frontend framework decision and consequences | day-to-day runbook or product view inventory |
+| Workbench need | Required contract |
+| --- | --- |
+| Mission/Wave | additive ids, status, ordered membership, objective, executor kind |
+| Attempts | executor run ids, lineage, accepted run id |
+| Team ownership | assignment message id and reusable correlation/causation inputs |
+| Member state | lifecycle, provider/model, latest explicit action, heartbeat, queue pressure |
+| Delivery | per-recipient delivery/ACK state and retry/escalation |
+| Workflow | WorkflowRun/Step, artifacts, result/verdict, patch state |
+| Host path | observable artifact/outcome without fake controlled children |
+| Wave gate | accepted/revise/blocked, actor/time, note, artifacts, accepted run |
+| Compatibility | honest Goal/GoalPhase/Task dual-read/deprecation metadata |
 
-Canonical Workbench docs currently live under `docs/dashboard/` for historical
-path compatibility. The app directory contains source, configuration, and build
-output only.
+Fields that affect acceptance, authorization, or ownership belong in schemas
+and runtime contracts, not frontend-only state.
 
-The frontend architecture follows this product boundary:
+## Thinking Boundary
 
-```text
-Rust store / CLI / API
-  -> snapshot JSON
-  -> frontend read model
-  -> goal-scoped control-plane panels and warnings
-```
+The final UI may show sanitized, truncated, rate-limited live thinking while a
+provider is streaming it. It must disappear on refresh/expiry and never enter
+snapshot history, replay, evidence, messages, or peer context.
 
-The frontend design contract is in
-[dashboard/frontend-design.md](dashboard/frontend-design.md). Frontend changes
-that reshape the Workbench should update that document before changing
-component structure or CSS.
-
-Candidate layout options, critiques, rejected alternatives, and accepted/killed
-layout decisions belong in
-[dashboard/layout-history.md](dashboard/layout-history.md). Once a direction is
-accepted, promote stable route, page, surface, action, and acceptance decisions
-into the frontend design contract.
-
-Browser screenshot and web-quality acceptance lives in
-[dashboard/acceptance.md](dashboard/acceptance.md). Layout PRs should plan that
-evidence before implementation starts.
-
-Frontend warnings are operator read-model warnings until promoted. If a warning
-becomes an acceptance rule, it must move into schema, Rust validation, CLI/API,
-review gate, or CI/CD. This prevents Workbench convenience logic from silently
-becoming the source of truth.
-
-## Task Detail Panel
-
-Selecting a task should show:
-
-- objective and acceptance criteria;
-- owner, assignee, reviewer, dependencies, parent, and follow-ups;
-- assignment messages and delivery state;
-- current member/runtime handling the task;
-- workspace, branch, PR, and owned paths;
-- reports, evidence refs, proposal, review, and Leader decision;
-- warnings for missing assignment, missing evidence, stale runtime, failed
-  provider session, path conflict, or missing evaluation.
-
-This panel is the primary way to verify that a task was really run through the
-harness rather than backfilled after local work.
-
-## Agent Member Panel
-
-Selecting a member should show:
-
-- id, name, description, role, team, prompt ref, skill refs, capabilities;
-- provider, runtime id, health layers, control endpoint, provider thread id;
-- current task, current proposal, queue length, latest event age;
-- permission profile, workspace roots, approval state, and forbidden actions;
-- provider sessions and child threads;
-- messages sent to and from the member.
-
-The member panel should make one-shot provider output visibly different from a
-durable harness `AgentMember`.
+Current v0 durable `MemberAction(type=thinking)` rows are a known migration
+gap. Compatibility views may reveal that old data exists, but product views
+must label it non-evidence and must not claim the live-only policy is already
+implemented.
 
 ## Warnings
 
-Warnings are product features because they expose harness failure modes.
-
 | Warning | Trigger |
 | --- | --- |
-| Fake assignment risk | task has assignee but no prior delivered task message |
-| Missing evidence | proposal or decision references no valid evidence |
-| Stale runtime | runtime has no recent event or failed protocol health |
-| Failed delivery | latest task message delivery failed or lacks terminal status |
-| Path conflict | task changed paths outside owned scope or overlaps active task |
-| Provider-only claim | provider output exists but no report/evidence/proposal was recorded |
-| Missing evaluation | goal is closing without goal evaluation or waiver |
+| Missing assignment | Agent Team lane began without an assignment message. |
+| Broken correlation | Follow-up claims an assignment but lacks a structural or explicit fallback reference. |
+| Failed/unacknowledged delivery | Required delivery is failed or beyond ACK threshold. |
+| Authorization required | Deploy, remote deletion, protected merge, payment, or comparable external change is pending. |
+| Stale member | No recent explicit action/heartbeat for an active member. |
+| Path/permission conflict | Member action exceeds owned paths or permission ceiling. |
+| Missing outcome/artifact | Attempt claims completion without the gate's required result. |
+| Ambiguous accepted attempt | A Wave has retries but no single accepted run. |
+| Durable thinking | A new runtime write persists thinking after the migration gate is enabled. |
+| Capability unavailable | Provider, hook, delegation observation, or control action is unsupported. |
 
-Warnings should link to repair actions: send message, retry delivery, attach
-evidence, request review, split task, record decision, or create follow-up.
+Warnings link to a real repair action or clearly state that no repair surface
+exists yet.
 
-## UI/UX Direction
+## Compatibility Surfaces
 
-The first product shape should be operational and dense:
+Goal, GoalPhase, Task graph/Kanban, Proposal, Review, Decision, and
+GoalEvaluation views remain useful for current self-hosting history and stricter
+repository governance. They must be visually labeled `Compatibility` and may
+not define the Mission/Wave information architecture.
 
-- goal graph plus goal Kanban for generated goals, blockers, follow-ups, and
-  evaluation readiness;
-- task graph plus task Kanban for dependency and execution work;
-- team roster and member runtime panels;
-- message inbox/outbox adjacent to tasks and members;
-- proposal/evidence/review lanes for acceptance;
-- warnings panel for broken workflow invariants.
+## Document Boundary
 
-The Workbench should link to project dashboards through adapters instead of
-duplicating domain UI. For example, a strategy adapter may link to trading
-charts, but the Agent Workbench still owns task/message/evidence/decision
-visibility.
+| Document | Owns |
+| --- | --- |
+| `docs/architecture-map.md` | cross-module product and runtime map |
+| `docs/dashboard.md` | Workbench product purpose and information architecture |
+| `docs/dashboard/pages/*.md` | page purpose, proof, actions, and layout contracts |
+| `docs/dashboard/frontend-architecture.md` | frontend modules, routing, and read-model plumbing |
+| `docs/dashboard/read-model.md` | projections and compatibility joins |
+| `docs/dashboard/acceptance.md` | browser, screenshot, responsive, and workflow acceptance |
+| `docs/dashboard/runbook.md` | local run/build/snapshot entry points |
+| `docs/dashboard/layout-history.md` | historical layout candidates and rejected decisions |
 
 ## Acceptance
 
-Workbench acceptance requires a fixture or live snapshot that shows:
+Workbench acceptance requires fixtures plus at least one live Mission showing:
 
-1. a goal with design and evaluation state;
-2. vision context, goal collection grouped by completion state, and
-   distance-to-vision state, or explicit missing-context warnings for any
-   self-improving/autonomous goal;
-3. Observer or equivalent proposals for next goals, blockers, graph changes, or
-   follow-up tasks when the workflow is long-running;
-4. selected-goal AgentTeam design plus current team roster, role gaps, runtime
-   health, and message queue state;
-5. goal graph and goal Kanban views for generated goals, blockers, follow-ups,
-   completion state, and evaluation readiness;
-6. task graph and task Kanban views with dependencies, blockers, and
-   graph-change history;
-7. assignment messages with delivered or failed status;
-8. provider sessions and runtime events;
-9. proposal, evidence, review, decision, and follow-up visibility;
-10. warnings when any required workflow link is missing.
-
-Frontend layout PRs must also include a web-quality pass. The recommended
-optional skill source is `https://github.com/addyosmani/web-quality-skills`;
-use it for accessibility, Core Web Vitals, performance, SEO, and browser
-best-practices checks after the harness-specific workflow acceptance passes.
+1. ordered Waves without a Task Graph;
+2. at least one Agent Team attempt with assignment/delivery/member/handoff data;
+3. at least one other executor kind or an explicit unsupported-state fixture;
+4. retry lineage and one accepted attempt;
+5. artifacts/outcome and a lightweight Wave gate;
+6. authorization and failed-delivery alerts;
+7. honest correlation and provider capability degradation;
+8. no new thinking in durable snapshots after the transient migration;
+9. Goal/GoalPhase data still reachable as labeled compatibility state;
+10. desktop, tablet, and mobile screenshot evidence with no horizontal overflow.
 
 ## Invariants
 
-1. Workbench must show assignment messages, not only assignee fields.
-2. Workbench warnings should expose missing evidence and failed delivery.
-3. Workbench should distinguish harness state from provider or project links.
-4. Safe actions should route through CLI/API/store contracts.
-5. A polished page that cannot prove the workflow happened is not accepted.
-6. AgentTeam should render as a persistent organization by default, not as a
-   decorative graph.
-7. Goal and Task graph/Kanban views must be synchronized projections of the
-   same harness state, not independent frontend state machines.
+1. Mission/Wave is the primary product navigation.
+2. A Wave never requires a Task Graph.
+3. Executor-specific semantics remain visible rather than collapsed.
+4. Agent Team ownership starts with assignment, not an assignee field.
+5. Unsupported correlation, delegation, or thinking behavior is labeled.
+6. UI actions route through canonical API/MCP/runtime contracts.
+7. The Workbench read model never outranks store/schema/runtime truth.

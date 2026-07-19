@@ -50,11 +50,13 @@ Do **not** form a team for: a single lane, a task that fits in one context,
 research/lookup questions, or anything whose output you need inline right now.
 That is sub-agent territory — cheaper and faster.
 
-## Waves, not marathons
+## Mission/Wave attempts, not marathons
 
-One **wave = one `AgentTeamRun`**. A wave boundary is an *integration gate*,
-not a time limit: the wave ends when you complete the integration check and
-re-plan, not when members go idle.
+The product hierarchy is **Mission → ordered Wave → executor**. An
+`AgentTeamRun` is one execution attempt for a Wave, not the Wave itself; a
+retry creates another run attempt and the Wave gate identifies the accepted
+one. A wave boundary is an *integration gate*, not a time limit: it ends when
+you complete the integration check and re-plan, not when members go idle.
 
 At every wave boundary run the re-plan loop:
 
@@ -62,12 +64,15 @@ At every wave boundary run the re-plan loop:
 plan vs actual -> deviation -> decision -> next wave plan
 ```
 
-Deviation is normal input, not an exception. A wave attaches to a GoalPhase;
-Agent Team adds no new planning layer on top of the goal skeleton.
+Deviation is normal input, not an exception. Name the Mission and Wave
+objective before creating the run. Current v0 CLI surfaces may expose only a
+numeric `--wave N`; treat that as a compatibility index, never as the Wave's
+identity or a substitute for Mission/Wave linkage.
 
 ## Creating a run: the member configuration contract
 
 Use `/agent-team:new-run` or the MCP `team_run_create` tool. The CLI shape:
+The numeric `--wave` below is a v0 compatibility index, not Wave identity.
 
 ```bash
 harness team-run create \
@@ -97,11 +102,21 @@ Rules that keep a run sane:
 
 ## Communication and ACK discipline
 
+Create a `TeamMessage(kind=assignment)` before lane work begins. Its message id
+and `correlation_id` are the lane's target work identity. Current v0 automatic
+member handoff preserves that correlation, but manual CLI/API/MCP send creates
+a new correlation id and cannot accept the existing one yet. Until that surface
+is extended, put `ASSIGNMENT: <message-id>; CORRELATION: <correlation-id>` in
+the body of progress, blocker, review, and control messages; do not claim they
+are structurally correlated. The current v0 CLI may also accept
+`[--task-id T]`; that is a compatibility association only and never proves
+ownership in place of an assignment message.
+
 `harness team-run send --id <run> --from host --to <ids> --kind <kind> --body "..." [--task-id T]`
 
 - Kinds: `assignment | question | answer | progress | blocker | handoff |
   review_request | review_result | control | broadcast`.
-- **Handoffs and key tasks must be ACKed.** Un-ACKed deliveries past
+- **Assignments, handoffs, and key messages must be ACKed.** Un-ACKed deliveries past
   threshold are re-sent and escalated — treat an un-ACKed handoff as a
   first-class alert, not a log line.
 - One message, one delivery record per recipient: semantics and delivery are
@@ -125,9 +140,10 @@ Neither you nor any member may decide these unilaterally:
 
 Your main thread holds **decisions, not bulk**:
 
-- Hand big chunks of execution to MemberRuns; keep only pointers (run id,
-  member ids, task ids, evidence refs) in your own context.
-- Per member, know: status, current task, last heartbeat, un-ACKed count —
+- Hand big chunks of execution to MemberRuns; keep only pointers (Mission/Wave
+  context, run id, member ids, assignment correlation ids, evidence refs) in
+  your own context.
+- Per member, know: status, current assignment, last heartbeat, un-ACKed count —
   not its full transcript. Drill in only on blockers, review requests, and
   handoffs.
 - Sub-agent vs member is decided by the boundary question above. Do not

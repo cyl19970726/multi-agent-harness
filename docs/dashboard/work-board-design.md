@@ -1,5 +1,10 @@
 # Work Board Design — Vision → Goal → Task
 
+> Deprecated compatibility design. This records the shipped Vision/Goal/Task
+> work board and must not be used as the Mission/Wave product IA. New work
+> follows [the architecture map](../architecture-map.md) and
+> [ADR 0026](../decisions/0026-mission-wave-architecture.md).
+
 This document is the complete design for the **Vision → Goal → Task management
 mechanism** of the Agent Workbench: the object structures (with examples), the
 unified board, the detail surfaces, and the read-model derivations behind them.

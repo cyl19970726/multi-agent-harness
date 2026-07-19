@@ -26,8 +26,5 @@
       "created_at": "unix-ms:1781164137000"
     }
   ],
-  "skill_refs": [
-    "generic-agent-harness",
-    "star-workflow"
-  ]
+  "skill_refs": ["star-workflow"]
 }

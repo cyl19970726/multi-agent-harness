@@ -1,252 +1,200 @@
 # Product Requirements
 
-## Vision
+## Product Mission
 
-Star Harness turns a project or business domain into an
-agent-operable and agent-progressable system.
+Star Harness gives resident Host Agents such as Codex, Claude Code, and Kimi
+Code provider-neutral tools for structured execution and collaboration.
 
-The product is not an agent runner and not a project-specific engine. It is a
-coordination layer for persistent Agent Teams. A standing team can observe
-project state, propose goals, prioritize work, manage a task graph, collaborate
-through messages, produce evidence, make reviewed decisions, evaluate the
-workflow, and continue into the next goal.
-
-The core product loop is:
+The canonical hierarchy is:
 
 ```text
-persistent AgentTeam
-  -> observe project state and prior goal cases
-  -> propose / prioritize goals
-  -> scenario and infra design
-  -> task graph
-  -> message-driven member collaboration
-  -> evidence -> proposal -> review -> decision
-  -> goal evaluation -> follow-up task or next goal
+Mission -> ordered Wave -> executor
+  executor = agent_team | dynamic_workflow | host
 ```
 
-The smaller execution loop inside one accepted goal is:
+- `Mission` is durable intent and the desired-outcome container.
+- `Wave` is a lightweight ordered unit with an objective, executor, outcome,
+  artifacts, and a gate.
+- The executor owns its internal planning. A Wave never requires a Task Graph.
 
-```text
-scenario -> missing infra -> agent team -> task graph -> message execution
-  -> evidence -> review -> decision -> goal learning
-```
-
-The harness succeeds only when a human or future agent can reconstruct why work
-existed, who owned it, how it was assigned, what evidence was produced, what
-decision was made, and what should improve next.
+Current `Goal`, `GoalPhase`, Task, Evidence, Proposal, Decision, and
+GoalEvaluation objects remain self-hosting compatibility surfaces while the
+non-destructive migration in [ADR 0026](decisions/0026-mission-wave-architecture.md)
+lands. They are not the exported product model.
 
 ## Product Thesis
 
-Modern projects already expose valuable capability through CLI commands, APIs,
-dashboards, artifacts, logs, tests, and domain-specific tools. Raw agents can
-call those tools, but they often see too much unstructured context and too
-little structured feedback.
+Resident agents already have provider-native execution and subagents. Star
+Harness adds the tools they lack when work needs a durable outer structure:
 
-The harness makes those capabilities usable by agents through:
+- Mission/Wave outcome planning and gates;
+- living Agent Team collaborators with messages, assignments, handoffs, and
+  reviews;
+- one-shot Dynamic Workflows with fan-out, retry, artifacts, and typed results;
+- provider-neutral sessions, capabilities, permission ceilings, and budgets;
+- plugins, MCP, CLI, hooks, and a shared Dashboard read model;
+- explicit artifacts and outcome summaries instead of hidden transcript state.
 
-- stable project adapters and tool descriptors;
-- scenario-specific skills;
-- durable agent teams, agent members, and task graphs;
-- message-first assignment and reporting;
-- peer-to-peer agent communication;
-- evidence-backed proposals, reviews, and decisions;
-- Dashboard visibility;
-- goal evaluation, reusable cases, and agent-proposed follow-up goals.
+This is not one universal Agent or Run abstraction. `WorkflowStep`,
+`MemberRun`, Host-native subagent, and future Standing Agent have different
+ownership and lifecycle semantics even when they reuse common infrastructure.
 
-The Lead Agent is therefore an organization and decision owner before it is an
-executor. It accepts or rejects proposed goals, designs the workflow, delegates
-through messages, and records decisions. It should not be the only source of
-new work once a standing team is operating.
-
-The default standing team should include an `Observer` role when the goal is
-long-running. The Observer watches repository state, Dashboard warnings, CI
-results, adapter outputs, prior GoalCases, and stale task graphs. Its output is
-not a final decision; it produces proposed goals, blockers, graph-change
-proposals, or follow-up tasks for the Lead and reviewers to accept, reject, or
-prioritize.
-
-For each goal, the Lead must decide:
-
-- which scenario is being operated;
-- which missing CLI, adapter, skill, Dashboard, or CI/CD surface would shorten
-  future work;
-- which agent members are needed and what each owns;
-- which tasks can run in parallel and which require worktree or PR boundaries;
-- what evidence proves the work happened through the harness;
-- which critic, reviewer, or gate decides whether the result is acceptable.
-- which agent-proposed follow-up goals should enter the backlog.
-
-## Final Acceptance
-
-The product is accepted when it can manage two real pilots with the same
-generic workflow and a standing team that continues across multiple tasks:
-
-1. self-hosting development of this repository;
-2. LetMeTry / Earning Engine strategy-matrix iteration through an adapter.
-
-Both pilots must use the same core chain:
+## Primary Product Loop
 
 ```text
-Standing AgentTeam -> Proposed Goal -> GoalDesign -> Task Graph
-  -> Message -> AgentMember work
-  -> Evidence -> Proposal -> Critic/Review -> Decision
-  -> GoalEvaluation -> Follow-up Task or GoalCase
+Host receives durable intent
+  -> define Mission
+  -> choose the next Wave objective and gate
+  -> select executor
+  -> run / observe / collect artifacts
+  -> accept, revise, or block the Wave
+  -> re-plan the next Wave
+  -> close the Mission with an outcome summary
 ```
 
-The self-hosting pilot has first priority. The product must prove it can
-develop its own docs, schemas, CLI, CI/CD, provider integration, and Dashboard
-before it can reliably coordinate another project's strategy work.
+Executor-specific truth stays local:
 
-A create-deliver-close smoke test is not final acceptance. It can prove
-provider transport, but it does not prove a team can keep working. Final
-acceptance requires durable members that return to idle, receive more messages,
-collaborate with peers, and produce or prioritize follow-up goals without being
-recreated as job runners.
+- Agent Team: assignment message -> correlated collaboration -> handoff /
+  optional review -> Wave gate;
+- Dynamic Workflow: program -> WorkflowRun/WorkflowStep -> artifacts/result ->
+  Wave gate;
+- Host: direct work and optional provider-native subagents -> observable
+  artifacts/outcome -> Wave gate.
 
-Detailed MVP gates are in [mvp.md](mvp.md).
+## Near-Term Scope
 
-## Critical Mechanisms
+The current product slice prioritizes:
 
-The product vision depends on these mechanisms working together:
+1. the minimal Mission/Wave contracts and non-destructive compatibility read;
+2. Agent Team as a real cross-provider collaborative executor;
+3. Dynamic Workflow as an independent one-shot executor;
+4. shared provider/session, capability, permission, artifact, event, plugin,
+   and Dashboard infrastructure;
+5. honest live observation, including a transient-only thinking channel.
 
-| Mechanism | Key question | Canonical doc |
-| --- | --- | --- |
-| Goal and learning loop | Why does the work exist and how does the system learn from it? | [goal-learning-loop.md](goal-learning-loop.md) |
-| Concept model | What do Goal, Task, Message, AgentMember, Evidence, Proposal, and Decision mean? | [concept-model.md](concept-model.md) |
-| Data model | What is source of truth and what is only projection? | [data-model.md](data-model.md) |
-| Core modules | Which modules exist because the vision would fail without them? | [core-modules.md](core-modules.md) |
-| Agent runtime | How do persistent provider-backed members receive work and emit events? | [agent-runtime.md](agent-runtime.md) |
-| Agent control plane | How are lifecycle, queues, peer messages, and reductions operated? | [agent-control-plane.md](agent-control-plane.md) |
-| Dashboard | What must the user see to know the workflow really happened? | [dashboard.md](dashboard.md) |
-| Git / PR workflow | How do worktrees, branches, PRs, proposals, reviews, and decisions relate? | [workflow-git-pr.md](workflow-git-pr.md) |
-| Provider integration | How can Codex and future providers implement the same runtime contract? | [integration/README.md](integration/README.md) |
-| Decisions | Which hard-to-reverse tradeoffs must future agents preserve? | [decisions/README.md](decisions/README.md) |
+Standing Agents + Docs are a later layer for long-lived business operation.
+They should reuse these tools, but must not distort the current Mission/Wave or
+Agent Team implementation into a premature organization model.
 
-## Scenarios
+## Required Capabilities
 
-### Persistent Autonomous Team Operation
+### Mission And Wave
 
-The central scenario is a long-lived team that can keep moving after one task
-or one user turn ends.
+- A Mission has durable intent, desired outcome, status, Waves, and closeout.
+- Waves are ordered but remain small: objective, optional exit criteria,
+  executor kind, attempts, accepted attempt, artifacts, outcome, and gate.
+- A Wave may retry with a new executor run; the accepted attempt is explicit.
+- Replanning occurs between Waves and records plan-vs-actual deviation.
+- No Mission/Wave API or UI requires a Task Graph.
 
-```mermaid
-flowchart TD
-  Team[Standing AgentTeam] --> Observe[Observe repo, adapter, dashboard, prior cases]
-  Observe --> Gap[Gap / opportunity / blocker]
-  Gap --> Proposed[Proposed Goal]
-  Proposed --> Lead[Lead prioritizes / accepts / rejects]
-  Lead --> Design[GoalDesign]
-  Design --> Graph[Task Graph]
-  Graph --> Msg[Task and peer messages]
-  Msg --> Members[Persistent AgentMembers]
-  Members --> Evidence[Reports and evidence]
-  Evidence --> Review[Critic / Review]
-  Review --> Decision[Leader Decision]
-  Decision --> Eval[GoalEvaluation]
-  Eval --> Next[Follow-up task or next goal]
-  Next --> Observe
-```
+### Agent Team
 
-This is what distinguishes the product from provider subagents. The team has a
-stable identity, shared task graph, durable mailboxes, persistent members, and
-an evaluation loop that generates the next work.
+- `AgentTeamRun` is one attempt for one Wave, not the Wave itself and not a
+  standing organization.
+- Each Wave defines only the members it needs: role, provider/model tier,
+  permissions, owned surfaces, budget, and depth.
+- A `TeamMessage(kind=assignment)` is the lane's work identity; progress,
+  blocker, handoff, review, and delegation target the assignment correlation.
+- Message delivery/ACK state is explicit and separate from message semantics.
+- Members may use provider-native subagents as their own capability. Harness
+  records only honestly observable attribution and does not pretend to control
+  children owned by the provider.
+- External changes such as deploy, remote deletion, protected merge, or paid
+  decisions remain user authorization gates.
 
-### Self-Hosting Development
+The v0 correlation send path is incomplete: automatic handoff preserves the
+assignment correlation, while manual sends currently create a new one. The
+target contract is not accepted until existing correlation/causation inputs are
+supported and exercised.
 
-The harness must develop itself through its own protocol.
+### Dynamic Workflow
 
-```mermaid
-flowchart TD
-  U[User request] --> L[Leader Agent]
-  L --> GD[GoalDesign]
-  GD --> TG[Task Graph]
-  TG --> M[Message kind=task]
-  M --> A[AgentMember]
-  A --> Repo[Repository / CLI / Tests]
-  Repo --> E[Evidence]
-  E --> P[Proposal]
-  P --> R[Critic / Review]
-  R --> D[Decision]
-  D --> GE[GoalEvaluation]
-  GE --> F[Follow-up Task or GoalCase]
-```
+- Dynamic Workflow remains standalone and independently useful.
+- Workflow programs own their steps, parallelism, retry, gates, patches,
+  artifacts, and structured result.
+- A Mission/Wave may point to a WorkflowRun without rebuilding it as a Task
+  Graph or Agent Team.
 
-This scenario proves that the harness is not just documentation. It must use
-durable agent members, message delivery, provider sessions, proposals, review
-gates, decisions, and Dashboard visibility for real repository work.
+### Shared Infrastructure
+
+- Provider adapters normalize sessions and observable actions without erasing
+  provider-specific capability.
+- Capability snapshots, permission ceilings, budgets, artifact references,
+  event transport, hooks, and Dashboard projections are reusable across
+  executors.
+- Plugins are thin host-native distribution/call surfaces; runtime truth stays
+  in the resident service and store.
+- Project-specific business logic remains in project adapters and tools.
+
+### Thinking Boundary
+
+Thinking is optional transient live state only: sanitize, truncate, rate-limit,
+overwrite/expire, and never persist, replay, forward to peers, or treat as
+evidence. Explicit plans, actions, artifacts, blockers, handoffs, and outcomes
+are durable.
+
+Current v0 Kimi execution still writes a bounded durable `thinking` action.
+That is a known migration defect, not an accepted capability.
+
+## Product Scenarios
+
+### Resident Host Uses Agent Team
+
+A Host turns one Mission Wave into a role-specific cross-provider team, keeps
+only run/member/assignment pointers in its own context, intervenes on blockers
+or approvals, and accepts a handoff-backed Wave outcome.
+
+### Resident Host Uses Dynamic Workflow
+
+A Host authors or selects a structured one-shot workflow, observes the run,
+reviews its artifacts or patch, and attaches its typed result to the Wave gate.
+
+### Self-Hosting Migration
+
+This repository uses its stricter compatibility governance chain while it adds
+Mission/Wave schemas, joins, runtime routing, and Dashboard surfaces. The
+stricter chain proves the migration without becoming a requirement for every
+external product Wave.
 
 ### Project Adapter Operation
 
-The harness must operate external projects without importing their domain logic
-into the generic core.
+An external project supplies its CLI/API, artifacts, dashboards, permission
+rules, and domain evaluation through an adapter. The harness owns orchestration
+and shared execution infrastructure, not project business logic.
 
-```mermaid
-flowchart TD
-  G[Project goal] --> L[Leader Agent]
-  L --> S[Scenario workflow]
-  S --> Adapter[Project adapter]
-  Adapter --> CLI[CLI / API / Dashboard / Artifacts]
-  CLI --> E[Evidence]
-  E --> Review[Domain review / Critic]
-  Review --> D[Decision]
-  D --> Next[Strategy or infrastructure task]
-```
+### Standing Agents + Docs (Future)
 
-The first adapter pilot is LetMeTry / Earning Engine strategy-matrix work.
-Strategy-specific logic, wallet/order safety, backtests, live artifacts, and
-domain dashboards stay in the project or adapter. The generic harness owns
-coordination, evidence, decisions, and follow-up work.
-
-### Self-Improving Workflow
-
-Every significant goal should produce learning.
-
-```mermaid
-flowchart TD
-  D[Decision] --> Eval[GoalEvaluation]
-  Eval --> Gap[Gap or reusable lesson]
-  Gap --> Task[Follow-up Task]
-  Gap --> Case[GoalCase]
-  Task --> Better[Better CLI / skill / schema / dashboard / CI]
-  Better --> Next[Next goal]
-```
-
-Repeated manual effort should become infrastructure. Repeated confusion should
-become docs, ADR, schema, skill, Dashboard visibility, or CI/CD.
+Long-lived business agents use Mission/Wave, Agent Team, Dynamic Workflow, and
+shared Docs/knowledge infrastructure. This is an architectural consumer of the
+current tools, not current MVP acceptance.
 
 ## Non-Goals
 
-- Do not build project-specific business logic into the generic core.
-- Do not make a large workflow DSL before the task/message/evidence loop works.
-- Do not treat provider chat or transcripts as canonical state.
-- Do not claim multi-agent execution from one-shot helper output unless it is
-  recorded through harness messages, evidence, and decisions.
-- Do not claim autonomous team acceptance from create-agent, deliver-one-turn,
-  close-agent smoke tests.
-- Do not make the Agent Dashboard replace project-specific dashboards.
-- Do not use docs as the source of truth for stable fields, commands, runtime
-  state, or checks.
+- No mandatory Task Graph inside Mission, Wave, or Agent Team.
+- No rename-only mapping from GoalPhase to Wave.
+- No universal Agent/Run object that erases executor semantics.
+- No claim that provider-native subagents are harness-controlled without a real
+  control/observation path.
+- No durable private reasoning or raw transcript as product evidence.
+- No project-specific business logic in the generic core.
+- No Standing Agent organization UI in the current Mission/Wave slice.
+- No plugin treated as architecture authority; schemas, code, ADRs, and current
+  product docs own the contract.
 
 ## Acceptance Summary
 
-The product is useful when:
+The product direction is accepted when:
 
-- a Lead Agent can turn a goal into scenario workflow, infra gaps, agent team,
-  task graph, evidence plan, and reviewer gates;
-- standing teams can propose useful goals or follow-up tasks from observed
-  gaps, evaluations, or dashboard warnings;
-- an Observer or equivalent role continuously scans project state and turns
-  drift, stale warnings, repeated manual work, or new opportunities into
-  reviewable proposals;
-- work is assigned through `Message(kind=task)`, not hidden chat or field-only
-  mutation;
-- persistent Agent Members can receive multiple messages over time, report,
-  return to idle, and be observed;
-- agents can communicate peer-to-peer through durable messages when work needs
-  clarification, handoff, or critique;
-- proposals are backed by evidence and reviewed before Leader decisions;
-- Dashboard views show goals, tasks, teams, messages, runtime health, evidence,
-  proposals, reviews, decisions, and goal-learning warnings;
-- completed goals produce evaluations and reusable cases or follow-up tasks;
-- stable commitments are verified by schema, CLI/API, Dashboard, CI/CD, or
-  skills rather than prose alone.
+- a Host can define a Mission and ordered Waves without a Task Graph;
+- each Wave selects Agent Team, Dynamic Workflow, or Host execution;
+- Agent Team ownership is assignment/message-based and retries are distinct run
+  attempts;
+- artifacts and a lightweight gate explain the accepted Wave outcome;
+- shared infrastructure works across provider instances without collapsing
+  their semantics;
+- compatibility Goal/GoalPhase data remains readable during migration;
+- thinking is live-only for new writes;
+- the Dashboard and host plugins expose the same truthful read model.
+
+Detailed implementation gates are in [mvp.md](mvp.md). The architecture map is
+[architecture-map.md](architecture-map.md).

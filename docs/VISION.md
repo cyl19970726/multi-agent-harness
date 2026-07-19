@@ -1,5 +1,13 @@
 # Vision
 
+> **Historical compatibility roadmap.** This file records the earlier
+> Goal/GoalPhase/Task Graph self-improvement vision and is no longer the
+> canonical product architecture. The accepted direction is
+> [Mission/Wave](architecture-map.md) as decided by
+> [ADR 0026](decisions/0026-mission-wave-architecture.md). GoalPhase references
+> below describe implemented compatibility machinery or historical plans, not
+> requirements for new product design.
+
 > 把项目/业务域变成常驻 Agent 团队可持续自我推进的系统:观察 → 提案目标 → 设计 → 任务图 →
 > 消息协作 → 证据 → 评审 → 决策 → 评估 → 下一目标,全程可重建因果。护城河是闭环 + 可审计证据链,
 > 不是并行调度。两个验收 pilot:自托管开发(优先)与 Earning Engine adapter。
@@ -12,8 +20,8 @@ The moat is the **closed loop + an auditable evidence chain**, explicitly NOT pa
 scheduling (that is commodity). Two acceptance pilots prove generalization: self-hosting the
 harness's own development (priority 1) and an Earning Engine business-domain adapter (priority 2).
 
-This file is the canonical vision. The harness Vision record (`vision-harness`) carries the
-one-paragraph summary and points its `source_refs` here.
+The compatibility Harness Vision record (`vision-harness`) still points its
+`source_refs` here until the Mission/Wave migration updates stored records.
 
 ## Product form (fully realized)
 
@@ -173,11 +181,13 @@ a credible architecture, not yet a demonstrated capability.
 
 ## Authoring surfaces
 
-Visions, goals, phases, and workflows are agent-authored at runtime via the shipped built-in skill
-kit: [star-goal](../skills/star-goal/SKILL.md),
-[star-planner](../skills/star-planner/SKILL.md),
-[star-workflow](../skills/star-workflow/SKILL.md), and
-[bootstrap-project-workflow](../skills/bootstrap-project-workflow/SKILL.md) (the doc-governance /
-architecture skill the `doc-sync` built-in phase runs). Diagrams (like the two above) are the
-preferred medium for goal/phase/vision docs; rendering them in the dashboard Vision / Docs
-surfaces is a tracked frontend follow-up.
+Dynamic Workflows can be agent-authored through the optional shipped
+[star-workflow](../skills/star-workflow/SKILL.md) capability. The former
+`star-goal` and `star-planner` packages were retired because they made the
+GoalPhase/Task Graph compatibility runtime the product planning authority.
+Mission/Wave authoring remains a product/runtime contract to implement before
+it is packaged as another skill. `bootstrap-project-workflow` remains only as
+the current doc-sync compatibility methodology, not part of the default
+external install. Diagrams remain the preferred medium for architecture docs;
+rendering them in the dashboard Vision / Docs surfaces is a tracked frontend
+follow-up.

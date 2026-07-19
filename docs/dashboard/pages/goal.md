@@ -1,8 +1,14 @@
 # Goal Workbench Page
 
-status: active contract for `goal-goal-workbench-v1`
+> Compatibility surface: this shipped Goal/GoalPhase page is not the canonical
+> Mission/Wave product IA. New design follows
+> [the architecture map](../../architecture-map.md),
+> [ADR 0026](../../decisions/0026-mission-wave-architecture.md), and the Agent
+> Team page spec. Keep this file only for reading and migrating current data.
+
+status: deprecated compatibility contract for `goal-goal-workbench-v1`
 owner_role: product-design
-canonical_for: selected Goal detail, phase-first execution surface, Goal proof chain
+canonical_for: shipped Goal detail compatibility and migration reference
 route_or_surface: `?surface=goal&goal=<goal-id>`
 workflow_evidence: `wfrun-1783013150649-0`, `evidence-1783013226770-p11384-0`
 

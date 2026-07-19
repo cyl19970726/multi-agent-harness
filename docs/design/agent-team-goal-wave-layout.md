@@ -1,252 +1,162 @@
-# Agent Team: Goal/Wave Layout (final)
+# Agent Team: Mission/Wave Layout
 
 ```text
-status: accepted
+status: stable
 owner_role: product-design
-canonical_for: Agent Team frontend information architecture (Goals / Agent Teams / member pages)
-supersedes: docs/design/agent-team-layout-v1..final.md (removed; see "Why v1–v4 were discarded")
+canonical_for: Mission / Wave / Agent Team frontend information architecture
+compatibility_note: file path and some current routes still say goal/team-run
+  until the runtime and dashboard migration lands
 ```
 
-## Why v1–v4 were discarded
+## Why Earlier Layouts Were Replaced
 
-The v1–v4 loop designed a *run-centric* console (one TeamRun per page, wave
-chain as stepper). Review against the real motivation showed it framed the
-product wrong:
+Earlier iterations treated one Team Run as the main page. That framed the
+product incorrectly.
 
-- The primary thing a user watches is **how the host agent decomposed the
-  goal** — the waves themselves — not one run at a time.
-- The existing `GoalPhase` model in the harness is too rigid for this; the
-  Goal/Wave model replaces it (wave = a phase of a goal, boundary = an
-  integration gate, not time).
-- A member is a first-class page (direct conversation + real-time events),
-  not a drawer.
-- Hidden reasoning is **not** dropped (see Thought visibility).
+- The operator's primary question is how the Host split a Mission into Waves.
+- A Wave may be executed by `agent_team`, `dynamic_workflow`, or `host`.
+- Agent Team is one executor kind, not the whole product hierarchy.
+- A Wave is lightweight. It does not require a Task Graph.
+- Thinking is not durable history; at most it is a transient live signal.
 
-This document is the layout contract for the Goal/Wave information
+This document is the layout contract for the accepted Mission/Wave information
 architecture.
 
-## Product model
+## Product Model
 
-Four layers; Goal/Wave replaces the old GoalPhase concept:
+Four layers:
 
 | Layer | Meaning | Notes |
 | --- | --- | --- |
-| Goal | The objective itself ("what we want"). | Reuses the existing `Goal` entity (`goals.jsonl`). The Goals page makes the host's decomposition of the goal visible. |
-| Wave | One phase of the goal. | Boundary = integration gate, not time. Executor: one `AgentTeamRun` (default) **or** the host's own subagents (no team). |
-| Agent Team | The executor of a wave when a team is needed. | One wave → one `AgentTeamRun` by default. The Teams list is a first-class sidebar entry; each goal shows which team serves each wave. |
-| Member | A `MemberRun` inside the team. | First-class page: direct conversation + real-time events. |
+| Mission | The durable objective. | Canonical product term. Current store/runtime still uses `Goal` as a compatibility surface. |
+| Wave | One ordered unit inside a Mission. | Boundary = integration gate, not time. Executor kinds: `agent_team`, `dynamic_workflow`, `host`. |
+| Agent Team | The `agent_team` executor for a Wave. | One Wave may instantiate multiple `AgentTeamRun` attempts; its gate identifies the accepted attempt. |
+| Member | A `MemberRun` inside the Agent Team. | First-class page with contract, explicit actions, messages, and artifacts. |
 
-Re-plan between waves is a first-class narrative: after a wave completes,
-the host may resolve conflicts and adjust the next wave's plan (objective,
-roster, contracts). Those adjustments are displayed between wave cards,
-not buried in history.
+`Standing Agents + Docs` is future and does not appear as a first-class current
+navigation surface in this iteration.
 
-## Information architecture
+## Information Architecture
 
-Sidebar (left rail) gains two entries next to Agents/Workflows/Docs:
+The canonical navigation is:
 
-- **Goals** — goal list and the vertical wave view.
-- **Agent Teams** — team list (operator inbox) and the team war room.
+- `Missions`: collection and Mission detail.
+- `Agent Teams`: wave-scoped collaborative runs.
+- `Members`: drill-in from a Team.
 
-| Level | Address | Region | User watches | User does |
-| --- | --- | --- | --- | --- |
-| L0 Goals | `?surface=goals` | goal list | every goal: title, status, wave progress (x/y), which team(s), needs-you | open a goal; create a goal |
-| L1 Goal | `?goal=<id>` | vertical wave flow | how the host split the goal; per-wave status, executor, members, gate; re-plan between waves | complete gate; adjust next wave; open a team; open a member |
-| L1.5 Team | `?team=<runId>` | team war room | members at a glance; internal event flow; external message flow | message members; ack handoffs; decide approvals |
-| L2 Member | `?team=<runId>&teamMember=<id>` | member page | one member's real-time events; conversation with that member; contract | talk to the member directly |
+Compatibility note: current routes and components may still expose `goal`,
+`goals`, or `team-run` names until migration lands. The product copy and doc
+contracts should use Mission/Wave now.
 
-## Goal detail page (the core page)
+| Level | Region | User watches | User does |
+| --- | --- | --- | --- |
+| L0 Missions | Mission list | mission status, wave progress, executor mix, needs-you | open a Mission, create a Mission |
+| L1 Mission | vertical Wave flow | per-Wave objective, executor, gate, outcome, re-plan bands | complete a gate, adjust a later Wave, open a Team or member |
+| L1.5 Team | Agent Team war room | member state, external message flow, internal action/event flow, Wave gate context | message members, ack handoffs, decide approvals |
+| L2 Member | member page | one member's contract, actions, messages, artifacts, delegations | talk to the member directly |
 
-Vertical wave flow, workflow-phase style: waves stack top→down, each a
-card, click to expand. The current wave is expanded by default; completed
-waves stay expanded with their outcome; planned waves collapsed.
+## Mission Detail Page
 
-```text
-← Goals
-┌ GOAL: Stage 6 migration end-state                       [active] ──┐
-│ executors: waves 1–3 → Agent Team "delivery" · wave 4 → host direct │
-│ ⛔ needs-you: 2 decisions (aggregated across active waves)          │
-├──────────────────────────────────────────────────────────────────────┤
-│ ▾ WAVE 1 · unblock development & acceptance           [completed ✓]  │
-│   Entry: checkpoint consolidated · Exit: A/B/C merged, gate rerun    │
-│   Executor: team delivery-run-1 (3 members) · gate note "verified…"  │
-│   ▸ member contract table (member | task | done when | boundaries)   │
-│   ▸ outcome: handoffs + evidence links · deviations 2                │
-├─ re-plan band ───────────────────────────────────────────────────────┤
-│ ⤷ after wave 1: host resolved 1 conflict · adjusted wave 3 plan      │
-│   (member +1, tasks rewritten) — diff visible here                   │
-├──────────────────────────────────────────────────────────────────────┤
-│ ▾ WAVE 2 · data & non-device E2E                        [running]    │
-│   Entry: w1 gate passed · Exit: D/E1/E2 evidence complete            │
-│   Executor: team delivery-run-2 (3 members) [open team ↗]            │
-│   ▸ member contract table (click member → member page)               │
-│   ▸ [expanded] embedded team panel: cockpit + live events + messages │
-├──────────────────────────────────────────────────────────────────────┤
-│ ▸ WAVE 3 · real-device capabilities                     [planned]    │
-│   Executor: host's own subagents (no agent team) · task pack: NFC…   │
-│ ▸ WAVE 4 · final consolidation                          [planned]    │
-│   Contains two operator decision points: deploy · remote delete      │
-└──────────────────────────────────────────────────────────────────────┘
-```
+Mission detail is the core page. Waves stack vertically. The current Wave is
+expanded by default; completed Waves remain readable history; future Waves are
+collapsed but editable at plan level.
 
-Re-plan band: between consecutive wave cards, show what the host changed
-after the previous wave's gate — conflicts resolved, deviations recorded,
-and the diff of the next wave's plan (objective/roster/contract changes).
-Planned waves are editable (adjusting the next wave's work is a first-class
-operation, not a side effect of starting it).
+Each Wave card shows:
 
-## Agent Team war room (L1.5)
+- Wave title and status;
+- objective and exit criteria;
+- executor kind: `agent_team`, `dynamic_workflow`, or `host`;
+- lightweight gate state;
+- outcome summary and artifact links;
+- deviations and re-plan deltas for the next Wave.
 
-One page per AgentTeamRun; every region maps to a real mechanism.
+The page must make the Host's replanning visible between Waves instead of
+burying it in logs.
 
-```text
-← Agent Teams
-┌ TEAM: delivery-run-2 · "data & E2E"                    [running] ──┐
-│ goal: Stage 6 · wave 2/4 · host: kimi-cli · created · budget limit │
-│ ⛔ needs-you: 1 decision · ⚠ 2 unacked (page-level, capped)        │
-├─ Members (cockpit) ────────────────────────────────────────────────┤
-│ Member │ Role │ Provider/Model │ Status │ Current action │ Last    │
-│ (row click → member page; row also filters the internal flow)      │
-├─ External flow ✉ (messages) ──┬─ Internal flow ⟳ (events/actions) ─┤
-│ ledger oldest-first, max-h    │ newest-first, max-h, filter member │
-│ kind pill · from→to · ACK     │ seq · source · type · summary      │
-│ evidence badges · reply links │ expand: summary + evidence         │
-│ [composer: operator → members]│                                    │
-├─ Delegations ──────────────────────────────────────────────────────┤
-│ honest empty state until adapters capture native subagents         │
-├─ Wave & gate context ──────────────────────────────────────────────┤
-│ goal link · wave 2/4 · gate min-conditions · [Complete gate…]      │
-│ deviations (non-empty expands)                                     │
-└──────────────────────────────────────────────────────────────────────┘
-```
+## Team Page
 
-The two flows are the two data streams: external = host↔member message
-mechanism (kinds, deliveries, ACK/resolve, evidence, reply links);
-internal = per-member real-time action/event stream. One subscription,
-render-time projections only.
+The Team page is the L1.5 war room for a Wave whose executor is `agent_team`.
 
-## Member page (L2)
+It has four regions:
 
-Design principle: the page must hold **as many member behaviors as
-possible** without redesign per behavior. `MemberAction.action_type` is an
-open vocabulary (free-form string); the page renders it through one
-protocol — every type maps to a pill/icon plus an expandable renderer, and
-unknown types fall back to a generic renderer. New behaviors become new
-vocabulary, not new pages.
+1. Header: Mission/Wave identity, host surface, budget, run status.
+2. Member cockpit: each member's role, provider/model, status, current action,
+   unread/blocked pressure.
+3. External flow: host/operator <-> member message ledger with delivery state.
+4. Internal flow: newest-first action/event stream for the run.
 
-Behavior vocabulary (v0+): `thinking` (derived reasoning, collapsed),
-`plan_updated`, `tool_started/progress/completed`,
-`command_started/completed`, `file_read/file_changed`,
-`test_started/completed`, `message_sent/received` (all ten kinds),
-`delegation_started/completed`, `review_started/completed`,
-`waiting_for_input/approval`, `blocked`, `error`, `completed`.
+The Team page does not make Task Graph the center of the experience. Ownership
+is explained through assignment-message correlation and explicit Wave context.
 
-```text
-← Team: run-name
-┌ HEADER ────────────────────────────────────────────────────────────┐
-│ ●E1 shop-journey · role · kimi/k3 · [testing] · ♥ 2s               │
-│ session · worktree · owned: src/shops/** · [Re-drive] (waiting/    │
-│ blocked only) · current action card (latest action + elapsed)      │
-├─ Behavior timeline (left, main, max-h scroll) ─┬─ Conversation ────┤
-│ [filter: all types ▾] [show thinking ☐]        │ messages with this │
-│ one unified stream, newest first:              │ member (assignment/│
-│ time · type pill · title · ▸ expand            │ handoff/question/  │
-│ per-type renderers:                            │ control) + ACK     │
-│  thinking → muted full text (collapsed)        │ state + evidence   │
-│  command → cmdline + exit + output             │ ┌ composer → this  │
-│  file → path + diff                            │ │ member (from     │
-│  test → pass/fail + log                        │ │ operator) [Send] │
-│  message → kind + from→to + anchor link        │ └──────────────────│
-│  delegation → mode + objective + status        │                    │
-├─ Contract (## Task / Done when / Boundaries verbatim) ─────────────┤
-├─ Delegations (honest empty) · Raw provider stream (collapsed) ─────┤
-```
+## Member Page
 
-The behavior timeline is the page spine: every behavior lives in one
-unified stream; thinking entries are collapsed one-liners by default and
-expand to the full reasoning text (derived-reasoning badge, never
-evidence). The conversation column is fixed on the right with a composer
-addressed to this member (from operator).
+The Member page is the durable drill-in for one `MemberRun`.
 
-## Member lifecycle (create / delete — resource discipline)
+It shows:
 
-**Create (add member to a run)** — lazy acquisition:
+- role, provider/model, worktree, owned paths, current contract;
+- explicit action timeline: commands, tests, file changes, reviews, delegation,
+  waiting, blocked, completed;
+- conversation/messages with the member;
+- artifacts and evidence links;
+- delegation observations when available.
 
-1. Ledger: `MemberRun(status=starting)` + event; config validated
-   (owned_paths, provider, model).
-2. v0 semantics: `create` only persists the roster; the provider session
-   is acquired lazily at `team-run start` / `start --member` (or eager
-   add-member later). At acquisition: worktree (optional) → provider
-   session (kimi ACP `session/new`) → `acp_session_id` written back →
-   `status=idle` (ready).
-3. Failure path: any step fails → release in reverse order →
-   `status=failed` + error action. No half-acquired member.
+Unknown future action types should fall back to a generic renderer. New member
+behaviors should extend vocabulary, not force new page types.
 
-**Delete / stop (remove member from a run)** — graceful release:
+## Member Lifecycle
 
-1. `status=stopping`: refuse new assignments; the member's queued
-   deliveries are expired.
-2. Stop current work: ACP `session/cancel` (graceful); after a grace
-   window (~15s) kill the process group (`kill_worker_tree`).
-3. Release in reverse: ACP child kill+reap (Drop is the backstop) →
-   member thread joined → worktree released (if allocated) → session dir
-   (`wire.jsonl`) archived for audit, never deleted silently.
-4. Terminal: `status=stopped` + `finished_at` + event. Prior handoffs and
-   actions remain readable history.
-5. Guards: deleting a working member needs inline confirmation; the lead
-   cannot be removed; members of a finished run are read-only.
+Member lifecycle is run-scoped and resource-disciplined:
 
-**Process/thread discipline**: one ACP child + one orchestrator thread
-per member; `process_group(0)` isolation so kills take the whole tree;
-orchestrator exit kills and reaps everything via Drop. When `start` moves
-into `serve`, a member registry (`member_id → child handle`) is required,
-with reaping on run end and on serve shutdown — no orphan sessions.
+1. Add member: validate provider/model, owned paths, permissions, and budget;
+   persist `MemberRun(status=starting)` before acquiring runtime resources.
+2. Start lazily: acquire worktree when needed, then provider session, then move
+   to `idle`/ready. A failed acquisition releases resources in reverse order
+   and records an explicit failure action.
+3. Stop gracefully: refuse new assignments, expire queued deliveries, request
+   provider cancellation, then terminate the process tree after a bounded grace
+   window if needed.
+4. Release and preserve history: reap process/thread handles, release the
+   worktree, archive sanitized wire/session artifacts, and persist
+   `status=stopped` plus `ended_at`.
+5. Guard destructive controls: stopping a working member needs confirmation;
+   the lead member cannot be removed; finished runs and their members are
+   read-only.
 
-## Thought visibility (policy change)
+One runtime child and one orchestrator owner must have a clear shutdown path.
+The resident service needs a member registry so run end, explicit stop, and
+service shutdown cannot leave orphan provider processes.
 
-v0 dropped `agent_thought_chunk` by design. That was wrong: the reasoning
-stream is part of "what the member is doing", and member observability is
-the product's core promise.
+## Thinking Visibility
 
-New policy:
+Thinking is transient live-only state.
 
-- Thinking streams are captured as first-class `MemberAction`s
-  (`action_type = "thinking"`), never silently discarded.
-- They are marked as **derived reasoning** (muted badge), collapsed by
-  default in the UI, and expandable on demand.
-- Guardrails: thinking actions are **never** treated as execution evidence
-  or acceptance proof (evidence = commands/files/tests/artifacts), and
-  **never** forwarded into other members' contexts (no cross-member
-  context pollution).
+- It may appear in host-local live UI when a provider exposes it.
+- It is never persisted as canonical page history.
+- It is never replayable after refresh.
+- It is never evidence.
+- It is never forwarded into another member's context.
 
-## Data model adjustments
+The stored page history should show explicit actions, summaries, blockers,
+artifacts, and outcomes instead.
 
-- New first-class `Wave` entity: `{id, goal_id, index, title,
-  entry_criteria?, exit_criteria?, status, executor_kind(agent_team|host_subagents),
-  team_run_id?, plan_note?, created_at, updated_at}`. Waves with no team
-  (host's own subagents) still appear in the flow.
-- `AgentTeamRun.goal_id` (+ `wave_id`) links a run into the goal/wave flow;
-  `previous_run_id` lineage remains as the re-plan/branch mechanism.
-- `Goal` reuses the existing entity; the rigid `GoalPhase` concept is
-  retired from the UI over time (execution modes `task_graph`/`workflow`
-  remain as non-team executors of a wave).
-- Member conversation reuses `TeamMessage` (operator ↔ member); no new
-  channel.
+## Data Model And Compatibility Notes
 
-## What stays from v0, what gets reshaped
+- Planned first-class `Wave` product shape:
+  `{id, mission_id, index, title, objective, exit_criteria?, status,
+  executor_kind(agent_team|dynamic_workflow|host), executor_run_ids[],
+  accepted_run_id?, outcome_summary?, artifact_refs[], gate_status,
+  gate_note?, created_at, updated_at}`.
+- `AgentTeamRun` attempts link to the Wave executed by
+  `executor_kind=agent_team`.
+- Current store/runtime may still use `Goal`, `GoalPhase`, `task_id`, and older
+  route names during migration.
+- Host-native subagents remain host/provider implementation detail unless
+  optional hooks expose observable delegation facts.
 
-Stays: the six ledger entities, kimi ACP driver, orchestrator, MCP server,
-CLI/HTTP surface, plugin package, wave lineage + transitions.
+## Non-goals
 
-Reshaped: the v0 Teams surface becomes the war room (keep cockpit,
-messages, gate); new Goals surface (vertical waves); member drawer is
-replaced by the member page; thought chunks are journaled as `thinking`
-actions instead of dropped.
-
-## Non-goals (this iteration)
-
-- No automatic re-plan (the host proposes, the operator confirms).
-- No per-member control actions beyond messaging (pause/inject/interrupt
-  stay CLI/driver-level).
-- No goal templates/definitions library yet.
-- No cross-goal analytics.
+- No standing-team directory or cross-Mission inbox in this iteration.
+- No automatic replanning without Host/operator confirmation.
+- No requirement that every Wave expose a Task Graph.
+- No durable storage of private reasoning.

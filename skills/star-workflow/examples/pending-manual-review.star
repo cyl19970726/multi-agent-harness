@@ -4,11 +4,10 @@
 # prove enough evidence internally to apply or reject it. No apply_patch() /
 # reject_patch() call is made for the pending case; the operator decides later.
 #
-# This standalone-run shape assumes no orchestration. Under `goal run-phases`
-# (this script attached to a workflow-mode phase via workflow_ref), no
-# WorkflowPatch rows exist to leave pending: phase landing is the sole landing
-# authority, and an omitted apply/reject call simply means this step's diff
-# lands like any other non-rejected diff when the phase passes.
+# This is a standalone Dynamic Workflow: omitting apply_patch()/reject_patch()
+# leaves the durable WorkflowPatch pending for an operator. An outer
+# Mission/Wave may attach this WorkflowRun, its artifacts, and final result
+# after completion without changing that pending-patch decision.
 #
 # Run:
 #   harness workflow run-script ./pending-manual-review.star \

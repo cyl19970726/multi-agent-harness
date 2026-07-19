@@ -1,6 +1,6 @@
 ---
 name: star-workflow
-description: "Use when an agent needs to author a dynamic multi-agent workflow at runtime, including workflow-mode GoalPhases: write a Starlark program (loops, conditionals, data-driven fan-out) that calls agent()/parallel()/phase()/log() over the harness runtime, declare a mandatory workflow(name, design_intent) header, run it with `harness workflow run-script`, and read the resulting WorkflowRun/WorkflowStep records back from the dashboard snapshot or store. For task_graph GoalPhases, use star-planner instead."
+description: "Use when an agent needs to author a standalone Dynamic Workflow at runtime: write a Starlark program (loops, conditionals, data-driven fan-out) that calls agent()/parallel()/phase()/log() over the harness runtime, declare a mandatory workflow(name, design_intent) header, run it with `harness workflow run-script`, and read the resulting WorkflowRun/WorkflowStep records back from the dashboard snapshot or store."
 ---
 
 # Author Workflow
@@ -44,21 +44,17 @@ should edit the selected project root immediately.
 Do not use this skill to do the domain work yourself. Use it to author the
 program, run it, and then read the recorded run.
 
-## Harness Self-Hosting Boundary
+## Product Boundary
 
-In the Multi-Agent Harness repo, a workflow run is execution evidence, not the
-canonical `Task` assignment. Before assigning implementation work for a harness
-goal, record a `GoalDesign` first. If urgent Lead-local work genuinely cannot
-wait, assignment must use the explicit waiver path:
+Dynamic Workflow is a standalone executor. Its Starlark program owns internal
+steps, fan-out, retries, structured output, and patch decisions. A host may
+attach the completed `WorkflowRun`, its artifacts, and its result to an outer
+Mission/Wave gate, but the workflow does not create or require a Task Graph,
+agent-team assignment, or compatibility lifecycle record.
 
-```bash
-harness task assign --id <task> --assignee <agent> \
-  --allow-missing-goal-design --waiver-decision <decision>
-```
-
-The waiver decision must have evidence, belong to a task in the same goal, and
-name a real follow-up task that will restore the missing design/evaluation
-chain. Do not run a workflow first and treat post-hoc design as equivalent.
+Do not reconstruct a workflow as a second plan after it runs. Treat the
+program, its `WorkflowRun`, `WorkflowStep` records, artifacts, and final
+`verdict()`/`output()` as the executor's durable truth.
 
 ## Choose The Write Scenario
 
@@ -74,15 +70,12 @@ come from mixing permission (`writable=True`) with landing semantics.
 | Simple direct edit | One serial `agent(..., writable=True, write_mode="direct")` against a clean git project. Use for small docs/config edits the operator intends to land in the current tree now. | Do not use direct mode inside `parallel()` / `pipeline()`, and do not split direct edit/repair across multiple writable leaves: after the first leaf dirties the repo, another direct leaf is refused. |
 | Parallel fixes | `parallel([{..., "writable": True, "owned_paths": [...]}, ...])`; each slot gets its own worktree and patch. Use unique labels such as `fix:1`, `fix:2`. | Never use `write_mode="direct"` for concurrent mutations. Avoid duplicate labels if humans must apply/reject individual patches. |
 | File/artifact generation | `writable=True`, `expected_artifacts=[...]`, and `artifact_manifest([...], artifact_root=..., write_roots=[...])`. | Do not write artifacts to absolute paths or outside declared roots; those writes escape worktree cleanup/accounting. |
-| Goal phase execution | For a workflow-mode GoalPhase, author a repo `.star` workflow and attach it as `workflow_ref=repo:workflows/name.star`; `goal run-phases` loads that script directly and links the resulting `WorkflowRun` to the GoalPhase. TaskGraph phases remain owned by `star-planner`. | Do not put a TaskGraph in front of a workflow-mode phase, and do not assume standalone `run-script` auto-lands worktree diffs; goal-managed runs have separate landing semantics. |
-| Landing mode choice | Use `examples/landing-mode-chooser.star` when deciding between ad-hoc `run-script` and goal-managed `run-phases`. | Do not describe "writable" as one landing behavior; the same runtime has different landing semantics depending on the front-end. |
 
 Good starting points:
 [`examples/direct-doc-edit.star`](examples/direct-doc-edit.star),
 [`examples/patch-review-apply.star`](examples/patch-review-apply.star),
 [`examples/pending-manual-review.star`](examples/pending-manual-review.star),
 [`examples/failure-aware-retry.star`](examples/failure-aware-retry.star),
-[`examples/landing-mode-chooser.star`](examples/landing-mode-chooser.star),
 [`examples/artifact-manifest.star`](examples/artifact-manifest.star),
 [`examples/scan-then-parallel-fix.star`](examples/scan-then-parallel-fix.star).
 
@@ -101,7 +94,6 @@ unless it covers a scenario this map does not already make obvious.
 | `direct-doc-edit.star` | The explicit `write_mode="direct"` exception for one small serial live-checkout edit. | The operator intentionally wants the current repo changed now. |
 | `patch-review-apply.star` | Default standalone code landing: writable worktree patch, schema'd review, apply/reject/pending decision. | Code should be reviewed before landing in the selected repo. |
 | `pending-manual-review.star` | Dedicated pending path: create a patch, make no internal apply/reject call, output operator commands. | Evidence is insufficient for an automated decision but the workflow should complete. |
-| `landing-mode-chooser.star` | Front-end choice: standalone `run-script` pending patches vs goal `run-phases` landing commits. | You need to explain or choose the correct landing surface before authoring. |
 | `build-and-gate.star` | One writable worker owns edit/test/repair inside its worktree; Starlark gates the worker report. | The edit and gate must share one temporary checkout. |
 | `artifact-manifest.star` | Generated file copy-back plus durable artifact manifest tracking. | The important output is a file/report/asset, not only a source diff. |
 | `scan-then-parallel-fix.star` | Runtime-determined fan-out into multiple isolated writable patches. | A scan decides how many independent fixes should run concurrently. |
@@ -151,7 +143,7 @@ A program calls these globals (no `import`; they are pre-bound):
 | `agent(prompt, provider="codex", label=, phase=, model=, effort=, service_tier=, fallback_model=, timeout_s=, image=, add_dir=, expected_artifacts=, persist_changes=, write_mode=, owned_paths=, artifact_root=, write_roots=, auto_apply_on_verdict=False, isolation=, schema=, return_status=False, writable=False)` | output text, dict, or status dict | Run ONE ephemeral worker synchronously. `prompt` is positional; the rest are keyword args. `model=` overrides the provider default model; `effort=` overrides reasoning effort (see the rules below); `service_tier=` overrides the Codex CLI service tier for this leaf; `fallback_model=` sets a provider fallback model when supported; `timeout_s=` is a per-leaf wall-clock cap in seconds; `image=` is a list of image file paths; `add_dir=` is a list of extra directory paths; `expected_artifacts=` is a list of repo-relative output files to assert and copy back; `persist_changes="discard"` opts out of default patch capture; `write_mode="direct"` makes a simple serial writable leaf edit the selected repo directly; `owned_paths=` guards patch apply. READ-ONLY by default; `writable=True` lets it edit / run shell AND normally auto-isolates it into a throwaway worktree. With `schema={...}` it returns a parsed dict (or `None`). With `return_status=True`, it returns an inspectable status dict instead — see [Error Tolerance](#error-tolerance). |
 | `parallel([dict, ...])` | list (input order) | Barrier fan-out: run every spec concurrently, block until ALL finish. Each element is the parsed dict (if that spec had a `schema` that parsed), a status dict (if `return_status=True`), else its output string. Each dict needs a `prompt` and may set `provider` (default `"codex"`), `label`, `phase`, `model`, `effort`, `service_tier`, `fallback_model`, `timeout_s`, `image`, `add_dir`, `expected_artifacts`, `persist_changes`, `owned_paths`, `artifact_root`, `write_roots`, `auto_apply_on_verdict`, `isolation`, `schema`, `return_status`, `writable`. `write_mode="direct"` is rejected here; use worktree isolation for concurrent edits. |
 | `pipeline(items, stages)` | list (one per item) | No-barrier streaming: each item flows through every stage independently. `stages` is a list of dicts `{prompt, provider?, label?, phase?, model?, effort?, service_tier?, fallback_model?, timeout_s?, image?, add_dir?, expected_artifacts?, persist_changes?, owned_paths?, artifact_root?, write_roots?, auto_apply_on_verdict?, isolation?, schema?, return_status?, writable?}` (or pass the stages as positional args: `pipeline(items, s1, s2)`) whose `prompt` is a TEMPLATE containing `{input}` — replaced with the item for stage 1, then the prior stage's output for each next stage (forward-injection). Returns each item's LAST stage result. `write_mode="direct"` is rejected here; keep pipeline stages read-only or worktree-isolated. |
-| `apply_patch(label, reason="")` / `reject_patch(label, reason="")` | — | Declare a workflow-internal decision over a captured patch. For a STANDALONE `run-script`, the CLI applies/rejects after the run journals durable `WorkflowPatch` rows, with the same guards as manual `workflow patch apply/reject`. Under `goal run-phases` (an orchestrated run), no `WorkflowPatch` rows exist to mutate: `apply_patch` is journaled as intent only (phase landing is the landing authority, [see below](#goal-layer-workflow-mode-goalphases)), and `reject_patch` excludes that step's diff from the phase's landing commit. |
+| `apply_patch(label, reason="")` / `reject_patch(label, reason="")` | — | Declare a workflow-internal decision over a captured patch. The CLI applies or rejects the durable `WorkflowPatch` after the standalone `run-script` journals it, with the same guards as manual `workflow patch apply/reject`. |
 | `artifact_manifest(paths, label=, artifact_root=, write_roots=)` | — | Declare durable artifact files to validate into `WorkflowArtifactManifest` rows with exists/size/hash/status. |
 | `verdict(ok, reason="")` | — | Declare the run's TYPED outcome. `reason` may be positional or keyword (`verdict(ok, "why")` ≡ `verdict(ok, reason="why")`). `ok=False` finalizes the run `Failed` even if every worker ran — so "workers ran" ≠ "intent satisfied". A closed-loop program's final gate calls this. |
 | `output(value)` | — | Declare the run's RESULT — the one unambiguous answer the calling agent reads back. `value` (a string or dict) is persisted verbatim under `final_output.result`, UNCAPPED, so the caller reads one field instead of digging the answer out of a step by label. Last call wins; pass a `schema`'d dict when you want the answer typed (a free-text `agent()` return is the worker's FULL reply — not truncated). |
@@ -427,47 +419,6 @@ on the intended branch or a writable leaf can branch from a stale base.
 Standalone `run-script` still discards the temporary worktree, but not the diff:
 the patch is durable in the store. Apply or reject it explicitly, or have the
 workflow declare `apply_patch()` / `reject_patch()` after a review leaf.
-
-## Goal layer: workflow-mode GoalPhases
-
-`GoalPhase` is the Goal checkpoint. It is not the same as the Starlark
-`phase("...")` grouping label inside a workflow.
-
-`goal run-phases` is a second front-end onto this exact runtime. Each
-`GoalPhase` chooses one executor:
-
-- `execution_mode="task_graph"`: compile the phase's task DAG to a `.star`
-  program (`compile_phase_to_starlark`) and run it here.
-- `execution_mode="workflow"`: load the authored Starlark program named by
-  `workflow_ref` (`repo:workflows/foo.star` or `builtin:<id>`) and run it here
-  directly. The primary truth is `WorkflowRun` / `WorkflowStep` / artifacts /
-  verdict, not a duplicate TaskGraph.
-
-The landing distinction still matters: standalone `run-script` creates pending
-patches that need explicit apply/reject, but under the goal layer a passing phase's
-writable diffs LAND on the branch via a per-phase landing commit. So the trap —
-"writable edits always vanish" — does not apply to phased goal execution.
-
-Any run `goal run-phases` executes — task-graph or workflow-mode — is an
-ORCHESTRATED run with a single landing authority: per-phase landing. It persists
-NO `WorkflowPatch` rows at all. `apply_patch(label, reason)` in an authored
-workflow-mode script performs no tree mutation there — it is journaled as intent
-only ("phase landing is the landing authority"), a no-op beyond the audit trail.
-`reject_patch(label, reason)` DOES have an effect: it excludes that step's diff
-from the phase's landing commit, same as a step that set
-`persist_changes="discard"`. Landing lands every other non-empty writable diff in
-one per-phase commit, same as before.
-
-The verdict gate is also per-mode. A task-graph phase keeps the strict clause
-"every task step `ok` is true" — a bare compiled `parallel()` has no `verdict()`,
-so a failed task inside it must fail the phase some other way. A workflow-mode
-phase instead trusts the run's own status: it passes when
-`run.status == Completed` and every required artifact is satisfied, full stop —
-it does NOT require every step to have succeeded. This lets an authored script
-legitimately tolerate a failed leaf (retry/fallback via `return_status=True`,
-landing a `verdict(True)` despite one journaled `ok=false` step — see
-[Error Tolerance](#error-tolerance)) without the phase gate second-guessing the
-script's own verdict.
 
 ## Structured Output: the foundation
 
@@ -843,16 +794,6 @@ no `apply_patch()` / `reject_patch()` call and outputs the exact
 `workflow patch list/show/apply/reject` commands for the operator. The workflow
 finishes; the patch state remains pending.
 
-## Worked Example: landing mode chooser
-
-[`examples/landing-mode-chooser.star`](examples/landing-mode-chooser.star)
-teaches the front-end distinction: standalone `workflow run-script` is the
-ad-hoc surface where writable leaves preserve patches for explicit review, while
-`goal run-phases` is the goal-managed surface where a passing phase lands its
-writable diff through the goal layer. Use it before authoring when the user is
-really asking "will this change land now, wait for review, or become a goal
-phase commit?"
-
 ## Worked Example: artifact manifest
 
 [`examples/artifact-manifest.star`](examples/artifact-manifest.star) shows the
@@ -1057,10 +998,7 @@ Pick by how live you need it:
   the var is unset; best-effort (a hook error is logged, never fails the run); keep
   the hook quick (the run waits for it) or self-detach with a trailing `&`. E.g.
   `HARNESS_WORKFLOW_ON_COMPLETE='harness message send --from lead --content "wf $HARNESS_RUN_ID $HARNESS_RUN_STATUS"' harness workflow run-script prog.star &`.
-  Scope: this hook is for `run-script` (and the stale-run reaper). `goal run-phases`
-  (the [Goal layer](#goal-layer-a-second-front-end-onto-this-runtime)) is a blocking
-  foreground orchestrator — its completion signal is the command RETURNING — so it
-  is not covered by this hook.
+  Scope: this hook is for `run-script` (and the stale-run reaper).
 
 ## Permission Note
 
@@ -1100,7 +1038,7 @@ its permission profile must allow it:
 - [ ] If a workflow should decide landing internally, it has a review/gate leaf and calls `apply_patch(label, reason)` or `reject_patch(label, reason)` only for explicit apply/reject; insufficient evidence leaves the patch pending.
 - [ ] Every leaf whose output drives control flow uses `schema={...}` and the script handles a `None` (and, in fan-outs, a non-dict) result.
 - [ ] Any branch that depends on timeout/provider failure uses `return_status=True` and checks `ok` / `reason` / `detail` rather than parsing prose.
-- [ ] The chosen landing surface is explicit: standalone `run-script` creates pending patches unless the script applies/rejects them; `goal run-phases` lands passing phase diffs.
+- [ ] The standalone landing decision is explicit: `run-script` creates pending patches unless the script applies or rejects them, while `write_mode="direct"` changes the selected working tree immediately.
 - [ ] If the workflow has only one `agent()` call and no branch/fan-out/loop, it is NOT a workflow — collapse it to that one call.
 - [ ] Quality steps (verify / adversarial / judge / loop-until-dry / completeness) cross-check rather than trust a single pass, where the task warrants it.
 - [ ] Ran it: `harness workflow run-script <prog.star>` (no member binding needed).

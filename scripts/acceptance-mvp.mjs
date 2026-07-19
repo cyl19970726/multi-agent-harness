@@ -155,8 +155,6 @@ function createMember(id, name, role, extra = []) {
     role,
     "--provider",
     "codex",
-    "--skill",
-    ".agents/skills/generic-agent-harness/SKILL.md",
     ...extra,
   ]);
 }
@@ -655,7 +653,16 @@ async function dashboardApi() {
   });
   const liveSnapshot = await fetchWithRetry(`http://127.0.0.1:${port}/v1/snapshot`);
   await new Promise((resolvePromise) => server.once("exit", resolvePromise));
-  assert(!stderr.trim(), `serve stderr was not empty: ${stderr}`);
+  const unexpectedStderr = stderr
+    .split("\n")
+    .filter(
+      (line) =>
+        line.trim() &&
+        line.trim() !==
+          "warning: HARNESS_ROOT is deprecated for store selection; prefer `harness project switch`",
+    )
+    .join("\n");
+  assert(!unexpectedStderr, `serve stderr was not empty: ${unexpectedStderr}`);
   assert(liveSnapshot.tasks.length >= 2, "live API snapshot missing tasks");
   return { snapshot_tasks: snapshot.tasks.length, api_tasks: liveSnapshot.tasks.length };
 }

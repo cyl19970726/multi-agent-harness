@@ -411,7 +411,7 @@ pub struct Goal {
     /// Multi-agent / multi-round exploration notes feeding `design_md`.
     #[serde(default)]
     pub explorations: Vec<Exploration>,
-    /// Domain skills needed to DO this goal's work (distinct from `star-goal`).
+    /// Skills needed to do this goal's work.
     #[serde(default)]
     pub skill_refs: Vec<String>,
     /// When `stage` last changed.
@@ -3426,7 +3426,7 @@ mod tests {
                 notes_md: "first grounded pass".to_string(),
                 created_at: "2026-05-26T00:00:00Z".to_string(),
             }],
-            skill_refs: vec!["star-goal".to_string()],
+            skill_refs: vec!["star-workflow".to_string()],
             stage_changed_at: Some("2026-05-26T00:00:00Z".to_string()),
         };
 

@@ -31,8 +31,9 @@ consequences, affected modules, and validation path.
 | [0021](0021-resident-daemon.md) | Resident-daemon warm-child host (amends 0018) — internal Unix-socket host keeps exec-stream children warm across deliveries |
 | [0022](0022-dynamic-workflow-runtime-json-ir.md) | Dynamic Workflow Runtime — skill + CLI entry, JSON-IR spec (not embedded JS), new `harness-workflow` crate |
 | [0023](0023-starlark-workflow-frontend.md) | Starlark program front-end — third authoring surface (loops/conditionals/data-driven fan-out) via a hermetic interpreter; reuses the 0022 backend |
-| [0024](0024-goal-phase-execution-modes.md) | GoalPhase execution modes — each phase chooses task_graph or workflow, never both |
-| [0025](0025-agent-team-run-control-plane.md) | Agent Team run control plane — ephemeral AgentTeamRun waves of cross-provider MemberRuns; capture-vs-orchestrate delegation; Plugin/MCP/Skill/CLI/Hook call-surface split |
+| [0024](0024-goal-phase-execution-modes.md) | GoalPhase execution modes — historical runtime compatibility for phase execution while Mission/Wave migration is pending |
+| [0025](0025-agent-team-run-control-plane.md) | Agent Team run control plane v0 — the `agent_team` Wave executor substrate, delegation guardrails, and Plugin/MCP/Skill/CLI/Hook call-surface split |
+| [0026](0026-mission-wave-architecture.md) | Mission/Wave architecture — Mission -> Wave -> executor (`agent_team`, `dynamic_workflow`, `host`), shared runtime contracts, transient-thinking policy, and non-destructive Goal/GoalPhase migration |
 
 ## Split Rule
 

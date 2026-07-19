@@ -85,8 +85,6 @@ function createMember(id, name, role) {
     role,
     "--provider",
     "codex",
-    "--skill",
-    ".agents/skills/generic-agent-harness/SKILL.md",
   ]);
 }
 

@@ -1,5 +1,13 @@
 # ADR 0024: GoalPhase Execution Modes
 
+## Status
+
+Historical runtime compatibility; superseded as future product architecture by
+[ADR 0026](0026-mission-wave-architecture.md).
+
+This ADR remains an accurate description of the implemented `GoalPhase` and
+`goal run-phases` surfaces until their non-destructive migration is complete.
+
 ## Context
 
 `GoalPhase` started as a task graph checkpoint: the planner created tasks, the
@@ -69,4 +77,3 @@ is not wrongly failed by the phase gate.
 - `cargo check -p harness-core -p harness-cli`
 - `cargo test -p harness-cli workflow_mode`
 - `cargo test -p harness-cli plan_into_goal_creates_workflow_mode_phase_without_tasks`
-

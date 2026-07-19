@@ -8,7 +8,7 @@
   "capabilities": ["docs", "schema"],
   "team_ids": ["team-1"],
   "prompt_ref": ".harness/prompts/agent-1.md",
-  "skill_refs": [".agents/skills/generic-agent-harness/SKILL.md"],
+  "skill_refs": ["star-workflow"],
   "workspace_policy": "one-worktree-per-editing-task",
   "status": "idle",
   "current_task_id": null,

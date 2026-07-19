@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Acceptance: a fresh user can INSTALL the authoring skill kit (star-workflow
-# + star-goal + star-planner) and RUN the harness. Models the external-user
+# Acceptance: a fresh user can INSTALL the star-workflow skill and RUN the
+# harness. Models the external-user
 # journey with checkable outcomes; exits nonzero on any failed check.
 #
 #   scripts/acceptance-skill-install.sh            # local: install + build + serve + run
@@ -27,7 +27,24 @@ SV=""
 cleanup() { [ -n "$SV" ] && { kill "$SV" 2>/dev/null; wait "$SV" 2>/dev/null; }; rm -rf "$WORK"; }
 trap cleanup EXIT
 
-echo "== A1: install the skill kit into a clean project (from this repo) =="
+echo "== A0: Claude marketplace isolates the Dynamic Workflow skill =="
+if python3 - "$REPO_ROOT" <<'PY'
+import json, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+manifest = json.loads((root / ".claude-plugin/plugin.json").read_text())
+market = json.loads((root / ".claude-plugin/marketplace.json").read_text())
+plugins = market.get("plugins", [])
+assert manifest.get("name") == "star-workflow"
+assert manifest.get("skills") == "./skills/star-workflow"
+assert [entry.get("name") for entry in plugins] == ["star-workflow"]
+PY
+then
+  ok "Claude plugin exposes only skills/star-workflow"
+else
+  bad "Claude plugin marketplace/component isolation is invalid"
+fi
+
+echo "== A1: install the Dynamic Workflow skill into a clean project (from this repo) =="
 PROJ="$WORK/proj"
 mkdir -p "$PROJ"
 if bash "$REPO_ROOT/scripts/install-skill.sh" --agent both --dest "$PROJ" >/dev/null 2>&1; then
@@ -35,10 +52,10 @@ if bash "$REPO_ROOT/scripts/install-skill.sh" --agent both --dest "$PROJ" >/dev/
 else
   bad "install-skill.sh exited nonzero"
 fi
-# All three shipped skills must land as REAL files (never a symlink) under BOTH
-# the Claude (.claude/skills) and Codex (.agents/skills) roots, each with its
-# SKILL.md and Codex agents/openai.yaml.
-for name in star-workflow star-goal star-planner; do
+# The default shipped skill must land as REAL files (never a symlink) under BOTH
+# the Claude (.claude/skills) and Codex (.agents/skills) roots, with its SKILL.md
+# and Codex agents/openai.yaml.
+for name in star-workflow; do
   for d in .claude/skills .agents/skills; do
     if [ -f "$PROJ/$d/$name/SKILL.md" ] && [ ! -L "$PROJ/$d/$name" ]; then
       ok "$d/$name installed as real files"

@@ -5,22 +5,32 @@ the harness objects as the canonical coordination state.
 
 ## Product We Are Building
 
-Star Harness is a goal-task-multi-agent development system. Its purpose
-is to turn a high-level goal into an executable, reviewable, reusable workflow:
+Star Harness gives resident Host Agents such as Codex, Claude Code, and Kimi
+Code provider-neutral tools for structured execution and collaboration. The
+canonical product hierarchy is:
 
 ```text
-Goal -> GoalDesign -> AgentTeam -> GoalPhase
-  -> task_graph executor (Task -> Message -> AgentMember work)
-     OR workflow executor (WorkflowRun -> WorkflowStep)
-  -> Evidence -> Proposal -> Critic/Gate -> Decision -> GoalEvaluation
-  -> GoalCase / Follow-up Task
+Mission -> ordered Wave -> executor
+  executor = agent_team | dynamic_workflow | host
 ```
 
-The product is not just a wrapper around coding agents. It must help a Lead
-Agent understand a project scenario, decide what infra is missing, design the
-right team, assign work through durable messages, observe execution, verify
-claims with evidence, and convert every useful lesson into future workflow
-improvements.
+`Mission` is durable intent. `Wave` is a lightweight ordered unit with an
+objective, executor, outcome, artifacts, and gate. A Wave does not own or
+require a Task Graph. Agent Team uses assignment-message correlation for member
+ownership; Dynamic Workflow owns its workflow steps; Host execution may use
+provider-native subagents as an implementation detail, with optional hooks for
+honest observation. The target contract allows thinking only as sanitized
+transient live state: it must not be persisted, replayed, treated as evidence,
+or forwarded to peers. Current v0 durable `thinking` actions are a migration
+gap, not an approved product contract.
+
+The shared substrate includes provider sessions/runtimes, capability snapshots,
+permission and budget ceilings, messages, artifacts, events, plugins/MCP, and
+Dashboard projections. It does not collapse WorkflowRun, AgentTeamRun,
+Host-native subagents, or future Standing Agents into one universal object.
+
+Future Standing Agents + Docs will build long-lived business operations on the
+same tools. They are not part of the current Mission/Wave implementation slice.
 
 For this repository, the first product scenario is self-hosting: the harness
 must be able to develop, evaluate, and improve itself through its own objects.
@@ -28,7 +38,21 @@ The second scenario is project adaptation, starting with the LetMeTry / Earning
 Engine strategy-matrix workflow. Project-specific logic belongs in adapters and
 skills, not in the generic harness core.
 
-## Core Objects And Responsibilities
+## Current Self-hosting Compatibility Objects
+
+The runtime and store still use `Goal`, `GoalDesign`, `GoalPhase`, `Task`,
+`Message`, `Evidence`, `Proposal`, `Decision`, and `GoalEvaluation`. They remain
+the canonical coordination state for work in this repository until the staged,
+non-destructive Mission/Wave migration in ADR 0026 is implemented and accepted.
+The stricter chain below is repository governance; it is not a mandatory
+product object graph for every Wave:
+
+```text
+Goal -> GoalDesign -> Task/Message -> Evidence -> Proposal
+  -> Critic/Gate -> Decision -> GoalEvaluation
+```
+
+Current object responsibilities:
 
 - `Goal`: the durable user or product objective. A goal is not complete until
   it has evidence-backed acceptance or an explicit blocker.
@@ -39,10 +63,10 @@ skills, not in the generic harness core.
 - `AgentMember`: a persistent or logically durable agent instance with id,
   name, role, prompt, skills, runtime state, current task, and provider session
   history.
-- `GoalPhase`: a sequential checkpoint inside a Goal. A phase chooses one
+- `GoalPhase`: a transitional sequential checkpoint inside a Goal. A phase chooses one
   primary executor: `task_graph` for durable Task/Message/AgentMember work, or
   `workflow` for direct WorkflowRun/WorkflowStep execution. It is not the same as
-  the Starlark workflow `phase("...")` label.
+  the Starlark workflow `phase("...")` label and is not the future Wave model.
 - `Task`: a unit of work owned by an agent, with dependencies, worktree/branch
   refs, owned paths, reviewer, and acceptance criteria.
 - `Message`: the communication protocol. Assignment, handoff, review request,
@@ -82,38 +106,35 @@ Do not claim a task was run by the multi-agent harness unless the store shows:
 
 The Lead Agent should use this sequence for every non-trivial change:
 
-1. Load the required Lead skill:
-   `.agents/skills/generic-agent-harness/SKILL.md`.
-2. Inspect current state:
+1. Inspect current state:
    `target/debug/harness goal list`, `target/debug/harness task list`,
    `target/debug/harness agent list`, and relevant docs.
-3. Create or reuse a goal. If the goal is new, record `goal_design` evidence
-   before assigning implementation tasks.
-4. Design the team and each phase's execution mode. Use `task_graph` when the
-   phase needs persistent AgentMember assignment and message/report proof. Use
-   `workflow` when the phase is naturally a direct Starlark workflow with
-   WorkflowRun/WorkflowStep as the runtime truth. Add Dashboard, Schema,
-   Provider, Adapter, or Docs agents only when the scenario needs those roles.
-5. For task_graph phases, create tasks with explicit owner, assignee, reviewer,
-   dependencies, owned paths, workspace or worktree refs, and acceptance
-   criteria. For workflow phases, author the workflow and record the
-   run/artifact evidence instead of inventing a duplicate task graph.
-6. Assign work through `task assign` or `agent send`; do not treat a private
+2. Define the Mission, its ordered Waves, each Wave's executor, and its gate.
+   When `executor_kind=agent_team`, define only the roles, permissions, model
+   tiers, depth, owned surfaces, and artifacts that Wave needs.
+3. Until first-class Mission/Wave storage exists, record this intent through the
+   current Goal design fields as compatibility data. Do not create GoalPhase or
+   a Task Graph merely to describe the new product model.
+4. When repository self-hosting governance needs durable ownership, create the
+   smallest necessary compatibility Tasks with explicit assignee, reviewer,
+   owned paths, and acceptance. Agent Team product ownership itself is expressed
+   through assignment-message correlation.
+5. Assign work through `task assign` or `agent send`; do not treat a private
    chat instruction as an assignment.
-7. For concurrent code work, give each implementation task a separate worktree
+6. For concurrent code work, give each implementation task a separate worktree
    or clearly disjoint owned paths. Shared-file conflicts must be escalated to
    the Lead before merging.
-8. When a claim depends on real provider behavior, use persistent Codex
+7. When a claim depends on real provider behavior, use persistent Codex
    `AgentMember` runtimes and `agent deliver`; one-shot helper output is not
    enough.
-9. Attach evidence with `evidence add`: checks, logs, provider sessions,
+8. Attach evidence with `evidence add`: checks, logs, provider sessions,
    dashboard snapshots, diffs, review notes, adapter artifacts, or screenshots.
-10. Create a proposal from a diff or explicit changed paths before acceptance.
-11. Run the review gate. Acceptance requires check evidence, worker or provider
+9. Create a proposal from a diff or explicit changed paths before acceptance.
+10. Run the review gate. Acceptance requires check evidence, worker or provider
     output, critic findings, valid evidence refs, and owned-path compliance
     unless an explicit waiver decision records the exception.
-12. Record the Leader decision and update task status.
-13. At goal close, add `goal_evaluation` evidence and create follow-up tasks or
+11. Record the Leader decision and update task status.
+12. At compatibility Goal close, add `goal_evaluation` evidence and create follow-up tasks or
     a reusable GoalCase when the run teaches a reusable workflow pattern.
 
 ## Project Selection (Multi-Project)
@@ -134,18 +155,18 @@ worker's cwd derives from `project_root`, not the harness process cwd.
   with no data loss; marks the old store). Full reference:
   [docs/multi-project.md](docs/multi-project.md).
 
-## Required Skills For Lead
+## Skills Are Optional Capabilities
 
-The Lead Agent must load `.agents/skills/generic-agent-harness/SKILL.md` before
-planning or accepting non-trivial work in this repository. It is the operating
-contract for the product itself: goal design, task graph design, message-first
-assignment, provider sessions, evidence, critic review, decisions, goal
-evaluation, and follow-up tasks.
+Repository skills are implementation and distribution artifacts, not the
+authority for product architecture or Lead behavior. Agents must not load a
+skill merely because they are working in this repository. Use a retained skill
+only when the user requests it or the current task explicitly needs that
+capability, and prefer canonical architecture, schemas, code, and ADRs when a
+skill conflicts with them.
 
-Load `skills/bootstrap-project-workflow/SKILL.md` only when the goal is about
-project bootstrapping or governance: docs and CI/CD design, directory reorg,
-new requirement workflow design, adapter boundaries, skill design, task-system
-design, or migrating a project into a harness-operable shape.
+The retired `generic-agent-harness`, `star-goal`, and `star-planner` skills must
+not be used to plan new work. Current Goal/GoalPhase commands remain temporary
+runtime compatibility surfaces until the Mission/Wave migration is complete.
 
 Do not make Earning Engine or other domain skills mandatory for this
 repository. Domain workflows enter through adapters and scenario-specific
@@ -188,7 +209,8 @@ This repository must dogfood the workflow it is building.
 
 ## Staged Acceptance
 
-Every non-trivial goal must be accepted in stages:
+Every non-trivial goal managed through the current repository self-hosting
+runtime must be accepted in stages:
 
 1. GoalDesign acceptance: scenario, non-goals, infra gaps, team, task graph,
    evidence plan, evaluator plan, and risks are recorded before implementation.
