@@ -70,7 +70,8 @@ The current product slice prioritizes:
 3. Dynamic Workflow as an independent one-shot executor;
 4. shared provider/session, capability, permission, artifact, event, plugin,
    and Dashboard infrastructure;
-5. honest live observation, including a transient-only thinking channel.
+5. a Mission-first Console for Agent Team Waves, with honest live observation
+   including a transient-only thinking preview.
 
 Standing Agents + Docs are a later layer for long-lived business operation.
 They should reuse these tools, but must not distort the current Mission/Wave or
@@ -84,6 +85,8 @@ Agent Team implementation into a premature organization model.
 - Waves are ordered but remain small: objective, optional exit criteria,
   executor kind, attempts, accepted attempt, artifacts, outcome, and gate.
 - A Wave may retry with a new executor run; the accepted attempt is explicit.
+- The Console creates native Mission/Wave records and creates/retries linked
+  AgentTeamRun attempts. Unlinked TeamRuns are compatibility-only readers.
 - Replanning occurs between Waves and records plan-vs-actual deviation.
 - No Mission/Wave API or UI requires a Task Graph.
 
@@ -133,8 +136,10 @@ evidence. Explicit plans, actions, artifacts, blockers, handoffs, and outcomes
 are durable.
 
 New Kimi execution no longer writes durable `thinking` actions. Historical rows
-remain in JSONL but are excluded from current snapshots. Real-time transient
-display is still pending; thinking is currently dropped rather than stored.
+remain in JSONL but are excluded from current snapshots. The Console receives a
+project-scoped SSE `member_activity` preview with expiry. It is direct-only and
+cannot survive refresh, TTL expiry, or reconnect; it is not JSONL, snapshot,
+replay, evidence, or peer context.
 
 ## Product Scenarios
 
@@ -186,14 +191,15 @@ current tools, not current MVP acceptance.
 The product direction is accepted when:
 
 - a Host can define a Mission and ordered Waves without a Task Graph;
-- each Wave selects Agent Team, Dynamic Workflow, or Host execution;
+- each Wave selects Agent Team, Dynamic Workflow, or Host execution, without
+  claiming that every executor is already routed through the Console;
 - Agent Team ownership is assignment/message-based and retries are distinct run
   attempts;
 - artifacts and a lightweight gate explain the accepted Wave outcome;
 - shared infrastructure works across provider instances without collapsing
   their semantics;
 - compatibility Goal/GoalPhase data remains readable during migration;
-- thinking is live-only for new writes;
+- thinking is live-only for new writes and its Console preview is volatile;
 - the Dashboard and host plugins expose the same truthful read model.
 
 Detailed implementation gates are in [mvp.md](mvp.md). The architecture map is

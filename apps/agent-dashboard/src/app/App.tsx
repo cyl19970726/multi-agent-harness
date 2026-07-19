@@ -1,12 +1,15 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   applyFrame,
   fetchProjects,
   fetchSnapshot,
   fetchWorkflowDefs,
+  matchesStreamProject,
   postAction,
   switchProject as switchProjectApi,
+  SnapshotFrameBuffer,
   type SseFrame,
+  type SnapshotRequestToken,
 } from "../api";
 import { buildWorkbenchModel } from "../model/readModel";
 import type { DashboardSnapshot, Project, WorkflowDef } from "../types";
@@ -90,6 +93,10 @@ const emptySnapshot: DashboardSnapshot = {};
 /** Live-poll cadence: re-fetch /v1/snapshot roughly every 5s while polling. */
 const pollIntervalMs = 5000;
 
+function activityExpiryMs(value: string): number {
+  return value.startsWith("unix-ms:") ? Number(value.slice(8)) : Date.parse(value);
+}
+
 export function App() {
   const [apiUrl, setApiUrl] = useState(apiFromLocation);
   // Selected project (goal-multi-project P6). Seeded from URL/localStorage; "" until
@@ -114,6 +121,85 @@ export function App() {
   // i.e. the /members/:memberId workbench) is directly addressable and
   // deep-linkable without pulling in a router.
   const [selection, setSelection] = useState<SelectionState>(() => selectionFromLocation(defaultSelection));
+  // Updated before project state so a callback from the old EventSource cannot
+  // merge an A frame into the newly selected B snapshot during effect cleanup.
+  const selectedProjectRef = useRef(selectedProjectId);
+  // Console mutations are serialized at the UI boundary. The server still
+  // validates every transition, but overlapping POST responses have no safe
+  // client-side ordering unless the product exposes an explicit operation id.
+  const mutationInFlightRef = useRef(false);
+  // A full snapshot and an SSE frame can cross in flight. Keep the tiny frame
+  // journal outside React state so every fetch/action response can replay its
+  // in-flight deltas before it replaces the read model.
+  const snapshotFrames = useRef(new SnapshotFrameBuffer());
+  const beginReadSnapshotRequest = useCallback(
+    (): SnapshotRequestToken | null => snapshotFrames.current.beginReadRequest(),
+    [],
+  );
+  const beginMutationSnapshotRequest = useCallback(
+    (): SnapshotRequestToken => snapshotFrames.current.beginMutationRequest(),
+    [],
+  );
+  const finishMutationSnapshotRequest = useCallback(
+    (request: SnapshotRequestToken): void => snapshotFrames.current.finishMutation(request),
+    [],
+  );
+  const discardSnapshotRequest = useCallback(
+    (request: SnapshotRequestToken): void => snapshotFrames.current.discardRequest(request),
+    [],
+  );
+  const adoptSnapshotResponse = useCallback(
+    (request: SnapshotRequestToken, next: DashboardSnapshot): boolean => {
+      const merged = snapshotFrames.current.resolveResponse(request, next);
+      if (!merged) return false;
+      setSnapshot(merged);
+      return true;
+    },
+    [],
+  );
+  const fetchReadSnapshot = useCallback(
+    async (baseUrl: string, project: string): Promise<{
+      request: SnapshotRequestToken;
+      snapshot: DashboardSnapshot;
+    } | null> => {
+      const request = beginReadSnapshotRequest();
+      if (!request) return null;
+      try {
+        return { request, snapshot: await fetchSnapshot(baseUrl, project) };
+      } catch (error) {
+        discardSnapshotRequest(request);
+        throw error;
+      }
+    },
+    [beginReadSnapshotRequest, discardSnapshotRequest],
+  );
+
+  // Expiry is a data-lifecycle boundary, not merely a card-rendering choice.
+  // Remove volatile previews from the shared client snapshot so Debug and every
+  // other surface lose the payload too, even while SSE remains connected.
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      const now = Date.now();
+      setSnapshot((current) => {
+        const activities = current.live_member_activity;
+        if (!activities) return current;
+        const retained = Object.entries(activities).filter(([, activity]) => {
+          const expiresAt = activityExpiryMs(activity.expires_at);
+          return Number.isFinite(expiresAt) && expiresAt > now;
+        });
+        if (retained.length === Object.keys(activities).length) return current;
+        snapshotFrames.current.replaceLiveMemberActivity(
+          retained.length > 0 ? Object.fromEntries(retained) : undefined,
+        );
+        return {
+          ...current,
+          live_member_activity:
+            retained.length > 0 ? Object.fromEntries(retained) : undefined,
+        };
+      });
+    }, 1_000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   // Keep the URL in sync with the selected surface/member so the address bar is
   // shareable, and honour Back/Forward navigation.
@@ -136,9 +222,13 @@ export function App() {
     let cancelled = false;
     void (async () => {
       try {
-        const next = await fetchSnapshot(apiDefault, selectedProjectId);
-        if (!cancelled) {
-          setSnapshot(next);
+        const result = await fetchReadSnapshot(apiDefault, selectedProjectId);
+        if (!result) return;
+        if (cancelled) {
+          discardSnapshotRequest(result.request);
+          return;
+        }
+        if (adoptSnapshotResponse(result.request, result.snapshot)) {
           setSource(liveSource);
         }
         try {
@@ -154,7 +244,7 @@ export function App() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [adoptSnapshotResponse, discardSnapshotRequest, fetchReadSnapshot]);
 
   // Auto-retry while offline: if the initial connect failed or the backend went
   // away, silently re-attempt the default URL every few seconds so the dashboard
@@ -164,16 +254,18 @@ export function App() {
     const id = window.setInterval(() => {
       void (async () => {
         try {
-          const next = await fetchSnapshot(apiUrl, selectedProjectId);
-          setSnapshot(next);
-          setSource(liveSource);
+          const result = await fetchReadSnapshot(apiUrl, selectedProjectId);
+          if (!result) return;
+          if (adoptSnapshotResponse(result.request, result.snapshot)) {
+            setSource(liveSource);
+          }
         } catch {
           // still offline; retry next tick
         }
       })();
     }, 4000);
     return () => window.clearInterval(id);
-  }, [source, apiUrl, selectedProjectId]);
+  }, [source, apiUrl, selectedProjectId, adoptSnapshotResponse, fetchReadSnapshot]);
 
   // Load the project list (goal-multi-project P6) once a live source is up, and
   // re-load on apiUrl change (a different serve has a different registry). If no
@@ -188,6 +280,7 @@ export function App() {
         if (cancelled) return;
         setProjects(list);
         if (!selectedProjectId && current) {
+          selectedProjectRef.current = current;
           setSelectedProjectId(current);
           syncProjectToLocation(current);
         }
@@ -223,26 +316,41 @@ export function App() {
   const handleSelectProject = useCallback(
     (projectId: string) => {
       if (projectId === selectedProjectId) return;
+      snapshotFrames.current.reset();
+      const request = beginMutationSnapshotRequest();
+      selectedProjectRef.current = projectId;
       setSelectedProjectId(projectId);
       // Drop stale data immediately so the previous project's snapshot is never
       // shown as the new one's while the switch round-trips.
       setSnapshot(emptySnapshot);
-      if (source !== liveSource) return;
+      if (source !== liveSource) {
+        finishMutationSnapshotRequest(request);
+        return;
+      }
       void (async () => {
         try {
           const response = await switchProjectApi(apiUrl, projectId);
           if (response.snapshot) {
-            setSnapshot(response.snapshot);
+            adoptSnapshotResponse(request, response.snapshot);
           } else {
-            setSnapshot(await fetchSnapshot(apiUrl, projectId));
+            adoptSnapshotResponse(request, await fetchSnapshot(apiUrl, projectId));
           }
           setSourceError(null);
         } catch (error) {
           setSourceError(error instanceof Error ? error.message : String(error));
+        } finally {
+          finishMutationSnapshotRequest(request);
         }
       })();
     },
-    [apiUrl, source, selectedProjectId],
+    [
+      adoptSnapshotResponse,
+      apiUrl,
+      beginMutationSnapshotRequest,
+      finishMutationSnapshotRequest,
+      source,
+      selectedProjectId,
+    ],
   );
 
   const model = useMemo(
@@ -257,9 +365,11 @@ export function App() {
     setIsLoading(true);
     setSourceError(null);
     try {
-      const next = await fetchSnapshot(apiUrl, selectedProjectId);
-      setSnapshot(next);
-      setSource(liveSource);
+      const result = await fetchReadSnapshot(apiUrl, selectedProjectId);
+      if (!result) return;
+      if (adoptSnapshotResponse(result.request, result.snapshot)) {
+        setSource(liveSource);
+      }
       try {
         setWorkflowDefs(await fetchWorkflowDefs(apiUrl));
       } catch {
@@ -268,6 +378,10 @@ export function App() {
     } catch (error) {
       setSourceError(error instanceof Error ? error.message : String(error));
       setSource("offline");
+      // A failed manual refresh transitions away from the live connection even
+      // before the stream hook's mode effect runs. Drop previews immediately so
+      // offline auto-retry cannot overlay old thinking onto a fresh snapshot.
+      snapshotFrames.current.clearLiveMemberActivity();
       setSnapshot(emptySnapshot);
       setWorkflowDefs([]);
     } finally {
@@ -278,22 +392,27 @@ export function App() {
   // SSE connect: resync the full snapshot off /v1/snapshot. The SSE `snapshot`
   // frame is timestamp-only (per docs/agent-runtime.md), so the authoritative
   // full state still comes from a one-shot fetch when the stream (re)connects.
-  const handleSseConnect = useCallback(() => {
+  const handleSseConnect = useCallback((streamProject: string) => {
+    if (!matchesStreamProject(selectedProjectRef.current, streamProject)) return;
     void (async () => {
       try {
-        const next = await fetchSnapshot(apiUrl, selectedProjectId);
-        setSnapshot(next);
-        setSourceError(null);
+        const result = await fetchReadSnapshot(apiUrl, selectedProjectId);
+        if (!result) return;
+        if (adoptSnapshotResponse(result.request, result.snapshot)) {
+          setSourceError(null);
+        }
       } catch (error) {
         setSourceError(error instanceof Error ? error.message : String(error));
       }
     })();
-  }, [apiUrl, selectedProjectId]);
+  }, [adoptSnapshotResponse, apiUrl, fetchReadSnapshot, selectedProjectId]);
 
   // SSE delta: merge the frame into the in-memory snapshot (append/replace by
   // id, latest-wins) so the read model and Member action stream update WITHOUT
   // a full re-fetch.
-  const handleSseFrame = useCallback((frame: SseFrame) => {
+  const handleSseFrame = useCallback((streamProject: string, frame: SseFrame) => {
+    if (!matchesStreamProject(selectedProjectRef.current, streamProject)) return;
+    snapshotFrames.current.recordFrame(frame);
     setSnapshot((current) => applyFrame(current, frame));
   }, []);
 
@@ -307,6 +426,25 @@ export function App() {
     onConnect: handleSseConnect,
     onFrame: handleSseFrame,
   });
+
+  // Volatile member previews exist only for the current live connection. A
+  // reconnect or polling fallback must not make old thinking look replayable.
+  useEffect(() => {
+    if (sseMode === "sse") return;
+    snapshotFrames.current.clearLiveMemberActivity();
+    setSnapshot((current) =>
+      current.live_member_activity
+        ? { ...current, live_member_activity: undefined }
+        : current,
+    );
+  }, [sseMode]);
+
+  useEffect(
+    () => () => {
+      snapshotFrames.current.clearLiveMemberActivity();
+    },
+    [],
+  );
 
   // Interval poll of /v1/snapshot. Runs while live AND either the operator
   // opted in (FE-WP5) OR the SSE stream is not currently connected (automatic
@@ -322,9 +460,13 @@ export function App() {
     const id = window.setInterval(() => {
       void (async () => {
         try {
-          const next = await fetchSnapshot(apiUrl, selectedProjectId);
-          if (!cancelled) {
-            setSnapshot(next);
+          const result = await fetchReadSnapshot(apiUrl, selectedProjectId);
+          if (!result) return;
+          if (cancelled) {
+            discardSnapshotRequest(result.request);
+            return;
+          }
+          if (adoptSnapshotResponse(result.request, result.snapshot)) {
             setSourceError(null);
           }
         } catch (error) {
@@ -338,26 +480,44 @@ export function App() {
       cancelled = true;
       window.clearInterval(id);
     };
-  }, [shouldPoll, apiUrl, selectedProjectId]);
+  }, [
+    shouldPoll,
+    apiUrl,
+    selectedProjectId,
+    adoptSnapshotResponse,
+    discardSnapshotRequest,
+    fetchReadSnapshot,
+  ]);
 
   // Returns whether the action succeeded so callers that chain actions (e.g. the
   // composer's queue-then-deliver) can stop on failure instead of clobbering the
   // first error with the next call's `setSourceError(null)`.
   async function runAction(path: string, body?: unknown): Promise<boolean> {
     if (!isLive) return false;
+    if (mutationInFlightRef.current) {
+      setSourceError("Another Console action is still in progress");
+      return false;
+    }
+    mutationInFlightRef.current = true;
     setSourceError(null);
+    const request = beginMutationSnapshotRequest();
+    let needsRefresh = false;
     try {
-      const response = await postAction(apiUrl, path, body);
+      const response = await postAction(apiUrl, path, body, selectedProjectId);
       if (response.snapshot) {
-        setSnapshot(response.snapshot);
+        adoptSnapshotResponse(request, response.snapshot);
       } else {
-        await refreshLive();
+        needsRefresh = true;
       }
-      return true;
     } catch (error) {
       setSourceError(error instanceof Error ? error.message : String(error));
       return false;
+    } finally {
+      finishMutationSnapshotRequest(request);
+      mutationInFlightRef.current = false;
     }
+    if (needsRefresh) await refreshLive();
+    return true;
   }
 
   // Freshness chip label: which source mode is actually feeding the view.

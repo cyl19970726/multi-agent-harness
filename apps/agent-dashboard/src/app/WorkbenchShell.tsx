@@ -54,6 +54,7 @@ import {
 } from "../surfaces/Surfaces";
 import { WorkflowRunDetail, WorkflowsList } from "../surfaces/Workflows";
 import { TeamRunDetail, TeamRunsList } from "../surfaces/TeamRuns";
+import { MissionsSurface } from "../surfaces/Missions";
 import { deliverQueued } from "../api/actions";
 import type { SelectionState, SurfaceId } from "./selection";
 
@@ -86,12 +87,13 @@ interface WorkbenchShellProps {
   onTogglePoll: () => void;
 }
 
-/** Primary navigation rail: Agents, Team, Vision, Work, Workflows, Docs. */
+/** Primary navigation rail: Missions first, then the available executors. */
 const navItems: { id: SurfaceId; label: string; icon: typeof Users }[] = [
+  { id: "missions", label: "Missions", icon: Target },
   { id: "agents", label: "Agents", icon: Bot },
-  { id: "team", label: "Team", icon: Users },
+  { id: "team", label: "Team Runs (compat)", icon: Users },
   { id: "vision", label: "Vision", icon: Target },
-  { id: "tasks", label: "Work", icon: GitBranch },
+  { id: "tasks", label: "Work (compat)", icon: GitBranch },
   { id: "workflows", label: "Workflows", icon: Workflow },
   { id: "docs", label: "Docs", icon: BookOpen },
 ];
@@ -130,7 +132,7 @@ export function WorkbenchShell({
   // needs full width for its columns; the Goal/Task detail pages are centered
   // Notion documents that read better without a competing rail. All suppress the
   // global Inspector; the rest keep it.
-  const noInspector: SurfaceId[] = ["agents", "team", "tasks", "goal", "task", "workflows", "docs"];
+  const noInspector: SurfaceId[] = ["agents", "missions", "team", "tasks", "goal", "task", "workflows", "docs"];
   const showInspector = !noInspector.includes(selection.surface);
 
   return (
@@ -138,6 +140,7 @@ export function WorkbenchShell({
       <TopBar
         apiUrl={apiUrl}
         currentSurface={surfaceLabel(selection.surface)}
+        contextLabel={nativeContextLabel(model, selection)}
         isLoading={isLoading}
         model={model}
         projects={projects}
@@ -232,6 +235,7 @@ function ActionErrorBanner({ error }: { error: string | null }) {
 function TopBar({
   apiUrl,
   currentSurface,
+  contextLabel,
   isLoading,
   model,
   projects,
@@ -251,6 +255,7 @@ function TopBar({
   "selection" | "onSelectionChange" | "actionsEnabled" | "onAction"
 > & {
   currentSurface: string;
+  contextLabel: string;
   debugActive: boolean;
   onToggleDebug: () => void;
 }) {
@@ -276,7 +281,7 @@ function TopBar({
             {currentSurface}
             <span className="mx-1 text-border">/</span>
             <span className="text-foreground/70">
-              {model.selectedGoal?.title ?? "No active goal"}
+              {contextLabel}
             </span>
           </div>
         </div>
@@ -541,6 +546,14 @@ function SurfaceSwitch({
 }) {
   const shared = { model, onSelectionChange, actionsEnabled, onAction, apiUrl };
   switch (selection.surface) {
+    case "missions":
+      return (
+        <MissionsSurface
+          {...shared}
+          missionId={selection.missionId}
+          waveId={selection.waveId}
+        />
+      );
     case "vision":
       return <VisionOverview {...shared} />;
     case "goal":
@@ -793,6 +806,44 @@ const offRailLabels: Partial<Record<SurfaceId, string>> = {
   docs: "Docs",
   debug: "Debug",
 };
+
+function nativeContextLabel(model: WorkbenchModel, selection: SelectionState): string {
+  if (selection.surface === "missions") {
+    const mission = (model.snapshot.missions ?? []).find(
+      (candidate) => candidate.id === selection.missionId,
+    );
+    return mission?.title ?? "Mission control";
+  }
+
+  if (selection.surface === "team") {
+    const run = (model.snapshot.team_runs ?? []).find(
+      (candidate) => candidate.id === selection.teamId,
+    );
+    const mission = run?.mission_id
+      ? (model.snapshot.missions ?? []).find((candidate) => candidate.id === run.mission_id)
+      : undefined;
+    return mission?.title ?? (run ? "Compatibility Team Run" : "Agent Team attempts");
+  }
+
+  if (["goal", "task", "tasks"].includes(selection.surface)) {
+    return model.selectedGoal?.title ?? "No selected Goal";
+  }
+
+  switch (selection.surface) {
+    case "agents":
+      return "Resident agents";
+    case "workflows":
+      return "Dynamic workflows";
+    case "docs":
+      return "Documentation";
+    case "vision":
+      return "Architecture";
+    case "debug":
+      return "Diagnostics";
+    default:
+      return "Control plane";
+  }
+}
 
 function surfaceLabel(surface: SurfaceId): string {
   return (

@@ -861,6 +861,21 @@ export interface MemberRun {
   finished_at?: string | null;
 }
 
+/**
+ * Volatile, display-only member activity delivered over SSE. It is never part
+ * of the backend snapshot, ledger history, evidence, messages, or replay.
+ */
+export interface LiveMemberActivity {
+  team_run_id: string;
+  member_run_id: string;
+  provider: string;
+  kind: "thinking" | string;
+  preview: string;
+  revision: number;
+  emitted_at: string;
+  expires_at: string;
+}
+
 /** Delivery of a {@link TeamMessage} to one recipient. */
 export interface TeamMessageDelivery {
   member_id?: string;
@@ -990,6 +1005,11 @@ export interface DashboardSnapshot {
    * with the /normalized-events read endpoint. Never sent by the backend snapshot.
    */
   live_normalized_events?: Record<string, HarnessTurnEvent[]>;
+  /**
+   * Transient, client-only member previews keyed by member_run_id. New SSE
+   * frames replace the prior preview; refresh/reconnect starts empty.
+   */
+  live_member_activity?: Record<string, LiveMemberActivity>;
   workflow_runs?: WorkflowRun[];
   workflow_steps?: WorkflowStep[];
   /** Native durable Mission rows. */

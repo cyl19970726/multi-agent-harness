@@ -1,13 +1,14 @@
 # Agent Team Page Spec
 
 ```text
-status: planned
+status: implemented for native Agent Team Waves; compatibility reader retained
 owner_role: product-design
 canonical_for: Agent Team war-room page for a Mission/Wave executed by
   executor_kind=agent_team
-route_or_surface: ?team=<runId> (historical /team-console/:runId compatibility
-  alias may remain during migration)
-supersedes: run-centric Team Run Console layout; path retained for compatibility
+route_or_surface: Missions -> Mission detail -> Wave -> ?team=<runId>; historical
+  Team Run routes remain a compatibility reader for unlinked runs
+supersedes: run-centric Team Run Console layout; compatibility path retained for
+  historical/manual runs without Mission/Wave linkage
 ```
 
 ## Purpose
@@ -27,15 +28,15 @@ Why it exists:
 Non-goals:
 
 - not a standing-team directory or long-lived employee workspace;
-- not the top-level Mission page;
+- not a replacement for the top-level Mission page, which creates Waves and
+  selects/retries attempts;
 - not a metrics wall;
 - not a transcript dump;
 - not a place that stores private reasoning as durable history.
 
 ## Canonical Objects
 
-- Mission / Goal compatibility object
-- Wave / GoalPhase compatibility object
+- native Mission and native Wave (Goal/GoalPhase are labeled compatibility)
 - AgentTeamRun
 - MemberRun
 - TeamMessage
@@ -78,7 +79,9 @@ The selected page is a war room with four regions:
 
 The current Wave gate context stays visible in the same page. Operators should
 not need to leave the Team page to understand whether the team is close to the
-gate or blocked before it.
+gate or blocked before it. Completing a TeamRun is not the same as accepting
+the Wave: completion makes an attempt eligible; the Host records the separate
+Wave gate from the parent Mission/Wave surface.
 
 ## Primary Actions
 
@@ -87,7 +90,8 @@ gate or blocked before it.
 - review blocked or waiting-for-approval states;
 - open a member page;
 - open the parent Mission/Wave detail;
-- close or complete the Wave gate from the parent surface when permitted.
+- complete this attempt, or cancel it while no provider execution is active;
+  gate the completed attempt from the parent Mission/Wave surface.
 
 ## Responsive Requirements
 
@@ -160,9 +164,12 @@ Target viewport: about `390x844`.
 
 Thinking is transient live-only state.
 
-- If a provider exposes it, the host may render it live.
-- Refreshing the page must not resurrect prior thinking text from durable
-  storage.
+- If a provider exposes it, the host may render a sanitized preview from a
+  project-scoped SSE `member_activity` frame.
+- Previews carry an expiry/TTL and are removed by expiry or refresh; a reconnect
+  does not receive old activity.
+- The activity channel is direct-only: it is not JSONL, snapshot, replay,
+  evidence, message context, or a substitute for explicit status/actions.
 - Stored history shows explicit actions, blockers, summaries, artifacts, and
   outcomes only.
 
@@ -191,8 +198,17 @@ process manager UI:
 - storing private reasoning as audit history;
 - forcing operators into raw provider transcripts to answer basic Wave questions.
 
-## Open Questions
+## Current Boundary
 
-- which Team-page actions should remain CLI-only in the first shipped slice;
-- how much Wave-gate mutation belongs directly in this page versus the parent
-  Mission page during the migration from Goal/GoalPhase surfaces.
+- Native, Mission-linked TeamRuns are created and retried from the parent Wave;
+  `previous_run_id` is same-Wave retry lineage.
+- Start reserves the attempt synchronously, then provider execution proceeds in
+  the background; durable run/member/message/event changes stream to the
+  selected project's SSE read model.
+- Running-provider interruption is not yet a Console control. Until cooperative
+  provider cancellation exists, the UI does not present status-only cancellation
+  as if it stopped active work.
+- The standalone Team Run list is compatibility-only for unlinked historical or
+  manual runs. It is not an alternative Mission planning surface.
+- Dynamic Workflow and Host remain executor seams. This page does not claim
+  that those executor kinds can already be launched or controlled here.

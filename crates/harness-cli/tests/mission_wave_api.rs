@@ -4,8 +4,11 @@
 //! constructing core objects directly: Wave attempt registration, the gate,
 //! and snapshot projections must agree across the surfaces a Host uses.
 
+use std::time::{Duration, Instant};
+
+mod fake_provider;
 mod harness_env;
-use harness_env::{current_project_id, run_harness, ServeHandle, TempHome};
+use harness_env::{collect_sse_data, current_project_id, run_harness, ServeHandle, TempHome};
 
 fn init_project(home: &TempHome, name: &str) -> String {
     let root = home.base().join(name);
@@ -576,4 +579,153 @@ fn legacy_goal_projects_to_mission_without_rewriting_history() {
     );
     assert!(!store_root.join("missions.jsonl").exists());
     assert!(!store_root.join("waves.jsonl").exists());
+}
+
+#[test]
+fn http_console_starts_native_team_wave_and_streams_transient_thinking() {
+    let home = TempHome::new("mission-wave-console-start");
+    let project_id = init_project(&home, "alpha");
+    let fake_bin = fake_provider::install_kimi_acp_shim(home.base());
+    let fake_kimi = fake_bin.join("kimi").display().to_string();
+    let serve = ServeHandle::spawn_with_env(
+        &home,
+        home.base(),
+        &[],
+        &[
+            ("KIMI_CODE_BIN", fake_kimi.as_str()),
+            ("FAKE_KIMI_RESULT", "done"),
+        ],
+    );
+
+    let (status, body) = serve.post_json(
+        "/v1/missions",
+        &serde_json::json!({
+            "id": "mission-console",
+            "title": "Console-native Agent Team",
+            "objective": "Run the complete Mission/Wave journey",
+        }),
+    );
+    assert_eq!(status, 200, "body: {body}");
+    let (status, body) = serve.post_json(
+        "/v1/waves",
+        &serde_json::json!({
+            "id": "wave-console",
+            "mission_id": "mission-console",
+            "title": "Execute one team",
+            "objective": "Let the fake member complete",
+            "executor_kind": "agent_team",
+            "exit_criteria": "The completed attempt is accepted",
+        }),
+    );
+    assert_eq!(status, 200, "body: {body}");
+    let (status, body) = serve.post_json(
+        "/v1/team-runs",
+        &serde_json::json!({
+            "objective": "Complete through the Console start endpoint",
+            "mission_id": "mission-console",
+            "wave_id": "wave-console",
+            "members": [{"name": "worker", "role": "implementer", "provider": "kimi"}],
+        }),
+    );
+    assert_eq!(status, 200, "body: {body}");
+    let run_id = body["result"]["team_run"]["id"]
+        .as_str()
+        .expect("run id")
+        .to_string();
+    let member_id = body["result"]["member_runs"][0]["id"]
+        .as_str()
+        .expect("member id")
+        .to_string();
+
+    let mut sse = serve.open_sse(&format!("?project={project_id}"));
+    let (status, body) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/start?project={project_id}"),
+        &serde_json::json!({"max_concurrency": 1, "idle_timeout_s": 10}),
+    );
+    assert_eq!(status, 202, "body: {body}");
+    assert_eq!(body["result"]["status"].as_str(), Some("running"));
+
+    // The synchronous reservation makes duplicate starts fail even while the
+    // provider driver is still booting (or after it has already completed).
+    let (status, body) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/start?project={project_id}"),
+        &serde_json::json!({}),
+    );
+    assert_eq!(status, 400, "body: {body}");
+
+    let frames = collect_sse_data(&mut sse, Duration::from_secs(8), 30);
+    assert!(
+        frames.iter().any(|frame| {
+            frame["kind"].as_str() == Some("thinking")
+                && frame["team_run_id"].as_str() == Some(run_id.as_str())
+                && frame["member_run_id"].as_str() == Some(member_id.as_str())
+                && frame["preview"].as_str() == Some("hidden reasoning")
+        }),
+        "transient activity frame missing: {frames:?}"
+    );
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let snapshot = loop {
+        let (status, snapshot) = serve.get_json(&format!("/v1/snapshot?project={project_id}"));
+        assert_eq!(status, 200);
+        let completed = snapshot["team_runs"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|run| {
+                run["id"].as_str() == Some(run_id.as_str())
+                    && run["status"].as_str() == Some("completed")
+            });
+        if completed {
+            break snapshot;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "team run did not complete: {snapshot}"
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    };
+    assert!(
+        snapshot["member_actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|action| action["action_type"].as_str() != Some("thinking")),
+        "thinking became durable: {}",
+        snapshot["member_actions"]
+    );
+    assert!(
+        !snapshot.to_string().contains("hidden reasoning"),
+        "thinking leaked into snapshot"
+    );
+    assert_eq!(snapshot["tasks"].as_array().map(Vec::len), Some(0));
+
+    // The external provider ingress applies the same lifecycle boundary and
+    // refuses previews once the attempt is terminal.
+    let (status, body) = serve.post_json(
+        &format!("/v1/live/member-activity?project={project_id}"),
+        &serde_json::json!({
+            "team_run_id": run_id,
+            "member_run_id": member_id,
+            "preview": "too late",
+        }),
+    );
+    assert_eq!(status, 400, "body: {body}");
+
+    let (status, body) = serve.post_json(
+        &format!("/v1/waves/wave-console/gate?project={project_id}"),
+        &serde_json::json!({
+            "status": "accepted",
+            "run_id": run_id,
+            "accepted_by": "console-host",
+            "outcome": "deterministic provider completed",
+            "artifact_refs": ["check:http-console"],
+        }),
+    );
+    assert_eq!(status, 200, "body: {body}");
+    assert_eq!(body["result"]["gate_status"].as_str(), Some("accepted"));
+    assert_eq!(
+        body["result"]["accepted_run_id"].as_str(),
+        Some(run_id.as_str())
+    );
 }

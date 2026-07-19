@@ -1,13 +1,13 @@
-import { useEffect, useRef, useState, type ComponentProps, type ReactNode } from "react";
+import { useEffect, useState, type ComponentProps, type ReactNode } from "react";
 import {
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
   MessageSquare,
   Play,
-  Plus,
   Send,
   ShieldAlert,
+  ShieldCheck,
   Users,
   X,
 } from "lucide-react";
@@ -30,19 +30,10 @@ import {
   StatusDot,
   type StatusTone,
 } from "@/components/workbench/atoms";
-import {
-  Dialog,
-  DialogFooter,
-  Field,
-  parseList,
-  Select,
-  TextArea,
-  TextInput,
-} from "@/components/workbench/OperatorForms";
+import { Select, TextArea } from "@/components/workbench/OperatorForms";
 
 import { parseTs, type WorkbenchModel } from "../model/readModel";
 import {
-  createTeamRun,
   sendTeamMessage,
   startTeamRun,
   transitionTeamRun,
@@ -50,6 +41,7 @@ import {
 } from "../api/actions";
 import type {
   DelegationRun,
+  LiveMemberActivity,
   MemberAction,
   MemberRun,
   TeamMessage,
@@ -328,84 +320,61 @@ function endpointLabel(memberById: Map<string, MemberRun>, id?: string | null): 
   return member?.name ?? id;
 }
 
+/** Assignment messages addressed to one member, oldest first. */
+function assignmentsForMember(messages: TeamMessage[], memberRunId: string): TeamMessage[] {
+  return messages
+    .filter(
+      (message) =>
+        message.kind === "assignment" && (message.to_member_ids ?? []).includes(memberRunId),
+    )
+    .sort((a, b) => {
+      const ta = parseTs(a.created_at);
+      const tb = parseTs(b.created_at);
+      return (Number.isNaN(ta) ? 0 : ta) - (Number.isNaN(tb) ? 0 : tb);
+    });
+}
+
+/** True only when both recipient sets describe the same ownership lane. */
+function sameRecipients(left: string[], right: string[]): boolean {
+  if (left.length !== right.length) return false;
+  const expected = new Set(left);
+  return expected.size === right.length && right.every((id) => expected.has(id));
+}
+
 /**
- * Build the wave lineage chain containing `runId`: walk BACK via
- * `previous_run_id` to the root, then FORWARD through children (a run's child
- * is the run whose `previous_run_id` points at it; first match wins per wave).
- * Cycle-safe via a seen-set. The chain is ordered wave 1 → N.
+ * Show assignment lineage without treating a generated opaque correlation as
+ * proof of ownership. A message is anchored only when an Assignment in this
+ * attempt carries the same correlation.
  */
-function waveLineage(runs: TeamRun[], runId: string): TeamRun[] {
-  const byId = new Map(runs.map((run) => [run.id, run]));
-  const seen = new Set<string>();
-  const back: TeamRun[] = [];
-  let cursor = byId.get(runId);
-  while (cursor && !seen.has(cursor.id)) {
-    seen.add(cursor.id);
-    back.push(cursor);
-    cursor = cursor.previous_run_id ? byId.get(cursor.previous_run_id) : undefined;
-  }
-  back.reverse();
-  cursor = byId.get(runId);
-  while (cursor) {
-    const child = runs.find(
-      (run) => run.previous_run_id === cursor?.id && !seen.has(run.id),
+function MessageLineage({ message, messages }: { message: TeamMessage; messages: TeamMessage[] }) {
+  const assignment =
+    message.kind === "assignment"
+      ? message
+      : messages.find(
+          (candidate) =>
+            candidate.kind === "assignment" &&
+            Boolean(message.correlation_id) &&
+            candidate.correlation_id === message.correlation_id,
+        );
+
+  if (assignment) {
+    return (
+      <div className="flex flex-wrap items-center gap-1 text-[10px] text-muted-foreground">
+        <Badge tone="info">{message.kind === "assignment" ? "assignment" : "assignment anchor"}</Badge>
+        <MonoId>{assignment.id}</MonoId>
+        {assignment.correlation_id && <MonoId>corr {assignment.correlation_id}</MonoId>}
+        {message.causation_id && <MonoId>cause {message.causation_id}</MonoId>}
+      </div>
     );
-    if (!child) break;
-    seen.add(child.id);
-    back.push(child);
-    cursor = child;
   }
-  return back;
-}
 
-/**
- * Order a list of runs so a child wave renders right under its parent (a
- * simple DFS over the previous_run_id links, preserving the input order
- * within each sibling group). Returns items annotated with indent depth.
- */
-function stitchLineage<T extends { run: TeamRun }>(items: T[]): (T & { depth: number })[] {
-  const ids = new Set(items.map((item) => item.run.id));
-  const childrenByParent = new Map<string, T[]>();
-  const roots: T[] = [];
-  for (const item of items) {
-    const parent = item.run.previous_run_id;
-    if (parent && ids.has(parent)) {
-      childrenByParent.set(parent, [...(childrenByParent.get(parent) ?? []), item]);
-    } else {
-      roots.push(item);
-    }
-  }
-  const out: (T & { depth: number })[] = [];
-  const walk = (item: T, depth: number) => {
-    out.push({ ...item, depth });
-    for (const child of childrenByParent.get(item.run.id) ?? []) walk(child, depth + 1);
-  };
-  for (const root of roots) walk(root, 0);
-  return out;
-}
-
-/**
- * After dispatching a team-run create, adopt the run id that appears in the
- * refreshed snapshot (the id is server-generated, so we diff against the set
- * of ids known at submit time) and navigate to its detail page.
- */
-function useAdoptNewTeamRun(
-  runs: TeamRun[],
-  onSelectionChange: (selection: Partial<SelectionState>) => void,
-): () => void {
-  const knownRunIds = useRef<Set<string> | null>(null);
-  useEffect(() => {
-    const known = knownRunIds.current;
-    if (!known) return;
-    const created = runs.find((run) => !known.has(run.id));
-    if (created) {
-      knownRunIds.current = null;
-      onSelectionChange({ surface: "team", teamId: created.id });
-    }
-  }, [runs, onSelectionChange]);
-  return () => {
-    knownRunIds.current = new Set(runs.map((run) => run.id));
-  };
+  return (
+    <div className="flex flex-wrap items-center gap-1 text-[10px] text-muted-foreground">
+      <Badge tone="muted">unanchored</Badge>
+      {message.correlation_id && <MonoId>corr {message.correlation_id}</MonoId>}
+      {message.causation_id && <MonoId>cause {message.causation_id}</MonoId>}
+    </div>
+  );
 }
 
 /** Member-run statuses that mean the member is done working (terminal-ish). */
@@ -440,15 +409,14 @@ function ActionButton({
 /* ================================================================== */
 
 /**
- * The Team surface list: every team run, needs-you first. Each row answers two
- * questions — what is this team doing (objective, status, wave, members) and
- * does it need ME (approvals / unacked deliveries / blocked members). Rows with
- * a non-zero needs-you signal sort to the top.
+ * Read-only index of unlinked compatibility runs, needs-you first. Native
+ * AgentTeamRun attempts are entered from their Mission/Wave cards.
  */
-export function TeamRunsList({ model, onSelectionChange, actionsEnabled, onAction }: TeamSurfaceProps) {
-  const [newRunOpen, setNewRunOpen] = useState(false);
+export function TeamRunsList({ model, onSelectionChange, actionsEnabled }: TeamSurfaceProps) {
   const snapshot = model.snapshot;
-  const runs = snapshot.team_runs ?? [];
+  // Mission → Wave is the native entry point. This list intentionally retains
+  // only unlinked historical/manual runs as a compatibility reader.
+  const runs = (snapshot.team_runs ?? []).filter((run) => !run.mission_id && !run.wave_id);
   const allMembers = snapshot.member_runs ?? [];
   const allMessages = snapshot.team_messages ?? [];
   const allEvents = snapshot.team_run_events ?? [];
@@ -458,20 +426,14 @@ export function TeamRunsList({ model, onSelectionChange, actionsEnabled, onActio
   const messagesByRun = groupBy(allMessages, (m) => m.team_run_id);
   const eventsByRun = groupBy(allEvents, (e) => e.team_run_id);
 
-  const decorated = stitchLineage(
-    runs
+  const decorated = runs
       .map((run) => ({
         run,
         members: membersByRun.get(run.id) ?? [],
         signals: runSignals(membersByRun.get(run.id) ?? [], messagesByRun.get(run.id) ?? []),
         lastMs: lastActivityMs(run, eventsByRun.get(run.id) ?? []),
       }))
-      .sort((a, b) => b.signals.total - a.signals.total || b.lastMs - a.lastMs),
-  );
-
-  // After a successful create the snapshot refreshes with a run id we could not
-  // know at submit time; remember the ids we knew, then adopt the new one.
-  const markPendingCreate = useAdoptNewTeamRun(runs, onSelectionChange);
+      .sort((a, b) => b.signals.total - a.signals.total || b.lastMs - a.lastMs);
 
   const cols =
     "grid-cols-[minmax(0,2.2fr)_minmax(0,1fr)_minmax(0,0.9fr)_minmax(0,1.7fr)_minmax(0,0.8fr)]";
@@ -481,18 +443,13 @@ export function TeamRunsList({ model, onSelectionChange, actionsEnabled, onActio
       <header className="flex flex-wrap items-end justify-between gap-3">
         <div className="space-y-1">
           <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-            <Users className="size-3.5" /> Agent Teams
+            <Users className="size-3.5" /> Compatibility reader
           </div>
-          <h1 className="text-2xl font-semibold tracking-tight text-foreground">Agent Teams</h1>
+          <h1 className="text-2xl font-semibold tracking-tight text-foreground">Unlinked Team Runs</h1>
           <p className="text-sm text-muted-foreground">
-            Watch agent teams work, inspect their members and messages, and step in when a run
-            needs you.
+            Historical or manual runs without a Mission/Wave link. Start new Agent Team work from Missions.
           </p>
         </div>
-        <ActionButton enabled={live} size="sm" onClick={() => setNewRunOpen(true)}>
-          <Plus className="size-3.5" />
-          New Team Run
-        </ActionButton>
       </header>
 
       <DocSection label={`${runs.length} ${runs.length === 1 ? "team run" : "team runs"}`}>
@@ -502,8 +459,8 @@ export function TeamRunsList({ model, onSelectionChange, actionsEnabled, onActio
             title="No team runs yet"
             description={
               live
-                ? "Create a team run with New Team Run to watch an agent team work on one objective."
-                : "Connect to a running harness, then create your first team run with New Team Run."
+                ? "Start native Agent Team work from a Mission Wave. This page remains only for deliberate compatibility runs."
+                : "Connect to a running harness, then open Missions to create a native Agent Team Wave."
             }
           />
         ) : (
@@ -521,7 +478,7 @@ export function TeamRunsList({ model, onSelectionChange, actionsEnabled, onActio
               <span>Last activity</span>
             </div>
             <div>
-              {decorated.map(({ run, members, signals, lastMs, depth }) => {
+          {decorated.map(({ run, members, signals, lastMs }) => {
                 const status = run.status ?? "unknown";
                 const providers = Array.from(
                   new Set(members.map((m) => m.provider).filter(Boolean)),
@@ -538,11 +495,7 @@ export function TeamRunsList({ model, onSelectionChange, actionsEnabled, onActio
                   >
                     <span
                       className="flex min-w-0 items-center gap-2.5"
-                      style={depth > 0 ? { paddingLeft: depth * 18 } : undefined}
                     >
-                      {depth > 0 && (
-                        <span className="shrink-0 text-[11px] text-muted-foreground">↳</span>
-                      )}
                       <StatusDot tone={teamRunTone(status)} pulse={status === "running"} />
                       <span className="min-w-0">
                         <span className="block truncate text-[13px] font-medium text-foreground">
@@ -599,14 +552,6 @@ export function TeamRunsList({ model, onSelectionChange, actionsEnabled, onActio
           </div>
         )}
       </DocSection>
-
-      <NewTeamRunDialog
-        open={newRunOpen}
-        actionsEnabled={live}
-        onAction={onAction}
-        onSubmitting={markPendingCreate}
-        onClose={() => setNewRunOpen(false)}
-      />
     </DocumentSurface>
   );
 }
@@ -618,11 +563,10 @@ export function TeamRunsList({ model, onSelectionChange, actionsEnabled, onActio
 type DetailTab = "overview" | "activity" | "messages" | "wave";
 
 /**
- * One team run: header (objective + status + actions) with the wave-lineage
- * stepper, the NEEDS-YOU banner (pending decisions, always on top), the member
- * strip (who is doing what, opening the member drawer), and the
- * Overview/Activity/Messages/Wave tabs. Overview — the cockpit — is the default
- * landing: one glance at every member, then drill into feeds when needed.
+ * One AgentTeamRun attempt: Mission/Wave context, attempt actions, the
+ * NEEDS-YOU banner (pending decisions, always on top), the member strip, and
+ * Overview/Activity/Messages/Wave-context tabs. Overview is the default
+ * cockpit; Wave planning and gating remain on the Mission surface.
  */
 export function TeamRunDetail({
   model,
@@ -633,7 +577,12 @@ export function TeamRunDetail({
 }: TeamSurfaceProps & { teamRunId?: string }) {
   const [tab, setTab] = useState<DetailTab>("overview");
   const [drawerMemberId, setDrawerMemberId] = useState<string | null>(null);
-  const [nextWaveOpen, setNextWaveOpen] = useState(false);
+  const [activityClock, setActivityClock] = useState(() => Date.now());
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setActivityClock(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   const snapshot = model.snapshot;
   const allRuns = snapshot.team_runs ?? [];
@@ -647,7 +596,13 @@ export function TeamRunDetail({
   );
   const memberById = new Map(members.map((m) => [m.id, m]));
   const drawerMember = drawerMemberId ? memberById.get(drawerMemberId) : undefined;
-  const markPendingCreate = useAdoptNewTeamRun(allRuns, onSelectionChange);
+  const liveActivity = snapshot.live_member_activity ?? {};
+  const activePreview = (memberId: string): LiveMemberActivity | undefined => {
+    const activity = liveActivity[memberId];
+    if (!activity || activity.team_run_id !== teamRunId) return undefined;
+    const expires = parseTs(activity.expires_at);
+    return !Number.isNaN(expires) && expires > activityClock ? activity : undefined;
+  };
 
   if (!run) {
     return (
@@ -671,22 +626,17 @@ export function TeamRunDetail({
   const status = run.status ?? "unknown";
   const signals = runSignals(members, messages);
   const live = Boolean(actionsEnabled);
-  const lineage = waveLineage(allRuns, run.id);
-  // Re-plan hints for the next-wave dialog: this wave's deviations, in one glance.
-  const blockers = messages.filter((m) => m.kind === "blocker");
-  const rePlanHints: string[] = [
-    ...signals.blockedMembers.map(
-      (member) => `${member.name ?? member.id} ended ${member.status}`,
-    ),
-    ...blockers.map((message) => message.body ?? ""),
-  ].filter(Boolean);
 
   return (
     <DocumentSurface className="max-w-[1180px]">
       <div className="space-y-4">
         <button
           type="button"
-          onClick={() => onSelectionChange({ surface: "team", teamId: undefined })}
+          onClick={() => onSelectionChange(
+            run.mission_id && run.wave_id
+              ? { surface: "missions", missionId: run.mission_id, waveId: run.wave_id, teamId: undefined }
+              : { surface: "team", teamId: undefined },
+          )}
           className="inline-flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground transition-colors hover:text-foreground"
         >
           <ChevronLeft className="size-3.5" /> Agent Teams
@@ -721,6 +671,7 @@ export function TeamRunDetail({
                   <ActionButton
                     enabled={live}
                     size="sm"
+                    disabled={status !== "planning"}
                     onClick={() => dispatch(onAction, startTeamRun(run.id))}
                   >
                     <Play className="size-3.5" />
@@ -729,20 +680,33 @@ export function TeamRunDetail({
                 </span>
               </TooltipTrigger>
               <TooltipContent side="bottom">
-                Starts the wave loop. The backend answers 501 in v0 and points at the CLI
-                (harness team-run start --id …).
+                Starts this attempt asynchronously. Member and Wave state stream back over SSE.
               </TooltipContent>
             </Tooltip>
+            {(["planning", "waiting", "reviewing"] as string[]).includes(status) && (
+              <ActionButton
+                enabled={live}
+                size="sm"
+                variant="secondary"
+                onClick={() => dispatch(onAction, transitionTeamRun(run.id, "cancelled"))}
+              >
+                <X className="size-3.5" /> Cancel attempt
+              </ActionButton>
+            )}
+            {status === "reviewing" && (
+              <ActionButton
+                enabled={live}
+                size="sm"
+                variant="secondary"
+                onClick={() => dispatch(onAction, transitionTeamRun(run.id, "completed"))}
+              >
+                <CheckCircle2 className="size-3.5" /> Mark completed
+              </ActionButton>
+            )}
           </div>
         </header>
 
-        <WaveStepper
-          lineage={lineage}
-          currentId={run.id}
-          canStartNext={status === "completed"}
-          onSelect={(id) => onSelectionChange({ surface: "team", teamId: id })}
-          onStartNext={() => setNextWaveOpen(true)}
-        />
+        <AttemptContext run={run} onSelectionChange={onSelectionChange} />
 
         <NeedsYouBanner
           signals={signals}
@@ -758,6 +722,7 @@ export function TeamRunDetail({
               key={member.id}
               member={member}
               latestAction={latestMemberAction(actions, member.id)}
+              liveActivity={activePreview(member.id)}
               onClick={() => setDrawerMemberId(member.id)}
             />
           ))}
@@ -780,6 +745,7 @@ export function TeamRunDetail({
             <OverviewTab
               run={run}
               members={members}
+              messages={messages}
               actions={actions}
               signals={signals}
               onOpenMember={(id) => setDrawerMemberId(id)}
@@ -806,6 +772,7 @@ export function TeamRunDetail({
               memberById={memberById}
               actionsEnabled={live}
               onAction={onAction}
+              onSelectionChange={onSelectionChange}
             />
           </TabsContent>
         </Tabs>
@@ -821,27 +788,6 @@ export function TeamRunDetail({
           onClose={() => setDrawerMemberId(null)}
         />
       )}
-
-      <NewTeamRunDialog
-        open={nextWaveOpen}
-        actionsEnabled={live}
-        onAction={onAction}
-        onSubmitting={markPendingCreate}
-        onClose={() => setNextWaveOpen(false)}
-        prefill={{
-          objective: run.objective ?? "",
-          waveIndex: (run.wave_index ?? 1) + 1,
-          previousRunId: run.id,
-          members: members.map((member) => ({
-            name: member.name ?? "",
-            role: member.role ?? "",
-            provider: member.provider ?? "kimi",
-            model: member.model ?? "",
-            ownedPaths: (member.owned_paths ?? []).join(", "),
-          })),
-          hints: rePlanHints,
-        }}
-      />
     </DocumentSurface>
   );
 }
@@ -934,96 +880,62 @@ function NeedsYouBanner({
 }
 
 /* ------------------------------------------------------------------ */
-/* Wave lineage stepper                                                */
+/* Native context                                                      */
 /* ------------------------------------------------------------------ */
 
-/**
- * The wave chain for this run's lineage (previous_run_id links): one small
- * node per wave (wave N + status pill), the current wave highlighted, each
- * node clickable. The trailing "+ Start next wave" button only unlocks once
- * the current wave's gate has passed (status completed) — you cannot re-plan
- * a wave that has not landed.
- */
-function WaveStepper({
-  lineage,
-  currentId,
-  canStartNext,
-  onSelect,
-  onStartNext,
+/** A TeamRun is an executor attempt, not a Wave itself. */
+function AttemptContext({
+  run,
+  onSelectionChange,
 }: {
-  lineage: TeamRun[];
-  currentId: string;
-  canStartNext: boolean;
-  onSelect: (runId: string) => void;
-  onStartNext: () => void;
+  run: TeamRun;
+  onSelectionChange: (selection: Partial<SelectionState>) => void;
 }) {
+  if (!run.mission_id || !run.wave_id) {
+    return (
+      <p className="rounded-md border border-status-warn/30 bg-status-warn/8 px-3 py-2 text-[12px] text-muted-foreground">
+        Compatibility run — this historical run is not linked to a native Mission/Wave.
+      </p>
+    );
+  }
+  const missionId = run.mission_id;
+  const waveId = run.wave_id;
   return (
-    <nav aria-label="Wave lineage" className="flex flex-wrap items-center gap-1.5">
-      {lineage.map((node, index) => {
-        const current = node.id === currentId;
-        return (
-          <span key={node.id} className="flex items-center gap-1.5">
-            {index > 0 && <ChevronRight className="size-3.5 text-muted-foreground/60" />}
-            <button
-              type="button"
-              onClick={() => onSelect(node.id)}
-              aria-current={current ? "page" : undefined}
-              className={cn(
-                "flex items-center gap-1.5 rounded-md border px-2 py-1 text-[11px] transition-colors",
-                current
-                  ? "border-primary/40 bg-primary/12 text-primary"
-                  : "border-border bg-card text-muted-foreground hover:border-input hover:text-foreground",
-              )}
-            >
-              <span className="font-semibold">wave {node.wave_index ?? 1}</span>
-              <Badge tone={teamRunTone(node.status)}>{node.status ?? "unknown"}</Badge>
-            </button>
-          </span>
-        );
-      })}
-      {canStartNext ? (
-        <Button size="sm" variant="secondary" onClick={onStartNext}>
-          <Plus className="size-3.5" />
-          Start next wave
-        </Button>
-      ) : (
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <span className="inline-flex">
-              <Button size="sm" variant="secondary" disabled title="Complete this wave's gate first">
-                <Plus className="size-3.5" />
-                Start next wave
-              </Button>
-            </span>
-          </TooltipTrigger>
-          <TooltipContent side="bottom">
-            Complete this wave&apos;s gate first — the next wave re-plans from a completed one.
-          </TooltipContent>
-        </Tooltip>
-      )}
-    </nav>
+    <button
+      type="button"
+      onClick={() => onSelectionChange({ surface: "missions", missionId, waveId })}
+      className="flex flex-wrap items-center gap-1.5 rounded-md border border-primary/25 bg-primary/8 px-3 py-2 text-left text-[12px] hover:border-primary/50"
+    >
+      <span className="font-semibold text-primary">Mission</span><MonoId>{run.mission_id}</MonoId>
+      <ChevronRight className="size-3.5 text-muted-foreground" />
+      <span className="font-semibold text-primary">Wave</span><MonoId>{run.wave_id}</MonoId>
+      <ChevronRight className="size-3.5 text-muted-foreground" />
+      <span className="font-semibold text-foreground">Attempt</span><MonoId>{run.id}</MonoId>
+    </button>
   );
 }
 
 /* ------------------------------------------------------------------ */
-/* Overview tab (default landing — Goal summary + the cockpit table)   */
+/* Overview tab (default landing — attempt summary + cockpit table)    */
 /* ------------------------------------------------------------------ */
 
 /**
- * The cockpit: the Goal summary card (what this run is, what it needs) over
- * the member × work table — every member's current task, current action,
+ * The cockpit: the attempt summary card (what this run is, what it needs) over
+ * the member × work table — every member's assignment ownership, current action,
  * runtime heartbeat and execution status in one glance (the design report's
  * 驾驶舱 row, re-lit with the light theme). A row opens the member drawer.
  */
 function OverviewTab({
   run,
   members,
+  messages,
   actions,
   signals,
   onOpenMember,
 }: {
   run: TeamRun;
   members: MemberRun[];
+  messages: TeamMessage[];
   actions: MemberAction[];
   signals: RunSignals;
   onOpenMember: (memberRunId: string) => void;
@@ -1033,10 +945,10 @@ function OverviewTab({
     "grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_minmax(0,1.4fr)_minmax(0,0.9fr)_minmax(0,0.7fr)_minmax(0,0.7fr)]";
   return (
     <div className="space-y-3">
-      {/* Goal summary card */}
+      {/* Attempt summary card */}
       <section className="rounded-lg border border-border bg-card p-3.5">
         <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-          Goal
+          Attempt objective
         </p>
         <p className="mt-1 text-[13px] leading-relaxed text-foreground">
           {run.objective ?? run.id}
@@ -1101,7 +1013,7 @@ function OverviewTab({
               )}
             >
               <span>Member</span>
-              <span>Current task</span>
+              <span>Assignment ownership</span>
               <span>Current action</span>
               <span>Runtime</span>
               <span>Status</span>
@@ -1109,6 +1021,8 @@ function OverviewTab({
             </div>
             {members.map((member) => {
               const latest = latestMemberAction(actions, member.id);
+              const assignments = assignmentsForMember(messages, member.id);
+              const assignment = assignments[assignments.length - 1];
               const heartbeatMs = member.last_event_at ? parseTs(member.last_event_at) : NaN;
               const alive = !Number.isNaN(heartbeatMs) && Date.now() - heartbeatMs < 120_000;
               return (
@@ -1133,10 +1047,17 @@ function OverviewTab({
                     </span>
                   </span>
                   <span className="min-w-0 truncate">
-                    {member.current_task_id ? (
-                      <MonoId>{member.current_task_id}</MonoId>
+                    {assignment ? (
+                      <span className="flex min-w-0 flex-wrap items-center gap-1">
+                        <Badge tone="info">assigned</Badge>
+                        <MonoId>{assignment.correlation_id ?? assignment.id}</MonoId>
+                      </span>
+                    ) : member.owned_paths?.length ? (
+                      <span className="text-[12px] text-muted-foreground">
+                        Declared paths (no assignment): {member.owned_paths.join(", ")}
+                      </span>
                     ) : (
-                      <span className="text-[12px] text-muted-foreground">—</span>
+                      <span className="text-[12px] text-muted-foreground">No assignment recorded</span>
                     )}
                   </span>
                   <span className="flex min-w-0 items-center gap-1.5">
@@ -1183,10 +1104,12 @@ function OverviewTab({
 function MemberStripCard({
   member,
   latestAction,
+  liveActivity,
   onClick,
 }: {
   member: MemberRun;
   latestAction?: MemberAction;
+  liveActivity?: LiveMemberActivity;
   onClick: () => void;
 }) {
   const status = member.status ?? "unknown";
@@ -1211,9 +1134,19 @@ function MemberStripCard({
           </Badge>
         )}
       </span>
-      <span className="block truncate text-[11px] text-foreground/80">
-        {latestAction?.title ?? "No actions yet"}
-      </span>
+      {liveActivity ? (
+        <span className="block rounded border border-status-info/25 bg-status-info/8 px-2 py-1 text-[11px] text-foreground/80">
+          <span className="mr-1 font-semibold text-status-info">Thinking live</span>
+          <span className="line-clamp-2">{liveActivity.preview}</span>
+          <span className="mt-0.5 block text-[9px] uppercase tracking-wide text-muted-foreground">
+            not saved
+          </span>
+        </span>
+      ) : (
+        <span className="block truncate text-[11px] text-foreground/80">
+          {latestAction?.title ?? "No actions yet"}
+        </span>
+      )}
       <span className="block text-[10px] uppercase tracking-wider text-muted-foreground">
         {member.last_event_at ? `${relativeFromTs(member.last_event_at)}` : "no heartbeat"}
       </span>
@@ -1433,6 +1366,7 @@ function MessagesTab({
               <p className="whitespace-pre-wrap text-[13px] leading-relaxed text-foreground">
                 {message.body}
               </p>
+              <MessageLineage message={message} messages={messages} />
               {(message.deliveries ?? []).length > 0 && (
                 <div className="flex flex-wrap items-center gap-1">
                   {(message.deliveries ?? []).map((delivery, index) => (
@@ -1459,6 +1393,7 @@ function MessagesTab({
       <MessageComposer
         run={run}
         members={members}
+        messages={messages}
         memberById={memberById}
         actionsEnabled={actionsEnabled}
         onAction={onAction}
@@ -1467,24 +1402,53 @@ function MessagesTab({
   );
 }
 
-/** The composer: from / kind / recipients / body → POST /v1/team-runs/{id}/messages. */
+/**
+ * Operator-authored messages only. Member-originated rows are written by the
+ * runtime/adapter; the console never impersonates a MemberRun. A selected
+ * assignment is the sole way to reuse assignment ownership correlation.
+ */
 function MessageComposer({
   run,
   members,
+  messages,
   memberById,
   actionsEnabled,
   onAction,
 }: {
   run: TeamRun;
   members: MemberRun[];
+  messages: TeamMessage[];
   memberById: Map<string, MemberRun>;
   actionsEnabled: boolean;
   onAction?: (path: string, body?: unknown) => void;
 }) {
-  const [from, setFrom] = useState("host");
   const [kind, setKind] = useState("broadcast");
   const [to, setTo] = useState<string[]>([]);
   const [body, setBody] = useState("");
+  const [assignmentAnchorId, setAssignmentAnchorId] = useState<string | null>(null);
+
+  const assignments = messages.filter((message) => message.kind === "assignment");
+  const selectedRecipients = to.slice().sort();
+  const exactAssignments = assignments.filter(
+    (assignment) =>
+      assignment.from_member_id === "host" &&
+      Boolean(assignment.correlation_id) &&
+      sameRecipients((assignment.to_member_ids ?? []).slice().sort(), selectedRecipients),
+  );
+  const anchorCandidates = assignments.filter((assignment) =>
+    Boolean(assignment.correlation_id) &&
+    (assignment.to_member_ids ?? []).some((id) => to.includes(id)),
+  );
+  const selectedAnchor = assignments.find((assignment) => assignment.id === assignmentAnchorId);
+
+  useEffect(() => {
+    // An automatic anchor is safe only for one exact host assignment. Multiple
+    // member lanes (including broadcasts) stay deliberately unanchored until
+    // the operator chooses an assignment in the explicit control below.
+    setAssignmentAnchorId(
+      kind === "assignment" || exactAssignments.length !== 1 ? null : exactAssignments[0].id,
+    );
+  }, [kind, to.join("\u0000"), exactAssignments.map((assignment) => assignment.id).join("\u0000")]);
 
   const canSubmit = Boolean(actionsEnabled && body.trim() && to.length > 0);
 
@@ -1499,37 +1463,27 @@ function MessageComposer({
     dispatch(
       onAction,
       sendTeamMessage(run.id, {
-        fromMemberId: from,
+        fromMemberId: "host",
         toMemberIds: to,
         kind,
         body: body.trim(),
+        correlationId: kind === "assignment" ? undefined : selectedAnchor?.correlation_id ?? undefined,
+        causationId: kind === "assignment" ? undefined : selectedAnchor?.id,
       }),
     );
     setBody("");
   }
 
-  const recipientOptions = ["host", ...members.map((m) => m.id)];
+  const recipientOptions = members.map((m) => m.id);
   return (
     <section className="space-y-2.5 rounded-lg border border-border bg-card p-3">
       <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
         New message
       </p>
       <div className="flex flex-wrap items-center gap-2">
-        <label className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
-          From
-          <Select
-            aria-label="From"
-            value={from}
-            onChange={(event) => setFrom(event.target.value)}
-            className="h-8 w-36"
-          >
-            {recipientOptions.map((id) => (
-              <option key={id} value={id}>
-                {endpointLabel(memberById, id)}
-              </option>
-            ))}
-          </Select>
-        </label>
+        <span className="inline-flex h-8 items-center rounded-md border border-border bg-background/50 px-2 text-[11px] text-muted-foreground">
+          From <strong className="ml-1 font-medium text-foreground">Host / operator</strong>
+        </span>
         <label className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
           Kind
           <Select
@@ -1568,6 +1522,33 @@ function MessageComposer({
           );
         })}
       </div>
+      {kind !== "assignment" && (
+        <label className="flex max-w-full flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
+          Assignment anchor
+          <Select
+            aria-label="Assignment anchor"
+            value={assignmentAnchorId ?? ""}
+            onChange={(event) => setAssignmentAnchorId(event.target.value || null)}
+            className="h-8 min-w-44 max-w-full"
+          >
+            <option value="">None — unanchored</option>
+            {anchorCandidates.map((assignment) => (
+              <option key={assignment.id} value={assignment.id}>
+                {assignment.to_member_ids
+                  ?.map((id) => endpointLabel(memberById, id))
+                  .join(", ") ?? "member"}
+                {" · "}{assignment.id}
+              </option>
+            ))}
+          </Select>
+          {exactAssignments.length === 1 && assignmentAnchorId === exactAssignments[0].id && (
+            <span>auto-selected exact recipient match</span>
+          )}
+          {to.length > 1 && exactAssignments.length !== 1 && (
+            <span>broadcasts stay unanchored until you choose an assignment</span>
+          )}
+        </label>
+      )}
       <TextArea
         aria-label="Message body"
         value={body}
@@ -1586,15 +1567,13 @@ function MessageComposer({
 }
 
 /* ------------------------------------------------------------------ */
-/* Wave tab (wave plan & gate)                                         */
+/* Wave tab (attempt contract & parent-gate context)                   */
 /* ------------------------------------------------------------------ */
 
 /**
- * Wave plan & gate: the current wave's contract (each member's assignment and
- * owned paths), the INTEGRATION GATE (what must be true for this wave to land:
- * no unacked handoffs, no blocked/failed members — and the Complete-wave-gate
- * action once the run is reviewing), and the deviation summary that feeds the
- * next wave's re-plan.
+ * Attempt contract and review: each member's assignment/owned paths, whether
+ * this attempt can be marked completed, and the deviations the parent Wave
+ * gate should consider. Completing an attempt never accepts the Wave.
  */
 function WaveTab({
   run,
@@ -1603,6 +1582,7 @@ function WaveTab({
   memberById,
   actionsEnabled,
   onAction,
+  onSelectionChange,
 }: {
   run: TeamRun;
   members: MemberRun[];
@@ -1610,11 +1590,12 @@ function WaveTab({
   memberById: Map<string, MemberRun>;
   actionsEnabled: boolean;
   onAction?: (path: string, body?: unknown) => void;
+  onSelectionChange: TeamSurfaceProps["onSelectionChange"];
 }) {
   const assignments = messages.filter((m) => m.kind === "assignment");
   const assignmentFor = (memberId: string) =>
     assignments.find((m) => (m.to_member_ids ?? []).includes(memberId));
-  // Deviations blocking the gate: handoffs not yet acked + members that ended badly.
+  // Deviations affecting attempt completion and the later parent Wave gate.
   const unackedHandoffs = messages.filter(
     (m) => m.kind === "handoff" && (m.deliveries ?? []).some((d) => isUnacked(d.status)),
   );
@@ -1675,18 +1656,18 @@ function WaveTab({
         )}
       </section>
 
-      {/* Integration gate: can this wave land? */}
+      {/* Attempt completion is only an input to the separate parent Wave gate. */}
       <section className="rounded-lg border border-border bg-card p-3.5">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-            Integration gate
+            Attempt completion
           </p>
           <Badge tone={teamRunTone(run.status)}>{run.status ?? "unknown"}</Badge>
         </div>
 
         {run.status === "completed" ? (
           <p className="mt-2 flex flex-wrap items-center gap-2 text-[12px] text-muted-foreground">
-            <Badge tone="good">gate passed</Badge>
+            <Badge tone="good">attempt completed</Badge>
             <span>completed {fmtTime(run.completed_at)}</span>
           </p>
         ) : (
@@ -1728,33 +1709,56 @@ function WaveTab({
                     onClick={() => dispatch(onAction, transitionTeamRun(run.id, "completed"))}
                   >
                     <CheckCircle2 className="size-3.5" />
-                    Complete wave gate
+                    Mark attempt completed
                   </ActionButton>
                 ) : (
                   <p className="text-[12px] text-muted-foreground">
-                    Reviewing — waiting for every member to reach a terminal state before the
-                    gate can pass.
+                    Reviewing — every member must reach a terminal state before this attempt can
+                    be completed.
                   </p>
                 )
               ) : (
                 <p className="text-[12px] text-muted-foreground">
-                  The gate opens once the run reaches reviewing (drive the wave with{" "}
+                  Completion becomes available once the attempt reaches reviewing (start it with{" "}
                   <MonoId>harness team-run start --id {run.id}</MonoId>).
                 </p>
               )}
             </div>
           </div>
         )}
+        {run.mission_id && run.wave_id && (
+          <div className="mt-3 border-t border-border/60 pt-3">
+            <Button
+              type="button"
+              size="sm"
+              variant="secondary"
+              onClick={() =>
+                onSelectionChange({
+                  surface: "missions",
+                  missionId: run.mission_id ?? undefined,
+                  waveId: run.wave_id ?? undefined,
+                  teamId: undefined,
+                })
+              }
+            >
+              <ShieldCheck className="size-3.5" /> Open parent Wave gate
+            </Button>
+            <p className="mt-2 text-[11px] text-muted-foreground">
+              The Host accepts, revises, or blocks the Wave separately after choosing a completed
+              attempt.
+            </p>
+          </div>
+        )}
       </section>
 
-      {/* Deviation summary: re-plan input for the next wave. */}
+      {/* Deviation summary: input to parent Wave gate or a same-Wave retry. */}
       <section className="rounded-lg border border-border bg-card p-3.5">
         <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-          Deviations — input to the next wave&apos;s re-plan
+          Deviations — Wave gate / retry input
         </p>
         {blockers.length === 0 && blockedMembers.length === 0 ? (
           <p className="mt-2 text-[12px] text-muted-foreground">
-            No blockers recorded this wave — the next wave can re-plan from a clean base.
+            No blockers recorded for this attempt.
           </p>
         ) : (
           <ul className="mt-2 space-y-1">
@@ -2057,6 +2061,7 @@ function MemberDrawer({
                     <p className="whitespace-pre-wrap text-[12px] text-foreground">
                       {message.body}
                     </p>
+                    <MessageLineage message={message} messages={messages} />
                   </div>
                 ))}
               </div>
@@ -2070,305 +2075,5 @@ function MemberDrawer({
         </div>
       </aside>
     </div>
-  );
-}
-
-/* ================================================================== */
-/* NEW TEAM RUN DIALOG (member configuration)                          */
-/* ================================================================== */
-
-interface MemberDraft {
-  name: string;
-  role: string;
-  provider: string;
-  model: string;
-  ownedPaths: string;
-}
-
-function emptyMember(): MemberDraft {
-  return { name: "", role: "", provider: "kimi", model: "", ownedPaths: "" };
-}
-
-/** "Start next wave" prefill: same objective + roster, wave+1, lineage link,
- * plus the previous wave's deviations as re-plan hints. */
-interface NextWavePrefill {
-  objective: string;
-  waveIndex: number;
-  previousRunId: string;
-  members: MemberDraft[];
-  hints: string[];
-}
-
-/**
- * NEW TEAM RUN (POST /v1/team-runs): objective + wave/budget + the member
- * roster editor. Every field carries a one-line hint so the operator can feel
- * what each setting does. With `prefill` set it becomes the START NEXT WAVE
- * dialog: fields seeded from the completed wave, a re-plan hint box on top,
- * and the create chained onto the previous run. On submit the caller watches
- * the refreshed snapshot for the new run id and navigates to its detail page.
- */
-function NewTeamRunDialog({
-  open,
-  actionsEnabled,
-  onAction,
-  onSubmitting,
-  onClose,
-  prefill,
-}: {
-  open: boolean;
-  actionsEnabled: boolean;
-  onAction?: (path: string, body?: unknown) => void;
-  /** Called just before dispatch so the list can adopt the new run id. */
-  onSubmitting: () => void;
-  onClose: () => void;
-  prefill?: NextWavePrefill;
-}) {
-  const [objective, setObjective] = useState("");
-  const [waveIndex, setWaveIndex] = useState("1");
-  const [budget, setBudget] = useState("");
-  const [members, setMembers] = useState<MemberDraft[]>([emptyMember()]);
-
-  useEffect(() => {
-    if (open) {
-      setObjective(prefill?.objective ?? "");
-      setWaveIndex(String(prefill?.waveIndex ?? 1));
-      setBudget("");
-      setMembers(
-        prefill?.members.length
-          ? prefill.members.map((member) => ({ ...member }))
-          : [emptyMember()],
-      );
-    }
-  }, [open, prefill]);
-
-  const membersValid =
-    members.length > 0 && members.every((m) => m.name.trim() && m.role.trim());
-  const canSubmit = Boolean(objective.trim()) && membersValid;
-
-  function updateMember(index: number, patch: Partial<MemberDraft>) {
-    setMembers((current) =>
-      current.map((member, i) => (i === index ? { ...member, ...patch } : member)),
-    );
-  }
-
-  function submit() {
-    if (!canSubmit || !actionsEnabled) return;
-    onSubmitting();
-    dispatch(
-      onAction,
-      createTeamRun({
-        objective: objective.trim(),
-        waveIndex: Number(waveIndex) > 0 ? Number(waveIndex) : undefined,
-        budgetLimitUsd: budget.trim() ? Number(budget.trim()) : undefined,
-        previousRunId: prefill?.previousRunId,
-        members: members.map((member) => ({
-          name: member.name.trim(),
-          role: member.role.trim(),
-          provider: member.provider,
-          model: member.model.trim() || undefined,
-          ownedPaths: parseList(member.ownedPaths),
-        })),
-      }),
-    );
-    onClose();
-  }
-
-  return (
-    <Dialog
-      open={open}
-      title={prefill ? `Start wave ${prefill.waveIndex}` : "New Team Run"}
-      description={
-        prefill
-          ? `Re-plan from the completed wave and chain onto it. POST /v1/team-runs.`
-          : "Create an agent team run. POST /v1/team-runs."
-      }
-      onClose={onClose}
-    >
-      <form
-        className="space-y-3"
-        onSubmit={(event) => {
-          event.preventDefault();
-          submit();
-        }}
-      >
-        {prefill && prefill.hints.length > 0 && (
-          <div className="rounded-lg border border-status-warn/30 bg-status-warn/8 px-3 py-2.5">
-            <p className="text-[10px] font-semibold uppercase tracking-wider text-status-warn">
-              Re-plan hint — deviations from wave {prefill.waveIndex - 1}
-            </p>
-            <ul className="mt-1 space-y-0.5">
-              {prefill.hints.map((hint, index) => (
-                <li key={index} className="truncate text-[12px] text-foreground">
-                  {hint}
-                </li>
-              ))}
-            </ul>
-            <p className="mt-1 text-[11px] text-muted-foreground">
-              Adjust the objective or the roster below to answer them.
-            </p>
-          </div>
-        )}
-        <Field
-          label="Objective"
-          required
-          hint="What the team should achieve. The host plans waves and assignments from this."
-        >
-          {(id) => (
-            <TextArea
-              id={id}
-              value={objective}
-              onChange={(event) => setObjective(event.target.value)}
-              placeholder="e.g. Ship the onboarding revamp"
-            />
-          )}
-        </Field>
-        <div className="grid grid-cols-2 gap-3">
-          <Field label="Wave" hint="Wave to start from. 1 = plan from the beginning.">
-            {(id) => (
-              <TextInput
-                id={id}
-                type="number"
-                min={1}
-                value={waveIndex}
-                onChange={(event) => setWaveIndex(event.target.value)}
-              />
-            )}
-          </Field>
-          <Field
-            label="Budget (USD)"
-            hint="Optional USD cap for the whole run. Empty = no budget limit."
-          >
-            {(id) => (
-              <TextInput
-                id={id}
-                type="number"
-                min={0}
-                step="0.01"
-                value={budget}
-                onChange={(event) => setBudget(event.target.value)}
-                placeholder="no limit"
-              />
-            )}
-          </Field>
-        </div>
-
-        <div className="space-y-2">
-          <div className="flex items-center justify-between">
-            <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-              Members
-            </p>
-            <Button
-              type="button"
-              variant="secondary"
-              size="sm"
-              onClick={() => setMembers((current) => [...current, emptyMember()])}
-            >
-              <Plus className="size-3.5" />
-              Add member
-            </Button>
-          </div>
-          {members.map((member, index) => (
-            <div
-              key={index}
-              className="space-y-2.5 rounded-lg border border-border bg-background/40 p-2.5"
-            >
-              <div className="flex items-center justify-between">
-                <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-                  Member {index + 1}
-                </span>
-                {members.length > 1 && (
-                  <button
-                    type="button"
-                    aria-label={`Remove member ${index + 1}`}
-                    onClick={() =>
-                      setMembers((current) => current.filter((_, i) => i !== index))
-                    }
-                    className="grid size-6 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-                  >
-                    <X className="size-3.5" />
-                  </button>
-                )}
-              </div>
-              <div className="grid grid-cols-2 gap-2.5">
-                <Field label="Name" required hint="Shown in the member strip and messages.">
-                  {(id) => (
-                    <TextInput
-                      id={id}
-                      value={member.name}
-                      onChange={(event) => updateMember(index, { name: event.target.value })}
-                      placeholder="e.g. lead"
-                    />
-                  )}
-                </Field>
-                <Field
-                  label="Role"
-                  required
-                  hint="Responsibility (e.g. lead, engineer, reviewer)."
-                >
-                  {(id) => (
-                    <TextInput
-                      id={id}
-                      value={member.role}
-                      onChange={(event) => updateMember(index, { role: event.target.value })}
-                      placeholder="e.g. engineer"
-                    />
-                  )}
-                </Field>
-                <Field
-                  label="Provider"
-                  hint="Runtime adapter. kimi is wired in v0; codex/claude are reserved."
-                >
-                  {(id) => (
-                    <Select
-                      id={id}
-                      value={member.provider}
-                      onChange={(event) => updateMember(index, { provider: event.target.value })}
-                    >
-                      <option value="kimi">kimi</option>
-                      <option value="codex">codex — adapter not wired in v0</option>
-                      <option value="claude">claude — adapter not wired in v0</option>
-                    </Select>
-                  )}
-                </Field>
-                <Field
-                  label="Model"
-                  hint="Optional model id (e.g. kimi-code/k3). Empty = provider default."
-                >
-                  {(id) => (
-                    <TextInput
-                      id={id}
-                      value={member.model}
-                      onChange={(event) => updateMember(index, { model: event.target.value })}
-                      placeholder="provider default"
-                    />
-                  )}
-                </Field>
-              </div>
-              <Field
-                label="Owned paths"
-                hint="Files the member may modify, comma separated. Empty = read-only."
-              >
-                {(id) => (
-                  <TextInput
-                    id={id}
-                    value={member.ownedPaths}
-                    onChange={(event) => updateMember(index, { ownedPaths: event.target.value })}
-                    placeholder="e.g. src/, docs/"
-                  />
-                )}
-              </Field>
-            </div>
-          ))}
-        </div>
-
-        <DialogFooter
-          submitLabel={prefill ? `Create wave ${prefill.waveIndex}` : "Create team run"}
-          actionsEnabled={actionsEnabled}
-          canSubmit={canSubmit}
-          onCancel={onClose}
-          onSubmit={submit}
-        />
-      </form>
-    </Dialog>
   );
 }

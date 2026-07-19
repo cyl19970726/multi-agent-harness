@@ -9,9 +9,14 @@ use std::thread;
 use std::time::Duration;
 
 use crossbeam::channel::{bounded, Receiver, Sender};
-use harness_core::{AgentEvent, Message, ProviderSession, TeamRunEvent, WorkflowRun, WorkflowStep};
+use harness_core::{
+    AgentEvent, AgentTeamRun, MemberAction, MemberRun, Message, Mission, ProviderSession,
+    TeamMessage, TeamRunEvent, Wave, WorkflowRun, WorkflowStep,
+};
 
-/// An event frame sent to SSE clients (WP2: added WorkflowRun and WorkflowStep)
+/// An event frame sent to SSE clients. Durable frames are reconstructed by tailing
+/// project-scoped JSONL ledgers; `MemberActivity` is deliberately different: it
+/// is a direct-only, volatile display signal and is never replayed from a ledger.
 #[derive(Clone, Debug)]
 #[allow(dead_code)]
 pub enum SseEventFrame {
@@ -40,6 +45,25 @@ pub enum SseEventFrame {
     ProviderTurnEventNormalized(serde_json::Value),
     /// A folded team-run event was recorded (Agent Team v0).
     TeamRunEvent(TeamRunEvent),
+    /// A native Mission was created or updated.
+    Mission(Mission),
+    /// A native Wave was created, updated, or gated.
+    Wave(Wave),
+    /// An Agent Team attempt was created or updated.
+    AgentTeamRun(AgentTeamRun),
+    /// An Agent Team member's durable run state changed.
+    MemberRun(MemberRun),
+    /// A routed Agent Team message was created or its delivery state changed.
+    TeamMessage(TeamMessage),
+    /// A durable member action was appended or updated. These rows are the
+    /// operator-visible execution trace for an Agent Team attempt, so they are
+    /// tail-replayed and merged latest-wins like the other run records.
+    MemberAction(MemberAction),
+    /// Sanitized, transient member activity for live display only. This value is
+    /// never written to JSONL, included in snapshots, or replayed to a later
+    /// subscriber. Callers must not place provider thinking or other durable
+    /// claims here.
+    MemberActivity(serde_json::Value),
 }
 
 /// Manages SSE client subscriptions and broadcasts, keyed by project id
@@ -74,6 +98,14 @@ impl SseManager {
             // Remove clients whose receivers are dropped.
             senders.retain(|tx| tx.try_send(frame.clone()).is_ok());
         }
+    }
+
+    /// Directly broadcast an ephemeral member-activity update to current
+    /// subscribers of one project. Unlike the durable frame variants, this
+    /// deliberately has no watched file: reconnecting clients do not receive a
+    /// replay and the activity is not part of any persisted product contract.
+    pub fn broadcast_member_activity(&self, project_id: &str, activity: serde_json::Value) {
+        self.broadcast(project_id, SseEventFrame::MemberActivity(activity));
     }
 
     /// Return number of currently connected clients for a project (for debugging).
@@ -200,7 +232,26 @@ const WATCHED_FILES: &[&str] = &[
     "workflow_steps.jsonl",
     "provider_turn_events.jsonl",
     "team_run_events.jsonl",
+    "missions.jsonl",
+    "waves.jsonl",
+    "team_runs.jsonl",
+    "member_runs.jsonl",
+    "team_messages.jsonl",
+    "member_actions.jsonl",
 ];
+
+/// Keep the incremental SSE read model aligned with the snapshot projection:
+/// legacy/manual reasoning actions are not product-visible durable state, even
+/// if an old ledger row still contains them. Provider thinking belongs only in
+/// the direct-only `MemberActivity` stream.
+fn member_action_frames(line: &str) -> Vec<SseEventFrame> {
+    serde_json::from_str::<MemberAction>(line)
+        .ok()
+        .filter(|action| action.action_type != "thinking")
+        .map(SseEventFrame::MemberAction)
+        .into_iter()
+        .collect()
+}
 
 /// Poll one project's ledgers once and broadcast any new rows to that project's
 /// channel only.
@@ -223,6 +274,93 @@ fn poll_project(
                 Vec::new()
             }
         },
+        manager,
+    );
+
+    // Native Mission/Wave contract: these ledgers are the durable source for
+    // the live console's incremental read model. They remain project-scoped by
+    // the common `(project_id, filename)` offsets and manager subscription.
+    check_and_broadcast_appends(
+        project_id,
+        store_root,
+        "missions.jsonl",
+        consumed_offsets,
+        |line| {
+            serde_json::from_str::<Mission>(line)
+                .ok()
+                .map(SseEventFrame::Mission)
+                .into_iter()
+                .collect()
+        },
+        manager,
+    );
+
+    check_and_broadcast_appends(
+        project_id,
+        store_root,
+        "waves.jsonl",
+        consumed_offsets,
+        |line| {
+            serde_json::from_str::<Wave>(line)
+                .ok()
+                .map(SseEventFrame::Wave)
+                .into_iter()
+                .collect()
+        },
+        manager,
+    );
+
+    check_and_broadcast_appends(
+        project_id,
+        store_root,
+        "team_runs.jsonl",
+        consumed_offsets,
+        |line| {
+            serde_json::from_str::<AgentTeamRun>(line)
+                .ok()
+                .map(SseEventFrame::AgentTeamRun)
+                .into_iter()
+                .collect()
+        },
+        manager,
+    );
+
+    check_and_broadcast_appends(
+        project_id,
+        store_root,
+        "member_runs.jsonl",
+        consumed_offsets,
+        |line| {
+            serde_json::from_str::<MemberRun>(line)
+                .ok()
+                .map(SseEventFrame::MemberRun)
+                .into_iter()
+                .collect()
+        },
+        manager,
+    );
+
+    check_and_broadcast_appends(
+        project_id,
+        store_root,
+        "team_messages.jsonl",
+        consumed_offsets,
+        |line| {
+            serde_json::from_str::<TeamMessage>(line)
+                .ok()
+                .map(SseEventFrame::TeamMessage)
+                .into_iter()
+                .collect()
+        },
+        manager,
+    );
+
+    check_and_broadcast_appends(
+        project_id,
+        store_root,
+        "member_actions.jsonl",
+        consumed_offsets,
+        member_action_frames,
         manager,
     );
 
@@ -454,8 +592,8 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use harness_core::{
-        Message, MessageDeliveryStatus, MessageKind, SenderKind, WorkflowRunStatus,
-        WorkflowStepStatus,
+        MemberActionStatus, Message, MessageDeliveryStatus, MessageKind, SenderKind,
+        WorkflowRunStatus, WorkflowStepStatus,
     };
 
     use super::*;
@@ -553,6 +691,23 @@ mod tests {
             .map(SseEventFrame::WorkflowStep)
             .into_iter()
             .collect()
+    }
+
+    fn test_member_action(id: &str) -> MemberAction {
+        MemberAction {
+            id: id.into(),
+            seq: 1,
+            team_run_id: "trun-1".into(),
+            member_run_id: "mrun-1".into(),
+            task_id: None,
+            action_type: "command_completed".into(),
+            status: MemberActionStatus::Succeeded,
+            title: "Ran focused checks".into(),
+            summary: "Focused checks passed".into(),
+            evidence_refs: Vec::new(),
+            started_at: "unix-ms:1".into(),
+            completed_at: Some("unix-ms:2".into()),
+        }
     }
 
     /// A JSONL row whose write is observed in two pieces (the watcher polls
@@ -865,6 +1020,59 @@ mod tests {
         std::fs::remove_dir_all(&root).expect("cleanup");
     }
 
+    /// Member actions are durable Agent Team execution records. They must take
+    /// the same project-scoped tail path as the attempt/member/message rows so
+    /// a background HTTP start updates an already-open console without polling.
+    #[test]
+    fn member_action_broadcasts_once_and_stays_project_scoped() {
+        let root = unique_dir("member-action");
+        std::fs::create_dir_all(&root).expect("create root");
+        let path = root.join("member_actions.jsonl");
+        let manager = SseManager::new();
+        let rx = manager.subscribe(TEST_PID);
+        let other_project_rx = manager.subscribe("other-project");
+        let mut offsets: HashMap<(String, String), u64> = HashMap::new();
+
+        let row = serde_json::to_string(&test_member_action("mact-1")).expect("serialize");
+        let mut legacy_thinking = test_member_action("mact-thinking");
+        legacy_thinking.action_type = "thinking".into();
+        let thinking_row = serde_json::to_string(&legacy_thinking).expect("serialize thinking");
+        std::fs::write(&path, format!("{row}\n{thinking_row}\n")).expect("write rows");
+
+        check_and_broadcast_appends(
+            TEST_PID,
+            &root,
+            "member_actions.jsonl",
+            &mut offsets,
+            member_action_frames,
+            &manager,
+        );
+        check_and_broadcast_appends(
+            TEST_PID,
+            &root,
+            "member_actions.jsonl",
+            &mut offsets,
+            member_action_frames,
+            &manager,
+        );
+
+        match rx.try_recv() {
+            Ok(SseEventFrame::MemberAction(action)) => assert_eq!(action.id, "mact-1"),
+            other => panic!("expected member action frame, got {other:?}"),
+        }
+        assert!(
+            rx.try_recv().is_err(),
+            "action must broadcast exactly once and thinking rows must not emit"
+        );
+        assert!(
+            other_project_rx.try_recv().is_err(),
+            "member action must not cross project subscriptions"
+        );
+        assert!(offsets.contains_key(&(TEST_PID.to_string(), "member_actions.jsonl".to_string())));
+
+        std::fs::remove_dir_all(&root).expect("cleanup");
+    }
+
     /// A frame broadcast to project A must reach A's subscriber and NOT B's, and
     /// the offset map keys by (project, filename) so two projects with the same
     /// filename are independent (multi-project P6 leakage guard).
@@ -939,5 +1147,123 @@ mod tests {
 
         std::fs::remove_dir_all(&root_a).expect("cleanup a");
         std::fs::remove_dir_all(&root_b).expect("cleanup b");
+    }
+
+    /// Native Mission/Wave and Agent Team ledgers are tail-able sources for the
+    /// console read model. One project poll must parse each native record into
+    /// its specific frame without requiring a full snapshot refresh.
+    #[test]
+    fn native_mission_wave_and_team_ledgers_emit_typed_frames() {
+        let root = unique_dir("native-ledgers");
+        std::fs::create_dir_all(&root).expect("create root");
+        let manager = SseManager::new();
+        let rx = manager.subscribe(TEST_PID);
+        let other_project_rx = manager.subscribe("other-project");
+        let mut offsets: HashMap<(String, String), u64> = HashMap::new();
+
+        let rows = [
+            (
+                "missions.jsonl",
+                include_str!("../../../schemas/fixtures/mission/valid/basic.json"),
+            ),
+            (
+                "waves.jsonl",
+                include_str!("../../../schemas/fixtures/wave/valid/basic.json"),
+            ),
+            (
+                "team_runs.jsonl",
+                include_str!("../../../schemas/fixtures/agent-team-run/valid/basic.json"),
+            ),
+            (
+                "member_runs.jsonl",
+                include_str!("../../../schemas/fixtures/member-run/valid/basic.json"),
+            ),
+            (
+                "team_messages.jsonl",
+                include_str!("../../../schemas/fixtures/team-message/valid/basic.json"),
+            ),
+        ];
+        for (filename, row) in rows {
+            // Fixture files are pretty-printed JSON, whereas a JSONL ledger has
+            // one compact record per physical line.
+            let compact = serde_json::from_str::<serde_json::Value>(row)
+                .expect("fixture JSON")
+                .to_string();
+            std::fs::write(root.join(filename), format!("{compact}\n")).expect("write row");
+        }
+
+        poll_project(TEST_PID, &root, &mut offsets, None, &manager);
+
+        let mut kinds = Vec::new();
+        while let Ok(frame) = rx.try_recv() {
+            match frame {
+                SseEventFrame::Mission(mission) => kinds.push(("mission", mission.id)),
+                SseEventFrame::Wave(wave) => kinds.push(("wave", wave.id)),
+                SseEventFrame::AgentTeamRun(run) => kinds.push(("team_run", run.id)),
+                SseEventFrame::MemberRun(member) => kinds.push(("member_run", member.id)),
+                SseEventFrame::TeamMessage(message) => kinds.push(("team_message", message.id)),
+                other => panic!("unexpected native-ledger frame {other:?}"),
+            }
+        }
+
+        assert_eq!(
+            kinds,
+            vec![
+                ("mission", "mission-1".into()),
+                ("wave", "wave-1".into()),
+                ("team_run", "trun-1".into()),
+                ("member_run", "mrun-1".into()),
+                ("team_message", "tmsg-1".into()),
+            ]
+        );
+        for (filename, _) in rows {
+            assert!(
+                offsets.contains_key(&(TEST_PID.to_string(), filename.to_string())),
+                "native ledger {filename} must receive a project-scoped offset"
+            );
+        }
+        assert!(
+            other_project_rx.try_recv().is_err(),
+            "native ledger frames must stay inside their subscribed project"
+        );
+
+        std::fs::remove_dir_all(&root).expect("cleanup");
+    }
+
+    /// Transient member activity is sent only to currently connected clients of
+    /// its project. It must not be attached to WATCHED_FILES, because doing so
+    /// would make it persisted/replayable rather than an honest live display.
+    #[test]
+    fn member_activity_is_direct_only_and_project_isolated() {
+        let manager = SseManager::new();
+        let rx_a = manager.subscribe("proj-a");
+        let rx_b = manager.subscribe("proj-b");
+        let activity = serde_json::json!({
+            "member_run_id": "mrun-a",
+            "status": "working",
+            "summary": "Reading the current implementation"
+        });
+
+        manager.broadcast_member_activity("proj-a", activity.clone());
+        let late_subscriber = manager.subscribe("proj-a");
+
+        match rx_a.try_recv() {
+            Ok(SseEventFrame::MemberActivity(value)) => assert_eq!(value, activity),
+            other => panic!("project A should receive its transient activity, got {other:?}"),
+        }
+        assert!(
+            rx_b.try_recv().is_err(),
+            "project B must not see project A transient activity"
+        );
+        assert!(
+            late_subscriber.try_recv().is_err(),
+            "a later subscriber must not receive replayed member activity"
+        );
+        assert!(
+            !WATCHED_FILES
+                .iter()
+                .any(|filename| filename.contains("activity")),
+            "member activity must never be read from a JSONL watcher"
+        );
     }
 }

@@ -144,9 +144,10 @@ The target contract makes thinking transient live-only state.
 Persist explicit actions, artifacts, summaries, blockers, and outcomes instead.
 
 New Kimi execution no longer persists `thinking` actions, and current snapshots
-hide historical thinking rows without deleting the ledger. The live-only
-channel is still pending, so provider thinking is currently dropped rather than
-displayed or stored.
+hide historical thinking rows without deleting the ledger. The Console now has a
+sanitized `member_activity` SSE preview with expiry: it is delivered only to
+currently connected clients, is project-scoped, and is never added to JSONL,
+snapshots, replay, messages, or evidence. It is a preview, not an audit trail.
 
 ## Current And Future Layers
 
@@ -182,8 +183,9 @@ The accepted migration is staged and non-destructive:
    Goal compatibility projection.
 3. Runtime: Agent Team joins, attempts, and gate are implemented; Dynamic
    Workflow and Host Wave routing remain.
-4. CLI/API/MCP/Dashboard: authoring and read-model contracts are implemented;
-   the Mission-first Dashboard experience remains.
+4. CLI/API/MCP/Dashboard: native authoring and the Mission-first Console are
+   implemented for Agent Team Waves. Dynamic Workflow and Host retain executor
+   seams rather than falsely claiming routed Console execution.
 5. Stored data, fixtures, tests, skills, and governance: update validators,
    snapshots, docs registry, and acceptance paths after the runtime seam is
    stable.

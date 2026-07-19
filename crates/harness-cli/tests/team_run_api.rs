@@ -5,12 +5,13 @@
 //!     messages + folded events, and the response snapshot carries the six new
 //!     ledger projections,
 //!   - `POST /v1/team-runs/{id}/messages` routes a message (400 on unknown
-//!     run), `POST /v1/team-runs/{id}/start` answers 501 in v0,
+//!     run), `POST /v1/team-runs/{id}/start` accepts asynchronous execution,
 //!   - `GET /team-console` serves the console page as text/html,
 //!   - SSE `/v1/events` streams `team_run_event` frames for appended rows.
 
 use std::time::Duration;
 
+mod fake_provider;
 mod harness_env;
 use harness_env::{collect_sse_data, current_project_id, run_harness, ServeHandle, TempHome};
 
@@ -946,10 +947,20 @@ fn post_team_run_creates_entities_and_snapshot() {
 }
 
 #[test]
-fn post_team_run_message_and_start_501() {
+fn post_team_run_message_and_start_async() {
     let home = TempHome::new("team-run-msg");
     let _project_id = init_project(&home, "alpha");
-    let serve = ServeHandle::spawn(&home, home.base(), &[]);
+    let fake_bin = fake_provider::install_kimi_acp_shim(home.base());
+    let fake_kimi = fake_bin.join("kimi").display().to_string();
+    let serve = ServeHandle::spawn_with_env(
+        &home,
+        home.base(),
+        &[],
+        &[
+            ("KIMI_CODE_BIN", fake_kimi.as_str()),
+            ("FAKE_KIMI_RESULT", "done"),
+        ],
+    );
 
     let (status, body) = serve.post_json(
         "/v1/team-runs",
@@ -957,7 +968,7 @@ fn post_team_run_message_and_start_501() {
             "objective": "Route mail",
             "members": [
                 {"name": "lead", "role": "coordinator", "provider": "kimi"},
-                {"name": "worker-1", "role": "implementer", "provider": "codex"},
+                {"name": "worker-1", "role": "implementer", "provider": "kimi"},
             ],
         }),
     );
@@ -1036,30 +1047,33 @@ fn post_team_run_message_and_start_501() {
     assert_eq!(status, 400, "body: {body}");
     assert_eq!(body["ok"].as_bool(), Some(false), "body: {body}");
 
-    // start is a v0 501 pointing at the CLI.
+    // HTTP start claims planning -> running synchronously, then drives the
+    // provider work in the background.
     let (status, body) = serve.post_json(
         &format!("/v1/team-runs/{run_id}/start"),
         &serde_json::json!({}),
     );
-    assert_eq!(status, 501, "body: {body}");
+    assert_eq!(status, 202, "body: {body}");
+    assert_eq!(body["ok"].as_bool(), Some(true), "body: {body}");
     assert_eq!(
-        body["error"].as_str(),
-        Some(format!("start via CLI: harness team-run start --id {run_id}").as_str()),
+        body["result"]["id"].as_str(),
+        Some(run_id.as_str()),
         "body: {body}"
     );
+    assert_eq!(body["result"]["status"].as_str(), Some("running"));
 }
 
 #[test]
-fn post_team_run_transition_gate_and_lineage() {
+fn post_team_run_transition_and_compatibility_lineage() {
     let home = TempHome::new("team-run-transition");
     let project_id = init_project(&home, "alpha");
     let serve = ServeHandle::spawn(&home, home.base(), &[]);
 
-    // Wave 1 (planning).
+    // Unlinked compatibility attempt 1 (planning).
     let (status, body) = serve.post_json(
         "/v1/team-runs",
         &serde_json::json!({
-            "objective": "Wave one",
+            "objective": "Compatibility attempt one",
             "members": [{"name": "lead", "role": "coordinator", "provider": "kimi"}],
         }),
     );
@@ -1069,11 +1083,13 @@ fn post_team_run_transition_gate_and_lineage() {
         .expect("run id")
         .to_string();
 
-    // Wave 2 chained via previous_run_id; the snapshot carries the link.
+    // Unlinked legacy runs retain previous_run_id as compatibility lineage.
+    // Native Mission/Wave attempts are covered separately and only link retries
+    // inside one Wave.
     let (status, body) = serve.post_json(
         "/v1/team-runs",
         &serde_json::json!({
-            "objective": "Wave two",
+            "objective": "Compatibility attempt two",
             "wave_index": 2,
             "previous_run_id": wave1_id,
             "members": [{"name": "lead", "role": "coordinator", "provider": "kimi"}],
@@ -1083,17 +1099,17 @@ fn post_team_run_transition_gate_and_lineage() {
     let runs = body["snapshot"]["team_runs"].as_array().expect("team_runs");
     assert_eq!(
         runs.iter()
-            .find(|run| run["objective"].as_str() == Some("Wave two"))
+            .find(|run| run["objective"].as_str() == Some("Compatibility attempt two"))
             .and_then(|run| run["previous_run_id"].as_str()),
         Some(wave1_id.as_str()),
-        "wave 2 links back to wave 1: {runs:?}"
+        "compatibility attempt lineage: {runs:?}"
     );
 
     // An unknown previous run id is rejected, nothing journaled.
     let (status, body) = serve.post_json(
         "/v1/team-runs",
         &serde_json::json!({
-            "objective": "Dangling wave",
+            "objective": "Dangling compatibility attempt",
             "previous_run_id": "team-run-nope",
             "members": [{"name": "lead", "role": "coordinator", "provider": "kimi"}],
         }),
@@ -1101,8 +1117,8 @@ fn post_team_run_transition_gate_and_lineage() {
     assert_eq!(status, 400, "body: {body}");
     assert_eq!(body["ok"].as_bool(), Some(false), "body: {body}");
 
-    // Illegal gate move: planning → completed (a wave must reach reviewing
-    // before its gate can pass) → 400.
+    // Illegal attempt move: planning → completed; an attempt must reach
+    // reviewing before it can become completion-eligible for a Wave gate.
     let (status, body) = serve.post_json(
         &format!("/v1/team-runs/{wave1_id}/transition"),
         &serde_json::json!({"status": "completed"}),
@@ -1153,11 +1169,11 @@ fn post_team_run_transition_gate_and_lineage() {
     );
     assert_eq!(status, 400, "body: {body}");
 
-    // Flip wave 2 to reviewing by appending the row directly (the store is an
-    // append-only latest-wins ledger), then pass the gate via the API.
+    // Flip compatibility attempt 2 to reviewing by appending the row directly
+    // (the store is an append-only latest-wins ledger), then complete it.
     let wave2_id = runs
         .iter()
-        .find(|run| run["objective"].as_str() == Some("Wave two"))
+        .find(|run| run["objective"].as_str() == Some("Compatibility attempt two"))
         .and_then(|run| run["id"].as_str())
         .expect("wave 2 id")
         .to_string();
@@ -1173,7 +1189,7 @@ fn post_team_run_transition_gate_and_lineage() {
         serde_json::json!({
             "id": wave2_id,
             "host_surface": "http",
-            "objective": "Wave two",
+            "objective": "Compatibility attempt two",
             "status": "reviewing",
             "wave_index": 2,
             "previous_run_id": wave1_id,
@@ -1191,7 +1207,7 @@ fn post_team_run_transition_gate_and_lineage() {
     assert_eq!(body["result"]["status"].as_str(), Some("completed"));
     assert!(
         body["result"]["completed_at"].as_str().is_some(),
-        "completed_at stamped on gate pass: {body:?}"
+        "completed_at stamped on attempt completion: {body:?}"
     );
     let events = body["snapshot"]["team_run_events"]
         .as_array()
@@ -1205,10 +1221,10 @@ fn post_team_run_transition_gate_and_lineage() {
                     .unwrap_or("")
                     .contains("team-run attempt completed")
         }),
-        "the gate-pass event was folded: {events:?}"
+        "the attempt-completion event was folded: {events:?}"
     );
 
-    // The CLI arms share the same gate: completing an already-completed run is
+    // The CLI arms share the same lifecycle: completing an already-completed run is
     // a usage error, and cancelling a planning run succeeds.
     let out = run_harness(
         &home,
@@ -1236,7 +1252,7 @@ fn post_team_run_transition_gate_and_lineage() {
     let (status, body) = serve.post_json(
         "/v1/team-runs",
         &serde_json::json!({
-            "objective": "Wave three",
+            "objective": "Compatibility attempt three",
             "members": [{"name": "lead", "role": "coordinator", "provider": "kimi"}],
         }),
     );
@@ -1247,6 +1263,52 @@ fn post_team_run_transition_gate_and_lineage() {
         .to_string();
     let cancelled = team_run_json(&home, &project_id, &["cancel", "--id", &wave3_id, "--json"]);
     assert_eq!(cancelled["status"].as_str(), Some("cancelled"));
+
+    // A status-only cancellation must not lie about stopping active provider
+    // work. Until cooperative interruption exists, running -> cancelled is
+    // rejected by the shared CLI/HTTP transition contract.
+    let (status, body) = serve.post_json(
+        "/v1/team-runs",
+        &serde_json::json!({
+            "objective": "Active compatibility attempt",
+            "members": [{"name": "lead", "role": "coordinator", "provider": "kimi"}],
+        }),
+    );
+    assert_eq!(status, 200, "body: {body}");
+    let running_id = body["result"]["team_run"]["id"]
+        .as_str()
+        .expect("running attempt id")
+        .to_string();
+    let mut ledger = std::fs::OpenOptions::new()
+        .append(true)
+        .open(store_root.join("team_runs.jsonl"))
+        .expect("open team_runs.jsonl");
+    writeln!(
+        ledger,
+        "{}",
+        serde_json::json!({
+            "id": running_id,
+            "host_surface": "http",
+            "objective": "Active compatibility attempt",
+            "status": "running",
+            "wave_index": 1,
+            "created_at": "unix-ms:3",
+            "updated_at": "unix-ms:4",
+        })
+    )
+    .expect("append running row");
+    let (status, body) = serve.post_json(
+        &format!("/v1/team-runs/{running_id}/transition"),
+        &serde_json::json!({"status": "cancelled"}),
+    );
+    assert_eq!(status, 400, "body: {body}");
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("running cancellation requires provider interruption"),
+        "body: {body}"
+    );
 }
 
 #[test]
@@ -1280,7 +1342,10 @@ fn sse_streams_team_run_events() {
     );
     let run_id = String::from_utf8_lossy(&out.stdout).trim().to_string();
 
-    let frames = collect_sse_data(&mut sse, Duration::from_secs(6), 3);
+    // Native row frames are now multiplexed alongside the folded event rows,
+    // so collect the complete create burst rather than stopping after the first
+    // three typed projections.
+    let frames = collect_sse_data(&mut sse, Duration::from_secs(6), 6);
     assert!(
         frames.iter().any(|frame| {
             frame["entity_type"].as_str() == Some("team_run")

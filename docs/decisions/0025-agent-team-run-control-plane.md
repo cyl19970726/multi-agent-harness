@@ -14,7 +14,8 @@ the v0 Agent Team object set, delegation guardrails, and host/tooling split.
 Agent Team exists for work that cannot be reduced to a one-shot function call.
 A sub-agent returns a result and disappears. An Agent Team member is a living
 collaborator with its own mailbox, runtime state, and responsibility lane until
-the Wave gate closes.
+its attempt completes or is cancelled. The separate Wave gate then decides
+whether a completed attempt is accepted, revised, or blocked.
 
 The v0 implementation goal is not to solve the whole Mission/Wave product. It
 is to prove the first real `agent_team` executor substrate:
@@ -23,6 +24,11 @@ is to prove the first real `agent_team` executor substrate:
 - explicit assignment, handoff, blocker, and review messages;
 - observable member actions and delegation;
 - shared dashboard, CLI, and host-tool read model.
+
+The native Mission-first Console is now implemented for this branch: it creates
+Missions and ordered Waves, creates/retries linked AgentTeamRun attempts, and
+shows the selected project's durable updates over SSE. This does not make
+Dynamic Workflow or Host a routed Agent Team control plane.
 
 ## Decision
 
@@ -45,7 +51,7 @@ reuse shared runtime infrastructure without adopting Agent Team semantics.
 ### v0 object model
 
 ```text
-AgentTeamRun    id, objective, status, wave_index?, budget_limit_usd?,
+AgentTeamRun    id, mission_id?, wave_id?, objective, status, wave_index?, budget_limit_usd?,
                 host{surface, thread_id}, member_run_ids[],
                 created_at / started_at / ended_at
 
@@ -93,6 +99,10 @@ Rules:
 - `MemberAction` stores explicit work facts. It does not store private
   reasoning.
 - `TeamRunEvent` is a single ordered durable event log with sanitized payloads.
+- A native attempt links both `mission_id` and `wave_id`; an unlinked TeamRun is
+  compatibility-only historical/manual state, not a native planning alternative.
+- Attempt completion (`reviewing -> completed`) is separate from the Wave gate;
+  only a completed attempt can be accepted by that parent Wave.
 
 ### Assignment-message correlation
 
@@ -162,8 +172,9 @@ Persist explicit actions, artifacts, summaries, blockers, and outcomes instead.
 New Kimi adapter writes no longer append provider reasoning as durable
 `MemberAction(type=thinking)` rows. Historical rows remain in JSONL for
 non-destructive compatibility but are filtered from current snapshots and
-status reads. The sanitized transient display channel is still pending; until
-it exists, provider thinking is dropped rather than persisted.
+status reads. The Console now receives a sanitized `member_activity` preview
+only through project-scoped SSE: it carries an expiry, is never tailed from a
+ledger, never appears in a snapshot, and is not replayed after reconnect.
 
 ## Consequences
 

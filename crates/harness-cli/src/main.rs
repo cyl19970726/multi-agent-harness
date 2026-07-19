@@ -6,7 +6,7 @@ use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use harness_core::{
@@ -2232,10 +2232,13 @@ fn parse_team_run_status(s: &str) -> CliResult<TeamRunStatus> {
 
 /// Transition a team-run attempt. Only these moves are legal:
 /// `reviewing → completed` (the attempt-level integration check passes) and
-/// `planning|running|waiting|reviewing → cancelled`. Cancelling a reviewing
+/// `planning|waiting|reviewing → cancelled`. Cancelling a reviewing
 /// attempt is the explicit rejection path that permits a later retry without
 /// falsely making the failed attempt acceptance-eligible. Anything else is a usage error
 /// (HTTP 400) so an attempt cannot skip review or resurrect after termination.
+/// A running attempt cannot be status-cancelled until provider execution has a
+/// real cooperative interruption path; accepting that transition would leave
+/// background work running behind a false terminal state.
 /// Completing an attempt only makes it eligible for the separate Wave gate; it
 /// does not accept the Wave.
 /// Appends the new AgentTeamRun row (latest-wins) and folds a TeamRunEvent so
@@ -2252,13 +2255,12 @@ fn transition_team_run(
         (previous_status, target),
         (TeamRunStatus::Reviewing, TeamRunStatus::Completed)
             | (TeamRunStatus::Planning, TeamRunStatus::Cancelled)
-            | (TeamRunStatus::Running, TeamRunStatus::Cancelled)
             | (TeamRunStatus::Waiting, TeamRunStatus::Cancelled)
             | (TeamRunStatus::Reviewing, TeamRunStatus::Cancelled)
     );
     if !allowed {
         return Err(CliError::Usage(format!(
-            "invalid team-run transition: {} → {} (allowed: reviewing → completed, planning|running|waiting|reviewing → cancelled)",
+            "invalid team-run transition: {} → {} (allowed: reviewing → completed, planning|waiting|reviewing → cancelled; running cancellation requires provider interruption)",
             serde_snake_label(&previous_status),
             serde_snake_label(&target),
         )));
@@ -2611,6 +2613,25 @@ const TEAM_RUN_START_MAX_ROUNDS: u32 = 5;
 /// most one per member per window, no matter how chatty the chunks are.
 const TEAM_RUN_PROGRESS_THROTTLE: Duration = Duration::from_secs(5);
 
+/// Live member thinking is an ephemeral operator hint, never a ledger row.
+/// Each preview expires in the browser shortly after publication and is not
+/// available to reconnecting clients.
+const LIVE_MEMBER_ACTIVITY_TTL_MS: u128 = 10_000;
+const LIVE_MEMBER_ACTIVITY_MAX_CHARS: usize = 240;
+const LIVE_MEMBER_ACTIVITY_THROTTLE: Duration = Duration::from_secs(1);
+static LIVE_MEMBER_ACTIVITY_REVISION: AtomicU64 = AtomicU64::new(1);
+static LIVE_MEMBER_ACTIVITY_INGRESS: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
+
+#[derive(Clone, Debug)]
+struct LiveMemberActivityPreview {
+    team_run_id: String,
+    member_run_id: String,
+    provider: String,
+    preview: String,
+}
+
+type LiveMemberActivitySink = Arc<dyn Fn(LiveMemberActivityPreview) + Send + Sync>;
+
 /// Minimal counting semaphore (std has none) bounding how many member threads
 /// run an ACP session at once.
 struct Semaphore {
@@ -2800,15 +2821,22 @@ impl MemberOutcome {
     }
 }
 
-/// `harness team-run start`: load the run, drive every member to a terminal
-/// state, then fold the run's own terminal status + a human summary.
-fn team_run_start(
+struct PreparedTeamRunStart {
+    run_id: String,
+    objective: String,
+    running: AgentTeamRun,
+    members: Vec<MemberRun>,
+    ledger: Arc<TeamRunLedger>,
+}
+
+/// Reserve a planning attempt synchronously before any provider thread starts.
+/// Both CLI and HTTP use this CAS, so two start requests cannot both be
+/// accepted while orchestration boots in the background.
+fn prepare_team_run_start(
     store: &HarnessStore,
-    resolved: &ResolvedStore,
     run_id: &str,
     max_concurrency: usize,
-    idle_timeout: Duration,
-) -> CliResult<()> {
+) -> CliResult<PreparedTeamRunStart> {
     let run = latest_team_run(store, run_id)?;
     if run.status != TeamRunStatus::Planning {
         return Err(CliError::Usage(format!(
@@ -2820,7 +2848,6 @@ fn team_run_start(
         .into_iter()
         .filter(|member| member.team_run_id == run_id)
         .collect();
-
     let ledger = Arc::new(TeamRunLedger::new(store, run_id));
     let mut running = run.clone();
     running.status = TeamRunStatus::Running;
@@ -2842,18 +2869,67 @@ fn team_run_start(
             members.len()
         ),
     )?;
+    Ok(PreparedTeamRunStart {
+        run_id: run_id.to_string(),
+        objective: run.objective,
+        running,
+        members,
+        ledger,
+    })
+}
 
+/// `harness team-run start`: reserve the run, drive every member to a terminal
+/// state, then fold the run's own terminal status + a human summary.
+fn team_run_start(
+    store: &HarnessStore,
+    resolved: &ResolvedStore,
+    run_id: &str,
+    max_concurrency: usize,
+    idle_timeout: Duration,
+) -> CliResult<()> {
+    let prepared = prepare_team_run_start(store, run_id, max_concurrency)?;
+    drive_prepared_team_run(
+        prepared,
+        resolved.context.clone(),
+        max_concurrency,
+        idle_timeout,
+        None,
+    )
+}
+
+fn drive_prepared_team_run(
+    prepared: PreparedTeamRunStart,
+    project_context: Option<ProjectContext>,
+    max_concurrency: usize,
+    idle_timeout: Duration,
+    live_sink: Option<LiveMemberActivitySink>,
+) -> CliResult<()> {
+    let PreparedTeamRunStart {
+        run_id,
+        objective,
+        running,
+        members,
+        ledger,
+    } = prepared;
     let semaphore = Arc::new(Semaphore::new(max_concurrency));
     let mut handles = Vec::new();
     for member in members {
         let ledger = Arc::clone(&ledger);
         let semaphore = Arc::clone(&semaphore);
-        let objective = run.objective.clone();
-        let cwd = member_spawn_cwd(resolved, &member);
+        let objective = objective.clone();
+        let cwd = member_spawn_cwd(project_context.as_ref(), &member);
         let handle_member = member.clone();
+        let live_sink = live_sink.clone();
         let handle = std::thread::spawn(move || {
             let _permit = semaphore.acquire();
-            run_member_orchestration(&ledger, &objective, handle_member, &cwd, idle_timeout)
+            run_member_orchestration(
+                &ledger,
+                &objective,
+                handle_member,
+                &cwd,
+                idle_timeout,
+                live_sink,
+            )
         });
         handles.push((member, handle));
     }
@@ -2896,7 +2972,7 @@ fn team_run_start(
     if final_status == TeamRunStatus::Completed {
         finished.completed_at = Some(now_string());
     }
-    store_conflict_as_usage(store.compare_and_append_team_run_with_wave_status(
+    store_conflict_as_usage(ledger.store.compare_and_append_team_run_with_wave_status(
         &running,
         &finished,
         WaveStatus::Waiting,
@@ -2906,7 +2982,7 @@ fn team_run_start(
         TeamRunEventSourceKind::Host,
         None,
         "team_run",
-        run_id,
+        &run_id,
         if final_status == TeamRunStatus::Completed {
             "completed"
         } else {
@@ -2943,6 +3019,7 @@ fn run_member_orchestration(
     member: MemberRun,
     cwd: &Path,
     idle_timeout: Duration,
+    live_sink: Option<LiveMemberActivitySink>,
 ) -> MemberOutcome {
     if !member.provider.eq_ignore_ascii_case("kimi") {
         let reason = format!(
@@ -2952,7 +3029,7 @@ fn run_member_orchestration(
         journal_member_failure(ledger, &member, &reason);
         return MemberOutcome::new(&member, MemberRunStatus::Failed, reason);
     }
-    match run_kimi_member(ledger, objective, &member, cwd, idle_timeout) {
+    match run_kimi_member(ledger, objective, &member, cwd, idle_timeout, live_sink) {
         Ok(outcome) => outcome,
         Err(error) => {
             let reason = error.to_string();
@@ -2971,6 +3048,7 @@ fn run_kimi_member(
     member: &MemberRun,
     cwd: &Path,
     idle_timeout: Duration,
+    live_sink: Option<LiveMemberActivitySink>,
 ) -> CliResult<MemberOutcome> {
     let mut member_row = member.clone();
     member_row.status = MemberRunStatus::Starting;
@@ -3024,7 +3102,7 @@ fn run_kimi_member(
     let mut final_summary = String::new();
     while let Some(prompt_text) = next_prompt.take() {
         round += 1;
-        let mut mapper = MemberUpdateMapper::new(ledger, member_row.clone());
+        let mut mapper = MemberUpdateMapper::new(ledger, member_row.clone(), live_sink.clone());
         let outcome = client.prompt(&prompt_text, idle_timeout, |update| mapper.handle(update))?;
         let final_text = mapper.text().to_string();
         member_row = mapper.into_member();
@@ -3229,16 +3307,34 @@ fn mark_message_delivered(
 
 /// Where a member's ACP session runs: its pinned worktree when set, else the
 /// selected project's root, else (unrouted raw-store invocation) the CLI cwd.
-fn member_spawn_cwd(resolved: &ResolvedStore, member: &MemberRun) -> PathBuf {
+fn member_spawn_cwd(project_context: Option<&ProjectContext>, member: &MemberRun) -> PathBuf {
     if let Some(worktree) = &member.worktree_ref {
         if !worktree.is_empty() {
             return PathBuf::from(worktree);
         }
     }
-    if let Some(context) = &resolved.context {
+    if let Some(context) = project_context {
         return context.project_root.clone();
     }
     std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+}
+
+/// Reduce a provider-approved thought chunk to a short, single-preview string.
+/// This value is only eligible for the volatile SSE channel; callers must not
+/// place it in a ledger, snapshot, message, or evidence record.
+fn sanitize_live_member_preview(value: &str) -> Option<String> {
+    let normalized = value
+        .chars()
+        .filter(|character| !character.is_control() || character.is_whitespace())
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let preview = normalized
+        .chars()
+        .take(LIVE_MEMBER_ACTIVITY_MAX_CHARS)
+        .collect::<String>();
+    (!preview.is_empty()).then_some(preview)
 }
 
 /// Maps `session/update` frames of one prompt round onto the member ledger.
@@ -3249,6 +3345,8 @@ fn member_spawn_cwd(resolved: &ResolvedStore, member: &MemberRun) -> PathBuf {
 struct MemberUpdateMapper<'a> {
     ledger: &'a TeamRunLedger,
     member: MemberRun,
+    live_sink: Option<LiveMemberActivitySink>,
+    last_live_activity_at: Instant,
     text: String,
     last_progress_at: std::time::Instant,
     /// toolCallId → title of tools we journaled `tool_started` for, so the
@@ -3257,10 +3355,16 @@ struct MemberUpdateMapper<'a> {
 }
 
 impl<'a> MemberUpdateMapper<'a> {
-    fn new(ledger: &'a TeamRunLedger, member: MemberRun) -> Self {
+    fn new(
+        ledger: &'a TeamRunLedger,
+        member: MemberRun,
+        live_sink: Option<LiveMemberActivitySink>,
+    ) -> Self {
         Self {
             ledger,
             member,
+            live_sink,
+            last_live_activity_at: Instant::now() - LIVE_MEMBER_ACTIVITY_THROTTLE,
             text: String::new(),
             // Arm the throttle already expired so the FIRST chunk journals one
             // progress action immediately (the console shows life), then at
@@ -3275,6 +3379,23 @@ impl<'a> MemberUpdateMapper<'a> {
             return;
         };
         if kind.contains("thought") {
+            if self.last_live_activity_at.elapsed() < LIVE_MEMBER_ACTIVITY_THROTTLE {
+                return;
+            }
+            let preview = update
+                .get("content")
+                .and_then(|content| content.get("text"))
+                .and_then(|text| text.as_str())
+                .and_then(sanitize_live_member_preview);
+            if let (Some(sink), Some(preview)) = (&self.live_sink, preview) {
+                self.last_live_activity_at = Instant::now();
+                sink(LiveMemberActivityPreview {
+                    team_run_id: self.ledger.run_id.clone(),
+                    member_run_id: self.member.id.clone(),
+                    provider: self.member.provider.clone(),
+                    preview,
+                });
+            }
             return;
         }
         if kind == "agent_message_chunk" {
@@ -8078,6 +8199,26 @@ fn codex_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     }
 }
 
+fn broadcast_live_member_activity(
+    manager: &sse::SseManager,
+    project_id: &str,
+    activity: LiveMemberActivityPreview,
+) -> serde_json::Value {
+    let emitted_ms = current_unix_ms();
+    let value = serde_json::json!({
+        "team_run_id": activity.team_run_id,
+        "member_run_id": activity.member_run_id,
+        "provider": activity.provider,
+        "kind": "thinking",
+        "preview": activity.preview,
+        "revision": LIVE_MEMBER_ACTIVITY_REVISION.fetch_add(1, Ordering::Relaxed),
+        "emitted_at": format!("unix-ms:{emitted_ms}"),
+        "expires_at": format!("unix-ms:{}", emitted_ms + LIVE_MEMBER_ACTIVITY_TTL_MS),
+    });
+    manager.broadcast_member_activity(project_id, value.clone());
+    value
+}
+
 fn handle_sse_stream(
     store: &HarnessStore,
     project_id: &str,
@@ -8191,6 +8332,54 @@ fn handle_sse_stream(
                             }
                         }
                     }
+                    sse::SseEventFrame::Mission(mission) => {
+                        if let Ok(json) = serde_json::to_value(&mission) {
+                            if sse::write_sse_frame(&mut stream, "mission", &json).is_err() {
+                                break;
+                            }
+                        }
+                    }
+                    sse::SseEventFrame::Wave(wave) => {
+                        if let Ok(json) = serde_json::to_value(&wave) {
+                            if sse::write_sse_frame(&mut stream, "wave", &json).is_err() {
+                                break;
+                            }
+                        }
+                    }
+                    sse::SseEventFrame::AgentTeamRun(run) => {
+                        if let Ok(json) = serde_json::to_value(&run) {
+                            if sse::write_sse_frame(&mut stream, "agent_team_run", &json).is_err() {
+                                break;
+                            }
+                        }
+                    }
+                    sse::SseEventFrame::MemberRun(member) => {
+                        if let Ok(json) = serde_json::to_value(&member) {
+                            if sse::write_sse_frame(&mut stream, "member_run", &json).is_err() {
+                                break;
+                            }
+                        }
+                    }
+                    sse::SseEventFrame::TeamMessage(message) => {
+                        if let Ok(json) = serde_json::to_value(&message) {
+                            if sse::write_sse_frame(&mut stream, "team_message", &json).is_err() {
+                                break;
+                            }
+                        }
+                    }
+                    sse::SseEventFrame::MemberAction(action) => {
+                        if let Ok(json) = serde_json::to_value(&action) {
+                            if sse::write_sse_frame(&mut stream, "member_action", &json).is_err() {
+                                break;
+                            }
+                        }
+                    }
+                    sse::SseEventFrame::MemberActivity(activity) => {
+                        if sse::write_sse_frame(&mut stream, "member_activity", &activity).is_err()
+                        {
+                            break;
+                        }
+                    }
                 }
                 last_keepalive = std::time::Instant::now();
             }
@@ -8257,6 +8446,25 @@ impl ServeProjects {
             }
         }
         (self.default_id.clone(), self.default_store.clone())
+    }
+
+    /// Resolve the project execution context paired with a routed store. Raw
+    /// store mode has no registry identity, so it gets an honest synthetic
+    /// context rooted at the served store rather than falling back to the
+    /// harness server process cwd.
+    fn context_for(&self, project_id: &str, store: &HarnessStore) -> ProjectContext {
+        if let Some(home) = &self.harness_home {
+            if let Ok(Some(context)) = project::context_for_id(home, project_id) {
+                return context;
+            }
+        }
+        ProjectContext {
+            id: project_id.to_string(),
+            project_root: store.root().to_path_buf(),
+            store_root: store.root().to_path_buf(),
+            kind: ProjectKind::Repo,
+            is_git_repo: false,
+        }
     }
 
     /// The currently-active project id, read live so a `POST /v1/projects/switch`
@@ -8855,18 +9063,159 @@ fn handle_http_connection(
         return Ok(());
     }
 
-    // POST /v1/team-runs/{id}/start — orchestration execution lands in the
-    // next wave; v0 answers 501 with the CLI path so the team console can
-    // degrade gracefully (its UI treats 404/501 as "start via CLI").
+    // POST /v1/live/member-activity — optional ingress for provider adapters
+    // running outside this process. It validates the project/run/member join,
+    // sanitizes one short preview, and broadcasts only to current subscribers.
+    // No store method is called and reconnecting clients cannot replay it.
+    if path_only == "/v1/live/member-activity" {
+        let result = (|| -> CliResult<serde_json::Value> {
+            let team_run_id = required_json_string(&body_json, "team_run_id")?;
+            let member_run_id = required_json_string(&body_json, "member_run_id")?;
+            let preview =
+                sanitize_live_member_preview(&required_json_string(&body_json, "preview")?)
+                    .ok_or_else(|| {
+                        CliError::Usage("member activity preview must not be empty".to_string())
+                    })?;
+            let run = latest_team_run(store, &team_run_id)?;
+            if run.status != TeamRunStatus::Running {
+                return Err(CliError::Usage(format!(
+                    "team run {team_run_id} is {}, not running",
+                    serde_snake_label(&run.status)
+                )));
+            }
+            let member = latest_member_runs_in_append_order(store)?
+                .into_iter()
+                .find(|member| member.id == member_run_id)
+                .ok_or_else(|| CliError::Usage(format!("member run not found: {member_run_id}")))?;
+            if member.team_run_id != team_run_id {
+                return Err(CliError::Usage(format!(
+                    "member run {member_run_id} does not belong to team run {team_run_id}"
+                )));
+            }
+            if matches!(
+                member.status,
+                MemberRunStatus::Completed
+                    | MemberRunStatus::Failed
+                    | MemberRunStatus::Stopped
+                    | MemberRunStatus::Blocked
+            ) {
+                return Err(CliError::Usage(format!(
+                    "member run {member_run_id} is terminal and cannot publish live activity"
+                )));
+            }
+            let ingress_key = format!("{project_id}:{member_run_id}");
+            let ingress = LIVE_MEMBER_ACTIVITY_INGRESS.get_or_init(|| Mutex::new(HashMap::new()));
+            let mut last_by_member = ingress.lock().unwrap_or_else(|error| error.into_inner());
+            // This registry is only a short-lived ingress throttle. Drop stale
+            // member keys so transient provider sessions cannot grow it without
+            // bound over the lifetime of the server.
+            last_by_member.retain(|_, last| last.elapsed() < Duration::from_secs(60));
+            if last_by_member
+                .get(&ingress_key)
+                .is_some_and(|last| last.elapsed() < LIVE_MEMBER_ACTIVITY_THROTTLE)
+            {
+                return Err(CliError::Usage(
+                    "member activity preview is rate limited".to_string(),
+                ));
+            }
+            last_by_member.insert(ingress_key, Instant::now());
+            drop(last_by_member);
+            Ok(broadcast_live_member_activity(
+                &sse_manager,
+                &project_id,
+                LiveMemberActivityPreview {
+                    team_run_id,
+                    member_run_id,
+                    provider: member.provider,
+                    preview,
+                },
+            ))
+        })();
+        match result {
+            Ok(activity) => write_http_json(
+                &mut stream,
+                "202 Accepted",
+                &serde_json::json!({"ok": true, "result": activity}),
+            )?,
+            Err(error) => write_http_json(
+                &mut stream,
+                "400 Bad Request",
+                &serde_json::json!({"ok": false, "error": error.to_string()}),
+            )?,
+        }
+        return Ok(());
+    }
+
+    // POST /v1/team-runs/{id}/start — reserve the planning attempt under the
+    // store CAS, then run providers on a background thread. The immediate 202
+    // lets the Console keep its SSE connection responsive while member turns
+    // execute; durable state still flows through the normal ledgers.
     if let Some(team_run_id) = path_only
         .strip_prefix("/v1/team-runs/")
         .and_then(|rest| rest.strip_suffix("/start"))
     {
-        write_http_json(
-            &mut stream,
-            "501 Not Implemented",
-            &serde_json::json!({"error": format!("start via CLI: harness team-run start --id {team_run_id}")}),
-        )?;
+        let parse_positive = |key: &str, default: u64| -> CliResult<u64> {
+            match body_json.get(key) {
+                None | Some(serde_json::Value::Null) => Ok(default),
+                Some(value) => value.as_u64().filter(|value| *value > 0).ok_or_else(|| {
+                    CliError::Usage(format!("JSON field {key} must be a positive integer"))
+                }),
+            }
+        };
+        let result = (|| -> CliResult<(PreparedTeamRunStart, usize, Duration)> {
+            let max_concurrency_u64 =
+                parse_positive("max_concurrency", TEAM_RUN_START_DEFAULT_CONCURRENCY as u64)?;
+            let max_concurrency = usize::try_from(max_concurrency_u64)
+                .ok()
+                .filter(|value| *value <= 64)
+                .ok_or_else(|| {
+                    CliError::Usage("max_concurrency must be between 1 and 64".to_string())
+                })?;
+            let idle_timeout_s =
+                parse_positive("idle_timeout_s", kimi_acp::DEFAULT_PROMPT_IDLE_TIMEOUT_SECS)?;
+            let prepared = prepare_team_run_start(store, team_run_id, max_concurrency)?;
+            Ok((
+                prepared,
+                max_concurrency,
+                Duration::from_secs(idle_timeout_s),
+            ))
+        })();
+        match result {
+            Ok((prepared, max_concurrency, idle_timeout)) => {
+                let context = projects.context_for(&project_id, store);
+                let activity_manager = sse_manager.clone();
+                let activity_project = project_id.clone();
+                let live_sink: LiveMemberActivitySink = Arc::new(move |activity| {
+                    broadcast_live_member_activity(&activity_manager, &activity_project, activity);
+                });
+                let accepted_run_id = prepared.run_id.clone();
+                std::thread::spawn(move || {
+                    if let Err(error) = drive_prepared_team_run(
+                        prepared,
+                        Some(context),
+                        max_concurrency,
+                        idle_timeout,
+                        Some(live_sink),
+                    ) {
+                        eprintln!("team-run HTTP start failed: {error}");
+                    }
+                });
+                write_http_json(
+                    &mut stream,
+                    "202 Accepted",
+                    &serde_json::json!({
+                        "ok": true,
+                        "result": {"id": accepted_run_id, "status": "running"},
+                        "snapshot": dashboard_snapshot(store)?,
+                    }),
+                )?;
+            }
+            Err(error) => write_http_json(
+                &mut stream,
+                "400 Bad Request",
+                &serde_json::json!({"ok": false, "error": error.to_string()}),
+            )?,
+        }
         return Ok(());
     }
 
@@ -9405,7 +9754,7 @@ fn create_team_run_value(
 
 /// POST /v1/team-runs/{id}/transition — attempt lifecycle. Body `{status}`; only
 /// `reviewing → completed` and
-/// `planning|running|waiting|reviewing → cancelled` are legal
+/// `planning|waiting|reviewing → cancelled` are legal
 /// (same logic as `team-run complete|cancel`, so CLI and UI cannot diverge).
 fn transition_team_run_value(
     store: &HarnessStore,

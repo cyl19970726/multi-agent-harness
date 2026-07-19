@@ -73,9 +73,9 @@ flowchart TD
 | View | Purpose | Safe actions |
 | --- | --- | --- |
 | Mission list | Find active, blocked, completed, and proposed Missions. | create/open Mission |
-| Mission detail | Read durable intent, ordered Waves, deviations, and outcome. | plan next Wave, open gate, close Mission |
-| Wave timeline | Compare executor attempts and accepted outcome. | launch attempt, revise, accept, block |
-| Agent Team | Operate one collaborative Wave attempt. | message, ACK/re-deliver, interrupt, open member, request review |
+| Mission detail | Read durable intent, ordered Waves, attempts, and outcome. | create Wave, create/retry Agent Team attempt, open gate |
+| Wave timeline | Compare executor attempts and accepted outcome. | create Agent Team attempt, revise, accept, block |
+| Agent Team | Operate one collaborative Wave attempt. | start asynchronously, message, ACK/re-deliver, open member, request review |
 | Member detail | Inspect one MemberRun lane and its assignments/actions. | send control/question, review handoff |
 | Dynamic Workflow | Inspect one WorkflowRun and its steps/artifacts/patches. | apply/reject patch, attach result to gate |
 | Host execution | Show direct Host outcome and optional observed delegation. | attach artifact/outcome |
@@ -120,14 +120,15 @@ and runtime contracts, not frontend-only state.
 
 ## Thinking Boundary
 
-The final UI may show sanitized, truncated, rate-limited live thinking while a
-provider is streaming it. It must disappear on refresh/expiry and never enter
-snapshot history, replay, evidence, messages, or peer context.
+The Console can show sanitized, truncated, rate-limited member activity while a
+provider is streaming it. A `thinking` preview is sent only as a project-scoped
+SSE `member_activity` frame, includes an expiry, and disappears on refresh or
+TTL expiry. It never enters snapshot history, JSONL, replay, evidence,
+messages, or peer context.
 
 New Kimi writes do not persist thinking, and product snapshots filter historical
-`MemberAction(type=thinking)` rows without deleting the ledger. The transient
-display channel is not implemented yet, so product views must not imply that
-real-time thinking is currently available.
+`MemberAction(type=thinking)` rows without deleting the ledger. The live preview
+is intentionally display-only and cannot be used to reconstruct an attempt.
 
 ## Warnings
 
@@ -179,8 +180,11 @@ Workbench acceptance requires fixtures plus at least one live Mission showing:
 6. authorization and failed-delivery alerts;
 7. honest correlation and provider capability degradation;
 8. no new thinking in durable snapshots after the transient migration;
-9. Goal/GoalPhase data still reachable as labeled compatibility state;
-10. desktop, tablet, and mobile screenshot evidence with no horizontal overflow.
+9. an asynchronous attempt start whose durable updates arrive in the selected
+   project's SSE read model;
+10. transient thinking that is absent after reload/expiry and from snapshots;
+11. Goal/GoalPhase data still reachable as labeled compatibility state;
+12. desktop, tablet, and mobile screenshot evidence with no horizontal overflow.
 
 ## Invariants
 

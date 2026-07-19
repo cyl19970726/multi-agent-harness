@@ -318,8 +318,11 @@ export function createTeamRun(params: {
   objective: string;
   waveIndex?: number;
   budgetLimitUsd?: number;
-  /** Chain this run onto an earlier wave's run (re-plan lineage). */
+  /** Retry lineage: an earlier attempt of this same native Wave. */
   previousRunId?: string;
+  /** Native executor context. Both ids are required together. */
+  missionId?: string;
+  waveId?: string;
   members: TeamRunMemberSpec[];
 }): ActionDescriptor {
   const body: Record<string, unknown> = {
@@ -348,7 +351,65 @@ export function createTeamRun(params: {
   if (params.previousRunId) {
     body.previous_run_id = params.previousRunId;
   }
+  if (params.missionId) {
+    body.mission_id = params.missionId;
+  }
+  if (params.waveId) {
+    body.wave_id = params.waveId;
+  }
   return { method: "POST", path: "/v1/team-runs", body };
+}
+
+/** Create native Mission intent (POST /v1/missions). */
+export function createMission(params: {
+  title: string;
+  objective: string;
+  desiredOutcome?: string;
+}): ActionDescriptor {
+  const body: Record<string, unknown> = { title: params.title, objective: params.objective };
+  if (params.desiredOutcome) body.desired_outcome = params.desiredOutcome;
+  return { method: "POST", path: "/v1/missions", body };
+}
+
+/** Add an ordered native Wave to a Mission (POST /v1/waves). */
+export function createWave(params: {
+  missionId: string;
+  title: string;
+  objective: string;
+  executorKind: "agent_team" | "dynamic_workflow" | "host";
+  index?: number;
+  exitCriteria?: string;
+  planNote?: string;
+}): ActionDescriptor {
+  const body: Record<string, unknown> = {
+    mission_id: params.missionId,
+    title: params.title,
+    objective: params.objective,
+    executor_kind: params.executorKind,
+  };
+  if (params.index != null) body.index = params.index;
+  if (params.exitCriteria) body.exit_criteria = params.exitCriteria;
+  if (params.planNote) body.plan_note = params.planNote;
+  return { method: "POST", path: "/v1/waves", body };
+}
+
+/** Record a Wave gate result without rewriting its attempt history. */
+export function gateWave(params: {
+  waveId: string;
+  status: "accepted" | "revise" | "blocked";
+  runId?: string;
+  acceptedBy?: string;
+  note?: string;
+  outcome?: string;
+  artifactRefs?: string[];
+}): ActionDescriptor {
+  const body: Record<string, unknown> = { status: params.status };
+  if (params.runId) body.run_id = params.runId;
+  if (params.acceptedBy) body.accepted_by = params.acceptedBy;
+  if (params.note) body.note = params.note;
+  if (params.outcome) body.outcome = params.outcome;
+  if (params.artifactRefs?.length) body.artifact_refs = params.artifactRefs;
+  return { method: "POST", path: `/v1/waves/${encodeId(params.waveId)}/gate`, body };
 }
 
 /**
@@ -363,6 +424,13 @@ export function sendTeamMessage(
     kind: string;
     body: string;
     taskId?: string;
+    /**
+     * Reuse an existing assignment's correlation only when the operator has
+     * explicitly selected that assignment as this message's ownership anchor.
+     */
+    correlationId?: string;
+    /** The assignment message that caused this anchored follow-up. */
+    causationId?: string;
   },
 ): ActionDescriptor {
   const body: Record<string, unknown> = {
@@ -374,6 +442,12 @@ export function sendTeamMessage(
   if (params.taskId) {
     body.task_id = params.taskId;
   }
+  if (params.correlationId) {
+    body.correlation_id = params.correlationId;
+  }
+  if (params.causationId) {
+    body.causation_id = params.causationId;
+  }
   return {
     method: "POST",
     path: `/v1/team-runs/${encodeId(teamRunId)}/messages`,
@@ -382,18 +456,20 @@ export function sendTeamMessage(
 }
 
 /**
- * Start a team run's orchestration loop (POST /v1/team-runs/{id}/start). v0
- * answers 501 with the CLI hint in the error body; the UI surfaces that hint
- * through the standard action-error banner.
+ * Start a team run's orchestration loop (POST /v1/team-runs/{id}/start). The
+ * server reserves the attempt synchronously, then executes providers in the
+ * background while durable and volatile updates arrive over SSE.
  */
 export function startTeamRun(teamRunId: string): ActionDescriptor {
   return { method: "POST", path: `/v1/team-runs/${encodeId(teamRunId)}/start`, body: {} };
 }
 
 /**
- * Drive a team run through the wave gate (POST /v1/team-runs/{id}/transition).
- * The backend only allows `reviewing → completed` (gate pass) and
- * `planning|running|waiting → cancelled`; anything else 400s.
+ * Drive an attempt lifecycle (POST /v1/team-runs/{id}/transition). The native
+ * Wave gate is separate: it accepts, revises, or blocks a completed attempt.
+ * The backend only allows `reviewing → completed` (attempt completion) and
+ * `planning|waiting|reviewing → cancelled`; running cancellation is rejected
+ * until provider execution has a cooperative interruption path.
  */
 export function transitionTeamRun(
   teamRunId: string,

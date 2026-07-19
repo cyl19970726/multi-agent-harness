@@ -1,5 +1,6 @@
 export type SurfaceId =
   | "agents"
+  | "missions"
   | "team"
   | "vision"
   | "goal"
@@ -22,6 +23,10 @@ const taskTabs: TaskTab[] = ["overview", "deps", "proof", "activity"];
 export interface SelectionState {
   surface: SurfaceId;
   goalId?: string;
+  /** Native Mission detail, addressed as `?mission=<id>`. */
+  missionId?: string;
+  /** Native Wave detail inside a Mission, addressed as `?wave=<id>`. */
+  waveId?: string;
   /**
    * The selected Agent Team run id (a team_run id), addressed as `?team=<id>`.
    * Opens the Team surface's run detail when set; the list shows when absent.
@@ -55,13 +60,14 @@ export interface SelectionState {
 }
 
 export const defaultSelection: SelectionState = {
-  surface: "agents",
+  surface: "missions",
   boardScope: "tasks",
 };
 
 const surfaceIds: SurfaceId[] = [
   "agents",
   "team",
+  "missions",
   "vision",
   "goal",
   "task",
@@ -78,6 +84,8 @@ const selectionParamKeys = [
   "agentTab",
   "team",
   "goal",
+  "mission",
+  "wave",
   "task",
   "phase",
   "doc",
@@ -128,6 +136,16 @@ export function selectionFromLocation(base: SelectionState): SelectionState {
   }
   const goal = params.get("goal");
   if (goal) next.goalId = goal;
+  const mission = params.get("mission");
+  if (mission) {
+    next.missionId = mission;
+    if (!surface) next.surface = "missions";
+  }
+  const wave = params.get("wave");
+  if (wave) {
+    next.waveId = wave;
+    if (!surface) next.surface = "missions";
+  }
   const task = params.get("task");
   if (task) next.taskId = task;
   const phase = params.get("phase");
@@ -167,7 +185,7 @@ export function syncSelectionToLocation(selection: SelectionState): void {
   if (typeof window === "undefined") return;
   const params = new URLSearchParams(window.location.search);
   for (const key of selectionParamKeys) params.delete(key);
-  if (selection.surface && selection.surface !== "agents") {
+  if (selection.surface && selection.surface !== "missions") {
     params.set("surface", selection.surface);
   }
   if (selection.memberId) params.set("agent", selection.memberId);
@@ -177,6 +195,8 @@ export function syncSelectionToLocation(selection: SelectionState): void {
   }
   if (selection.teamId) params.set("team", selection.teamId);
   if (selection.goalId) params.set("goal", selection.goalId);
+  if (selection.missionId) params.set("mission", selection.missionId);
+  if (selection.waveId) params.set("wave", selection.waveId);
   if (selection.taskId) params.set("task", selection.taskId);
   if (selection.phaseId) params.set("phase", selection.phaseId);
   if (selection.docPath) params.set("doc", selection.docPath);

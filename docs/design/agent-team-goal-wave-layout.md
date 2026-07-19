@@ -4,8 +4,8 @@
 status: stable
 owner_role: product-design
 canonical_for: Mission / Wave / Agent Team frontend information architecture
-compatibility_note: file path and some current routes still say goal/team-run
-  until the runtime and dashboard migration lands
+compatibility_note: file path retains historical goal/team-run wording; native
+  Mission/Wave Console is implemented, while unlinked Team Runs remain readers
 ```
 
 ## Why Earlier Layouts Were Replaced
@@ -44,9 +44,9 @@ The canonical navigation is:
 - `Agent Teams`: wave-scoped collaborative runs.
 - `Members`: drill-in from a Team.
 
-Compatibility note: current routes and components may still expose `goal`,
-`goals`, or `team-run` names until migration lands. The product copy and doc
-contracts should use Mission/Wave now.
+Compatibility note: native Mission/Wave is the primary Console path. The
+standalone Team Run surface is retained only to inspect unlinked historical or
+manual runs; it is not a second authoring path.
 
 | Level | Region | User watches | User does |
 | --- | --- | --- | --- |
@@ -76,6 +76,8 @@ burying it in logs.
 ## Team Page
 
 The Team page is the L1.5 war room for a Wave whose executor is `agent_team`.
+The Mission page creates the first attempt and later retries; a retry links to
+the earlier attempt of that same Wave rather than becoming a new Wave.
 
 It has four regions:
 
@@ -87,6 +89,8 @@ It has four regions:
 
 The Team page does not make Task Graph the center of the experience. Ownership
 is explained through assignment-message correlation and explicit Wave context.
+Attempt completion is shown separately from the parent Wave gate: only the Host
+can accept, revise, or block the Wave and name an accepted completed attempt.
 
 ## Member Page
 
@@ -131,7 +135,8 @@ service shutdown cannot leave orphan provider processes.
 
 Thinking is transient live-only state.
 
-- It may appear in host-local live UI when a provider exposes it.
+- It may appear in host-local live UI when a provider exposes it, through a
+  project-scoped SSE preview with an expiry/TTL.
 - It is never persisted as canonical page history.
 - It is never replayable after refresh.
 - It is never evidence.
@@ -142,15 +147,15 @@ artifacts, and outcomes instead.
 
 ## Data Model And Compatibility Notes
 
-- Planned first-class `Wave` product shape:
+- Implemented first-class `Wave` product shape:
   `{id, mission_id, index, title, objective, exit_criteria?, status,
   executor_kind(agent_team|dynamic_workflow|host), executor_run_ids[],
   accepted_run_id?, outcome_summary?, artifact_refs[], gate_status,
   gate_note?, created_at, updated_at}`.
 - `AgentTeamRun` attempts link to the Wave executed by
   `executor_kind=agent_team`.
-- Current store/runtime may still use `Goal`, `GoalPhase`, `task_id`, and older
-  route names during migration.
+- Goal, GoalPhase, task_id, and older route names remain compatibility details;
+  they do not define native Mission/Wave authoring.
 - Host-native subagents remain host/provider implementation detail unless
   optional hooks expose observable delegation facts.
 
@@ -160,3 +165,5 @@ artifacts, and outcomes instead.
 - No automatic replanning without Host/operator confirmation.
 - No requirement that every Wave expose a Task Graph.
 - No durable storage of private reasoning.
+- No claim that Dynamic Workflow or Host executor controls are implemented in
+  this Console merely because those executor choices are visible.

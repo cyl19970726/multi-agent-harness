@@ -25,7 +25,7 @@ processes.
 flowchart TB
   User["User"] --> Host["Resident Host Agent"]
   Host --> Plugin["Host plugin / MCP / Skill"]
-  Plugin --> Mission["Mission / Wave<br/>Agent Team foundation"]
+  Plugin --> Mission["Mission / Wave<br/>native Console"]
   Plugin --> Workflow["Dynamic Workflow<br/>implemented"]
   Plugin --> Team["Agent Team<br/>v0 implemented"]
   Mission --> Choice{"Wave executor"}
@@ -105,7 +105,7 @@ flowchart TB
   Control --> Artifacts["Artifact refs + outcomes"]
   Session --> Durable["Durable action/event summaries"]
   Session --> Live["Transient live stream"]
-  Durable --> ReadModel["Dashboard read model"]
+  Durable --> ReadModel["Project-scoped SSE<br/>Dashboard read model"]
   Messages --> ReadModel
   Artifacts --> ReadModel
 ```
@@ -133,10 +133,10 @@ blockers, handoffs, reviews, and outcome summaries instead.
 
 | Capability | Lifetime | Current maturity |
 | --- | --- | --- |
-| Mission | Across Waves | native schema/store/CLI/API/MCP/read model implemented; closeout UI pending |
-| Wave | One ordered Mission step | native Agent Team attempts and gate implemented; Workflow/Host routing pending |
+| Mission | Across Waves | native schema/store/CLI/API/MCP and Mission-first Console implemented; closeout remains a later surface |
+| Wave | One ordered Mission step | ordered Console cards, Agent Team attempts/retries and Wave gate implemented; Workflow/Host routing remain seams |
 | Dynamic Workflow | One structured run | implemented |
-| AgentTeamRun | One collaborative Wave attempt | Mission/Wave link, retries, correlation, and accepted-attempt gate implemented |
+| AgentTeamRun | One collaborative Wave attempt | Mission/Wave link, retries, asynchronous start, correlation, and accepted-attempt gate implemented |
 | MemberRun | One TeamRun | Kimi-first v0 implemented |
 | Host-native subagent | Provider-controlled | usable by Host; observation optional |
 | Standing Agent + Docs | Long-lived business responsibility | future |
@@ -150,5 +150,5 @@ blockers, handoffs, reviews, and outcome summaries instead.
   Agent Team v0 control plane, amended by ADR 0026.
 - [Agent Team Mission/Wave layout](design/agent-team-goal-wave-layout.md): UI
   information architecture.
-- [Team Run console](dashboard/pages/team-run-console.md): transitional v0
-  mechanism inventory and Team war-room contract.
+- [Team Run console](dashboard/pages/team-run-console.md): native Wave-scoped
+  Agent Team war room and compatibility-reader boundary.

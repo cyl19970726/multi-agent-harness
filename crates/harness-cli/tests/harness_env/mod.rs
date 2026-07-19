@@ -106,6 +106,18 @@ impl ServeHandle {
     /// `--no-truncate` preserves any pre-seeded `provider_turn_events.jsonl` rows.
     /// Extra env can pin `--project`/`HARNESS_PROJECT` via the args/env.
     pub fn spawn(home: &TempHome, cwd: &Path, extra_args: &[&str]) -> Self {
+        Self::spawn_with_env(home, cwd, extra_args, &[])
+    }
+
+    /// Spawn serve with additional environment entries. Provider-execution
+    /// tests use this to place deterministic adapter shims on PATH without
+    /// mutating the parent test process.
+    pub fn spawn_with_env(
+        home: &TempHome,
+        cwd: &Path,
+        extra_args: &[&str],
+        extra_env: &[(&str, &str)],
+    ) -> Self {
         let port = free_port();
         let addr = format!("127.0.0.1:{port}");
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_harness"));
@@ -120,6 +132,9 @@ impl ServeHandle {
             .envs(home.envs())
             .env_remove("HARNESS_ROOT")
             .env_remove("HARNESS_PROJECT");
+        for (key, value) in extra_env {
+            cmd.env(key, value);
+        }
         let child = cmd.spawn().expect("spawn harness serve");
         let handle = Self { child, port };
         handle.wait_until_ready();

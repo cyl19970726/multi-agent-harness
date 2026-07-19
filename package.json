@@ -9,7 +9,7 @@
     "validate:json": "node scripts/validate-json.mjs",
     "check:schema-fixtures": "node scripts/check-schema-fixtures.mjs",
     "check:tool-descriptors": "node scripts/check-tool-descriptors.mjs",
-    "check:dashboard": "tsc -p apps/agent-dashboard/tsconfig.json --noEmit && vite build --config apps/agent-dashboard/vite.config.ts",
+    "check:dashboard": "tsc -p apps/agent-dashboard/tsconfig.json --noEmit && node apps/agent-dashboard/tests/mission-wave-live-merge-check.mjs && vite build --config apps/agent-dashboard/vite.config.ts",
     "dashboard:dev": "vite --config apps/agent-dashboard/vite.config.ts --host 127.0.0.1",
     "dashboard:build": "vite build --config apps/agent-dashboard/vite.config.ts",
     "acceptance:mvp": "node scripts/acceptance-mvp.mjs",
