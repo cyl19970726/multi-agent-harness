@@ -25,7 +25,7 @@ processes.
 flowchart TB
   User["User"] --> Host["Resident Host Agent"]
   Host --> Plugin["Host plugin / MCP / Skill"]
-  Plugin --> Mission["Mission / Wave<br/>planned"]
+  Plugin --> Mission["Mission / Wave<br/>Agent Team foundation"]
   Plugin --> Workflow["Dynamic Workflow<br/>implemented"]
   Plugin --> Team["Agent Team<br/>v0 implemented"]
   Mission --> Choice{"Wave executor"}
@@ -64,9 +64,9 @@ criteria, executor kind/reference, status, outcome summary, artifacts, and the
 gate result. It does not contain or require a Task Graph. Executor-specific
 planning stays inside the executor.
 
-`Mission` and `Wave` are canonical product terms. Current `Goal`, `GoalPhase`,
-and `goal run-phases` records remain transitional implementation surfaces until
-the staged migration in ADR 0026 lands.
+`Mission` and `Wave` are canonical product terms with native ledgers and public
+Agent Team authoring. Existing `Goal` records project to provenance-marked,
+read-only Missions; GoalPhase ids are not converted into Waves.
 
 ## Agent Team Collaboration
 
@@ -133,10 +133,10 @@ blockers, handoffs, reviews, and outcome summaries instead.
 
 | Capability | Lifetime | Current maturity |
 | --- | --- | --- |
-| Mission | Across Waves | planned; `Goal` is the compatibility surface |
-| Wave | One ordered Mission step | planned; `GoalPhase` is transitional, not canonical product design |
+| Mission | Across Waves | native schema/store/CLI/API/MCP/read model implemented; closeout UI pending |
+| Wave | One ordered Mission step | native Agent Team attempts and gate implemented; Workflow/Host routing pending |
 | Dynamic Workflow | One structured run | implemented |
-| AgentTeamRun | One collaborative Wave attempt | v0 implemented, target links to Mission/Wave pending |
+| AgentTeamRun | One collaborative Wave attempt | Mission/Wave link, retries, correlation, and accepted-attempt gate implemented |
 | MemberRun | One TeamRun | Kimi-first v0 implemented |
 | Host-native subagent | Provider-controlled | usable by Host; observation optional |
 | Standing Agent + Docs | Long-lived business responsibility | future |

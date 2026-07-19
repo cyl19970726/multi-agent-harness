@@ -25,22 +25,23 @@ connected through adapters.
 
 ## Compatibility Terms
 
-Mission/Wave is the canonical product vocabulary. Current code and stored data
-still use older names in places. Docs must make that explicit.
+Mission/Wave is the canonical product vocabulary and native contract for new
+work. Existing Goal data remains visible through an explicit read-only
+compatibility projection.
 
 | Canonical term | Current compatibility surface | Rule |
 | --- | --- | --- |
-| `Mission` | `Goal` object, `goal` CLI, Goal-facing dashboard/docs | Use `Mission` for product semantics. Mention `Goal` only when referring to current runtime/store compatibility. |
-| `Wave` | `GoalPhase`, phase-local task joins, some Goal page contracts | A Wave replaces GoalPhase as the product term. `GoalPhase` remains a transitional runtime concept until migration lands. |
-| `MissionEvaluation` | `GoalEvaluation` | Closeout semantics stay the same while names migrate. |
+| `Mission` | `Goal` compatibility projection with provenance | Native Mission is used for new execution; the projection cannot be mutated as a Mission. |
+| `Wave` | GoalPhase ids exposed only as compatibility provenance | A native Wave is not a renamed GoalPhase and never inherits its Task Graph. |
+| Mission closeout | Optional `GoalEvaluation` compatibility object | Native Mission closeout is an explicit outcome summary; evaluation may be layered on when useful. |
 
 ## Core Object Relationships
 
 ```mermaid
 flowchart TD
   Vision[Product Vision]
-  Mission[Mission / Goal compat]
-  Wave[Wave / GoalPhase compat]
+  Mission[Mission / read-only Goal projection]
+  Wave[Native Wave]
   TeamRun[AgentTeamRun]
   WorkflowRun[WorkflowRun]
   HostExec[Host execution]
@@ -56,7 +57,7 @@ flowchart TD
   Proposal[Proposal]
   Review[Review / Critic]
   Decision[Decision]
-  Eval[MissionEvaluation / GoalEvaluation compat]
+  Eval[Optional evaluation / GoalEvaluation compat]
   Case[GoalCase]
 
   Vision --> Mission
@@ -79,7 +80,7 @@ flowchart TD
   Evidence --> Gate
   Gate --> Outcome
   Mission --> Outcome
-  Outcome --> Eval
+  Outcome -. optional evaluation .-> Eval
   Evidence -. repository governance .-> Proposal
   Proposal --> Review
   Review --> Decision
@@ -101,8 +102,9 @@ Rules:
 - a Wave does not require or expose a Task Graph as a product concept;
 - replanning happens between Waves as an explicit design/update step, not as a
   hidden side effect;
-- a Mission is not complete because activity happened; it is complete only when
-  decision and evaluation evidence support the outcome.
+- a Mission is not complete because activity happened; it is complete when its
+  Wave gates and explicit closeout summary support the desired outcome. Stricter
+  evidence or evaluation may be layered on when the domain or risk requires it.
 
 Failure mode this prevents: replacing a durable objective with a sequence of
 convenient implementation steps and then claiming completion from activity
@@ -130,10 +132,10 @@ TeamMessage(kind=assignment)
   -> artifacts, checks, summaries, explicit outcome
 ```
 
-Current v0 automatic handoff preserves this correlation, but manually sent
-progress, blocker, and review messages still receive a new correlation id.
-Those messages must not be described as structurally linked until the send
-surfaces accept an existing correlation/causation reference.
+Automatic handoff preserves this correlation. Manual progress, blocker, review,
+and control messages can explicitly reuse the same-run Assignment correlation;
+a causation-only reply inherits its direct cause's correlation. Cross-run,
+unknown, and mismatched lineage is rejected before persistence.
 
 ### `dynamic_workflow`
 
@@ -238,9 +240,10 @@ The target contract makes thinking transient live-only state.
 
 Persist explicit actions, artifacts, summaries, blockers, and outcomes instead.
 
-Current v0 Kimi execution still writes a bounded durable `thinking` action.
-That row is a migration gap, is not evidence, and must disappear from new writes
-after the transient channel is implemented.
+New Kimi execution no longer writes durable `thinking` actions. Historical rows
+stay in JSONL but are excluded from current snapshots and status reads. The
+transient display channel remains follow-up work, so thinking is currently
+dropped at the adapter boundary.
 
 ## Closeout Gates
 
@@ -251,9 +254,8 @@ deliberately different:
   attempt, actor/time, outcome summary, a short note, and useful artifact refs;
 - a Mission outcome is based on its Wave gates and an explicit Mission-level
   closeout summary;
-- while this repository migrates, harness-managed development still requires
-  the stricter current `Decision` + evidence + `GoalEvaluation` closeout (or an
-  explicit waiver with evidence and a follow-up task).
+- this repository may layer review, evidence, or evaluation on high-risk Waves,
+  but those objects are not mandatory for every self-hosting change.
 
 The legacy governance chain must not leak into every Agent Team product Wave as
 a mandatory object graph.

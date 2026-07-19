@@ -96,10 +96,10 @@ Wave
   -> Wave gate
 ```
 
-Current v0 automatic handoff preserves assignment correlation, but manual send
-creates a new correlation id. Until correlation/causation inputs land, the UI
-must show the assignment reference carried in body text as a compatibility
-fallback and must not fabricate a structural join.
+Automatic handoff preserves assignment correlation. Manual CLI, HTTP, and MCP
+sends can reuse that assignment correlation or inherit it from a validated
+same-run cause. The UI should render these structural joins and label messages
+with omitted lineage as unanchored rather than fabricating ownership.
 
 ## Backward Data Requirements
 
@@ -124,10 +124,10 @@ The final UI may show sanitized, truncated, rate-limited live thinking while a
 provider is streaming it. It must disappear on refresh/expiry and never enter
 snapshot history, replay, evidence, messages, or peer context.
 
-Current v0 durable `MemberAction(type=thinking)` rows are a known migration
-gap. Compatibility views may reveal that old data exists, but product views
-must label it non-evidence and must not claim the live-only policy is already
-implemented.
+New Kimi writes do not persist thinking, and product snapshots filter historical
+`MemberAction(type=thinking)` rows without deleting the ledger. The transient
+display channel is not implemented yet, so product views must not imply that
+real-time thinking is currently available.
 
 ## Warnings
 

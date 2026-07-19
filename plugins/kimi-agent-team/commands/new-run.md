@@ -13,9 +13,8 @@ Follow the [[agent-team-orchestrator]] method while doing this.
    one-paragraph Wave objective (skip only when `$ARGUMENTS` states both
    clearly). An `AgentTeamRun` is one attempt for that Wave; if the objective
    crosses an integration boundary, suggest ordered Waves and create only the
-   first attempt. Current v0 CLI fields may not yet persist Mission/Wave ids,
-   so keep the stated context in the run objective/report rather than inventing
-   unsupported flags.
+   first attempt. Create a native Mission and an `agent_team` Wave when they do
+   not already exist; otherwise select their existing ids.
 2. **Member roster.** Propose a member list and confirm it with the user
    before creating anything. For each member show exactly one line:
 
@@ -31,18 +30,24 @@ name:role:provider[:model][@path1,path2]   — what this lane owns
      prompt contract is attached per member by the harness);
    - include a Lead/integrator lane when lanes must be merged.
 3. **Run options.** Ask about `--budget-usd X` (recommend always setting one).
-   If the current CLI offers `--wave N`, explain it is a v0 compatibility index,
-   not the Mission/Wave identity, and omit it unless the user needs that legacy
-   association.
+   Use `--mission-id` and `--wave-id`; omit legacy numeric `--wave` for linked
+   runs because the native Wave owns its index.
 4. **Assemble and show the command**, e.g.:
 
-   The numeric `--wave` below is an optional v0 compatibility index, not the
-   Wave identity.
-
 ```bash
+harness mission create \
+  --title "..." \
+  --objective "..." \
+  --desired-outcome "..."
+harness wave create \
+  --mission-id <mission-id> \
+  --title "..." \
+  --objective "..." \
+  --executor-kind agent_team
 harness team-run create \
-  --objective "Mission: ...; Wave: ...; Objective: ..." \
-  --wave 2 \
+  --mission-id <mission-id> \
+  --wave-id <wave-id> \
+  --objective "..." \
   --budget-usd 25 \
   --member lead:integrator:kimi \
   --member api:backend:codex:@crates/harness-store,crates/harness-core \

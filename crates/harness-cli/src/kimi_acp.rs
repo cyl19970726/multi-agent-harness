@@ -23,9 +23,9 @@
 //!   "method not implemented" error so the agent can never wedge waiting on
 //!   us — consistent with the v0 posture of no interactive approvals.
 //! - Reasoning streams (`agent_thought_chunk`) are passed through to the
-//!   caller verbatim; the ORCHESTRATOR (team-run start) journals them as
-//!   `thinking` MemberActions (derived reasoning, never execution evidence).
-//!   The driver itself stays a faithful transport.
+//!   caller verbatim. The team-run orchestrator deliberately does not persist
+//!   them: thinking is not evidence, replayable history, or peer-visible
+//!   state. The driver itself stays a faithful transport.
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};

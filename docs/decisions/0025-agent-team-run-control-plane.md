@@ -108,13 +108,13 @@ TeamMessage(kind=assignment)
 
 This is the target proof chain for lane ownership inside the run.
 
-The current v0 implementation is incomplete here. The automatic member
-handoff reuses its assignment's `correlation_id`, but the manual CLI/API/MCP
-send path creates a new correlation id and does not yet accept an existing
-`correlation_id` or `causation_id`. Until that additive input lands, clients
-must keep the assignment message id/correlation in the message body when they
-need to express the relationship; they must not claim that progress, blocker,
-or review messages are structurally correlated by the store.
+Automatic handoff reuses its assignment's `correlation_id`. Manual CLI, HTTP,
+and MCP sends now accept `correlation_id` and `causation_id`: explicit
+correlation must identify an Assignment in the same run, causation must identify
+a message in the same run, and a causation-only reply inherits its cause's
+correlation. Invalid or cross-run lineage is rejected before a message append.
+Messages that omit both fields retain an opaque generated correlation and make
+no claim of assignment ownership.
 
 ### Delegation guardrails
 
@@ -159,12 +159,11 @@ object model.
 
 Persist explicit actions, artifacts, summaries, blockers, and outcomes instead.
 
-Current v0 code still appends provider reasoning as durable
-`MemberAction(type=thinking)` rows. That behavior predates this policy and is a
-known migration gap. New product surfaces must not treat those rows as
-evidence, forward them to peers, or describe them as the final contract; the
-runtime must stop writing them after the transient channel exists, as specified
-by ADR 0026.
+New Kimi adapter writes no longer append provider reasoning as durable
+`MemberAction(type=thinking)` rows. Historical rows remain in JSONL for
+non-destructive compatibility but are filtered from current snapshots and
+status reads. The sanitized transient display channel is still pending; until
+it exists, provider thinking is dropped rather than persisted.
 
 ## Consequences
 

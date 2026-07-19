@@ -715,6 +715,82 @@ export interface HarnessTurnEvent {
 /* Agent Team runs (team-run orchestration, WP team-console)           */
 /* ------------------------------------------------------------------ */
 
+/** Lifecycle of a durable Mission. */
+export type MissionStatus =
+  | "planned"
+  | "running"
+  | "blocked"
+  | "completed"
+  | "cancelled";
+
+/** Durable intent container for one or more ordered Waves. */
+export interface Mission {
+  id: string;
+  title: string;
+  objective: string;
+  desired_outcome?: string | null;
+  status?: MissionStatus | string;
+  wave_ids?: string[];
+  outcome_summary?: string | null;
+  created_at?: string;
+  updated_at?: string;
+  completed_at?: string | null;
+}
+
+/** Whether a Mission view is native product state or a read-only Goal bridge. */
+export type MissionProjectionSource = "native" | "goal_compatibility" | string;
+
+/**
+ * A Mission read model during the non-destructive Goal migration. Compatibility
+ * projections retain legacy phase provenance and do not pretend those phases
+ * are Waves.
+ */
+export interface MissionProjection {
+  mission: Mission;
+  source: MissionProjectionSource;
+  source_id: string;
+  legacy_goal_phase_ids?: string[];
+}
+
+/** Executor selected by a Wave; each retains its own runtime semantics. */
+export type WaveExecutorKind = "agent_team" | "dynamic_workflow" | "host";
+
+/** Lifecycle of a Wave, independent from its lightweight acceptance gate. */
+export type WaveStatus =
+  | "planned"
+  | "running"
+  | "waiting"
+  | "completed"
+  | "blocked"
+  | "failed"
+  | "cancelled";
+
+/** Lightweight Wave gate state. */
+export type WaveGateStatus = "pending" | "accepted" | "revise" | "blocked";
+
+/** One ordered, lightweight unit of a Mission. */
+export interface Wave {
+  id: string;
+  mission_id: string;
+  index: number;
+  title: string;
+  objective: string;
+  exit_criteria?: string | null;
+  status?: WaveStatus | string;
+  executor_kind: WaveExecutorKind | string;
+  executor_run_ids?: string[];
+  accepted_run_id?: string | null;
+  plan_note?: string | null;
+  outcome_summary?: string | null;
+  artifact_refs?: string[];
+  gate_status?: WaveGateStatus | string;
+  gate_note?: string | null;
+  accepted_by?: string | null;
+  accepted_at?: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
 /** Lifecycle of a {@link TeamRun} (mirrors the harness team-run status). */
 export type TeamRunStatus =
   | "planning"
@@ -733,7 +809,11 @@ export type TeamRunStatus =
 export interface TeamRun {
   id: string;
   definition_id?: string | null;
-  /** Wave lineage: the previous wave's run this one re-plans from, if any. */
+  /** Native Mission context when this is an executor attempt. */
+  mission_id?: string | null;
+  /** Native Wave context when this is an executor attempt. */
+  wave_id?: string | null;
+  /** Retry lineage: the previous attempt of this same native Wave, if any. */
   previous_run_id?: string | null;
   host_surface?: string | null;
   host_thread_id?: string | null;
@@ -912,6 +992,12 @@ export interface DashboardSnapshot {
   live_normalized_events?: Record<string, HarnessTurnEvent[]>;
   workflow_runs?: WorkflowRun[];
   workflow_steps?: WorkflowStep[];
+  /** Native durable Mission rows. */
+  missions?: Mission[];
+  /** Native ordered Wave rows. */
+  waves?: Wave[];
+  /** Native and read-only Goal compatibility Mission views. */
+  mission_projections?: MissionProjection[];
   /**
    * The goal↔run orchestration checkpoints (Stage 0): each `goal run-phases`
    * execution and its per-phase `workflow_run_id` links — the BACK link to the

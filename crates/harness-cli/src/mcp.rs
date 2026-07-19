@@ -10,7 +10,7 @@
 //! - `initialize` → protocolVersion / capabilities / serverInfo handshake.
 //! - `notifications/initialized` (and any other notification) → no response.
 //! - `ping` → `{}`.
-//! - `tools/list` → the five Agent Team v0 tools.
+//! - `tools/list` → Mission/Wave authoring plus Agent Team tools.
 //! - `tools/call` → `{content:[{type:"text",text:<result JSON>}], isError}`.
 //! - unknown method → JSON-RPC -32601. stdin EOF exits.
 
@@ -21,9 +21,10 @@ use harness_store::HarnessStore;
 use serde_json::{json, Value};
 
 use crate::{
-    create_team_run, latest_member_actions_in_append_order, latest_member_runs_in_append_order,
+    create_mission, create_team_run, create_wave, gate_wave, latest_member_runs_in_append_order,
     latest_team_messages_in_append_order, latest_team_run, latest_team_runs_in_append_order,
-    parse_team_message_kind, send_team_message, TeamMemberSpec,
+    parse_team_message_kind, parse_wave_executor_kind, send_team_message,
+    visible_member_actions_in_append_order, TeamMemberSpec,
 };
 
 /// MCP protocol revision this server speaks, echoed verbatim in `initialize`
@@ -105,6 +106,11 @@ fn call_tool(store: &HarnessStore, params: &Value) -> Result<Value, (i64, String
         .cloned()
         .unwrap_or_else(|| json!({}));
     let outcome = match name {
+        "mission_create" => tool_mission_create(store, &arguments),
+        "mission_list" => tool_mission_list(store),
+        "wave_create" => tool_wave_create(store, &arguments),
+        "wave_list" => tool_wave_list(store, &arguments),
+        "wave_gate" => tool_wave_gate(store, &arguments),
         "team_run_create" => tool_team_run_create(store, &arguments),
         "team_run_list" => tool_team_run_list(store),
         "team_run_status" => tool_team_run_status(store, &arguments),
@@ -130,14 +136,125 @@ fn required_str<'a>(arguments: &'a Value, key: &str) -> Result<&'a str, String> 
         .ok_or_else(|| format!("missing required string argument `{key}`"))
 }
 
+fn optional_str(arguments: &Value, key: &str) -> Result<Option<String>, String> {
+    match arguments.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => value
+            .as_str()
+            .map(|text| Some(text.to_string()))
+            .ok_or_else(|| format!("argument `{key}` must be a string or null")),
+    }
+}
+
+fn optional_string_array(arguments: &Value, key: &str) -> Result<Vec<String>, String> {
+    match arguments.get(key) {
+        None => Ok(Vec::new()),
+        Some(Value::Array(values)) => values
+            .iter()
+            .enumerate()
+            .map(|(index, value)| {
+                value
+                    .as_str()
+                    .map(str::to_string)
+                    .ok_or_else(|| format!("argument `{key}[{index}]` must be a string"))
+            })
+            .collect(),
+        Some(_) => Err(format!("argument `{key}` must be an array")),
+    }
+}
+
+fn tool_mission_create(store: &HarnessStore, arguments: &Value) -> Result<Value, String> {
+    let mission = create_mission(
+        store,
+        optional_str(arguments, "id")?,
+        required_str(arguments, "title")?,
+        required_str(arguments, "objective")?,
+        optional_str(arguments, "desired_outcome")?,
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(json!(mission))
+}
+
+fn tool_mission_list(store: &HarnessStore) -> Result<Value, String> {
+    Ok(json!(store
+        .mission_projections()
+        .map_err(|error| error.to_string())?))
+}
+
+fn tool_wave_create(store: &HarnessStore, arguments: &Value) -> Result<Value, String> {
+    let index = match arguments.get("index") {
+        None => None,
+        Some(value) => {
+            let index = value
+                .as_u64()
+                .ok_or_else(|| "index must be a positive integer".to_string())?;
+            Some(u32::try_from(index).map_err(|_| "index must fit a positive u32".to_string())?)
+        }
+    };
+    let wave = create_wave(
+        store,
+        optional_str(arguments, "id")?,
+        required_str(arguments, "mission_id")?,
+        index,
+        required_str(arguments, "title")?,
+        required_str(arguments, "objective")?,
+        parse_wave_executor_kind(required_str(arguments, "executor_kind")?)
+            .map_err(|error| error.to_string())?,
+        optional_str(arguments, "exit_criteria")?,
+        optional_str(arguments, "plan_note")?,
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(json!(wave))
+}
+
+fn tool_wave_list(store: &HarnessStore, arguments: &Value) -> Result<Value, String> {
+    let mission_id = optional_str(arguments, "mission_id")?;
+    Ok(json!(store
+        .latest_waves()
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .filter(|wave| mission_id.as_deref().is_none_or(|id| wave.mission_id == id))
+        .collect::<Vec<_>>()))
+}
+
+fn tool_wave_gate(store: &HarnessStore, arguments: &Value) -> Result<Value, String> {
+    let artifacts = optional_string_array(arguments, "artifact_refs")?;
+    let wave = gate_wave(
+        store,
+        required_str(arguments, "wave_id")?,
+        required_str(arguments, "status")?,
+        optional_str(arguments, "run_id")?,
+        optional_str(arguments, "accepted_by")?
+            .as_deref()
+            .unwrap_or("host"),
+        optional_str(arguments, "note")?,
+        optional_str(arguments, "outcome")?,
+        artifacts,
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(json!(wave))
+}
+
 /// `team_run_create` — journal a new run + member runs + assignment messages.
 fn tool_team_run_create(store: &HarnessStore, arguments: &Value) -> Result<Value, String> {
     let objective = required_str(arguments, "objective")?;
-    let wave_index = arguments
-        .get("wave_index")
-        .and_then(Value::as_u64)
-        .unwrap_or(1) as u32;
-    let budget_limit_usd = arguments.get("budget_limit_usd").and_then(Value::as_f64);
+    let wave_index = match arguments.get("wave_index") {
+        None => 1,
+        Some(value) => {
+            let raw = value
+                .as_u64()
+                .ok_or_else(|| "wave_index must be a positive integer".to_string())?;
+            u32::try_from(raw).map_err(|_| "wave_index must fit a positive u32".to_string())?
+        }
+    };
+    let budget_limit_usd = match arguments.get("budget_limit_usd") {
+        None | Some(Value::Null) => None,
+        Some(value) => Some(
+            value
+                .as_f64()
+                .ok_or_else(|| "budget_limit_usd must be a number or null".to_string())?,
+        ),
+    };
     let member_values = arguments
         .get("members")
         .and_then(Value::as_array)
@@ -150,25 +267,27 @@ fn tool_team_run_create(store: &HarnessStore, arguments: &Value) -> Result<Value
                 .and_then(Value::as_str)
                 .ok_or_else(|| format!("members[{index}].{key} must be a string"))
         };
+        let owned_paths = match member.get("owned_paths") {
+            None => Vec::new(),
+            Some(Value::Array(paths)) => paths
+                .iter()
+                .enumerate()
+                .map(|(path_index, path)| {
+                    path.as_str().map(str::to_string).ok_or_else(|| {
+                        format!("members[{index}].owned_paths[{path_index}] must be a string")
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+            Some(_) => {
+                return Err(format!("members[{index}].owned_paths must be an array"));
+            }
+        };
         members.push(TeamMemberSpec {
             name: member_str("name")?.to_string(),
             role: member_str("role")?.to_string(),
             provider: member_str("provider")?.to_string(),
-            model: member
-                .get("model")
-                .and_then(Value::as_str)
-                .map(str::to_string),
-            owned_paths: member
-                .get("owned_paths")
-                .and_then(Value::as_array)
-                .map(|paths| {
-                    paths
-                        .iter()
-                        .filter_map(Value::as_str)
-                        .map(str::to_string)
-                        .collect()
-                })
-                .unwrap_or_default(),
+            model: optional_str(member, "model")?,
+            owned_paths,
         });
     }
     let created = create_team_run(
@@ -178,16 +297,18 @@ fn tool_team_run_create(store: &HarnessStore, arguments: &Value) -> Result<Value
         budget_limit_usd,
         "mcp",
         None,
-        arguments
-            .get("previous_run_id")
-            .and_then(Value::as_str)
-            .map(str::to_string),
+        optional_str(arguments, "previous_run_id")?,
+        optional_str(arguments, "mission_id")?,
+        optional_str(arguments, "wave_id")?,
         &members,
     )
     .map_err(|error| error.to_string())?;
     Ok(json!({
         "team_run_id": created.team_run.id,
         "member_run_ids": created.team_run.member_run_ids,
+        "mission_id": created.team_run.mission_id,
+        "wave_id": created.team_run.wave_id,
+        "assignment_messages": created.assignment_messages,
         "dashboard_url": DASHBOARD_URL,
     }))
 }
@@ -224,7 +345,7 @@ fn tool_team_run_status(store: &HarnessStore, arguments: &Value) -> Result<Value
         .filter(|member| member.team_run_id == id)
         .collect();
     let actions =
-        latest_member_actions_in_append_order(store).map_err(|error| error.to_string())?;
+        visible_member_actions_in_append_order(store).map_err(|error| error.to_string())?;
     let messages =
         latest_team_messages_in_append_order(store).map_err(|error| error.to_string())?;
     let members: Vec<Value> = member_runs
@@ -281,6 +402,14 @@ fn tool_team_run_send_message(store: &HarnessStore, arguments: &Value) -> Result
         .get("task_id")
         .and_then(Value::as_str)
         .map(str::to_string);
+    let correlation_id = arguments
+        .get("correlation_id")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let causation_id = arguments
+        .get("causation_id")
+        .and_then(Value::as_str)
+        .map(str::to_string);
     let message = send_team_message(
         store,
         team_run_id,
@@ -289,6 +418,8 @@ fn tool_team_run_send_message(store: &HarnessStore, arguments: &Value) -> Result
         kind,
         body,
         task_id,
+        correlation_id,
+        causation_id,
     )
     .map_err(|error| error.to_string())?;
     Ok(json!({
@@ -315,31 +446,93 @@ fn tool_team_run_events(store: &HarnessStore, arguments: &Value) -> Result<Value
     Ok(json!(events))
 }
 
-/// The five Agent Team v0 tools. Descriptions ARE the interface contract —
-/// the host model reads them to decide how to call each tool.
+/// Mission/Wave authoring plus Agent Team tools. Descriptions ARE the interface
+/// contract — the host model reads them to decide how to call each tool.
 fn tool_definitions() -> Value {
     json!([
         {
-            "name": "team_run_create",
-            "description": "Create an Agent Team v0 run: journals the team run (status `planning`), one idle member run per member, one queued assignment message per member from the reserved `host` sender, and folded team-run events. Returns the run id, member run ids, and the live dashboard URL. Drive the run afterwards with `harness team-run start` (the kimi-over-ACP adapter is the v0 member runtime).",
+            "name": "mission_create",
+            "description": "Create a native durable Mission. Goal compatibility projections are read-only; use this for new Mission/Wave work.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "objective": {"type": "string", "description": "What the team should accomplish; also seeds each member's assignment message body."},
-                    "wave_index": {"type": "integer", "description": "Wave number of this run (default 1)."},
-                    "budget_limit_usd": {"type": "number", "description": "Optional budget cap in USD, recorded on the run."},
-                    "previous_run_id": {"type": "string", "description": "Optional id of the previous wave's run; chains this run onto that lineage (re-plan of an earlier wave)."},
+                    "id": {"type": "string", "description": "Optional stable Mission id; generated when omitted."},
+                    "title": {"type": "string"},
+                    "objective": {"type": "string"},
+                    "desired_outcome": {"type": "string"}
+                },
+                "required": ["title", "objective"]
+            }
+        },
+        {
+            "name": "mission_list",
+            "description": "List Mission projections with provenance. Native Mission rows and read-only Goal compatibility projections are both returned explicitly.",
+            "inputSchema": {"type": "object", "properties": {}}
+        },
+        {
+            "name": "wave_create",
+            "description": "Create a lightweight ordered Wave for a native Mission. The Mission is updated with the Wave id; no Task Graph is created.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string"},
+                    "mission_id": {"type": "string"},
+                    "index": {"type": "integer", "minimum": 1, "description": "Optional explicit order; next order is selected when omitted."},
+                    "title": {"type": "string"},
+                    "objective": {"type": "string"},
+                    "executor_kind": {"type": "string", "enum": ["agent_team", "dynamic_workflow", "host"]},
+                    "exit_criteria": {"type": "string"},
+                    "plan_note": {"type": "string"}
+                },
+                "required": ["mission_id", "title", "objective", "executor_kind"]
+            }
+        },
+        {
+            "name": "wave_list",
+            "description": "List latest native Wave rows, optionally limited to one Mission.",
+            "inputSchema": {"type": "object", "properties": {"mission_id": {"type": "string"}}}
+        },
+        {
+            "name": "wave_gate",
+            "description": "Record a lightweight Wave gate. `accepted` requires an eligible executor run; for agent_team it must be a completed TeamRun linked to the same Mission/Wave. `revise` and `blocked` preserve attempts.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "wave_id": {"type": "string"},
+                    "status": {"type": "string", "enum": ["accepted", "revise", "blocked"]},
+                    "run_id": {"type": "string", "description": "Required when status is accepted."},
+                    "accepted_by": {"type": "string", "description": "Defaults to host."},
+                    "note": {"type": "string"},
+                    "outcome": {"type": "string", "description": "Required when status is accepted."},
+                    "artifact_refs": {"type": "array", "items": {"type": "string"}}
+                },
+                "required": ["wave_id", "status"]
+            }
+        },
+        {
+            "name": "team_run_create",
+            "description": "Create an Agent Team run with at least one member: journals the planning run, member rows, canonical queued Assignment messages, and events. Returns run/member ids and the Assignment messages with their correlation ids. Drive it with `harness team-run start`.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "objective": {"type": "string", "minLength": 1, "description": "What the team should accomplish; also seeds each member's assignment message body."},
+                    "wave_index": {"type": "integer", "minimum": 1, "description": "Compatibility wave number for unlinked runs (default 1); a native Wave supplies its own index."},
+                    "budget_limit_usd": {"type": "number", "minimum": 0, "description": "Optional budget cap in USD, recorded on the run."},
+                    "previous_run_id": {"type": "string", "description": "Optional previous attempt id. For a linked native Wave it must belong to the same Mission/Wave."},
+                    "mission_id": {"type": "string", "description": "Optional durable Mission id. New native linkage requires a concrete wave_id; omit both ids only for an unlinked compatibility run."},
+                    "wave_id": {"type": "string", "description": "Optional durable Wave id for this run. The run inherits that Wave's Mission when mission_id is omitted; a supplied mission_id must match."},
                     "members": {
                         "type": "array",
                         "description": "One entry per team member.",
+                        "minItems": 1,
                         "items": {
                             "type": "object",
                             "properties": {
-                                "name": {"type": "string", "description": "Member display name, unique within the run."},
-                                "role": {"type": "string", "description": "e.g. coordinator / implementer / reviewer."},
-                                "provider": {"type": "string", "description": "Provider id (kimi is the v0 adapter)."},
-                                "model": {"type": "string", "description": "Optional provider model override."},
-                                "owned_paths": {"type": "array", "items": {"type": "string"}, "description": "Paths this member exclusively owns."}
+                                "name": {"type": "string", "minLength": 1, "description": "Member display name, unique within the run."},
+                                "role": {"type": "string", "minLength": 1, "description": "e.g. coordinator / implementer / reviewer."},
+                                "provider": {"type": "string", "minLength": 1, "description": "Provider id (kimi is the v0 adapter)."},
+                                "model": {"type": "string", "minLength": 1, "description": "Optional provider model override."},
+                                "owned_paths": {"type": "array", "items": {"type": "string", "minLength": 1}, "description": "Paths this member exclusively owns."}
                             },
                             "required": ["name", "role", "provider"]
                         }
@@ -366,16 +559,18 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "team_run_send_message",
-            "description": "Route one message inside a team run and fold it into the run's event log. `from_member_id` may be a member run id or the reserved sender `host`. Returns the new message id and its correlation id.",
+            "description": "Route one message inside a team run and fold it into the run's event log. `from_member_id` may be a member run id or the reserved sender `host`. Omit lineage fields for a fresh opaque correlation; to reuse an assignment's ownership correlation, pass that assignment's `correlation_id` (and optionally its message id as `causation_id`). Returns the new message id and its correlation id.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "team_run_id": {"type": "string"},
                     "from_member_id": {"type": "string", "description": "Sender: a member run id, or `host`."},
-                    "to_member_ids": {"type": "array", "items": {"type": "string"}, "description": "One or more recipient member run ids."},
+                    "to_member_ids": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}, "description": "One or more recipient member run ids, or the reserved host recipient."},
                     "kind": {"type": "string", "enum": ["assignment", "question", "answer", "progress", "blocker", "handoff", "review_request", "review_result", "control", "broadcast"]},
                     "body": {"type": "string"},
-                    "task_id": {"type": "string", "description": "Optional task this message refers to."}
+                    "task_id": {"type": "string", "description": "Optional legacy task this message refers to."},
+                    "correlation_id": {"type": "string", "description": "Optional assignment correlation to reuse. For a non-assignment message, it must identify an Assignment in this team run."},
+                    "causation_id": {"type": "string", "description": "Optional earlier TeamMessage id in this team run. When paired with correlation_id, it must carry that same correlation."}
                 },
                 "required": ["team_run_id", "from_member_id", "to_member_ids", "kind", "body"]
             }

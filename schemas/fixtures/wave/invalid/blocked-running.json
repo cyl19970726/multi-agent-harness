@@ -1,0 +1,13 @@
+{
+  "id": "wave-invalid-blocked-running",
+  "mission_id": "mission-1",
+  "index": 1,
+  "title": "Contradictory blocked Wave",
+  "objective": "A blocked gate cannot have a running Wave status.",
+  "status": "running",
+  "executor_kind": "agent_team",
+  "executor_run_ids": ["team-run-1"],
+  "gate_status": "blocked",
+  "created_at": "unix-ms:1",
+  "updated_at": "unix-ms:2"
+}

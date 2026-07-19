@@ -2,12 +2,13 @@
 
 ## Status
 
-Accepted product direction; implementation migration planned.
+Accepted. The additive Agent Team foundation is implemented; Dynamic Workflow,
+Host execution, Mission closeout, and the transient thinking channel remain
+follow-up work.
 
 This decision supersedes ADR 0024 as the future product orchestration model and
 amends ADR 0025. Existing GoalPhase code, commands, ledgers, and stored data
-remain compatibility surfaces until the migration below is implemented and
-verified.
+remain compatibility surfaces during the non-destructive migration below.
 
 ## Context
 
@@ -125,6 +126,11 @@ never counts as evidence, and is never forwarded to peers.
 Explicit plans, tool actions, artifacts, blockers, handoffs, and outcomes remain
 durable.
 
+New Kimi adapter writes no longer persist provider thinking, and current
+snapshots filter historical `MemberAction(type=thinking)` rows without deleting
+the ledger. The live-only transport described above is not implemented yet, so
+provider thinking is currently dropped instead of shown.
+
 ## Options Rejected
 
 ### Keep Goal as the product term
@@ -173,17 +179,24 @@ authority it does not possess.
 
 1. **Docs:** make this ADR and `docs/architecture-map.md` canonical. Mark ADR
    0024, the GoalPhase loop, and run-centric UI sections transitional.
-2. **Additive contracts:** introduce Mission/Wave schemas and projection code;
-   dual-read existing Goal/GoalPhase data without rewriting JSONL history.
-3. **Agent Team joins:** add `mission_id`, `wave_id`, and
-   `assignment_message_id`/correlation joins. Keep old task fields readable but
-   stop requiring them for new runs.
+2. **Additive contracts (implemented):** Mission/Wave schemas, ledgers, Rust
+   contracts, dashboard snapshot fields, and a provenance-bearing Goal
+   compatibility projection exist. GoalPhase ids remain compatibility
+   provenance; they are not synthesized into Wave rows and JSONL is not
+   rewritten.
+3. **Agent Team joins (implemented):** `AgentTeamRun` accepts `mission_id` and
+   `wave_id`; a Wave records every run attempt and its accepted run. Manual
+   messages accept validated `correlation_id` and `causation_id`. Old task
+   fields remain readable but are not required for new Agent Team work.
 4. **Runtime:** route Wave executor selection to Agent Team, Dynamic Workflow,
    or Host. Prove retries through `executor_run_ids[]` and `accepted_run_id`.
-5. **Thinking:** remove durable thinking writes after the transient channel is
-   available; preserve old rows as history but exclude them from new snapshots.
-6. **CLI/API/Dashboard/plugins/skills:** promote Mission/Wave names and keep
-   temporary Goal/phase aliases with deprecation output.
+5. **Thinking (partially implemented):** new durable thinking writes have
+   stopped and old rows are excluded from snapshots. Add a sanitized,
+   overwrite/expire live channel before claiming real-time thinking display.
+6. **CLI/API/MCP/Dashboard/plugins/skills (Agent Team foundation):** native
+   Mission/Wave authoring, listing, Agent Team run linkage, retry lineage, and
+   the lightweight Wave gate are public. Dashboard types/read models are
+   present; the Mission-first product UI is still follow-up work.
 7. **Removal:** delete GoalPhase-specific orchestration only after fixtures,
    migrations, stored-data reads, live Wave runs, governance, and Dashboard
    acceptance pass. Record the removal in a later ADR.
@@ -198,7 +211,9 @@ authority it does not possess.
 
 ## Validation
 
-The design stage passes when canonical docs contain no claim that Wave attaches
-to GoalPhase, no required Task Graph remains in Mission/Wave or Agent Team, the
-thinking boundary is transient, and governance/doc checks pass. Runtime
-acceptance belongs to the follow-up implementation Mission.
+The additive Agent Team foundation passes when canonical docs contain no claim
+that Wave attaches to GoalPhase, no required Task Graph remains in Mission/Wave
+or Agent Team, native and compatibility reads are distinguishable, retry/gate
+lineage is executable through public surfaces, new thinking is absent from
+durable state, and the focused acceptance suite passes. Dynamic Workflow/Host
+Wave routing and transient thinking display are separate acceptance slices.

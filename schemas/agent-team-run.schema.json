@@ -12,6 +12,28 @@
     "created_at",
     "updated_at"
   ],
+  "allOf": [
+    {
+      "if": {
+        "required": ["mission_id"],
+        "properties": { "mission_id": { "type": "string" } }
+      },
+      "then": {
+        "required": ["wave_id"],
+        "properties": { "wave_id": { "type": "string" } }
+      }
+    },
+    {
+      "if": {
+        "required": ["wave_id"],
+        "properties": { "wave_id": { "type": "string" } }
+      },
+      "then": {
+        "required": ["mission_id"],
+        "properties": { "mission_id": { "type": "string" } }
+      }
+    }
+  ],
   "properties": {
     "id": {
       "type": "string",
@@ -25,6 +47,20 @@
       "minLength": 1
     },
     "previous_run_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1
+    },
+    "mission_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1
+    },
+    "wave_id": {
       "type": [
         "string",
         "null"

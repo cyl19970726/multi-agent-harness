@@ -49,8 +49,8 @@
    "lifecycle": "stable",
    "canonicalFor": [
     "agent operating rules",
-    "canonical AgentMember workflow",
-    "staged acceptance"
+    "native Mission/Wave self-hosting workflow",
+    "executor-specific staged acceptance"
    ],
    "dependsOn": [
     "docs/prd.md",
@@ -68,7 +68,7 @@
    "lastVerifiedWith": [
     "npx pnpm@9.15.4 check"
    ],
-   "reorgTrigger": "The Mission/Wave product model, current self-hosting compatibility workflow, canonical AgentMember workflow, staged acceptance, or goal learning gate requirements change."
+   "reorgTrigger": "The Mission/Wave product model, native self-hosting workflow, executor proof contract, or staged acceptance requirements change."
   },
   {
    "path": "docs/README.md",
@@ -380,7 +380,8 @@
     "data model relationships",
     "source-of-truth rules",
     "projection semantics",
-    "task graph edges",
+    "Mission/Wave and executor attempt edges",
+    "legacy task graph compatibility edges",
     "generic object edges",
     "Evidence-to-object graduation (dual-read)"
    ],
@@ -401,7 +402,7 @@
     "npx pnpm@9.15.4 check",
     "cargo test"
    ],
-   "reorgTrigger": "Object relationships, generic object edges, Evidence-to-object graduation, projections, source-of-truth rules, or schema responsibilities change."
+   "reorgTrigger": "Mission/Wave relationships, executor attempt edges, legacy generic object edges, projections, source-of-truth rules, or schema responsibilities change."
   },
   {
    "path": "docs/agent-runtime.md",

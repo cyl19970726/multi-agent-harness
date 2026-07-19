@@ -2421,6 +2421,206 @@ pub struct Vision {
     pub created_at: String,
 }
 
+// ---------------------------------------------------------------------------
+// Mission / Wave product contracts (ADR 0026)
+//
+// These records are deliberately independent from the historical Goal /
+// GoalPhase model. A Mission owns durable intent and outcome; each Wave owns a
+// small, ordered execution attempt and delegates its internal execution
+// semantics to its selected executor. They are additive so existing ledgers can
+// continue to deserialize unchanged during the staged migration.
+// ---------------------------------------------------------------------------
+
+/// Lifecycle of a [`Mission`]. The lifecycle is intentionally lighter than the
+/// compatibility `GoalStatus` / `GoalStage` pair: executor-specific progress
+/// belongs to Waves and their runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum MissionStatus {
+    #[default]
+    Planned,
+    Running,
+    Blocked,
+    Completed,
+    Cancelled,
+}
+
+/// Durable operator intent. `desired_outcome` captures the intended result;
+/// `outcome_summary` is filled only after execution has produced one. A Mission
+/// does not contain a task graph or executor-specific state.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Mission {
+    pub id: String,
+    pub title: String,
+    pub objective: String,
+    #[serde(default)]
+    pub desired_outcome: Option<String>,
+    #[serde(default)]
+    pub status: MissionStatus,
+    /// Ordered Wave identities. Wave rows remain their own append-only ledger;
+    /// this is a convenient explicit membership projection, not a replacement
+    /// for reading the Wave ledger by `mission_id`.
+    #[serde(default)]
+    pub wave_ids: Vec<String>,
+    #[serde(default)]
+    pub outcome_summary: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    #[serde(default)]
+    pub completed_at: Option<String>,
+}
+
+/// The executor selected for a [`Wave`]. Its execution records live in the
+/// executor's own ledger: `AgentTeamRun`, `WorkflowRun`, or a Host-owned run
+/// reference. This enum intentionally has no task-graph variant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WaveExecutorKind {
+    AgentTeam,
+    DynamicWorkflow,
+    Host,
+}
+
+/// Lifecycle of a [`Wave`], kept separate from its lightweight gate result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum WaveStatus {
+    #[default]
+    Planned,
+    Running,
+    Waiting,
+    Completed,
+    Blocked,
+    Failed,
+    Cancelled,
+}
+
+/// Lightweight acceptance state for a [`Wave`]. This is intentionally not the
+/// historical Goal/Task/Evidence/Proposal review chain; repositories may retain
+/// stricter governance on top of this product contract.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum WaveGateStatus {
+    #[default]
+    Pending,
+    Accepted,
+    Revise,
+    Blocked,
+}
+
+/// One ordered unit of a Mission. Retries and replacement attempts are recorded
+/// in `executor_run_ids`; `accepted_run_id` identifies the attempt accepted by
+/// the Wave gate. A Wave has no task graph or executor-specific child model.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Wave {
+    pub id: String,
+    pub mission_id: String,
+    pub index: u32,
+    pub title: String,
+    pub objective: String,
+    #[serde(default)]
+    pub exit_criteria: Option<String>,
+    #[serde(default)]
+    pub status: WaveStatus,
+    pub executor_kind: WaveExecutorKind,
+    #[serde(default)]
+    pub executor_run_ids: Vec<String>,
+    #[serde(default)]
+    pub accepted_run_id: Option<String>,
+    #[serde(default)]
+    pub plan_note: Option<String>,
+    #[serde(default)]
+    pub outcome_summary: Option<String>,
+    #[serde(default)]
+    pub artifact_refs: Vec<String>,
+    #[serde(default)]
+    pub gate_status: WaveGateStatus,
+    #[serde(default)]
+    pub gate_note: Option<String>,
+    #[serde(default)]
+    pub accepted_by: Option<String>,
+    #[serde(default)]
+    pub accepted_at: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// Identifies whether a Mission read model came from the native Mission ledger
+/// or from a read-only compatibility projection of a historical Goal row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MissionProjectionSource {
+    Native,
+    GoalCompatibility,
+}
+
+/// Read-only Mission view used during the non-destructive migration. Goal
+/// compatibility projections intentionally expose their phase ids as provenance
+/// instead of inventing Wave rows: a GoalPhase may own a task graph and cannot
+/// honestly be represented as one of the three Wave executor kinds.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MissionProjection {
+    pub mission: Mission,
+    pub source: MissionProjectionSource,
+    pub source_id: String,
+    #[serde(default)]
+    pub legacy_goal_phase_ids: Vec<String>,
+}
+
+impl MissionProjection {
+    pub fn native(mission: Mission) -> Self {
+        let source_id = mission.id.clone();
+        Self {
+            mission,
+            source: MissionProjectionSource::Native,
+            source_id,
+            legacy_goal_phase_ids: Vec::new(),
+        }
+    }
+
+    /// Build a synthetic, read-only Mission view from a compatibility Goal row.
+    /// The `compat-goal:` namespace prevents a projection from colliding with a
+    /// native Mission id, and no projection is ever written back to a ledger.
+    pub fn from_goal_compatibility(goal: &Goal) -> Self {
+        let status = match goal.status {
+            GoalStatus::Blocked => MissionStatus::Blocked,
+            GoalStatus::Done | GoalStatus::Complete => MissionStatus::Completed,
+            GoalStatus::Archived => MissionStatus::Cancelled,
+            GoalStatus::Active | GoalStatus::Review => match goal.effective_stage() {
+                GoalStage::Draft | GoalStage::Exploring | GoalStage::Explored => {
+                    MissionStatus::Planned
+                }
+                GoalStage::Working
+                | GoalStage::Done
+                | GoalStage::Verifying
+                | GoalStage::Verified => MissionStatus::Running,
+            },
+        };
+        let mission = Mission {
+            id: format!("compat-goal:{}", goal.id),
+            title: goal.title.clone(),
+            objective: goal
+                .description_md
+                .clone()
+                .unwrap_or_else(|| goal.title.clone()),
+            desired_outcome: goal.acceptance_md.clone(),
+            status,
+            wave_ids: Vec::new(),
+            outcome_summary: None,
+            created_at: goal.created_at.clone(),
+            updated_at: goal.updated_at.clone(),
+            // A compatibility Goal has no canonical Mission completion timestamp.
+            completed_at: None,
+        };
+        Self {
+            mission,
+            source: MissionProjectionSource::GoalCompatibility,
+            source_id: goal.id.clone(),
+            legacy_goal_phase_ids: goal.phases.iter().map(|phase| phase.id.clone()).collect(),
+        }
+    }
+}
+
 pub trait Validate {
     fn validate(&self) -> Result<(), ValidationError>;
 }
@@ -2618,6 +2818,27 @@ impl Validate for Vision {
         require_non_empty(&self.id, "Vision.id")?;
         require_non_empty(&self.summary, "Vision.summary")?;
         require_non_empty(&self.created_at, "Vision.created_at")
+    }
+}
+
+impl Validate for Mission {
+    fn validate(&self) -> Result<(), ValidationError> {
+        require_non_empty(&self.id, "Mission.id")?;
+        require_non_empty(&self.title, "Mission.title")?;
+        require_non_empty(&self.objective, "Mission.objective")?;
+        require_non_empty(&self.created_at, "Mission.created_at")?;
+        require_non_empty(&self.updated_at, "Mission.updated_at")
+    }
+}
+
+impl Validate for Wave {
+    fn validate(&self) -> Result<(), ValidationError> {
+        require_non_empty(&self.id, "Wave.id")?;
+        require_non_empty(&self.mission_id, "Wave.mission_id")?;
+        require_non_empty(&self.title, "Wave.title")?;
+        require_non_empty(&self.objective, "Wave.objective")?;
+        require_non_empty(&self.created_at, "Wave.created_at")?;
+        require_non_empty(&self.updated_at, "Wave.updated_at")
     }
 }
 
@@ -2963,8 +3184,9 @@ fn default_wave_index() -> u32 {
 /// back to a TeamDefinition when one exists (v0 runs may be ad-hoc, so it is
 /// nullable). `host_surface` names the hosting surface ("codex-app" /
 /// "kimi-cli" / "claude-cli") and `host_thread_id` its native thread.
-/// `previous_run_id` chains waves: a wave-N+1 run points at the wave-N run it
-/// re-plans from, so the UI can render the wave lineage.
+/// `previous_run_id` records retry/replacement lineage. For native Mission/Wave
+/// execution it points to an earlier attempt of the same Wave; legacy unlinked
+/// runs may retain older ad-hoc lineage semantics.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AgentTeamRun {
     pub id: String,
@@ -2972,6 +3194,12 @@ pub struct AgentTeamRun {
     pub definition_id: Option<String>,
     #[serde(default)]
     pub previous_run_id: Option<String>,
+    /// Optional outer product identity (ADR 0026). Existing v0 team-run rows
+    /// remain readable without these joins during the staged migration.
+    #[serde(default)]
+    pub mission_id: Option<String>,
+    #[serde(default)]
+    pub wave_id: Option<String>,
     pub host_surface: String,
     #[serde(default)]
     pub host_thread_id: Option<String>,

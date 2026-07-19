@@ -210,7 +210,7 @@ fn team_run_start_completes_kimi_members() {
     }
 
     // Actions: per member a tool_started + tool_completed + completed, plus
-    // throttled progress; hidden reasoning never journaled.
+    // throttled progress. Provider reasoning is deliberately not durable.
     let actions = store_rows(&home, &project_id, "member_actions.jsonl");
     for member_id in &member_ids {
         let of_member: Vec<&str> = actions
@@ -224,22 +224,18 @@ fn team_run_start_completes_kimi_members() {
                 "member {member_id} missing action {expected}: {of_member:?}"
             );
         }
-        // Reasoning streams are journaled as `thinking` actions (not dropped).
         assert!(
-            of_member.contains(&"thinking"),
-            "member {member_id} missing thinking action: {of_member:?}"
+            !of_member.contains(&"thinking"),
+            "member {member_id} persisted thinking: {of_member:?}"
         );
     }
-    // The round-end thinking action carries the full reasoning text.
-    let thinking_full = actions.iter().any(|action| {
-        action["action_type"].as_str() == Some("thinking")
-            && action["summary"]
-                .as_str()
-                .is_some_and(|s| s.contains("hidden reasoning"))
-    });
     assert!(
-        thinking_full,
-        "expected a thinking action carrying the reasoning text: {actions:?}"
+        !actions.iter().any(|action| {
+            action["summary"]
+                .as_str()
+                .is_some_and(|summary| summary.contains("hidden reasoning"))
+        }),
+        "thinking text leaked into durable actions: {actions:?}"
     );
 
     // Events: seq strictly continuous 1..=N for the run.
@@ -311,6 +307,30 @@ fn team_run_start_blocked_member_sends_run_to_reviewing() {
         runs[0]["status"].as_str(),
         Some("reviewing"),
         "run reviewing: {runs:?}"
+    );
+
+    let retry = run_with_fake_kimi(
+        &home,
+        &fake_bin,
+        "completed",
+        &[
+            "--project",
+            &project_id,
+            "team-run",
+            "start",
+            "--id",
+            &run_id,
+        ],
+    );
+    assert!(!retry.status.success(), "reviewing attempt restarted");
+    assert!(
+        String::from_utf8_lossy(&retry.stderr).contains("create a new attempt to retry"),
+        "stderr: {}",
+        String::from_utf8_lossy(&retry.stderr)
+    );
+    assert_eq!(
+        store_rows(&home, &project_id, "team_runs.jsonl")[0]["status"].as_str(),
+        Some("reviewing")
     );
 
     // Seqs stay continuous on the blocked path too.

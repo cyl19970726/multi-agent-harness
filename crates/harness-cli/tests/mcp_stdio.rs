@@ -138,7 +138,8 @@ fn mcp_stdio_agent_team_tools() {
     );
     mcp.notify("notifications/initialized");
 
-    // 2. tools/list → exactly the five Agent Team v0 tools, in order.
+    // 2. tools/list preserves the original five TeamRun tools and adds the
+    // native Mission/Wave authoring surface.
     let response = mcp.request("tools/list", serde_json::json!({}));
     let tools = response["result"]["tools"].as_array().expect("tools array");
     let names: Vec<&str> = tools
@@ -148,6 +149,11 @@ fn mcp_stdio_agent_team_tools() {
     assert_eq!(
         names,
         [
+            "mission_create",
+            "mission_list",
+            "wave_create",
+            "wave_list",
+            "wave_gate",
             "team_run_create",
             "team_run_list",
             "team_run_status",
@@ -159,8 +165,53 @@ fn mcp_stdio_agent_team_tools() {
         assert!(tool["description"].is_string(), "tool description: {tool}");
         assert_eq!(tool["inputSchema"]["type"].as_str(), Some("object"));
     }
+    let create_schema = tools
+        .iter()
+        .find(|tool| tool["name"].as_str() == Some("team_run_create"))
+        .expect("team_run_create definition");
+    assert!(
+        create_schema["inputSchema"]["properties"]
+            .get("mission_id")
+            .is_some(),
+        "MCP create accepts mission_id: {create_schema}"
+    );
+    assert!(
+        create_schema["inputSchema"]["properties"]
+            .get("wave_id")
+            .is_some(),
+        "MCP create accepts wave_id: {create_schema}"
+    );
 
-    // 3. team_run_create with two members → run id + member run ids.
+    // 3. Native Mission + Wave creation through MCP (the same helpers as CLI
+    // and HTTP) supplies the outer identity for the TeamRun.
+    let response = mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "mission_create",
+            "arguments": {"id": "mission-mcp", "title": "MCP mission", "objective": "Exercise authoring"}
+        }),
+    );
+    let mission = call_payload(&response);
+    assert_eq!(mission["id"].as_str(), Some("mission-mcp"));
+    let response = mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "wave_create",
+            "arguments": {
+                "id": "wave-mcp",
+                "mission_id": "mission-mcp",
+                "index": 2,
+                "title": "Team wave",
+                "objective": "Run members",
+                "executor_kind": "agent_team"
+            }
+        }),
+    );
+    let wave = call_payload(&response);
+    assert_eq!(wave["mission_id"].as_str(), Some("mission-mcp"));
+    assert_eq!(wave["index"].as_u64(), Some(2));
+
+    // 4. team_run_create with two members → run id + member run ids.
     let response = mcp.request(
         "tools/call",
         serde_json::json!({
@@ -168,6 +219,8 @@ fn mcp_stdio_agent_team_tools() {
             "arguments": {
                 "objective": "Ship v0",
                 "wave_index": 2,
+                "mission_id": "mission-mcp",
+                "wave_id": "wave-mcp",
                 "budget_limit_usd": 5.5,
                 "members": [
                     {"name": "lead", "role": "coordinator", "provider": "kimi"},
@@ -182,6 +235,8 @@ fn mcp_stdio_agent_team_tools() {
         .expect("team_run_id")
         .to_string();
     assert!(team_run_id.starts_with("team-run-"), "id: {team_run_id}");
+    assert_eq!(payload["mission_id"].as_str(), Some("mission-mcp"));
+    assert_eq!(payload["wave_id"].as_str(), Some("wave-mcp"));
     let member_ids: Vec<String> = payload["member_run_ids"]
         .as_array()
         .expect("member_run_ids")
@@ -189,12 +244,21 @@ fn mcp_stdio_agent_team_tools() {
         .map(|id| id.as_str().expect("member id").to_string())
         .collect();
     assert_eq!(member_ids.len(), 2, "member ids: {payload}");
+    let automatic_assignment = &payload["assignment_messages"][0];
+    let assignment_id = automatic_assignment["id"]
+        .as_str()
+        .expect("automatic assignment id")
+        .to_string();
+    let assignment_correlation = automatic_assignment["correlation_id"]
+        .as_str()
+        .expect("automatic assignment correlation")
+        .to_string();
     assert_eq!(
         payload["dashboard_url"].as_str(),
         Some("http://127.0.0.1:8787/team-console")
     );
 
-    // 4. team_run_status → both members + dashboard URL (+ the two queued
+    // 5. team_run_status → both members + dashboard URL (+ the two queued
     //    assignment messages count as unacked).
     let response = mcp.request(
         "tools/call",
@@ -223,7 +287,8 @@ fn mcp_stdio_agent_team_tools() {
         Some("http://127.0.0.1:8787/team-console")
     );
 
-    // 5. team_run_send_message → new message id + correlation id.
+    // 6. team_run_send_message can immediately reuse the automatic Assignment
+    // returned by team_run_create; the Host never needs a second fake anchor.
     let response = mcp.request(
         "tools/call",
         serde_json::json!({
@@ -233,7 +298,9 @@ fn mcp_stdio_agent_team_tools() {
                 "from_member_id": member_ids[0],
                 "to_member_ids": [member_ids[1]],
                 "kind": "handoff",
-                "body": "handing off the slice"
+                "body": "handing off the slice",
+                "correlation_id": assignment_correlation,
+                "causation_id": assignment_id
             }
         }),
     );
@@ -244,14 +311,12 @@ fn mcp_stdio_agent_team_tools() {
         .to_string();
     assert!(message_id.starts_with("tmsg-"), "message id: {message_id}");
     assert!(
-        payload["correlation_id"]
-            .as_str()
-            .expect("correlation_id")
-            .starts_with("corr-"),
+        payload["correlation_id"].as_str().expect("correlation_id")
+            == automatic_assignment["correlation_id"].as_str().unwrap(),
         "correlation id: {payload}"
     );
 
-    // 6. team_run_events → strictly increasing seq, and the send above is
+    // 7. team_run_events → strictly increasing seq, and the send above is
     //    journaled as a message/created event. after_seq resumes the tail.
     let response = mcp.request(
         "tools/call",
@@ -262,7 +327,7 @@ fn mcp_stdio_agent_team_tools() {
     );
     let payload = call_payload(&response);
     //    create journals 1 (run) + 2×2 (member + assignment) = 5 events,
-    //    the send adds one more.
+    //    the handoff adds one more.
     let events = payload.as_array().expect("events array");
     assert!(events.len() >= 6, "events: {}", events.len());
     let seqs: Vec<u64> = events

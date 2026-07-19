@@ -102,10 +102,9 @@ Agent Team implementation into a premature organization model.
 - External changes such as deploy, remote deletion, protected merge, or paid
   decisions remain user authorization gates.
 
-The v0 correlation send path is incomplete: automatic handoff preserves the
-assignment correlation, while manual sends currently create a new one. The
-target contract is not accepted until existing correlation/causation inputs are
-supported and exercised.
+Automatic handoff preserves the assignment correlation. Manual CLI, HTTP, and
+MCP sends accept validated correlation/causation inputs, including causation-only
+inheritance. Invalid cross-run or mismatched lineage is rejected before write.
 
 ### Dynamic Workflow
 
@@ -133,8 +132,9 @@ overwrite/expire, and never persist, replay, forward to peers, or treat as
 evidence. Explicit plans, actions, artifacts, blockers, handoffs, and outcomes
 are durable.
 
-Current v0 Kimi execution still writes a bounded durable `thinking` action.
-That is a known migration defect, not an accepted capability.
+New Kimi execution no longer writes durable `thinking` actions. Historical rows
+remain in JSONL but are excluded from current snapshots. Real-time transient
+display is still pending; thinking is currently dropped rather than stored.
 
 ## Product Scenarios
 

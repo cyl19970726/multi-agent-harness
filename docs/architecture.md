@@ -21,8 +21,9 @@ Project Adapter
   project-specific artifacts and evidence rules
 ```
 
-The generic core owns coordination, evidence, governance, and agent-facing
-interfaces. Adapters own domain execution and domain evaluation.
+The generic core owns coordination, messages, artifacts/outcomes, optional
+governance primitives, and agent-facing interfaces. Adapters own domain
+execution and domain evaluation.
 
 ## Canonical Map
 
@@ -57,18 +58,18 @@ product concept a future operator should start from.
 
 ## Compatibility Terms
 
-Mission/Wave is the canonical product vocabulary now, but the runtime and store
-still carry older names in many places. The documentation must make that
-explicit instead of pretending the migration already landed.
+Mission/Wave is the canonical product vocabulary. Native Mission/Wave ledgers,
+schemas, public authoring, Agent Team linkage, retry lineage, and the Wave gate
+now exist, while older Goal surfaces remain readable compatibility paths.
 
 | Canonical product term | Current compatibility surface | Rule |
 | --- | --- | --- |
-| `Mission` | `Goal` object, `goal` CLI, Goal-facing dashboard/docs | Use `Mission` for product design. Mention `Goal` only when referring to the current schema/runtime surface. |
-| `Wave` | `GoalPhase`, phase-local task DAGs, some Goal page contracts | Use `Wave` for the product. Treat `GoalPhase` as transitional runtime compatibility until migration lands. |
-| `MissionEvaluation` | `GoalEvaluation` object/evidence | The closeout semantics stay the same; only the product term changes. |
+| `Mission` | Read-only provenance projection from existing `Goal` rows | Native Mission is authoritative for new work. Compatibility projections use `compat-goal:*` ids and are never written back. |
+| `Wave` | Existing `GoalPhase` ids are compatibility provenance only | Native Wave is authoritative for new work. A GoalPhase is never synthesized into a Wave because its task-graph semantics differ. |
+| Mission closeout | Optional legacy `GoalEvaluation` | Native closeout uses an explicit Mission outcome summary; richer evaluation remains an optional compatibility/governance layer. |
 
-The accepted direction is non-destructive. Current code and data stay in place
-until the planned schema/runtime migration lands.
+The migration is non-destructive: old ledgers stay readable and are not
+rewritten by Mission/Wave commands.
 
 ## Executor Kinds
 
@@ -87,9 +88,9 @@ TeamMessage(kind=assignment)
 ```
 
 Assignment-message correlation replaces Task Graph semantics as the primary
-explanation of who owns what inside a Wave. This is the target contract: v0
-automatic handoff preserves the assignment correlation, while manual send
-surfaces still generate a new correlation id and need an additive migration.
+explanation of who owns what inside a Wave. Automatic handoff preserves the
+assignment correlation; manual CLI, HTTP, and MCP sends can reuse it directly
+or inherit it from a validated same-run causation message.
 
 ### `dynamic_workflow`
 
@@ -142,9 +143,10 @@ The target contract makes thinking transient live-only state.
 
 Persist explicit actions, artifacts, summaries, blockers, and outcomes instead.
 
-Current v0 Kimi execution still persists a bounded `thinking` action. That is a
-known compatibility gap scheduled for removal after the live-only channel is
-available; it is not evidence and must not be presented as completed policy.
+New Kimi execution no longer persists `thinking` actions, and current snapshots
+hide historical thinking rows without deleting the ledger. The live-only
+channel is still pending, so provider thinking is currently dropped rather than
+displayed or stored.
 
 ## Current And Future Layers
 
@@ -176,12 +178,12 @@ The accepted migration is staged and non-destructive:
 
 1. Docs: make Mission/Wave canonical, mark Goal/GoalPhase references
    transitional, and add one architecture map.
-2. Schema and store: introduce Mission/Wave-facing contracts while preserving
-   backward-readable Goal/GoalPhase data.
-3. Runtime: move execution selection and orchestration onto Mission/Wave
-   semantics without deleting working code first.
-4. CLI/API/Dashboard: rename primary surfaces, keep compatibility aliases long
-   enough to migrate operators and skills safely.
+2. Schema and store: implemented for native Mission/Wave plus non-destructive
+   Goal compatibility projection.
+3. Runtime: Agent Team joins, attempts, and gate are implemented; Dynamic
+   Workflow and Host Wave routing remain.
+4. CLI/API/MCP/Dashboard: authoring and read-model contracts are implemented;
+   the Mission-first Dashboard experience remains.
 5. Stored data, fixtures, tests, skills, and governance: update validators,
    snapshots, docs registry, and acceptance paths after the runtime seam is
    stable.

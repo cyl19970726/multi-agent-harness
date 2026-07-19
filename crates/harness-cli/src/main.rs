@@ -18,16 +18,17 @@ use harness_core::{
     GoalPhaseStatus, GoalStage, GoalStatus, HarnessTokenUsage, HarnessToolCall, HarnessToolResult,
     HarnessTurnEvent, HarnessTurnEventKind, Knowledge, KnowledgeSource, LaunchMcp,
     LaunchPermission, LaunchSpec, MemberAction, MemberActionStatus, MemberRun, MemberRunStatus,
-    Message, MessageDelivery, MessageDeliveryStatus, MessageKind, MessageTerminalSource,
-    OrchestrationPhaseRun, OrchestrationStatus, ProjectContext, ProjectKind, Proposal,
-    ProposalStatus, ProviderCapabilities, ProviderChildThread, ProviderChildThreadStatus,
+    Message, MessageDelivery, MessageDeliveryStatus, MessageKind, MessageTerminalSource, Mission,
+    MissionStatus, OrchestrationPhaseRun, OrchestrationStatus, ProjectContext, ProjectKind,
+    Proposal, ProposalStatus, ProviderCapabilities, ProviderChildThread, ProviderChildThreadStatus,
     ProviderSession, ProviderSessionStatus, Review, ReviewVerdict, SenderKind, Task, TaskStatus,
     TeamDeliveryPolicy, TeamDeliveryStatus, TeamMessage, TeamMessageDelivery, TeamMessageKind,
-    TeamRunEvent, TeamRunEventSourceKind, TeamRunStatus, VerdictOutcome, Vision,
-    WorkflowArtifactFile, WorkflowArtifactManifest, WorkflowArtifactManifestStatus, WorkflowPatch,
-    WorkflowPatchStatus, WorkflowRun, WorkflowRunStatus, WorkflowStep, WorkflowStepStatus,
+    TeamRunEvent, TeamRunEventSourceKind, TeamRunStatus, VerdictOutcome, Vision, Wave,
+    WaveExecutorKind, WaveGateStatus, WaveStatus, WorkflowArtifactFile, WorkflowArtifactManifest,
+    WorkflowArtifactManifestStatus, WorkflowPatch, WorkflowPatchStatus, WorkflowRun,
+    WorkflowRunStatus, WorkflowStep, WorkflowStepStatus,
 };
-use harness_store::{HarnessStore, MessageDeliveryClaimResult};
+use harness_store::{HarnessStore, MessageDeliveryClaimResult, StoreError};
 use thiserror::Error;
 
 mod kimi_acp;
@@ -52,6 +53,14 @@ enum CliError {
 }
 
 type CliResult<T> = Result<T, CliError>;
+
+fn store_conflict_as_usage<T>(result: Result<T, StoreError>) -> CliResult<T> {
+    match result {
+        Ok(value) => Ok(value),
+        Err(StoreError::Conflict(message)) => Err(CliError::Usage(message)),
+        Err(error) => Err(CliError::Store(error)),
+    }
+}
 
 fn main() {
     if let Err(error) = run() {
@@ -836,6 +845,8 @@ fn run() -> CliResult<()> {
         "project" => project_command(&args[1..])?,
         "agent" => agent_command(&store, &args[1..])?,
         "team" => team_command(&store, &args[1..])?,
+        "mission" => mission_command(&store, &args[1..])?,
+        "wave" => wave_command(&store, &args[1..])?,
         "team-run" => team_run_command(&store, &resolved, &args[1..])?,
         "member" => member_command(&store, &args[1..])?,
         "goal" => goal_command(&store, &args[1..])?,
@@ -1221,6 +1232,369 @@ fn team_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
 }
 
 // ---------------------------------------------------------------------------
+// Mission / Wave — lightweight product-control surfaces (ADR 0026).
+// ---------------------------------------------------------------------------
+
+fn mission_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    require_subcommand(args, "mission create|list|show")?;
+    let json = has_flag(args, "--json");
+    match args[0].as_str() {
+        "create" => {
+            let mission = create_mission(
+                store,
+                value(args, "--id"),
+                &required(args, "--title")?,
+                &required(args, "--objective")?,
+                value(args, "--desired-outcome"),
+            )?;
+            if json {
+                print_json(&mission)?;
+            } else {
+                println!("{}", mission.id);
+            }
+        }
+        "list" => print_json(&store.mission_projections()?)?,
+        "show" => {
+            let id = required(args, "--id")?;
+            let projection = store
+                .mission_projections()?
+                .into_iter()
+                .find(|projection| projection.mission.id == id)
+                .ok_or_else(|| CliError::Usage(format!("mission not found: {id}")))?;
+            print_json(&projection)?;
+        }
+        other => return Err(CliError::Usage(format!("unknown mission command: {other}"))),
+    }
+    Ok(())
+}
+
+fn wave_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    require_subcommand(args, "wave create|list|show|gate")?;
+    let json = has_flag(args, "--json");
+    match args[0].as_str() {
+        "create" => {
+            let wave = create_wave(
+                store,
+                value(args, "--id"),
+                &required(args, "--mission-id")?,
+                value(args, "--index")
+                    .map(|index| {
+                        index.parse::<u32>().map_err(|_| {
+                            CliError::Usage("--index must be a positive integer".to_string())
+                        })
+                    })
+                    .transpose()?,
+                &required(args, "--title")?,
+                &required(args, "--objective")?,
+                parse_wave_executor_kind(&required(args, "--executor-kind")?)?,
+                value(args, "--exit-criteria"),
+                value(args, "--plan-note"),
+            )?;
+            if json {
+                print_json(&wave)?;
+            } else {
+                println!("{}", wave.id);
+            }
+        }
+        "list" => {
+            let mission_id = value(args, "--mission-id");
+            let waves = store
+                .latest_waves()?
+                .into_iter()
+                .filter(|wave| {
+                    mission_id
+                        .as_deref()
+                        .is_none_or(|mission_id| wave.mission_id == mission_id)
+                })
+                .collect::<Vec<_>>();
+            print_json(&waves)?;
+        }
+        "show" => print_json(&latest_wave(store, &required(args, "--id")?)?)?,
+        "gate" => {
+            let wave = gate_wave(
+                store,
+                &required(args, "--id")?,
+                &required(args, "--status")?,
+                value(args, "--run-id"),
+                &value(args, "--accepted-by").unwrap_or_else(|| "host".to_string()),
+                value(args, "--note"),
+                value(args, "--outcome"),
+                many(args, "--artifact"),
+            )?;
+            if json {
+                print_json(&wave)?;
+            } else {
+                println!("{}\t{}", wave.id, serde_snake_label(&wave.gate_status));
+            }
+        }
+        other => return Err(CliError::Usage(format!("unknown wave command: {other}"))),
+    }
+    Ok(())
+}
+
+/// Create one native Mission. Compatibility Mission projections are read-only,
+/// so native ids are checked only against the native ledger.
+pub(crate) fn create_mission(
+    store: &HarnessStore,
+    id: Option<String>,
+    title: &str,
+    objective: &str,
+    desired_outcome: Option<String>,
+) -> CliResult<Mission> {
+    let id = id.unwrap_or_else(|| generated_id("mission"));
+    if id.trim().is_empty() {
+        return Err(CliError::Usage("mission id must not be empty".to_string()));
+    }
+    if id.starts_with("compat-goal:") {
+        return Err(CliError::Usage(
+            "mission ids beginning with `compat-goal:` are reserved for read-only Goal projections"
+                .to_string(),
+        ));
+    }
+    if title.trim().is_empty() || objective.trim().is_empty() {
+        return Err(CliError::Usage(
+            "mission title and objective must not be empty".to_string(),
+        ));
+    }
+    if desired_outcome
+        .as_ref()
+        .is_some_and(|outcome| outcome.trim().is_empty())
+    {
+        return Err(CliError::Usage(
+            "mission desired outcome must not be empty when supplied".to_string(),
+        ));
+    }
+    let mission = Mission {
+        id,
+        title: title.to_string(),
+        objective: objective.to_string(),
+        desired_outcome,
+        status: MissionStatus::Planned,
+        wave_ids: Vec::new(),
+        outcome_summary: None,
+        created_at: now_string(),
+        updated_at: now_string(),
+        completed_at: None,
+    };
+    store_conflict_as_usage(store.insert_mission(&mission))?;
+    Ok(mission)
+}
+
+/// Create a native Wave and append the owning Mission's latest row with the
+/// Wave id exactly once. The read model is intentionally ordered by index,
+/// rather than a hidden task graph.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn create_wave(
+    store: &HarnessStore,
+    id: Option<String>,
+    mission_id: &str,
+    index: Option<u32>,
+    title: &str,
+    objective: &str,
+    executor_kind: WaveExecutorKind,
+    exit_criteria: Option<String>,
+    plan_note: Option<String>,
+) -> CliResult<Wave> {
+    if mission_id.trim().is_empty() || title.trim().is_empty() || objective.trim().is_empty() {
+        return Err(CliError::Usage(
+            "wave mission id, title, and objective must not be empty".to_string(),
+        ));
+    }
+    if exit_criteria
+        .as_ref()
+        .is_some_and(|criteria| criteria.trim().is_empty())
+        || plan_note
+            .as_ref()
+            .is_some_and(|note| note.trim().is_empty())
+    {
+        return Err(CliError::Usage(
+            "wave exit criteria and plan note must not be empty when supplied".to_string(),
+        ));
+    }
+    if index == Some(0) {
+        return Err(CliError::Usage("wave index must be at least 1".to_string()));
+    }
+    let id = id.unwrap_or_else(|| generated_id("wave"));
+    if id.trim().is_empty() {
+        return Err(CliError::Usage("wave id must not be empty".to_string()));
+    }
+    let now = now_string();
+    let wave = Wave {
+        id,
+        mission_id: mission_id.to_string(),
+        index: index.unwrap_or(0),
+        title: title.to_string(),
+        objective: objective.to_string(),
+        exit_criteria,
+        status: WaveStatus::Planned,
+        executor_kind,
+        executor_run_ids: Vec::new(),
+        accepted_run_id: None,
+        plan_note,
+        outcome_summary: None,
+        artifact_refs: Vec::new(),
+        gate_status: WaveGateStatus::Pending,
+        gate_note: None,
+        accepted_by: None,
+        accepted_at: None,
+        created_at: now.clone(),
+        updated_at: now,
+    };
+    store_conflict_as_usage(store.insert_wave_and_update_mission(wave, index, &now_string()))
+}
+
+/// Apply the lightweight Wave gate. This is deliberately separate from the
+/// legacy Goal/Proposal evidence chain; it validates only executor attempt
+/// identity and the accepted outcome, preserving all recorded attempts.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn gate_wave(
+    store: &HarnessStore,
+    wave_id: &str,
+    gate: &str,
+    run_id: Option<String>,
+    accepted_by: &str,
+    note: Option<String>,
+    outcome: Option<String>,
+    artifact_refs: Vec<String>,
+) -> CliResult<Wave> {
+    let mut wave = latest_wave(store, wave_id)?;
+    if accepted_by.trim().is_empty()
+        || note.as_ref().is_some_and(|value| value.trim().is_empty())
+        || outcome
+            .as_ref()
+            .is_some_and(|value| value.trim().is_empty())
+        || artifact_refs.iter().any(|value| value.trim().is_empty())
+    {
+        return Err(CliError::Usage(
+            "wave gate actor, note, outcome, and artifact refs must not be empty when supplied"
+                .to_string(),
+        ));
+    }
+    if wave.accepted_run_id.is_some() {
+        if gate == "accepted" && run_id.as_deref() == wave.accepted_run_id.as_deref() {
+            return Ok(wave);
+        }
+        return Err(CliError::Usage(format!(
+            "wave {wave_id} already accepted by run {}; create a later Wave for new work",
+            wave.accepted_run_id.as_deref().unwrap_or_default()
+        )));
+    }
+    let expected = wave.clone();
+
+    // A Wave gate is a decision about a settled attempt set. Applying revise
+    // or blocked while an attempt is still live creates contradictory state:
+    // the next TeamRun transition would otherwise overwrite Wave.status while
+    // leaving gate_status untouched. The Wave CAS below also protects this
+    // check from a concurrent attempt registration or lifecycle transition.
+    if wave.executor_kind == WaveExecutorKind::AgentTeam {
+        if let Some(active) = latest_team_runs_in_append_order(store)?
+            .into_iter()
+            .find(|attempt| {
+                wave.executor_run_ids.contains(&attempt.id)
+                    && matches!(
+                        attempt.status,
+                        TeamRunStatus::Planning
+                            | TeamRunStatus::Running
+                            | TeamRunStatus::Waiting
+                            | TeamRunStatus::Reviewing
+                    )
+            })
+        {
+            return Err(CliError::Usage(format!(
+                "wave {wave_id} still has active attempt {} in status {}; finish or cancel it before applying a gate",
+                active.id,
+                serde_snake_label(&active.status)
+            )));
+        }
+    }
+
+    match gate {
+        "accepted" => {
+            if outcome.is_none() {
+                return Err(CliError::Usage(
+                    "wave gate accepted requires an explicit outcome".to_string(),
+                ));
+            }
+            let run_id = run_id.ok_or_else(|| {
+                CliError::Usage("wave gate accepted requires --run-id".to_string())
+            })?;
+            if !wave.executor_run_ids.contains(&run_id) {
+                return Err(CliError::Usage(format!(
+                    "run {run_id} is not an eligible attempt of wave {wave_id}"
+                )));
+            }
+            if wave.executor_kind == WaveExecutorKind::AgentTeam {
+                let run = latest_team_run(store, &run_id)?;
+                if run.mission_id.as_deref() != Some(wave.mission_id.as_str())
+                    || run.wave_id.as_deref() != Some(wave.id.as_str())
+                {
+                    return Err(CliError::Usage(format!(
+                        "team run {run_id} does not belong to mission {} wave {}",
+                        wave.mission_id, wave.id
+                    )));
+                }
+                if run.status != TeamRunStatus::Completed {
+                    return Err(CliError::Usage(format!(
+                        "team run {run_id} is {}, not completed",
+                        serde_snake_label(&run.status)
+                    )));
+                }
+            }
+            wave.gate_status = WaveGateStatus::Accepted;
+            wave.status = WaveStatus::Completed;
+            wave.accepted_run_id = Some(run_id);
+            wave.accepted_by = Some(accepted_by.to_string());
+            wave.accepted_at = Some(now_string());
+        }
+        "revise" => {
+            wave.gate_status = WaveGateStatus::Revise;
+            wave.status = WaveStatus::Planned;
+        }
+        "blocked" => {
+            wave.gate_status = WaveGateStatus::Blocked;
+            wave.status = WaveStatus::Blocked;
+        }
+        other => {
+            return Err(CliError::Usage(format!(
+                "unknown wave gate status `{other}` (accepted|revise|blocked)"
+            )))
+        }
+    }
+    if note.is_some() {
+        wave.gate_note = note;
+    }
+    if outcome.is_some() {
+        wave.outcome_summary = outcome;
+    }
+    if !artifact_refs.is_empty() {
+        for artifact in artifact_refs {
+            if !wave.artifact_refs.contains(&artifact) {
+                wave.artifact_refs.push(artifact);
+            }
+        }
+    }
+    wave.updated_at = now_string();
+    store_conflict_as_usage(store.compare_and_append_wave(&expected, &wave))?;
+    Ok(wave)
+}
+
+fn latest_wave(store: &HarnessStore, id: &str) -> CliResult<Wave> {
+    store
+        .latest_waves()?
+        .into_iter()
+        .find(|wave| wave.id == id)
+        .ok_or_else(|| CliError::Usage(format!("wave not found: {id}")))
+}
+
+pub(crate) fn parse_wave_executor_kind(value: &str) -> CliResult<WaveExecutorKind> {
+    serde_json::from_value(serde_json::Value::String(value.to_string())).map_err(|_| {
+        CliError::Usage(format!(
+            "unknown wave executor kind `{value}` (agent_team|dynamic_workflow|host)"
+        ))
+    })
+}
+
+// ---------------------------------------------------------------------------
 // Agent Team v0 — `harness team-run` command group
 //
 // A team run (AgentTeamRun) is one execution of an agent team against an
@@ -1249,12 +1623,14 @@ fn next_team_run_seq(store: &HarnessStore, team_run_id: &str) -> CliResult<u64> 
     Ok(max_seq + 1)
 }
 
-/// Append one folded event to a team run's event log.
+/// Append one folded event to a team run's event log. The store allocates the
+/// authoritative sequence under its global lock; the caller-provided value is
+/// retained only as a source-compatible hint for existing call sites.
 #[allow(clippy::too_many_arguments)]
 fn append_team_run_event(
     store: &HarnessStore,
     team_run_id: &str,
-    seq: u64,
+    _seq: u64,
     source_kind: TeamRunEventSourceKind,
     member_run_id: Option<String>,
     entity_type: &str,
@@ -1264,7 +1640,7 @@ fn append_team_run_event(
 ) -> CliResult<TeamRunEvent> {
     let event = TeamRunEvent {
         id: generated_id("trev"),
-        seq,
+        seq: 0,
         team_run_id: team_run_id.to_string(),
         source_kind,
         member_run_id,
@@ -1275,8 +1651,7 @@ fn append_team_run_event(
         summary: summary.to_string(),
         occurred_at: now_string(),
     };
-    store.append_team_run_event(&event)?;
-    Ok(event)
+    Ok(store.append_team_run_event_next(event)?)
 }
 
 /// One member spec for team-run creation, parsed from either the CLI
@@ -1342,8 +1717,8 @@ fn created_team_run_json(created: &CreatedTeamRun) -> serde_json::Value {
 /// MemberRun per member, one queued assignment TeamMessage per member
 /// (from the reserved "host" sender), and a folded TeamRunEvent per created
 /// entity (host-sourced, seq increasing). Shared by the `team-run create` CLI
-/// arm and POST /v1/team-runs. `previous_run_id` chains the run onto an
-/// earlier wave (it must name an existing run).
+/// arm and POST /v1/team-runs. `previous_run_id` records retry lineage. For a
+/// native Wave it must name an earlier attempt of that same Mission/Wave.
 #[allow(clippy::too_many_arguments)]
 fn create_team_run(
     store: &HarnessStore,
@@ -1353,13 +1728,91 @@ fn create_team_run(
     host_surface: &str,
     host_thread_id: Option<String>,
     previous_run_id: Option<String>,
+    mission_id: Option<String>,
+    wave_id: Option<String>,
     members: &[TeamMemberSpec],
 ) -> CliResult<CreatedTeamRun> {
-    // A wave chained onto a previous run must name a run that exists — fail
-    // fast instead of journaling a dangling lineage link.
-    if let Some(previous) = previous_run_id.as_deref() {
-        latest_team_run(store, previous)?;
+    if objective.trim().is_empty() {
+        return Err(CliError::Usage(
+            "team-run objective must not be empty".to_string(),
+        ));
     }
+    if host_surface.trim().is_empty() {
+        return Err(CliError::Usage(
+            "team-run host surface must not be empty".to_string(),
+        ));
+    }
+    if host_thread_id
+        .as_ref()
+        .is_some_and(|id| id.trim().is_empty())
+        || previous_run_id
+            .as_ref()
+            .is_some_and(|id| id.trim().is_empty())
+    {
+        return Err(CliError::Usage(
+            "host_thread_id and previous_run_id must not be empty when supplied".to_string(),
+        ));
+    }
+    if wave_index == 0 {
+        return Err(CliError::Usage(
+            "team-run wave index must be at least 1".to_string(),
+        ));
+    }
+    if budget_limit_usd.is_some_and(|budget| !budget.is_finite() || budget < 0.0) {
+        return Err(CliError::Usage(
+            "team-run budget must be a finite non-negative number".to_string(),
+        ));
+    }
+    if members.is_empty() {
+        return Err(CliError::Usage(
+            "agent_team runs require at least one member".to_string(),
+        ));
+    }
+    let mut member_names = std::collections::HashSet::new();
+    for member in members {
+        if member.name.trim().is_empty()
+            || member.role.trim().is_empty()
+            || member.provider.trim().is_empty()
+            || member
+                .model
+                .as_ref()
+                .is_some_and(|model| model.trim().is_empty())
+        {
+            return Err(CliError::Usage(
+                "team member name, role, and provider must not be empty".to_string(),
+            ));
+        }
+        if !member_names.insert(member.name.as_str()) {
+            return Err(CliError::Usage(format!(
+                "duplicate team member name: {}",
+                member.name
+            )));
+        }
+        if member.owned_paths.iter().any(|path| path.trim().is_empty()) {
+            return Err(CliError::Usage(format!(
+                "team member {} has an empty owned path",
+                member.name
+            )));
+        }
+    }
+    let (mission_id, wave_id, wave) = resolve_team_run_mission_wave(store, mission_id, wave_id)?;
+    // A wave chained onto a previous run must name a run that exists. Linked
+    // retries must stay inside the exact same native Mission/Wave.
+    if let Some(previous) = previous_run_id.as_deref() {
+        let previous = latest_team_run(store, previous)?;
+        if let Some(wave) = wave.as_ref() {
+            if previous.mission_id.as_deref() != Some(wave.mission_id.as_str())
+                || previous.wave_id.as_deref() != Some(wave.id.as_str())
+            {
+                return Err(CliError::Usage(format!(
+                    "previous run {} is not an attempt of mission {} wave {}",
+                    previous.id, wave.mission_id, wave.id
+                )));
+            }
+        }
+    }
+    // A native Wave owns its order; don't let legacy --wave input drift it.
+    let wave_index = wave.as_ref().map(|wave| wave.index).unwrap_or(wave_index);
     let run_id = generated_id("team-run");
     let mut member_runs = Vec::new();
     let mut member_run_ids = Vec::new();
@@ -1389,6 +1842,8 @@ fn create_team_run(
         id: run_id.clone(),
         definition_id: None,
         previous_run_id,
+        mission_id,
+        wave_id,
         host_surface: host_surface.to_string(),
         host_thread_id,
         objective: objective.to_string(),
@@ -1404,7 +1859,7 @@ fn create_team_run(
 
     // A freshly-generated run id has no events yet, so seq starts at 1.
     let mut seq = next_team_run_seq(store, &run_id)?;
-    store.append_team_run(&team_run)?;
+    store_conflict_as_usage(store.insert_team_run_and_register_attempt(&team_run, &now_string()))?;
     append_team_run_event(
         store,
         &run_id,
@@ -1483,10 +1938,90 @@ fn create_team_run(
     })
 }
 
+/// Validate optional outer Mission/Wave joins for a new AgentTeamRun. A Wave
+/// is owned by one native Mission, so `--wave-id` can safely supply a missing
+/// mission id; conflicting or unknown joins fail before any run rows append.
+fn resolve_team_run_mission_wave(
+    store: &HarnessStore,
+    mission_id: Option<String>,
+    wave_id: Option<String>,
+) -> CliResult<(Option<String>, Option<String>, Option<Wave>)> {
+    if mission_id.as_ref().is_some_and(|id| id.trim().is_empty()) {
+        return Err(CliError::Usage(
+            "mission_id must not be empty when supplied".to_string(),
+        ));
+    }
+    if wave_id.as_ref().is_some_and(|id| id.trim().is_empty()) {
+        return Err(CliError::Usage(
+            "wave_id must not be empty when supplied".to_string(),
+        ));
+    }
+    let mut mission_id = mission_id;
+
+    if mission_id.is_some() && wave_id.is_none() {
+        return Err(CliError::Usage(
+            "a native Mission-linked TeamRun requires --wave-id; omit both ids only for an unlinked compatibility run"
+                .to_string(),
+        ));
+    }
+
+    if mission_id.is_some()
+        && !store.latest_missions()?.iter().any(|mission| {
+            mission_id
+                .as_deref()
+                .is_some_and(|mission_id| mission.id == mission_id)
+        })
+    {
+        return Err(CliError::Usage(format!(
+            "mission not found: {}",
+            mission_id.as_deref().unwrap_or_default()
+        )));
+    }
+
+    let wave = if let Some(wave_id) = wave_id.as_deref() {
+        let wave = store
+            .latest_waves()?
+            .into_iter()
+            .find(|wave| wave.id == wave_id)
+            .ok_or_else(|| CliError::Usage(format!("wave not found: {wave_id}")))?;
+        if let Some(requested_mission_id) = mission_id.as_deref() {
+            if wave.mission_id != requested_mission_id {
+                return Err(CliError::Usage(format!(
+                    "wave {wave_id} belongs to mission {}, not {requested_mission_id}",
+                    wave.mission_id
+                )));
+            }
+        } else {
+            mission_id = Some(wave.mission_id.clone());
+        }
+        if wave.executor_kind != WaveExecutorKind::AgentTeam {
+            return Err(CliError::Usage(format!(
+                "wave {wave_id} uses executor_kind {}, not agent_team",
+                serde_snake_label(&wave.executor_kind)
+            )));
+        }
+        if !matches!(
+            wave.status,
+            WaveStatus::Planned | WaveStatus::Running | WaveStatus::Waiting
+        ) {
+            return Err(CliError::Usage(format!(
+                "wave {wave_id} is {} and cannot accept another team-run attempt; revise or create a later Wave",
+                serde_snake_label(&wave.status)
+            )));
+        }
+        Some(wave)
+    } else {
+        None
+    };
+
+    Ok((mission_id, wave_id, wave))
+}
+
 /// Route a message inside a team run and fold it into the event log. Shared
 /// by the `team-run send` CLI arm and POST /v1/team-runs/{id}/messages. v0
 /// does not drive the member state machine: a handoff/blocker from a member is
 /// only recorded as an event — the member's MemberRun row is left untouched.
+#[allow(clippy::too_many_arguments)]
 fn send_team_message(
     store: &HarnessStore,
     team_run_id: &str,
@@ -1495,9 +2030,47 @@ fn send_team_message(
     kind: TeamMessageKind,
     body: &str,
     task_id: Option<String>,
+    correlation_id: Option<String>,
+    causation_id: Option<String>,
 ) -> CliResult<TeamMessage> {
     // Fail fast on an unknown run id rather than journaling an orphan message.
-    latest_team_run(store, team_run_id)?;
+    let run = latest_team_run(store, team_run_id)?;
+    if body.trim().is_empty() {
+        return Err(CliError::Usage(
+            "team message body must not be empty".to_string(),
+        ));
+    }
+    if task_id.as_ref().is_some_and(|id| id.trim().is_empty()) {
+        return Err(CliError::Usage(
+            "task_id must not be empty when supplied".to_string(),
+        ));
+    }
+    let valid_member = |id: &str| id == "host" || run.member_run_ids.iter().any(|row| row == id);
+    if !valid_member(from_member_id) {
+        return Err(CliError::Usage(format!(
+            "message sender {from_member_id} does not belong to team run {team_run_id}"
+        )));
+    }
+    if to_member_ids.is_empty() {
+        return Err(CliError::Usage(
+            "team message requires at least one recipient".to_string(),
+        ));
+    }
+    let mut recipients = std::collections::HashSet::new();
+    for recipient in &to_member_ids {
+        if !valid_member(recipient) {
+            return Err(CliError::Usage(format!(
+                "message recipient {recipient} does not belong to team run {team_run_id}"
+            )));
+        }
+        if !recipients.insert(recipient.as_str()) {
+            return Err(CliError::Usage(format!(
+                "duplicate message recipient: {recipient}"
+            )));
+        }
+    }
+    let (correlation_id, causation_id) =
+        resolve_team_message_lineage(store, team_run_id, &kind, correlation_id, causation_id)?;
     let message = TeamMessage {
         id: generated_id("tmsg"),
         team_run_id: team_run_id.to_string(),
@@ -1506,8 +2079,8 @@ fn send_team_message(
         to_member_ids: to_member_ids.clone(),
         kind,
         body: body.to_string(),
-        correlation_id: generated_id("corr"),
-        causation_id: None,
+        correlation_id,
+        causation_id,
         evidence_refs: Vec::new(),
         deliveries: to_member_ids
             .iter()
@@ -1521,7 +2094,7 @@ fn send_team_message(
             .collect(),
         created_at: now_string(),
     };
-    store.append_team_message(&message)?;
+    store_conflict_as_usage(store.append_team_message_checked(&message))?;
     let from_host = from_member_id == "host";
     let seq = next_team_run_seq(store, team_run_id)?;
     append_team_run_event(
@@ -1551,6 +2124,95 @@ fn send_team_message(
     Ok(message)
 }
 
+/// Resolve and verify manual message lineage without requiring legacy Task
+/// records. An Assignment establishes a unique correlation anchor. A
+/// non-assignment message that explicitly names a correlation must point at an
+/// existing assignment in this run; a causation-only reply inherits its direct
+/// cause's correlation (which may be an intentionally uncorrelated message).
+///
+/// Omitted lineage retains the v0 generated-default behavior and makes no
+/// claim of assignment proof. Every validation happens before the append, so
+/// bad cross-run, unknown, or mismatched lineage is atomic.
+fn resolve_team_message_lineage(
+    store: &HarnessStore,
+    team_run_id: &str,
+    kind: &TeamMessageKind,
+    supplied_correlation_id: Option<String>,
+    supplied_causation_id: Option<String>,
+) -> CliResult<(String, Option<String>)> {
+    let messages = latest_team_messages_in_append_order(store)?;
+    let has_explicit_correlation = supplied_correlation_id.is_some();
+
+    if let Some(correlation_id) = supplied_correlation_id.as_deref() {
+        if correlation_id.trim().is_empty() {
+            return Err(CliError::Usage(
+                "--correlation-id must not be empty".to_string(),
+            ));
+        }
+    }
+
+    let cause = if let Some(causation_id) = supplied_causation_id.as_deref() {
+        if causation_id.trim().is_empty() {
+            return Err(CliError::Usage(
+                "--causation-id must not be empty".to_string(),
+            ));
+        }
+        Some(
+            messages
+            .iter()
+            .find(|message| message.team_run_id == team_run_id && message.id == causation_id)
+            .cloned()
+            .ok_or_else(|| {
+                CliError::Usage(format!(
+                    "causation_id `{causation_id}` does not identify a message in team run {team_run_id}"
+                ))
+            })?,
+        )
+    } else {
+        None
+    };
+
+    if let (Some(correlation_id), Some(cause)) =
+        (supplied_correlation_id.as_deref(), cause.as_ref())
+    {
+        if cause.correlation_id != correlation_id {
+            return Err(CliError::Usage(format!(
+                "causation_id `{causation_id}` has correlation_id `{}`, not `{correlation_id}`",
+                cause.correlation_id,
+                causation_id = supplied_causation_id.as_deref().unwrap_or_default(),
+            )));
+        }
+    }
+
+    let correlation_id = supplied_correlation_id
+        .or_else(|| cause.as_ref().map(|message| message.correlation_id.clone()))
+        .unwrap_or_else(|| generated_id("corr"));
+
+    if *kind == TeamMessageKind::Assignment {
+        if messages.iter().any(|message| {
+            message.team_run_id == team_run_id
+                && message.kind == TeamMessageKind::Assignment
+                && message.correlation_id == correlation_id
+        }) {
+            return Err(CliError::Usage(format!(
+                "correlation_id `{correlation_id}` already identifies an assignment in team run {team_run_id}"
+            )));
+        }
+    } else if has_explicit_correlation
+        && !messages.iter().any(|message| {
+            message.team_run_id == team_run_id
+                && message.kind == TeamMessageKind::Assignment
+                && message.correlation_id == correlation_id
+        })
+    {
+        return Err(CliError::Usage(format!(
+            "correlation_id `{correlation_id}` does not identify an assignment in team run {team_run_id}"
+        )));
+    }
+
+    Ok((correlation_id, supplied_causation_id))
+}
+
 /// Load the latest row for a team run id, or a clear not-found error.
 fn latest_team_run(store: &HarnessStore, id: &str) -> CliResult<AgentTeamRun> {
     latest_team_runs_in_append_order(store)?
@@ -1568,10 +2230,14 @@ fn parse_team_run_status(s: &str) -> CliResult<TeamRunStatus> {
     })
 }
 
-/// Transition a team run through the wave gate. Only two moves are legal:
-/// `reviewing → completed` (the integration gate passes) and
-/// `planning|running|waiting → cancelled`. Anything else is a usage error
-/// (HTTP 400) so a wave cannot skip its gate or resurrect a terminal run.
+/// Transition a team-run attempt. Only these moves are legal:
+/// `reviewing → completed` (the attempt-level integration check passes) and
+/// `planning|running|waiting|reviewing → cancelled`. Cancelling a reviewing
+/// attempt is the explicit rejection path that permits a later retry without
+/// falsely making the failed attempt acceptance-eligible. Anything else is a usage error
+/// (HTTP 400) so an attempt cannot skip review or resurrect after termination.
+/// Completing an attempt only makes it eligible for the separate Wave gate; it
+/// does not accept the Wave.
 /// Appends the new AgentTeamRun row (latest-wins) and folds a TeamRunEvent so
 /// the dashboard timeline narrates the gate decision. Shared by
 /// POST /v1/team-runs/{id}/transition and the `team-run complete|cancel` arms.
@@ -1588,27 +2254,38 @@ fn transition_team_run(
             | (TeamRunStatus::Planning, TeamRunStatus::Cancelled)
             | (TeamRunStatus::Running, TeamRunStatus::Cancelled)
             | (TeamRunStatus::Waiting, TeamRunStatus::Cancelled)
+            | (TeamRunStatus::Reviewing, TeamRunStatus::Cancelled)
     );
     if !allowed {
         return Err(CliError::Usage(format!(
-            "invalid team-run transition: {} → {} (allowed: reviewing → completed, planning|running|waiting → cancelled)",
+            "invalid team-run transition: {} → {} (allowed: reviewing → completed, planning|running|waiting|reviewing → cancelled)",
             serde_snake_label(&previous_status),
             serde_snake_label(&target),
         )));
     }
-    let mut next = current;
+    let mut next = current.clone();
     next.status = target;
     next.updated_at = now_string();
     if target == TeamRunStatus::Completed {
         next.completed_at = Some(now_string());
     }
-    store.append_team_run(&next)?;
+    let wave_status = if target == TeamRunStatus::Completed {
+        WaveStatus::Waiting
+    } else {
+        WaveStatus::Planned
+    };
+    store_conflict_as_usage(store.compare_and_append_team_run_with_wave_status(
+        &current,
+        &next,
+        wave_status,
+        &now_string(),
+    ))?;
     let seq = next_team_run_seq(store, team_run_id)?;
     let (operation, summary) = match target {
         TeamRunStatus::Completed => (
             "completed",
             format!(
-                "wave gate passed: reviewing → completed (wave {})",
+                "team-run attempt completed: reviewing → completed (wave {})",
                 next.wave_index
             ),
         ),
@@ -1683,16 +2360,30 @@ fn team_run_command(
                 .iter()
                 .map(|raw| parse_team_member_spec(raw))
                 .collect::<CliResult<_>>()?;
+            let wave_index = value(args, "--wave")
+                .map(|raw| {
+                    raw.parse::<u32>().map_err(|_| {
+                        CliError::Usage("--wave must be a positive integer".to_string())
+                    })
+                })
+                .transpose()?
+                .unwrap_or(1);
+            let budget_limit_usd = value(args, "--budget-usd")
+                .map(|raw| {
+                    raw.parse::<f64>()
+                        .map_err(|_| CliError::Usage("--budget-usd must be a number".to_string()))
+                })
+                .transpose()?;
             let created = create_team_run(
                 store,
                 &required(args, "--objective")?,
-                value(args, "--wave")
-                    .and_then(|raw| raw.parse::<u32>().ok())
-                    .unwrap_or(1),
-                value(args, "--budget-usd").and_then(|raw| raw.parse::<f64>().ok()),
+                wave_index,
+                budget_limit_usd,
                 &value(args, "--host-surface").unwrap_or_else(|| "cli".into()),
                 value(args, "--host-thread-id"),
                 value(args, "--previous"),
+                value(args, "--mission-id"),
+                value(args, "--wave-id"),
                 &members,
             )?;
             if json {
@@ -1701,8 +2392,8 @@ fn team_run_command(
                 println!("{}", created.team_run.id);
             }
         }
-        // complete / cancel share the HTTP wave-gate transition logic, so a
-        // CLI-driven gate decision is indistinguishable from a dashboard one.
+        // complete / cancel share the HTTP attempt-transition logic, so CLI
+        // and dashboard cannot disagree about attempt eligibility.
         "complete" => {
             let id = required(args, "--id")?;
             let run = transition_team_run(store, &id, TeamRunStatus::Completed)?;
@@ -1746,7 +2437,7 @@ fn team_run_command(
                 .into_iter()
                 .filter(|member| member.team_run_id == id)
                 .collect();
-            let actions = latest_member_actions_in_append_order(store)?;
+            let actions = visible_member_actions_in_append_order(store)?;
             let messages = latest_team_messages_in_append_order(store)?;
             let latest_action_of = |member_run_id: &str| {
                 actions
@@ -1826,6 +2517,8 @@ fn team_run_command(
                 parse_team_message_kind(&required(args, "--kind")?)?,
                 &required(args, "--body")?,
                 value(args, "--task-id"),
+                value(args, "--correlation-id"),
+                value(args, "--causation-id"),
             )?;
             if json {
                 print_json(&message)?;
@@ -2117,12 +2810,9 @@ fn team_run_start(
     idle_timeout: Duration,
 ) -> CliResult<()> {
     let run = latest_team_run(store, run_id)?;
-    if matches!(
-        run.status,
-        TeamRunStatus::Completed | TeamRunStatus::Cancelled
-    ) {
+    if run.status != TeamRunStatus::Planning {
         return Err(CliError::Usage(format!(
-            "team run {run_id} is already {} — refusing to re-orchestrate",
+            "team run {run_id} is {} — only a planning attempt can be started; create a new attempt to retry",
             serde_snake_label(&run.status)
         )));
     }
@@ -2135,7 +2825,12 @@ fn team_run_start(
     let mut running = run.clone();
     running.status = TeamRunStatus::Running;
     running.updated_at = now_string();
-    store.append_team_run(&running)?;
+    store_conflict_as_usage(store.compare_and_append_team_run_with_wave_status(
+        &run,
+        &running,
+        WaveStatus::Running,
+        &now_string(),
+    ))?;
     ledger.fold_event(
         TeamRunEventSourceKind::Host,
         None,
@@ -2195,13 +2890,18 @@ fn team_run_start(
         .iter()
         .filter(|outcome| outcome.status == MemberRunStatus::Completed)
         .count();
-    let mut finished = run.clone();
+    let mut finished = running.clone();
     finished.status = final_status;
     finished.updated_at = now_string();
     if final_status == TeamRunStatus::Completed {
         finished.completed_at = Some(now_string());
     }
-    store.append_team_run(&finished)?;
+    store_conflict_as_usage(store.compare_and_append_team_run_with_wave_status(
+        &running,
+        &finished,
+        WaveStatus::Waiting,
+        &now_string(),
+    ))?;
     ledger.fold_event(
         TeamRunEventSourceKind::Host,
         None,
@@ -2327,19 +3027,6 @@ fn run_kimi_member(
         let mut mapper = MemberUpdateMapper::new(ledger, member_row.clone());
         let outcome = client.prompt(&prompt_text, idle_timeout, |update| mapper.handle(update))?;
         let final_text = mapper.text().to_string();
-        // Journal the round's full reasoning stream as one `thinking` action
-        // (derived reasoning: visible to operators, never execution evidence).
-        let thinking_text = mapper.thinking_text().to_string();
-        if !thinking_text.trim().is_empty() {
-            let capped: String = thinking_text.chars().take(16_000).collect();
-            let _ = ledger.append_action(
-                &member.id,
-                "thinking",
-                MemberActionStatus::Succeeded,
-                &format!("round {round} reasoning"),
-                &capped,
-            );
-        }
         member_row = mapper.into_member();
         let result = parse_round_result(&final_text);
 
@@ -2555,16 +3242,15 @@ fn member_spawn_cwd(resolved: &ResolvedStore, member: &MemberRun) -> PathBuf {
 }
 
 /// Maps `session/update` frames of one prompt round onto the member ledger.
-/// Reasoning streams (`agent_thought_chunk`) are journaled as `thinking`
-/// actions: coalesced while streaming, full text at round end. They are
-/// derived reasoning — never execution evidence, never forwarded to members.
+/// Reasoning streams (`agent_thought_chunk`) are intentionally ignored here:
+/// no MemberAction or other durable record may contain thinking. A future
+/// transient live channel can surface a sanitized, non-replayable indicator
+/// without changing this ledger contract.
 struct MemberUpdateMapper<'a> {
     ledger: &'a TeamRunLedger,
     member: MemberRun,
     text: String,
-    thinking: String,
     last_progress_at: std::time::Instant,
-    last_thinking_at: std::time::Instant,
     /// toolCallId → title of tools we journaled `tool_started` for, so the
     /// completion action can carry a name even when the update frame omits it.
     open_tools: std::collections::HashMap<String, String>,
@@ -2576,12 +3262,10 @@ impl<'a> MemberUpdateMapper<'a> {
             ledger,
             member,
             text: String::new(),
-            thinking: String::new(),
             // Arm the throttle already expired so the FIRST chunk journals one
             // progress action immediately (the console shows life), then at
             // most one per TEAM_RUN_PROGRESS_THROTTLE window.
             last_progress_at: std::time::Instant::now() - TEAM_RUN_PROGRESS_THROTTLE,
-            last_thinking_at: std::time::Instant::now() - TEAM_RUN_PROGRESS_THROTTLE,
             open_tools: std::collections::HashMap::new(),
         }
     }
@@ -2591,32 +3275,6 @@ impl<'a> MemberUpdateMapper<'a> {
             return;
         };
         if kind.contains("thought") {
-            if let Some(text) = update
-                .get("content")
-                .and_then(|content| content.get("text"))
-                .and_then(|text| text.as_str())
-            {
-                self.thinking.push_str(text);
-            }
-            if !self.thinking.is_empty()
-                && self.last_thinking_at.elapsed() >= TEAM_RUN_PROGRESS_THROTTLE
-            {
-                self.last_thinking_at = std::time::Instant::now();
-                let summary = format!("{} chars of reasoning streamed", self.thinking.len());
-                if self
-                    .ledger
-                    .append_action(
-                        &self.member.id,
-                        "thinking",
-                        MemberActionStatus::Progress,
-                        "reasoning stream",
-                        &summary,
-                    )
-                    .is_ok()
-                {
-                    self.touch_member();
-                }
-            }
             return;
         }
         if kind == "agent_message_chunk" {
@@ -2705,11 +3363,6 @@ impl<'a> MemberUpdateMapper<'a> {
     /// The accumulated assistant text of this round (all message chunks).
     fn text(&self) -> &str {
         &self.text
-    }
-
-    /// The accumulated reasoning stream of this round (all thought chunks).
-    fn thinking_text(&self) -> &str {
-        &self.thinking
     }
 
     fn into_member(self) -> MemberRun {
@@ -8286,6 +8939,18 @@ fn handle_http_action(
     path: &str,
     body: &serde_json::Value,
 ) -> CliResult<serde_json::Value> {
+    if path == "/v1/missions" {
+        return create_mission_value(store, body);
+    }
+    if path == "/v1/waves" {
+        return create_wave_value(store, body);
+    }
+    if let Some(wave_id) = path
+        .strip_prefix("/v1/waves/")
+        .and_then(|rest| rest.strip_suffix("/gate"))
+    {
+        return gate_wave_value(store, wave_id, body);
+    }
     if path == "/v1/team-runs" {
         return create_team_run_value(store, body);
     }
@@ -8405,6 +9070,70 @@ fn handle_http_action(
         return request_task_review_value(store, task_id, body);
     }
     Err(CliError::Usage(format!("unknown action path: {path}")))
+}
+
+/// POST /v1/missions — create native Mission intent. Goal compatibility
+/// projections are read-only and intentionally have no creation endpoint.
+fn create_mission_value(
+    store: &HarnessStore,
+    body: &serde_json::Value,
+) -> CliResult<serde_json::Value> {
+    Ok(serde_json::to_value(create_mission(
+        store,
+        optional_json_string(body, "id")?,
+        &required_json_string(body, "title")?,
+        &required_json_string(body, "objective")?,
+        optional_json_string(body, "desired_outcome")?,
+    )?)?)
+}
+
+/// POST /v1/waves — add one ordered, executor-specific Wave to a native
+/// Mission. Its membership is recorded on both append-only ledgers.
+fn create_wave_value(
+    store: &HarnessStore,
+    body: &serde_json::Value,
+) -> CliResult<serde_json::Value> {
+    let index = match body.get("index") {
+        None => None,
+        Some(value) => {
+            let raw = value.as_u64().ok_or_else(|| {
+                CliError::Usage("JSON field index must be a positive integer".to_string())
+            })?;
+            Some(u32::try_from(raw).map_err(|_| {
+                CliError::Usage("JSON field index must fit a positive u32".to_string())
+            })?)
+        }
+    };
+    Ok(serde_json::to_value(create_wave(
+        store,
+        optional_json_string(body, "id")?,
+        &required_json_string(body, "mission_id")?,
+        index,
+        &required_json_string(body, "title")?,
+        &required_json_string(body, "objective")?,
+        parse_wave_executor_kind(&required_json_string(body, "executor_kind")?)?,
+        optional_json_string(body, "exit_criteria")?,
+        optional_json_string(body, "plan_note")?,
+    )?)?)
+}
+
+/// POST /v1/waves/{id}/gate — write a lightweight acceptance, revise, or
+/// blocked result without deleting executor-attempt lineage.
+fn gate_wave_value(
+    store: &HarnessStore,
+    wave_id: &str,
+    body: &serde_json::Value,
+) -> CliResult<serde_json::Value> {
+    Ok(serde_json::to_value(gate_wave(
+        store,
+        wave_id,
+        &required_json_string(body, "status")?,
+        optional_json_string(body, "run_id")?,
+        &optional_json_string(body, "accepted_by")?.unwrap_or_else(|| "host".to_string()),
+        optional_json_string(body, "note")?,
+        optional_json_string(body, "outcome")?,
+        optional_json_string_array(body, "artifact_refs")?,
+    )?)?)
 }
 
 fn create_message_value(
@@ -8612,35 +9341,71 @@ fn create_team_run_value(
         .and_then(|value| value.as_array())
         .ok_or_else(|| CliError::Usage("missing JSON field: members".to_string()))?;
     let mut members = Vec::new();
-    for member in member_values {
+    for (member_index, member) in member_values.iter().enumerate() {
+        let owned_paths = match member.get("owned_paths") {
+            None => Vec::new(),
+            Some(serde_json::Value::Array(paths)) => paths
+                .iter()
+                .enumerate()
+                .map(|(path_index, path)| {
+                    path.as_str().map(str::to_string).ok_or_else(|| {
+                        CliError::Usage(format!(
+                            "members[{member_index}].owned_paths[{path_index}] must be a string"
+                        ))
+                    })
+                })
+                .collect::<CliResult<Vec<_>>>()?,
+            Some(_) => {
+                return Err(CliError::Usage(format!(
+                    "members[{member_index}].owned_paths must be an array"
+                )));
+            }
+        };
         members.push(TeamMemberSpec {
             name: required_json_string(member, "name")?,
             role: required_json_string(member, "role")?,
             provider: required_json_string(member, "provider")?,
-            model: json_string(member, "model"),
-            owned_paths: json_string_array(member, "owned_paths"),
+            model: optional_json_string(member, "model")?,
+            owned_paths,
         });
     }
+    let wave_index = match body.get("wave_index") {
+        None => 1,
+        Some(value) => {
+            let raw = value.as_u64().ok_or_else(|| {
+                CliError::Usage("JSON field wave_index must be a positive integer".to_string())
+            })?;
+            u32::try_from(raw).map_err(|_| {
+                CliError::Usage("JSON field wave_index must fit a positive u32".to_string())
+            })?
+        }
+    };
+    let budget_limit_usd = match body.get("budget_limit_usd") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(value) => Some(value.as_f64().ok_or_else(|| {
+            CliError::Usage("JSON field budget_limit_usd must be a number or null".to_string())
+        })?),
+    };
+    let host_surface =
+        optional_json_string(body, "host_surface")?.unwrap_or_else(|| "http".to_string());
     let created = create_team_run(
         store,
         &required_json_string(body, "objective")?,
-        json_u64(body, "wave_index")
-            .and_then(|wave| u32::try_from(wave).ok())
-            .unwrap_or(1),
-        body.get("budget_limit_usd")
-            .and_then(|value| value.as_f64()),
-        json_string(body, "host_surface")
-            .as_deref()
-            .unwrap_or("http"),
-        json_string(body, "host_thread_id"),
-        json_string(body, "previous_run_id"),
+        wave_index,
+        budget_limit_usd,
+        &host_surface,
+        optional_json_string(body, "host_thread_id")?,
+        optional_json_string(body, "previous_run_id")?,
+        optional_json_string(body, "mission_id")?,
+        optional_json_string(body, "wave_id")?,
         &members,
     )?;
     Ok(created_team_run_json(&created))
 }
 
-/// POST /v1/team-runs/{id}/transition — the wave gate. Body `{status}`; only
-/// `reviewing → completed` and `planning|running|waiting → cancelled` are legal
+/// POST /v1/team-runs/{id}/transition — attempt lifecycle. Body `{status}`; only
+/// `reviewing → completed` and
+/// `planning|running|waiting|reviewing → cancelled` are legal
 /// (same logic as `team-run complete|cancel`, so CLI and UI cannot diverge).
 fn transition_team_run_value(
     store: &HarnessStore,
@@ -8673,6 +9438,8 @@ fn send_team_message_value(
         parse_team_message_kind(&required_json_string(body, "kind")?)?,
         &required_json_string(body, "body")?,
         json_string(body, "task_id"),
+        json_string(body, "correlation_id"),
+        json_string(body, "causation_id"),
     )?;
     Ok(serde_json::to_value(message)?)
 }
@@ -8921,6 +9688,16 @@ fn required_json_string(body: &serde_json::Value, key: &str) -> CliResult<String
     json_string(body, key).ok_or_else(|| CliError::Usage(format!("missing JSON field: {key}")))
 }
 
+fn optional_json_string(body: &serde_json::Value, key: &str) -> CliResult<Option<String>> {
+    match body.get(key) {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(value) => value
+            .as_str()
+            .map(|text| Some(text.to_string()))
+            .ok_or_else(|| CliError::Usage(format!("JSON field {key} must be a string or null"))),
+    }
+}
+
 fn json_bool(body: &serde_json::Value, key: &str) -> Option<bool> {
     body.get(key).and_then(|value| value.as_bool())
 }
@@ -8939,6 +9716,24 @@ fn json_string_array(body: &serde_json::Value, key: &str) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+fn optional_json_string_array(body: &serde_json::Value, key: &str) -> CliResult<Vec<String>> {
+    match body.get(key) {
+        None => Ok(Vec::new()),
+        Some(serde_json::Value::Array(values)) => values
+            .iter()
+            .enumerate()
+            .map(|(index, value)| {
+                value.as_str().map(str::to_string).ok_or_else(|| {
+                    CliError::Usage(format!("JSON field {key}[{index}] must be a string"))
+                })
+            })
+            .collect(),
+        Some(_) => Err(CliError::Usage(format!(
+            "JSON field {key} must be an array"
+        ))),
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -16626,12 +17421,20 @@ fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::Value> {
     let workflow_steps = latest_workflow_steps_in_append_order(store)?;
     let workflow_patches = latest_workflow_patches_in_append_order(store)?;
     let workflow_artifact_manifests = latest_workflow_artifact_manifests_in_append_order(store)?;
+    // Native Mission/Wave rows and their read-only compatibility projection
+    // are additive product state. Keep executor attempts separate below.
+    let missions = store.latest_missions()?;
+    let waves = store.latest_waves()?;
+    let mission_projections = store.mission_projections()?;
     // Agent Team v0 ledger projections (append-only, latest-wins). The folded
     // event log is capped per run so a chatty run cannot bloat the snapshot.
     let team_runs = latest_team_runs_in_append_order(store)?;
     let member_runs = latest_member_runs_in_append_order(store)?;
     let team_messages = latest_team_messages_in_append_order(store)?;
-    let member_actions = latest_member_actions_in_append_order(store)?;
+    // Old ledgers can contain v0 `thinking` rows. Keep the JSONL history
+    // intact for migration/audit, but never project those rows into a new
+    // snapshot: thinking is not product state or evidence.
+    let member_actions = visible_member_actions_in_append_order(store)?;
     let delegation_runs = latest_delegation_runs_in_append_order(store)?;
     let team_run_events = recent_team_run_events_in_append_order(store, 500)?;
     // The goal↔run orchestration checkpoints (Stage 0): each `goal run-phases`
@@ -16757,6 +17560,9 @@ fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::Value> {
         "workflow_patches": workflow_patches,
         "workflow_artifact_manifests": workflow_artifact_manifests,
         "goal_orchestration_runs": goal_orchestration_runs,
+        "missions": missions,
+        "waves": waves,
+        "mission_projections": mission_projections,
         "team_runs": team_runs,
         "member_runs": member_runs,
         "team_messages": team_messages,
@@ -17209,6 +18015,16 @@ fn latest_member_actions_in_append_order(store: &HarnessStore) -> CliResult<Vec<
         by_id.insert(action.id.clone(), action);
     }
     Ok(ids.into_iter().filter_map(|id| by_id.remove(&id)).collect())
+}
+
+/// Project the product-visible MemberAction view. Legacy v0 reasoning rows
+/// remain in the append-only ledger but are never surfaced to a new operator
+/// or MCP consumer as durable state.
+fn visible_member_actions_in_append_order(store: &HarnessStore) -> CliResult<Vec<MemberAction>> {
+    Ok(latest_member_actions_in_append_order(store)?
+        .into_iter()
+        .filter(|action| action.action_type != "thinking")
+        .collect())
 }
 
 fn latest_delegation_runs_in_append_order(store: &HarnessStore) -> CliResult<Vec<DelegationRun>> {
@@ -21425,10 +22241,17 @@ fn print_help() {
   team list [--all]
   team show --id <team>
   team close --id <team>
-  team-run create --objective <text> [--wave <n>] [--budget-usd <x>] [--host-surface <surface>] [--host-thread-id <id>] [--member name:role:provider[:model][@path1,path2]]... [--json]
+  mission create --title <title> --objective <text> [--id <mission>] [--desired-outcome <text>] [--json]
+  mission list
+  mission show --id <mission|compat-goal:...>
+  wave create --mission-id <mission> --title <title> --objective <text> --executor-kind agent_team|dynamic_workflow|host [--id <wave>] [--index <n>] [--exit-criteria <text>] [--plan-note <text>] [--json]
+  wave list [--mission-id <mission>]
+  wave show --id <wave>
+  wave gate --id <wave> --status accepted|revise|blocked [--run-id <run> --outcome <text> (required for accepted)] [--accepted-by <actor>] [--note <text>] [--artifact <ref>] [--json]
+  team-run create --objective <text> [--mission-id <mission> --wave-id <wave>] [--previous <run>] [--wave <legacy-n>] [--budget-usd <x>] [--host-surface <surface>] [--host-thread-id <id>] --member name:role:provider[:model][@path1,path2] [--member ...] [--json]
   team-run list [--json]
   team-run status --id <run> [--json]
-  team-run send --id <run> --from <member|host> --to <id1>[,<id2>] --kind assignment|question|answer|progress|blocker|handoff|review_request|review_result|control|broadcast --body <text> [--task-id <task>] [--json]
+  team-run send --id <run> --from <member|host> --to <id1>[,<id2>] --kind assignment|question|answer|progress|blocker|handoff|review_request|review_result|control|broadcast --body <text> [--task-id <task>] [--correlation-id <id>] [--causation-id <message>] [--json]
   team-run start --id <run> [--max-concurrency <n>] [--idle-timeout-s <n>]
   team-run events --id <run> [--after-seq <n>] [--json]
   member register --name <name> --role <role> [--provider codex|claude] [--capability <cap>] [--worktree <path>] [--permission-profile <profile>] [--runtime-workspace-root <path>]
@@ -26842,6 +27665,36 @@ agent("a NEW second leaf that changes the ordinal alignment")
             .and_then(|v| v.as_array())
             .expect("workflow_steps array");
         assert_eq!(steps.len(), 3);
+    }
+
+    #[test]
+    fn dashboard_snapshot_hides_legacy_durable_thinking_rows() {
+        let store = temp_store("snapshot-no-thinking");
+        let legacy = MemberAction {
+            id: generated_id("mact"),
+            seq: 1,
+            team_run_id: "team-run-legacy".to_string(),
+            member_run_id: "member-run-legacy".to_string(),
+            task_id: None,
+            action_type: "thinking".to_string(),
+            status: MemberActionStatus::Succeeded,
+            title: "old reasoning".to_string(),
+            summary: "must remain only in the legacy ledger".to_string(),
+            evidence_refs: Vec::new(),
+            started_at: now_string(),
+            completed_at: Some(now_string()),
+        };
+        store
+            .append_member_action(&legacy)
+            .expect("append legacy row");
+
+        assert_eq!(store.member_actions().expect("raw ledger").len(), 1);
+        let snapshot = dashboard_snapshot(&store).expect("snapshot");
+        assert_eq!(
+            snapshot["member_actions"].as_array().map(Vec::len),
+            Some(0),
+            "legacy thinking must not be projected as product state"
+        );
     }
 
     /// The dashboard snapshot serializes a phase-driven goal's `phases[]` and

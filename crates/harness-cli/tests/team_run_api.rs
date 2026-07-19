@@ -23,6 +23,58 @@ fn init_project(home: &TempHome, name: &str) -> String {
     current_project_id(home)
 }
 
+/// Seed the native Mission/Wave ledgers directly so the public team-run
+/// surfaces can prove their optional joins without depending on a separate
+/// Mission authoring command in this integration suite.
+fn seed_native_mission_wave(home: &TempHome, project_id: &str) {
+    let store = home.projects_dir().join(project_id);
+    std::fs::write(
+        store.join("missions.jsonl"),
+        serde_json::json!({
+            "id": "mission-test",
+            "title": "Test Mission",
+            "objective": "Exercise team-run join",
+            "desired_outcome": null,
+            "status": "running",
+            "wave_ids": ["wave-test"],
+            "outcome_summary": null,
+            "created_at": "2026-07-19T00:00:00Z",
+            "updated_at": "2026-07-19T00:00:00Z",
+            "completed_at": null
+        })
+        .to_string()
+            + "\n",
+    )
+    .expect("seed mission");
+    std::fs::write(
+        store.join("waves.jsonl"),
+        serde_json::json!({
+            "id": "wave-test",
+            "mission_id": "mission-test",
+            "index": 2,
+            "title": "Test Wave",
+            "objective": "Exercise team run",
+            "exit_criteria": null,
+            "status": "planned",
+            "executor_kind": "agent_team",
+            "executor_run_ids": [],
+            "accepted_run_id": null,
+            "plan_note": null,
+            "outcome_summary": null,
+            "artifact_refs": [],
+            "gate_status": "pending",
+            "gate_note": null,
+            "accepted_by": null,
+            "accepted_at": null,
+            "created_at": "2026-07-19T00:00:00Z",
+            "updated_at": "2026-07-19T00:00:00Z"
+        })
+        .to_string()
+            + "\n",
+    )
+    .expect("seed wave");
+}
+
 /// Run `harness team-run ...` in the given project and return parsed stdout JSON.
 fn team_run_json(home: &TempHome, project_id: &str, args: &[&str]) -> serde_json::Value {
     let mut full = vec!["--project", project_id, "team-run"];
@@ -37,10 +89,24 @@ fn team_run_json(home: &TempHome, project_id: &str, args: &[&str]) -> serde_json
         .unwrap_or_else(|e| panic!("team-run {args:?} stdout not JSON ({e})"))
 }
 
+fn command_json(home: &TempHome, project_id: &str, args: &[&str]) -> serde_json::Value {
+    let mut full = vec!["--project", project_id];
+    full.extend_from_slice(args);
+    let out = run_harness(home, home.base(), &full);
+    assert!(
+        out.status.success(),
+        "command {args:?} failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    serde_json::from_str(&String::from_utf8_lossy(&out.stdout))
+        .unwrap_or_else(|e| panic!("command {args:?} stdout not JSON ({e})"))
+}
+
 #[test]
 fn team_run_cli_create_list_status_send_events() {
     let home = TempHome::new("team-run-cli");
     let project_id = init_project(&home, "alpha");
+    seed_native_mission_wave(&home, &project_id);
 
     // create (plain output): bare run id on stdout.
     let out = run_harness(
@@ -55,6 +121,10 @@ fn team_run_cli_create_list_status_send_events() {
             "Ship v0",
             "--wave",
             "2",
+            "--mission-id",
+            "mission-test",
+            "--wave-id",
+            "wave-test",
             "--budget-usd",
             "5.5",
             "--member",
@@ -78,6 +148,8 @@ fn team_run_cli_create_list_status_send_events() {
     assert_eq!(runs[0]["id"].as_str(), Some(run_id.as_str()));
     assert_eq!(runs[0]["status"].as_str(), Some("planning"));
     assert_eq!(runs[0]["wave_index"].as_u64(), Some(2));
+    assert_eq!(runs[0]["mission_id"].as_str(), Some("mission-test"));
+    assert_eq!(runs[0]["wave_id"].as_str(), Some("wave-test"));
     assert_eq!(runs[0]["budget_limit_usd"].as_f64(), Some(5.5));
     let member_ids: Vec<&str> = runs[0]["member_run_ids"]
         .as_array()
@@ -201,9 +273,567 @@ fn team_run_cli_create_list_status_send_events() {
 }
 
 #[test]
+fn team_run_cli_message_reuses_assignment_lineage_only_within_its_run() {
+    let home = TempHome::new("team-run-cli-lineage");
+    let project_id = init_project(&home, "alpha");
+    let created = team_run_json(
+        &home,
+        &project_id,
+        &[
+            "create",
+            "--objective",
+            "Correlate work",
+            "--member",
+            "lead:coordinator:kimi",
+            "--member",
+            "worker:implementer:kimi",
+            "--json",
+        ],
+    );
+    let run_id = created["team_run"]["id"].as_str().unwrap().to_string();
+    let assignment = &created["assignment_messages"][0];
+    let assignment_id = assignment["id"].as_str().unwrap();
+    let correlation_id = assignment["correlation_id"].as_str().unwrap();
+    let members = created["member_runs"].as_array().unwrap();
+
+    let handoff = team_run_json(
+        &home,
+        &project_id,
+        &[
+            "send",
+            "--id",
+            &run_id,
+            "--from",
+            members[0]["id"].as_str().unwrap(),
+            "--to",
+            members[1]["id"].as_str().unwrap(),
+            "--kind",
+            "handoff",
+            "--body",
+            "handoff linked to assignment",
+            "--correlation-id",
+            correlation_id,
+            "--causation-id",
+            assignment_id,
+            "--json",
+        ],
+    );
+    assert_eq!(handoff["correlation_id"].as_str(), Some(correlation_id));
+    assert_eq!(handoff["causation_id"].as_str(), Some(assignment_id));
+
+    // A causation-only reply inherits its direct cause's correlation rather
+    // than fabricating a fresh one.
+    let reply = team_run_json(
+        &home,
+        &project_id,
+        &[
+            "send",
+            "--id",
+            &run_id,
+            "--from",
+            members[1]["id"].as_str().unwrap(),
+            "--to",
+            members[0]["id"].as_str().unwrap(),
+            "--kind",
+            "answer",
+            "--body",
+            "acknowledged",
+            "--causation-id",
+            handoff["id"].as_str().unwrap(),
+            "--json",
+        ],
+    );
+    assert_eq!(reply["correlation_id"].as_str(), Some(correlation_id));
+    assert_eq!(reply["causation_id"].as_str(), handoff["id"].as_str());
+
+    let foreign = team_run_json(
+        &home,
+        &project_id,
+        &[
+            "create",
+            "--objective",
+            "Separate team boundary",
+            "--member",
+            "outsider:implementer:kimi",
+            "--json",
+        ],
+    );
+    let foreign_member_id = foreign["member_runs"][0]["id"].as_str().unwrap();
+    let messages_before_invalid = std::fs::read_to_string(
+        home.projects_dir()
+            .join(&project_id)
+            .join("team_messages.jsonl"),
+    )
+    .expect("read messages before invalid sends")
+    .lines()
+    .count();
+
+    // A member from another TeamRun cannot impersonate a sender in this run,
+    // even when it presents valid assignment lineage from the target run.
+    let out = run_harness(
+        &home,
+        home.base(),
+        &[
+            "--project",
+            &project_id,
+            "team-run",
+            "send",
+            "--id",
+            &run_id,
+            "--from",
+            foreign_member_id,
+            "--to",
+            members[0]["id"].as_str().unwrap(),
+            "--kind",
+            "progress",
+            "--body",
+            "cross-run impersonation",
+            "--correlation-id",
+            correlation_id,
+            "--causation-id",
+            assignment_id,
+        ],
+    );
+    assert!(!out.status.success(), "unexpected success: {out:?}");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("does not belong to team run"),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // Recipient membership is checked before any message or event is written.
+    let out = run_harness(
+        &home,
+        home.base(),
+        &[
+            "--project",
+            &project_id,
+            "team-run",
+            "send",
+            "--id",
+            &run_id,
+            "--from",
+            members[0]["id"].as_str().unwrap(),
+            "--to",
+            "member-run-unknown",
+            "--kind",
+            "progress",
+            "--body",
+            "unknown recipient",
+            "--correlation-id",
+            correlation_id,
+            "--causation-id",
+            assignment_id,
+        ],
+    );
+    assert!(!out.status.success(), "unexpected success: {out:?}");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("does not belong to team run"),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let messages_after_invalid = std::fs::read_to_string(
+        home.projects_dir()
+            .join(&project_id)
+            .join("team_messages.jsonl"),
+    )
+    .expect("read messages after invalid sends")
+    .lines()
+    .count();
+    assert_eq!(messages_after_invalid, messages_before_invalid);
+
+    let out = run_harness(
+        &home,
+        home.base(),
+        &[
+            "--project",
+            &project_id,
+            "team-run",
+            "send",
+            "--id",
+            &run_id,
+            "--from",
+            members[0]["id"].as_str().unwrap(),
+            "--to",
+            members[1]["id"].as_str().unwrap(),
+            "--kind",
+            "progress",
+            "--body",
+            "unproven correlation",
+            "--correlation-id",
+            "corr-not-an-assignment",
+        ],
+    );
+    assert!(!out.status.success(), "unexpected success: {out:?}");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("does not identify an assignment"),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // A causation id from the same run must still agree with an explicitly
+    // supplied correlation; the rejected send leaves the event stream intact.
+    let out = run_harness(
+        &home,
+        home.base(),
+        &[
+            "--project",
+            &project_id,
+            "team-run",
+            "send",
+            "--id",
+            &run_id,
+            "--from",
+            members[0]["id"].as_str().unwrap(),
+            "--to",
+            members[1]["id"].as_str().unwrap(),
+            "--kind",
+            "progress",
+            "--body",
+            "mismatched lineage",
+            "--correlation-id",
+            correlation_id,
+            "--causation-id",
+            created["assignment_messages"][1]["id"].as_str().unwrap(),
+        ],
+    );
+    assert!(!out.status.success(), "unexpected success: {out:?}");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("has correlation_id"),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let events = team_run_json(&home, &project_id, &["events", "--id", &run_id, "--json"]);
+    assert_eq!(events.as_array().map(Vec::len), Some(7));
+}
+
+#[test]
+fn team_run_rejects_non_agent_team_wave_before_journaling_attempt() {
+    let home = TempHome::new("team-run-wrong-executor");
+    let project_id = init_project(&home, "alpha");
+    seed_native_mission_wave(&home, &project_id);
+    let wave_path = home.projects_dir().join(&project_id).join("waves.jsonl");
+    let wave = std::fs::read_to_string(&wave_path)
+        .expect("read seeded wave")
+        .replace("\"agent_team\"", "\"dynamic_workflow\"");
+    std::fs::write(&wave_path, wave).expect("replace executor kind");
+
+    let out = run_harness(
+        &home,
+        home.base(),
+        &[
+            "--project",
+            &project_id,
+            "team-run",
+            "create",
+            "--objective",
+            "must not start",
+            "--wave-id",
+            "wave-test",
+            "--member",
+            "worker:implementer:kimi",
+        ],
+    );
+    assert!(!out.status.success(), "unexpected success: {out:?}");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("not agent_team"),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        !home
+            .projects_dir()
+            .join(&project_id)
+            .join("team_runs.jsonl")
+            .exists(),
+        "failed validation must not append a TeamRun"
+    );
+}
+
+#[test]
+fn mission_wave_cli_authoring_and_accepted_team_gate() {
+    let home = TempHome::new("mission-wave-cli");
+    let project_id = init_project(&home, "alpha");
+    let mission = command_json(
+        &home,
+        &project_id,
+        &[
+            "mission",
+            "create",
+            "--id",
+            "mission-cli",
+            "--title",
+            "CLI Mission",
+            "--objective",
+            "Prove the native authoring surface",
+            "--desired-outcome",
+            "One accepted Wave",
+            "--json",
+        ],
+    );
+    assert_eq!(mission["id"].as_str(), Some("mission-cli"));
+    let wave = command_json(
+        &home,
+        &project_id,
+        &[
+            "wave",
+            "create",
+            "--id",
+            "wave-cli",
+            "--mission-id",
+            "mission-cli",
+            "--title",
+            "Reviewed TeamRun",
+            "--objective",
+            "Complete one assigned member attempt",
+            "--executor-kind",
+            "agent_team",
+            "--json",
+        ],
+    );
+    assert_eq!(wave["index"].as_u64(), Some(1));
+    assert_eq!(wave["executor_kind"].as_str(), Some("agent_team"));
+
+    let run = team_run_json(
+        &home,
+        &project_id,
+        &[
+            "create",
+            "--objective",
+            "empty completion",
+            "--mission-id",
+            "mission-cli",
+            "--wave-id",
+            "wave-cli",
+            "--member",
+            "worker:implementer:kimi",
+            "--json",
+        ],
+    );
+    let run_id = run["team_run"]["id"].as_str().unwrap().to_string();
+    let mut reviewing = run["team_run"].clone();
+    reviewing["status"] = serde_json::json!("reviewing");
+    reviewing["updated_at"] = serde_json::json!("unix-ms:review-ready");
+    use std::io::Write as _;
+    let mut ledger = std::fs::OpenOptions::new()
+        .append(true)
+        .open(
+            home.projects_dir()
+                .join(&project_id)
+                .join("team_runs.jsonl"),
+        )
+        .expect("open team run ledger");
+    writeln!(ledger, "{reviewing}").expect("append reviewing row");
+    let completed = run_harness(
+        &home,
+        home.base(),
+        &[
+            "--project",
+            &project_id,
+            "team-run",
+            "complete",
+            "--id",
+            &run_id,
+        ],
+    );
+    assert!(
+        completed.status.success(),
+        "team completion failed: {}",
+        String::from_utf8_lossy(&completed.stderr)
+    );
+    let waiting_wave = command_json(
+        &home,
+        &project_id,
+        &["wave", "show", "--id", "wave-cli", "--json"],
+    );
+    assert_eq!(waiting_wave["status"].as_str(), Some("waiting"));
+    let running_mission = command_json(
+        &home,
+        &project_id,
+        &["mission", "show", "--id", "mission-cli", "--json"],
+    );
+    assert_eq!(
+        running_mission["mission"]["status"].as_str(),
+        Some("running")
+    );
+    let gated = command_json(
+        &home,
+        &project_id,
+        &[
+            "wave",
+            "gate",
+            "--id",
+            "wave-cli",
+            "--status",
+            "accepted",
+            "--run-id",
+            &run_id,
+            "--accepted-by",
+            "operator",
+            "--note",
+            "gate passed",
+            "--outcome",
+            "assigned run completed",
+            "--artifact",
+            "artifact:smoke",
+            "--json",
+        ],
+    );
+    assert_eq!(gated["gate_status"].as_str(), Some("accepted"));
+    assert_eq!(gated["status"].as_str(), Some("completed"));
+    assert_eq!(gated["accepted_run_id"].as_str(), Some(run_id.as_str()));
+    assert_eq!(gated["accepted_by"].as_str(), Some("operator"));
+    assert_eq!(
+        gated["artifact_refs"],
+        serde_json::json!(["artifact:smoke"])
+    );
+
+    let mission = command_json(
+        &home,
+        &project_id,
+        &["mission", "show", "--id", "mission-cli", "--json"],
+    );
+    assert_eq!(mission["source"].as_str(), Some("native"));
+    assert_eq!(
+        mission["mission"]["wave_ids"],
+        serde_json::json!(["wave-cli"])
+    );
+}
+
+#[test]
+fn post_mission_wave_and_lightweight_gate() {
+    let home = TempHome::new("mission-wave-http");
+    let _project_id = init_project(&home, "alpha");
+    let serve = ServeHandle::spawn(&home, home.base(), &[]);
+    let (status, body) = serve.post_json(
+        "/v1/missions",
+        &serde_json::json!({
+            "id": "mission-http",
+            "title": "HTTP Mission",
+            "objective": "Author via API"
+        }),
+    );
+    assert_eq!(status, 200, "body: {body}");
+    assert_eq!(body["result"]["id"].as_str(), Some("mission-http"));
+    let (status, body) = serve.post_json(
+        "/v1/waves",
+        &serde_json::json!({
+            "id": "wave-http",
+            "mission_id": "mission-http",
+            "title": "HTTP Wave",
+            "objective": "Gate without accepting",
+            "executor_kind": "host"
+        }),
+    );
+    assert_eq!(status, 200, "body: {body}");
+    assert_eq!(body["result"]["index"].as_u64(), Some(1));
+    assert_eq!(
+        body["snapshot"]["missions"].as_array().map(Vec::len),
+        Some(1)
+    );
+    assert_eq!(body["snapshot"]["waves"].as_array().map(Vec::len), Some(1));
+    let (status, body) = serve.post_json(
+        "/v1/waves/wave-http/gate",
+        &serde_json::json!({"status": "revise", "note": "clarify scope"}),
+    );
+    assert_eq!(status, 200, "body: {body}");
+    assert_eq!(body["result"]["gate_status"].as_str(), Some("revise"));
+    assert_eq!(body["result"]["status"].as_str(), Some("planned"));
+    assert_eq!(body["result"]["gate_note"].as_str(), Some("clarify scope"));
+}
+
+#[test]
+fn linked_team_run_rejects_previous_attempt_from_another_wave() {
+    let home = TempHome::new("team-run-previous-wave");
+    let project_id = init_project(&home, "alpha");
+    for (mission_id, wave_id) in [("mission-a", "wave-a"), ("mission-b", "wave-b")] {
+        let _ = command_json(
+            &home,
+            &project_id,
+            &[
+                "mission",
+                "create",
+                "--id",
+                mission_id,
+                "--title",
+                mission_id,
+                "--objective",
+                "test lineage",
+                "--json",
+            ],
+        );
+        let _ = command_json(
+            &home,
+            &project_id,
+            &[
+                "wave",
+                "create",
+                "--id",
+                wave_id,
+                "--mission-id",
+                mission_id,
+                "--title",
+                wave_id,
+                "--objective",
+                "test lineage",
+                "--executor-kind",
+                "agent_team",
+                "--json",
+            ],
+        );
+    }
+    let first = team_run_json(
+        &home,
+        &project_id,
+        &[
+            "create",
+            "--objective",
+            "first",
+            "--mission-id",
+            "mission-a",
+            "--wave-id",
+            "wave-a",
+            "--member",
+            "worker-a:implementer:kimi",
+            "--json",
+        ],
+    );
+    let first_id = first["team_run"]["id"].as_str().unwrap();
+    let out = run_harness(
+        &home,
+        home.base(),
+        &[
+            "--project",
+            &project_id,
+            "team-run",
+            "create",
+            "--objective",
+            "invalid retry",
+            "--mission-id",
+            "mission-b",
+            "--wave-id",
+            "wave-b",
+            "--previous",
+            first_id,
+            "--member",
+            "worker-b:implementer:kimi",
+        ],
+    );
+    assert!(!out.status.success(), "unexpected success: {out:?}");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("not an attempt of mission"),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let runs = team_run_json(&home, &project_id, &["list", "--json"]);
+    assert_eq!(runs.as_array().map(Vec::len), Some(1));
+}
+
+#[test]
 fn post_team_run_creates_entities_and_snapshot() {
     let home = TempHome::new("team-run-api");
-    let _project_id = init_project(&home, "alpha");
+    let project_id = init_project(&home, "alpha");
+    seed_native_mission_wave(&home, &project_id);
     let serve = ServeHandle::spawn(&home, home.base(), &[]);
 
     let (status, body) = serve.post_json(
@@ -211,6 +841,8 @@ fn post_team_run_creates_entities_and_snapshot() {
         &serde_json::json!({
             "objective": "Ship v0",
             "wave_index": 2,
+            "mission_id": "mission-test",
+            "wave_id": "wave-test",
             "budget_limit_usd": 5.0,
             "members": [
                 {"name": "lead", "role": "coordinator", "provider": "kimi"},
@@ -226,6 +858,11 @@ fn post_team_run_creates_entities_and_snapshot() {
     let result = &body["result"];
     assert_eq!(result["team_run"]["objective"].as_str(), Some("Ship v0"));
     assert_eq!(result["team_run"]["status"].as_str(), Some("planning"));
+    assert_eq!(
+        result["team_run"]["mission_id"].as_str(),
+        Some("mission-test")
+    );
+    assert_eq!(result["team_run"]["wave_id"].as_str(), Some("wave-test"));
     assert_eq!(
         result["team_run"]["host_surface"].as_str(),
         Some("http"),
@@ -251,6 +888,14 @@ fn post_team_run_creates_entities_and_snapshot() {
     assert_eq!(
         team_runs[0]["member_run_ids"].as_array().map(Vec::len),
         Some(2)
+    );
+    let waves = snapshot["waves"].as_array().expect("waves");
+    assert_eq!(waves.len(), 1, "waves: {waves:?}");
+    assert_eq!(waves[0]["id"].as_str(), Some("wave-test"));
+    assert_eq!(
+        waves[0]["executor_run_ids"],
+        serde_json::json!([run_id]),
+        "linked Wave owns the new AgentTeamRun attempt"
     );
 
     let member_runs = snapshot["member_runs"].as_array().expect("member_runs");
@@ -328,6 +973,14 @@ fn post_team_run_message_and_start_501() {
         .filter_map(|m| m["id"].as_str().map(str::to_string))
         .collect();
     assert_eq!(member_ids.len(), 2);
+    let assignment_id = body["result"]["assignment_messages"][0]["id"]
+        .as_str()
+        .expect("assignment id")
+        .to_string();
+    let assignment_correlation = body["result"]["assignment_messages"][0]["correlation_id"]
+        .as_str()
+        .expect("assignment correlation")
+        .to_string();
 
     // Route a handoff from the worker to the lead.
     let (status, body) = serve.post_json(
@@ -337,11 +990,21 @@ fn post_team_run_message_and_start_501() {
             "to_member_ids": [member_ids[0]],
             "kind": "handoff",
             "body": "take over the review",
+            "correlation_id": assignment_correlation,
+            "causation_id": assignment_id,
         }),
     );
     assert_eq!(status, 200, "body: {body}");
     assert_eq!(body["ok"].as_bool(), Some(true), "body: {body}");
     assert_eq!(body["result"]["kind"].as_str(), Some("handoff"));
+    assert_eq!(
+        body["result"]["correlation_id"].as_str(),
+        Some(assignment_correlation.as_str())
+    );
+    assert_eq!(
+        body["result"]["causation_id"].as_str(),
+        Some(assignment_id.as_str())
+    );
     assert_eq!(
         body["result"]["team_run_id"].as_str(),
         Some(run_id.as_str())
@@ -540,7 +1203,7 @@ fn post_team_run_transition_gate_and_lineage() {
                 && event["summary"]
                     .as_str()
                     .unwrap_or("")
-                    .contains("wave gate passed")
+                    .contains("team-run attempt completed")
         }),
         "the gate-pass event was folded: {events:?}"
     );

@@ -1,0 +1,11 @@
+{
+  "id": "wave-1",
+  "mission_id": "mission-1",
+  "index": 1,
+  "title": "Legacy task graph",
+  "objective": "This must not become a Wave executor.",
+  "status": "planned",
+  "executor_kind": "task_graph",
+  "created_at": "2026-07-19T00:00:00Z",
+  "updated_at": "2026-07-19T00:00:00Z"
+}

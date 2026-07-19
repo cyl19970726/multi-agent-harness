@@ -1,0 +1,21 @@
+{
+  "id": "wave-1",
+  "mission_id": "mission-1",
+  "index": 1,
+  "title": "Agent Team implementation",
+  "objective": "Run the collaboration attempt.",
+  "exit_criteria": "The gate accepts one recorded run.",
+  "status": "completed",
+  "executor_kind": "agent_team",
+  "executor_run_ids": ["team-run-1", "team-run-2"],
+  "accepted_run_id": "team-run-2",
+  "plan_note": "Retry once if the first attempt is blocked.",
+  "outcome_summary": "The second attempt produced the accepted artifact.",
+  "artifact_refs": ["evidence:artifact-1"],
+  "gate_status": "accepted",
+  "gate_note": "Outcome and artifact are sufficient.",
+  "accepted_by": "host",
+  "accepted_at": "2026-07-19T00:03:00Z",
+  "created_at": "2026-07-19T00:00:00Z",
+  "updated_at": "2026-07-19T00:03:00Z"
+}

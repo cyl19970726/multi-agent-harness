@@ -13,10 +13,9 @@ commands), and the nerves (hooks) — it contains no runtime logic of its own.
 Product context is **Mission → ordered Wave → executor**. An `AgentTeamRun` is
 one attempt for an `agent_team` Wave. The target ownership chain starts from
 `TeamMessage(kind=assignment)` and its `correlation_id`; task ids remain v0
-compatibility fields where the current CLI exposes them. In current v0 only the
-automatic member handoff reuses that correlation; manual send creates a new
-one, so clients must carry the assignment reference in the body until the send
-surface accepts correlation/causation inputs.
+compatibility fields where the current CLI exposes them. Automatic handoff
+reuses the assignment correlation; manual CLI/API/MCP sends may pass
+`correlation_id` and `causation_id` explicitly.
 
 ## 前置要求 / Prerequisites
 
@@ -43,7 +42,7 @@ manifest 为 `kimi.plugin.json`（优先于 `.kimi-plugin/plugin.json`）。
 | 部件 | 内容 |
 | --- | --- |
 | Skills | `agent-team-orchestrator`（编排方法，会话开始自动加载）、`agent-team-member`（被拉起 member 的交付契约与 handoff 格式） |
-| MCP server | `harness`（stdio，`harness mcp`）：`team_run_create` / `team_run_list` / `team_run_status` / `team_run_send_message` / `team_run_events` |
+| MCP server | `harness`（stdio，`harness mcp`）：Mission create/list、Wave create/list/gate，以及 TeamRun create/list/status/send/events |
 | Commands | `/agent-team:new-run` 创建 run、`/agent-team:status` 紧凑状态表、`/agent-team:dashboard` 打开 Team Console |
 | Hooks | `hooks/team-events.sh`：SessionStart 与 Stop 时注入一行 active run 摘要（run id / status / 未 ACK 数 / console URL），10s 超时，失败静默放行 (fail-open) |
 
@@ -61,13 +60,20 @@ manifest 为 `kimi.plugin.json`（优先于 `.kimi-plugin/plugin.json`）。
 CLI 兜底（不经过插件也可用）：
 
 ```bash
-harness team-run create --objective "Mission: ...; Wave: ...; Objective: ..." [--wave N] [--budget-usd X] \
+harness mission create --title "..." --objective "..." --desired-outcome "..."
+harness wave create --mission-id <mission-id> --title "..." --objective "..." \
+  --executor-kind agent_team
+harness team-run create --mission-id <mission-id> --wave-id <wave-id> \
+  --objective "..." [--budget-usd X] \
   [--member name:role:provider[:model][@path1,path2]]...
 harness team-run start --id <run-id>
 harness team-run status --id <run-id> [--json]
 harness team-run send --id <run-id> --from <id|host> --to <ids> \
-  --kind <kind> --body "..." [--task-id T]
+  --kind <kind> --body "..." [--correlation-id <assignment-correlation>] \
+  [--causation-id <message-id>] [--task-id T]
 harness team-run events --id <run-id> [--after-seq N] [--json]
+harness wave gate --id <wave-id> --status accepted --run-id <run-id> \
+  --accepted-by <actor> --note "..." --outcome "..." [--artifact <ref>]...
 ```
 
 ## 纪律 / Ground Rules
@@ -76,9 +82,9 @@ harness team-run events --id <run-id> [--after-seq N] [--json]
   member 与 host 都不得自行决定。
 - **ACK 纪律**：handoff 与关键任务消息必须 ACK；超阈未 ACK 会重发并升级告警。
 - **归属**：`TeamMessage(kind=assignment)` 的 message id 与 `correlation_id`
-  是 lane 的目标主身份。当前 v0 自动 handoff 会复用它；手工 blocker /
-  progress / review 消息尚不能传入旧 correlation，必须在 body 中明确写出
-  assignment 引用。`task_id` 仅是兼容字段，不替代 assignment。
+  是 lane 的目标主身份。自动 handoff 会复用它；手工 blocker / progress /
+  review 消息应传入同一 assignment correlation，或通过同一 run 的
+  `causation_id` 继承。`task_id` 仅是兼容字段，不替代 assignment。
 - **判断标准**：结果需要回到我的上下文 → sub-agent；结果留在执行者那里、
   我只留指针 → Agent Team member。member 自主调用自己的原生 sub-agent，
   harness 只捕获归属、不调度。

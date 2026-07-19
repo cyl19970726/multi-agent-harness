@@ -64,20 +64,29 @@ At every wave boundary run the re-plan loop:
 plan vs actual -> deviation -> decision -> next wave plan
 ```
 
-Deviation is normal input, not an exception. Name the Mission and Wave
-objective before creating the run. Current v0 CLI surfaces may expose only a
-numeric `--wave N`; treat that as a compatibility index, never as the Wave's
-identity or a substitute for Mission/Wave linkage.
+Deviation is normal input, not an exception. Create or select the native
+Mission and Wave before creating the run, then pass their ids to the TeamRun.
+The numeric `--wave N` remains a compatibility index for unlinked runs only.
 
 ## Creating a run: the member configuration contract
 
-Use `/agent-team:new-run` or the MCP `team_run_create` tool. The CLI shape:
-The numeric `--wave` below is a v0 compatibility index, not Wave identity.
+Use `/agent-team:new-run` or the MCP Mission/Wave and `team_run_create` tools.
+The CLI shape:
 
 ```bash
-harness team-run create \
+harness mission create \
+  --title "Payment reconciliation" \
+  --objective "Ship reconciliation safely" \
+  --desired-outcome "Verified production-ready slice"
+harness wave create \
+  --mission-id <mission-id> \
+  --title "Implement and review" \
   --objective "Land the payment reconciliation slice behind PR #81" \
-  --wave 2 \
+  --executor-kind agent_team
+harness team-run create \
+  --mission-id <mission-id> \
+  --wave-id <wave-id> \
+  --objective "Land the payment reconciliation slice behind PR #81" \
   --budget-usd 25 \
   --member lead:integrator:kimi \
   --member api:backend:codex:@crates/harness-store,crates/harness-core \
@@ -103,16 +112,14 @@ Rules that keep a run sane:
 ## Communication and ACK discipline
 
 Create a `TeamMessage(kind=assignment)` before lane work begins. Its message id
-and `correlation_id` are the lane's target work identity. Current v0 automatic
-member handoff preserves that correlation, but manual CLI/API/MCP send creates
-a new correlation id and cannot accept the existing one yet. Until that surface
-is extended, put `ASSIGNMENT: <message-id>; CORRELATION: <correlation-id>` in
-the body of progress, blocker, review, and control messages; do not claim they
-are structurally correlated. The current v0 CLI may also accept
+and `correlation_id` are the lane's target work identity. Automatic member
+handoff preserves that correlation. Manual CLI/API/MCP sends pass the existing
+`correlation_id`, optionally with a same-run `causation_id`; a causation-only
+reply inherits its cause's correlation. The current CLI may also accept
 `[--task-id T]`; that is a compatibility association only and never proves
 ownership in place of an assignment message.
 
-`harness team-run send --id <run> --from host --to <ids> --kind <kind> --body "..." [--task-id T]`
+`harness team-run send --id <run> --from host --to <ids> --kind <kind> --body "..." --correlation-id <assignment-correlation> [--causation-id <message-id>]`
 
 - Kinds: `assignment | question | answer | progress | blocker | handoff |
   review_request | review_result | control | broadcast`.
