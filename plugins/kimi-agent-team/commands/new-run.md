@@ -23,7 +23,8 @@ name:role:provider[:model][@path1,path2]   — what this lane owns
 ```
 
    Rules:
-   - provider is one of `codex|claude|kimi`; model is optional;
+   - provider must currently be `kimi`; Codex/Claude Member adapters are not
+     executable yet; model is optional;
    - `@paths` are that member's ownedPaths — explicit and pairwise disjoint;
    - every member gets a role and a completion standard (the member prompt
      contract is in [[agent-team-member]]; the CLI carries the roster, the
@@ -49,8 +50,8 @@ harness team-run create \
   --objective "..." \
   --budget-usd 25 \
   --member lead:integrator:kimi \
-  --member api:backend:codex:@crates/harness-store,crates/harness-core \
-  --member ui:frontend:claude:claude-sonnet-4@apps/web
+  --member api:backend:kimi@crates/harness-store,crates/harness-core \
+  --member ui:reviewer:kimi@apps/web
 ```
 
    Get the user's explicit go-ahead, then execute it.
@@ -59,12 +60,13 @@ harness team-run create \
 ```text
 Run created: <run-id>
 Mission/Wave context: <mission> / <wave>
-Team Console: http://127.0.0.1:8787/team-console  (requires `harness serve --addr 127.0.0.1:8787`; /agent-team:dashboard opens it)
+Team Console: <use the exact Workspace-scoped dashboard_url returned by MCP>
 ```
 
-6. **Start only on confirmation.** Ask whether to launch now; if yes run
-   `harness team-run start --id <run-id>` and confirm the run moved to
-   `running` via `harness team-run status --id <run-id>`. Otherwise remind
+6. **Start only on confirmation.** Ask whether to launch now; if yes call MCP
+   `team_run_start` and report its immediately returned `running` projection
+   and deep link. Use `harness team-run start --id <run-id>` only as fallback.
+   Otherwise remind
    the user the run stays in `planning` until started.
 
 If the `harness` CLI is missing or any command fails, report the error

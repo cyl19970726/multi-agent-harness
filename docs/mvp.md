@@ -12,9 +12,9 @@ It is not a rewrite of the whole compatibility runtime. It adds the smallest
 Mission/Wave contracts and joins needed to run real Agent Team and Dynamic
 Workflow Waves while preserving existing Goal/legacy phase record data.
 
-Historical `acceptance:mvp`, `acceptance:mvp:live`, and
-`acceptance:autonomous-team` remain compatibility regression gates. Passing
-them does not by itself prove this Mission/Wave MVP.
+The retired `acceptance:mvp*` and `acceptance:autonomous-team` names belonged
+to the superseded coordination stack. The active executable gate is
+`acceptance:mission-wave`.
 
 ## MVP Slice
 
@@ -115,12 +115,11 @@ The accepted journey must prove:
 
 ## Required Tests
 
-Keep current regression checks:
+Run the current product gates:
 
 ```bash
 npx pnpm@9.15.4 check
-npx pnpm@9.15.4 acceptance:mvp
-npx pnpm@9.15.4 acceptance:mvp:live
+npx pnpm@9.15.4 acceptance:mission-wave
 ```
 
 Add focused Mission/Wave acceptance covering:

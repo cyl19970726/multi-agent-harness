@@ -17,15 +17,18 @@ headless exec-stream, per
 Star Harness must support Codex first — with Claude Code and Kimi now
 registered as further exec-stream providers — while leaving room for others
 such as OpenClaw, cloud-hosted agents, or a Permission Agent. Provider
-integrations are successful only when they implement the same
-harness objects and workflow without changing `Goal`, `Task`, `Message`,
-`Evidence`, `Proposal`, or `Decision` semantics.
+integrations are successful only when they preserve the native
+`Mission -> ordered Wave -> executor` contract and the executor's own honest
+runtime records. Provider integrations must not reintroduce the retired
+Goal/GoalPhase planning stack.
 
 ## Integration Boundary
 
 ```text
 docs/agent-runtime.md        # provider-neutral A-ROM and interfaces
 docs/integration/README.md   # provider documentation rules
+docs/integration/host-agent-mcp.md
+                                 # Host MCP control contract and Codex setup
 docs/integration/codex.md    # Codex implementation
 docs/integration/codex-message-delivery.md
                                  # Codex mailbox and turn delivery detail
@@ -75,11 +78,12 @@ Provider
 
 | Provider | Doc | Status | Role |
 | --- | --- | --- | --- |
+| Host control | [host-agent-mcp.md](host-agent-mcp.md) | MCP implemented | Codex/Kimi/Claude-style Host contract; independent from the Team Member provider. |
 | Codex | [codex.md](codex.md) | planned / implemented in slices | First provider: headless exec-stream primary (app-server retained as fallback design) + hooks + skills + plugin path. |
 | Codex message delivery | [codex-message-delivery.md](codex-message-delivery.md) | planned / implemented in slices | Persistent member mailbox, dispatcher, queue policy, and delivery proof. |
 | Codex source audit | [codex-source-audit.md](codex.md) | planned / reference | Source-level notes that support Codex integration decisions. |
 | Claude Code | [claude.md](claude.md) | planned / implemented in slices | On-demand provider via claude CLI, native subagent-to-child-thread mapping. |
-| Kimi (Moonshot) | [kimi.md](kimi.md) | implemented in slices | Third registered exec-stream adapter (`kimi -p --output-format stream-json`); `kimi -p` accepts no permission flags, so the harness worktree-isolates its read-only leaves. |
+| Kimi (Moonshot) | [kimi.md](kimi.md) | Team Member start implemented through ACP | Current executable Agent Team member adapter. Other Kimi execution slices remain separately scoped. |
 | OpenClaw / cloud agent | not yet created | idea | Future remote or cloud-hosted provider implementation. |
 | Permission Agent | not yet created | idea | Future approval/safety specialist or provider-side permission service. |
 
@@ -96,3 +100,5 @@ README until they need their own file.
    honest capability state.
 5. Provider docs must distinguish target contract, implemented slices, and
    acceptance gaps. A working hot path is not the same as a gateable provider.
+6. Host-provider support and Team Member-provider support are separate
+   capabilities and must never be inferred from each other.

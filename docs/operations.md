@@ -24,53 +24,36 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-The executable MVP acceptance gate is:
+The executable Mission/Wave + Agent Team acceptance gate is:
 
 ```bash
-npx pnpm@9.15.4 acceptance:mvp
+npx pnpm@9.15.4 acceptance:mission-wave
 ```
 
-Use the quick gate while iterating on a single implementation slice:
+It covers native Mission/Wave HTTP and CLI contracts, Agent Team create/start,
+the Host-facing MCP transport, assignment correlations, the Dashboard read
+model, and the deterministic Kimi ACP member adapter.
+
+Use focused Rust tests while iterating on one slice:
 
 ```bash
-npx pnpm@9.15.4 acceptance:mvp:quick
+cargo test -p harness-cli --test mcp_stdio --test team_run_start -- --test-threads=1
 ```
 
-Use the live gate only when the claim depends on real Codex provider delivery:
+There is currently no packaged live-provider command. When a claim depends on
+a real provider, record the exact Mission, Wave, TeamRun, member runs,
+assignment correlations, handoffs, artifacts, and accepted Wave gate from the
+live run. Do not present the deterministic fake-Kimi adapter test as live proof.
+
+The retired `acceptance:mvp*` and `acceptance:autonomous-team` commands belonged
+to the superseded Goal/GoalPhase planning stack and are intentionally not part
+of the active command surface.
+
+Start the operator surface with an explicit Workspace selection:
 
 ```bash
-npx pnpm@9.15.4 acceptance:mvp:live
+harness serve --addr 127.0.0.1:8787
 ```
-
-Use the autonomous-team gate when the claim depends on standing team behavior,
-Observer proposals, peer messages, Lead disposition, and automatic next-round
-planning:
-
-```bash
-npx pnpm@9.15.4 acceptance:autonomous-team
-```
-
-The quick gate creates an isolated `HARNESS_ROOT`, then exercises the staged
-self-hosting flow: team creation, historical work design, task assignment, worker report,
-provider-event fixture ingestion, negative review-gate rejection, accepted
-proposal, outcome evaluation, hook bridge, Dashboard API, and the Earning Engine
-adapter surface. The current live gate adds real Codex provider delivery
-smokes, including a single-member transport smoke and a Worker/Critic live
-delivery smoke, and can spend provider tokens.
-
-Do not use the current live gate to claim autonomous persistent team
-acceptance. That requires additional proof: durable member reuse across
-multiple messages, idle-to-next-message gateway delivery, peer-to-peer
-messages, Observer-generated goal or graph-change proposals, and a Lead
-decision over those proposals.
-
-The autonomous-team gate provides this deterministic proof through dry-run
-provider delivery. It must use `autonomy loop` to close an evaluated goal,
-compare the result with a vision reference, create and accept the next goal,
-generate a minimal legacy dependency graph, carry that generated task through execution and
-evaluation, and then create another accepted follow-up proposal. It does not
-replace the live Codex gate when a change claims real provider transport
-behavior.
 
 The first CLI is available through Cargo:
 

@@ -20,7 +20,8 @@
     "acceptance:workflow-starlark": "node scripts/acceptance-workflow-starlark.mjs",
     "acceptance:skill-install": "bash scripts/acceptance-skill-install.sh",
     "test:multi-project": "cargo test -p harness-core project -- --nocapture && cargo test -p harness-cli --test project_registry --test project_resolution --test init_project --test workflow_cwd --test workflow_project_options --test global_project_workflow --test delivery_project_context --test codex_delivery_cwd --test claude_delivery_cwd --test serve_projects_api --test serve_sse_projects --test project_convergence --test project_cli --test project_migrate --test store_source",
-    "acceptance:multi-project": "bash scripts/verify-fixes.sh"
+    "acceptance:multi-project": "bash scripts/verify-fixes.sh",
+    "acceptance:mission-wave": "cargo test -p harness-cli --test mission_wave_api --test team_run_api --test team_run_start --test mcp_stdio -- --test-threads=1 && pnpm check:dashboard"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.0",
