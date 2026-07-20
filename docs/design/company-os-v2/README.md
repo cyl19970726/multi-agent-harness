@@ -1,13 +1,13 @@
 # Company OS V2 visual direction
 
 V2 is a visual and interaction redesign built on the accepted Company OS
-product model. V1 remains the implemented functional baseline; its generated
-Expected images are not promoted into V2 and must not constrain V2 composition.
+product model. V1 remains the historical functional baseline; its generated
+Expected images were not promoted into V2 and did not constrain V2 composition.
 
 ```text
 V1 Actual = current browser baseline
-V2 Expected = new product and visual intent, pending Human approval
-V2 Actual = absent until approved V2 designs are implemented
+V2.2 Expected = generated product and visual intent, approved for implementation
+V2.2 Actual = browser implementation with deterministic fixture, pending Human review
 ```
 
 The redesign starts with six P0 mother pages:
@@ -43,5 +43,10 @@ Review artifacts:
 - [`v2.2-asset-inventory.md`](v2.2-asset-inventory.md)
 - [`review-v2.2.html`](review-v2.2.html) — V2 functional base → V2.2
   art-directed workbench review;
+- [`expected-vs-actual-v2.2.html`](expected-vs-actual-v2.2.html) — V1 browser
+  baseline → V2.2 generated direction → V2.2 browser implementation;
+- [`comparison-manifest-v2.2.json`](comparison-manifest-v2.2.json) — hashes,
+  routes, fixture mode, and truth classification for all six pages;
 - `prompts/`
 - `expected/`
+- `actual/` — deterministic-fixture browser evidence, not Store-live evidence.

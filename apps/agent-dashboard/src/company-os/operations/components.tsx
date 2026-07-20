@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import { ArrowUpRight, CheckCircle2, CircleAlert, FileText, ShieldCheck, UserRound } from "lucide-react";
 
 import { cn } from "@/lib/utils";
+import { ActorAvatar, ArtField, EditorialTitle } from "../visuals";
 
 import type { ActorSummary, FinancialRecordView, PageFrameProps } from "./types";
 
@@ -46,9 +47,7 @@ const actorDataKinds = {
 export function ActorPill({ actor, compact = false }: { actor: ActorSummary; compact?: boolean }) {
   return (
     <span className="inline-flex min-w-0 items-center gap-2 text-sm text-foreground" data-company-os-ref={actor.id} data-actor-kind={actorDataKinds[actor.kind]} data-actor-type={actorDataKinds[actor.kind]}>
-      <span className={cn("grid size-7 shrink-0 place-items-center rounded-full border text-[10px] font-semibold", actor.kind === "human" ? "border-primary/35 bg-primary/10 text-primary" : actor.kind === "external" ? "border-status-warn/35 bg-status-warn/10 text-status-warn" : "border-border bg-muted text-muted-foreground")} aria-hidden>
-        {actor.kind === "human" ? "H" : actor.kind === "external" ? "E" : "A"}
-      </span>
+      <ActorAvatar identity={`${actor.id} ${actor.role}`} name={actor.name} size={compact ? "sm" : "md"} ring={actor.kind === "human" ? "warm" : actor.kind === "external" ? "external" : actor.availability === "available" ? "good" : "neutral"} />
       <span className="min-w-0">
         <span className="block truncate font-medium">{actor.name}</span>
         {!compact && <span className="block truncate text-xs text-muted-foreground">{actorLabels[actor.kind]} · {actor.role}</span>}
@@ -73,13 +72,14 @@ export function StatusTag({ status }: { status: string }) {
 
 export function PageFrame({ eyebrow, title, description, action, children, context, dense = false }: PageFrameProps) {
   return (
-    <div className="h-full overflow-y-auto bg-background">
-      <div className={cn("mx-auto grid w-full max-w-[1440px] grid-cols-1 gap-6 px-5 lg:grid-cols-[minmax(0,1fr)_300px] lg:px-8", dense ? "py-4" : "py-7")}>
+    <div className="company-workbench h-full overflow-y-auto bg-background">
+      <ArtField />
+      <div className={cn("relative mx-auto grid w-full max-w-[1480px] grid-cols-1 gap-7 px-5 lg:grid-cols-[minmax(0,1fr)_310px] lg:px-9", dense ? "py-5" : "py-8")}>
         <main className="min-w-0">
-          <header className={cn("flex flex-wrap items-start justify-between gap-4 border-b border-border", dense ? "mb-3 pb-3" : "mb-7 pb-5")}>
+          <header className={cn("flex flex-wrap items-start justify-between gap-4 border-b border-border/80", dense ? "mb-4 pb-4" : "mb-7 pb-6")}>
             <div>
               <p className="mb-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-primary">{eyebrow}</p>
-              <h1 className="text-2xl font-semibold tracking-tight text-foreground">{title}</h1>
+              <EditorialTitle className={dense ? "text-4xl sm:text-5xl" : undefined}>{title}</EditorialTitle>
               {description && <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">{description}</p>}
             </div>
             {action}

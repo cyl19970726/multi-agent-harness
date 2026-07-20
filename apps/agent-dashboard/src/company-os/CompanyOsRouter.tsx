@@ -214,7 +214,7 @@ export function CompanyOsRouter({ model, selection }: { model: WorkbenchModel; s
     case "work-item-focus": content = <WorkItemFocus data={operations} />; break;
     case "finance": content = <FinancePage data={operations} />; break;
     case "agents-organization": content = <OrganizationPage data={operations} />; break;
-    case "standing-agent-focus": content = <StandingAgentFocus data={operations} />; break;
+    case "standing-agent-focus": content = <StandingAgentFocus data={operations} actorId={selection.standingAgentId} />; break;
     case "governance-proposal": content = <GovernanceProposalFocus data={operations} />; break;
     case "approval-focus": content = <ApprovalFocus data={operations} />; break;
     case "business-module-focus": content = <BusinessModuleFocus data={operations} />; break;

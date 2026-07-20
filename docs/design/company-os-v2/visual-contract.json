@@ -1,18 +1,25 @@
 {
   "workstream": "company-os-v2",
-  "status": "expected_direction_in_progress",
+  "status": "implementation_review_pending",
   "artifact_policy": {
     "baseline": "../company-os-v1/actual",
     "expected": "expected",
-    "implemented": ".visual-evidence/company-os-v2/<run-id>/implemented",
-    "comparison": "comparisons"
+    "implemented": "actual",
+    "comparison": "expected-vs-actual-v2.2.html"
   },
   "fixture": "company-os-v2-lead-first-trademark-direction",
   "design_revisions": [
     {
       "version": "2.2",
-      "status": "human_review_pending",
+      "status": "implementation_review_pending",
       "decision_ref": "v2.2-revision.md",
+      "implementation": {
+        "capture_manifest": ".visual-evidence/company-os-v2/v2-2-implementation-final/capture-run.json",
+        "comparison_manifest": "comparison-manifest-v2.2.json",
+        "gallery": "expected-vs-actual-v2.2.html",
+        "data_mode": "deterministic-fixture",
+        "truth": "Browser-rendered implementation evidence; not Store-live product evidence."
+      },
       "cases": [
         {
           "case_id": "home--morning-operating-review--desktop",
