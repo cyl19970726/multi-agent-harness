@@ -57,6 +57,9 @@ model.
   their dependency order, evidence, and completion gates.
 - [Completion audit](completion-audit.md): requirement-by-requirement evidence
   and the remaining Human-only visual sign-off boundary.
+- [Store-live V2.2 gap audit](store-live-v2.2-gap-audit.md): the implemented
+  backend boundary, the still-disabled interactive product paths, model gaps,
+  and the ordered work after the V2.2 visual merge.
 - [Vision](vision.md): the product thesis, operating loop, and system boundary.
 - [Concept model](concept-model.md): object boundaries and source-of-truth rules.
 - [Document system](document-system.md) and [module design](module-design.md):
