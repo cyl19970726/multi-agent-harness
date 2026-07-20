@@ -1546,13 +1546,16 @@ pub(crate) fn gate_wave(
                 .to_string(),
         ));
     }
-    if wave.accepted_run_id.is_some() {
+    if wave.gate_status == WaveGateStatus::Accepted {
         if gate == "accepted" && run_id.as_deref() == wave.accepted_run_id.as_deref() {
             return Ok(wave);
         }
         return Err(CliError::Usage(format!(
-            "wave {wave_id} already accepted by run {}; create a later Wave for new work",
-            wave.accepted_run_id.as_deref().unwrap_or_default()
+            "wave {wave_id} already accepted{}; create a later Wave for new work",
+            wave.accepted_run_id
+                .as_deref()
+                .map(|run_id| format!(" by run {run_id}"))
+                .unwrap_or_else(|| " as direct Host execution".to_string())
         )));
     }
     let expected = wave.clone();
@@ -1591,16 +1594,27 @@ pub(crate) fn gate_wave(
                     "wave gate accepted requires an explicit outcome".to_string(),
                 ));
             }
-            let run_id = run_id.ok_or_else(|| {
-                CliError::Usage("wave gate accepted requires --run-id".to_string())
-            })?;
-            if !wave.executor_run_ids.contains(&run_id) {
-                return Err(CliError::Usage(format!(
-                    "run {run_id} is not an eligible attempt of wave {wave_id}"
-                )));
-            }
+            let accepted_run_id = if wave.executor_kind == WaveExecutorKind::Host {
+                if run_id.is_some() {
+                    return Err(CliError::Usage(
+                        "a host Wave records its direct outcome without --run-id".to_string(),
+                    ));
+                }
+                None
+            } else {
+                let run_id = run_id.ok_or_else(|| {
+                    CliError::Usage("a non-host Wave gate accepted requires --run-id".to_string())
+                })?;
+                if !wave.executor_run_ids.contains(&run_id) {
+                    return Err(CliError::Usage(format!(
+                        "run {run_id} is not an eligible attempt of wave {wave_id}"
+                    )));
+                }
+                Some(run_id)
+            };
             if wave.executor_kind == WaveExecutorKind::AgentTeam {
-                let run = latest_team_run(store, &run_id)?;
+                let run_id = accepted_run_id.as_deref().expect("validated TeamRun id");
+                let run = latest_team_run(store, run_id)?;
                 if run.mission_id.as_deref() != Some(wave.mission_id.as_str())
                     || run.wave_id.as_deref() != Some(wave.id.as_str())
                 {
@@ -1618,7 +1632,7 @@ pub(crate) fn gate_wave(
             }
             wave.gate_status = WaveGateStatus::Accepted;
             wave.status = WaveStatus::Completed;
-            wave.accepted_run_id = Some(run_id);
+            wave.accepted_run_id = accepted_run_id;
             wave.accepted_by = Some(accepted_by.to_string());
             wave.accepted_at = Some(now_string());
         }

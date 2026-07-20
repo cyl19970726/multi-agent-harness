@@ -63,6 +63,87 @@ fn force_team_run_reviewing(
 }
 
 #[test]
+fn host_wave_accepts_direct_outcome_without_fake_run() {
+    let home = TempHome::new("host-wave-gate");
+    let project_id = init_project(&home, "host-wave");
+    run_json(
+        &home,
+        &project_id,
+        &[
+            "mission",
+            "create",
+            "--id",
+            "mission-host",
+            "--title",
+            "Direct host work",
+            "--objective",
+            "Record an honest Host outcome",
+            "--json",
+        ],
+    );
+    run_json(
+        &home,
+        &project_id,
+        &[
+            "wave",
+            "create",
+            "--id",
+            "wave-host",
+            "--mission-id",
+            "mission-host",
+            "--title",
+            "Host slice",
+            "--objective",
+            "Finish without a fake executor run",
+            "--executor-kind",
+            "host",
+            "--json",
+        ],
+    );
+    let accepted = run_json(
+        &home,
+        &project_id,
+        &[
+            "wave",
+            "gate",
+            "--id",
+            "wave-host",
+            "--status",
+            "accepted",
+            "--accepted-by",
+            "host",
+            "--outcome",
+            "Direct work verified",
+            "--artifact",
+            "check:host",
+            "--json",
+        ],
+    );
+    assert_eq!(accepted["gate_status"].as_str(), Some("accepted"));
+    assert_eq!(accepted["status"].as_str(), Some("completed"));
+    assert!(accepted["accepted_run_id"].is_null());
+
+    // Host acceptance remains immutable even though its honest accepted run
+    // id is null.
+    let out = run_harness(
+        &home,
+        home.base(),
+        &[
+            "--project",
+            &project_id,
+            "wave",
+            "gate",
+            "--id",
+            "wave-host",
+            "--status",
+            "blocked",
+        ],
+    );
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("already accepted"));
+}
+
+#[test]
 fn mission_wave_attempt_retry_gate_and_snapshot_contract() {
     let home = TempHome::new("mission-wave-api");
     let project_id = init_project(&home, "alpha");
