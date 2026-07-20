@@ -119,6 +119,16 @@ while IFS= read -r line; do
       printf '{"jsonrpc":"2.0","id":%s,"result":{"sessionId":"%s","configOptions":[]}}\n' "$id" "$session_id"
       printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"%s","update":{"sessionUpdate":"available_commands_update","availableCommands":[]}}}\n' "$session_id"
       ;;
+    *'"method":"session/set_config_option"'*)
+      case "$line" in
+        *'"configId":"model"'*'"value":"k2.5"'*)
+          printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id"
+          ;;
+        *)
+          printf '{"jsonrpc":"2.0","id":%s,"error":{"code":-32602,"message":"unexpected fake model selection"}}\n' "$id"
+          ;;
+      esac
+      ;;
     *'"method":"session/prompt"'*)
       printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"%s","update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"hidden reasoning"}}}}\n' "$session_id"
       printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"%s","update":{"sessionUpdate":"tool_call","toolCallId":"tool-1","title":"fake_edit","kind":"edit","status":"in_progress"}}}\n' "$session_id"
@@ -142,6 +152,31 @@ exit 0
         fs::set_permissions(&shim_path, perms).expect("chmod shim");
     }
     bin_dir
+}
+
+/// Add a deterministic `codex exec --json` shim to `bin_dir`. The stream
+/// includes a reasoning item and a final report so Agent Team tests can prove
+/// reasoning stays transient while the report becomes the durable handoff.
+pub fn install_codex_team_shim(bin_dir: &Path) -> PathBuf {
+    fs::create_dir_all(bin_dir).expect("mk fake codex team bin dir");
+    let shim_path = bin_dir.join("codex");
+    let script = r###"#!/bin/sh
+printf '%s\n' '{"type":"thread.started","thread_id":"thread_fake_codex_team"}'
+printf '%s\n' '{"type":"turn.started"}'
+printf '%s\n' '{"type":"item.completed","item":{"id":"reason-1","type":"reasoning","text":"hidden codex reasoning"}}'
+printf '%s\n' '{"type":"item.completed","item":{"id":"message-1","type":"agent_message","text":"## RESULT\ndone\n## SUMMARY\nfake codex member finished round\n"}}'
+printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":5}}'
+exit 0
+"###;
+    fs::write(&shim_path, script).expect("write fake codex team shim");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&shim_path).expect("stat shim").permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&shim_path, perms).expect("chmod shim");
+    }
+    bin_dir.to_path_buf()
 }
 
 /// One spawned `harness` invocation's result.

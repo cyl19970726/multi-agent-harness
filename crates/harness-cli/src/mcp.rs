@@ -24,7 +24,7 @@ use harness_store::HarnessStore;
 use serde_json::{json, Value};
 
 use crate::{
-    acknowledge_team_message, create_mission, create_team_run, create_wave,
+    acknowledge_team_message, close_mission, create_mission, create_team_run, create_wave,
     drive_prepared_team_run, gate_wave, latest_member_runs_in_append_order,
     latest_team_messages_in_append_order, latest_team_run, latest_team_runs_in_append_order,
     parse_team_message_kind, parse_wave_executor_kind, prepare_team_run_start, send_team_message,
@@ -126,6 +126,7 @@ fn call_tool(
         .unwrap_or_else(|| json!({}));
     let outcome = match name {
         "mission_create" => tool_mission_create(store, &arguments),
+        "mission_close" => tool_mission_close(store, &arguments),
         "mission_list" => tool_mission_list(store),
         "wave_create" => tool_wave_create(store, &arguments),
         "wave_list" => tool_wave_list(store, &arguments),
@@ -253,6 +254,19 @@ fn tool_mission_create(store: &HarnessStore, arguments: &Value) -> Result<Value,
         required_str(arguments, "title")?,
         required_str(arguments, "objective")?,
         optional_str(arguments, "desired_outcome")?,
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(json!(mission))
+}
+
+fn tool_mission_close(store: &HarnessStore, arguments: &Value) -> Result<Value, String> {
+    let mission = close_mission(
+        store,
+        required_str(arguments, "mission_id")?,
+        required_str(arguments, "outcome")?,
+        optional_str(arguments, "completed_by")?
+            .as_deref()
+            .unwrap_or("host"),
     )
     .map_err(|error| error.to_string())?;
     Ok(json!(mission))
@@ -547,6 +561,19 @@ fn tool_definitions() -> Value {
                     "desired_outcome": {"type": "string"}
                 },
                 "required": ["title", "objective"]
+            }
+        },
+        {
+            "name": "mission_close",
+            "description": "Complete a Mission with an explicit outcome. Closeout succeeds only when the Mission has at least one Wave and every ordered Wave is completed with an accepted gate; completed Missions are immutable.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "mission_id": {"type": "string"},
+                    "outcome": {"type": "string", "minLength": 1},
+                    "completed_by": {"type": "string", "minLength": 1, "description": "Defaults to host."}
+                },
+                "required": ["mission_id", "outcome"]
             }
         },
         {

@@ -6,6 +6,7 @@
   "status": "running",
   "wave_ids": ["wave-1", "wave-2"],
   "outcome_summary": null,
+  "completed_by": null,
   "created_at": "2026-07-19T00:00:00Z",
   "updated_at": "2026-07-19T00:01:00Z",
   "completed_at": null

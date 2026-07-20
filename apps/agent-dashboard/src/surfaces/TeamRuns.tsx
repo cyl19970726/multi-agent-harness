@@ -34,6 +34,7 @@ import { Select, TextArea } from "@/components/workbench/OperatorForms";
 
 import { parseTs, type WorkbenchModel } from "../model/readModel";
 import {
+  acknowledgeTeamMessage,
   sendTeamMessage,
   startTeamRun,
   transitionTeamRun,
@@ -57,7 +58,7 @@ interface TeamSurfaceProps {
   /** True only when the snapshot is the live source; gates write actions. */
   actionsEnabled?: boolean;
   /** POST a harness action then refresh the snapshot. */
-  onAction?: (path: string, body?: unknown) => void;
+  onAction?: (path: string, body?: unknown) => void | Promise<boolean>;
   apiUrl?: string;
 }
 
@@ -65,10 +66,10 @@ const ACTIONS_DISABLED_HINT = "Connect a live source to enable actions";
 
 /** Dispatch an action descriptor through the snapshot-refreshing onAction prop. */
 function dispatch(
-  onAction: ((path: string, body?: unknown) => void) | undefined,
+  onAction: ((path: string, body?: unknown) => void | Promise<boolean>) | undefined,
   descriptor: ActionDescriptor,
-): void {
-  onAction?.(descriptor.path, descriptor.body);
+): void | Promise<boolean> | undefined {
+  return onAction?.(descriptor.path, descriptor.body);
 }
 
 /* ------------------------------------------------------------------ */
@@ -593,6 +594,7 @@ export function TeamRunDetail({
   const [tab, setTab] = useState<DetailTab>("overview");
   const [drawerMemberId, setDrawerMemberId] = useState<string | null>(null);
   const [activityClock, setActivityClock] = useState(() => Date.now());
+  const [starting, setStarting] = useState(false);
 
   useEffect(() => {
     const timer = window.setInterval(() => setActivityClock(Date.now()), 1_000);
@@ -602,6 +604,9 @@ export function TeamRunDetail({
   const snapshot = model.snapshot;
   const allRuns = snapshot.team_runs ?? [];
   const run = allRuns.find((r) => r.id === teamRunId);
+  useEffect(() => {
+    if (run?.status !== "planning") setStarting(false);
+  }, [run?.status]);
   const members = (snapshot.member_runs ?? []).filter((m) => m.team_run_id === teamRunId);
   const messages = (snapshot.team_messages ?? []).filter((m) => m.team_run_id === teamRunId);
   const actions = (snapshot.member_actions ?? []).filter((a) => a.team_run_id === teamRunId);
@@ -687,11 +692,21 @@ export function TeamRunDetail({
                   <ActionButton
                     enabled={live}
                     size="sm"
-                    disabled={status !== "planning"}
-                    onClick={() => dispatch(onAction, startTeamRun(run.id))}
+                    disabled={status !== "planning" || starting}
+                    onClick={() => {
+                      setStarting(true);
+                      const result = dispatch(onAction, startTeamRun(run.id));
+                      if (result instanceof Promise) {
+                        void result.then((ok) => {
+                          if (!ok) setStarting(false);
+                        });
+                      } else {
+                        setStarting(false);
+                      }
+                    }}
                   >
                     <Play className="size-3.5" />
-                    Start orchestration
+                    {starting ? "Starting…" : "Start orchestration"}
                   </ActionButton>
                 </span>
               </TooltipTrigger>
@@ -1346,7 +1361,7 @@ function MessagesTab({
   messages: TeamMessage[];
   memberById: Map<string, MemberRun>;
   actionsEnabled: boolean;
-  onAction?: (path: string, body?: unknown) => void;
+  onAction?: (path: string, body?: unknown) => void | Promise<boolean>;
 }) {
   const sorted = messages.slice().sort((a, b) => {
     const ta = parseTs(a.created_at);
@@ -1390,18 +1405,33 @@ function MessagesTab({
               {(message.deliveries ?? []).length > 0 && (
                 <div className="flex flex-wrap items-center gap-1">
                   {(message.deliveries ?? []).map((delivery, index) => (
-                    <Badge
-                      key={`${delivery.member_id ?? "member"}-${index}`}
-                      tone={deliveryTone(delivery.status)}
-                      title={
-                        delivery.updated_at
-                          ? `updated ${fmtTime(delivery.updated_at)} · attempt ${delivery.attempt ?? 0}`
-                          : undefined
-                      }
-                    >
-                      {endpointLabel(memberById, delivery.member_id)}:{" "}
-                      {delivery.status ?? "unknown"}
-                    </Badge>
+                    <span key={`${delivery.member_id ?? "member"}-${index}`} className="inline-flex items-center gap-1">
+                      <Badge
+                        tone={deliveryTone(delivery.status)}
+                        title={
+                          delivery.updated_at
+                            ? `updated ${fmtTime(delivery.updated_at)} · attempt ${delivery.attempt ?? 0}`
+                            : undefined
+                        }
+                      >
+                        {endpointLabel(memberById, delivery.member_id)}:{" "}
+                        {delivery.status ?? "unknown"}
+                      </Badge>
+                      {delivery.member_id === "host" && delivery.status === "delivered" && (
+                        <ActionButton
+                          enabled={actionsEnabled}
+                          size="sm"
+                          variant="ghost"
+                          className="h-6 px-2 text-[10px]"
+                          onClick={() => dispatch(
+                            onAction,
+                            acknowledgeTeamMessage(run.id, message.id, "host"),
+                          )}
+                        >
+                          <CheckCircle2 className="size-3" /> Acknowledge
+                        </ActionButton>
+                      )}
+                    </span>
                   ))}
                 </div>
               )}

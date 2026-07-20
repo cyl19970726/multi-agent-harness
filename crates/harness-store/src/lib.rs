@@ -118,6 +118,15 @@ impl HarnessStore {
         let mut mission = missions.remove(&wave.mission_id).ok_or_else(|| {
             StoreError::Conflict(format!("native mission not found: {}", wave.mission_id))
         })?;
+        if matches!(
+            mission.status,
+            MissionStatus::Completed | MissionStatus::Cancelled
+        ) {
+            return Err(StoreError::Conflict(format!(
+                "mission {} is {:?} and cannot accept another Wave",
+                mission.id, mission.status
+            )));
+        }
         let waves = latest_by_id(self.read_jsonl::<Wave>("waves.jsonl")?, |row| {
             row.id.clone()
         })
@@ -173,6 +182,79 @@ impl HarnessStore {
         self.append_jsonl_unlocked("waves.jsonl", &wave)?;
         self.append_jsonl_unlocked("missions.jsonl", &mission)?;
         Ok(wave)
+    }
+
+    /// Atomically close one Mission after every ordered Wave has an accepted,
+    /// completed gate. The Wave set is checked under the same store lock as
+    /// the Mission CAS so a concurrent Wave create cannot race closeout.
+    pub fn compare_and_close_mission(&self, expected: &Mission, next: &Mission) -> StoreResult<()> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        let current = latest_by_id(self.read_jsonl::<Mission>("missions.jsonl")?, |mission| {
+            mission.id.clone()
+        })
+        .remove(&expected.id)
+        .ok_or_else(|| StoreError::Conflict(format!("mission not found: {}", expected.id)))?;
+        if current != *expected {
+            return Err(StoreError::Conflict(format!(
+                "mission {} changed concurrently; retry the operation",
+                expected.id
+            )));
+        }
+        if current.wave_ids.is_empty() {
+            return Err(StoreError::Conflict(format!(
+                "mission {} has no Waves to close",
+                current.id
+            )));
+        }
+        let waves = latest_by_id(self.read_jsonl::<Wave>("waves.jsonl")?, |wave| {
+            wave.id.clone()
+        });
+        let mut actual_wave_ids = waves
+            .values()
+            .filter(|wave| wave.mission_id == current.id)
+            .map(|wave| (wave.index, wave.id.clone()))
+            .collect::<Vec<_>>();
+        actual_wave_ids.sort_by(|left, right| left.0.cmp(&right.0).then(left.1.cmp(&right.1)));
+        let actual_wave_ids = actual_wave_ids
+            .into_iter()
+            .map(|(_, id)| id)
+            .collect::<Vec<_>>();
+        if actual_wave_ids != current.wave_ids {
+            return Err(StoreError::Conflict(format!(
+                "mission {} Wave membership changed or is inconsistent; retry closeout",
+                current.id
+            )));
+        }
+        for wave_id in &current.wave_ids {
+            let wave = waves.get(wave_id).ok_or_else(|| {
+                StoreError::Conflict(format!(
+                    "mission {} references missing Wave {wave_id}",
+                    current.id
+                ))
+            })?;
+            if wave.mission_id != current.id
+                || wave.status != WaveStatus::Completed
+                || wave.gate_status != WaveGateStatus::Accepted
+            {
+                return Err(StoreError::Conflict(format!(
+                    "mission {} cannot close: Wave {} is status {:?} with gate {:?}",
+                    current.id, wave.id, wave.status, wave.gate_status
+                )));
+            }
+        }
+        if next.id != current.id
+            || next.status != MissionStatus::Completed
+            || next.outcome_summary.as_deref().is_none_or(str::is_empty)
+            || next.completed_by.as_deref().is_none_or(str::is_empty)
+            || next.completed_at.as_deref().is_none_or(str::is_empty)
+        {
+            return Err(StoreError::Conflict(
+                "mission closeout must preserve identity and record completed status, outcome, actor, and timestamp"
+                    .to_string(),
+            ));
+        }
+        self.append_jsonl_unlocked("missions.jsonl", next)
     }
 
     pub fn append_member(&self, value: &AgentMember) -> StoreResult<()> {
@@ -277,6 +359,23 @@ impl HarnessStore {
                     .to_string(),
             )),
             (Some(mission_id), Some(wave_id)) => {
+                let mission =
+                    latest_by_id(self.read_jsonl::<Mission>("missions.jsonl")?, |mission| {
+                        mission.id.clone()
+                    })
+                    .remove(mission_id)
+                    .ok_or_else(|| {
+                        StoreError::Conflict(format!("mission not found: {mission_id}"))
+                    })?;
+                if matches!(
+                    mission.status,
+                    MissionStatus::Completed | MissionStatus::Cancelled
+                ) {
+                    return Err(StoreError::Conflict(format!(
+                        "mission {mission_id} is {:?} and cannot accept a TeamRun attempt",
+                        mission.status
+                    )));
+                }
                 let mut waves = latest_by_id(self.read_jsonl::<Wave>("waves.jsonl")?, |wave| {
                     wave.id.clone()
                 });
@@ -372,6 +471,15 @@ impl HarnessStore {
         let mut mission = missions.remove(&next.mission_id).ok_or_else(|| {
             StoreError::Conflict(format!("native mission not found: {}", next.mission_id))
         })?;
+        if matches!(
+            mission.status,
+            MissionStatus::Completed | MissionStatus::Cancelled
+        ) {
+            return Err(StoreError::Conflict(format!(
+                "mission {} is {:?} and its Waves are immutable",
+                mission.id, mission.status
+            )));
+        }
         mission.status = match next.gate_status {
             WaveGateStatus::Blocked => MissionStatus::Blocked,
             WaveGateStatus::Accepted | WaveGateStatus::Revise | WaveGateStatus::Pending => {
@@ -477,6 +585,23 @@ impl HarnessStore {
         let linked_wave = match (next.mission_id.as_deref(), next.wave_id.as_deref()) {
             (None, None) => None,
             (Some(mission_id), Some(wave_id)) => {
+                let mission =
+                    latest_by_id(self.read_jsonl::<Mission>("missions.jsonl")?, |mission| {
+                        mission.id.clone()
+                    })
+                    .remove(mission_id)
+                    .ok_or_else(|| {
+                        StoreError::Conflict(format!("mission not found: {mission_id}"))
+                    })?;
+                if matches!(
+                    mission.status,
+                    MissionStatus::Completed | MissionStatus::Cancelled
+                ) {
+                    return Err(StoreError::Conflict(format!(
+                        "mission {mission_id} is {:?} and cannot transition TeamRun {}",
+                        mission.status, next.id
+                    )));
+                }
                 let mut wave = latest_by_id(self.read_jsonl::<Wave>("waves.jsonl")?, |wave| {
                     wave.id.clone()
                 })
@@ -852,6 +977,7 @@ mod tests {
             status: MissionStatus::Planned,
             wave_ids: vec!["wave-1".into()],
             outcome_summary: None,
+            completed_by: None,
             created_at: "unix-ms:1".into(),
             updated_at: "unix-ms:1".into(),
             completed_at: None,
@@ -930,6 +1056,7 @@ mod tests {
                 status: MissionStatus::Planned,
                 wave_ids: Vec::new(),
                 outcome_summary: None,
+                completed_by: None,
                 created_at: "unix-ms:1".into(),
                 updated_at: "unix-ms:1".into(),
                 completed_at: None,
@@ -1118,6 +1245,7 @@ mod tests {
                         status: MissionStatus::Running,
                         wave_ids: Vec::new(),
                         outcome_summary: None,
+                        completed_by: None,
                         created_at: "2026-05-26T00:00:00Z".into(),
                         updated_at: "2026-05-26T00:00:00Z".into(),
                         completed_at: None,
@@ -1163,6 +1291,7 @@ mod tests {
             status: MissionStatus::Running,
             wave_ids: Vec::new(),
             outcome_summary: None,
+            completed_by: None,
             created_at: "2026-05-26T00:00:00Z".into(),
             updated_at: "2026-05-26T00:00:00Z".into(),
             completed_at: None,

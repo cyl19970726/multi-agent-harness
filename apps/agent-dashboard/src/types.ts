@@ -305,6 +305,7 @@ export interface Mission {
   status?: MissionStatus | string;
   wave_ids?: string[];
   outcome_summary?: string | null;
+  completed_by?: string | null;
   created_at?: string;
   updated_at?: string;
   completed_at?: string | null;

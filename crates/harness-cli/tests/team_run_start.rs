@@ -260,6 +260,142 @@ fn team_run_start_completes_kimi_members() {
 }
 
 #[test]
+fn team_run_start_completes_mixed_codex_kimi_without_persisting_reasoning() {
+    let home = TempHome::new("team-run-start-mixed-codex-kimi");
+    let project_id = init_project(&home, "alpha");
+    let fake_bin = fake_provider::install_kimi_acp_shim(home.base());
+    fake_provider::install_codex_team_shim(&fake_bin);
+
+    let mission = run_harness(
+        &home,
+        home.base(),
+        &[
+            "--project",
+            &project_id,
+            "mission",
+            "create",
+            "--title",
+            "Mixed provider acceptance",
+            "--objective",
+            "Prove Codex and Kimi share one native TeamRun",
+        ],
+    );
+    assert!(mission.status.success(), "mission: {mission:?}");
+    let mission_id = String::from_utf8_lossy(&mission.stdout).trim().to_string();
+    let wave = run_harness(
+        &home,
+        home.base(),
+        &[
+            "--project",
+            &project_id,
+            "wave",
+            "create",
+            "--mission-id",
+            &mission_id,
+            "--title",
+            "Mixed team",
+            "--objective",
+            "Have Codex implement and Kimi review",
+            "--executor-kind",
+            "agent_team",
+        ],
+    );
+    assert!(wave.status.success(), "wave: {wave:?}");
+    let wave_id = String::from_utf8_lossy(&wave.stdout).trim().to_string();
+
+    let create = run_with_fake_kimi(
+        &home,
+        &fake_bin,
+        "done",
+        &[
+            "--project",
+            &project_id,
+            "team-run",
+            "create",
+            "--mission-id",
+            &mission_id,
+            "--wave-id",
+            &wave_id,
+            "--objective",
+            "Implement with Codex and perform a small Kimi review",
+            "--member",
+            "codex-worker:implementer:codex:gpt-5.6",
+            "--member",
+            "kimi-reviewer:reviewer:kimi:k2.5",
+        ],
+    );
+    assert!(
+        create.status.success(),
+        "create failed: {}",
+        String::from_utf8_lossy(&create.stderr)
+    );
+    let run_id = String::from_utf8_lossy(&create.stdout).trim().to_string();
+    let start = run_with_fake_kimi(
+        &home,
+        &fake_bin,
+        "done",
+        &[
+            "--project",
+            &project_id,
+            "team-run",
+            "start",
+            "--id",
+            &run_id,
+        ],
+    );
+    assert!(
+        start.status.success(),
+        "start failed: {}",
+        String::from_utf8_lossy(&start.stderr)
+    );
+
+    let members = store_rows(&home, &project_id, "member_runs.jsonl");
+    assert_eq!(members.len(), 2, "members: {members:?}");
+    assert!(members
+        .iter()
+        .all(|member| member["status"].as_str() == Some("completed")));
+    let codex = members
+        .iter()
+        .find(|member| member["provider"].as_str() == Some("codex"))
+        .expect("codex member");
+    assert_eq!(codex["model"].as_str(), Some("gpt-5.6"));
+    assert_eq!(
+        codex["acp_session_id"].as_str(),
+        Some("thread_fake_codex_team")
+    );
+    let kimi = members
+        .iter()
+        .find(|member| member["provider"].as_str() == Some("kimi"))
+        .expect("kimi member");
+    assert_eq!(kimi["model"].as_str(), Some("k2.5"));
+
+    let messages = store_rows(&home, &project_id, "team_messages.jsonl");
+    let handoffs: Vec<_> = messages
+        .iter()
+        .filter(|message| message["kind"].as_str() == Some("handoff"))
+        .collect();
+    assert_eq!(handoffs.len(), 2, "handoffs: {handoffs:?}");
+    assert!(handoffs.iter().any(|message| message["body"]
+        .as_str()
+        .is_some_and(|body| body.contains("fake codex member"))));
+
+    // Neither provider's hidden reasoning may appear in any durable ledger.
+    let store_root = home.projects_dir().join(&project_id);
+    for entry in std::fs::read_dir(&store_root).expect("read store") {
+        let path = entry.expect("store entry").path();
+        if path.extension().and_then(|value| value.to_str()) != Some("jsonl") {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path).expect("read ledger");
+        assert!(
+            !text.contains("hidden codex reasoning") && !text.contains("hidden reasoning"),
+            "reasoning leaked into {}",
+            path.display()
+        );
+    }
+}
+
+#[test]
 fn team_run_start_blocked_member_sends_run_to_reviewing() {
     let home = TempHome::new("team-run-start-blocked");
     let project_id = init_project(&home, "alpha");
