@@ -107,7 +107,7 @@ Rules:
 ### Assignment-message correlation
 
 Ownership inside an Agent Team Wave is explained by message correlation, not by
-an exposed Task Graph:
+an exposed legacy dependency graph:
 
 ```text
 TeamMessage(kind=assignment)
@@ -183,7 +183,7 @@ ledger, never appears in a snapshot, and is not replayed after reconnect.
   0026, not by this file.
 - A future dashboard or host surface should explain Agent Team ownership through
   assignment-message correlation and wave context rather than through a
-  first-class Task Graph concept.
+  first-class legacy dependency graph concept.
 - Current runtime fields such as `current_task_id` may remain during migration,
   but they are compatibility seams, not the preferred product explanation.
 

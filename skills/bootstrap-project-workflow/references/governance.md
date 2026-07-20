@@ -76,10 +76,10 @@ The registry is DATA; the gate that enforces it is a separate surface. In this
 repository the registry is `docs/registry.json` (schema
 `agent_harness.docs_registry.v1`), which requires **camelCase** keys
 (`ownerRole`, `canonicalFor`, `dependsOn`, `machineConsumers`, `reviewAfter`,
-…). It is enforced by `harness governance check` in CI **and** re-run by the
-doc-sync built-in phase after a goal's execution phases pass (see "Integration
-With The doc-sync Phase"). Mirror the field set your project's registry declares;
-the snake_case names above are illustrative only.
+…). It is enforced by `harness governance check` in CI. A project may also
+attach that check to its own delivery gate, but the registry must not depend on
+one particular planning object or executor. Mirror the field set your project's
+registry declares; the snake_case names above are illustrative only.
 
 CI can start by warning on stale `reviewAfter`, missing owner roles, broken
 `dependsOn`, and large docs without a split reason. Promote warnings to
@@ -101,22 +101,17 @@ Checklist:
 
 Do not create deep directories for one file unless a tool consumes that path.
 
-## Integration With The doc-sync Phase
+## Integration With Delivery Gates
 
-In a harness-operated project this skill is not run only by hand. After a goal's
-execution phases pass, the orchestrator auto-appends a built-in **doc-sync**
-building phase (`BUILTIN_BUILDING_PHASES` / `build_builtin_phase_script` in
-`crates/harness-cli/src/main.rs`) that applies this governance methodology to the
-docs the goal touched and then runs the repo's doc gates. The phase verdict is a
-real gate: it passes only when the checks pass, so a goal cannot close while it
-has left the docs drifted.
+Documentation governance belongs in the delivery path whenever docs are an
+acceptance-critical artifact. The selected executor should report the changed
+or generated document paths, run the repository's documented governance checks,
+and attach both to its outcome. A Mission/Wave host can then make those artifacts
+and checks part of the Wave gate without inventing a second internal plan.
 
-Inputs: the goal's phases declare doc-class artifact outputs
-(`ArtifactKind::DesignDoc` / `Adr` / `RegisteredDoc` / …); the phase collects
-those paths (`declared_doc_updates`) as the focused audit set, and audits broadly
-when none are declared. (Honest limit today: doc-sync verifies declared
-OUTPUTS; a per-goal "docs this goal READS" input lifecycle is not yet modeled —
-state the reads in the goal's design prose until it is.)
+The integration must remain honest about scope: a focused check proves only the
+declared outputs it inspected. Run the broad repository check when the change can
+affect navigation, registry relationships, shared terminology, or architecture.
 
 ## Surface Responsibility Matrix
 
@@ -178,8 +173,8 @@ Exit rules:
 The ladder above names "skill", but a skill is worth extracting only when all of
 these hold:
 
-- it is REUSED — an agent runs roughly these steps across more than one goal or
-  project (a one-off belongs in the goal, not a skill);
+- it is REUSED — an agent runs roughly these steps across more than one project
+  or delivery (a one-off belongs in the current work context, not a skill);
 - it is PROCEDURAL judgment, not facts — facts belong in docs/schema; a skill
   encodes how to DO something and what to watch for;
 - it is SURFACE-BOUND — it tells an agent how to operate and points at docs for
@@ -204,7 +199,7 @@ Use diagrams when text alone hides system structure.
 | Data flow | where data, artifacts, and evidence move |
 | Workflow | how a scenario reaches acceptance |
 | Sequence | how agents, CLI, API, and dashboard interact over time |
-| State/lifecycle | how task, message, evidence, decision, or agent status changes |
+| State/lifecycle | how work, message, evidence, decision, or actor status changes |
 | Deployment | how runtime components run locally, in CI, and in production |
 
 Prefer Mermaid. Over roughly 12 nodes, split the diagram.

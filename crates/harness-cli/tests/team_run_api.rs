@@ -120,8 +120,6 @@ fn team_run_cli_create_list_status_send_events() {
             "create",
             "--objective",
             "Ship v0",
-            "--wave",
-            "2",
             "--mission-id",
             "mission-test",
             "--wave-id",
@@ -653,10 +651,7 @@ fn mission_wave_cli_authoring_and_accepted_team_gate() {
         &project_id,
         &["mission", "show", "--id", "mission-cli", "--json"],
     );
-    assert_eq!(
-        running_mission["mission"]["status"].as_str(),
-        Some("running")
-    );
+    assert_eq!(running_mission["status"].as_str(), Some("running"));
     let gated = command_json(
         &home,
         &project_id,
@@ -694,11 +689,7 @@ fn mission_wave_cli_authoring_and_accepted_team_gate() {
         &project_id,
         &["mission", "show", "--id", "mission-cli", "--json"],
     );
-    assert_eq!(mission["source"].as_str(), Some("native"));
-    assert_eq!(
-        mission["mission"]["wave_ids"],
-        serde_json::json!(["wave-cli"])
-    );
+    assert_eq!(mission["wave_ids"], serde_json::json!(["wave-cli"]));
 }
 
 #[test]
@@ -841,7 +832,6 @@ fn post_team_run_creates_entities_and_snapshot() {
         "/v1/team-runs",
         &serde_json::json!({
             "objective": "Ship v0",
-            "wave_index": 2,
             "mission_id": "mission-test",
             "wave_id": "wave-test",
             "budget_limit_usd": 5.0,
@@ -884,7 +874,10 @@ fn post_team_run_creates_entities_and_snapshot() {
     let team_runs = snapshot["team_runs"].as_array().expect("team_runs");
     assert_eq!(team_runs.len(), 1, "team_runs: {team_runs:?}");
     assert_eq!(team_runs[0]["id"].as_str(), Some(run_id.as_str()));
-    assert_eq!(team_runs[0]["wave_index"].as_u64(), Some(2));
+    assert!(
+        team_runs[0].get("wave_index").is_none(),
+        "the persisted TeamRun has no second Wave ordering field"
+    );
     assert_eq!(team_runs[0]["budget_limit_usd"].as_f64(), Some(5.0));
     assert_eq!(
         team_runs[0]["member_run_ids"].as_array().map(Vec::len),
@@ -1090,7 +1083,6 @@ fn post_team_run_transition_and_compatibility_lineage() {
         "/v1/team-runs",
         &serde_json::json!({
             "objective": "Compatibility attempt two",
-            "wave_index": 2,
             "previous_run_id": wave1_id,
             "members": [{"name": "lead", "role": "coordinator", "provider": "kimi"}],
         }),
@@ -1191,7 +1183,6 @@ fn post_team_run_transition_and_compatibility_lineage() {
             "host_surface": "http",
             "objective": "Compatibility attempt two",
             "status": "reviewing",
-            "wave_index": 2,
             "previous_run_id": wave1_id,
             "created_at": "unix-ms:1",
             "updated_at": "unix-ms:2",
@@ -1291,7 +1282,6 @@ fn post_team_run_transition_and_compatibility_lineage() {
             "host_surface": "http",
             "objective": "Active compatibility attempt",
             "status": "running",
-            "wave_index": 1,
             "created_at": "unix-ms:3",
             "updated_at": "unix-ms:4",
         })

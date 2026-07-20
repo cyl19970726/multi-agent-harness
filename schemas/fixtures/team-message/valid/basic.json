@@ -1,11 +1,10 @@
 {
   "id": "tmsg-1",
   "team_run_id": "trun-1",
-  "task_id": "task-1",
   "from_member_id": "host",
   "to_member_ids": ["mrun-1"],
   "kind": "assignment",
-  "body": "Take task-1.",
+  "body": "Own the core/store retirement lane.",
   "correlation_id": "corr-1",
   "causation_id": null,
   "evidence_refs": ["ev-1"],

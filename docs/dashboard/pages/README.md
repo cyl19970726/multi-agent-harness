@@ -51,15 +51,13 @@ open_questions:
 The current product direction is Mission -> ordered Wave -> executor, owned by
 [the architecture map](../../architecture-map.md) and
 [ADR 0026](../../decisions/0026-mission-wave-architecture.md). The next primary
-page is the Agent Team war room in Mission/Wave context. Shipped
-Vision/Goal/Task Work-board and Goal Workbench specs remain compatibility and
-migration references only; they do not define the new information architecture.
+page is the Agent Team war room in Mission/Wave context. Historical
+Vision/Goal/Task Work-board and Goal Workbench specs are archived; they do not
+define the new information architecture.
 
 | Page | Status | Layout |
 | --- | --- | --- |
 | [Agent Team page](team-run-console.md) | planned current product page | page-local Mission/Wave contract |
-| [Goal Workbench](goal.md) | deprecated compatibility | shipped page-local contract |
-| [Vision/Goal/Task Work board](../work-board-design.md) | deprecated compatibility | shipped compatibility design |
 | [Team workspace](team-workspace.md) | future Standing Agents | page-local concept |
 | [AgentMember workbench](agent-member-workbench.md) | compatibility/future Standing Agent | page-local contract |
 | [Evidence/Review/Decision](evidence-review-decision.md) | planned | page-local contract |
@@ -71,5 +69,5 @@ migration references only; they do not define the new information architecture.
 - Update the same page spec when the page purpose, canonical object ownership,
   information architecture, action model, dimensions, first viewport,
   breakpoint behavior, or scroll ownership changes.
-- Update [../layout-history.md](../layout-history.md) when a selected,
+- Update [../layout-history.md](../../company-os/frontend-information-architecture.md) when a selected,
   rejected, or borrowed design decision changes.

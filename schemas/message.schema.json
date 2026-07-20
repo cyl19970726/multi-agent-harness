@@ -34,7 +34,7 @@
     },
     "kind": {
       "type": "string",
-      "enum": ["message", "task", "report"]
+      "enum": ["message", "assignment", "report"]
     },
     "delivery_status": {
       "type": "string",

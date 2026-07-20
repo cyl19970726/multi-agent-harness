@@ -10,7 +10,7 @@
   },
   "boundaries": {
     "genericHarnessOwns": [
-      "task graph",
+      "dependency graph",
       "agent messages",
       "role assignment",
       "evidence references",

@@ -18,7 +18,7 @@ Accepted. **Promotes the deferred parts of
 [the dynamic-workflow design study](../research/dynamic-workflow-runtime-design.md)**
 (its WP5 IR + an author surface) into a shipped path, and builds on
 [0011 (Provider-neutral runtime)](0011-provider-neutral-runtime.md),
-[0017 (Generic object model)](0017-generic-object-model.md), and
+current schema-governance guidance, and
 [0018 (Exec-stream primary substrate)](0018-exec-stream-primary-substrate.md).
 
 (0021 is the latest prior ADR; 0022 is the next free number.)
@@ -76,7 +76,7 @@ runtime *lives* so it stays provider-agnostic.
 ## Consequences
 
 - **No new object types; additive fields only.** Per
-  [0017](0017-generic-object-model.md), the dynamic path reuses
+  current schema-governance guidance, the dynamic path reuses
   `WorkflowRun`/`WorkflowStep` and adds optional fields a dynamic run needs:
   `WorkflowRun.args` (JSON parameterization, `{{key}}`-interpolated into node
   prompts), `WorkflowRun.agents_spawned`, `WorkflowRun.final_output`, and

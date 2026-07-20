@@ -1,137 +1,122 @@
-# Star Harness
+# Star Harness — AI Company OS
 
-Provider-neutral execution and collaboration tools for resident Host Agents.
+Star Harness is building an operating system for an AI-native company.
 
-The product direction is `Mission -> ordered Wave -> executor`. Each Wave uses
-an Agent Team, a Dynamic Workflow, or direct Host execution. Wave stays
-lightweight: executor-specific planning belongs to the executor, and Agent Team
-ownership is expressed through assignment-message correlation rather than a
-mandatory Task Graph.
+The product has two primary systems:
 
-This repository is intentionally separate from any specific trading, research,
-or product codebase. A project such as Earning Engine should be integrated
-through an adapter: skills and tool descriptors teach agent members how to use
-that project's CLI, Dashboard, artifacts, and permission rules.
+1. **Docs** — the company's memory, business structure, data relationships,
+   decisions, and default place to initiate work.
+2. **Organization** — humans, standing Agents, external collaborators, and
+   services arranged into accountable, permissioned operating units.
 
-## Product Boundary
+Documents create explicit `WorkItem` and `Approval` records. Actors execute the
+work directly or select an execution tool. Results, evidence, metrics, and
+financial effects return to the originating document and related records.
 
 ```text
-Star Harness
-  Mission / Wave / executor selection
-  Agent Team / Dynamic Workflow / Host execution
-  Provider sessions / messages / artifacts / events
-  Plugin / MCP / CLI / Agent Dashboard
-
-Project Adapter
-  CLI commands / Dashboard links / artifact readers / domain acceptance /
-  permissions / evidence policy
+Document / Business Module
+  -> WorkItem / Approval
+     -> Human or Standing Agent responsibility
+     -> Mission/Wave | Agent Team | Dynamic Workflow | direct work
+  -> Result / Evidence / Metric / FinancialRecord
+  -> Document and organization evolution
 ```
 
-The generic core must not import project-specific runtime code.
+Mission/Wave, Agent Team, Dynamic Workflow, Host execution, provider runtimes,
+plugins, and MCP are the execution foundation. They remain important, but they
+are not the top-level product information architecture.
 
-Current Goal, GoalPhase, Task, Evidence, and Decision objects remain
-self-hosting compatibility surfaces while the non-destructive Mission/Wave
-migration proceeds.
+## Current implementation status
 
-## Quickstart
+The provider-neutral execution foundation is substantially implemented and
+is actively being
+migrated to native `Mission -> ordered Wave -> executor` semantics. The Company
+OS product contracts, document system, mixed human/Agent organization,
+WorkItem/Approval model, and new frontend information architecture are the
+current product-development focus.
 
-Install the optional `star-workflow` authoring capability, start the harness
-service, then ask your agent to author and run a Dynamic Workflow. Full walkthrough:
-**[docs/getting-started.md](docs/getting-started.md)**.
+The superseded coordination stack is being frozen, exported, verified, and
+removed under ADR 0028. It is not part of the active product model.
+
+## Product surfaces
+
+Primary:
+
+- **Home** — a document-composed company overview and decision queue.
+- **Docs** — Notion-like pages, databases, typed records, relations, views, and
+  module templates.
+- **Organization** — structure containing people, standing Agents, and
+  external participants.
+
+Shared operating views:
+
+- **Work** — WorkItems with explicit submission, ownership, execution, review,
+  approval, source document, and result document.
+- **Approvals** — human and policy gates for legal, finance, permissions, and
+  organization changes.
+- **Finance** — typed budgets, commitments, invoices, payments, and refunds
+  linked to their originating business records.
+
+Execution tools:
+
+- Missions and ordered Waves;
+- Agent Team attempts and MemberRuns;
+- Dynamic Workflows;
+- provider sessions, plugins, MCP, artifacts, and events.
+
+## Quickstart: current execution foundation
 
 ```bash
-# 1. install the Dynamic Workflow authoring skill (Claude Code + Codex)
-scripts/install-skill.sh --agent both
-#    explicit:         scripts/install-skill.sh --agent both --skill star-workflow
-#    or standalone:   curl -fsSL .../scripts/install-skill.sh | bash -s -- --agent both
-#    or:              npx skills add cyl19970726/multi-agent-harness --skill star-workflow --agent codex
-#    or (Claude):     /plugin marketplace add cyl19970726/multi-agent-harness && /plugin install star-workflow
-
-# 2. start the service
+scripts/install-skill.sh --agent both --skill star-workflow
 cargo build -p harness-cli
-./target/debug/harness serve --addr 127.0.0.1:8787   # API + store
-pnpm install && pnpm dashboard:dev                    # dashboard UI (watch runs live)
-
-# 3. run a workflow your agent authored
-./target/debug/harness workflow run-script prog.star \
-    [--timeout-ms 300000] [--max-budget-usd 2.00] [--resume <prior_run_id>]
+./target/debug/harness serve --addr 127.0.0.1:8787
+pnpm install
+pnpm dashboard:dev
 ```
 
-Verify the whole install → service → run journey at any time:
+Run a Dynamic Workflow:
 
 ```bash
-pnpm acceptance:skill-install            # local checks (no network)
-pnpm acceptance:skill-install --remote   # + the anonymous curl|bash install path
+./target/debug/harness workflow run-script prog.star \
+  --timeout-ms 300000 --max-budget-usd 2.00
 ```
 
-One `serve` / dashboard can manage many projects (each with its own
-goals/tasks/runs in a centralized store under `~/.harness/projects/<id>/`) plus a
-reserved GLOBAL `~/` project. Register with `harness init`, switch with
-`harness project switch <id|path>`, migrate a legacy repo-local `.harness` with
-`harness project migrate`. See **[docs/multi-project.md](docs/multi-project.md)**.
+One service can manage many projects. See [multi-project](docs/multi-project.md)
+and [getting started](docs/getting-started.md).
 
-## Repository Layout
+## Start here
+
+- [Company OS documentation](docs/company-os/README.md)
+- [Vision](docs/company-os/vision.md)
+- [Concept model](docs/company-os/concept-model.md)
+- [Document system](docs/company-os/document-system.md)
+- [Organization and actors](docs/company-os/organization-and-actors.md)
+- [WorkItems and approvals](docs/company-os/work-items-and-approvals.md)
+- [Module design](docs/company-os/module-design.md)
+- [Financial relations](docs/company-os/financial-relations.md)
+- [Governance](docs/company-os/governance.md)
+- [Execution foundation](docs/company-os/execution-foundation.md)
+- [Product requirements](docs/prd.md)
+- [Architecture map](docs/architecture-map.md)
+- [Provider integrations](docs/integration/README.md)
+- [Operations](docs/operations.md)
+- [Architecture decisions](docs/decisions/README.md)
+
+## Repository layout
 
 | Path | Purpose |
 | --- | --- |
-| `docs/` | PRD, architecture, operations, schemas, and decisions. |
-| `schemas/` | Stable JSON schemas shared by API, CLI, adapters, and Dashboard. |
-| `crates/` | Rust backend crates. |
-| `apps/agent-dashboard` | React/Vite Agent Dashboard control-plane app and static build output. |
-| `skills/` | Optional shipped capabilities; currently Dynamic Workflow authoring plus compatibility governance material. |
-| `.agents/skills/` | This repo's internal runtime skills (auto-discovered by Codex / harness-spawned workers). |
-| `examples/adapters/earning-engine` | First project adapter example. |
+| `docs/company-os/` | Canonical Company OS product and architecture contracts. |
+| `docs/design/` | Visual contracts, layout specifications, and execution UI designs. |
+| `schemas/` | Stable wire schemas for implemented objects. |
+| `crates/` | Rust store, core, CLI, execution, and provider infrastructure. |
+| `apps/agent-dashboard/` | React/Vite Company OS and execution workbench frontend. |
+| `skills/` | Optional capabilities, currently including Dynamic Workflow authoring. |
+| `examples/adapters/` | Domain adapters; business-specific logic stays outside the generic core. |
 
-## Start Here
+## Core boundary
 
-- [Agent operating rules](AGENTS.md)
-- [Product requirements](docs/prd.md)
-- [MVP](docs/mvp.md)
-- [Design basis](docs/design-basis.md)
-- [Concept Model](docs/concept-model.md)
-- [Architecture](docs/architecture.md)
-- [Core Modules](docs/core-modules.md)
-- [Data Model](docs/data-model.md)
-- [Agent Runtime](docs/agent-runtime.md)
-- [Agent Control Plane](docs/agent-control-plane.md)
-- [Agent Dashboard](docs/dashboard.md)
-- [Agent Dashboard Frontend Architecture](docs/dashboard/frontend-architecture.md)
-- [Agent Dashboard Runbook](docs/dashboard/runbook.md)
-- [Git / PR Workflow](docs/workflow-git-pr.md)
-- [Multi-Project Harness](docs/multi-project.md)
-- [Provider Integrations](docs/integration/README.md)
-- [Goal Learning Loop](docs/goal-learning-loop.md)
-- [Codex Integration](docs/integration/codex.md)
-- [Operations](docs/operations.md)
-- [Schemas](docs/schemas.md)
-- [Decisions](docs/decisions/README.md)
-
-## Skills
-
-**Shipped:**
-
-- [**Star workflow**](skills/star-workflow/SKILL.md): teach a shell-capable
-  agent (Claude Code / Codex) to author a Starlark multi-agent workflow and run
-  it with `harness workflow run-script`.
-
-Install it with `scripts/install-skill.sh --agent both`.
-
-**Compatibility and specialist capabilities (opt in only when explicitly
-needed):**
-
-- [Bootstrap project workflow](skills/bootstrap-project-workflow/SKILL.md):
-  legacy doc-sync and project-governance guidance. It is retained for current
-  compatibility work, but is not installed by default and is not Lead policy.
-- [Multi-agent system design](.agents/skills/multi-agent-system-design/SKILL.md):
-  reusable runtime, mailbox, permission, recovery, and observability design
-  guidance; it is not a product orchestration authority.
-
-## Initial Commands
-
-```bash
-npx pnpm@9.15.4 check
-pnpm dashboard:build
-cargo test
-cargo run -p harness-cli -- --help
-cargo run -p harness-cli -- dashboard snapshot
-```
+The generic core may define document, organization, work, relation, finance,
+governance, and execution contracts. Domain-specific record types such as a
+trademark jurisdiction or a content-platform metric belong to Company Modules,
+templates, adapters, and typed schemas—not hard-coded provider or project logic.

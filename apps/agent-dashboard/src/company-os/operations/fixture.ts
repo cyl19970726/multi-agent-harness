@@ -1,0 +1,381 @@
+import type {
+  ActorAvailability,
+  ActorKind,
+  ActorSummary,
+  ApprovalView,
+  FinancialRecordView,
+  RelatedLink,
+  TrademarkOperationsProjection,
+  WorkItemView,
+} from "./types";
+
+type JsonRecord = Record<string, unknown>;
+
+function records(value: unknown): JsonRecord[] {
+  return Array.isArray(value)
+    ? value
+        .filter((item): item is JsonRecord => Boolean(item) && typeof item === "object")
+        .map((item) => {
+          const nested = item.record;
+          return nested && typeof nested === "object" && !Array.isArray(nested)
+            ? { ...(nested as JsonRecord), ...item }
+            : item;
+        })
+    : [];
+}
+
+function text(value: unknown, fallback = ""): string {
+  return typeof value === "string" ? value : fallback;
+}
+
+function refId(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return "";
+  const ref = value as JsonRecord;
+  return text(ref.actor_id) || text(ref.id);
+}
+
+function field(record: JsonRecord | undefined, key: string): unknown {
+  if (!record) return undefined;
+  if (record[key] !== undefined) return record[key];
+  const fields = record.fields;
+  return fields && typeof fields === "object" && !Array.isArray(fields)
+    ? (fields as JsonRecord)[key]
+    : undefined;
+}
+
+function find(items: JsonRecord[], id: string): JsonRecord | undefined {
+  return items.find((item) => text(item.id) === id);
+}
+
+function pick(items: JsonRecord[], preferredId: string): JsonRecord {
+  return find(items, preferredId) ?? items[0] ?? {};
+}
+
+function actorKind(value: unknown): ActorKind {
+  switch (text(value).toLowerCase().replace(/ /g, "_")) {
+    case "human": return "human";
+    case "standing_agent": case "agent": return "standing_agent";
+    case "external": return "external";
+    case "service": return "service";
+    default: return "service";
+  }
+}
+
+function workStatus(value: unknown): WorkItemView["status"] {
+  switch (text(value)) {
+    case "waiting_for_approval": case "in_progress": case "in_review": case "completed": case "blocked": return text(value) as WorkItemView["status"];
+    default: return "in_progress";
+  }
+}
+
+function financialType(value: unknown): FinancialRecordView["type"] {
+  switch (text(value)) {
+    case "budget": case "commitment": case "invoice": case "payment": case "refund": return text(value) as FinancialRecordView["type"];
+    default: return "commitment";
+  }
+}
+
+function financialStatus(value: unknown): FinancialRecordView["status"] {
+  switch (text(value)) {
+    case "pending_approval": case "approved": case "settled": return text(value) as FinancialRecordView["status"];
+    default: return "pending_approval";
+  }
+}
+
+function approvalStatus(value: unknown): ApprovalView["status"] {
+  switch (text(value)) {
+    case "requested": case "approved": case "rejected": case "expired": return text(value) as ApprovalView["status"];
+    default: return "requested";
+  }
+}
+
+function asRef(id: unknown, label: unknown, detail?: unknown): RelatedLink {
+  return { id: text(id), label: text(label, "Unresolved record"), detail: text(detail) || undefined };
+}
+
+function humanizeEvidenceLabel(value: unknown): string {
+  const raw = text(value);
+  if (!raw) return "Evidence";
+  if (!raw.startsWith("evidence-")) return raw;
+  const words = raw
+    .replace(/^evidence-/, "")
+    .replace(/-(?:[a-z]{2}-)?\d{4}-\d+$/i, "")
+    .split("-")
+    .filter(Boolean)
+    .join(" ");
+  if (words.toLowerCase() === "legal review") return "Lawyer review";
+  return words.replace(/\b\w/g, (letter) => letter.toUpperCase()) || "Evidence";
+}
+
+function financialBusinessLabel(record: JsonRecord): string {
+  const displayName = text(record.display_name).trim();
+  if (displayName && !/^financial (?:record|commitment)$/i.test(displayName)) return displayName;
+  const id = text(record.id)
+    .replace(/^financial-(?:budget|commitment|invoice|payment|refund)-/i, "")
+    .replace(/-(?:[a-z]{2}-)?\d{4}-\d+$/i, "");
+  const words = id.split("-").filter(Boolean).join(" ");
+  return words ? words.replace(/^\w/, (letter) => letter.toUpperCase()) : (displayName || "Financial record");
+}
+
+function isInternalCommand(value: string): boolean {
+  return /\b[a-z]+(?:[._-][a-z]+)+\b/i.test(value);
+}
+
+function approvalPresentation(params: {
+  title: string;
+  summary: string;
+  commitment: FinancialRecordView;
+}): Pick<ApprovalView, "title" | "actionSummary"> {
+  const rawTitle = params.title.trim();
+  const rawSummary = params.summary.trim();
+  if (!isInternalCommand(rawTitle) && !isInternalCommand(rawSummary)) {
+    return { title: rawTitle || "Approval", actionSummary: rawSummary };
+  }
+  const noun = params.commitment.label.trim().toLowerCase() || "commitment";
+  return {
+    title: `Approve ${noun}`,
+    actionSummary: `Authorize the ${params.commitment.amount} ${noun}; legal submission remains blocked until approval.`,
+  };
+}
+
+/** Shared V1 fixture adapted to typed UI props. No page may invent new facts. */
+export const companyOsActors = {
+  brandOwner: { id: "actor-human-brand-owner", name: "Brand Owner", kind: "human", role: "Business owner", unit: "Brand & IP" },
+  trademarkAgent: { id: "actor-agent-trademark", name: "Trademark Agent", kind: "standing_agent", role: "Proposed trademark role", unit: "Brand & IP", organizationRoleState: "proposed" },
+  financeAgent: { id: "actor-agent-finance", name: "Finance Agent", kind: "standing_agent", role: "Financial review", unit: "Finance" },
+  externalLawyer: { id: "actor-external-lawyer", name: "External Lawyer", kind: "external", role: "Matter-specific legal support", unit: "Brand & IP" },
+  documentArchitecture: { id: "actor-agent-document-architecture", name: "Document Architecture Agent", kind: "standing_agent", role: "Document architecture", unit: "Governance", availability: "available" },
+  ipLead: { id: "actor-agent-ip-lead", name: "IP Lead Agent", kind: "standing_agent", role: "IP lead", unit: "Brand & IP" },
+  organizationGovernance: { id: "actor-agent-organization-governance", name: "Organization Governance Agent", kind: "standing_agent", role: "Organization governance", unit: "Governance" },
+  contentStrategy: { id: "actor-agent-content-strategy", name: "Content Strategy Agent", kind: "standing_agent", role: "Strategy partner", unit: "Content Operations" },
+  analytics: { id: "actor-agent-analytics", name: "Analytics Agent", kind: "standing_agent", role: "Analytics", unit: "Content Operations" },
+} as const satisfies Record<string, ActorSummary>;
+
+export const trademarkSource = {
+  id: "document-trademark-application-cn-2026-018",
+  label: "Trademark application CN-2026-018",
+  detail: "Brand & IP",
+} as const;
+
+export const trademarkWorkItem: WorkItemView = {
+  id: "workitem-trademark-filing-brand-a",
+  title: "Trademark filing for Brand A",
+  status: "waiting_for_approval",
+  sourceDocument: trademarkSource,
+  requestedBy: companyOsActors.brandOwner,
+  submittedBy: companyOsActors.trademarkAgent,
+  accountableOwner: companyOsActors.brandOwner,
+  assignees: [companyOsActors.trademarkAgent],
+  contributors: [companyOsActors.externalLawyer],
+  reviewer: companyOsActors.financeAgent,
+  legalReviewer: companyOsActors.externalLawyer,
+  approver: companyOsActors.brandOwner,
+  updatedAt: "20 Jul 2026 · 09:10",
+};
+
+export const trademarkCommitment: FinancialRecordView = {
+  id: "financial-commitment-trademark-filing-fee-cn-2026-018",
+  label: "Trademark filing fee",
+  type: "commitment",
+  amount: "¥3,000",
+  status: "pending_approval",
+  sourceDocument: trademarkSource,
+  project: { id: "brand-brand-a", label: "Brand A" },
+  accountableOwner: companyOsActors.brandOwner,
+};
+
+export const trademarkApproval: ApprovalView = {
+  id: "approval-trademark-filing-fee-cn-2026-018",
+  title: "Approve trademark filing fee",
+  actionSummary: "Authorize a ¥3,000 commitment and legal submission for Trademark application CN-2026-018.",
+  status: "requested",
+  requestedBy: companyOsActors.trademarkAgent,
+  requiredApprover: companyOsActors.brandOwner,
+  financeReviewer: companyOsActors.financeAgent,
+  legalReviewer: companyOsActors.externalLawyer,
+  expiresAt: "31 Jul 2026 · 18:00",
+};
+
+export const prototypeTrademarkOperationsProjection: TrademarkOperationsProjection = {
+  fixtureId: "company-os-trademark-v1",
+  actors: companyOsActors,
+  actorList: Object.values(companyOsActors),
+  organization: {
+    company: { id: "org-company", label: "Company" },
+    brandUnit: { id: "org-brand-ip", label: "Brand & IP" },
+    units: [
+      { id: "org-company", label: "Company", actorIds: [] },
+      { id: "org-brand-ip", label: "Brand & IP", parentId: "org-company", actorIds: ["actor-human-brand-owner", "actor-agent-ip-lead", "actor-agent-trademark", "actor-external-lawyer"] },
+      { id: "org-content-operations", label: "Content Operations", parentId: "org-company", actorIds: ["actor-agent-content-strategy", "actor-agent-analytics"] },
+      { id: "org-finance", label: "Finance", parentId: "org-company", actorIds: ["actor-agent-finance"] },
+      { id: "org-governance", label: "Governance", parentId: "org-company", actorIds: ["actor-agent-document-architecture", "actor-agent-organization-governance"] },
+    ],
+  },
+  sourceDocument: trademarkSource,
+  contentPlanDocument: { id: "document-brand-a-content-operating-plan", label: "Brand A · Content operating plan", detail: "Content Operations" },
+  typedApplication: { id: "trademark-application-cn-2026-018", label: "Trademark application CN-2026-018", detail: "Typed application record · filing preparation" },
+  workItem: trademarkWorkItem,
+  commitment: trademarkCommitment,
+  approval: trademarkApproval,
+  evidence: [
+    { id: "evidence-trademark-filing-package-cn-2026-018", label: "Trademark filing package", detail: "Submitted by Trademark Agent" },
+    { id: "evidence-legal-review-cn-2026-018", label: "Lawyer review", detail: "Submitted by External Lawyer" },
+  ],
+  governanceProposal: { id: "governance-proposal-trademark-management", label: "Create Trademark Management module", detail: "Awaiting final approval", proposedById: "actor-agent-document-architecture" },
+  businessModule: { id: "module-trademark-management", label: "Trademark Management", detail: "Proposed module" },
+  julySpendMetric: { id: "metric-july-spend", label: "July spend" },
+  julySpendAmount: "¥18,400",
+};
+
+/**
+ * Adapts a resolved Company OS read projection into operations presentation
+ * data. It preserves the input's ids, labels and responsibility relations; it
+ * never adds a payment or derives ownership from execution telemetry.
+ */
+export function adaptTrademarkOperationsProjection(projection: unknown): TrademarkOperationsProjection {
+  const root = projection && typeof projection === "object" ? projection as JsonRecord : {};
+  const actorRecords = records(root.actors);
+
+  const memberships = records((root.organization as JsonRecord | undefined)?.memberships);
+  const statuses = records((root.organization as JsonRecord | undefined)?.explicitly_reported_statuses);
+  const units = records((root.organization as JsonRecord | undefined)?.org_units);
+  const actorById: Record<string, ActorSummary> = {};
+  for (const actor of actorRecords) {
+    const id = text(actor.id);
+    const membership = memberships.find((item) => (text(item.actor_id) || refId(item.actor_ref)) === id);
+    const unit = find(units, text(membership?.org_unit_id));
+    const reported = statuses.find((item) => text(item.subject_ref) === id && text(item.kind) === "availability");
+    const roleState = statuses.find((item) => text(item.subject_ref) === id && text(item.kind) === "organization_role_state");
+    actorById[id] = {
+      id,
+      name: text(actor.display_name, id || "Unresolved actor"),
+      kind: actorKind(actor.actor_type),
+      role: text(membership?.role_label, text(membership?.title_or_function, text(actor.role, "Organization participant"))),
+      unit: text(unit?.name) || undefined,
+      availability: (text(reported?.value) || (text(actor.availability) !== "unknown" ? text(actor.availability) : "")) as ActorAvailability || undefined,
+      organizationRoleState: text(roleState?.value) === "proposed" ? "proposed" : undefined,
+    };
+  }
+  const actor = (id: unknown): ActorSummary => actorById[refId(id)] ?? {
+    id: refId(id) || "unresolved-actor", name: "Unresolved actor", kind: "service", role: "Unresolved role",
+  };
+
+  const documents = records(root.documents);
+  const typedRecords = records(root.typed_records);
+  const workRecords = records(root.work_items);
+  const financeRecords = records(root.financial_records);
+  const approvalRecords = records(root.approvals);
+  const evidenceRecords = records(root.evidence);
+  const proposalRecords = [
+    ...records(root.governance_proposals),
+    ...typedRecords.filter((item) => text(item.record_type).toLowerCase() === "governance_proposal"),
+  ];
+  const moduleRecords = records(root.business_modules);
+  const metrics = [
+    ...records(root.explicit_metrics),
+    ...typedRecords.filter((item) => text(item.record_type).toLowerCase() === "metric_observation"),
+  ];
+  const workRecord = pick(workRecords, "workitem-trademark-filing-brand-a");
+  const sourceDocument = pick(documents, text(workRecord.source_document_ref, "document-trademark-application-cn-2026-018"));
+  const contentPlan = pick(documents, "document-brand-a-content-operating-plan");
+  const application = pick(typedRecords, "trademark-application-cn-2026-018");
+  const commitmentRecord = financeRecords.find((item) => text(item.type) === "commitment") ?? financeRecords[0] ?? {};
+  const approvalRecord = pick(approvalRecords, text((Array.isArray(workRecord.approval_refs) ? workRecord.approval_refs[0] : undefined), "approval-trademark-filing-fee-cn-2026-018"));
+  const proposalRecord = pick(proposalRecords, "governance-proposal-trademark-management");
+  const moduleRecord = pick(moduleRecords, "module-trademark-management");
+  const metricRecord = pick(metrics, "metric-july-spend");
+  const source = asRef(sourceDocument.id, sourceDocument.title, sourceDocument.space ?? sourceDocument.space_id);
+  const evidenceIds = Array.isArray(workRecord.evidence_refs) ? workRecord.evidence_refs : [];
+  const evidence = evidenceIds.map((id) => {
+    const record = find(evidenceRecords, text(id));
+    return asRef(record?.id ?? id, humanizeEvidenceLabel(record?.title ?? id), record ? `Submitted by ${actor(record.submitted_by_ref).name}` : undefined);
+  });
+
+  const workItem: WorkItemView = {
+    id: text(workRecord.id, "unresolved-work-item"),
+    title: text(workRecord.title, "Unresolved work"),
+    status: workStatus(workRecord.status),
+    sourceDocument: source,
+    requestedBy: actor(workRecord.requested_by_ref ?? workRecord.requested_by),
+    submittedBy: actor(workRecord.submitted_by_ref ?? workRecord.submitted_by),
+    accountableOwner: actor(workRecord.accountable_owner_ref ?? workRecord.accountable_owner),
+    assignees: Array.isArray(workRecord.assignee_refs) ? workRecord.assignee_refs.map(actor) : Array.isArray(workRecord.assignees) ? workRecord.assignees.map(actor) : [],
+    contributors: Array.isArray(workRecord.contributor_refs) ? workRecord.contributor_refs.map(actor) : Array.isArray(workRecord.contributors) ? workRecord.contributors.map(actor) : [],
+    reviewer: workRecord.reviewer_ref || workRecord.reviewer ? actor(workRecord.reviewer_ref ?? workRecord.reviewer) : undefined,
+    legalReviewer: workRecord.legal_reviewer_ref
+      ? actor(workRecord.legal_reviewer_ref)
+      : (Array.isArray(workRecord.contributors) ? workRecord.contributors.map(actor).find((entry) => entry.kind === "external") : undefined),
+    approver: workRecord.approver_ref || workRecord.approver ? actor(workRecord.approver_ref ?? workRecord.approver) : undefined,
+    updatedAt: text(workRecord.updated_at),
+  };
+  const commitment: FinancialRecordView = {
+    id: text(commitmentRecord.id, "unresolved-financial-record"),
+    label: financialBusinessLabel(commitmentRecord),
+    type: financialType(commitmentRecord.type),
+    amount: text(commitmentRecord.display_amount, "—"),
+    status: financialStatus(commitmentRecord.status),
+    sourceDocument: source,
+    project: commitmentRecord.project_ref
+      ? asRef(commitmentRecord.project_ref, find(typedRecords, text(commitmentRecord.project_ref))?.display_name ?? find(typedRecords, text(commitmentRecord.project_ref))?.title ?? commitmentRecord.project_ref)
+      : text(field(application, "brand"))
+        ? asRef(text(application.id), text(field(application, "brand")), "Business context from the linked application")
+        : undefined,
+    accountableOwner: actor(commitmentRecord.accountable_owner_ref ?? commitmentRecord.accountable_owner),
+  };
+  const rawApprovalTitle = text(approvalRecord.title, text(approvalRecord.action_summary, "Approval"));
+  const rawApprovalSummary = text(approvalRecord.action_summary);
+  const approvalCopy = approvalPresentation({ title: rawApprovalTitle, summary: rawApprovalSummary, commitment });
+  const approval: ApprovalView = {
+    id: text(approvalRecord.id, "unresolved-approval"),
+    title: approvalCopy.title,
+    actionSummary: approvalCopy.actionSummary,
+    status: approvalStatus(approvalRecord.status),
+    requestedBy: actor(approvalRecord.requested_by_ref ?? approvalRecord.requested_by),
+    requiredApprover: actor(Array.isArray(approvalRecord.required_approver_refs) ? approvalRecord.required_approver_refs[0] : undefined),
+    financeReviewer: approvalRecord.finance_reviewer_ref
+      ? actor(approvalRecord.finance_reviewer_ref)
+      : workRecord.reviewer_ref || workRecord.reviewer ? actor(workRecord.reviewer_ref ?? workRecord.reviewer) : undefined,
+    legalReviewer: approvalRecord.legal_reviewer_ref
+      ? actor(approvalRecord.legal_reviewer_ref)
+      : (Array.isArray(workRecord.contributors) ? workRecord.contributors.map(actor).find((entry) => entry.kind === "external") : undefined),
+    expiresAt: text(approvalRecord.expires_at) || undefined,
+  };
+
+  const organizationUnits = units.map((unit) => ({
+    id: text(unit.id),
+    label: text(field(unit, "name"), "Unresolved unit"),
+    parentId: text(field(unit, "parent_id")) || undefined,
+    actorIds: memberships
+      .filter((membership) => text(field(membership, "org_unit_id")) === text(unit.id))
+      .map((membership) => text(field(membership, "actor_id")) || refId(field(membership, "actor_ref")))
+      .filter(Boolean),
+  }));
+  const companyUnit = pick(units, "org-company");
+  const brandUnit = pick(units, "org-brand-ip");
+
+  return {
+    fixtureId: text(root.fixture_id) || undefined,
+    actors: actorById,
+    actorList: Object.values(actorById),
+    organization: {
+      company: asRef(companyUnit.id, field(companyUnit, "name")),
+      brandUnit: asRef(brandUnit.id, field(brandUnit, "name")),
+      units: organizationUnits,
+    },
+    sourceDocument: source,
+    contentPlanDocument: asRef(contentPlan.id, contentPlan.title, contentPlan.space ?? contentPlan.space_id),
+    typedApplication: asRef(application.id, field(application, "display_id") ? `Trademark application ${text(field(application, "display_id"))}` : application.display_name ?? application.title, "Typed application record · filing preparation"),
+    workItem,
+    commitment,
+    approval,
+    evidence,
+    governanceProposal: {
+      ...asRef(proposalRecord.id, field(proposalRecord, "title") ?? proposalRecord.title, text(field(proposalRecord, "status") ?? proposalRecord.lifecycle_status).replace(/_/g, " ") || undefined),
+      proposedById: refId(field(proposalRecord, "proposed_by_ref")) || undefined,
+    },
+    businessModule: asRef(moduleRecord.id, moduleRecord.name, text(moduleRecord.status).replace(/_/g, " ") || undefined),
+    julySpendMetric: asRef(metricRecord.id, field(metricRecord, "label")),
+    julySpendAmount: text(field(metricRecord, "display_amount"), "—"),
+  };
+}

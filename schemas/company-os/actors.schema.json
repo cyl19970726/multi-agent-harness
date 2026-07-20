@@ -1,0 +1,182 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://star-harness.local/schemas/company-os/actors.schema.json",
+  "title": "Company OS actors",
+  "oneOf": [
+    { "$ref": "#/$defs/humanMember" },
+    { "$ref": "#/$defs/standingAgent" },
+    { "$ref": "#/$defs/externalParticipant" },
+    { "$ref": "#/$defs/serviceActor" },
+    { "$ref": "#/$defs/orgUnit" },
+    { "$ref": "#/$defs/organizationMembership" }
+  ],
+  "$defs": {
+    "nonEmptyString": { "type": "string", "minLength": 1 },
+    "stringRefs": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/nonEmptyString" }
+    },
+    "actorType": {
+      "type": "string",
+      "enum": ["human", "agent", "external", "service"]
+    },
+    "actorRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["actor_type", "actor_id"],
+      "properties": {
+        "actor_type": { "$ref": "#/$defs/actorType" },
+        "actor_id": { "$ref": "#/$defs/nonEmptyString" }
+      }
+    },
+    "memberStatus": {
+      "type": "string",
+      "enum": ["active", "invited", "paused", "ended", "archived"]
+    },
+    "availability": {
+      "type": "string",
+      "enum": ["available", "busy", "paused", "offline", "unknown"]
+    },
+    "humanMember": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id", "display_name", "title", "status", "availability",
+        "membership_refs", "responsibility_summary", "permission_policy_refs",
+        "authority_policy_refs", "created_at", "updated_at"
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/nonEmptyString" },
+        "display_name": { "$ref": "#/$defs/nonEmptyString" },
+        "title": { "type": ["string", "null"], "minLength": 1 },
+        "status": { "$ref": "#/$defs/memberStatus" },
+        "availability": {
+          "oneOf": [{ "$ref": "#/$defs/availability" }, { "type": "null" }]
+        },
+        "membership_refs": { "$ref": "#/$defs/stringRefs" },
+        "responsibility_summary": { "$ref": "#/$defs/nonEmptyString" },
+        "permission_policy_refs": { "$ref": "#/$defs/stringRefs" },
+        "authority_policy_refs": { "$ref": "#/$defs/stringRefs" },
+        "created_at": { "$ref": "#/$defs/nonEmptyString" },
+        "updated_at": { "$ref": "#/$defs/nonEmptyString" }
+      }
+    },
+    "standingAgent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id", "display_name", "role", "status", "availability",
+        "assignment_capacity", "exclusive_assignment_ref", "membership_refs",
+        "responsibility_summary", "capability_refs", "permission_policy_refs",
+        "runtime_refs", "provider_session_refs", "created_at", "updated_at"
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/nonEmptyString" },
+        "display_name": { "$ref": "#/$defs/nonEmptyString" },
+        "role": { "$ref": "#/$defs/nonEmptyString" },
+        "status": { "$ref": "#/$defs/memberStatus" },
+        "availability": { "$ref": "#/$defs/availability" },
+        "assignment_capacity": { "type": ["integer", "null"], "minimum": 1 },
+        "exclusive_assignment_ref": { "type": ["string", "null"], "minLength": 1 },
+        "membership_refs": { "$ref": "#/$defs/stringRefs" },
+        "responsibility_summary": { "$ref": "#/$defs/nonEmptyString" },
+        "capability_refs": { "$ref": "#/$defs/stringRefs" },
+        "permission_policy_refs": { "$ref": "#/$defs/stringRefs" },
+        "runtime_refs": { "$ref": "#/$defs/stringRefs" },
+        "provider_session_refs": { "$ref": "#/$defs/stringRefs" },
+        "created_at": { "$ref": "#/$defs/nonEmptyString" },
+        "updated_at": { "$ref": "#/$defs/nonEmptyString" }
+      }
+    },
+    "externalParticipant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id", "display_name_or_organization", "engagement_scope",
+        "sponsor_actor_ref", "access_expires_at", "confidentiality_or_contract_refs",
+        "membership_refs", "restricted_permission_refs", "status", "created_at", "updated_at"
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/nonEmptyString" },
+        "display_name_or_organization": { "$ref": "#/$defs/nonEmptyString" },
+        "engagement_scope": { "$ref": "#/$defs/nonEmptyString" },
+        "sponsor_actor_ref": { "$ref": "#/$defs/actorRef" },
+        "access_expires_at": { "$ref": "#/$defs/nonEmptyString" },
+        "confidentiality_or_contract_refs": { "$ref": "#/$defs/stringRefs" },
+        "membership_refs": { "$ref": "#/$defs/stringRefs" },
+        "restricted_permission_refs": { "$ref": "#/$defs/stringRefs" },
+        "status": { "$ref": "#/$defs/memberStatus" },
+        "created_at": { "$ref": "#/$defs/nonEmptyString" },
+        "updated_at": { "$ref": "#/$defs/nonEmptyString" }
+      }
+    },
+    "serviceActor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id", "display_name", "service_kind", "owner_actor_ref",
+        "credential_boundary", "permission_policy_refs", "audit_policy_ref",
+        "status", "created_at", "updated_at"
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/nonEmptyString" },
+        "display_name": { "$ref": "#/$defs/nonEmptyString" },
+        "service_kind": { "$ref": "#/$defs/nonEmptyString" },
+        "owner_actor_ref": { "$ref": "#/$defs/actorRef" },
+        "credential_boundary": { "$ref": "#/$defs/nonEmptyString" },
+        "permission_policy_refs": { "$ref": "#/$defs/stringRefs" },
+        "audit_policy_ref": { "$ref": "#/$defs/nonEmptyString" },
+        "status": { "$ref": "#/$defs/memberStatus" },
+        "created_at": { "$ref": "#/$defs/nonEmptyString" },
+        "updated_at": { "$ref": "#/$defs/nonEmptyString" }
+      }
+    },
+    "orgUnit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id", "organization_id", "name", "purpose", "parent_unit_id", "status",
+        "human_lead_actor_ref", "agent_lead_actor_ref", "policy_refs",
+        "document_space_ref", "created_at", "updated_at"
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/nonEmptyString" },
+        "organization_id": { "$ref": "#/$defs/nonEmptyString" },
+        "name": { "$ref": "#/$defs/nonEmptyString" },
+        "purpose": { "$ref": "#/$defs/nonEmptyString" },
+        "parent_unit_id": { "type": ["string", "null"], "minLength": 1 },
+        "status": { "enum": ["active", "paused", "archived"] },
+        "human_lead_actor_ref": { "oneOf": [{ "$ref": "#/$defs/actorRef" }, { "type": "null" }] },
+        "agent_lead_actor_ref": { "oneOf": [{ "$ref": "#/$defs/actorRef" }, { "type": "null" }] },
+        "policy_refs": { "$ref": "#/$defs/stringRefs" },
+        "document_space_ref": { "type": ["string", "null"], "minLength": 1 },
+        "created_at": { "$ref": "#/$defs/nonEmptyString" },
+        "updated_at": { "$ref": "#/$defs/nonEmptyString" }
+      }
+    },
+    "organizationMembership": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id", "organization_id", "org_unit_id", "actor_ref", "membership_role",
+        "title_or_function", "status", "starts_at", "ends_at", "authority_policy_refs",
+        "created_by_actor_ref", "created_at"
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/nonEmptyString" },
+        "organization_id": { "$ref": "#/$defs/nonEmptyString" },
+        "org_unit_id": { "$ref": "#/$defs/nonEmptyString" },
+        "actor_ref": { "$ref": "#/$defs/actorRef" },
+        "membership_role": { "enum": ["lead", "member", "advisor", "observer", "external_partner"] },
+        "title_or_function": { "type": ["string", "null"], "minLength": 1 },
+        "status": { "enum": ["active", "invited", "paused", "ended"] },
+        "starts_at": { "$ref": "#/$defs/nonEmptyString" },
+        "ends_at": { "type": ["string", "null"], "minLength": 1 },
+        "authority_policy_refs": { "$ref": "#/$defs/stringRefs" },
+        "created_by_actor_ref": { "$ref": "#/$defs/actorRef" },
+        "created_at": { "$ref": "#/$defs/nonEmptyString" }
+      }
+    }
+  }
+}

@@ -1,0 +1,94 @@
+{
+  "workstream": "company-os-v2",
+  "status": "expected_direction_in_progress",
+  "artifact_policy": {
+    "baseline": "../company-os-v1/actual",
+    "expected": "expected",
+    "implemented": ".visual-evidence/company-os-v2/<run-id>/implemented",
+    "comparison": "comparisons"
+  },
+  "fixture": "company-os-v2-lead-first-trademark-direction",
+  "design_revisions": [
+    {
+      "version": "2.2",
+      "status": "human_review_pending",
+      "decision_ref": "v2.2-revision.md",
+      "cases": [
+        {
+          "case_id": "home--morning-operating-review--desktop",
+          "prompt": "prompts/home-v2.2.md",
+          "expected": "expected/home--morning-operating-review-v2-2--desktop-1536x1024.png",
+          "expected_hash": "sha256:c0aa1de9d568dda13bb12e7a25b69f10c0782167f20a92fd333d68d9121d9dec"
+        },
+        {
+          "case_id": "docs--company-knowledge-workspace--desktop",
+          "prompt": "prompts/docs-v2.2.md",
+          "expected": "expected/docs--company-knowledge-workspace-v2-2--desktop-1536x1024.png",
+          "expected_hash": "sha256:2cf0f6829dae308603d6bfce25f579df35178732a2d02d361a21fe8ec52f9c1b"
+        },
+        {
+          "case_id": "organization--lead-first-company--desktop",
+          "prompt": "prompts/organization-v2.2.md",
+          "expected": "expected/organization--lead-first-company-v2-2--desktop-1536x1024.png",
+          "expected_hash": "sha256:284d3bb0187f6ece56f2cf16d0254449efeaaff02f56626e8a9ff313ca60c0ba"
+        },
+        {
+          "case_id": "lead-agent--coordinating-direct-reports--desktop",
+          "prompt": "prompts/lead-agent-v2.2.md",
+          "expected": "expected/lead-agent--coordinating-direct-reports-v2-2--desktop-1536x1024.png",
+          "expected_hash": "sha256:506c9a5b9467809638fb409395b238bf8826708be20cbc04ed900f4cd3d27a1b"
+        },
+        {
+          "case_id": "business-module--trademark-operations--desktop",
+          "prompt": "prompts/business-module-v2.2.md",
+          "expected": "expected/business-module--trademark-operations-v2-2--desktop-1536x1024.png",
+          "expected_hash": "sha256:981a6fab2c86c25ecbf0dc9b9fc2cf792c3962593ada94484652334f684286cf"
+        },
+        {
+          "case_id": "work--milestones-and-workitems--desktop",
+          "prompt": "prompts/work-v2.2.md",
+          "expected": "expected/work--milestones-and-workitems-v2-2--desktop-1536x1024.png",
+          "expected_hash": "sha256:75abcf2d52a09571f1cb4d84bcfa87a14d32f406efce5c13294cc2c8d58a4ac0"
+        }
+      ]
+    },
+    {
+      "version": "2.1",
+      "status": "human_review_pending",
+      "decision_ref": "v2.1-revision.md",
+      "cases": [
+        {
+          "case_id": "home--morning-operating-review--desktop",
+          "prompt": "prompts/home-v2.1.md",
+          "expected": "expected/home--morning-operating-review-v2-1--desktop-1536x1024.png",
+          "expected_hash": "sha256:ad221e66000e37cd403d79f13e6f1794b4afa7125e8da3b58a97d0b0cd68e457"
+        },
+        {
+          "case_id": "docs--company-knowledge-workspace--desktop",
+          "prompt": "prompts/docs-v2.1.md",
+          "expected": "expected/docs--company-knowledge-workspace-v2-1--desktop-1536x1024.png",
+          "expected_hash": "sha256:8969f45653755fc282bea94c5856d3afe396884fe2734f92290d8caed2aebfbb"
+        },
+        {
+          "case_id": "lead-agent--coordinating-direct-reports--desktop",
+          "prompt": "prompts/lead-agent-v2.1.md",
+          "expected": "expected/lead-agent--coordinating-direct-reports-v2-1--desktop-1536x1024.png",
+          "expected_hash": "sha256:60ded9d6ed5ef6ec78b202273f7d3a8b5672444d5e6fd0f164ebb75531e2078b"
+        }
+      ]
+    }
+  ],
+  "viewports": {
+    "desktop": { "width": 1536, "height": 1024, "device_scale_factor": 1 },
+    "tablet": { "width": 900, "height": 1180, "device_scale_factor": 1 },
+    "mobile": { "width": 390, "height": 844, "device_scale_factor": 1 }
+  },
+  "cases": [
+    { "id": "home--morning-operating-review--desktop", "priority": "P0", "page": "home", "state": "morning-operating-review", "route": "/?surface=home", "prompt": "prompts/home.md", "baseline": "../company-os-v1/actual/home--morning-review--desktop-1440x1000.png", "expected": "expected/home--morning-operating-review--desktop-1536x1024.png", "expected_hash": "sha256:c49226ea39611c733290ebe6924673961b86710ef63f010f2f2a05331aa76229", "implemented": null, "comparison": null, "expected_approval": { "status": "pending", "approver": "Human Owner", "decided_at": null }, "review": { "status": "not_started", "defects": [], "intentional_deviations": [] } },
+    { "id": "docs--company-knowledge-workspace--desktop", "priority": "P0", "page": "docs", "state": "company-knowledge-workspace", "route": "/?surface=docs", "prompt": "prompts/docs.md", "baseline": "../company-os-v1/actual/docs-workspace--company-knowledge-home--desktop-1440x1000.png", "expected": "expected/docs--company-knowledge-workspace--desktop-1536x1024.png", "expected_hash": "sha256:0a254ccd250c8ecda59fa2fa2eb358f88d2b7167b96fe6c9e4dd4ba522350bc7", "implemented": null, "comparison": null, "expected_approval": { "status": "pending", "approver": "Human Owner", "decided_at": null }, "review": { "status": "not_started", "defects": [], "intentional_deviations": [] } },
+    { "id": "organization--lead-first-company--desktop", "priority": "P0", "page": "organization", "state": "lead-first-company", "route": "/?surface=organization", "prompt": "prompts/organization.md", "baseline": "../company-os-v1/actual/agents-organization--mixed-company-org--desktop-1440x1000.png", "expected": "expected/organization--lead-first-company--desktop-1536x1024.png", "expected_hash": "sha256:998cdaa6a9be7e5cb68cc39f0a3358326dc3a03cab73037d94c5841f169001b8", "implemented": null, "comparison": null, "expected_approval": { "status": "pending", "approver": "Human Owner", "decided_at": null }, "review": { "status": "not_started", "defects": [], "intentional_deviations": [] } },
+    { "id": "lead-agent--coordinating-direct-reports--desktop", "priority": "P0", "page": "lead-agent", "state": "coordinating-direct-reports", "route": "/?surface=organization&agent=company-lead", "prompt": "prompts/lead-agent.md", "baseline": "../company-os-v1/actual/standing-agent-focus--document-architect-available--desktop-1440x1000.png", "expected": "expected/lead-agent--coordinating-direct-reports--desktop-1536x1024.png", "expected_hash": "sha256:15d594b6954fbad66daaad2b3003dff5bd639ea0f57bb5781182198b042c5304", "implemented": null, "comparison": null, "expected_approval": { "status": "pending", "approver": "Human Owner", "decided_at": null }, "review": { "status": "not_started", "defects": [], "intentional_deviations": [] } },
+    { "id": "business-module--trademark-operations--desktop", "priority": "P0", "page": "business-module", "state": "trademark-operations", "route": "/?surface=docs&module=trademark-management", "prompt": "prompts/business-module.md", "baseline": "../company-os-v1/actual/business-module-focus--trademark-management--desktop-1440x1000.png", "expected": "expected/business-module--trademark-operations--desktop-1536x1024.png", "expected_hash": "sha256:1010e1c4371ed31ca4ad4b4002327bc44c898173bf63265bc582d20ac798d0dc", "implemented": null, "comparison": null, "expected_approval": { "status": "pending", "approver": "Human Owner", "decided_at": null }, "review": { "status": "not_started", "defects": [], "intentional_deviations": [] } },
+    { "id": "work--milestones-and-workitems--desktop", "priority": "P0", "page": "work", "state": "milestones-and-workitems", "route": "/?surface=work", "prompt": "prompts/work.md", "baseline": "../company-os-v1/actual/workboard--company-workboard--desktop-1440x1000.png", "expected": "expected/work--milestones-and-workitems--desktop-1536x1024.png", "expected_hash": "sha256:74c5fb3d95c575f076c6174833a50bb079a9d28096ad8179d1c346365f04e10d", "implemented": null, "comparison": null, "expected_approval": { "status": "pending", "approver": "Human Owner", "decided_at": null }, "review": { "status": "not_started", "defects": [], "intentional_deviations": [] } }
+  ]
+}

@@ -54,6 +54,5 @@ review flows.
 npx pnpm@9.15.4 acceptance:autonomous-team
 ```
 
-The gate proves a standing team, same-member reuse, peer messages, goal
-evaluation, Observer next-round proposal, Lead acceptance, follow-up goal/task
+The gate proves a standing team, same-member reuse, peer messages, outcome evaluation, Observer next-round proposal, Lead acceptance, follow-up goal/task
 creation, and Dashboard projection.

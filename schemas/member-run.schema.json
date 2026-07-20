@@ -19,7 +19,6 @@
     },
     "provider_session_id": { "type": ["string", "null"], "minLength": 1 },
     "acp_session_id": { "type": ["string", "null"], "minLength": 1 },
-    "current_task_id": { "type": ["string", "null"], "minLength": 1 },
     "worktree_ref": { "type": ["string", "null"], "minLength": 1 },
     "owned_paths": {
       "type": "array",

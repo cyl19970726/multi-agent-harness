@@ -4,7 +4,7 @@
   "from_agent_id": "agent-1",
   "to_agent_id": null,
   "channel": "architecture",
-  "kind": "task",
+  "kind": "assignment",
   "delivery_status": "queued",
   "content": "Please validate docs governance.",
   "evidence_ids": [],

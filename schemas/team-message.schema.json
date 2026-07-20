@@ -8,7 +8,6 @@
   "properties": {
     "id": { "type": "string", "minLength": 1 },
     "team_run_id": { "type": "string", "minLength": 1 },
-    "task_id": { "type": ["string", "null"], "minLength": 1 },
     "from_member_id": { "type": "string", "minLength": 1 },
     "to_member_ids": {
       "type": "array",

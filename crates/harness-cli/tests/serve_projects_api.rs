@@ -25,7 +25,7 @@ fn init_project(home: &TempHome, name: &str) -> (std::path::PathBuf, String) {
     (root, id)
 }
 
-/// Create a goal in a specific project's store via `--project <id>`.
+/// Create a Mission in a specific project's store via `--project <id>`.
 fn create_goal(home: &TempHome, project_id: &str, goal_id: &str, title: &str) {
     let out = run_harness(
         home,
@@ -33,21 +33,21 @@ fn create_goal(home: &TempHome, project_id: &str, goal_id: &str, title: &str) {
         &[
             "--project",
             project_id,
-            "goal",
+            "mission",
             "create",
             "--id",
             goal_id,
             "--title",
             title,
-            "--owner",
-            "tester",
+            "--objective",
+            "Exercise project isolation",
         ],
     );
-    assert!(out.status.success(), "goal create failed: {out:?}");
+    assert!(out.status.success(), "mission create failed: {out:?}");
 }
 
 fn goal_ids(snapshot: &serde_json::Value) -> Vec<String> {
-    snapshot["goals"]
+    snapshot["missions"]
         .as_array()
         .map(|a| {
             a.iter()
@@ -193,9 +193,9 @@ fn post_switch_updates_registry_and_marker() {
     );
 }
 
-/// Run `harness --store-source goal list` and return (stdout, stderr).
+/// Run `harness --store-source mission list` and return (stdout, stderr).
 fn store_source(home: &TempHome, cwd: &Path) -> (String, String) {
-    let out = run_harness(home, cwd, &["--store-source", "goal", "list"]);
+    let out = run_harness(home, cwd, &["--store-source", "mission", "list"]);
     (
         String::from_utf8_lossy(&out.stdout).to_string(),
         String::from_utf8_lossy(&out.stderr).to_string(),

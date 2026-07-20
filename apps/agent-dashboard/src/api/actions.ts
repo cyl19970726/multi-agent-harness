@@ -4,13 +4,10 @@
 //   POST /v1/messages                          { from, to, content, kind, task, sender_kind }
 //   POST /v1/teams                             { name, description, owner }
 //   POST /v1/agents                            { name, role, provider?, skill[], team[], ... }
-//   POST /v1/goals                             { title, objective, owner, success[], priority? }
 //   POST /v1/agents/{id}/deliver               { start_runtime?, dry_run?, ... }
 //   POST /v1/agents/{id}/retry-delivery        { message_id, ... }
 //   POST /v1/agents/{id}/reconcile-session     { session_id, status, ... }
 //   POST /v1/agents/{id}/close                 {}
-//   POST /v1/tasks/{id}/request-review         { from_agent_id?, to_agent_id?, content? }
-//   POST /v1/tasks/{id}/assign                  { assignee }
 //
 // The agent id / task id belong in the URL PATH, never the body. The earlier
 // UI posted /v1/actions/* with the id in the body, so every write 400'd. This
@@ -149,29 +146,6 @@ export function createAgent(params: {
 }
 
 /**
- * Create a new Goal. POST /v1/goals requires title, objective and owner (the
- * Lead). Success criteria and priority are optional.
- */
-export function createGoal(params: {
-  title: string;
-  owner: string;
-  priority?: string;
-  description_md?: string;
-}): ActionDescriptor {
-  const body: Record<string, unknown> = {
-    title: params.title,
-    owner: params.owner,
-  };
-  if (params.priority) {
-    body.priority = params.priority;
-  }
-  if (params.description_md) {
-    body.description_md = params.description_md;
-  }
-  return { method: "POST", path: "/v1/goals", body };
-}
-
-/**
  * Deliver this member's queued messages. The backend keys delivery off the
  * agent id in the URL path; the body only carries optional delivery options.
  */
@@ -244,57 +218,6 @@ export function closeMember(agentId: string): ActionDescriptor {
   return { method: "POST", path: `/v1/agents/${encodeId(agentId)}/close`, body: {} };
 }
 
-/**
- * Assign a task to an agent. The backend keys assignment off the task id in the
- * URL path; the body carries the `assignee` agent id (POST /v1/tasks/{id}/assign).
- */
-export function assignTask(taskId: string, assignee: string): ActionDescriptor {
-  return {
-    method: "POST",
-    path: `/v1/tasks/${encodeId(taskId)}/assign`,
-    body: { assignee },
-  };
-}
-
-/**
- * Set a task's reviewer (the `@reviewer` gesture). POST /v1/tasks/{id}/reviewer
- * records `reviewer_agent_id` on the existing field WITHOUT a status change or a
- * queued message — naming a reviewer is not the same as handing the work off.
- * Review delivery is the separate `requestReview` hand-off.
- */
-export function setReviewer(taskId: string, reviewer: string): ActionDescriptor {
-  return {
-    method: "POST",
-    path: `/v1/tasks/${encodeId(taskId)}/reviewer`,
-    body: { reviewer },
-  };
-}
-
-/**
- * Request review of a task. `from` and `reviewer` default server-side to the
- * task's owner / reviewer when omitted, so an empty descriptor body is valid.
- */
-export function requestReview(
-  taskId: string,
-  params: { from?: string; reviewer?: string; content?: string } = {},
-): ActionDescriptor {
-  const body: Record<string, unknown> = {};
-  if (params.from) {
-    body.from_agent_id = params.from;
-  }
-  if (params.reviewer) {
-    body.to_agent_id = params.reviewer;
-  }
-  if (params.content) {
-    body.content = params.content;
-  }
-  return {
-    method: "POST",
-    path: `/v1/tasks/${encodeId(taskId)}/request-review`,
-    body,
-  };
-}
-
 /* ------------------------------------------------------------------ */
 /* Agent Team runs (POST /v1/team-runs…, team-console)                 */
 /* ------------------------------------------------------------------ */
@@ -316,7 +239,6 @@ export interface TeamRunMemberSpec {
  */
 export function createTeamRun(params: {
   objective: string;
-  waveIndex?: number;
   budgetLimitUsd?: number;
   /** Retry lineage: an earlier attempt of this same native Wave. */
   previousRunId?: string;
@@ -342,9 +264,6 @@ export function createTeamRun(params: {
       return spec;
     }),
   };
-  if (params.waveIndex != null) {
-    body.wave_index = params.waveIndex;
-  }
   if (params.budgetLimitUsd != null) {
     body.budget_limit_usd = params.budgetLimitUsd;
   }
@@ -423,7 +342,6 @@ export function sendTeamMessage(
     toMemberIds: string[];
     kind: string;
     body: string;
-    taskId?: string;
     /**
      * Reuse an existing assignment's correlation only when the operator has
      * explicitly selected that assignment as this message's ownership anchor.
@@ -439,9 +357,6 @@ export function sendTeamMessage(
     kind: params.kind,
     body: params.body,
   };
-  if (params.taskId) {
-    body.task_id = params.taskId;
-  }
   if (params.correlationId) {
     body.correlation_id = params.correlationId;
   }

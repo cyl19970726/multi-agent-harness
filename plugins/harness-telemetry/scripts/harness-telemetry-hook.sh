@@ -9,9 +9,6 @@ if [[ -n "${HARNESS_ROOT:-}" && -n "${HARNESS_AGENT_MEMBER_ID:-}" ]]; then
   if [[ -n "${HARNESS_AGENT_RUNTIME_ID:-}" ]]; then
     args+=(--runtime "$HARNESS_AGENT_RUNTIME_ID")
   fi
-  if [[ -n "${HARNESS_TASK_ID:-}" ]]; then
-    args+=(--task "$HARNESS_TASK_ID")
-  fi
   printf '%s' "$payload" | "$harness_bin" "${args[@]}" >/dev/null
   exit 0
 fi

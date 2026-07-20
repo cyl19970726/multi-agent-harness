@@ -19,7 +19,7 @@ Doc-reference fields are modeled as **ADR-0017 additive-optional** extensions
 (nullable / array, `additionalProperties:false` preserved, no `schema_version`,
 `Option`/`Vec` + `#[serde(default)]` in Rust) per
 [schemas.md](../schemas.md) and
-[0017](../decisions/0017-generic-object-model.md). Established assignment
+[the Company OS concept model](../company-os/concept-model.md). Established assignment
 doctrine is cited from [concept-model.md](../concept-model.md) and
 [data-model.md](../data-model.md); harness building blocks are cited inline as
 `file:line`. The doc-sync workflow ties to the runtime in
@@ -43,7 +43,7 @@ is the gesture; under it, `assign_task` already sets the field **and** queues th
 task message (`crates/harness-cli/src/main.rs:2724-2767`). The owner's mental
 model ("@ a member like in Notion") maps one-to-one onto the existing
 `design -> assignment message -> report -> evidence -> critic -> decision` order
-([goal-learning-loop.md](../goal-learning-loop.md) line 172).
+([Company OS governance](../company-os/governance.md)).
 
 ## 2. The @-mention assignment model (reuse, no new object)
 
@@ -180,7 +180,7 @@ already carries.
 completion the agent produces, per updated doc, an
 `Evidence { source_type: "doc", source_ref: "docs/...", task_id }` —
 `source_type` is free-form (`evidence.schema.json:16-19`) and already carries
-convention strings like `"git_worktree"` / `"goal_design"`
+convention strings like `"git_worktree"` / `"historical work design"`
 (`main.rs:1834,1513`), so `source_type: "doc"` is schema-legal with zero schema
 change. The Task document shows a **"Docs to update"** checklist whose status is
 derived: a path is *satisfied* once an `Evidence(source_type=doc)` keyed to this
@@ -197,8 +197,7 @@ hatch**:
   is the one CI-enforced invariant (Invariant #1). At closeout, fan out a
   `doc-sync` workflow over the union of `updates_doc_paths` across the goal's
   tasks. Closeout is the natural "the work is done, reconcile the docs" moment
-  and produces a `GoalCase` teaching artifact anyway
-  ([goal-learning-loop.md](../goal-learning-loop.md) lines 110-130).
+  and records a reusable operating improvement when warranted.
 - *Manual `workflow run --name doc-sync` (recommended escape hatch).* For
   ad-hoc reconciliation between closeouts.
 - *Registry staleness (already exists, complementary).* `DocDescriptor.reviewAfter`
@@ -220,8 +219,8 @@ encode the target doc paths in the prompt (deferred detail, WP-e).
 | Q2 full doc-update | `doc-sync` workflow on goal-closeout + manual run | reuse runtime registry + closeout gate; new `WorkflowDef` | `workflow.rs:336-349`; goal-close Invariant #1 |
 
 All three additive fields preserve `additionalProperties:false`, are nullable /
-defaulted, and add no `schema_version` — exactly the ADR-0017 additive contract
-([schemas.md](../schemas.md); [0017](../decisions/0017-generic-object-model.md)).
+defaulted, and add no `schema_version`, consistent with current schema
+governance ([schemas.md](../schemas.md)).
 
 ## 5. How it ties together (one ASCII flow)
 
@@ -254,7 +253,7 @@ defaulted, and add no `schema_version` — exactly the ADR-0017 additive contrac
         |
         v
   doc-sync workflow fans out over the goal's updates_doc_paths (Q2)
-        -> reconciles the project docs/ tree, emits GoalCase
+        -> reconciles the project docs/ tree, emits reusable learning note
 ```
 
 Agents appear as members at every hop: picked from `snapshot.members`, shown

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Company Page Builder"
+  short_description: "Build governed custom Company OS document pages"
+  default_prompt: "Use $company-page-builder to build a governed custom page from an approved module design."

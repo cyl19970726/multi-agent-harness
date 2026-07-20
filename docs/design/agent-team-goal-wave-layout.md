@@ -16,7 +16,7 @@ product incorrectly.
 - The operator's primary question is how the Host split a Mission into Waves.
 - A Wave may be executed by `agent_team`, `dynamic_workflow`, or `host`.
 - Agent Team is one executor kind, not the whole product hierarchy.
-- A Wave is lightweight. It does not require a Task Graph.
+- A Wave is lightweight. It does not require a legacy dependency graph.
 - Thinking is not durable history; at most it is a transient live signal.
 
 This document is the layout contract for the accepted Mission/Wave information
@@ -33,8 +33,12 @@ Four layers:
 | Agent Team | The `agent_team` executor for a Wave. | One Wave may instantiate multiple `AgentTeamRun` attempts; its gate identifies the accepted attempt. |
 | Member | A `MemberRun` inside the Agent Team. | First-class page with contract, explicit actions, messages, and artifacts. |
 
-`Standing Agents + Docs` is future and does not appear as a first-class current
-navigation surface in this iteration.
+This document now governs only the execution workbench beneath the Company OS.
+Standing Agents + Docs are the primary product surfaces defined by
+[ADR 0027](../decisions/0027-company-os-primary-model.md) and the
+[Company OS frontend IA](../company-os/frontend-information-architecture.md).
+Mission/Wave, Agent Team, and MemberRun pages must link back to their WorkItem,
+source document, accountable actors, and approval when those relations exist.
 
 ## Information Architecture
 
@@ -87,7 +91,7 @@ It has four regions:
 3. External flow: host/operator <-> member message ledger with delivery state.
 4. Internal flow: newest-first action/event stream for the run.
 
-The Team page does not make Task Graph the center of the experience. Ownership
+The Team page does not make legacy dependency graph the center of the experience. Ownership
 is explained through assignment-message correlation and explicit Wave context.
 Attempt completion is shown separately from the parent Wave gate: only the Host
 can accept, revise, or block the Wave and name an accepted completed attempt.
@@ -154,7 +158,7 @@ artifacts, and outcomes instead.
   gate_note?, created_at, updated_at}`.
 - `AgentTeamRun` attempts link to the Wave executed by
   `executor_kind=agent_team`.
-- Goal, GoalPhase, task_id, and older route names remain compatibility details;
+- Goal, legacy phase record, task_id, and older route names remain compatibility details;
   they do not define native Mission/Wave authoring.
 - Host-native subagents remain host/provider implementation detail unless
   optional hooks expose observable delegation facts.
@@ -163,7 +167,7 @@ artifacts, and outcomes instead.
 
 - No standing-team directory or cross-Mission inbox in this iteration.
 - No automatic replanning without Host/operator confirmation.
-- No requirement that every Wave expose a Task Graph.
+- No requirement that every Wave expose a legacy dependency graph.
 - No durable storage of private reasoning.
 - No claim that Dynamic Workflow or Host executor controls are implemented in
   this Console merely because those executor choices are visible.

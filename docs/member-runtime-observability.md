@@ -7,7 +7,7 @@ aspirational per provider. It is provider-neutral; provider-specific shapes live
 under [integration/](integration/).
 
 It sits between the runtime object model in [agent-runtime.md](agent-runtime.md)
-and the control-plane doctrine in [agent-control-plane.md](agent-control-plane.md).
+and the control-plane doctrine in [agent-control-plane.md](company-os/execution-foundation.md).
 It does not redefine `AgentMember`, `AgentRuntime`, `ProviderSession`,
 `AgentEvent`, or `Message`; it defines how a viewer reconstructs a member's live
 state from those objects.
@@ -24,7 +24,7 @@ Two doctrines bound this contract:
   only that a process exists. It does not prove the member can accept work,
   reach a terminal turn, or deliver a message. The Dashboard must not present
   process health as execution readiness when protocol or delivery health is
-  unknown (see [agent-control-plane.md](agent-control-plane.md), "Lifecycle").
+  unknown (see [agent-control-plane.md](company-os/execution-foundation.md), "Lifecycle").
 - **The store is canonical; the provider transcript is evidence.** Real-time
   signals describe the canonical harness store. Provider stdout, hooks, and
   sessions are evidence inputs reduced into that store, never the source of
@@ -32,7 +32,7 @@ Two doctrines bound this contract:
   [0008](decisions/0008-persistent-codex-agent-runtime.md)).
 
 Out of scope: the runtime object semantics ([agent-runtime.md](agent-runtime.md)),
-the delivery queue policy ([agent-control-plane.md](agent-control-plane.md)),
+the delivery queue policy ([agent-control-plane.md](company-os/execution-foundation.md)),
 and provider wire protocols ([integration/codex.md](integration/codex.md),
 [integration/claude.md](integration/claude.md)).
 
@@ -267,7 +267,7 @@ provider activity
 
 - [agent-runtime.md](agent-runtime.md) — A-ROM objects and the `/v1/events`
   endpoint spec.
-- [agent-control-plane.md](agent-control-plane.md) — lifecycle health layers and
+- [agent-control-plane.md](company-os/execution-foundation.md) — lifecycle health layers and
   the process-alive-is-not-execution-ready doctrine.
 - [concept-model.md](concept-model.md) — source-of-truth rules; provider
   transcript is evidence.

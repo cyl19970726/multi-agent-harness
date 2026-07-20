@@ -65,10 +65,8 @@ schema contracts are checked with valid and invalid fixtures.
 | Member action | [member-action.schema.json](../schemas/member-action.schema.json) |
 | Delegation run | [delegation-run.schema.json](../schemas/delegation-run.schema.json) |
 | Team run event | [team-run-event.schema.json](../schemas/team-run-event.schema.json) |
-| Goal | [goal.schema.json](../schemas/goal.schema.json) |
 | Agent team | [agent-team.schema.json](../schemas/agent-team.schema.json) |
 | Agent member | [agent-member.schema.json](../schemas/agent-member.schema.json) |
-| Task | [task.schema.json](../schemas/task.schema.json) |
 | Message | [message.schema.json](../schemas/message.schema.json) |
 | Agent runtime | [agent-runtime.schema.json](../schemas/agent-runtime.schema.json) |
 | Agent event | [agent-event.schema.json](../schemas/agent-event.schema.json) |
@@ -81,15 +79,12 @@ schema contracts are checked with valid and invalid fixtures.
 | Doc descriptor | [doc-descriptor.schema.json](../schemas/doc-descriptor.schema.json) |
 | Review | [review.schema.json](../schemas/review.schema.json) |
 | Gap | [gap.schema.json](../schemas/gap.schema.json) |
-| Goal design | [goal-design.schema.json](../schemas/goal-design.schema.json) |
-| Goal evaluation | [goal-evaluation.schema.json](../schemas/goal-evaluation.schema.json) |
-| Goal case | [goal-case.schema.json](../schemas/goal-case.schema.json) |
 | Vision | [vision.schema.json](../schemas/vision.schema.json) |
 
 ## Schema Evolution
 
-Schemas evolve **additive-optional**: see
-[decisions/0017-generic-object-model.md](decisions/0017-generic-object-model.md).
+Schemas evolve additively where a current contract permits it; Company OS
+contracts define their own required migration and validation rules.
 
 - New fields on existing objects are added as property-but-NOT-required, using
   nullable type unions (`["string","null"]`) for scalars, arrays for lists, and

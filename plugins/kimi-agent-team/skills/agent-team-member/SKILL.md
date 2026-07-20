@@ -20,9 +20,8 @@ the bracketed slots.
   `TeamMessage(kind=assignment)`. Its message id and `correlation_id` identify
   the target work chain. Automatic handoff preserves that correlation. Manual
   sends should pass the same correlation explicitly or use a same-run
-  `causation_id` so the correlation is inherited. A v0 `task_id`, when present,
-  is compatibility context only;
-  it never replaces the assignment message as proof of ownership.
+  `causation_id` so the correlation is inherited. The assignment message is the
+  proof of ownership.
 - **Role**: `[role]` — what this lane owns end to end (e.g. "backend lane:
   store + core crates, unit tests green").
 - **ownedPaths**: `[path1, path2, ...]` — you may create/modify files **only**
@@ -57,12 +56,11 @@ harness team-run send --id <run-id> --from <your-member-id> --to host \
   --body "ASSIGNMENT CORRELATION: <correlation-id>
           AUTHORIZATION NEEDED: <exact change> — blast radius: <what it
           touches, what breaks if wrong> — options: <A/B, with your
-          recommendation and why>" [--task-id <task-id>]
+          recommendation and why>"
 ```
 
-The optional `--task-id` is a v0 CLI compatibility association only. Then
-wait. Do not "proceed with the reasonable default" — a reasonable default is
-not authorization.
+Then wait. Do not "proceed with the reasonable default" — a reasonable default
+is not authorization.
 
 ## Message discipline
 

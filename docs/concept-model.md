@@ -32,8 +32,8 @@ compatibility projection.
 | Canonical term | Current compatibility surface | Rule |
 | --- | --- | --- |
 | `Mission` | `Goal` compatibility projection with provenance | Native Mission is used for new execution; the projection cannot be mutated as a Mission. |
-| `Wave` | GoalPhase ids exposed only as compatibility provenance | A native Wave is not a renamed GoalPhase and never inherits its Task Graph. |
-| Mission closeout | Optional `GoalEvaluation` compatibility object | Native Mission closeout is an explicit outcome summary; evaluation may be layered on when useful. |
+| `Wave` | legacy phase record ids exposed only as compatibility provenance | A native Wave is not a renamed legacy phase record and never inherits its legacy dependency graph. |
+| Mission closeout | Optional `outcome evaluation` compatibility object | Native Mission closeout is an explicit outcome summary; evaluation may be layered on when useful. |
 
 ## Core Object Relationships
 
@@ -57,8 +57,8 @@ flowchart TD
   Proposal[Proposal]
   Review[Review / Critic]
   Decision[Decision]
-  Eval[Optional evaluation / GoalEvaluation compat]
-  Case[GoalCase]
+  Eval[Optional evaluation / outcome evaluation compat]
+  Case[reusable learning note]
 
   Vision --> Mission
   Mission --> Wave
@@ -99,7 +99,7 @@ Rules:
   standard;
 - a Wave owns objective, exit criteria, status, executor reference, outcome,
   and a lightweight gate;
-- a Wave does not require or expose a Task Graph as a product concept;
+- a Wave does not require or expose a legacy dependency graph as a product concept;
 - replanning happens between Waves as an explicit design/update step, not as a
   hidden side effect;
 - a Mission is not complete because activity happened; it is complete when its
@@ -160,14 +160,14 @@ Rules:
   task system and in compatibility flows;
 - `Message(kind=task)` remains current proof of assignment for classic task
   execution;
-- task DAGs, `Task.phase_id`, and `GoalPhase` joins may continue internally
+- task DAGs, `Task.phase_id`, and `legacy phase record` joins may continue internally
   while Mission/Wave migration is underway;
-- not every Wave must expose a Task Graph to the user or planner;
+- not every Wave must expose a legacy dependency graph to the user or planner;
 - when Agent Team is the executor, TeamMessage assignment correlation explains
   ownership more directly than a task DAG does.
 
 Failure mode this prevents: forcing every orchestration mode through the legacy
-task-graph story even when the real proof is message-driven collaboration or a
+dependency graph story even when the real proof is message-driven collaboration or a
 one-shot workflow run.
 
 ## Agent Team Objects
@@ -193,7 +193,7 @@ Relationship rules:
 - `TeamMessage` and `MemberAction` may reference artifacts or `Evidence`; the
   Wave gate needs an explicit outcome and acceptance note but does not require
   Proposal/Review/Decision objects;
-- current runtime code may still reference Goal/GoalPhase/task fields during
+- current runtime code may still reference Goal/legacy phase record/task fields during
   migration, but those fields are compatibility seams, not the product model.
 
 ## Generic Object Model
@@ -204,9 +204,9 @@ The learning and governance layer remains domain-neutral.
 | --- | --- |
 | `Review` | Structured evaluator or critic output. Evidence for a Decision, never the Decision itself. |
 | `Gap` | Defect/risk ledger row. `category=bug` is a bug; there is no separate Bug object. |
-| `GoalDesign` | Current compatibility object for the Mission design/plan. |
-| `GoalEvaluation` | Current compatibility object for Mission closeout and learning. |
-| `GoalCase` | Reusable teaching artifact distilled from a closed Mission/Goal. |
+| `legacy plan record` | Current compatibility object for the Mission design/plan. |
+| `outcome evaluation` | Current compatibility object for Mission closeout and learning. |
+| `reusable learning note` | Reusable teaching artifact distilled from a closed Mission/Goal. |
 | `Vision` | Long-lived target that Missions/Goals advance toward. |
 
 ## Agent Runtime And Provider Session
@@ -272,8 +272,8 @@ may add values without a schema bump.
 | `verdict` | Review | `pass`, `fail`, `blocked`, `needs_changes` |
 | `decision` | Decision | `accept`, `reject`, `revise`, `split`, `block`, `promote`, `waive`, `follow_up`, `stop_approved`, `continue_required` |
 | `decision_kind` | Decision | `verdict`, `gate`, `stop_gate`, `waiver`, `closeout`, `promotion`, `other` |
-| `evidence_kind` | Evidence | `check`, `log`, `session`, `diff`, `review_note`, `screenshot`, `artifact`, `snapshot`, `goal_design`, `goal_evaluation`, `other` |
+| `evidence_kind` | Evidence | `check`, `log`, `session`, `diff`, `review_note`, `screenshot`, `artifact`, `snapshot`, `historical work design`, `outcome evaluation`, `other` |
 | `category` | Gap | `ux`, `data`, `observability`, `parity`, `tooling`, `workflow`, `docs`, `bug`, `other` |
-| `outcome` | GoalEvaluation | `success`, `partial`, `failed`, `blocked` |
+| `outcome` | outcome evaluation | `success`, `partial`, `failed`, `blocked` |
 
 Only truly closed, harness-owned sets should use hard JSON enums.

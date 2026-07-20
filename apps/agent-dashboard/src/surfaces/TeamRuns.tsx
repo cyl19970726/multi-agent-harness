@@ -47,6 +47,7 @@ import type {
   TeamMessage,
   TeamRun,
   TeamRunEvent,
+  Wave,
 } from "../types";
 import type { SelectionState } from "../app/selection";
 
@@ -91,6 +92,20 @@ function teamRunTone(status?: string | null): StatusTone {
     default:
       return "idle";
   }
+}
+
+/** Resolve Wave display truth exclusively through the run's native Wave join. */
+function resolveRunWave(waves: Wave[], run: TeamRun): Wave | undefined {
+  if (!run.wave_id) return undefined;
+  return waves.find(
+    (wave) => wave.id === run.wave_id && (!run.mission_id || wave.mission_id === run.mission_id),
+  );
+}
+
+function runWaveLabel(run: TeamRun, wave?: Wave): string {
+  if (!run.wave_id) return "unlinked";
+  if (!wave) return "unknown Wave";
+  return `Wave ${wave.index} · ${wave.title}`;
 }
 
 /** Member run status → pill tone. */
@@ -508,7 +523,7 @@ export function TeamRunsList({ model, onSelectionChange, actionsEnabled }: TeamS
                     </span>
                     <span className="flex min-w-0 flex-wrap items-center gap-1">
                       <Badge tone={teamRunTone(status)}>{status}</Badge>
-                      <Badge tone="muted">wave {run.wave_index ?? 1}</Badge>
+                      <Badge tone="muted">unlinked</Badge>
                     </span>
                     <span className="flex min-w-0 items-center gap-1.5">
                       <span className="text-[12px] tabular-nums text-foreground">
@@ -624,6 +639,7 @@ export function TeamRunDetail({
   }
 
   const status = run.status ?? "unknown";
+  const wave = resolveRunWave(snapshot.waves ?? [], run);
   const signals = runSignals(members, messages);
   const live = Boolean(actionsEnabled);
 
@@ -652,7 +668,7 @@ export function TeamRunDetail({
             </h1>
             <div className="flex flex-wrap items-center gap-1.5">
               <Badge tone={teamRunTone(status)}>{status}</Badge>
-              <Badge tone="muted">wave {run.wave_index ?? 1}</Badge>
+              <Badge tone="muted">{runWaveLabel(run, wave)}</Badge>
               {run.host_surface && <Badge tone="muted">{run.host_surface}</Badge>}
               <MonoId>{run.id}</MonoId>
               <span className="text-[11px] text-muted-foreground">
@@ -744,6 +760,7 @@ export function TeamRunDetail({
           <TabsContent value="overview">
             <OverviewTab
               run={run}
+              wave={wave}
               members={members}
               messages={messages}
               actions={actions}
@@ -767,6 +784,7 @@ export function TeamRunDetail({
           <TabsContent value="wave">
             <WaveTab
               run={run}
+              wave={wave}
               members={members}
               messages={messages}
               memberById={memberById}
@@ -927,6 +945,7 @@ function AttemptContext({
  */
 function OverviewTab({
   run,
+  wave,
   members,
   messages,
   actions,
@@ -934,6 +953,7 @@ function OverviewTab({
   onOpenMember,
 }: {
   run: TeamRun;
+  wave?: Wave;
   members: MemberRun[];
   messages: TeamMessage[];
   actions: MemberAction[];
@@ -962,7 +982,7 @@ function OverviewTab({
           </div>
           <div className="rounded-md border border-border bg-background/40 px-3 py-2">
             <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Wave</div>
-            <div className="mt-0.5 text-lg font-semibold tabular-nums">{run.wave_index ?? 1}</div>
+            <div className="mt-0.5 text-sm font-semibold">{runWaveLabel(run, wave)}</div>
           </div>
           <div className="rounded-md border border-border bg-background/40 px-3 py-2">
             <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Budget</div>
@@ -1577,6 +1597,7 @@ function MessageComposer({
  */
 function WaveTab({
   run,
+  wave,
   members,
   messages,
   memberById,
@@ -1585,6 +1606,7 @@ function WaveTab({
   onSelectionChange,
 }: {
   run: TeamRun;
+  wave?: Wave;
   members: MemberRun[];
   messages: TeamMessage[];
   memberById: Map<string, MemberRun>;
@@ -1614,7 +1636,7 @@ function WaveTab({
       <section className="overflow-hidden rounded-lg border border-border bg-card">
         <div className="border-b border-border px-3.5 py-2.5">
           <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-            Wave {run.wave_index ?? 1} contract — {members.length}{" "}
+            {runWaveLabel(run, wave)} contract — {members.length}{" "}
             {members.length === 1 ? "member" : "members"}
           </p>
         </div>

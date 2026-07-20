@@ -1,180 +1,4 @@
-export type TaskStatus =
-  | "planned"
-  | "assigned"
-  | "running"
-  | "blocked"
-  | "review"
-  | "done"
-  | "archived"
-  | "superseded";
-/**
- * Goal lifecycle. Product columns are active/blocked/review/done; `complete`
- * (legacy alias folded into `done`) and `archived` stay valid for old rows but
- * are not shown as columns. See ADR 0019.
- */
-export type GoalStatus = "active" | "blocked" | "review" | "done" | "complete" | "archived";
-/**
- * Markdown-first Goal lifecycle stage (distinct from the legacy `GoalStatus`
- * kanban). Phases: exploration (exploring→explored), work (working→done),
- * acceptance (verifying→verified).
- */
-export type GoalStage =
-  | "draft"
-  | "exploring"
-  | "explored"
-  | "working"
-  | "done"
-  | "verifying"
-  | "verified";
-/** One multi-agent / multi-round exploration note feeding `design_md`. */
-export interface Exploration {
-  author: string;
-  round?: number;
-  notes_md: string;
-  created_at: string;
-}
-
-/**
- * Status of one agent-planned phase (mirrors harness-core `GoalPhaseStatus`).
- * Phases run sequentially; a phase must reach `passed` (its verdict) before the
- * next begins.
- */
-export type GoalPhaseStatus =
-  | "not_started"
-  | "in_progress"
-  | "passed"
-  | "failed"
-  | "blocked";
-
-export type GoalPhaseKind = "execution" | "remediation" | "building";
-
-export type GoalPhaseExecutionMode = "task_graph" | "workflow";
-
-/**
- * Kind of a declared artifact (goal-phase-artifacts; mirrors harness-core
- * `ArtifactKind`, serde snake_case). `code` is the default and matches today's
- * implicit behavior (a code diff). The multi-word kinds are the bar — they read
- * `design_doc`, `test_report`, `migration_doc`, `registered_doc` on the wire.
- */
-export type ArtifactKind =
-  | "design_doc"
-  | "adr"
-  | "code"
-  | "test_report"
-  | "migration_doc"
-  | "registered_doc"
-  | "screenshot"
-  | "other";
-
-/**
- * One declared deliverable of a phase or task (goal-phase-artifacts; mirrors
- * harness-core `ArtifactSpec`). Makes artifacts first-class and declarative so
- * the verdict gate can VERIFY a phase produced what it promised. `required`
- * defaults to TRUE on the wire; an empty `outputs[]` reproduces today's behavior
- * (the legacy `design_md` is the implicit `design_doc`, `acceptance` the gate).
- */
-export interface ArtifactSpec {
-  /** Stable handle for this artifact within its phase/task. */
-  id: string;
-  /** What kind of artifact this is (gate/render hint). Defaults to `code`. */
-  kind?: ArtifactKind;
-  /**
-   * Where the artifact lands (repo-relative path; glob ok). When present and
-   * `required`, the gate asserts it exists & is non-empty in the worktree diff.
-   */
-  path?: string | null;
-  /** Why this artifact exists — the human/agent-readable intent. */
-  purpose: string;
-  /** Whether the gate must enforce this artifact. Defaults to TRUE. */
-  required?: boolean;
-  /** Optional per-artifact acceptance criterion (a finer gate than presence). */
-  acceptance?: string | null;
-}
-
-/**
- * One agent-planned phase of a goal (goal-planning-model; mirrors harness-core
- * `GoalPhase`). It owns the tasks whose `phase_id == this.id`; `acceptance` is
- * the verdict gate before the next phase.
- */
-export interface GoalPhase {
-  id: string;
-  name: string;
-  intent: string;
-  status: GoalPhaseStatus;
-  /** Markdown gate condition (the verdict this phase must pass). */
-  acceptance?: string | null;
-  verdict_decision_id?: string | null;
-  created_at: string;
-  started_at?: string | null;
-  ended_at?: string | null;
-  /**
-   * Artifacts this phase declares it will produce (goal-phase-artifacts). Empty
-   * reproduces today's behavior; non-empty makes the verdict gate enforce each
-   * `required` artifact's presence.
-   */
-  outputs?: ArtifactSpec[];
-  /**
-   * Artifacts a PRIOR phase must have landed for this phase to run
-   * (goal-phase-refinements). Reuses {@link ArtifactSpec} (`path`/`purpose`/
-   * `required` are what matter); before running, each REQUIRED input's `path`
-   * must exist or the phase fails fast. Empty reproduces today's behavior.
-   */
-  inputs?: ArtifactSpec[];
-  /**
-   * Per-phase retry budget override (goal-phase-refinements). When set, this
-   * phase's replan/rerun budget is this value instead of the global default;
-   * `null`/absent falls back to the global. Additive + back-compat.
-   */
-  retry?: number | null;
-  /**
-   * The commit that landed this phase's writable work onto the goal's branch
-   * (goal-phase-landing). Set by `run-phases` on a passing phase or by
-   * `goal reconcile-phase` for out-of-band work; absent for read-only / legacy.
-   */
-  landed_commit?: string | null;
-  kind?: GoalPhaseKind;
-  builtin?: string | null;
-  execution_mode?: GoalPhaseExecutionMode;
-  workflow_ref?: string | null;
-}
-
-/** Where a {@link Knowledge} entry came from (mirrors `KnowledgeSource`). */
-export type KnowledgeSource = "exploration" | "task" | "decision" | "evidence";
-
-/**
- * One append-only learning in a goal's knowledge ledger (mirrors harness-core
- * `Knowledge`) — the durable truth `design_md` is synthesized from. Carries
- * provenance (`phase_id`/`task_id`/author) so "which task changed the plan,
- * when, by whom" is always answerable.
- */
-export interface Knowledge {
-  id: string;
-  goal_id: string;
-  phase_id?: string | null;
-  task_id?: string | null;
-  author: string;
-  timestamp: string;
-  notes_md: string;
-  tags?: string[];
-  source?: KnowledgeSource;
-  superseded_by_knowledge_id?: string | null;
-  created_at: string;
-}
 export type DeliveryStatus = "queued" | "delivered" | "acknowledged" | "failed";
-
-/**
- * Shared git/worktree context (ADR 0019). Additive-optional; on Goal and Task.
- * The read model prefers these over the Task flat git fields where both exist.
- */
-export interface GitMetadata {
-  repo?: string | null;
-  worktree_path?: string | null;
-  branch?: string | null;
-  base_branch?: string | null;
-  pr_ref?: string | null;
-  commit?: string | null;
-  owned_paths?: string[];
-}
 /**
  * One project in the multi-project control plane (goal-multi-project P6). The
  * backend `GET /v1/projects` enumerates the registry + on-disk stores + the
@@ -193,78 +17,6 @@ export interface Project {
 export type MessageKind = "message" | "task" | "report";
 export type SenderKind = "agent" | "operator" | "system";
 export type ProviderSessionStatus = "queued" | "running" | "succeeded" | "failed" | "canceled" | "stale";
-
-export interface Goal {
-  id: string;
-  title?: string;
-  owner_agent_id?: string;
-  status?: string;
-  priority?: string;
-  created_at?: string;
-  updated_at?: string;
-  vision_id?: string | null;
-  goal_design_id?: string | null;
-  closed_by_decision_id?: string | null;
-  git_metadata?: GitMetadata | null;
-  // Markdown-first lifecycle (additive).
-  stage?: GoalStage;
-  description_md?: string | null;
-  design_md?: string | null;
-  acceptance_md?: string | null;
-  explorations?: Exploration[];
-  skill_refs?: string[];
-  stage_changed_at?: string | null;
-  /**
-   * Agent-planned, SEQUENTIAL phases (goal-planning-model). Empty/absent for
-   * legacy goals, which still render via the legacy stage bar. When non-empty,
-   * the dashboard renders the phases timeline + per-phase task DAG instead.
-   */
-  phases?: GoalPhase[];
-  /** Append-only knowledge ledger (the truth `design_md` is synthesized from). */
-  knowledge?: Knowledge[];
-  /** When `design_md` was last (re)synthesized from `knowledge[]`. */
-  design_synthesis_at?: string | null;
-}
-
-export interface Task {
-  id: string;
-  goal_id?: string | null;
-  parent_task_id?: string | null;
-  title?: string;
-  objective?: string;
-  owner_agent_id?: string;
-  assignee_agent_id?: string | null;
-  reviewer_agent_id?: string | null;
-  status: TaskStatus;
-  /** Full task write-up (markdown). `objective` stays the one-line summary. */
-  description?: string | null;
-  depends_on_task_ids?: string[];
-  workspace_ref?: string | null;
-  branch_ref?: string | null;
-  pr_ref?: string | null;
-  owned_paths?: string[];
-  acceptance_criteria?: string[];
-  created_at?: string;
-  updated_at?: string;
-  phase?: string | null;
-  scope_refs?: string[];
-  requires_human_approval?: boolean;
-  verdict_decision_id?: string | null;
-  git_metadata?: GitMetadata | null;
-  /** Full per-task design (goal-planning-model): a grounded slice of the goal's design. */
-  design_md?: string | null;
-  /** The {@link GoalPhase} id this task belongs to; `null` for legacy/unplaced tasks. */
-  phase_id?: string | null;
-  /** When `status === "superseded"`, the `Knowledge.id` whose finding killed it. */
-  superseded_by_knowledge_id?: string | null;
-  /** The `WorkflowStep`s that executed this task (reverse link). */
-  workflow_step_ids?: string[];
-  /**
-   * Artifacts this task declares it will produce (goal-phase-artifacts). Empty
-   * reproduces today's behavior (the implicit `design_md` doc + acceptance gate).
-   */
-  outputs?: ArtifactSpec[];
-}
 
 /**
  * The backend's four-layer runtime health snapshot (serialized
@@ -297,7 +49,6 @@ export interface AgentMember {
   provider_agent_path?: string | null;
   provider_agent_nickname?: string | null;
   provider_agent_role?: string | null;
-  current_task_id?: string | null;
   current_proposal_id?: string | null;
   prompt_ref?: string | null;
   skill_refs?: string[];
@@ -361,7 +112,6 @@ export interface AgentTeam {
 
 export interface Message {
   id: string;
-  task_id?: string | null;
   from_agent_id?: string;
   to_agent_id?: string | null;
   channel?: string | null;
@@ -390,7 +140,6 @@ export interface ProviderSession {
   id: string;
   provider?: string;
   agent_member_id?: string;
-  task_id?: string | null;
   workspace_ref?: string | null;
   provider_thread_id?: string | null;
   provider_turn_id?: string | null;
@@ -416,22 +165,10 @@ export interface AgentEvent {
   id: string;
   agent_member_id?: string;
   provider_runtime_id?: string | null;
-  task_id?: string | null;
   event_type?: string;
   summary?: string;
   payload_ref?: string | null;
   created_at?: string;
-}
-
-export interface Proposal {
-  id: string;
-  task_id: string;
-  agent_member_id?: string;
-  title?: string;
-  summary?: string;
-  status?: string;
-  changed_paths?: string[];
-  evidence_ids?: string[];
 }
 
 export interface ProviderChildThread {
@@ -439,7 +176,6 @@ export interface ProviderChildThread {
   provider?: string;
   agent_member_id?: string;
   provider_runtime_id?: string | null;
-  task_id?: string | null;
   parent_provider_thread_id?: string | null;
   provider_thread_id?: string;
   provider_agent_path?: string | null;
@@ -453,126 +189,10 @@ export interface ProviderChildThread {
 
 export interface Evidence {
   id: string;
-  task_id?: string | null;
   source_type?: string;
   source_ref?: string;
   summary?: string;
   evidence_kind?: string | null;
-  goal_id?: string | null;
-}
-
-export interface Decision {
-  id: string;
-  task_id: string;
-  decision?: string;
-  rationale?: string;
-  evidence_ids?: string[];
-  decision_kind?: string | null;
-  goal_id?: string | null;
-  is_waiver?: boolean;
-  follow_up_task_id?: string | null;
-}
-
-export interface Review {
-  id: string;
-  task_id?: string | null;
-  goal_id?: string | null;
-  reviewer_agent_id?: string;
-  review_kind?: string;
-  /** Open enum: pass/fail/blocked/needs_changes, or an adapter-supplied value. */
-  verdict?: string;
-  summary?: string;
-  blockers?: string[];
-  residual_risk?: string | null;
-  missing_validation?: string[];
-  evidence_ids?: string[];
-  created_at?: string;
-}
-
-/**
- * Gap ledger entry (absorbs the bug ledger: a Bug is a Gap with category="bug").
- * `category` is an open enum (free string); `severity`/`status` are closed,
- * harness-owned sets matching the Rust hard enums.
- */
-export interface Gap {
-  id: string;
-  goal_id?: string | null;
-  task_id?: string | null;
-  /** Open enum: ux/data/observability/parity/tooling/workflow/docs/bug/other, or adapter-supplied. */
-  category?: string;
-  severity?: "p0" | "p1" | "p2" | string;
-  status?: "open" | "in_progress" | "fixed" | "blocked" | "deferred" | "wontfix" | string;
-  summary?: string;
-  evidence_ids?: string[];
-  next_step?: string | null;
-  owner_agent_id?: string | null;
-  repro_ref?: string | null;
-  closing_test_ref?: string | null;
-  created_at?: string;
-  updated_at?: string;
-}
-
-/**
- * Executable thesis for a Goal (the generic subset of the strategy-creation
- * checklist). Graduates from `Evidence(source_type=goal_design)`; both
- * representations coexist (dual-read by goal_id, no backfill).
- */
-export interface GoalDesign {
-  id: string;
-  goal_id: string;
-  scenario_summary?: string;
-  non_goals?: string[];
-  risk_and_permission_boundaries?: string;
-  required_infra?: string[];
-  agent_team?: string | null;
-  task_graph?: string[];
-  evidence_plan?: string[];
-  acceptance_gates?: string[];
-  created_at?: string;
-}
-
-/** Retrospective for a Goal: what worked / failed, reusable patterns, follow-ups. */
-export interface GoalEvaluation {
-  id: string;
-  goal_id: string;
-  evaluator_agent_id?: string;
-  /** Open enum: success/partial/failed/blocked, or an adapter-supplied value. */
-  outcome?: string;
-  what_worked?: string;
-  what_failed?: string;
-  missing_infra?: string[];
-  missing_evidence?: string[];
-  team_design_feedback?: string;
-  task_graph_feedback?: string;
-  dashboard_feedback?: string;
-  reusable_patterns?: string[];
-  anti_patterns?: string[];
-  follow_up_task_ids?: string[];
-  proposed_goal_ids?: string[];
-  created_at?: string;
-}
-
-/** Reusable teaching artifact distilled from a completed Goal. */
-export interface GoalCase {
-  case_id: string;
-  source_goal_id: string;
-  scenario_type?: string;
-  project_adapter?: string | null;
-  goal_design_ref?: string | null;
-  evaluation_ref?: string | null;
-  reusable_patterns?: string[];
-  anti_patterns?: string[];
-  follow_up_refs?: string[];
-  tags?: string[];
-  created_at?: string;
-}
-
-/** A durable product vision a Goal can be scheduled against (Goal.vision_id). */
-export interface Vision {
-  id: string;
-  summary?: string;
-  source_refs?: string[];
-  created_at?: string;
 }
 
 /**
@@ -588,53 +208,6 @@ export interface DocRegistryEntry {
   lifecycle?: "volatile" | "stable" | "archival";
   canonicalFor?: string[];
   dependsOn?: string[];
-}
-
-export interface AutonomousProposal {
-  id: string;
-  kind?: string;
-  source_type?: string;
-  source_ref?: string;
-  summary?: string;
-  task_id?: string | null;
-  goal_id?: string | null;
-  created_at?: string;
-  message_id?: string | null;
-  from_agent_id?: string | null;
-  to_agent_id?: string | null;
-  linked_evidence_ids?: string[];
-  disposition?: "pending" | "accepted" | "rejected" | "deferred" | "request_evidence" | "decided" | string;
-  decision_id?: string | null;
-  decision_rationale?: string | null;
-  follow_up_task_ids?: string[];
-  follow_up_goal_ids?: string[];
-}
-
-export interface GoalLearningStatus {
-  goal_id: string;
-  ok?: boolean;
-  warnings?: string[];
-  task_ids?: string[];
-  /** Legacy representation: learning artifacts carried as Evidence rows. */
-  goal_design?: unknown[];
-  goal_evaluation?: unknown[];
-  goal_cases?: { source_ref?: string; id?: string }[];
-  /** Graduated representation: first-class learning objects (dual-read union). */
-  goal_design_objects?: GoalDesign[];
-  goal_evaluation_objects?: GoalEvaluation[];
-  goal_case_objects?: GoalCase[];
-  follow_up_tasks?: Task[];
-  member_reports?: unknown[];
-  decisions?: unknown[];
-  /** Closeout-gate readiness (§3.7): surfaced so the UI can render the gate. */
-  closeout_decisions?: Decision[];
-  closeout_waivers?: Decision[];
-  has_closeout_decision?: boolean;
-  has_evaluation?: boolean;
-  has_closeout_waiver?: boolean;
-  may_close?: boolean;
-  closeout_blockers?: string[];
-  event_order?: Record<string, unknown>;
 }
 
 /**
@@ -737,21 +310,6 @@ export interface Mission {
   completed_at?: string | null;
 }
 
-/** Whether a Mission view is native product state or a read-only Goal bridge. */
-export type MissionProjectionSource = "native" | "goal_compatibility" | string;
-
-/**
- * A Mission read model during the non-destructive Goal migration. Compatibility
- * projections retain legacy phase provenance and do not pretend those phases
- * are Waves.
- */
-export interface MissionProjection {
-  mission: Mission;
-  source: MissionProjectionSource;
-  source_id: string;
-  legacy_goal_phase_ids?: string[];
-}
-
 /** Executor selected by a Wave; each retains its own runtime semantics. */
 export type WaveExecutorKind = "agent_team" | "dynamic_workflow" | "host";
 
@@ -819,9 +377,7 @@ export interface TeamRun {
   host_thread_id?: string | null;
   objective?: string | null;
   status?: TeamRunStatus | string;
-  wave_index?: number;
   member_run_ids?: string[];
-  task_ids?: string[];
   budget_limit_usd?: number | null;
   created_at?: string;
   updated_at?: string;
@@ -853,7 +409,6 @@ export interface MemberRun {
   status?: MemberRunStatus | string;
   provider_session_id?: string | null;
   acp_session_id?: string | null;
-  current_task_id?: string | null;
   worktree_ref?: string | null;
   owned_paths?: string[];
   started_at?: string;
@@ -906,7 +461,6 @@ export type TeamMessageKind =
 export interface TeamMessage {
   id: string;
   team_run_id?: string;
-  task_id?: string | null;
   from_member_id?: string;
   to_member_ids?: string[];
   kind?: TeamMessageKind | string;
@@ -924,7 +478,6 @@ export interface MemberAction {
   seq?: number;
   team_run_id?: string;
   member_run_id?: string;
-  task_id?: string | null;
   action_type?: string;
   status?: "started" | "progress" | "succeeded" | "failed" | "cancelled" | string;
   title?: string;
@@ -943,7 +496,6 @@ export interface DelegationRun {
   id: string;
   team_run_id?: string;
   parent_member_run_id?: string;
-  parent_task_id?: string | null;
   mode?: "provider_native" | "harness_worker" | "dynamic_workflow" | string;
   provider?: string | null;
   provider_child_thread_id?: string | null;
@@ -972,26 +524,13 @@ export interface TeamRunEvent {
 
 export interface DashboardSnapshot {
   generated_at?: string;
-  goals?: Goal[];
   teams?: AgentTeam[];
   members?: AgentMember[];
-  kanban?: Record<TaskStatus, string[]>;
-  tasks?: Task[];
   messages?: Message[];
   events?: AgentEvent[];
-  proposals?: Proposal[];
-  autonomous_proposals?: AutonomousProposal[];
   evidence?: Evidence[];
-  decisions?: Decision[];
-  reviews?: Review[];
-  gaps?: Gap[];
-  goal_designs?: GoalDesign[];
-  goal_evaluations?: GoalEvaluation[];
-  goal_cases?: GoalCase[];
-  visions?: Vision[];
   provider_sessions?: ProviderSession[];
   provider_child_threads?: ProviderChildThread[];
-  goal_learning_status?: GoalLearningStatus[];
   /**
    * Transient, client-only: raw provider turn events pushed live via SSE
    * (provider_turn_event), keyed by session id. Never sent by the backend
@@ -1016,14 +555,6 @@ export interface DashboardSnapshot {
   missions?: Mission[];
   /** Native ordered Wave rows. */
   waves?: Wave[];
-  /** Native and read-only Goal compatibility Mission views. */
-  mission_projections?: MissionProjection[];
-  /**
-   * The goal↔run orchestration checkpoints (Stage 0): each `goal run-phases`
-   * execution and its per-phase `workflow_run_id` links — the BACK link to the
-   * forward `goal_id`/`phase_id` now stamped on each {@link WorkflowRun}.
-   */
-  goal_orchestration_runs?: GoalOrchestrationRun[];
   /** Agent Team runs (team-console): host-orchestrated member groups. */
   team_runs?: TeamRun[];
   member_runs?: MemberRun[];
@@ -1109,44 +640,6 @@ export interface WorkflowRun {
    * never mistaken for a real one. `undefined`/false for live and legacy rows.
    */
   dry_run?: boolean;
-  /**
-   * The goal this run belongs to, when spawned by the goal orchestrator
-   * (`goal plan` / `goal run-phases`). Together with `phase_id` this is the
-   * FORWARD goal↔run link (Stage 0). `undefined` for standalone `run-script` /
-   * registry runs and legacy rows.
-   */
-  goal_id?: string | null;
-  /** The goal phase this run executed (`phase-*`) or revised (`revise-*`). */
-  phase_id?: string | null;
-}
-
-/**
- * One phase's outcome inside a {@link GoalOrchestrationRun} — which compiled
- * workflow ran it and whether its verdict passed. Mirrors harness-core
- * `OrchestrationPhaseRun`.
- */
-export interface OrchestrationPhaseRun {
-  phase_id: string;
-  workflow_run_id?: string | null;
-  compiled_path?: string | null;
-  passed: boolean;
-  started_at: string;
-  ended_at?: string | null;
-  landed_commit?: string | null;
-}
-
-/**
- * The durable checkpoint for `harness goal run-phases`: it sequences a goal's
- * phases, gating each on its verdict, and records each phase run. Mirrors
- * harness-core `GoalOrchestrationRun`.
- */
-export interface GoalOrchestrationRun {
-  id: string;
-  goal_id: string;
-  status?: string;
-  phase_runs?: OrchestrationPhaseRun[];
-  created_at: string;
-  updated_at: string;
 }
 
 /**
@@ -1230,20 +723,6 @@ export interface WorkflowStep {
   result?: WorkflowStepResult | null;
   started_at: string;
   ended_at?: string | null;
-}
-
-export interface WorkflowWarning {
-  id: string;
-  kind: string;
-  severity: "high" | "medium" | "low";
-  goalId?: string;
-  taskId?: string;
-  memberId?: string;
-  proposalId?: string;
-  decisionId?: string;
-  sessionId?: string;
-  evidenceId?: string;
-  summary: string;
 }
 
 export type DashboardAction = (path: string, body?: unknown) => Promise<void>;

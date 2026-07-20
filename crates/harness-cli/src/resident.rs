@@ -672,15 +672,16 @@ pub(crate) struct TempDir {
 #[cfg(test)]
 impl TempDir {
     pub(crate) fn new(tag: &str) -> TempDir {
-        let mut path = std::env::temp_dir();
+        // macOS limits Unix-domain socket paths to roughly 104 bytes. Tests in
+        // `resident_daemon` place `resident.sock` under this directory, so use
+        // the stable short `/tmp` alias instead of the much longer per-user
+        // `TMPDIR` path under `/var/folders/...`.
+        let mut path = PathBuf::from("/tmp");
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        path.push(format!(
-            "resident-test-{tag}-{nanos}-{:?}",
-            std::thread::current().id()
-        ));
+        path.push(format!("hr-{tag}-{}-{nanos}", std::process::id()));
         std::fs::create_dir_all(&path).unwrap();
         TempDir { path }
     }

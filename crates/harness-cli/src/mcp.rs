@@ -23,7 +23,7 @@ use serde_json::{json, Value};
 use crate::{
     create_mission, create_team_run, create_wave, gate_wave, latest_member_runs_in_append_order,
     latest_team_messages_in_append_order, latest_team_run, latest_team_runs_in_append_order,
-    parse_team_message_kind, parse_wave_executor_kind, send_team_message,
+    parse_team_message_kind, parse_wave_executor_kind, send_team_message, team_run_wave_index,
     visible_member_actions_in_append_order, TeamMemberSpec,
 };
 
@@ -177,7 +177,7 @@ fn tool_mission_create(store: &HarnessStore, arguments: &Value) -> Result<Value,
 
 fn tool_mission_list(store: &HarnessStore) -> Result<Value, String> {
     Ok(json!(store
-        .mission_projections()
+        .latest_missions()
         .map_err(|error| error.to_string())?))
 }
 
@@ -237,16 +237,13 @@ fn tool_wave_gate(store: &HarnessStore, arguments: &Value) -> Result<Value, Stri
 
 /// `team_run_create` — journal a new run + member runs + assignment messages.
 fn tool_team_run_create(store: &HarnessStore, arguments: &Value) -> Result<Value, String> {
+    if arguments.get("wave_index").is_some() {
+        return Err(
+            "wave_index was retired; supply wave_id and derive order from the native Wave"
+                .to_string(),
+        );
+    }
     let objective = required_str(arguments, "objective")?;
-    let wave_index = match arguments.get("wave_index") {
-        None => 1,
-        Some(value) => {
-            let raw = value
-                .as_u64()
-                .ok_or_else(|| "wave_index must be a positive integer".to_string())?;
-            u32::try_from(raw).map_err(|_| "wave_index must fit a positive u32".to_string())?
-        }
-    };
     let budget_limit_usd = match arguments.get("budget_limit_usd") {
         None | Some(Value::Null) => None,
         Some(value) => Some(
@@ -293,7 +290,6 @@ fn tool_team_run_create(store: &HarnessStore, arguments: &Value) -> Result<Value
     let created = create_team_run(
         store,
         objective,
-        wave_index,
         budget_limit_usd,
         "mcp",
         None,
@@ -320,11 +316,12 @@ fn tool_team_run_list(store: &HarnessStore) -> Result<Value, String> {
     Ok(Value::Array(
         runs.iter()
             .map(|run| {
+                let wave_index = team_run_wave_index(store, run).ok().flatten();
                 json!({
                     "id": run.id,
                     "objective": run.objective,
                     "status": run.status,
-                    "wave_index": run.wave_index,
+                    "wave_index": wave_index,
                     "member_count": run.member_run_ids.len(),
                     "created_at": run.created_at,
                 })
@@ -339,6 +336,7 @@ fn tool_team_run_list(store: &HarnessStore) -> Result<Value, String> {
 fn tool_team_run_status(store: &HarnessStore, arguments: &Value) -> Result<Value, String> {
     let id = required_str(arguments, "team_run_id")?;
     let run = latest_team_run(store, id).map_err(|error| error.to_string())?;
+    let wave_index = team_run_wave_index(store, &run).map_err(|error| error.to_string())?;
     let member_runs: Vec<_> = latest_member_runs_in_append_order(store)
         .map_err(|error| error.to_string())?
         .into_iter()
@@ -373,6 +371,7 @@ fn tool_team_run_status(store: &HarnessStore, arguments: &Value) -> Result<Value
         .count();
     Ok(json!({
         "team_run": run,
+        "wave_index": wave_index,
         "members": members,
         "unacked_messages": unacked_messages,
         "dashboard_url": DASHBOARD_URL,
@@ -398,10 +397,6 @@ fn tool_team_run_send_message(store: &HarnessStore, arguments: &Value) -> Result
     let kind = parse_team_message_kind(required_str(arguments, "kind")?)
         .map_err(|error| error.to_string())?;
     let body = required_str(arguments, "body")?;
-    let task_id = arguments
-        .get("task_id")
-        .and_then(Value::as_str)
-        .map(str::to_string);
     let correlation_id = arguments
         .get("correlation_id")
         .and_then(Value::as_str)
@@ -417,7 +412,6 @@ fn tool_team_run_send_message(store: &HarnessStore, arguments: &Value) -> Result
         to_member_ids,
         kind,
         body,
-        task_id,
         correlation_id,
         causation_id,
     )
@@ -452,7 +446,7 @@ fn tool_definitions() -> Value {
     json!([
         {
             "name": "mission_create",
-            "description": "Create a native durable Mission. Goal compatibility projections are read-only; use this for new Mission/Wave work.",
+            "description": "Create a native durable Mission for ordered Wave execution.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -466,12 +460,12 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "mission_list",
-            "description": "List Mission projections with provenance. Native Mission rows and read-only Goal compatibility projections are both returned explicitly.",
+            "description": "List latest native Mission rows.",
             "inputSchema": {"type": "object", "properties": {}}
         },
         {
             "name": "wave_create",
-            "description": "Create a lightweight ordered Wave for a native Mission. The Mission is updated with the Wave id; no Task Graph is created.",
+            "description": "Create a lightweight ordered Wave for a native Mission.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -516,7 +510,6 @@ fn tool_definitions() -> Value {
                 "type": "object",
                 "properties": {
                     "objective": {"type": "string", "minLength": 1, "description": "What the team should accomplish; also seeds each member's assignment message body."},
-                    "wave_index": {"type": "integer", "minimum": 1, "description": "Compatibility wave number for unlinked runs (default 1); a native Wave supplies its own index."},
                     "budget_limit_usd": {"type": "number", "minimum": 0, "description": "Optional budget cap in USD, recorded on the run."},
                     "previous_run_id": {"type": "string", "description": "Optional previous attempt id. For a linked native Wave it must belong to the same Mission/Wave."},
                     "mission_id": {"type": "string", "description": "Optional durable Mission id. New native linkage requires a concrete wave_id; omit both ids only for an unlinked compatibility run."},
@@ -543,7 +536,7 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "team_run_list",
-            "description": "List every team run in the store (latest projection, append order), trimmed to id/objective/status/wave_index/member_count/created_at. Use it to find a run id for the other tools.",
+            "description": "List every team run in the store (latest projection, append order). wave_index is derived by joining wave_id to the native Wave and is null when unresolved.",
             "inputSchema": {"type": "object", "properties": {}}
         },
         {
@@ -568,7 +561,6 @@ fn tool_definitions() -> Value {
                     "to_member_ids": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}, "description": "One or more recipient member run ids, or the reserved host recipient."},
                     "kind": {"type": "string", "enum": ["assignment", "question", "answer", "progress", "blocker", "handoff", "review_request", "review_result", "control", "broadcast"]},
                     "body": {"type": "string"},
-                    "task_id": {"type": "string", "description": "Optional legacy task this message refers to."},
                     "correlation_id": {"type": "string", "description": "Optional assignment correlation to reuse. For a non-assignment message, it must identify an Assignment in this team run."},
                     "causation_id": {"type": "string", "description": "Optional earlier TeamMessage id in this team run. When paired with correlation_id, it must carry that same correlation."}
                 },

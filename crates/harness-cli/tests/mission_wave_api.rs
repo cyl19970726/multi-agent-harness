@@ -82,15 +82,24 @@ fn mission_wave_attempt_retry_gate_and_snapshot_contract() {
 
     // Public JSON parsing and domain validation reject malformed TeamRuns
     // before any run/member/message/event row is appended.
+    let (status, body) = serve.post_json(
+        "/v1/team-runs",
+        &serde_json::json!({
+            "objective": "obsolete wave index",
+            "wave_index": 2,
+            "members": [{"name": "lead", "role": "integrator", "provider": "kimi"}],
+        }),
+    );
+    assert_eq!(status, 400, "body: {body}");
+    assert!(
+        body["error"].as_str().unwrap_or("").contains("was retired"),
+        "body: {body}"
+    );
+
     for invalid in [
         serde_json::json!({
             "objective": "no executable member",
             "members": [],
-        }),
-        serde_json::json!({
-            "objective": "bad wave index",
-            "wave_index": "not-a-number",
-            "members": [{"name": "lead", "role": "integrator", "provider": "kimi"}],
         }),
         serde_json::json!({
             "objective": "incomplete native linkage",
@@ -155,21 +164,16 @@ fn mission_wave_attempt_retry_gate_and_snapshot_contract() {
         Some(1)
     );
     assert_eq!(body["snapshot"]["waves"].as_array().map(Vec::len), Some(1));
-    assert_eq!(body["snapshot"]["tasks"].as_array().map(Vec::len), Some(0));
 
-    // CLI list is the same native projection and carries the ordered membership.
+    // CLI list returns native Mission rows and carries ordered Wave membership.
     let missions = run_json(&home, &project_id, &["mission", "list"]);
     let native = missions
         .as_array()
         .expect("mission list")
         .iter()
-        .find(|projection| projection["mission"]["id"].as_str() == Some("mission-alpha"))
-        .expect("native mission projection");
-    assert_eq!(native["source"].as_str(), Some("native"));
-    assert_eq!(
-        native["mission"]["wave_ids"],
-        serde_json::json!(["wave-alpha"])
-    );
+        .find(|mission| mission["id"].as_str() == Some("mission-alpha"))
+        .expect("native mission");
+    assert_eq!(native["wave_ids"], serde_json::json!(["wave-alpha"]));
     let waves = run_json(
         &home,
         &project_id,
@@ -218,7 +222,7 @@ fn mission_wave_attempt_retry_gate_and_snapshot_contract() {
         &["mission", "show", "--id", "mission-beta"],
     );
     assert_eq!(
-        mission_beta["mission"]["wave_ids"],
+        mission_beta["wave_ids"],
         serde_json::json!(["wave-beta", "wave-beta-middle", "wave-beta-later"])
     );
     let beta_waves = run_json(
@@ -295,10 +299,7 @@ fn mission_wave_attempt_retry_gate_and_snapshot_contract() {
         body["result"]["team_run"]["wave_id"].as_str(),
         Some("wave-alpha")
     );
-    assert_eq!(
-        body["result"]["team_run"]["task_ids"],
-        serde_json::json!([])
-    );
+    assert!(body["result"]["team_run"].get("task_ids").is_none());
     let assignment_id = body["result"]["assignment_messages"][0]["id"]
         .as_str()
         .expect("assignment id")
@@ -530,58 +531,6 @@ fn mission_wave_attempt_retry_gate_and_snapshot_contract() {
 }
 
 #[test]
-fn legacy_goal_projects_to_mission_without_rewriting_history() {
-    let home = TempHome::new("mission-wave-compat");
-    let project_id = init_project(&home, "alpha");
-    let store_root = home.projects_dir().join(&project_id);
-
-    let goal = run_json(
-        &home,
-        &project_id,
-        &[
-            "goal",
-            "create",
-            "--id",
-            "legacy-goal",
-            "--title",
-            "Historical Goal",
-            "--owner",
-            "lead",
-            "--description",
-            "Keep the old ledger readable",
-        ],
-    );
-    assert_eq!(goal["id"].as_str(), Some("legacy-goal"));
-    let goals_before = std::fs::read_to_string(store_root.join("goals.jsonl")).unwrap();
-    assert!(!store_root.join("missions.jsonl").exists());
-    assert!(!store_root.join("waves.jsonl").exists());
-
-    let projections = run_json(&home, &project_id, &["mission", "list"]);
-    let legacy = projections
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|projection| projection["source_id"].as_str() == Some("legacy-goal"))
-        .expect("Goal compatibility projection");
-    assert_eq!(legacy["source"].as_str(), Some("goal_compatibility"));
-    assert_eq!(
-        legacy["mission"]["id"].as_str(),
-        Some("compat-goal:legacy-goal")
-    );
-    assert_eq!(
-        legacy["mission"]["objective"].as_str(),
-        Some("Keep the old ledger readable")
-    );
-
-    assert_eq!(
-        std::fs::read_to_string(store_root.join("goals.jsonl")).unwrap(),
-        goals_before
-    );
-    assert!(!store_root.join("missions.jsonl").exists());
-    assert!(!store_root.join("waves.jsonl").exists());
-}
-
-#[test]
 fn http_console_starts_native_team_wave_and_streams_transient_thinking() {
     let home = TempHome::new("mission-wave-console-start");
     let project_id = init_project(&home, "alpha");
@@ -698,7 +647,6 @@ fn http_console_starts_native_team_wave_and_streams_transient_thinking() {
         !snapshot.to_string().contains("hidden reasoning"),
         "thinking leaked into snapshot"
     );
-    assert_eq!(snapshot["tasks"].as_array().map(Vec::len), Some(0));
 
     // The external provider ingress applies the same lifecycle boundary and
     // refuses previews once the attempt is terminal.

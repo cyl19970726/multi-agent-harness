@@ -2,9 +2,7 @@
   "id": "trun-1",
   "host_surface": "kimi-cli",
   "objective": "Ship the team run ledger.",
-  "wave_index": 2,
   "member_run_ids": [],
-  "task_ids": [],
   "created_at": "2026-07-18T00:00:00Z",
   "updated_at": "2026-07-18T00:01:00Z"
 }

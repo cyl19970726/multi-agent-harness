@@ -23,7 +23,7 @@ Why it exists:
 - The operator needs live member state, explicit assignment/handoff/review
   messages, and Wave-gate context without opening raw provider transcripts.
 - The page must show ownership through assignment-message correlation, not
-  through a first-class Task Graph concept.
+  through a first-class legacy dependency graph concept.
 
 Non-goals:
 
@@ -36,7 +36,7 @@ Non-goals:
 
 ## Canonical Objects
 
-- native Mission and native Wave (Goal/GoalPhase are labeled compatibility)
+- native Mission and native Wave (Goal/legacy phase record are labeled compatibility)
 - AgentTeamRun
 - MemberRun
 - TeamMessage
@@ -190,8 +190,8 @@ process manager UI:
 
 ## Failure Modes Prevented
 
-- hiding ownership behind a task-graph-only explanation;
-- implying a Wave must be a Task Graph;
+- hiding ownership behind a dependency graph-only explanation;
+- implying a Wave must be a legacy dependency graph;
 - losing message delivery state;
 - presenting host-native delegation as fully controlled when it is only
   observed;

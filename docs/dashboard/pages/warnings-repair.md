@@ -43,7 +43,7 @@ by `severity` (`p0`/`p1`/`p2`) then unresolved-first `status`
 renders the ledger yet; warnings currently render object-locally (Task
 document) and feed the decision-queue projection. The warning kinds are owned
 by `apps/agent-dashboard/src/model/warnings.ts` (`deriveWarnings`); see the
-table in [../read-model.md](../read-model.md) for the current list.
+table in [../read-model.md](../../company-os/frontend-information-architecture.md) for the current list.
 
 Workflow proof:
 
@@ -55,8 +55,8 @@ Workflow proof:
 
 Source docs:
 
-- [../read-model.md](../read-model.md)
-- [../acceptance.md](../acceptance.md)
+- [../read-model.md](../../company-os/frontend-information-architecture.md)
+- [../acceptance.md](../../company-os/frontend-information-architecture.md)
 - [../../operations.md](../../operations.md)
 
 Read-model inputs:

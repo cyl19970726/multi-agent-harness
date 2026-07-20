@@ -12,6 +12,16 @@ export default defineConfig({
       "@": fileURLToPath(new URL("./src", import.meta.url)),
     },
   },
+  server: process.env.HARNESS_CAPTURE_API_PROXY
+    ? {
+        // Screenshot acceptance keeps browser reads same-origin. The target is
+        // supplied only by the capture runner; normal development is unchanged.
+        proxy: {
+          "/v1": { target: process.env.HARNESS_CAPTURE_API_PROXY, changeOrigin: true },
+          "/health": { target: process.env.HARNESS_CAPTURE_API_PROXY, changeOrigin: true },
+        },
+      }
+    : undefined,
   build: {
     outDir: "web",
     emptyOutDir: true,

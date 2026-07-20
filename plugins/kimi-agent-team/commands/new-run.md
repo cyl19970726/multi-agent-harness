@@ -30,8 +30,7 @@ name:role:provider[:model][@path1,path2]   — what this lane owns
      prompt contract is attached per member by the harness);
    - include a Lead/integrator lane when lanes must be merged.
 3. **Run options.** Ask about `--budget-usd X` (recommend always setting one).
-   Use `--mission-id` and `--wave-id`; omit legacy numeric `--wave` for linked
-   runs because the native Wave owns its index.
+   Use `--mission-id` and `--wave-id`; the native Wave owns its ordering.
 4. **Assemble and show the command**, e.g.:
 
 ```bash

@@ -6,7 +6,7 @@ The Agent Dashboard is an operational control surface over harness state.
 
 ## Consequences
 
-It must show task graph, team state, message delivery, runtime health,
+It must show legacy dependency graph, team state, message delivery, runtime health,
 evidence, proposal, review, decision, and evaluation visibility. It should
 link to project dashboards instead of replacing them.
 

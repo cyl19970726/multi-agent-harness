@@ -1,206 +1,195 @@
-# Product Requirements
+# Product Requirements — AI Company OS
 
-## Product Mission
+## Product mission
 
-Star Harness gives resident Host Agents such as Codex, Claude Code, and Kimi
-Code provider-neutral tools for structured execution and collaboration.
+Star Harness helps a person and a mixed organization of standing Agents run a
+company through durable documents, explicit responsibility, governed actions,
+and provider-neutral execution tools.
 
-The canonical hierarchy is:
+The product is not primarily a multi-agent run dashboard. It is a Company OS:
+
+```text
+Docs organize business intent and knowledge.
+Organization supplies long-lived human and Agent capability.
+WorkItems connect intent to accountable execution.
+Approvals protect high-risk actions.
+Execution tools perform the work.
+Results and effects return to Docs and related records.
+```
+
+## Product thesis
+
+An AI-native company needs more than parallel agents. It needs:
+
+- a place where company context, data, decisions, and operating structures
+  remain understandable as they grow;
+- durable Agent identities with roles, permissions, availability, capacity,
+  responsibilities, and provider runtime history;
+- first-class human, external, service, and Agent participation without
+  pretending their lifecycles are identical;
+- explicit records of who requested, submitted, owns, executes, reviews, and
+  approves work;
+- typed relations so a business action, its cost, its approval, and its result
+  remain one connected truth;
+- execution tools that can be selected when useful without forcing every piece
+  of company work into a predefined execution structure.
+
+## Primary systems
+
+### Docs
+
+Docs is the company memory and operating hub. It must support:
+
+- basic rich documents: hierarchical pages, text, lists, checklists, callouts,
+  media, attachments, comments, mentions, and ordinary tables;
+- structured documents: standard table, board, timeline, calendar, chart, and
+  embedded related-record views over TypedRecords and Relations;
+- typed records and relations rather than copied values;
+- templates and Module Designs for repeatable business domains;
+- actions that create WorkItems and Approvals with source-document provenance;
+- result, evidence, metric, and financial-effect updates back into the source;
+- structure-health, reorganization, archival, and conflict detection.
+
+For a stable, high-value surface that must coordinate several kinds of data and
+actions, a Module may register a custom HTML/React page. An Agent may compose
+this page from approved components, declared queries, and named Action
+Commands. The page is never a data store: it cannot directly write business
+facts or bypass permissions, audit, relation validation, or Approval policy.
+Every custom page links to its underlying Documents and records and has a
+standard document/view fallback.
+
+### Organization
+
+Organization models `HumanMember`, standing `AgentMember`, external
+collaborators, and services through common `ActorRef` references while
+preserving their distinct identity and runtime rules.
+
+The initial operating model is deliberately lead-first: one Human Owner, one
+Lead Agent, and several second-level Standing Agents that report directly to
+the Lead. The Lead receives company intent, assigns WorkItems, starts optional
+long-running execution, monitors blockers, and proposes missing organizational
+capability. `reports_to_actor_ref` and `OrgUnit.parent_unit_id` keep deeper
+hierarchy additive without making it part of the first-release experience.
+
+Organization collaboration is object-centred. Human and Agent conversation,
+handoff, activity, and artifacts remain linked to a Document, BusinessModule,
+Milestone, WorkItem, Approval, or execution attempt. A Lead workspace composes
+those explicit links; it is not a free-floating chat history or provider log.
+
+### Work and approvals
+
+`WorkItem` is the product-level work record. It is distinct from executor
+internals and from ordinary messages.
+
+`Milestone` is the only grouping layer above WorkItems. It records a named
+stage outcome, owner, target date, acceptance criteria, and the WorkItems that
+contribute to it. There is no separate canonical `Project` object. A
+BusinessModule or Document supplies durable business context while Work owns
+Milestones and WorkItems.
+
+Every WorkItem records:
+
+- source document and result document;
+- requested by and submitted by;
+- accountable owner;
+- assignees and contributors;
+- reviewer and approver when required;
+- execution reference;
+- result, evidence, metrics, and linked financial records.
+
+`Approval` records legal, financial, permission, publication, and organization
+gates. Policies may require a human actor; an Agent cannot impersonate that
+approval.
+
+### Relations, finance, and metrics
+
+Structured records are linked, not duplicated. A trademark filing fee shown in
+a trademark document and in Finance is one `FinancialRecord` with relations to
+the application, BusinessModule, Milestone, source document, WorkItem,
+approval, and evidence.
+
+Finance distinguishes budget, commitment, invoice, payment, refund, and
+forecast. Metrics distinguish definitions from timestamped observations and
+retain their source.
+
+### Governance
+
+- Document Architecture Agent proposes new or reorganized Module structures.
+- Organization Governance Agent proposes roles, OrgUnits, permissions, and
+  Agent changes.
+- Finance, legal, security, and domain reviewers evaluate affected relations.
+- A Lead or human authority approves changes according to risk policy.
+- Proposals and decisions remain reconstructable from source to effect.
+
+## Execution foundation
+
+A WorkItem may be executed directly by a human or Standing Agent, or may start
+one of the product's one-time long-task capabilities:
 
 ```text
 Mission -> ordered Wave -> executor
   executor = agent_team | dynamic_workflow | host
 ```
 
-- `Mission` is durable intent and the desired-outcome container.
-- `Wave` is a lightweight ordered unit with an objective, executor, outcome,
-  artifacts, and a gate.
-- The executor owns its internal planning. A Wave never requires a Task Graph.
+- `Mission/Wave` structures one bounded long-running outcome.
+- `AgentTeamRun/MemberRun` records one temporary collaborative attempt inside
+  that execution.
+- `DynamicWorkflow` runs a provider-neutral process for the bounded outcome.
+- provider sessions, plugins, MCP, and child work remain execution evidence.
 
-Current `Goal`, `GoalPhase`, Task, Evidence, Proposal, Decision, and
-GoalEvaluation objects remain self-hosting compatibility surfaces while the
-non-destructive migration in [ADR 0026](decisions/0026-mission-wave-architecture.md)
-lands. They are not the exported product model.
+No executor owns the originating document, organization, approval, or company
+record. Results return through the WorkItem relation.
 
-## Product Thesis
+## Required product experiences
 
-Resident agents already have provider-native execution and subagents. Star
-Harness adds the tools they lack when work needs a durable outer structure:
+1. Company Home surfaces decisions, milestone state, metrics, financial pressure,
+   and organization capacity with links to source documents.
+2. Docs supports Notion-like editing and nesting, ordinary tables, structured
+   relations, Module templates, embedded operating views, and governed custom
+   pages for core surfaces.
+3. Organization shows a mixed company and distinct details for humans and
+   standing Agents.
+4. Work is the company-wide ledger of Milestones and typed WorkItems and makes
+   submission, responsibility, remaining work, and acceptance visible.
+5. Approvals provides a focused `Needs You` queue and complete audit history.
+6. Finance provides typed, permissioned records linked to business origin.
+7. Governance handles new business domains, document growth, organization
+   change, and missing capability.
+8. Execution pages retain Mission/Wave, Team, MemberRun, Workflow, and provider
+   observability as professional drill-ins.
 
-- Mission/Wave outcome planning and gates;
-- living Agent Team collaborators with messages, assignments, handoffs, and
-  reviews;
-- one-shot Dynamic Workflows with fan-out, retry, artifacts, and typed results;
-- provider-neutral sessions, capabilities, permission ceilings, and budgets;
-- plugins, MCP, CLI, hooks, and a shared Dashboard read model;
-- explicit artifacts and outcome summaries instead of hidden transcript state.
+## Near-term acceptance scenario
 
-This is not one universal Agent or Run abstraction. `WorkflowStep`,
-`MemberRun`, Host-native subagent, and future Standing Agent have different
-ownership and lifecycle semantics even when they reuse common infrastructure.
+The first Company OS scenario is a new Trademark Management module:
 
-## Primary Product Loop
+- Document Architecture proposes its document space, templates, record types,
+  relations, views, permissions, and archival rules.
+- Organization Governance identifies a Brand Owner human, Trademark Agent,
+  Finance Agent, and External Lawyer participation.
+- a filing WorkItem preserves requester, submitter, owner, contributors,
+  reviewer, and human approver;
+- the ¥3,000 filing fee is one linked FinancialRecord, not copied text;
+- approval updates Work, Finance, and the trademark application;
+- documents receive the filing result, evidence, dates, cost, and next action.
 
-```text
-Host receives durable intent
-  -> define Mission
-  -> choose the next Wave objective and gate
-  -> select executor
-  -> run / observe / collect artifacts
-  -> accept, revise, or block the Wave
-  -> re-plan the next Wave
-  -> close the Mission with an outcome summary
-```
+## Non-goals
 
-Executor-specific truth stays local:
+- do not make raw provider transcripts or thinking the company knowledge base;
+- do not infer assignment from matching names, roles, providers, or sessions;
+- do not make every message a WorkItem;
+- do not introduce a separate Project object above Milestone and WorkItem;
+- do not force every WorkItem into Mission/Wave or another executor;
+- do not use runtime status as business availability;
+- do not let an Agent satisfy a human-required approval;
+- do not copy finance or metric values between modules;
+- do not let page code become a second source of truth or a policy bypass.
 
-- Agent Team: assignment message -> correlated collaboration -> handoff /
-  optional review -> Wave gate;
-- Dynamic Workflow: program -> WorkflowRun/WorkflowStep -> artifacts/result ->
-  Wave gate;
-- Host: direct work and optional provider-native subagents -> observable
-  artifacts/outcome -> Wave gate.
+## Implementation truth
 
-## Near-Term Scope
+The execution foundation is substantially implemented. The Company OS objects
+and primary frontend are an additive migration in progress. Documentation must
+label planned fields and projections honestly until schemas, store, APIs,
+fixtures, and acceptance checks exist.
 
-The current product slice prioritizes:
-
-1. the minimal Mission/Wave contracts and non-destructive compatibility read;
-2. Agent Team as a real cross-provider collaborative executor;
-3. Dynamic Workflow as an independent one-shot executor;
-4. shared provider/session, capability, permission, artifact, event, plugin,
-   and Dashboard infrastructure;
-5. a Mission-first Console for Agent Team Waves, with honest live observation
-   including a transient-only thinking preview.
-
-Standing Agents + Docs are a later layer for long-lived business operation.
-They should reuse these tools, but must not distort the current Mission/Wave or
-Agent Team implementation into a premature organization model.
-
-## Required Capabilities
-
-### Mission And Wave
-
-- A Mission has durable intent, desired outcome, status, Waves, and closeout.
-- Waves are ordered but remain small: objective, optional exit criteria,
-  executor kind, attempts, accepted attempt, artifacts, outcome, and gate.
-- A Wave may retry with a new executor run; the accepted attempt is explicit.
-- The Console creates native Mission/Wave records and creates/retries linked
-  AgentTeamRun attempts. Unlinked TeamRuns are compatibility-only readers.
-- Replanning occurs between Waves and records plan-vs-actual deviation.
-- No Mission/Wave API or UI requires a Task Graph.
-
-### Agent Team
-
-- `AgentTeamRun` is one attempt for one Wave, not the Wave itself and not a
-  standing organization.
-- Each Wave defines only the members it needs: role, provider/model tier,
-  permissions, owned surfaces, budget, and depth.
-- A `TeamMessage(kind=assignment)` is the lane's work identity; progress,
-  blocker, handoff, review, and delegation target the assignment correlation.
-- Message delivery/ACK state is explicit and separate from message semantics.
-- Members may use provider-native subagents as their own capability. Harness
-  records only honestly observable attribution and does not pretend to control
-  children owned by the provider.
-- External changes such as deploy, remote deletion, protected merge, or paid
-  decisions remain user authorization gates.
-
-Automatic handoff preserves the assignment correlation. Manual CLI, HTTP, and
-MCP sends accept validated correlation/causation inputs, including causation-only
-inheritance. Invalid cross-run or mismatched lineage is rejected before write.
-
-### Dynamic Workflow
-
-- Dynamic Workflow remains standalone and independently useful.
-- Workflow programs own their steps, parallelism, retry, gates, patches,
-  artifacts, and structured result.
-- A Mission/Wave may point to a WorkflowRun without rebuilding it as a Task
-  Graph or Agent Team.
-
-### Shared Infrastructure
-
-- Provider adapters normalize sessions and observable actions without erasing
-  provider-specific capability.
-- Capability snapshots, permission ceilings, budgets, artifact references,
-  event transport, hooks, and Dashboard projections are reusable across
-  executors.
-- Plugins are thin host-native distribution/call surfaces; runtime truth stays
-  in the resident service and store.
-- Project-specific business logic remains in project adapters and tools.
-
-### Thinking Boundary
-
-Thinking is optional transient live state only: sanitize, truncate, rate-limit,
-overwrite/expire, and never persist, replay, forward to peers, or treat as
-evidence. Explicit plans, actions, artifacts, blockers, handoffs, and outcomes
-are durable.
-
-New Kimi execution no longer writes durable `thinking` actions. Historical rows
-remain in JSONL but are excluded from current snapshots. The Console receives a
-project-scoped SSE `member_activity` preview with expiry. It is direct-only and
-cannot survive refresh, TTL expiry, or reconnect; it is not JSONL, snapshot,
-replay, evidence, or peer context.
-
-## Product Scenarios
-
-### Resident Host Uses Agent Team
-
-A Host turns one Mission Wave into a role-specific cross-provider team, keeps
-only run/member/assignment pointers in its own context, intervenes on blockers
-or approvals, and accepts a handoff-backed Wave outcome.
-
-### Resident Host Uses Dynamic Workflow
-
-A Host authors or selects a structured one-shot workflow, observes the run,
-reviews its artifacts or patch, and attaches its typed result to the Wave gate.
-
-### Self-Hosting Migration
-
-This repository uses its stricter compatibility governance chain while it adds
-Mission/Wave schemas, joins, runtime routing, and Dashboard surfaces. The
-stricter chain proves the migration without becoming a requirement for every
-external product Wave.
-
-### Project Adapter Operation
-
-An external project supplies its CLI/API, artifacts, dashboards, permission
-rules, and domain evaluation through an adapter. The harness owns orchestration
-and shared execution infrastructure, not project business logic.
-
-### Standing Agents + Docs (Future)
-
-Long-lived business agents use Mission/Wave, Agent Team, Dynamic Workflow, and
-shared Docs/knowledge infrastructure. This is an architectural consumer of the
-current tools, not current MVP acceptance.
-
-## Non-Goals
-
-- No mandatory Task Graph inside Mission, Wave, or Agent Team.
-- No rename-only mapping from GoalPhase to Wave.
-- No universal Agent/Run object that erases executor semantics.
-- No claim that provider-native subagents are harness-controlled without a real
-  control/observation path.
-- No durable private reasoning or raw transcript as product evidence.
-- No project-specific business logic in the generic core.
-- No Standing Agent organization UI in the current Mission/Wave slice.
-- No plugin treated as architecture authority; schemas, code, ADRs, and current
-  product docs own the contract.
-
-## Acceptance Summary
-
-The product direction is accepted when:
-
-- a Host can define a Mission and ordered Waves without a Task Graph;
-- each Wave selects Agent Team, Dynamic Workflow, or Host execution, without
-  claiming that every executor is already routed through the Console;
-- Agent Team ownership is assignment/message-based and retries are distinct run
-  attempts;
-- artifacts and a lightweight gate explain the accepted Wave outcome;
-- shared infrastructure works across provider instances without collapsing
-  their semantics;
-- compatibility Goal/GoalPhase data remains readable during migration;
-- thinking is live-only for new writes and its Console preview is volatile;
-- the Dashboard and host plugins expose the same truthful read model.
-
-Detailed implementation gates are in [mvp.md](mvp.md). The architecture map is
-[architecture-map.md](architecture-map.md).
+See [Company OS docs](company-os/README.md) and
+[ADR 0027](decisions/0027-company-os-primary-model.md).

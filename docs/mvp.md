@@ -10,7 +10,7 @@ Mission -> ordered Wave -> executor
 
 It is not a rewrite of the whole compatibility runtime. It adds the smallest
 Mission/Wave contracts and joins needed to run real Agent Team and Dynamic
-Workflow Waves while preserving existing Goal/GoalPhase data.
+Workflow Waves while preserving existing Goal/legacy phase record data.
 
 Historical `acceptance:mvp`, `acceptance:mvp:live`, and
 `acceptance:autonomous-team` remain compatibility regression gates. Passing
@@ -22,7 +22,7 @@ them does not by itself prove this Mission/Wave MVP.
 
 - JSON schemas and Rust types for Mission, Wave, Wave attempt refs, and the
   lightweight gate;
-- store ledgers/projections that do not rewrite existing Goal/GoalPhase JSONL;
+- store ledgers/projections that do not rewrite existing Goal/legacy phase record JSONL;
 - dual-read mapping for compatibility records where the mapping is honest;
 - explicit `executor_kind = agent_team | dynamic_workflow | host`;
 - `executor_run_ids[]` and `accepted_run_id` for retry lineage.
@@ -42,7 +42,7 @@ them does not by itself prove this Mission/Wave MVP.
 
 - attach one or more WorkflowRun attempts to a Wave;
 - use WorkflowRun/WorkflowStep/artifacts/result as executor truth;
-- accept or revise the Wave without creating a duplicate Task Graph;
+- accept or revise the Wave without creating a duplicate legacy dependency graph;
 - preserve standalone workflow patch/apply/reject behavior.
 
 ### 4. Host Wave
@@ -50,7 +50,7 @@ them does not by itself prove this Mission/Wave MVP.
 - represent direct Host execution and its outcome/artifacts;
 - permit provider-native subagents as Host implementation detail;
 - record only honestly observable delegation facts;
-- never require a fake Task, child MemberRun, or Task Graph.
+- never require a fake Task, child MemberRun, or legacy dependency graph.
 
 ### 5. Thinking Migration
 
@@ -89,7 +89,7 @@ flowchart TD
 
 The accepted journey must prove:
 
-- no Wave has or needs a Task Graph;
+- no Wave has or needs a legacy dependency graph;
 - assignment ownership is structurally correlated, not inferred only from body
   prose or `task_id`;
 - a retry is a new run attempt and the gate identifies the accepted attempt;
@@ -102,7 +102,7 @@ The accepted journey must prove:
 | Gate | Accepted when | Does not pass |
 | --- | --- | --- |
 | Contracts | Rust, schema, fixtures, store, CLI/API, and docs agree on Mission/Wave. | Future-state prose only. |
-| Compatibility | Existing Goal/GoalPhase ledgers and commands still read/run or emit explicit deprecation guidance. | Destructive history rewrite or silent data loss. |
+| Compatibility | Existing Goal/legacy phase record ledgers and commands still read/run or emit explicit deprecation guidance. | Destructive history rewrite or silent data loss. |
 | Wave minimalism | Wave fields are objective/executor/attempt/outcome/artifact/gate focused. | Task DAG embedded in Wave. |
 | Agent Team joins | New runs/messages/actions can join Mission, Wave, and assignment correlation without Task. | A `task_id` is still required or manual sends always fork correlation. |
 | Team execution | A real provider-backed team completes an assignment/handoff/review path. | Create/start smoke with no accepted outcome. |
@@ -126,7 +126,7 @@ npx pnpm@9.15.4 acceptance:mvp:live
 Add focused Mission/Wave acceptance covering:
 
 1. schema/fixture validation;
-2. old Goal/GoalPhase dual-read;
+2. old Goal/legacy phase record dual-read;
 3. Agent Team Wave with assignment correlation and accepted attempt;
 4. Dynamic Workflow Wave with artifacts/result;
 5. retry/revise lineage;
@@ -155,10 +155,10 @@ additive schemas/types
 
 ## Non-Goals For This MVP
 
-- Removing Goal/GoalPhase code or rewriting old ledgers.
+- Removing Goal/legacy phase record code or rewriting old ledgers.
 - Standing Agents + Docs business operation.
 - A portfolio/project-management suite.
-- A mandatory Task Graph, Proposal, Critic, or Decision object for every Wave.
+- A mandatory legacy dependency graph, Proposal, Critic, or Decision object for every Wave.
 - Full control of provider-native subagent lifecycles.
 - Rebuilding Dynamic Workflow around Agent Team semantics.
 - Project-specific strategy or commerce logic in the core.
@@ -168,4 +168,4 @@ additive schemas/types
 The MVP is complete when one real Mission uses at least two Waves with distinct
 executor semantics, including a live Agent Team Wave, and the store/UI can
 explain objective, attempts, accepted run, assignment ownership, artifacts,
-gate result, and Mission outcome without a Task Graph or persisted thinking.
+gate result, and Mission outcome without a legacy dependency graph or persisted thinking.

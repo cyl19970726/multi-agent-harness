@@ -115,9 +115,8 @@ Create a `TeamMessage(kind=assignment)` before lane work begins. Its message id
 and `correlation_id` are the lane's target work identity. Automatic member
 handoff preserves that correlation. Manual CLI/API/MCP sends pass the existing
 `correlation_id`, optionally with a same-run `causation_id`; a causation-only
-reply inherits its cause's correlation. The current CLI may also accept
-`[--task-id T]`; that is a compatibility association only and never proves
-ownership in place of an assignment message.
+reply inherits its cause's correlation. Assignment-message correlation, not a
+parallel planning identifier, proves ownership.
 
 `harness team-run send --id <run> --from host --to <ids> --kind <kind> --body "..." --correlation-id <assignment-correlation> [--causation-id <message-id>]`
 

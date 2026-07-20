@@ -15,7 +15,7 @@ Workbench primitives and no UI kit. That shell was rejected (PR #6): the
 browser-visible surface read as a dense dashboard/card dump rather than a
 Feishu-like collaboration workspace, and the failure was structural information
 architecture, not spacing or color polish. See
-[../dashboard/layout-history.md](../dashboard/layout-history.md) for the full
+[../dashboard/layout-history.md](../company-os/frontend-information-architecture.md) for the full
 rejected/selected ledger.
 
 Maintaining a bespoke CSS layer and reinventing accessible primitives (dialogs,
@@ -65,4 +65,4 @@ npx pnpm@9.15.4 check
 ```
 
 The dashboard check builds the Workbench (tsc + Vite). Browser screenshot-first
-acceptance follows [../dashboard/acceptance.md](../dashboard/acceptance.md).
+acceptance follows [../dashboard/acceptance.md](../company-os/frontend-information-architecture.md).

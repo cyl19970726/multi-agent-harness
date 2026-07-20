@@ -14,10 +14,9 @@
 // "Open evidence" link to the wrong plan row, while that step ALSO rendered
 // correctly on its own (correctly-labeled) row — a duplicate attribution bug.
 //
-// Mirrors the dependency-free style of tests/phase-board-check.mjs: it
+// Uses the dashboard's dependency-free source-transform test style: it
 // exercises the REAL `matchRuntimeSteps` implementation by transpiling
-// workflowSelectors.ts (and its transitive runtime deps, readModel.ts +
-// warnings.ts) with the TypeScript compiler API into a temp dir and importing
+// workflowSelectors.ts with the TypeScript compiler API into a temp dir and importing
 // the emitted ESM — so a regression in the actual matcher is caught, not a
 // re-implementation of it.
 //
@@ -36,17 +35,14 @@ let fail = 0;
 const ok = (m) => { console.log(`  PASS  ${m}`); pass += 1; };
 const bad = (m) => { console.log(`  FAIL  ${m}`); fail += 1; };
 
-/** Transpile workflowSelectors.ts + its runtime deps to ESM in a temp dir and import them. */
+/** Transpile the dependency-free selector module to ESM and import it. */
 async function loadWorkflowSelectors() {
   const { default: ts } = await import("typescript");
   const dir = await mkdtemp(join(tmpdir(), "workflow-step-matcher-"));
   const opts = { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 };
-  for (const name of ["warnings", "readModel", "workflowSelectors"]) {
+  for (const name of ["workflowSelectors"]) {
     const src = await readFile(join(modelDir, `${name}.ts`), "utf8");
     let js = ts.transpileModule(src, { compilerOptions: opts }).outputText;
-    // Point runtime imports (workflowSelectors -> ./readModel -> ./warnings) at emitted files.
-    js = js.replace(/from\s+["']\.\/warnings["']/g, 'from "./warnings.mjs"');
-    js = js.replace(/from\s+["']\.\/readModel["']/g, 'from "./readModel.mjs"');
     await writeFile(join(dir, `${name}.mjs`), js, "utf8");
   }
   const mod = await import(pathToFileURL(join(dir, "workflowSelectors.mjs")).href);

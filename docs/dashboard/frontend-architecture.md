@@ -3,22 +3,22 @@
 This document owns the frontend architecture and technology-stack decision for
 Agent Workbench. Product purpose stays in [../dashboard.md](../dashboard.md).
 Page-level UX and layout contracts stay in [pages/](pages/). Layout history and
-the rejected/selected decision ledger stay in [layout-history.md](layout-history.md).
-Acceptance gates stay in [acceptance.md](acceptance.md). The stack decision is
+the rejected/selected decision ledger stay in [layout-history.md](../company-os/frontend-information-architecture.md).
+Acceptance gates stay in [acceptance.md](../company-os/frontend-information-architecture.md). The stack decision is
 recorded as ADR [0016](../decisions/0016-tailwind-shadcn-adoption.md).
 
 ## Current Decision
 
 ```text
-status: shipped (PR #7); theme repivoted to light Notion (ADR 0019)
-implementation_allowed: yes, from page-local layout contracts + work-board-design.md
+status: shipped (PR #7); light document theme retained from a historical redesign
+implementation_allowed: yes, from current page-local layout contracts
 decision:
   React 18 + TypeScript + Vite build/runtime shell
   Tailwind CSS v4 (@tailwindcss/vite) for styling and tokens
   shadcn/ui primitives over Radix (components.json, style new-york)
   lucide-react icons; Geist + Geist Mono fonts
-  light, Notion-like token theme in src/index.css (ADR 0019 supersedes the
-    0016 dark operator-console theme; decoration removed)
+  light, Notion-like token theme in src/index.css (the historical redesign
+    superseded the 0016 dark operator-console theme; decoration removed)
   document atoms (DocumentSurface / DocSection / DocProperties) for the
     Notion-style Goal/Task detail pages
   dependencies live in the ROOT package.json (no per-app package.json)
@@ -28,8 +28,8 @@ decision:
 The Agent Workbench frontend was rebuilt and merged in PR #7 on React +
 TypeScript + Vite with Tailwind CSS v4, shadcn/ui primitives over Radix,
 lucide-react icons, and the Geist font family. The original rebuild used a dark
-operator-console token theme; ADR
-[0019](../decisions/0019-vision-goal-task-workbench-redesign.md) **repivoted the
+operator-console token theme; the historical Vision/Goal/Task redesign
+**repivoted the
 theme to a light, Notion-like document surface** (decoration removed) and added
 the document atoms used by the Goal/Task detail pages, superseding the theme
 tokens of ADR [0016](../decisions/0016-tailwind-shadcn-adoption.md) (the stack
@@ -64,7 +64,7 @@ mutation truth.
 | Framework | React 18 | Good composition for page/workbench surfaces. |
 | Language | TypeScript strict mode | Snapshot/read-model contracts must remain explicit. |
 | Bundler | Vite | Lightweight local dev and static `web/` output. |
-| Styling | Tailwind CSS v4 via `@tailwindcss/vite` | Token-driven utility styling tied to page-local contracts; light, Notion-like theme in `src/index.css` (ADR 0019, supersedes the 0016 dark operator-console theme). |
+| Styling | Tailwind CSS v4 via `@tailwindcss/vite` | Token-driven utility styling tied to page-local contracts; light, Notion-like theme in `src/index.css` (supersedes the 0016 dark operator-console theme). |
 | UI kit | shadcn/ui primitives over Radix (`components.json`, style `new-york`) in `src/components/ui` | Accessible Radix behavior with copy-in primitives the product owns and can adapt. |
 | Product atoms | `src/components/workbench` | Workbench-specific atoms composed from the shadcn/ui primitives. |
 | Icons | `lucide-react` | Use icon+tooltip/label where it clarifies action. |
@@ -89,7 +89,7 @@ implementation components for the next slice:
 | `TeamWorkspace` | default collaboration workspace, activity stream, current work, decisions, warnings | roster-only dashboard |
 | `MemberWorkbench` | durable teammate view: identity, current work, inbox/outbox, timeline, runtime, prompt/skills | provider-session dump |
 | `VisionOverview` | goal collection, completed/not-complete proof, distance-to-vision, next proposals | single-goal status card |
-| `GoalDocument` | GoalDesign, team design, branch policy, graph/Kanban preview, evidence/review/decision, evaluation | task list |
+| `GoalDocument` | legacy plan record, team design, branch policy, graph/Kanban preview, evidence/review/decision, evaluation | task list |
 | `TaskDocument` | assignment -> report -> evidence -> proposal -> review -> decision proof order | status card |
 | `GraphKanban` | Kanban default plus semantic graph focus and synchronized selected object | graph-first shell |
 | `DocsContext` | mounted docs context with source paths and missing-context warnings | copied docs body |
@@ -111,7 +111,7 @@ primitives and preserve the product model:
 | --- | --- |
 | `StatusDot` + tone maps (`tones.ts`) | text-backed state dots/labels, never color-only. |
 | `Section` / `SurfaceHeader` | bounded workspace region and surface heading with kicker/action slots. |
-| `DocumentSurface` / `DocSection` / `DocProperties` | Notion-style Goal/Task document atoms (ADR 0019). |
+| `DocumentSurface` / `DocSection` / `DocProperties` | Notion-style document atoms retained from the earlier UI. |
 | `TimelineRow` | canonical Message/Event/Evidence/Decision rows. |
 | `Avatar`, `AgentSparkline`, `CollapsibleBlock`, `MetaList`, `EmptyState`, `Kbd`, `MonoId` | supporting display atoms (`atoms.tsx`). |
 | `Markdown` | markdown rendering for doc/plan bodies. |
@@ -130,8 +130,8 @@ out of scope.
   `apps/agent-dashboard/package.json`.
 - Do not add a second full component framework without a recorded Reviewer
   decision.
-- Do not add a graph/canvas library until [work-board-design.md](work-board-design.md)
-  and its layout contract require capabilities that custom SVG/HTML cannot
+- Do not add a graph/canvas library until a current Company OS page contract
+  requires capabilities that custom SVG/HTML cannot
   provide.
 - Any dependency must name the page spec it serves and how it will be
   screenshot-accepted.
@@ -194,7 +194,7 @@ src/
     workbench/    # product atoms composed from the ui primitives
   api.ts, api/    # snapshot/SSE/projects fetch + typed write-action descriptors
   types.ts        # snapshot and UI object types
-  index.css       # Tailwind v4 entry + light Notion-like token theme (ADR 0019)
+  index.css       # Tailwind v4 entry + light Notion-like token theme
 ```
 
 shadcn configuration lives in `apps/agent-dashboard/components.json`. The build
@@ -228,4 +228,4 @@ Architecture acceptance requires:
 - page specs and page-local layout contracts linked from implemented surfaces;
 - screenshot-first PM/User acceptance;
 - rejected implementation outcomes recorded in
-  [layout-history.md](layout-history.md) for failed browser-visible attempts.
+  [layout-history.md](../company-os/frontend-information-architecture.md) for failed browser-visible attempts.

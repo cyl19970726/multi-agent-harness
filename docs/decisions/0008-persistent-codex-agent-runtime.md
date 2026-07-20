@@ -45,4 +45,4 @@ This decision is not MVP-complete until:
 See [../integration/codex.md](../integration/codex.md) and
 [../integration/codex-message-delivery.md](../integration/codex-message-delivery.md)
 for the message delivery contract, plus
-[../integration/codex-source-audit.md](../integration/codex-source-audit.md).
+[../integration/codex-source-audit.md](../integration/codex.md).

@@ -4,7 +4,6 @@
   "host_surface": "test",
   "objective": "Invalid partial native link",
   "status": "planning",
-  "wave_index": 1,
   "created_at": "unix-ms:1",
   "updated_at": "unix-ms:1"
 }

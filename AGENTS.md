@@ -1,13 +1,19 @@
 # Agent Operating Rules
 
-This repository builds Star Harness itself. Work in this repo must use
-the harness objects as the canonical coordination state.
+This repository builds Star Harness itself. Product truth lives in canonical
+docs, schemas, ADRs, and implemented stores. Execution claims must additionally
+be reconstructable from the native runtime records of the executor used.
 
 ## Product We Are Building
 
-Star Harness gives resident Host Agents such as Codex, Claude Code, and Kimi
-Code provider-neutral tools for structured execution and collaboration. The
-canonical product hierarchy is:
+Star Harness is an AI Company OS with two primary systems: a Notion-like Docs
+system for company memory and operating structure, and a mixed Organization of
+humans, Standing Agents, external collaborators, and services. Documents create
+WorkItems and Approvals; accountable actors execute them; results, evidence,
+metrics, and financial effects return to the originating records.
+
+Mission/Wave, Agent Team, Dynamic Workflow, Host execution, providers, plugins,
+and MCP are the shared execution foundation. Their native hierarchy is:
 
 ```text
 Mission -> ordered Wave -> executor
@@ -15,8 +21,8 @@ Mission -> ordered Wave -> executor
 ```
 
 `Mission` is durable intent. `Wave` is a lightweight ordered unit with an
-objective, executor, outcome, artifacts, and gate. A Wave does not own or
-require a Task Graph. Agent Team uses assignment-message correlation for member
+objective, executor, outcome, artifacts, and gate. Agent Team uses
+assignment-message correlation for member
 ownership; Dynamic Workflow owns its workflow steps; Host execution may use
 provider-native subagents as an implementation detail, with optional hooks for
 honest observation. The target contract allows thinking only as sanitized
@@ -29,34 +35,36 @@ permission and budget ceilings, messages, artifacts, events, plugins/MCP, and
 Dashboard projections. It does not collapse WorkflowRun, AgentTeamRun,
 Host-native subagents, or future Standing Agents into one universal object.
 
-Future Standing Agents + Docs will build long-lived business operations on the
-same tools. They are not part of the current Mission/Wave implementation slice.
+Standing Agents + Docs are the current product direction. Their Company OS
+contracts are additive and still being implemented; do not claim planned
+objects or fields exist until schemas, stores, APIs, and acceptance checks prove
+them. See `docs/company-os/README.md` and ADR 0027.
 
-For this repository, the first product scenario is self-hosting: the harness
-must be able to develop, evaluate, and improve itself through its own objects.
-The second scenario is project adaptation, starting with the LetMeTry / Earning
-Engine strategy-matrix workflow. Project-specific logic belongs in adapters and
-skills, not in the generic harness core.
+The first Company OS acceptance scenario is a governed Trademark Management
+module whose filing WorkItem, human approval, ¥3,000 financial commitment,
+participants, evidence, and source/result documents remain one linked truth.
+Repository self-hosting remains the first execution-foundation scenario.
+Project-specific logic belongs in modules, adapters, and scenario skills, not
+in the generic core.
 
-## Native And Compatibility Objects
+## Native Product And Execution Objects
 
-`Mission` and `Wave` are the native coordination objects for new work. Existing
-`Goal`, `GoalDesign`, `GoalPhase`, `Task`, `Message`, `Evidence`, `Proposal`,
-`Decision`, and `GoalEvaluation` ledgers remain readable compatibility and
-optional governance surfaces; they are not prerequisites for a new Wave.
+For company operations, the native product objects are `Document`,
+`BusinessModule`, `TypedRecord`, `Relation`, `ActorRef`, `HumanMember`,
+`AgentMember`, `OrgUnit`, `WorkItem`, `Assignment`, `Approval`,
+`FinancialRecord`, and `MetricObservation`. Some of these are currently design
+contracts rather than implemented schemas; keep that distinction explicit.
 
-Compatibility reads are intentionally asymmetric:
-
-- an existing Goal may appear as a provenance-marked, read-only Mission
-  projection;
-- a GoalPhase is never converted into a Wave, because its Task Graph and gate
-  semantics are different;
-- old JSONL is not rewritten by native Mission/Wave operations.
+`Mission` and `Wave` are the only native coordination objects for new work.
+The superseded coordination stack is being removed under ADR 0028: do not load
+it into normal planning context, create new records, use its commands, or add
+new dependencies. Historical stores must be exported and verified before their
+old ledgers or code are deleted.
 
 For `executor_kind=agent_team`, the canonical execution records are
 `AgentTeamRun`, `MemberRun`, `TeamMessage`, explicit `MemberAction` summaries,
 artifacts, and the Wave gate. Assignment ownership is proven by
-`TeamMessage(kind=assignment)` plus `correlation_id`, not by a Task Graph.
+`TeamMessage(kind=assignment)` plus `correlation_id`.
 
 Provider-native or chat-side subagents are implementation details of the Host
 or member that invoked them. Optional hooks may record honest attribution, but
@@ -87,8 +95,8 @@ The Lead Agent should use this sequence for non-trivial new work:
    and its lightweight gate.
    When `executor_kind=agent_team`, define only the roles, permissions, model
    tiers, depth, owned surfaces, and artifacts that Wave needs.
-3. Do not create GoalPhase or a Task Graph merely to describe a Mission/Wave or
-   Agent Team. An executor may use its own internal plan.
+3. Let the selected executor own its internal plan; a Wave remains a lightweight
+   outcome, executor, artifact, and gate boundary.
 4. For Agent Team work, create the linked TeamRun, then use its Assignment
    messages and correlations for lane ownership. Give concurrent members
    disjoint owned paths or worktrees and surface shared-file conflicts to the
@@ -96,7 +104,7 @@ The Lead Agent should use this sequence for non-trivial new work:
 5. Keep explicit actions, checks, artifacts, blockers, handoffs, reviews, and
    outcomes durable. Do not persist provider thinking.
 6. Apply review proportional to risk. A reviewer member or stricter repository
-   governance may be added when useful, but Proposal/Decision/GoalEvaluation is
+   governance may be added when useful, but Proposal/Decision/outcome evaluation is
    not a universal product chain.
 7. Gate the Wave as `accepted`, `revise`, or `blocked`. A retry creates another
    executor run; it never mutates away the earlier attempt.
@@ -130,9 +138,9 @@ only when the user requests it or the current task explicitly needs that
 capability, and prefer canonical architecture, schemas, code, and ADRs when a
 skill conflicts with them.
 
-The retired `generic-agent-harness`, `star-goal`, and `star-planner` skills must
-not be used to plan new work. Goal/GoalPhase commands are legacy compatibility
-surfaces and must not be used as the default for a new Mission.
+Retired planning skills must not be installed, loaded, or referenced from
+active repository instructions. Skills are optional capabilities, never the
+authority for product architecture.
 
 Do not make Earning Engine or other domain skills mandatory for this
 repository. Domain workflows enter through adapters and scenario-specific
@@ -194,8 +202,11 @@ Every non-trivial native Wave is accepted in four small stages:
 4. Gate: the Host records `accepted | revise | blocked`; acceptance names one
    completed attempt and preserves all earlier attempts.
 
-Legacy Goal learning/evidence gates may still be used by compatibility flows or
-special governance, but they are not prerequisites for native Wave acceptance.
+Company-level acceptance is separate: a WorkItem must preserve source/result
+provenance and responsibility, sensitive actions must satisfy their Approval
+policy, and durable effects must update their related document and typed
+records. An accepted Wave alone does not approve a payment, legal submission,
+permission change, or organization change.
 
 ## What Counts As Done
 

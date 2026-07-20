@@ -12,8 +12,7 @@ commands), and the nerves (hooks) — it contains no runtime logic of its own.
 
 Product context is **Mission → ordered Wave → executor**. An `AgentTeamRun` is
 one attempt for an `agent_team` Wave. The target ownership chain starts from
-`TeamMessage(kind=assignment)` and its `correlation_id`; task ids remain v0
-compatibility fields where the current CLI exposes them. Automatic handoff
+`TeamMessage(kind=assignment)` and its `correlation_id`. Automatic handoff
 reuses the assignment correlation; manual CLI/API/MCP sends may pass
 `correlation_id` and `causation_id` explicitly.
 
@@ -70,7 +69,7 @@ harness team-run start --id <run-id>
 harness team-run status --id <run-id> [--json]
 harness team-run send --id <run-id> --from <id|host> --to <ids> \
   --kind <kind> --body "..." [--correlation-id <assignment-correlation>] \
-  [--causation-id <message-id>] [--task-id T]
+  [--causation-id <message-id>]
 harness team-run events --id <run-id> [--after-seq N] [--json]
 harness wave gate --id <wave-id> --status accepted --run-id <run-id> \
   --accepted-by <actor> --note "..." --outcome "..." [--artifact <ref>]...
@@ -84,7 +83,7 @@ harness wave gate --id <wave-id> --status accepted --run-id <run-id> \
 - **归属**：`TeamMessage(kind=assignment)` 的 message id 与 `correlation_id`
   是 lane 的目标主身份。自动 handoff 会复用它；手工 blocker / progress /
   review 消息应传入同一 assignment correlation，或通过同一 run 的
-  `causation_id` 继承。`task_id` 仅是兼容字段，不替代 assignment。
+  `causation_id` 继承。
 - **判断标准**：结果需要回到我的上下文 → sub-agent；结果留在执行者那里、
   我只留指针 → Agent Team member。member 自主调用自己的原生 sub-agent，
   harness 只捕获归属、不调度。

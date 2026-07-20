@@ -1,0 +1,183 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://star-harness.local/schemas/company-os/programmable-page.schema.json",
+  "title": "Company OS programmable page boundary",
+  "oneOf": [
+    { "$ref": "#/$defs/customPageDefinition" },
+    { "$ref": "#/$defs/customPagePackage" },
+    { "$ref": "#/$defs/actionPolicyDefinition" },
+    { "$ref": "#/$defs/actionCommand" },
+    { "$ref": "#/$defs/auditEvent" }
+  ],
+  "$defs": {
+    "string": { "type": "string", "minLength": 1 },
+    "refs": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/string" } },
+    "actorRef": {
+      "type": "object", "additionalProperties": false,
+      "required": ["actor_type", "actor_id"],
+      "properties": {
+        "actor_type": { "enum": ["human", "agent", "external", "service"] },
+        "actor_id": { "$ref": "#/$defs/string" }
+      }
+    },
+    "entityKind": { "enum": ["actor", "document", "typed_record", "business_module", "work_item", "approval", "financial_record", "evidence", "execution"] },
+    "entityRef": {
+      "type": "object", "additionalProperties": false,
+      "required": ["kind", "id"],
+      "properties": {
+        "kind": { "$ref": "#/$defs/entityKind" },
+        "id": { "$ref": "#/$defs/string" }
+      }
+    },
+    "dataQueryDeclaration": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "source_kind", "source_scope", "permission_policy_ref"],
+      "properties": {
+        "id": { "$ref": "#/$defs/string" },
+        "source_kind": { "$ref": "#/$defs/entityKind" },
+        "source_scope": { "$ref": "#/$defs/string" },
+        "permission_policy_ref": { "$ref": "#/$defs/string" }
+      }
+    },
+    "customPageDefinition": {
+      "type": "object", "additionalProperties": false,
+      "required": [
+        "id", "module_id", "purpose", "allowed_data_queries", "approved_ui_components",
+        "action_command_refs", "standard_view_fallback_ref", "owner", "package_ref",
+        "package_version", "fixture_ref", "visual_contract_ref", "policy_refs", "created_at", "updated_at"
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/string" },
+        "module_id": { "$ref": "#/$defs/string" },
+        "purpose": { "$ref": "#/$defs/string" },
+        "allowed_data_queries": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/dataQueryDeclaration" } },
+        "approved_ui_components": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/string" } },
+        "action_command_refs": { "$ref": "#/$defs/refs" },
+        "standard_view_fallback_ref": { "$ref": "#/$defs/string" },
+        "owner": { "$ref": "#/$defs/actorRef" },
+        "package_ref": { "$ref": "#/$defs/string" },
+        "package_version": { "$ref": "#/$defs/string" },
+        "fixture_ref": { "$ref": "#/$defs/string" },
+        "visual_contract_ref": { "$ref": "#/$defs/string" },
+        "policy_refs": { "$ref": "#/$defs/refs" },
+        "created_at": { "$ref": "#/$defs/string" },
+        "updated_at": { "$ref": "#/$defs/string" }
+      }
+    },
+    "customPagePackage": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "definition_id", "version", "kind", "artifact_ref", "entrypoint", "integrity_digest", "built_at"],
+      "properties": {
+        "id": { "$ref": "#/$defs/string" },
+        "definition_id": { "$ref": "#/$defs/string" },
+        "version": { "$ref": "#/$defs/string" },
+        "kind": { "enum": ["html", "react"] },
+        "artifact_ref": { "$ref": "#/$defs/string" },
+        "entrypoint": { "$ref": "#/$defs/string" },
+        "integrity_digest": { "$ref": "#/$defs/string" },
+        "built_at": { "$ref": "#/$defs/string" }
+      }
+    },
+    "actionEffect": {
+      "enum": [
+        "create_record", "update_record", "transition_state", "create_relation",
+        "dispatch_external", "create_commitment", "settle_payment", "submit_legal_filing",
+        "change_permission", "change_organization"
+      ]
+    },
+    "actionPolicyDefinition": {
+      "type": "object", "additionalProperties": false,
+      "required": [
+        "id", "module_ref", "definition_ref", "command_name", "required_permission",
+        "risk_tier", "requires_human_approval", "allowed_actor_kinds", "allowed_effects"
+      ],
+      "allOf": [{
+        "if": { "properties": { "risk_tier": { "const": "r3" } }, "required": ["risk_tier"] },
+        "then": { "properties": { "requires_human_approval": { "const": true } } }
+      }],
+      "properties": {
+        "id": { "$ref": "#/$defs/string" },
+        "module_ref": { "$ref": "#/$defs/string" },
+        "definition_ref": { "$ref": "#/$defs/string" },
+        "command_name": { "$ref": "#/$defs/string" },
+        "required_permission": { "$ref": "#/$defs/string" },
+        "risk_tier": { "enum": ["r0", "r1", "r2", "r3"] },
+        "requires_human_approval": { "type": "boolean" },
+        "allowed_actor_kinds": {
+          "type": "array", "minItems": 1, "uniqueItems": true,
+          "items": { "enum": ["human", "agent", "external", "service"] }
+        },
+        "allowed_effects": {
+          "type": "array", "minItems": 1, "uniqueItems": true,
+          "items": { "$ref": "#/$defs/actionEffect" }
+        }
+      }
+    },
+    "auditEvent": {
+      "type": "object", "additionalProperties": false,
+      "required": [
+        "id", "action_command_id", "event_kind", "actor_ref", "subject_ref",
+        "detail", "evidence_refs", "occurred_at"
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/string" },
+        "action_command_id": { "$ref": "#/$defs/string" },
+        "event_kind": { "enum": ["requested", "policy_authorized", "approval_attached", "executed", "failed", "cancelled"] },
+        "actor_ref": { "$ref": "#/$defs/actorRef" },
+        "subject_ref": { "$ref": "#/$defs/entityRef" },
+        "detail": { "type": "object" },
+        "evidence_refs": { "$ref": "#/$defs/refs" },
+        "occurred_at": { "$ref": "#/$defs/string" }
+      }
+    },
+    "actionCommand": {
+      "type": "object", "additionalProperties": false,
+      "required": [
+        "id", "command_name", "subject_ref", "requested_by", "payload", "required_permission",
+        "policy_ref", "risk_tier", "requires_human_approval", "approval_refs", "status",
+        "audit_event_refs", "requested_at", "completed_at"
+      ],
+      "allOf": [
+        {
+          "if": { "properties": { "risk_tier": { "const": "r3" } }, "required": ["risk_tier"] },
+          "then": { "properties": { "requires_human_approval": { "const": true } } }
+        },
+        {
+          "if": {
+            "properties": {
+              "requires_human_approval": { "const": true },
+              "status": { "enum": ["authorized", "executed"] }
+            },
+            "required": ["requires_human_approval", "status"]
+          },
+          "then": { "properties": { "approval_refs": { "type": "array", "minItems": 1 } } }
+        },
+        {
+          "if": { "properties": { "status": { "const": "executed" } }, "required": ["status"] },
+          "then": {
+            "properties": {
+              "audit_event_refs": { "type": "array", "minItems": 1 },
+              "completed_at": { "$ref": "#/$defs/string" }
+            }
+          }
+        }
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/string" },
+        "command_name": { "$ref": "#/$defs/string" },
+        "subject_ref": { "$ref": "#/$defs/entityRef" },
+        "requested_by": { "$ref": "#/$defs/actorRef" },
+        "payload": { "type": "object" },
+        "required_permission": { "$ref": "#/$defs/string" },
+        "policy_ref": { "$ref": "#/$defs/string" },
+        "risk_tier": { "enum": ["r0", "r1", "r2", "r3"] },
+        "requires_human_approval": { "type": "boolean" },
+        "approval_refs": { "$ref": "#/$defs/refs" },
+        "status": { "enum": ["requested", "authorized", "rejected", "executed", "failed", "cancelled"] },
+        "audit_event_refs": { "$ref": "#/$defs/refs" },
+        "requested_at": { "$ref": "#/$defs/string" },
+        "completed_at": { "type": ["string", "null"], "minLength": 1 }
+      }
+    }
+  }
+}

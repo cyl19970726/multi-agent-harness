@@ -16,7 +16,7 @@ Mission -> ordered Wave -> executor attempt(s)
 ```
 
 The executor is `agent_team`, `dynamic_workflow`, or `host`. A Wave never
-requires a Task Graph. The data model succeeds when another human or agent can
+requires a legacy dependency graph. The data model succeeds when another human or agent can
 reconstruct the selected executor, attempts, ownership, outcome, and gate from
 harness state without relying on chat memory or provider transcripts.
 
@@ -52,9 +52,9 @@ harness state without relying on chat memory or provider transcripts.
 | Wave acceptance | `Wave.gate_status` + `accepted_run_id` + outcome/artifacts | reviewer comment or provider self-report alone |
 | Optional evaluator output | `Review` | report message text |
 | Defect / risk ledger | `Gap` (Bug = `Gap(category=bug)`) | `product-gap-inbox.md` flat file |
-| Legacy Goal plan | `GoalDesign` (or legacy `Evidence(source_type=goal_design)`) | chat plan |
-| Legacy Goal retrospective | `GoalEvaluation` (or legacy `Evidence(source_type=goal_evaluation)`) | final chat summary |
-| Reusable lesson | `GoalCase` + `examples/goal-cases/**` | full transcript |
+| Legacy Goal plan | `legacy plan record` (or legacy `Evidence(source_type=historical work design)`) | chat plan |
+| Legacy Goal retrospective | `outcome evaluation` (or legacy `Evidence(source_type=outcome evaluation)`) | final chat summary |
+| Reusable lesson | `reusable learning note` + `examples/reusable learning notes/**` | full transcript |
 | Long-lived target | `Vision`; `Goal.vision_id` links a goal | loose `vision_ref` text |
 
 ## Object Clusters
@@ -81,16 +81,16 @@ flowchart TD
 
 The remaining Goal/Task sections document the still-readable classic runtime.
 They do not define native Mission/Wave execution and must not be used to require
-a Task Graph, Proposal, Decision, or GoalEvaluation for every Wave.
+a legacy dependency graph, Proposal, Decision, or outcome evaluation for every Wave.
 
-## Task Graph Edges
+## legacy dependency graph Edges
 
-The task graph is a view over tasks and their edges, not a separate competing
+The legacy dependency graph is a view over tasks and their edges, not a separate competing
 state machine.
 
 | Edge | Field or source | Meaning |
 | --- | --- | --- |
-| Goal membership | `task.goal_id` | Task contributes to one goal. |
+| Goal membership | `task.execution_ref` | Task contributes to one goal. |
 | Decomposition | `task.parent_task_id` | Task is a child of a broader task. |
 | Execution dependency | `depends_on_task_ids` | Task waits for prior work. |
 | Review | `reviewer_agent_id` | Reviewer or critic expected before acceptance. |
@@ -106,31 +106,31 @@ following edges over existing objects:
 
 | Object | Edge fields | Meaning |
 | --- | --- | --- |
-| `Review` | `task_id` / `goal_id`, `reviewer_agent_id`, `evidence_ids` | Structured evaluator verdict for a task or goal; backs a `Decision`. |
-| `Gap` | `goal_id` / `task_id`, `owner_agent_id`, `evidence_ids` | Defect or risk row; a Bug is `category=bug`. `severity`/`status` are closed enums. |
-| `GoalDesign` | `goal_id`, `task_graph[]` (task ids), `agent_team` | The goal's plan; `Goal.goal_design_id` may point back to it. |
-| `GoalEvaluation` | `goal_id`, `follow_up_task_ids[]`, `proposed_goal_ids[]` | The retrospective; closes the learning loop into the next round. |
-| `GoalCase` | `source_goal_id`, `goal_design_ref`, `evaluation_ref` | Sanitized reusable lesson. |
+| `Review` | `task_id` / `execution_ref`, `reviewer_agent_id`, `evidence_ids` | Structured evaluator verdict for a task or goal; backs a `Decision`. |
+| `Gap` | `execution_ref` / `task_id`, `owner_agent_id`, `evidence_ids` | Defect or risk row; a Bug is `category=bug`. `severity`/`status` are closed enums. |
+| `legacy plan record` | `execution_ref`, `dependency graph[]` (task ids), `agent_team` | The goal's plan; `Goal.historical work design_id` may point back to it. |
+| `outcome evaluation` | `execution_ref`, `follow_up_task_ids[]`, `proposed_execution_refs[]` | The retrospective; closes the learning loop into the next round. |
+| `reusable learning note` | `source_execution_ref`, `historical work design_ref`, `evaluation_ref` | Sanitized reusable lesson. |
 | `Vision` | referenced by `Goal.vision_id` | Long-lived target a goal collection moves toward. |
 
 New scalar links on existing objects: `Goal.vision_id` /
-`Goal.goal_design_id` / `Goal.closed_by_decision_id`; `Task.phase_id`
-(the join key to a `GoalPhase`; the legacy free-text `Task.phase` label was
+`Goal.historical work design_id` / `Goal.closed_by_decision_id`; `Task.phase_id`
+(the join key to a `legacy phase record`; the legacy free-text `Task.phase` label was
 retired) / `Task.scope_refs[]` / `Task.requires_human_approval` /
 `Task.verdict_decision_id`;
-`Evidence.evidence_kind` / `Evidence.goal_id`; `Decision.decision_kind` /
-`Decision.goal_id` / `Decision.is_waiver` / `Decision.follow_up_task_id`.
+`Evidence.evidence_kind` / `Evidence.execution_ref`; `Decision.decision_kind` /
+`Decision.execution_ref` / `Decision.is_waiver` / `Decision.follow_up_task_id`.
 
 ### Evidence-to-Object Graduation (dual-read)
 
-`GoalDesign` and `GoalEvaluation` first existed as
-`Evidence(source_type=goal_design | goal_evaluation)`. They have now graduated
+`legacy plan record` and `outcome evaluation` first existed as
+`Evidence(source_type=historical work design | outcome evaluation)`. They have now graduated
 to first-class objects, and **both representations are read at once**: the
-read model and the `goal_learning_status` gate union legacy `Evidence` rows and
-the graduated objects by `goal_id`, with no backfill. Old goals keep their
+read model and the `operational learning_status` gate union legacy `Evidence` rows and
+the graduated objects by `execution_ref`, with no backfill. Old goals keep their
 `Evidence` rows; new goals write the objects; the gate is satisfied by either.
 The graduation contract is documented in
-[goal-learning-loop.md](goal-learning-loop.md).
+[Company OS governance](company-os/governance.md).
 
 ## Projection Rules
 

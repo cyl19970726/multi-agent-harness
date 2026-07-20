@@ -204,14 +204,36 @@ impl ServeHandle {
 
     /// POST a JSON body to a path, returning (status_code, parsed JSON body).
     pub fn post_json(&self, path: &str, body: &serde_json::Value) -> (u16, serde_json::Value) {
+        self.post_json_with_header(path, body, None)
+    }
+
+    /// POST JSON with the server-held Company OS capability token.
+    pub fn post_json_with_token(
+        &self,
+        path: &str,
+        body: &serde_json::Value,
+        token: &str,
+    ) -> (u16, serde_json::Value) {
+        self.post_json_with_header(path, body, Some(token))
+    }
+
+    fn post_json_with_header(
+        &self,
+        path: &str,
+        body: &serde_json::Value,
+        token: Option<&str>,
+    ) -> (u16, serde_json::Value) {
         let payload = body.to_string();
         let mut stream = TcpStream::connect(self.addr()).expect("connect post");
         stream
             .set_read_timeout(Some(Duration::from_secs(5)))
             .expect("timeout");
+        let token_header = token
+            .map(|value| format!("X-Harness-Company-OS-Token: {value}\r\n"))
+            .unwrap_or_default();
         write!(
             stream,
-            "POST {path} HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}",
+            "POST {path} HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\n{token_header}Content-Length: {}\r\nConnection: close\r\n\r\n{payload}",
             payload.len()
         )
         .expect("write post");

@@ -48,7 +48,7 @@ any agent can author a workflow shape at runtime. The as-built decisions
   injected `AgentStepFn` seam. `harness-cli` injects the real driver
   (`workflow_real_agent_step` → `run_provider_delivery`), and the registry `run`
   and dynamic `run-spec` paths share one `journal_workflow_outcome`.
-- **Additive object fields only** (per [0017](../decisions/0017-generic-object-model.md)):
+- **Additive object fields only** under current schema governance:
   `WorkflowRun.args` / `.agents_spawned` / `.final_output` and
   `WorkflowStep.result`. `pipeline()` is **real streaming** (no barrier; a failed
   stage drops the item and skips its rest), not a `parallel()` fallback.
@@ -78,7 +78,7 @@ the second input and is cited as "CC spec §N". Harness building blocks are cite
 inline as `file:line`. Ties to
 [0018](../decisions/0018-exec-stream-primary-substrate.md),
 [0011](../decisions/0011-provider-neutral-runtime.md), and
-[0017](../decisions/0017-generic-object-model.md).
+the current schema-governance boundary.
 
 ## 1. Goal & scope
 
@@ -275,7 +275,7 @@ would mean an async rewrite of the exec-stream `try_wait` poll loops
 
 ## 5. Proposed Workflow object + run model
 
-Additive, ADR-0017-style ([0017](../decisions/0017-generic-object-model.md)):
+Additive under the current schema-governance boundary:
 new objects in `harness-core/src/lib.rs`, new `append_*`/reader methods in
 `harness-store` (the typed-append pattern at `lib.rs:66-135`), surfaced via SSE
 frames (`SseEventFrame` `sse.rs:18`). **No existing object changes; no

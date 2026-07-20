@@ -218,7 +218,6 @@ fn mcp_stdio_agent_team_tools() {
             "name": "team_run_create",
             "arguments": {
                 "objective": "Ship v0",
-                "wave_index": 2,
                 "mission_id": "mission-mcp",
                 "wave_id": "wave-mcp",
                 "budget_limit_usd": 5.5,

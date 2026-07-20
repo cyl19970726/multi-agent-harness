@@ -9,7 +9,6 @@
   "status": "running",
   "provider_session_id": "ps-1",
   "acp_session_id": "acp-session-1",
-  "current_task_id": "task-1",
   "worktree_ref": "wt://mrun-1",
   "owned_paths": ["crates/harness-core/"],
   "started_at": "2026-07-18T00:00:00Z",

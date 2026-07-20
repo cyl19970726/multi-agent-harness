@@ -51,7 +51,7 @@ Mission -> Wave -> executor
   exit criteria, status, executor reference, outcome, and a lightweight gate.
 - An executor is one of `agent_team`, `dynamic_workflow`, or `host`.
 
-A Wave is intentionally small. It does not own or require a Task Graph.
+A Wave is intentionally small. It does not own or require a legacy dependency graph.
 Dependencies, branches, worktrees, or workflow fan-out may still exist inside
 current implementations, but they are internal execution mechanics, not the
 product concept a future operator should start from.
@@ -65,8 +65,8 @@ now exist, while older Goal surfaces remain readable compatibility paths.
 | Canonical product term | Current compatibility surface | Rule |
 | --- | --- | --- |
 | `Mission` | Read-only provenance projection from existing `Goal` rows | Native Mission is authoritative for new work. Compatibility projections use `compat-goal:*` ids and are never written back. |
-| `Wave` | Existing `GoalPhase` ids are compatibility provenance only | Native Wave is authoritative for new work. A GoalPhase is never synthesized into a Wave because its task-graph semantics differ. |
-| Mission closeout | Optional legacy `GoalEvaluation` | Native closeout uses an explicit Mission outcome summary; richer evaluation remains an optional compatibility/governance layer. |
+| `Wave` | Existing `legacy phase record` ids are compatibility provenance only | Native Wave is authoritative for new work. A legacy phase record is never synthesized into a Wave because its dependency graph semantics differ. |
+| Mission closeout | Optional legacy `outcome evaluation` | Native closeout uses an explicit Mission outcome summary; richer evaluation remains an optional compatibility/governance layer. |
 
 The migration is non-destructive: old ledgers stay readable and are not
 rewritten by Mission/Wave commands.
@@ -87,7 +87,7 @@ TeamMessage(kind=assignment)
   -> artifacts, checks, and explicit outcomes
 ```
 
-Assignment-message correlation replaces Task Graph semantics as the primary
+Assignment-message correlation replaces legacy dependency graph semantics as the primary
 explanation of who owns what inside a Wave. Automatic handoff preserves the
 assignment correlation; manual CLI, HTTP, and MCP sends can reuse it directly
 or inherit it from a validated same-run causation message.
@@ -127,7 +127,7 @@ Wave executed by Agent Team is still different from a Wave executed by Dynamic
 Workflow or directly by the host.
 
 The repository currently applies a stricter Evidence -> Proposal -> Review ->
-Decision -> GoalEvaluation chain while self-hosting changes. That is repository
+Decision -> outcome evaluation chain while self-hosting changes. That is repository
 governance during migration, not a mandatory product contract for every Wave.
 
 ## Thinking Policy
@@ -177,7 +177,7 @@ standing organizations.
 
 The accepted migration is staged and non-destructive:
 
-1. Docs: make Mission/Wave canonical, mark Goal/GoalPhase references
+1. Docs: make Mission/Wave canonical, mark Goal/legacy phase record references
    transitional, and add one architecture map.
 2. Schema and store: implemented for native Mission/Wave plus non-destructive
    Goal compatibility projection.

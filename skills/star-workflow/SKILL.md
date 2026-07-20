@@ -49,7 +49,7 @@ program, run it, and then read the recorded run.
 Dynamic Workflow is a standalone executor. Its Starlark program owns internal
 steps, fan-out, retries, structured output, and patch decisions. A host may
 attach the completed `WorkflowRun`, its artifacts, and its result to an outer
-Mission/Wave gate, but the workflow does not create or require a Task Graph,
+Mission/Wave gate, but the workflow does not create or require a dependency graph,
 agent-team assignment, or compatibility lifecycle record.
 
 Do not reconstruct a workflow as a second plan after it runs. Treat the

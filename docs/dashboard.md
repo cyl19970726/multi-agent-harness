@@ -18,8 +18,8 @@ Mission
   -> next Wave or Mission closeout
 ```
 
-The Workbench must not require or introduce a Task Graph for Mission, Wave, or
-Agent Team. Current Goal/GoalPhase/Task pages remain labeled compatibility
+The Workbench must not require or introduce a legacy dependency graph for Mission, Wave, or
+Agent Team. Current Goal/legacy phase record/Task pages remain labeled compatibility
 surfaces until their data is dual-read into Mission/Wave views.
 
 ## Key Questions
@@ -50,7 +50,7 @@ flowchart TD
   Artifacts[Artifacts and outcomes]
   Gate[Wave gate]
   Warnings[Approvals and warnings]
-  Compat[Goal/GoalPhase compatibility]
+  Compat[Goal/legacy phase record compatibility]
 
   Missions --> Mission
   Mission --> Waves
@@ -80,7 +80,7 @@ flowchart TD
 | Dynamic Workflow | Inspect one WorkflowRun and its steps/artifacts/patches. | apply/reject patch, attach result to gate |
 | Host execution | Show direct Host outcome and optional observed delegation. | attach artifact/outcome |
 | Warnings/approvals | Surface unsafe or incomplete state. | approve/reject, retry, clarify, revise Wave |
-| Compatibility | Keep current Goal/GoalPhase/Task data usable during migration. | open legacy surface with explicit label |
+| Compatibility | Keep current Goal/legacy phase record/Task data usable during migration. | open legacy surface with explicit label |
 
 ## Agent Team Proof
 
@@ -113,7 +113,7 @@ with omitted lineage as unanchored rather than fabricating ownership.
 | Workflow | WorkflowRun/Step, artifacts, result/verdict, patch state |
 | Host path | observable artifact/outcome without fake controlled children |
 | Wave gate | accepted/revise/blocked, actor/time, note, artifacts, accepted run |
-| Compatibility | honest Goal/GoalPhase/Task dual-read/deprecation metadata |
+| Compatibility | honest Goal/legacy phase record/Task dual-read/deprecation metadata |
 
 Fields that affect acceptance, authorization, or ownership belong in schemas
 and runtime contracts, not frontend-only state.
@@ -150,8 +150,8 @@ exists yet.
 
 ## Compatibility Surfaces
 
-Goal, GoalPhase, Task graph/Kanban, Proposal, Review, Decision, and
-GoalEvaluation views remain useful for current self-hosting history and stricter
+Goal, legacy phase record, legacy dependency graph/Kanban, Proposal, Review, Decision, and
+outcome evaluation views remain useful for current self-hosting history and stricter
 repository governance. They must be visually labeled `Compatibility` and may
 not define the Mission/Wave information architecture.
 
@@ -172,7 +172,7 @@ not define the Mission/Wave information architecture.
 
 Workbench acceptance requires fixtures plus at least one live Mission showing:
 
-1. ordered Waves without a Task Graph;
+1. ordered Waves without a legacy dependency graph;
 2. at least one Agent Team attempt with assignment/delivery/member/handoff data;
 3. at least one other executor kind or an explicit unsupported-state fixture;
 4. retry lineage and one accepted attempt;
@@ -183,13 +183,13 @@ Workbench acceptance requires fixtures plus at least one live Mission showing:
 9. an asynchronous attempt start whose durable updates arrive in the selected
    project's SSE read model;
 10. transient thinking that is absent after reload/expiry and from snapshots;
-11. Goal/GoalPhase data still reachable as labeled compatibility state;
+11. Goal/legacy phase record data still reachable as labeled compatibility state;
 12. desktop, tablet, and mobile screenshot evidence with no horizontal overflow.
 
 ## Invariants
 
 1. Mission/Wave is the primary product navigation.
-2. A Wave never requires a Task Graph.
+2. A Wave never requires a legacy dependency graph.
 3. Executor-specific semantics remain visible rather than collapsed.
 4. Agent Team ownership starts with assignment, not an assignee field.
 5. Unsupported correlation, delegation, or thinking behavior is labeled.

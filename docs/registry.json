@@ -7,26 +7,25 @@
    "status": "stable",
    "lifecycle": "stable",
    "canonicalFor": [
-    "repository entry point",
-    "product boundary"
+    "repository entry point for the AI Company OS",
+    "Company OS product boundary and execution-foundation boundary"
    ],
    "dependsOn": [
     "docs/prd.md",
+    "docs/company-os/README.md",
+    "docs/company-os/vision.md",
+    "docs/company-os/document-migration.md",
     "docs/mvp.md",
     "docs/design-basis.md",
     "docs/concept-model.md",
     "docs/architecture.md",
-    "docs/core-modules.md",
     "docs/data-model.md",
     "docs/agent-runtime.md",
-    "docs/agent-control-plane.md",
     "docs/dashboard.md",
     "docs/workflow-git-pr.md",
-    "docs/goal-learning-loop.md",
     "docs/integration/README.md",
     "docs/integration/codex.md",
     "docs/integration/codex-message-delivery.md",
-    "docs/integration/codex-source-audit.md",
     "docs/integration/claude.md",
     "docs/operations.md",
     "docs/schemas.md",
@@ -40,7 +39,7 @@
    "lastVerifiedWith": [
     "npx pnpm@9.15.4 check"
    ],
-   "reorgTrigger": "Start Here links or product boundary no longer match implemented and gateable surfaces."
+   "reorgTrigger": "Start Here links, Company OS product boundary, or execution-foundation boundary no longer match implemented and gateable surfaces."
   },
   {
    "path": "AGENTS.md",
@@ -49,16 +48,19 @@
    "lifecycle": "stable",
    "canonicalFor": [
     "agent operating rules",
+    "Company OS self-hosting and documentation-governance boundary",
     "native Mission/Wave self-hosting workflow",
     "executor-specific staged acceptance"
    ],
    "dependsOn": [
     "docs/prd.md",
+    "docs/company-os/README.md",
+    "docs/company-os/execution-foundation.md",
     "docs/architecture-map.md",
     "docs/architecture.md",
     "docs/concept-model.md",
     "docs/decisions/0026-mission-wave-architecture.md",
-    "docs/goal-learning-loop.md"
+    "docs/decisions/0027-company-os-primary-model.md"
    ],
    "machineConsumers": [
     "check-doc-links",
@@ -68,7 +70,7 @@
    "lastVerifiedWith": [
     "npx pnpm@9.15.4 check"
    ],
-   "reorgTrigger": "The Mission/Wave product model, native self-hosting workflow, executor proof contract, or staged acceptance requirements change."
+   "reorgTrigger": "The Company OS product boundary, Mission/Wave execution foundation, native self-hosting workflow, executor proof contract, or staged acceptance requirements change."
   },
   {
    "path": "docs/README.md",
@@ -85,17 +87,13 @@
     "docs/design-basis.md",
     "docs/concept-model.md",
     "docs/architecture.md",
-    "docs/core-modules.md",
     "docs/data-model.md",
     "docs/agent-runtime.md",
-    "docs/agent-control-plane.md",
     "docs/dashboard.md",
     "docs/workflow-git-pr.md",
-    "docs/goal-learning-loop.md",
     "docs/integration/README.md",
     "docs/integration/codex.md",
     "docs/integration/codex-message-delivery.md",
-    "docs/integration/codex-source-audit.md",
     "docs/integration/claude.md",
     "docs/operations.md",
     "docs/schemas.md",
@@ -112,57 +110,30 @@
    "reorgTrigger": "Docs grow new stable sections, readers, or machine-consumed groups."
   },
   {
-   "path": "docs/VISION.md",
-   "ownerRole": "product",
-   "status": "deprecated",
-   "lifecycle": "archival",
-   "canonicalFor": [
-    "historical Goal/GoalPhase closed-loop vision",
-    "implemented compatibility roadmap provenance"
-   ],
-   "dependsOn": [
-    "docs/architecture-map.md",
-    "docs/decisions/0026-mission-wave-architecture.md",
-    "docs/prd.md",
-    "docs/mvp.md",
-    "docs/decisions/0019-vision-goal-task-workbench-redesign.md",
-    "crates/harness-core/src/lib.rs",
-    "docs/vision/closed-loop.svg",
-    "docs/vision/task-vs-workflow.svg"
-   ],
-   "machineConsumers": [
-    "check-doc-links",
-    "check-doc-governance"
-   ],
-   "reviewAfter": "2026-09-20",
-   "lastVerifiedWith": [
-    "npx pnpm@9.15.4 check"
-   ],
-   "reorgTrigger": "GoalPhase compatibility is removed, stored Vision records migrate to Mission, or historical roadmap provenance no longer needs this file."
-  },
-  {
    "path": "docs/prd.md",
    "ownerRole": "product",
    "status": "stable",
    "lifecycle": "stable",
    "canonicalFor": [
-    "Mission/Wave product purpose",
-    "executor product requirements",
-    "near-term scenarios and non-goals"
+    "AI Company OS product requirements",
+    "Docs and mixed Organization product boundary",
+    "execution-foundation requirements and near-term scenarios"
    ],
    "dependsOn": [
     "docs/architecture-map.md",
+    "docs/company-os/README.md",
+    "docs/company-os/vision.md",
+    "docs/company-os/execution-foundation.md",
+    "docs/company-os/document-migration.md",
+    "docs/decisions/0027-company-os-primary-model.md",
     "docs/decisions/0026-mission-wave-architecture.md",
     "docs/mvp.md",
     "docs/design-basis.md",
     "docs/concept-model.md",
-    "docs/core-modules.md",
     "docs/data-model.md",
     "docs/agent-runtime.md",
-    "docs/agent-control-plane.md",
     "docs/dashboard.md",
     "docs/workflow-git-pr.md",
-    "docs/goal-learning-loop.md",
     "docs/integration/README.md",
     "docs/integration/claude.md",
     "docs/decisions/README.md"
@@ -175,7 +146,7 @@
    "lastVerifiedWith": [
     "npx pnpm@9.15.4 check"
    ],
-   "reorgTrigger": "Mission/Wave hierarchy, executor requirements, near-term scope, scenarios, or non-goals change."
+   "reorgTrigger": "Company OS product boundary, Docs/Organization model, execution-foundation requirements, near-term scope, scenarios, or non-goals change."
   },
   {
    "path": "docs/mvp.md",
@@ -193,11 +164,9 @@
     "docs/decisions/0026-mission-wave-architecture.md",
     "docs/design-basis.md",
     "docs/concept-model.md",
-    "docs/core-modules.md",
     "docs/architecture.md",
     "docs/data-model.md",
     "docs/agent-runtime.md",
-    "docs/agent-control-plane.md",
     "docs/dashboard.md",
     "docs/workflow-git-pr.md",
     "docs/integration/codex.md",
@@ -251,7 +220,7 @@
     "core object relationships",
     "Mission/Wave semantics and compatibility mapping",
     "executor kinds and assignment-message correlation",
-    "generic object model (Review, Gap, GoalDesign, GoalEvaluation, GoalCase, Vision)",
+    "generic object model (Review, Gap, historical work design, outcome evaluation, reusable learning note, Vision)",
     "closeout gate and open-enum vocabularies",
     "anti-drift invariants"
    ],
@@ -260,9 +229,7 @@
     "docs/design-basis.md",
     "docs/architecture.md",
     "docs/architecture-map.md",
-    "docs/core-modules.md",
     "docs/schemas.md",
-    "docs/decisions/0017-generic-object-model.md",
     "docs/decisions/0026-mission-wave-architecture.md"
    ],
    "machineConsumers": [
@@ -290,18 +257,15 @@
     "docs/design-basis.md",
     "docs/concept-model.md",
     "docs/architecture-map.md",
-    "docs/core-modules.md",
     "docs/data-model.md",
     "docs/agent-runtime.md",
     "docs/dashboard.md",
     "docs/workflow-git-pr.md",
     "docs/schemas.md",
-    "docs/agent-control-plane.md",
     "docs/integration/README.md",
     "docs/integration/claude.md",
     "docs/integration/codex.md",
     "docs/integration/codex-message-delivery.md",
-    "docs/goal-learning-loop.md",
     "docs/decisions/0026-mission-wave-architecture.md"
    ],
    "machineConsumers": [
@@ -321,13 +285,18 @@
    "status": "stable",
    "lifecycle": "stable",
    "canonicalFor": [
-    "Mission/Wave architecture diagrams",
+    "Company OS and execution-foundation architecture diagrams",
+    "Docs and mixed Organization relationship map",
     "executor capability map",
     "shared infrastructure map",
     "compatibility migration map"
    ],
    "dependsOn": [
     "docs/architecture.md",
+    "docs/company-os/README.md",
+    "docs/company-os/concept-model.md",
+    "docs/company-os/execution-foundation.md",
+    "docs/decisions/0027-company-os-primary-model.md",
     "docs/concept-model.md",
     "docs/decisions/0025-agent-team-run-control-plane.md",
     "docs/decisions/0026-mission-wave-architecture.md"
@@ -340,36 +309,7 @@
    "lastVerifiedWith": [
     "npx pnpm@9.15.4 check"
    ],
-   "reorgTrigger": "The product hierarchy, executor kinds, shared runtime diagrams, or compatibility migration map change."
-  },
-  {
-   "path": "docs/core-modules.md",
-   "ownerRole": "product-architecture",
-   "status": "planned",
-   "lifecycle": "volatile",
-   "canonicalFor": [
-    "core module PRD narrative",
-    "core module architecture boundaries",
-    "source-of-truth map",
-    "module build order"
-   ],
-   "dependsOn": [
-    "docs/prd.md",
-    "docs/design-basis.md",
-    "docs/architecture.md",
-    "docs/concept-model.md",
-    "docs/agent-control-plane.md",
-    "docs/schemas.md"
-   ],
-   "machineConsumers": [
-    "check-doc-links",
-    "check-doc-governance"
-   ],
-   "reviewAfter": "2026-08-31",
-   "lastVerifiedWith": [
-    "npx pnpm@9.15.4 check"
-   ],
-   "reorgTrigger": "Core module boundaries, source-of-truth ownership, primary-object membership, or build order changes."
+   "reorgTrigger": "The Company OS product hierarchy, Docs/Organization relationship model, executor kinds, shared runtime diagrams, or compatibility migration map change."
   },
   {
    "path": "docs/data-model.md",
@@ -381,7 +321,7 @@
     "source-of-truth rules",
     "projection semantics",
     "Mission/Wave and executor attempt edges",
-    "legacy task graph compatibility edges",
+    "legacy dependency graph compatibility edges",
     "generic object edges",
     "Evidence-to-object graduation (dual-read)"
    ],
@@ -390,8 +330,7 @@
     "docs/concept-model.md",
     "docs/architecture.md",
     "docs/schemas.md",
-    "docs/goal-learning-loop.md",
-    "docs/decisions/0017-generic-object-model.md"
+    "docs/company-os/governance.md"
    ],
    "machineConsumers": [
     "check-doc-links",
@@ -419,7 +358,6 @@
     "docs/prd.md",
     "docs/concept-model.md",
     "docs/data-model.md",
-    "docs/agent-control-plane.md",
     "docs/integration/README.md",
     "docs/integration/claude.md",
     "docs/schemas.md",
@@ -455,14 +393,9 @@
     "docs/concept-model.md",
     "docs/data-model.md",
     "docs/agent-runtime.md",
-    "docs/agent-control-plane.md",
     "docs/dashboard/README.md",
-    "docs/dashboard/design-principles.md",
-    "docs/dashboard/layout-history.md",
     "docs/dashboard/frontend-design.md",
     "docs/dashboard/frontend-architecture.md",
-    "docs/dashboard/read-model.md",
-    "docs/dashboard/acceptance.md",
     "docs/dashboard/runbook.md",
     "docs/dashboard/pages/README.md",
     "apps/agent-dashboard/src/app/selection.ts"
@@ -491,12 +424,8 @@
    "dependsOn": [
     "docs/README.md",
     "docs/dashboard.md",
-    "docs/dashboard/design-principles.md",
-    "docs/dashboard/layout-history.md",
     "docs/dashboard/frontend-design.md",
     "docs/dashboard/frontend-architecture.md",
-    "docs/dashboard/read-model.md",
-    "docs/dashboard/acceptance.md",
     "docs/dashboard/runbook.md",
     "docs/dashboard/pages/README.md"
    ],
@@ -509,65 +438,6 @@
     "npx pnpm@9.15.4 check"
    ],
    "reorgTrigger": "Workbench docs gain new stable surfaces, readers, or source-of-truth boundaries."
-  },
-  {
-   "path": "docs/dashboard/design-principles.md",
-   "ownerRole": "product-design",
-   "status": "planned",
-   "lifecycle": "volatile",
-   "canonicalFor": [
-    "Agent Workbench frontend design principles",
-    "AgentTeam and AgentMember UI doctrine",
-    "Workbench visual system"
-   ],
-   "dependsOn": [
-    "docs/prd.md",
-    "docs/concept-model.md",
-    "docs/dashboard.md",
-    "docs/agent-control-plane.md",
-    "docs/workflow-git-pr.md",
-    "docs/goal-learning-loop.md",
-    "docs/dashboard/work-board-design.md"
-   ],
-   "machineConsumers": [
-    "check-doc-links",
-    "check-doc-governance"
-   ],
-   "reviewAfter": "2026-08-03",
-   "lastVerifiedWith": [
-    "npx pnpm@9.15.4 check",
-    "harness governance check"
-   ],
-   "reorgTrigger": "Workbench frontend principles, Agent Team UI doctrine, or visual system changes."
-  },
-  {
-   "path": "docs/dashboard/layout-history.md",
-   "ownerRole": "product-design",
-   "status": "planned",
-   "lifecycle": "volatile",
-   "canonicalFor": [
-    "Agent Workbench candidate layouts",
-    "Designer and Questioner critique",
-    "Workbench layout scoring rubric",
-    "Agent Workbench accepted/killed layout decision ledger",
-    "rejected-implementation outcomes"
-   ],
-   "dependsOn": [
-    "docs/prd.md",
-    "docs/concept-model.md",
-    "docs/dashboard.md",
-    "docs/dashboard/design-principles.md",
-    "docs/dashboard/frontend-design.md"
-   ],
-   "machineConsumers": [
-    "check-doc-links",
-    "check-doc-governance"
-   ],
-   "reviewAfter": "2026-08-03",
-   "lastVerifiedWith": [
-    "npx pnpm@9.15.4 check"
-   ],
-   "reorgTrigger": "Workbench candidate layout set, scoring rubric, accepted/killed layout decisions, module decisions, or rejected-implementation routing changes."
   },
   {
    "path": "docs/dashboard/frontend-design.md",
@@ -587,12 +457,8 @@
     "docs/prd.md",
     "docs/concept-model.md",
     "docs/dashboard.md",
-    "docs/dashboard/design-principles.md",
-    "docs/dashboard/layout-history.md",
     "docs/dashboard/pages/README.md",
-    "docs/dashboard/frontend-architecture.md",
-    "docs/dashboard/read-model.md",
-    "docs/dashboard/acceptance.md"
+    "docs/dashboard/frontend-architecture.md"
    ],
    "machineConsumers": [
     "check-doc-links",
@@ -603,32 +469,6 @@
     "npx pnpm@9.15.4 check"
    ],
    "reorgTrigger": "Workbench page specs, page-local layout contracts, implementation readiness, or frontend design reading order changes."
-  },
-  {
-   "path": "docs/dashboard/work-board-design.md",
-   "ownerRole": "product-design",
-   "status": "deprecated",
-   "lifecycle": "archival",
-   "canonicalFor": [
-    "shipped Vision/Goal/Task compatibility UI",
-    "historical unified Work board layout"
-   ],
-   "dependsOn": [
-    "docs/concept-model.md",
-    "docs/data-model.md",
-    "docs/decisions/0019-vision-goal-task-workbench-redesign.md",
-    "docs/dashboard/read-model.md",
-    "docs/dashboard/acceptance.md"
-   ],
-   "machineConsumers": [
-    "check-doc-links",
-    "check-doc-governance"
-   ],
-   "reviewAfter": "2026-09-01",
-   "lastVerifiedWith": [
-    "npx pnpm@9.15.4 check"
-   ],
-   "reorgTrigger": "Vision/Goal/Task structures, Work board IA, detail document layout, or task-graph derivation change."
   },
   {
    "path": "docs/dashboard/frontend-architecture.md",
@@ -645,7 +485,6 @@
     "docs/dashboard.md",
     "docs/dashboard/frontend-design.md",
     "docs/dashboard/pages/README.md",
-    "docs/dashboard/acceptance.md",
     "docs/decisions/0014-react-vite-agent-dashboard.md",
     "apps/agent-dashboard/vite.config.ts",
     "apps/agent-dashboard/src/types.ts",
@@ -664,68 +503,6 @@
    "reorgTrigger": "Frontend stack, dependency policy, primitive boundaries, graph strategy, or old-code disposition changes."
   },
   {
-   "path": "docs/dashboard/read-model.md",
-   "ownerRole": "frontend-architecture",
-   "status": "planned",
-   "lifecycle": "volatile",
-   "canonicalFor": [
-    "Agent Workbench read-model projections",
-    "goal-scoped Dashboard filtering",
-    "advisory warning ownership",
-    "warning promotion rules"
-   ],
-   "dependsOn": [
-    "docs/dashboard.md",
-    "docs/dashboard/design-principles.md",
-    "docs/dashboard/frontend-architecture.md",
-    "docs/data-model.md",
-    "apps/agent-dashboard/src/types.ts",
-    "apps/agent-dashboard/src/model/warnings.ts",
-    "apps/agent-dashboard/src/model/readModel.ts"
-   ],
-   "machineConsumers": [
-    "check-doc-links",
-    "check-doc-governance"
-   ],
-   "reviewAfter": "2026-08-03",
-   "lastVerifiedWith": [
-    "npx pnpm@9.15.4 check",
-    "harness governance check"
-   ],
-   "reorgTrigger": "Workbench warning logic, read-model selectors, or canonical promotion rules change."
-  },
-  {
-   "path": "docs/dashboard/acceptance.md",
-   "ownerRole": "frontend-quality",
-   "status": "planned",
-   "lifecycle": "volatile",
-   "canonicalFor": [
-    "Agent Workbench screenshot-first browser acceptance",
-    "PM/User acceptance subagent gate",
-    "Workbench web-quality gate"
-   ],
-   "dependsOn": [
-    "docs/dashboard.md",
-    "docs/dashboard/design-principles.md",
-    "docs/dashboard/layout-history.md",
-    "docs/dashboard/frontend-design.md",
-    "docs/dashboard/frontend-architecture.md",
-    "docs/dashboard/read-model.md",
-    "package.json",
-    "docs/dashboard/pages/README.md"
-   ],
-   "machineConsumers": [
-    "check-doc-links",
-    "check-doc-governance"
-   ],
-   "reviewAfter": "2026-08-03",
-   "lastVerifiedWith": [
-    "npx pnpm@9.15.4 check",
-    "harness governance check"
-   ],
-   "reorgTrigger": "Browser evidence, PM/User subagent gates, screenshot policy, rejected implementation rules, or web-quality acceptance changes."
-  },
-  {
    "path": "docs/dashboard/runbook.md",
    "ownerRole": "operations",
    "status": "planned",
@@ -738,10 +515,8 @@
    ],
    "dependsOn": [
     "docs/dashboard.md",
-    "docs/dashboard/design-principles.md",
     "docs/dashboard/frontend-design.md",
     "docs/dashboard/frontend-architecture.md",
-    "docs/dashboard/acceptance.md",
     "apps/agent-dashboard/vite.config.ts",
     "package.json",
     "apps/agent-dashboard/src/api.ts",
@@ -774,7 +549,7 @@
     "docs/data-model.md",
     "docs/architecture.md",
     "docs/decisions/README.md",
-    "docs/goal-phase-loop.md",
+    "docs/company-os/execution-foundation.md",
     "docs/workflow-runtime.md"
    ],
    "machineConsumers": [
@@ -787,71 +562,6 @@
     "harness governance check"
    ],
    "reorgTrigger": "Task concurrency, worktree, PR, proposal, review, or decision workflow changes."
-  },
-  {
-   "path": "docs/agent-control-plane.md",
-   "ownerRole": "architecture",
-   "status": "planned",
-   "lifecycle": "volatile",
-   "canonicalFor": [
-    "AgentMember control plane",
-    "agent lifecycle",
-    "message queue semantics",
-    "peer-to-peer agent messaging",
-    "provider event reducer",
-    "Workbench control-plane roadmap"
-   ],
-   "dependsOn": [
-    "docs/prd.md",
-    "docs/architecture.md",
-    "docs/mvp.md",
-    "docs/agent-runtime.md",
-    "docs/dashboard.md",
-    "docs/schemas.md",
-    "docs/integration/codex.md",
-    "docs/integration/codex-message-delivery.md"
-   ],
-   "machineConsumers": [
-    "check-doc-links",
-    "check-doc-governance"
-   ],
-   "reviewAfter": "2026-08-03",
-   "lastVerifiedWith": [
-    "npx pnpm@9.15.4 check",
-    "https://code.claude.com/docs/en/agent-teams",
-    "harness governance check"
-   ],
-   "reorgTrigger": "Agent lifecycle, queue semantics, peer messaging, provider reducer, or Dashboard control actions stabilize enough to move from roadmap into schema/CLI/API contracts."
-  },
-  {
-   "path": "docs/goal-learning-loop.md",
-   "ownerRole": "product-architecture",
-   "status": "planned",
-   "lifecycle": "volatile",
-   "canonicalFor": [
-    "goal design artifacts",
-    "goal evaluation workflow",
-    "reusable goal cases",
-    "Evidence-to-object graduation and dual-read",
-    "closeout gate and waiver enforcement"
-   ],
-   "dependsOn": [
-    "docs/prd.md",
-    "docs/design-basis.md",
-    "docs/architecture.md",
-    "docs/decisions/0017-generic-object-model.md",
-    "examples/goal-cases/README.md"
-   ],
-   "machineConsumers": [
-    "check-doc-links",
-    "check-doc-governance"
-   ],
-   "reviewAfter": "2026-08-31",
-   "lastVerifiedWith": [
-    "npx pnpm@9.15.4 check",
-    "cargo test"
-   ],
-   "reorgTrigger": "GoalDesign, GoalEvaluation, GoalCase, or Vision fields, the dual-read graduation contract, or the closeout/waiver gates change."
   },
   {
    "path": "docs/integration/README.md",
@@ -897,7 +607,6 @@
     "docs/integration/README.md",
     "docs/architecture.md",
     "docs/integration/codex-message-delivery.md",
-    "docs/integration/codex-source-audit.md",
     "docs/mvp.md",
     "docs/schemas.md",
     "docs/decisions/0018-exec-stream-primary-substrate.md"
@@ -931,7 +640,6 @@
    "dependsOn": [
     "docs/agent-runtime.md",
     "docs/integration/codex.md",
-    "docs/dashboard/read-model.md",
     "crates/harness-cli/src/main.rs",
     "docs/decisions/0018-exec-stream-primary-substrate.md"
    ],
@@ -946,34 +654,6 @@
     "harness governance check"
    ],
    "reorgTrigger": "Codex delivery queue, provider gateway, MessageDelivery schema, app-server protocol, or Dashboard projection behavior changes."
-  },
-  {
-   "path": "docs/integration/codex-source-audit.md",
-   "ownerRole": "provider-integration",
-   "status": "planned",
-   "lifecycle": "volatile",
-   "canonicalFor": [
-    "Codex source findings",
-    "Codex app-server audit",
-    "provider integration refresh notes"
-   ],
-   "dependsOn": [
-    "docs/agent-runtime.md",
-    "docs/integration/codex.md",
-    "docs/decisions/README.md",
-    "docs/decisions/0018-exec-stream-primary-substrate.md"
-   ],
-   "machineConsumers": [
-    "check-doc-links",
-    "check-doc-governance"
-   ],
-   "reviewAfter": "2026-08-03",
-   "lastVerifiedWith": [
-    "Codex source audit",
-    "npx pnpm@9.15.4 check",
-    "harness governance check"
-   ],
-   "reorgTrigger": "Codex app-server protocol, hooks, plugins, native subagents, or permission behavior changes."
   },
   {
    "path": "docs/integration/claude.md",
@@ -1075,7 +755,6 @@
     "docs/workflow-git-pr.md",
     "docs/integration/codex.md",
     "docs/integration/codex-message-delivery.md",
-    "docs/integration/codex-source-audit.md",
     "docs/integration/claude.md"
    ],
    "machineConsumers": [
@@ -1100,8 +779,7 @@
    "dependsOn": [
     "docs/architecture-map.md",
     "docs/decisions/0026-mission-wave-architecture.md",
-    "docs/dashboard/frontend-design.md",
-    "docs/dashboard/design-principles.md"
+    "docs/dashboard/frontend-design.md"
    ],
    "machineConsumers": [
     "check-doc-links",
@@ -1112,35 +790,6 @@
     "npx pnpm@9.15.4 check"
    ],
    "reorgTrigger": "Mission/Wave page list, compatibility page status, page-spec template, or page-spec boundary changes."
-  },
-  {
-   "path": "docs/dashboard/pages/goal.md",
-   "ownerRole": "product-design",
-   "status": "deprecated",
-   "lifecycle": "archival",
-   "canonicalFor": [
-    "shipped Goal Workbench compatibility page",
-    "historical phase-first Goal detail contract"
-   ],
-   "dependsOn": [
-    "docs/prd.md",
-    "docs/concept-model.md",
-    "docs/dashboard.md",
-    "docs/dashboard/frontend-design.md",
-    "docs/dashboard/design-principles.md",
-    "docs/dashboard/layout-history.md",
-    "docs/dashboard/work-board-design.md",
-    "docs/dashboard/acceptance.md"
-   ],
-   "machineConsumers": [
-    "check-doc-links",
-    "check-doc-governance"
-   ],
-   "reviewAfter": "2026-08-03",
-   "lastVerifiedWith": [
-    "wfrun-1783013150649-0"
-   ],
-   "reorgTrigger": "Goal/GoalPhase compatibility UI is removed or dual-read into Mission/Wave detail."
   },
   {
    "path": "docs/dashboard/pages/team-workspace.md",
@@ -1156,10 +805,7 @@
     "docs/prd.md",
     "docs/concept-model.md",
     "docs/dashboard.md",
-    "docs/dashboard/frontend-design.md",
-    "docs/dashboard/design-principles.md",
-    "docs/dashboard/layout-history.md",
-    "docs/dashboard/read-model.md"
+    "docs/dashboard/frontend-design.md"
    ],
    "machineConsumers": [
     "check-doc-links",
@@ -1186,10 +832,7 @@
     "docs/prd.md",
     "docs/concept-model.md",
     "docs/dashboard.md",
-    "docs/dashboard/frontend-design.md",
-    "docs/dashboard/design-principles.md",
-    "docs/dashboard/layout-history.md",
-    "docs/dashboard/read-model.md"
+    "docs/dashboard/frontend-design.md"
    ],
    "machineConsumers": [
     "check-doc-links",
@@ -1217,10 +860,7 @@
     "docs/prd.md",
     "docs/concept-model.md",
     "docs/dashboard.md",
-    "docs/dashboard/frontend-design.md",
-    "docs/dashboard/design-principles.md",
-    "docs/dashboard/layout-history.md",
-    "docs/dashboard/read-model.md"
+    "docs/dashboard/frontend-design.md"
    ],
    "machineConsumers": [
     "check-doc-links",
@@ -1248,10 +888,7 @@
     "docs/prd.md",
     "docs/concept-model.md",
     "docs/dashboard.md",
-    "docs/dashboard/frontend-design.md",
-    "docs/dashboard/design-principles.md",
-    "docs/dashboard/layout-history.md",
-    "docs/dashboard/read-model.md"
+    "docs/dashboard/frontend-design.md"
    ],
    "machineConsumers": [
     "check-doc-links",
@@ -1278,10 +915,7 @@
     "docs/prd.md",
     "docs/concept-model.md",
     "docs/dashboard.md",
-    "docs/dashboard/frontend-design.md",
-    "docs/dashboard/design-principles.md",
-    "docs/dashboard/layout-history.md",
-    "docs/dashboard/read-model.md"
+    "docs/dashboard/frontend-design.md"
    ],
    "machineConsumers": [
     "check-doc-links",
@@ -1310,10 +944,6 @@
     "docs/concept-model.md",
     "docs/dashboard.md",
     "docs/dashboard/frontend-design.md",
-    "docs/dashboard/design-principles.md",
-    "docs/dashboard/layout-history.md",
-    "docs/dashboard/read-model.md",
-    "docs/dashboard/acceptance.md",
     "docs/decisions/0025-agent-team-run-control-plane.md",
     "docs/decisions/0026-mission-wave-architecture.md"
    ],
@@ -1340,9 +970,7 @@
    ],
    "dependsOn": [
     "docs/decisions/0014-react-vite-agent-dashboard.md",
-    "docs/dashboard/frontend-architecture.md",
-    "docs/dashboard/layout-history.md",
-    "docs/dashboard/acceptance.md"
+    "docs/dashboard/frontend-architecture.md"
    ],
    "machineConsumers": [
     "check-doc-links",
@@ -1353,39 +981,6 @@
     "npx pnpm@9.15.4 check"
    ],
    "reorgTrigger": "Frontend styling stack, UI-primitive library, dependency boundary, or Workbench module boundary changes."
-  },
-  {
-   "path": "docs/decisions/0017-generic-object-model.md",
-   "ownerRole": "schema",
-   "status": "stable",
-   "lifecycle": "stable",
-   "canonicalFor": [
-    "additive-optional schema evolution policy",
-    "no schema_version field decision",
-    "the six generic objects (Review, Gap, GoalDesign, GoalEvaluation, GoalCase, Vision)",
-    "Bug is Gap(category=bug) and Phase is Task.phase",
-    "open-enum versus hard-enum pattern"
-   ],
-   "dependsOn": [
-    "docs/decisions/0003-minimal-first-types.md",
-    "docs/decisions/0015-autonomous-proposals-use-evidence-message-decision.md",
-    "docs/schemas.md",
-    "schemas/review.schema.json",
-    "schemas/gap.schema.json",
-    "schemas/goal-design.schema.json",
-    "schemas/goal-evaluation.schema.json",
-    "schemas/goal-case.schema.json",
-    "schemas/vision.schema.json"
-   ],
-   "machineConsumers": [
-    "check-doc-links",
-    "check-doc-governance"
-   ],
-   "reviewAfter": "2026-08-30",
-   "lastVerifiedWith": [
-    "npx pnpm@9.15.4 check"
-   ],
-   "reorgTrigger": "A new required field is needed on an existing object, a new generic object is added, or the open-enum/domain-neutrality policy changes."
   },
   {
    "path": "docs/member-runtime-observability.md",
@@ -1400,7 +995,6 @@
    ],
    "dependsOn": [
     "docs/agent-runtime.md",
-    "docs/agent-control-plane.md",
     "docs/concept-model.md",
     "docs/data-model.md",
     "docs/integration/codex.md",
@@ -1439,7 +1033,6 @@
    ],
    "dependsOn": [
     "docs/agent-runtime.md",
-    "docs/agent-control-plane.md",
     "docs/integration/README.md",
     "docs/integration/codex.md",
     "docs/integration/claude.md",
@@ -1505,7 +1098,6 @@
    ],
    "dependsOn": [
     "docs/concept-model.md",
-    "docs/agent-control-plane.md",
     "docs/agent-runtime.md",
     "docs/architecture-map.md",
     "docs/integration/kimi.md",
@@ -1513,7 +1105,6 @@
     "docs/decisions/0011-provider-neutral-runtime.md",
     "docs/decisions/0018-exec-stream-primary-substrate.md",
     "docs/decisions/0022-dynamic-workflow-runtime-json-ir.md",
-    "docs/decisions/0024-goal-phase-execution-modes.md",
     "docs/decisions/0026-mission-wave-architecture.md"
    ],
    "machineConsumers": [
@@ -1536,13 +1127,12 @@
     "Mission -> Wave -> executor hierarchy",
     "executor kinds (agent_team, dynamic_workflow, host)",
     "shared runtime contracts and transient-thinking policy",
-    "non-destructive Goal/GoalPhase compatibility migration"
+    "non-destructive Goal/historical phase compatibility migration"
    ],
    "dependsOn": [
     "docs/architecture.md",
     "docs/architecture-map.md",
     "docs/concept-model.md",
-    "docs/decisions/0024-goal-phase-execution-modes.md",
     "docs/decisions/0025-agent-team-run-control-plane.md"
    ],
    "machineConsumers": [
@@ -1728,7 +1318,6 @@
     "docs/research/multica-architecture.md",
     "docs/decisions/0018-exec-stream-primary-substrate.md",
     "docs/decisions/0011-provider-neutral-runtime.md",
-    "docs/decisions/0017-generic-object-model.md",
     "docs/decisions/0022-dynamic-workflow-runtime-json-ir.md"
    ],
    "machineConsumers": [
@@ -1756,9 +1345,7 @@
    "dependsOn": [
     "docs/concept-model.md",
     "docs/data-model.md",
-    "docs/goal-learning-loop.md",
     "docs/schemas.md",
-    "docs/decisions/0017-generic-object-model.md",
     "docs/research/dynamic-workflow-runtime-design.md"
    ],
    "machineConsumers": [
@@ -2010,7 +1597,6 @@
    ],
    "dependsOn": [
     "docs/dashboard/frontend-design.md",
-    "docs/dashboard/read-model.md",
     "apps/agent-dashboard/src/types.ts"
    ],
    "machineConsumers": [
@@ -2059,7 +1645,6 @@
     "conversation-default + live-current-work tab structure"
    ],
    "dependsOn": [
-    "docs/dashboard/design-principles.md",
     "docs/dashboard/pages/agent-member-workbench.md",
     "apps/agent-dashboard/src/types.ts"
    ],
@@ -2101,33 +1686,6 @@
    "reorgTrigger": "The workflow runtime primitives, run-script surface, or WorkflowRun/WorkflowStep shape change."
   },
   {
-   "path": "docs/goal-phase-loop.md",
-   "ownerRole": "architect",
-   "status": "stable",
-   "lifecycle": "stable",
-   "canonicalFor": [
-    "current GoalPhase runtime compatibility",
-    "current run-phases orchestrator",
-    "current per-phase landing"
-   ],
-   "dependsOn": [
-    "crates/harness-core/src/lib.rs",
-    "crates/harness-cli/src/main.rs",
-    "docs/workflow-runtime.md",
-    "docs/VISION.md",
-    "docs/decisions/0026-mission-wave-architecture.md"
-   ],
-   "machineConsumers": [
-    "check-doc-links",
-    "check-doc-governance"
-   ],
-   "reviewAfter": "2026-09-20",
-   "lastVerifiedWith": [
-    "npx pnpm@9.15.4 check"
-   ],
-   "reorgTrigger": "The current GoalPhase compatibility shape, compile_phase_to_starlark, run-phases orchestrator, per-phase landing, or Mission/Wave migration changes."
-  },
-  {
    "path": "docs/integration/kimi.md",
    "ownerRole": "provider-integration",
    "status": "stable",
@@ -2163,7 +1721,6 @@
    ],
    "dependsOn": [
     "docs/agent-integration-model.md",
-    "docs/goal-phase-loop.md",
     "skills/bootstrap-project-workflow/references/governance.md"
    ],
    "machineConsumers": [
@@ -2202,6 +1759,759 @@
     "npx pnpm@9.15.4 check"
    ],
    "reorgTrigger": "The Mission/Wave IA, Wave executor model, member page structure, compatibility-copy policy, or transient-thinking policy changes."
+  },
+  {
+   "path": "docs/company-os/README.md",
+   "ownerRole": "product",
+   "status": "stable",
+   "lifecycle": "volatile",
+   "canonicalFor": [
+    "AI Company OS documentation entry",
+    "Docs and mixed Organization product boundary"
+   ],
+   "dependsOn": [
+    "docs/company-os/vision.md",
+    "docs/company-os/concept-model.md",
+    "docs/company-os/document-migration.md",
+    "docs/decisions/0027-company-os-primary-model.md",
+    "docs/decisions/0029-agent-programmable-document-runtime.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-08-20",
+   "lastVerifiedWith": [
+    "npx pnpm@9.15.4 check"
+   ],
+   "reorgTrigger": "The Company OS product boundary, canonical document map, or migration boundary changes."
+  },
+  {
+   "path": "docs/company-os/vision.md",
+   "ownerRole": "product",
+   "status": "stable",
+   "lifecycle": "volatile",
+   "canonicalFor": [
+    "AI Company OS thesis",
+    "document-driven operating loop",
+    "Docs and Organization dual cores"
+   ],
+   "dependsOn": [
+    "docs/company-os/concept-model.md",
+    "docs/company-os/execution-foundation.md",
+    "docs/decisions/0027-company-os-primary-model.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-08-20",
+   "lastVerifiedWith": [
+    "npx pnpm@9.15.4 check"
+   ],
+   "reorgTrigger": "The Company OS thesis, operating loop, or primary-system boundary changes."
+  },
+  {
+   "path": "docs/company-os/concept-model.md",
+   "ownerRole": "product-architecture",
+   "status": "stable",
+   "lifecycle": "volatile",
+   "canonicalFor": [
+    "Company OS object relationships",
+    "Actor and organization boundaries",
+    "Document, WorkItem, Approval, and execution-reference semantics"
+   ],
+   "dependsOn": [
+    "docs/company-os/vision.md",
+    "docs/company-os/document-system.md",
+    "docs/company-os/organization-and-actors.md",
+    "docs/company-os/work-items-and-approvals.md",
+    "docs/company-os/execution-foundation.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-08-20",
+   "lastVerifiedWith": [
+    "npx pnpm@9.15.4 check"
+   ],
+   "reorgTrigger": "Any Company OS object, source-of-truth boundary, or relationship invariant changes."
+  },
+  {
+   "path": "docs/company-os/document-system.md",
+   "ownerRole": "product-architecture",
+   "status": "stable",
+   "lifecycle": "volatile",
+   "canonicalFor": [
+    "Company document system",
+    "typed records, relations, views, and document spaces"
+   ],
+   "dependsOn": [
+    "docs/company-os/concept-model.md",
+    "docs/company-os/module-design.md",
+    "docs/company-os/governance.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-08-20",
+   "lastVerifiedWith": [
+    "npx pnpm@9.15.4 check"
+   ],
+   "reorgTrigger": "Document, typed-record, relation, view, or document-space semantics change."
+  },
+  {
+   "path": "docs/company-os/organization-and-actors.md",
+   "ownerRole": "product-architecture",
+   "status": "stable",
+   "lifecycle": "volatile",
+   "canonicalFor": [
+    "mixed human, Standing Agent, external, and service organization",
+    "OrgUnit and ActorRef lifecycles"
+   ],
+   "dependsOn": [
+    "docs/company-os/concept-model.md",
+    "docs/company-os/work-items-and-approvals.md",
+    "docs/company-os/governance.md",
+    "docs/company-os/execution-foundation.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-08-20",
+   "lastVerifiedWith": [
+    "npx pnpm@9.15.4 check"
+   ],
+   "reorgTrigger": "Actor types, OrgUnit semantics, authority, capacity, or Standing Agent boundaries change."
+  },
+  {
+   "path": "docs/company-os/work-items-and-approvals.md",
+   "ownerRole": "product-architecture",
+   "status": "stable",
+   "lifecycle": "volatile",
+   "canonicalFor": [
+    "document-originated WorkItems",
+    "responsibility, execution references, review, and approvals"
+   ],
+   "dependsOn": [
+    "docs/company-os/concept-model.md",
+    "docs/company-os/organization-and-actors.md",
+    "docs/company-os/document-system.md",
+    "docs/company-os/execution-foundation.md",
+    "docs/company-os/governance.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-08-20",
+   "lastVerifiedWith": [
+    "npx pnpm@9.15.4 check"
+   ],
+   "reorgTrigger": "WorkItem provenance, responsibility roles, approval semantics, or execution-reference rules change."
+  },
+  {
+   "path": "docs/company-os/financial-relations.md",
+   "ownerRole": "product-architecture",
+   "status": "stable",
+   "lifecycle": "volatile",
+   "canonicalFor": [
+    "FinancialRecord relationships",
+    "finance-to-module, WorkItem, Approval, and evidence linkage"
+   ],
+   "dependsOn": [
+    "docs/company-os/concept-model.md",
+    "docs/company-os/work-items-and-approvals.md",
+    "docs/company-os/governance.md",
+    "docs/company-os/examples/trademark-registration.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-08-20",
+   "lastVerifiedWith": [
+    "npx pnpm@9.15.4 check"
+   ],
+   "reorgTrigger": "FinancialRecord types, cross-module financial relations, approval controls, or audit rules change."
+  },
+  {
+   "path": "docs/company-os/module-design.md",
+   "ownerRole": "product-architecture",
+   "status": "stable",
+   "lifecycle": "volatile",
+   "canonicalFor": [
+    "BusinessModule design",
+    "new-domain relation and migration requirements"
+   ],
+   "dependsOn": [
+    "docs/company-os/document-system.md",
+    "docs/company-os/organization-and-actors.md",
+    "docs/company-os/work-items-and-approvals.md",
+    "docs/company-os/financial-relations.md",
+    "docs/company-os/governance.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-08-20",
+   "lastVerifiedWith": [
+    "npx pnpm@9.15.4 check"
+   ],
+   "reorgTrigger": "BusinessModule proposal, cross-module relation, permission, finance, or migration requirements change."
+  },
+  {
+   "path": "docs/company-os/governance.md",
+   "ownerRole": "governance",
+   "status": "stable",
+   "lifecycle": "volatile",
+   "canonicalFor": [
+    "Company OS document and organization governance",
+    "module evolution, authority, policies, and approval boundaries"
+   ],
+   "dependsOn": [
+    "docs/company-os/concept-model.md",
+    "docs/company-os/organization-and-actors.md",
+    "docs/company-os/module-design.md",
+    "docs/company-os/work-items-and-approvals.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-08-20",
+   "lastVerifiedWith": [
+    "npx pnpm@9.15.4 check"
+   ],
+   "reorgTrigger": "Governance roles, policy gates, human authority, module evolution, or audit requirements change."
+  },
+  {
+   "path": "docs/company-os/execution-foundation.md",
+   "ownerRole": "architecture",
+   "status": "stable",
+   "lifecycle": "volatile",
+   "canonicalFor": [
+    "Company OS execution foundation",
+    "Mission/Wave, Agent Team, Workflow, Host, provider, plugin, and MCP boundary"
+   ],
+   "dependsOn": [
+    "docs/decisions/0025-agent-team-run-control-plane.md",
+    "docs/decisions/0026-mission-wave-architecture.md",
+    "docs/company-os/concept-model.md",
+    "docs/company-os/work-items-and-approvals.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-08-20",
+   "lastVerifiedWith": [
+    "npx pnpm@9.15.4 check"
+   ],
+   "reorgTrigger": "Execution substrate, execution-reference, provider, or transient-thinking boundary changes."
+  },
+  {
+   "path": "docs/company-os/frontend-information-architecture.md",
+   "ownerRole": "product-design",
+   "status": "stable",
+   "lifecycle": "volatile",
+   "canonicalFor": [
+    "Company OS navigation",
+    "Home, Docs, Agents, and Operations information architecture"
+   ],
+   "dependsOn": [
+    "docs/company-os/README.md",
+    "docs/company-os/core-page-matrix.md",
+    "docs/design/company-os-v1/README.md",
+    "docs/design/company-os-v1/page-matrix.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-08-20",
+   "lastVerifiedWith": [
+    "npx pnpm@9.15.4 check"
+   ],
+   "reorgTrigger": "Primary navigation, page responsibility, responsive hierarchy, or execution-tool placement changes."
+  },
+  {
+   "path": "docs/company-os/core-page-matrix.md",
+   "ownerRole": "product-design",
+   "status": "stable",
+   "lifecycle": "volatile",
+   "canonicalFor": [
+    "Company OS core page coverage",
+    "expected-design and implementation matrix"
+   ],
+   "dependsOn": [
+    "docs/company-os/frontend-information-architecture.md",
+    "docs/company-os/concept-model.md",
+    "docs/design/company-os-v1/page-matrix.md",
+    "docs/design/company-os-v1/visual-contract.json"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-08-20",
+   "lastVerifiedWith": [
+    "npx pnpm@9.15.4 check"
+   ],
+   "reorgTrigger": "Required core pages, truth constraints, expected-design coverage, or implementation state changes."
+  },
+  {
+   "path": "docs/company-os/agent-programmable-pages.md",
+   "ownerRole": "product-platform",
+   "status": "stable",
+   "lifecycle": "volatile",
+   "canonicalFor": [
+    "agent-programmable page tiers",
+    "CustomView authority and governed-action boundaries"
+   ],
+   "dependsOn": [
+    "docs/company-os/document-system.md",
+    "docs/company-os/module-design.md",
+    "docs/company-os/governance.md",
+    "docs/company-os/skill-contracts.md",
+    "docs/decisions/0029-agent-programmable-document-runtime.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-08-20",
+   "lastVerifiedWith": [
+    "npx pnpm@9.15.4 check"
+   ],
+   "reorgTrigger": "Document/page tiers, CustomView registration, scoped read, or governed action boundaries change."
+  },
+  {
+   "path": "docs/company-os/skill-contracts.md",
+   "ownerRole": "product-platform",
+   "status": "stable",
+   "lifecycle": "volatile",
+   "canonicalFor": [
+    "future Company OS module and custom-page skill contracts",
+    "skill non-authority boundaries"
+   ],
+   "dependsOn": [
+    "docs/company-os/module-design.md",
+    "docs/company-os/agent-programmable-pages.md",
+    "docs/company-os/governance.md",
+    "docs/decisions/0029-agent-programmable-document-runtime.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-08-20",
+   "lastVerifiedWith": [
+    "npx pnpm@9.15.4 check"
+   ],
+   "reorgTrigger": "Optional skill inputs, outputs, policy boundaries, or future custom-page capabilities change."
+  },
+  {
+   "path": "docs/company-os/examples/trademark-registration.md",
+   "ownerRole": "product",
+   "status": "stable",
+   "lifecycle": "volatile",
+   "canonicalFor": [
+    "Trademark Management cross-module acceptance scenario",
+    "document, work, finance, approval, and governance linkage example"
+   ],
+   "dependsOn": [
+    "docs/company-os/module-design.md",
+    "docs/company-os/financial-relations.md",
+    "docs/company-os/work-items-and-approvals.md",
+    "docs/company-os/governance.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-08-20",
+   "lastVerifiedWith": [
+    "npx pnpm@9.15.4 check"
+   ],
+   "reorgTrigger": "The primary cross-module acceptance scenario, trademark module contract, or finance/approval linkage changes."
+  },
+  {
+   "path": "docs/company-os/document-migration.md",
+   "ownerRole": "documentation-governance",
+   "status": "stable",
+   "lifecycle": "volatile",
+   "canonicalFor": [
+    "Company OS documentation lifecycle map",
+    "canonical, execution, compatibility, and historical documentation boundary"
+   ],
+   "dependsOn": [
+    "docs/company-os/README.md",
+    "docs/decisions/0027-company-os-primary-model.md",
+    "docs/decisions/0026-mission-wave-architecture.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance",
+    "harness governance check"
+   ],
+   "reviewAfter": "2026-08-20",
+   "lastVerifiedWith": [
+    "npx pnpm@9.15.4 check"
+   ],
+   "reorgTrigger": "A canonical, execution, compatibility, historical, or superseded document family changes lifecycle."
+  },
+  {
+   "path": "docs/decisions/0027-company-os-primary-model.md",
+   "ownerRole": "product-architecture",
+   "status": "stable",
+   "lifecycle": "stable",
+   "canonicalFor": [
+    "Company OS primary product model decision",
+    "Docs and mixed Organization supersession of future-layer framing"
+   ],
+   "dependsOn": [
+    "docs/company-os/vision.md",
+    "docs/company-os/concept-model.md",
+    "docs/company-os/execution-foundation.md",
+    "docs/decisions/0026-mission-wave-architecture.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-10-20",
+   "lastVerifiedWith": [
+    "npx pnpm@9.15.4 check"
+   ],
+   "reorgTrigger": "The primary Company OS model, product center, WorkItem bridge, or ADR 0026 supersession boundary changes."
+  },
+  {
+   "path": "docs/design/company-os-v1/README.md",
+   "ownerRole": "product-design",
+   "status": "stable",
+   "lifecycle": "volatile",
+   "canonicalFor": [
+    "Company OS V1 twelve-page visual contract",
+    "Company OS visual grammar, twelve-page coverage, and evidence lifecycle"
+   ],
+   "dependsOn": [
+    "docs/company-os/frontend-information-architecture.md",
+    "docs/company-os/core-page-matrix.md",
+    "docs/design/company-os-v1/page-matrix.md",
+    "docs/design/company-os-v1/visual-contract.json"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-08-20",
+   "lastVerifiedWith": [
+    "npx pnpm@9.15.4 check"
+   ],
+   "reorgTrigger": "Company OS visual grammar, truth constraints, evidence lifecycle, or visual-contract scope changes."
+  },
+  {
+   "path": "docs/design/company-os-v1/page-matrix.md",
+   "ownerRole": "product-design",
+   "status": "stable",
+   "lifecycle": "volatile",
+   "canonicalFor": [
+    "Company OS V1 twelve-page visual matrix",
+    "shared cross-module fixture and twelve-page coverage map"
+   ],
+   "dependsOn": [
+    "docs/company-os/core-page-matrix.md",
+    "docs/design/company-os-v1/README.md",
+    "docs/design/company-os-v1/visual-contract.json",
+    "docs/company-os/examples/trademark-registration.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-08-20",
+   "lastVerifiedWith": [
+    "npx pnpm@9.15.4 check"
+   ],
+   "reorgTrigger": "Required page coverage, shared fixture, representative states, or expected-image mapping changes."
+  },
+  {
+   "path": "docs/design/company-os-v1/visual-contract.json",
+   "ownerRole": "product-design",
+   "status": "stable",
+   "lifecycle": "volatile",
+   "canonicalFor": [
+    "machine-readable Company OS V1 twelve-page visual contract",
+    "twelve expected-image statuses and acceptance metadata"
+   ],
+   "dependsOn": [
+    "docs/design/company-os-v1/README.md",
+    "docs/design/company-os-v1/page-matrix.md",
+    "docs/company-os/core-page-matrix.md"
+   ],
+   "machineConsumers": [
+    "check-doc-governance",
+    "visual-contract tooling"
+   ],
+   "reviewAfter": "2026-08-20",
+   "lastVerifiedWith": [
+    "npx pnpm@9.15.4 validate:json"
+   ],
+   "reorgTrigger": "Expected-image paths, visual truth rules, page status, or visual acceptance metadata changes."
+  },
+  {
+   "path": "docs/dashboard/pages/member-run-focus.md",
+   "ownerRole": "product-design",
+   "status": "planned",
+   "lifecycle": "volatile",
+   "canonicalFor": [
+    "MemberRun execution focus page",
+    "run-scoped assignment, activity, and evidence UI contract"
+   ],
+   "dependsOn": [
+    "docs/company-os/execution-foundation.md",
+    "docs/decisions/0025-agent-team-run-control-plane.md",
+    "docs/design/workbench-layout-v2/README.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-09-30",
+   "lastVerifiedWith": [
+    "npx pnpm@9.15.4 check"
+   ],
+   "reorgTrigger": "MemberRun execution semantics, assignment proof, activity truth, or responsive page contract changes."
+  },
+  {
+   "path": "docs/dashboard/pages/mission-wave-canvas.md",
+   "ownerRole": "product-design",
+   "status": "planned",
+   "lifecycle": "volatile",
+   "canonicalFor": [
+    "Mission and Wave execution canvas",
+    "ordered Wave and gate UI contract"
+   ],
+   "dependsOn": [
+    "docs/company-os/execution-foundation.md",
+    "docs/decisions/0026-mission-wave-architecture.md",
+    "docs/design/workbench-layout-v2/README.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-09-30",
+   "lastVerifiedWith": [
+    "npx pnpm@9.15.4 check"
+   ],
+   "reorgTrigger": "Mission/Wave execution semantics, gate rendering, source-context return path, or responsive page contract changes."
+  },
+  {
+   "path": "docs/dashboard/pages/team-run-war-room.md",
+   "ownerRole": "product-design",
+   "status": "planned",
+   "lifecycle": "volatile",
+   "canonicalFor": [
+    "AgentTeamRun execution war room",
+    "run-scoped collaboration and correlation-proof UI contract"
+   ],
+   "dependsOn": [
+    "docs/company-os/execution-foundation.md",
+    "docs/decisions/0025-agent-team-run-control-plane.md",
+    "docs/design/workbench-layout-v2/README.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-09-30",
+   "lastVerifiedWith": [
+    "npx pnpm@9.15.4 check"
+   ],
+   "reorgTrigger": "AgentTeamRun collaboration, assignment correlation, source-context return path, or responsive page contract changes."
+  },
+  {
+   "path": "docs/dashboard/pages/standing-agent-focus.md",
+   "ownerRole": "product-design",
+   "status": "planned",
+   "lifecycle": "volatile",
+   "canonicalFor": [
+    "Standing Agent detail page",
+    "durable AgentMember availability, assignments, and activity UI contract"
+   ],
+   "dependsOn": [
+    "docs/company-os/organization-and-actors.md",
+    "docs/company-os/work-items-and-approvals.md",
+    "docs/company-os/execution-foundation.md",
+    "docs/design/company-os-v1/page-matrix.md",
+    "docs/design/workbench-layout-v2/README.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-08-20",
+   "lastVerifiedWith": [
+    "npx pnpm@9.15.4 check"
+   ],
+   "reorgTrigger": "Standing Agent identity, availability, assignment, organization, execution-link, or responsive page contract changes."
+  },
+  {
+   "path": "docs/decisions/0029-agent-programmable-document-runtime.md",
+   "ownerRole": "product-platform",
+   "status": "stable",
+   "lifecycle": "stable",
+   "canonicalFor": [
+    "agent-programmable document runtime decision",
+    "Document, View, and Custom Page authority boundary"
+   ],
+   "dependsOn": [
+    "docs/company-os/agent-programmable-pages.md",
+    "docs/company-os/skill-contracts.md",
+    "docs/company-os/document-system.md",
+    "docs/company-os/governance.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-10-20",
+   "lastVerifiedWith": [
+    "npx pnpm@9.15.4 check"
+   ],
+   "reorgTrigger": "Page-tier model, CustomPageDefinition/Package boundaries, scoped query/action policy, or standard-view fallback requirements change."
+  },
+  {
+   "path": "docs/company-os/implementation-waves.md",
+   "ownerRole": "product-architecture",
+   "status": "stable",
+   "lifecycle": "stable",
+   "canonicalFor": [
+    "Company OS V1 ordered implementation Waves and gates",
+    "shared cross-Wave acceptance scenario"
+   ],
+   "dependsOn": [
+    "docs/company-os/README.md",
+    "docs/company-os/examples/trademark-registration.md",
+    "docs/design/company-os-v1/fixture-contract.md",
+    "docs/decisions/0026-mission-wave-architecture.md",
+    "docs/decisions/0027-company-os-primary-model.md",
+    "docs/decisions/0029-agent-programmable-document-runtime.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-08-20",
+   "lastVerifiedWith": [
+    "npx pnpm@9.15.4 check"
+   ],
+   "reorgTrigger": "Company OS V1 Wave order, gate, shared scenario, or completion-evidence requirement changes."
+  },
+  {
+   "path": "docs/design/company-os-v1/fixture-contract.md",
+   "ownerRole": "product-design",
+   "status": "stable",
+   "lifecycle": "stable",
+   "canonicalFor": [
+    "supporting shared-fixture truth contract for Company OS V1 visual and implementation work"
+   ],
+   "dependsOn": [
+    "docs/design/company-os-v1/fixtures/company-os-trademark-v1.json",
+    "docs/company-os/examples/trademark-registration.md",
+    "docs/company-os/core-page-matrix.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance",
+    "Company OS fixture validation"
+   ],
+   "reviewAfter": "2026-08-20",
+   "lastVerifiedWith": [
+    "node apps/agent-dashboard/tests/company-os-trademark-acceptance.mjs"
+   ],
+   "reorgTrigger": "Fixture identifiers, visible truth rules, required page slices, or financial/approval constraints change."
+  },
+  {
+   "path": "docs/company-os/completion-audit.md",
+   "ownerRole": "product-architecture",
+   "status": "stable",
+   "lifecycle": "stable",
+   "canonicalFor": [
+    "Company OS V1 requirement-by-requirement completion evidence",
+    "remaining Human-only visual sign-off boundary"
+   ],
+   "dependsOn": [
+    "docs/company-os/implementation-waves.md",
+    "docs/design/company-os-v1/implementation-acceptance.md",
+    "docs/design/company-os-v1/comparison-manifest.json",
+    "docs/design/company-os-v1/visual-contract.json"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance",
+    "Company OS completion audit"
+   ],
+   "reviewAfter": "2026-08-20",
+   "lastVerifiedWith": [
+    "TMPDIR=/tmp cargo test --workspace -- --test-threads=1",
+    "npx pnpm@9.15.4 check"
+   ],
+   "reorgTrigger": "A Company OS V1 requirement, evidence source, independent Gate, or Human visual decision changes."
+  },
+  {
+   "path": "docs/design/company-os-v1/implementation-acceptance.md",
+   "ownerRole": "frontend-quality",
+   "status": "stable",
+   "lifecycle": "stable",
+   "canonicalFor": [
+    "supporting Company OS V1 browser and data acceptance evidence contract"
+   ],
+   "dependsOn": [
+    "docs/design/company-os-v1/fixture-contract.md",
+    "docs/design/company-os-v1/fixtures/company-os-trademark-v1.json",
+    "docs/design/company-os-v1/visual-contract.json",
+    "docs/company-os/implementation-waves.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance",
+    "Company OS acceptance"
+   ],
+   "reviewAfter": "2026-08-20",
+   "lastVerifiedWith": [
+    "node apps/agent-dashboard/tests/company-os-trademark-acceptance.mjs"
+   ],
+   "reorgTrigger": "Fixture loading, browser route evidence, visual comparison policy, or acceptance evidence requirements change."
+  },
+  {
+   "path": "docs/design/company-os-v1/fixtures/company-os-trademark-v1.json",
+   "ownerRole": "product-architecture",
+   "status": "stable",
+   "lifecycle": "stable",
+   "canonicalFor": [
+    "supporting authoritative Company OS V1 deterministic trademark fixture"
+   ],
+   "dependsOn": [
+    "docs/company-os/examples/trademark-registration.md",
+    "docs/design/company-os-v1/fixture-contract.md"
+   ],
+   "machineConsumers": [
+    "check-doc-governance",
+    "Company OS fixture validation",
+    "Company OS acceptance"
+   ],
+   "reviewAfter": "2026-08-20",
+   "lastVerifiedWith": [
+    "node apps/agent-dashboard/tests/company-os-trademark-acceptance.mjs"
+   ],
+   "reorgTrigger": "The shared Company OS V1 scenario facts, record IDs, actor roles, financial state, or page slices change."
   }
  ]
 }

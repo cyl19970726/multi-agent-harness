@@ -1,0 +1,269 @@
+{
+  "contract": "company-os-v1-current-before-v1",
+  "run_id": "wave7-route-audit",
+  "status": "audited_missing_routes",
+  "source_manifest": ".visual-evidence/company-os-v1/wave7-route-audit/capture-run.json",
+  "explanation": "The pre-implementation Dashboard exposed none of the twelve Company OS semantic route roots. No screenshot is substituted or fabricated.",
+  "results": [
+    {
+      "case_id": "home--morning-review--desktop",
+      "page": "home",
+      "viewport": "desktop-1440x1000",
+      "route": "/?surface=home",
+      "status": "route_or_contract_missing",
+      "reason": "locator.waitFor: Timeout 1200ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('[data-company-os-page=\"home\"][data-company-os-fixture=\"company-os-trademark-v1\"][data-company-os-ready=\"true\"]').first() to be visible\u001b[22m\n. Required root: [data-company-os-page=\"home\"][data-company-os-fixture=\"company-os-trademark-v1\"][data-company-os-ready=\"true\"]",
+      "screenshot": null,
+      "evidence": ".visual-evidence/company-os-v1/wave7-route-audit/capture-run.json"
+    },
+    {
+      "case_id": "docs-workspace--company-knowledge-home--desktop",
+      "page": "docs-workspace",
+      "viewport": "desktop-1440x1000",
+      "route": "/?surface=docs",
+      "status": "route_or_contract_missing",
+      "reason": "locator.waitFor: Timeout 1200ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('[data-company-os-page=\"docs-workspace\"][data-company-os-fixture=\"company-os-trademark-v1\"][data-company-os-ready=\"true\"]').first() to be visible\u001b[22m\n. Required root: [data-company-os-page=\"docs-workspace\"][data-company-os-fixture=\"company-os-trademark-v1\"][data-company-os-ready=\"true\"]",
+      "screenshot": null,
+      "evidence": ".visual-evidence/company-os-v1/wave7-route-audit/capture-run.json"
+    },
+    {
+      "case_id": "document-focus--brand-a-content-plan--desktop",
+      "page": "document-focus",
+      "viewport": "desktop-1440x1000",
+      "route": "/?surface=docs&document=document-brand-a-content-operating-plan",
+      "status": "route_or_contract_missing",
+      "reason": "locator.waitFor: Timeout 1200ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('[data-company-os-page=\"document-focus\"][data-company-os-fixture=\"company-os-trademark-v1\"][data-company-os-ready=\"true\"]').first() to be visible\u001b[22m\n. Required root: [data-company-os-page=\"document-focus\"][data-company-os-fixture=\"company-os-trademark-v1\"][data-company-os-ready=\"true\"]",
+      "screenshot": null,
+      "evidence": ".visual-evidence/company-os-v1/wave7-route-audit/capture-run.json"
+    },
+    {
+      "case_id": "document-focus--brand-a-content-plan--desktop",
+      "page": "document-focus",
+      "viewport": "tablet-900x1180",
+      "route": "/?surface=docs&document=<brand-a-content-plan-id>",
+      "status": "blocked",
+      "reason": "desktop route failed first: locator.waitFor: Timeout 1200ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('[data-company-os-page=\"document-focus\"][data-company-os-fixture=\"company-os-trademark-v1\"][data-company-os-ready=\"true\"]').first() to be visible\u001b[22m\n. Required root: [data-company-os-page=\"document-focus\"][data-company-os-fixture=\"company-os-trademark-v1\"][data-company-os-ready=\"true\"]",
+      "screenshot": null,
+      "evidence": ".visual-evidence/company-os-v1/wave7-route-audit/capture-run.json"
+    },
+    {
+      "case_id": "document-focus--brand-a-content-plan--desktop",
+      "page": "document-focus",
+      "viewport": "mobile-390x844",
+      "route": "/?surface=docs&document=<brand-a-content-plan-id>",
+      "status": "blocked",
+      "reason": "desktop route failed first: locator.waitFor: Timeout 1200ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('[data-company-os-page=\"document-focus\"][data-company-os-fixture=\"company-os-trademark-v1\"][data-company-os-ready=\"true\"]').first() to be visible\u001b[22m\n. Required root: [data-company-os-page=\"document-focus\"][data-company-os-fixture=\"company-os-trademark-v1\"][data-company-os-ready=\"true\"]",
+      "screenshot": null,
+      "evidence": ".visual-evidence/company-os-v1/wave7-route-audit/capture-run.json"
+    },
+    {
+      "case_id": "workboard--company-workboard--desktop",
+      "page": "workboard",
+      "viewport": "desktop-1440x1000",
+      "route": "/?surface=work",
+      "status": "route_or_contract_missing",
+      "reason": "locator.waitFor: Timeout 1200ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('[data-company-os-page=\"workboard\"][data-company-os-fixture=\"company-os-trademark-v1\"][data-company-os-ready=\"true\"]').first() to be visible\u001b[22m\n. Required root: [data-company-os-page=\"workboard\"][data-company-os-fixture=\"company-os-trademark-v1\"][data-company-os-ready=\"true\"]",
+      "screenshot": null,
+      "evidence": ".visual-evidence/company-os-v1/wave7-route-audit/capture-run.json"
+    },
+    {
+      "case_id": "work-item-focus--trademark-filing--desktop",
+      "page": "work-item-focus",
+      "viewport": "desktop-1440x1000",
+      "route": "/?surface=work&workItem=workitem-trademark-filing-brand-a",
+      "status": "route_or_contract_missing",
+      "reason": "locator.waitFor: Timeout 1200ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('[data-company-os-page=\"work-item-focus\"][data-company-os-fixture=\"company-os-trademark-v1\"][data-company-os-ready=\"true\"]').first() to be visible\u001b[22m\n. Required root: [data-company-os-page=\"work-item-focus\"][data-company-os-fixture=\"company-os-trademark-v1\"][data-company-os-ready=\"true\"]",
+      "screenshot": null,
+      "evidence": ".visual-evidence/company-os-v1/wave7-route-audit/capture-run.json"
+    },
+    {
+      "case_id": "work-item-focus--trademark-filing--desktop",
+      "page": "work-item-focus",
+      "viewport": "tablet-900x1180",
+      "route": "/?surface=work&workItem=<trademark-filing-id>",
+      "status": "blocked",
+      "reason": "desktop route failed first: locator.waitFor: Timeout 1200ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('[data-company-os-page=\"work-item-focus\"][data-company-os-fixture=\"company-os-trademark-v1\"][data-company-os-ready=\"true\"]').first() to be visible\u001b[22m\n. Required root: [data-company-os-page=\"work-item-focus\"][data-company-os-fixture=\"company-os-trademark-v1\"][data-company-os-ready=\"true\"]",
+      "screenshot": null,
+      "evidence": ".visual-evidence/company-os-v1/wave7-route-audit/capture-run.json"
+    },
+    {
+      "case_id": "work-item-focus--trademark-filing--desktop",
+      "page": "work-item-focus",
+      "viewport": "mobile-390x844",
+      "route": "/?surface=work&workItem=<trademark-filing-id>",
+      "status": "blocked",
+      "reason": "desktop route failed first: locator.waitFor: Timeout 1200ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('[data-company-os-page=\"work-item-focus\"][data-company-os-fixture=\"company-os-trademark-v1\"][data-company-os-ready=\"true\"]').first() to be visible\u001b[22m\n. Required root: [data-company-os-page=\"work-item-focus\"][data-company-os-fixture=\"company-os-trademark-v1\"][data-company-os-ready=\"true\"]",
+      "screenshot": null,
+      "evidence": ".visual-evidence/company-os-v1/wave7-route-audit/capture-run.json"
+    },
+    {
+      "case_id": "finance--july-operating-view--desktop",
+      "page": "finance",
+      "viewport": "desktop-1440x1000",
+      "route": "/?surface=finance",
+      "status": "route_or_contract_missing",
+      "reason": "locator.waitFor: Timeout 1200ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('[data-company-os-page=\"finance\"][data-company-os-fixture=\"company-os-trademark-v1\"][data-company-os-ready=\"true\"]').first() to be visible\u001b[22m\n. Required root: [data-company-os-page=\"finance\"][data-company-os-fixture=\"company-os-trademark-v1\"][data-company-os-ready=\"true\"]",
+      "screenshot": null,
+      "evidence": ".visual-evidence/company-os-v1/wave7-route-audit/capture-run.json"
+    },
+    {
+      "case_id": "agents-organization--mixed-company-org--desktop",
+      "page": "agents-organization",
+      "viewport": "desktop-1440x1000",
+      "route": "/?surface=organization",
+      "status": "route_or_contract_missing",
+      "reason": "locator.waitFor: Timeout 1200ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('[data-company-os-page=\"agents-organization\"][data-company-os-fixture=\"company-os-trademark-v1\"][data-company-os-ready=\"true\"]').first() to be visible\u001b[22m\n. Required root: [data-company-os-page=\"agents-organization\"][data-company-os-fixture=\"company-os-trademark-v1\"][data-company-os-ready=\"true\"]",
+      "screenshot": null,
+      "evidence": ".visual-evidence/company-os-v1/wave7-route-audit/capture-run.json"
+    },
+    {
+      "case_id": "standing-agent-focus--document-architect-available--desktop",
+      "page": "standing-agent-focus",
+      "viewport": "desktop-1440x1000",
+      "route": "/?surface=organization&agent=actor-agent-document-architecture",
+      "status": "route_or_contract_missing",
+      "reason": "locator.waitFor: Timeout 1200ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('[data-company-os-page=\"standing-agent-focus\"][data-company-os-fixture=\"company-os-trademark-v1\"][data-company-os-ready=\"true\"]').first() to be visible\u001b[22m\n. Required root: [data-company-os-page=\"standing-agent-focus\"][data-company-os-fixture=\"company-os-trademark-v1\"][data-company-os-ready=\"true\"]",
+      "screenshot": null,
+      "evidence": ".visual-evidence/company-os-v1/wave7-route-audit/capture-run.json"
+    },
+    {
+      "case_id": "standing-agent-focus--document-architect-available--desktop",
+      "page": "standing-agent-focus",
+      "viewport": "tablet-900x1180",
+      "route": "/?surface=organization&agent=<document-architecture-agent-id>",
+      "status": "blocked",
+      "reason": "desktop route failed first: locator.waitFor: Timeout 1200ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('[data-company-os-page=\"standing-agent-focus\"][data-company-os-fixture=\"company-os-trademark-v1\"][data-company-os-ready=\"true\"]').first() to be visible\u001b[22m\n. Required root: [data-company-os-page=\"standing-agent-focus\"][data-company-os-fixture=\"company-os-trademark-v1\"][data-company-os-ready=\"true\"]",
+      "screenshot": null,
+      "evidence": ".visual-evidence/company-os-v1/wave7-route-audit/capture-run.json"
+    },
+    {
+      "case_id": "standing-agent-focus--document-architect-available--desktop",
+      "page": "standing-agent-focus",
+      "viewport": "mobile-390x844",
+      "route": "/?surface=organization&agent=<document-architecture-agent-id>",
+      "status": "blocked",
+      "reason": "desktop route failed first: locator.waitFor: Timeout 1200ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('[data-company-os-page=\"standing-agent-focus\"][data-company-os-fixture=\"company-os-trademark-v1\"][data-company-os-ready=\"true\"]').first() to be visible\u001b[22m\n. Required root: [data-company-os-page=\"standing-agent-focus\"][data-company-os-fixture=\"company-os-trademark-v1\"][data-company-os-ready=\"true\"]",
+      "screenshot": null,
+      "evidence": ".visual-evidence/company-os-v1/wave7-route-audit/capture-run.json"
+    },
+    {
+      "case_id": "governance-proposal--trademark-management-module--desktop",
+      "page": "governance-proposal",
+      "viewport": "desktop-1440x1000",
+      "route": "/?surface=organization&proposal=governance-proposal-trademark-management",
+      "status": "route_or_contract_missing",
+      "reason": "locator.waitFor: Timeout 1200ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('[data-company-os-page=\"governance-proposal\"][data-company-os-fixture=\"company-os-trademark-v1\"][data-company-os-ready=\"true\"]').first() to be visible\u001b[22m\n. Required root: [data-company-os-page=\"governance-proposal\"][data-company-os-fixture=\"company-os-trademark-v1\"][data-company-os-ready=\"true\"]",
+      "screenshot": null,
+      "evidence": ".visual-evidence/company-os-v1/wave7-route-audit/capture-run.json"
+    },
+    {
+      "case_id": "governance-proposal--trademark-management-module--desktop",
+      "page": "governance-proposal",
+      "viewport": "tablet-900x1180",
+      "route": "/?surface=organization&proposal=<trademark-management-module-id>",
+      "status": "blocked",
+      "reason": "desktop route failed first: locator.waitFor: Timeout 1200ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('[data-company-os-page=\"governance-proposal\"][data-company-os-fixture=\"company-os-trademark-v1\"][data-company-os-ready=\"true\"]').first() to be visible\u001b[22m\n. Required root: [data-company-os-page=\"governance-proposal\"][data-company-os-fixture=\"company-os-trademark-v1\"][data-company-os-ready=\"true\"]",
+      "screenshot": null,
+      "evidence": ".visual-evidence/company-os-v1/wave7-route-audit/capture-run.json"
+    },
+    {
+      "case_id": "governance-proposal--trademark-management-module--desktop",
+      "page": "governance-proposal",
+      "viewport": "mobile-390x844",
+      "route": "/?surface=organization&proposal=<trademark-management-module-id>",
+      "status": "blocked",
+      "reason": "desktop route failed first: locator.waitFor: Timeout 1200ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('[data-company-os-page=\"governance-proposal\"][data-company-os-fixture=\"company-os-trademark-v1\"][data-company-os-ready=\"true\"]').first() to be visible\u001b[22m\n. Required root: [data-company-os-page=\"governance-proposal\"][data-company-os-fixture=\"company-os-trademark-v1\"][data-company-os-ready=\"true\"]",
+      "screenshot": null,
+      "evidence": ".visual-evidence/company-os-v1/wave7-route-audit/capture-run.json"
+    },
+    {
+      "case_id": "approval-focus--trademark-filing-fee--desktop",
+      "page": "approval-focus",
+      "viewport": "desktop-1440x1000",
+      "route": "/?surface=approvals&approval=approval-trademark-filing-fee-cn-2026-018",
+      "status": "route_or_contract_missing",
+      "reason": "locator.waitFor: Timeout 1200ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('[data-company-os-page=\"approval-focus\"][data-company-os-fixture=\"company-os-trademark-v1\"][data-company-os-ready=\"true\"]').first() to be visible\u001b[22m\n. Required root: [data-company-os-page=\"approval-focus\"][data-company-os-fixture=\"company-os-trademark-v1\"][data-company-os-ready=\"true\"]",
+      "screenshot": null,
+      "evidence": ".visual-evidence/company-os-v1/wave7-route-audit/capture-run.json"
+    },
+    {
+      "case_id": "approval-focus--trademark-filing-fee--desktop",
+      "page": "approval-focus",
+      "viewport": "tablet-900x1180",
+      "route": "/?surface=approvals&approval=<trademark-filing-fee-id>",
+      "status": "blocked",
+      "reason": "desktop route failed first: locator.waitFor: Timeout 1200ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('[data-company-os-page=\"approval-focus\"][data-company-os-fixture=\"company-os-trademark-v1\"][data-company-os-ready=\"true\"]').first() to be visible\u001b[22m\n. Required root: [data-company-os-page=\"approval-focus\"][data-company-os-fixture=\"company-os-trademark-v1\"][data-company-os-ready=\"true\"]",
+      "screenshot": null,
+      "evidence": ".visual-evidence/company-os-v1/wave7-route-audit/capture-run.json"
+    },
+    {
+      "case_id": "approval-focus--trademark-filing-fee--desktop",
+      "page": "approval-focus",
+      "viewport": "mobile-390x844",
+      "route": "/?surface=approvals&approval=<trademark-filing-fee-id>",
+      "status": "blocked",
+      "reason": "desktop route failed first: locator.waitFor: Timeout 1200ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('[data-company-os-page=\"approval-focus\"][data-company-os-fixture=\"company-os-trademark-v1\"][data-company-os-ready=\"true\"]').first() to be visible\u001b[22m\n. Required root: [data-company-os-page=\"approval-focus\"][data-company-os-fixture=\"company-os-trademark-v1\"][data-company-os-ready=\"true\"]",
+      "screenshot": null,
+      "evidence": ".visual-evidence/company-os-v1/wave7-route-audit/capture-run.json"
+    },
+    {
+      "case_id": "business-module-focus--trademark-management--desktop",
+      "page": "business-module-focus",
+      "viewport": "desktop-1440x1000",
+      "route": "/?surface=docs&module=module-trademark-management",
+      "status": "route_or_contract_missing",
+      "reason": "locator.waitFor: Timeout 1200ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('[data-company-os-page=\"business-module-focus\"][data-company-os-fixture=\"company-os-trademark-v1\"][data-company-os-ready=\"true\"]').first() to be visible\u001b[22m\n. Required root: [data-company-os-page=\"business-module-focus\"][data-company-os-fixture=\"company-os-trademark-v1\"][data-company-os-ready=\"true\"]",
+      "screenshot": null,
+      "evidence": ".visual-evidence/company-os-v1/wave7-route-audit/capture-run.json"
+    },
+    {
+      "case_id": "business-module-focus--trademark-management--desktop",
+      "page": "business-module-focus",
+      "viewport": "tablet-900x1180",
+      "route": "/?surface=docs&module=<trademark-management-id>",
+      "status": "blocked",
+      "reason": "desktop route failed first: locator.waitFor: Timeout 1200ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('[data-company-os-page=\"business-module-focus\"][data-company-os-fixture=\"company-os-trademark-v1\"][data-company-os-ready=\"true\"]').first() to be visible\u001b[22m\n. Required root: [data-company-os-page=\"business-module-focus\"][data-company-os-fixture=\"company-os-trademark-v1\"][data-company-os-ready=\"true\"]",
+      "screenshot": null,
+      "evidence": ".visual-evidence/company-os-v1/wave7-route-audit/capture-run.json"
+    },
+    {
+      "case_id": "business-module-focus--trademark-management--desktop",
+      "page": "business-module-focus",
+      "viewport": "mobile-390x844",
+      "route": "/?surface=docs&module=<trademark-management-id>",
+      "status": "blocked",
+      "reason": "desktop route failed first: locator.waitFor: Timeout 1200ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('[data-company-os-page=\"business-module-focus\"][data-company-os-fixture=\"company-os-trademark-v1\"][data-company-os-ready=\"true\"]').first() to be visible\u001b[22m\n. Required root: [data-company-os-page=\"business-module-focus\"][data-company-os-fixture=\"company-os-trademark-v1\"][data-company-os-ready=\"true\"]",
+      "screenshot": null,
+      "evidence": ".visual-evidence/company-os-v1/wave7-route-audit/capture-run.json"
+    },
+    {
+      "case_id": "human-member-focus--brand-owner--desktop",
+      "page": "human-member-focus",
+      "viewport": "desktop-1440x1000",
+      "route": "/?surface=organization&person=actor-human-brand-owner",
+      "status": "route_or_contract_missing",
+      "reason": "locator.waitFor: Timeout 1200ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('[data-company-os-page=\"human-member-focus\"][data-company-os-fixture=\"company-os-trademark-v1\"][data-company-os-ready=\"true\"]').first() to be visible\u001b[22m\n. Required root: [data-company-os-page=\"human-member-focus\"][data-company-os-fixture=\"company-os-trademark-v1\"][data-company-os-ready=\"true\"]",
+      "screenshot": null,
+      "evidence": ".visual-evidence/company-os-v1/wave7-route-audit/capture-run.json"
+    },
+    {
+      "case_id": "human-member-focus--brand-owner--desktop",
+      "page": "human-member-focus",
+      "viewport": "tablet-900x1180",
+      "route": "/?surface=organization&person=<brand-owner-id>",
+      "status": "blocked",
+      "reason": "desktop route failed first: locator.waitFor: Timeout 1200ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('[data-company-os-page=\"human-member-focus\"][data-company-os-fixture=\"company-os-trademark-v1\"][data-company-os-ready=\"true\"]').first() to be visible\u001b[22m\n. Required root: [data-company-os-page=\"human-member-focus\"][data-company-os-fixture=\"company-os-trademark-v1\"][data-company-os-ready=\"true\"]",
+      "screenshot": null,
+      "evidence": ".visual-evidence/company-os-v1/wave7-route-audit/capture-run.json"
+    },
+    {
+      "case_id": "human-member-focus--brand-owner--desktop",
+      "page": "human-member-focus",
+      "viewport": "mobile-390x844",
+      "route": "/?surface=organization&person=<brand-owner-id>",
+      "status": "blocked",
+      "reason": "desktop route failed first: locator.waitFor: Timeout 1200ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('[data-company-os-page=\"human-member-focus\"][data-company-os-fixture=\"company-os-trademark-v1\"][data-company-os-ready=\"true\"]').first() to be visible\u001b[22m\n. Required root: [data-company-os-page=\"human-member-focus\"][data-company-os-fixture=\"company-os-trademark-v1\"][data-company-os-ready=\"true\"]",
+      "screenshot": null,
+      "evidence": ".visual-evidence/company-os-v1/wave7-route-audit/capture-run.json"
+    }
+  ]
+}

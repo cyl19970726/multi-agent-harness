@@ -7,15 +7,19 @@ use std::time::{Duration, Instant};
 
 use harness_core::{
     AgentEvent, AgentMember, AgentRuntime, AgentTeam, AgentTeamRun, Decision, DelegationRun,
-    Evidence, Gap, Goal, GoalCase, GoalDesign, GoalEvaluation, GoalOrchestrationRun, MemberAction,
-    MemberRun, Message, MessageDelivery, MessageDeliveryStatus, MessageTerminalSource, Mission,
-    MissionProjection, MissionStatus, Proposal, ProviderChildThread, ProviderSession,
-    ProviderSessionStatus, Review, Task, TeamMessage, TeamRunEvent, TeamRunStatus, Vision, Wave,
+    Evidence, Gap, MemberAction, MemberRun, Message, MessageDelivery, MessageDeliveryStatus,
+    MessageTerminalSource, Mission, MissionStatus, Proposal, ProviderChildThread, ProviderSession,
+    ProviderSessionStatus, Review, TeamMessage, TeamRunEvent, TeamRunStatus, Vision, Wave,
     WaveExecutorKind, WaveGateStatus, WaveStatus, WorkflowArtifactManifest, WorkflowPatch,
     WorkflowRun, WorkflowStep,
 };
 use serde::{de::DeserializeOwned, Serialize};
 use thiserror::Error;
+
+mod company_os;
+pub use company_os::{
+    ActionAuditReservation, ActionCommandClaimResult, CompanyActor, FinancialRecord,
+};
 
 unsafe extern "C" {
     fn flock(fd: i32, operation: i32) -> i32;
@@ -35,6 +39,10 @@ pub enum StoreError {
     LockTimeout(String),
     #[error("conflict: {0}")]
     Conflict(String),
+    #[error("invalid company os record: {0}")]
+    CompanyOsValidation(String),
+    #[error("company os reference not found: {0}")]
+    CompanyOsMissingReference(String),
 }
 
 pub type StoreResult<T> = Result<T, StoreError>;
@@ -66,10 +74,6 @@ impl HarnessStore {
         fs::create_dir_all(self.root.join("prompts"))?;
         fs::create_dir_all(self.root.join("runtimes"))?;
         Ok(())
-    }
-
-    pub fn append_goal(&self, value: &Goal) -> StoreResult<()> {
-        self.append_jsonl("goals.jsonl", value)
     }
 
     pub fn append_mission(&self, value: &Mission) -> StoreResult<()> {
@@ -191,10 +195,6 @@ impl HarnessStore {
         self.append_jsonl("proposals.jsonl", value)
     }
 
-    pub fn append_task(&self, value: &Task) -> StoreResult<()> {
-        self.append_jsonl("tasks.jsonl", value)
-    }
-
     pub fn append_message(&self, value: &Message) -> StoreResult<()> {
         self.append_jsonl("messages.jsonl", value)
     }
@@ -213,18 +213,6 @@ impl HarnessStore {
 
     pub fn append_gap(&self, value: &Gap) -> StoreResult<()> {
         self.append_jsonl("gaps.jsonl", value)
-    }
-
-    pub fn append_goal_design(&self, value: &GoalDesign) -> StoreResult<()> {
-        self.append_jsonl("goal_designs.jsonl", value)
-    }
-
-    pub fn append_goal_evaluation(&self, value: &GoalEvaluation) -> StoreResult<()> {
-        self.append_jsonl("goal_evaluations.jsonl", value)
-    }
-
-    pub fn append_goal_case(&self, value: &GoalCase) -> StoreResult<()> {
-        self.append_jsonl("goal_cases.jsonl", value)
     }
 
     pub fn append_vision(&self, value: &Vision) -> StoreResult<()> {
@@ -256,10 +244,6 @@ impl HarnessStore {
         value: &WorkflowArtifactManifest,
     ) -> StoreResult<()> {
         self.append_jsonl("workflow_artifact_manifests.jsonl", value)
-    }
-
-    pub fn append_goal_orchestration_run(&self, value: &GoalOrchestrationRun) -> StoreResult<()> {
-        self.append_jsonl("goal_orchestration_runs.jsonl", value)
     }
 
     pub fn append_team_run(&self, value: &AgentTeamRun) -> StoreResult<()> {
@@ -594,10 +578,6 @@ impl HarnessStore {
         Ok(MessageDeliveryClaimResult::Claimed(Box::new(message)))
     }
 
-    pub fn goals(&self) -> StoreResult<Vec<Goal>> {
-        self.read_jsonl("goals.jsonl")
-    }
-
     /// Raw append-only Mission ledger rows, in append order.
     pub fn missions(&self) -> StoreResult<Vec<Mission>> {
         self.read_jsonl("missions.jsonl")
@@ -632,26 +612,6 @@ impl HarnessStore {
         Ok(waves)
     }
 
-    /// Combined, read-only Mission view during the ADR 0026 migration. Native
-    /// Mission ledger rows are returned alongside synthetic Goal compatibility
-    /// views. Compatibility views are never appended to `missions.jsonl`, and
-    /// their provenance makes clear that legacy GoalPhase data was not rewritten
-    /// into Wave rows.
-    pub fn mission_projections(&self) -> StoreResult<Vec<MissionProjection>> {
-        let mut projections = self
-            .latest_missions()?
-            .into_iter()
-            .map(MissionProjection::native)
-            .collect::<Vec<_>>();
-        projections.extend(
-            latest_by_id(self.goals()?, |goal| goal.id.clone())
-                .into_values()
-                .map(|goal| MissionProjection::from_goal_compatibility(&goal)),
-        );
-        projections.sort_by(|left, right| left.mission.id.cmp(&right.mission.id));
-        Ok(projections)
-    }
-
     pub fn members(&self) -> StoreResult<Vec<AgentMember>> {
         self.read_jsonl("members.jsonl")
     }
@@ -672,10 +632,6 @@ impl HarnessStore {
         self.read_jsonl("proposals.jsonl")
     }
 
-    pub fn tasks(&self) -> StoreResult<Vec<Task>> {
-        self.read_jsonl("tasks.jsonl")
-    }
-
     pub fn messages(&self) -> StoreResult<Vec<Message>> {
         self.read_jsonl("messages.jsonl")
     }
@@ -694,18 +650,6 @@ impl HarnessStore {
 
     pub fn gaps(&self) -> StoreResult<Vec<Gap>> {
         self.read_jsonl("gaps.jsonl")
-    }
-
-    pub fn goal_designs(&self) -> StoreResult<Vec<GoalDesign>> {
-        self.read_jsonl("goal_designs.jsonl")
-    }
-
-    pub fn goal_evaluations(&self) -> StoreResult<Vec<GoalEvaluation>> {
-        self.read_jsonl("goal_evaluations.jsonl")
-    }
-
-    pub fn goal_cases(&self) -> StoreResult<Vec<GoalCase>> {
-        self.read_jsonl("goal_cases.jsonl")
     }
 
     pub fn visions(&self) -> StoreResult<Vec<Vision>> {
@@ -734,10 +678,6 @@ impl HarnessStore {
 
     pub fn workflow_artifact_manifests(&self) -> StoreResult<Vec<WorkflowArtifactManifest>> {
         self.read_jsonl("workflow_artifact_manifests.jsonl")
-    }
-
-    pub fn goal_orchestration_runs(&self) -> StoreResult<Vec<GoalOrchestrationRun>> {
-        self.read_jsonl("goal_orchestration_runs.jsonl")
     }
 
     pub fn team_runs(&self) -> StoreResult<Vec<AgentTeamRun>> {
@@ -886,53 +826,13 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use harness_core::{
-        DelegationMode, DelegationStatus, Goal, GoalStage, GoalStatus, MemberActionStatus,
-        MemberRunStatus, MessageKind, Mission, MissionProjectionSource, MissionStatus, SenderKind,
-        TeamDeliveryPolicy, TeamDeliveryStatus, TeamMessageDelivery, TeamMessageKind,
-        TeamRunEventSourceKind, TeamRunStatus, Wave, WaveExecutorKind, WaveGateStatus, WaveStatus,
+        DelegationMode, DelegationStatus, MemberActionStatus, MemberRunStatus, MessageKind,
+        Mission, MissionStatus, SenderKind, TeamDeliveryPolicy, TeamDeliveryStatus,
+        TeamMessageDelivery, TeamMessageKind, TeamRunEventSourceKind, TeamRunStatus, Wave,
+        WaveExecutorKind, WaveGateStatus, WaveStatus,
     };
 
     use super::*;
-
-    #[test]
-    fn append_and_read_goal_jsonl() {
-        let root = std::env::temp_dir().join(format!(
-            "harness-store-test-{}",
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("system clock")
-                .as_millis()
-        ));
-        let store = HarnessStore::new(&root);
-        let goal = Goal {
-            phases: Vec::new(),
-            knowledge: Vec::new(),
-            design_synthesis_at: None,
-            id: "goal-1".into(),
-            title: "Self-host".into(),
-            owner_agent_id: "leader-1".into(),
-            status: GoalStatus::Active,
-            priority: "p0".into(),
-            created_at: "2026-05-26T00:00:00Z".into(),
-            updated_at: "2026-05-26T00:00:00Z".into(),
-            vision_id: None,
-            goal_design_id: None,
-            closed_by_decision_id: None,
-            git_metadata: None,
-            stage: GoalStage::default(),
-            description_md: None,
-            design_md: None,
-            acceptance_md: None,
-            explorations: Vec::new(),
-            skill_refs: Vec::new(),
-            stage_changed_at: None,
-        };
-
-        store.append_goal(&goal).expect("append goal");
-        assert_eq!(store.goals().expect("read goals"), vec![goal]);
-
-        std::fs::remove_dir_all(root).expect("remove temp store");
-    }
 
     #[test]
     fn mission_and_wave_ledgers_keep_history_and_project_latest_rows() {
@@ -1119,9 +1019,7 @@ mod tests {
                         host_thread_id: None,
                         objective: "attempt".into(),
                         status: TeamRunStatus::Planning,
-                        wave_index: 1,
                         member_run_ids: vec![format!("member-{id}")],
-                        task_ids: Vec::new(),
                         budget_limit_usd: None,
                         created_at: "unix-ms:3".into(),
                         updated_at: "unix-ms:3".into(),
@@ -1192,72 +1090,6 @@ mod tests {
     }
 
     #[test]
-    fn mission_projection_reads_legacy_goals_without_writing_missions() {
-        let root = std::env::temp_dir().join(format!(
-            "harness-store-mission-projection-test-{}",
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("system clock")
-                .as_millis()
-        ));
-        let store = HarnessStore::new(&root);
-        let goal = Goal {
-            phases: Vec::new(),
-            knowledge: Vec::new(),
-            design_synthesis_at: None,
-            id: "goal-compat".into(),
-            title: "Historical goal".into(),
-            owner_agent_id: "leader-1".into(),
-            status: GoalStatus::Active,
-            priority: "p1".into(),
-            created_at: "unix-ms:1".into(),
-            updated_at: "unix-ms:2".into(),
-            vision_id: None,
-            goal_design_id: None,
-            closed_by_decision_id: None,
-            git_metadata: None,
-            stage: GoalStage::default(),
-            description_md: None,
-            design_md: None,
-            acceptance_md: None,
-            explorations: Vec::new(),
-            skill_refs: Vec::new(),
-            stage_changed_at: None,
-        };
-        store.append_goal(&goal).expect("append compatibility goal");
-        let mut updated_goal = goal.clone();
-        updated_goal.title = "Updated historical goal".into();
-        updated_goal.description_md = Some("The latest compatibility intent".into());
-        updated_goal.updated_at = "unix-ms:3".into();
-        store
-            .append_goal(&updated_goal)
-            .expect("append updated compatibility goal");
-
-        let projections = store.mission_projections().expect("mission projections");
-        assert_eq!(projections.len(), 1);
-        assert_eq!(
-            projections[0].source,
-            MissionProjectionSource::GoalCompatibility
-        );
-        assert_eq!(projections[0].source_id, "goal-compat");
-        assert_eq!(projections[0].mission.id, "compat-goal:goal-compat");
-        assert_eq!(projections[0].mission.title, "Updated historical goal");
-        assert_eq!(
-            projections[0].mission.objective,
-            "The latest compatibility intent"
-        );
-        assert_eq!(projections[0].mission.status, MissionStatus::Planned);
-        assert!(projections[0].mission.wave_ids.is_empty());
-        assert!(projections[0].legacy_goal_phase_ids.is_empty());
-        assert!(
-            !root.join("missions.jsonl").exists(),
-            "read-only compatibility projections must not write synthetic Mission rows"
-        );
-
-        std::fs::remove_dir_all(root).expect("remove temp store");
-    }
-
-    #[test]
     fn concurrent_appends_write_complete_jsonl_rows() {
         let root = std::env::temp_dir().join(format!(
             "harness-store-concurrent-test-{}",
@@ -1278,30 +1110,19 @@ mod tests {
             handles.push(std::thread::spawn(move || {
                 barrier.wait();
                 for index in 0..appends_per_worker {
-                    let goal = Goal {
-                        phases: Vec::new(),
-                        knowledge: Vec::new(),
-                        design_synthesis_at: None,
-                        id: format!("goal-{worker}-{index}"),
+                    let mission = Mission {
+                        id: format!("mission-{worker}-{index}"),
                         title: "Concurrent".into(),
-                        owner_agent_id: "leader-1".into(),
-                        status: GoalStatus::Active,
-                        priority: "p1".into(),
+                        objective: "Exercise concurrent append integrity".into(),
+                        desired_outcome: None,
+                        status: MissionStatus::Running,
+                        wave_ids: Vec::new(),
+                        outcome_summary: None,
                         created_at: "2026-05-26T00:00:00Z".into(),
                         updated_at: "2026-05-26T00:00:00Z".into(),
-                        vision_id: None,
-                        goal_design_id: None,
-                        closed_by_decision_id: None,
-                        git_metadata: None,
-                        stage: GoalStage::default(),
-                        description_md: None,
-                        design_md: None,
-                        acceptance_md: None,
-                        explorations: Vec::new(),
-                        skill_refs: Vec::new(),
-                        stage_changed_at: None,
+                        completed_at: None,
                     };
-                    store.append_goal(&goal).expect("append goal");
+                    store.append_mission(&mission).expect("append mission");
                 }
             }));
         }
@@ -1310,11 +1131,11 @@ mod tests {
             handle.join().expect("worker thread");
         }
 
-        let goals = store.goals().expect("read goals");
-        assert_eq!(goals.len(), worker_count * appends_per_worker);
-        let ids = goals
+        let missions = store.missions().expect("read missions");
+        assert_eq!(missions.len(), worker_count * appends_per_worker);
+        let ids = missions
             .iter()
-            .map(|goal| goal.id.clone())
+            .map(|mission| mission.id.clone())
             .collect::<BTreeSet<_>>();
         assert_eq!(ids.len(), worker_count * appends_per_worker);
 
@@ -1334,34 +1155,23 @@ mod tests {
         store.init().expect("init store");
         std::fs::write(root.join(".store.lock"), "left by interrupted writer\n")
             .expect("write existing lock file");
-        let goal = Goal {
-            phases: Vec::new(),
-            knowledge: Vec::new(),
-            design_synthesis_at: None,
-            id: "goal-stale-lock".into(),
+        let mission = Mission {
+            id: "mission-stale-lock".into(),
             title: "Stale lock".into(),
-            owner_agent_id: "leader-1".into(),
-            status: GoalStatus::Active,
-            priority: "p1".into(),
+            objective: "Verify an unlocked existing lock file is reusable".into(),
+            desired_outcome: None,
+            status: MissionStatus::Running,
+            wave_ids: Vec::new(),
+            outcome_summary: None,
             created_at: "2026-05-26T00:00:00Z".into(),
             updated_at: "2026-05-26T00:00:00Z".into(),
-            vision_id: None,
-            goal_design_id: None,
-            closed_by_decision_id: None,
-            git_metadata: None,
-            stage: GoalStage::default(),
-            description_md: None,
-            design_md: None,
-            acceptance_md: None,
-            explorations: Vec::new(),
-            skill_refs: Vec::new(),
-            stage_changed_at: None,
+            completed_at: None,
         };
 
         store
-            .append_goal(&goal)
+            .append_mission(&mission)
             .expect("append with unlocked lock file");
-        assert_eq!(store.goals().expect("read goals"), vec![goal]);
+        assert_eq!(store.missions().expect("read missions"), vec![mission]);
 
         std::fs::remove_dir_all(root).expect("remove temp store");
     }
@@ -1536,9 +1346,7 @@ mod tests {
             host_thread_id: Some("thread-1".into()),
             objective: "Ship the feature".into(),
             status: TeamRunStatus::Running,
-            wave_index: 2,
             member_run_ids: vec!["mr-1".into()],
-            task_ids: vec!["task-1".into()],
             budget_limit_usd: Some(12.5),
             created_at: "unix-ms:1".into(),
             updated_at: "unix-ms:2".into(),
@@ -1558,14 +1366,12 @@ mod tests {
         assert_eq!(runs[0], run);
         let sparse = &runs[1];
         assert_eq!(sparse.id, "tr-sparse");
-        assert_eq!(sparse.wave_index, 1);
         assert!(sparse.definition_id.is_none());
         assert!(sparse.previous_run_id.is_none());
         assert!(sparse.mission_id.is_none());
         assert!(sparse.wave_id.is_none());
         assert!(sparse.host_thread_id.is_none());
         assert!(sparse.member_run_ids.is_empty());
-        assert!(sparse.task_ids.is_empty());
         assert!(sparse.budget_limit_usd.is_none());
         assert!(sparse.completed_at.is_none());
 
@@ -1587,7 +1393,6 @@ mod tests {
             status: MemberRunStatus::Running,
             provider_session_id: Some("ps-1".into()),
             acp_session_id: Some("acp-1".into()),
-            current_task_id: Some("task-1".into()),
             worktree_ref: Some("wt-1".into()),
             owned_paths: vec!["src/".into()],
             started_at: "unix-ms:1".into(),
@@ -1614,7 +1419,6 @@ mod tests {
         assert!(sparse.model.is_none());
         assert!(sparse.provider_session_id.is_none());
         assert!(sparse.acp_session_id.is_none());
-        assert!(sparse.current_task_id.is_none());
         assert!(sparse.worktree_ref.is_none());
         assert!(sparse.owned_paths.is_empty());
         assert!(sparse.last_event_at.is_none());
@@ -1630,7 +1434,6 @@ mod tests {
         let message = TeamMessage {
             id: "tm-1".into(),
             team_run_id: "tr-1".into(),
-            task_id: Some("task-1".into()),
             from_member_id: "host".into(),
             to_member_ids: vec!["mr-1".into()],
             kind: TeamMessageKind::Assignment,
@@ -1663,7 +1466,6 @@ mod tests {
         let sparse = &messages[1];
         assert_eq!(sparse.id, "tm-sparse");
         assert_eq!(sparse.kind, TeamMessageKind::Broadcast);
-        assert!(sparse.task_id.is_none());
         assert!(sparse.to_member_ids.is_empty());
         assert!(sparse.causation_id.is_none());
         assert!(sparse.evidence_refs.is_empty());
@@ -1803,7 +1605,7 @@ mod tests {
             from_agent_id: "leader".into(),
             to_agent_id: Some(agent_id.into()),
             channel: Some("assignment".into()),
-            kind: MessageKind::Task,
+            kind: MessageKind::Assignment,
             delivery_status: MessageDeliveryStatus::Queued,
             content: "Do the task".into(),
             evidence_ids: Vec::new(),

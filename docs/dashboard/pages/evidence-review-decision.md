@@ -34,7 +34,7 @@ Canonical objects:
   `is_waiver`, `follow_up_task_id`);
 - Task;
 - Goal;
-- checks, screenshots, PR refs, GoalEvaluation.
+- checks, screenshots, PR refs, outcome evaluation.
 
 Implemented: `Review` is a first-class object whose `verdict`, `blockers`,
 `missing_validation`, and `residual_risk` render visually distinct from the
@@ -57,8 +57,7 @@ Workflow proof:
 Source docs:
 
 - [../../workflow-git-pr.md](../../workflow-git-pr.md)
-- [../../goal-learning-loop.md](../../goal-learning-loop.md)
-- [../acceptance.md](../acceptance.md)
+- [../acceptance.md](../../company-os/frontend-information-architecture.md)
 
 Read-model inputs:
 

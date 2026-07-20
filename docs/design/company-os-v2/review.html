@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Company OS V2 · Visual Direction Review</title>
+  <style>
+    :root { color-scheme: light; --bg:#f4f0e9; --paper:#fffdf9; --ink:#25231f; --muted:#746f67; --line:#dfd8cd; --coral:#ea5a3d; --sage:#718668; }
+    * { box-sizing:border-box; }
+    body { margin:0; background:var(--bg); color:var(--ink); font:14px/1.55 Inter, ui-sans-serif, system-ui, sans-serif; }
+    header { position:sticky; top:0; z-index:4; padding:22px 34px; display:flex; align-items:center; justify-content:space-between; background:rgba(244,240,233,.92); border-bottom:1px solid var(--line); backdrop-filter:blur(16px); }
+    h1,h2,h3,p { margin:0; }
+    h1 { font-family:Georgia,serif; font-size:28px; font-weight:500; }
+    .status { padding:7px 11px; border:1px solid #efad9f; border-radius:999px; color:#b43f28; background:#fff5f1; font-size:12px; }
+    main { max-width:1600px; margin:auto; padding:38px 34px 80px; }
+    .intro { max-width:900px; font-size:17px; color:var(--muted); margin:12px 0 34px; }
+    .section-title { display:flex; align-items:end; justify-content:space-between; margin:42px 0 16px; }
+    .section-title h2 { font:500 26px Georgia,serif; }
+    .section-title span { color:var(--muted); font-size:12px; }
+    .case { margin-bottom:32px; background:var(--paper); border:1px solid var(--line); border-radius:16px; overflow:hidden; box-shadow:0 10px 40px rgba(51,42,29,.04); }
+    .case-head { padding:16px 18px; display:flex; justify-content:space-between; border-bottom:1px solid var(--line); }
+    .case-head h3 { font-size:16px; }
+    .case-head p { color:var(--muted); font-size:12px; }
+    .compare { display:grid; grid-template-columns:1fr 1fr; }
+    figure { margin:0; min-width:0; }
+    figure+figure { border-left:1px solid var(--line); }
+    figcaption { padding:9px 14px; background:#faf7f2; border-bottom:1px solid var(--line); color:var(--muted); font-size:11px; letter-spacing:.06em; text-transform:uppercase; }
+    figure img { display:block; width:100%; height:auto; }
+    .avatars { display:grid; grid-template-columns:repeat(5,1fr); gap:18px; }
+    .avatar { padding:14px; background:var(--paper); border:1px solid var(--line); border-radius:16px; text-align:center; }
+    .avatar img { display:block; width:100%; border-radius:50%; margin-bottom:12px; }
+    .avatar strong { display:block; font-size:13px; }
+    .avatar span { color:var(--muted); font-size:11px; }
+    .note { margin-top:30px; padding:18px 20px; border-left:3px solid var(--coral); background:#fff8f4; color:#5f554d; }
+    @media (max-width:900px) { .compare { grid-template-columns:1fr; } figure+figure { border-left:0; border-top:1px solid var(--line); } .avatars { grid-template-columns:repeat(2,1fr); } }
+  </style>
+</head>
+<body>
+  <header><h1>Company OS V2 · Visual Direction</h1><span class="status">Expected · Human review pending</span></header>
+  <main>
+    <p class="intro">V1 是已经验证的功能基线；V2 重新定义产品层级、协作方式和视觉语言。以下对照只用于评审设计方向，V2 尚未实现，也没有被自动视为批准。</p>
+
+    <div class="section-title"><h2>Six mother pages</h2><span>V1 actual baseline → V2 expected</span></div>
+
+    <section class="case"><div class="case-head"><div><h3>Company Home</h3><p>Morning operating brief · decisions and Milestones</p></div></div><div class="compare"><figure><figcaption>V1 actual baseline</figcaption><img src="../company-os-v1/actual/home--morning-review--desktop-1440x1000.png" /></figure><figure><figcaption>V2 expected</figcaption><img src="expected/home--morning-operating-review--desktop-1536x1024.png" /></figure></div></section>
+    <section class="case"><div class="case-head"><div><h3>Docs Workspace</h3><p>Company knowledge · authored pages and embedded live views</p></div></div><div class="compare"><figure><figcaption>V1 actual baseline</figcaption><img src="../company-os-v1/actual/docs-workspace--company-knowledge-home--desktop-1440x1000.png" /></figure><figure><figcaption>V2 expected</figcaption><img src="expected/docs--company-knowledge-workspace--desktop-1536x1024.png" /></figure></div></section>
+    <section class="case"><div class="case-head"><div><h3>Organization</h3><p>Human Owner → Lead Agent → direct Standing Agents</p></div></div><div class="compare"><figure><figcaption>V1 actual baseline</figcaption><img src="../company-os-v1/actual/agents-organization--mixed-company-org--desktop-1440x1000.png" /></figure><figure><figcaption>V2 expected</figcaption><img src="expected/organization--lead-first-company--desktop-1536x1024.png" /></figure></div></section>
+    <section class="case"><div class="case-head"><div><h3>Lead Agent Workspace</h3><p>Long-lived collaboration, direct reports, one-time execution summaries</p></div></div><div class="compare"><figure><figcaption>V1 Standing Agent baseline</figcaption><img src="../company-os-v1/actual/standing-agent-focus--document-architect-available--desktop-1440x1000.png" /></figure><figure><figcaption>V2 expected</figcaption><img src="expected/lead-agent--coordinating-direct-reports--desktop-1536x1024.png" /></figure></div></section>
+    <section class="case"><div class="case-head"><div><h3>Business Module</h3><p>Trademark Management · domain page over shared Company OS truth</p></div></div><div class="compare"><figure><figcaption>V1 actual baseline</figcaption><img src="../company-os-v1/actual/business-module-focus--trademark-management--desktop-1440x1000.png" /></figure><figure><figcaption>V2 expected</figcaption><img src="expected/business-module--trademark-operations--desktop-1536x1024.png" /></figure></div></section>
+    <section class="case"><div class="case-head"><div><h3>Work</h3><p>Milestones and typed WorkItems · no Project, no Task Graph</p></div></div><div class="compare"><figure><figcaption>V1 actual baseline</figcaption><img src="../company-os-v1/actual/workboard--company-workboard--desktop-1440x1000.png" /></figure><figure><figcaption>V2 expected</figcaption><img src="expected/work--milestones-and-workitems--desktop-1536x1024.png" /></figure></div></section>
+
+    <div class="section-title"><h2>Standing Agent identity family</h2><span>Stable visual identity · authority remains explicit data</span></div>
+    <section class="avatars">
+      <div class="avatar"><img src="identity/avatars/company-lead.png" /><strong>Company Lead</strong><span>Lead Agent</span></div>
+      <div class="avatar"><img src="identity/avatars/document-architecture-agent.png" /><strong>Document Architecture</strong><span>Standing Agent</span></div>
+      <div class="avatar"><img src="identity/avatars/finance-agent.png" /><strong>Finance</strong><span>Standing Agent</span></div>
+      <div class="avatar"><img src="identity/avatars/content-strategy-agent.png" /><strong>Content Strategy</strong><span>Standing Agent</span></div>
+      <div class="avatar"><img src="identity/avatars/trademark-agent.png" /><strong>Trademark</strong><span>Proposed Standing Agent</span></div>
+    </section>
+    <p class="note">评审重点：整体美术方向、六种页面构图是否准确、头像家族是否符合长期 Agent 的产品感。确认后才会扩展 Document、Milestone、typed WorkItem、Approval、Finance、Mission/Wave、Agent Team 等完整页面族。</p>
+  </main>
+</body>
+</html>

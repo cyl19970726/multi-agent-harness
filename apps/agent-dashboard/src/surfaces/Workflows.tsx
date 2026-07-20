@@ -223,11 +223,6 @@ function RunsTable({
               <span className="min-w-0">
                 <Badge tone={tone}>{run.status}</Badge>
                 {run.dry_run && <Badge tone="warn">dry-run</Badge>}
-                {run.goal_id && (
-                  <Badge tone="idle">
-                    {run.phase_id ? `${run.goal_id} · ${run.phase_id}` : run.goal_id}
-                  </Badge>
-                )}
               </span>
               <span className="min-w-0">
                 <ShapeGlyph steps={steps} />
@@ -347,11 +342,6 @@ export function WorkflowRunDetail({ model, onSelectionChange, apiUrl }: Workflow
               <div className="mt-1 flex flex-wrap items-center gap-1.5">
                 <Badge tone={headerTone}>{headerStatus}</Badge>
                 {run.dry_run && <Badge tone="warn">dry-run</Badge>}
-                {run.goal_id && (
-                  <Badge tone="idle">
-                    {run.phase_id ? `${run.goal_id} · ${run.phase_id}` : run.goal_id}
-                  </Badge>
-                )}
               </div>
             </div>
           </div>
@@ -485,12 +475,10 @@ function WorkflowRunContextStrip({
   const finished = steps.filter((step) => isTerminal(step.status)).length;
   const evidenceOutputs = steps.filter((step) => step.output_summary?.trim()).length;
   const failed = steps.filter((step) => step.status === "failed").length;
-  const context = run.phase_id
-    ? `${run.goal_id ?? "goal"} / ${run.phase_id}`
-    : run.goal_id ?? "standalone run";
+  const context = "standalone workflow";
   return (
     <section className="grid gap-2 rounded-lg border border-border bg-card/70 p-3 text-[12px] sm:grid-cols-2 xl:grid-cols-[0.8fr_0.7fr_0.7fr_minmax(0,1.8fr)]">
-      <WorkflowContextItem label="Goal / phase" value={context} />
+      <WorkflowContextItem label="Execution context" value={context} />
       <WorkflowContextItem
         label="Run stages"
         value={steps.length ? `${finished}/${steps.length} passed` : "not started"}
@@ -521,9 +509,7 @@ function WorkflowPlanOverview({
   parsed: { result: string; criterion?: string; detail?: string };
   phases: WorkflowPhase[];
 }) {
-  const context = run.phase_id
-    ? `${run.goal_id ?? "goal"} / ${run.phase_id}`
-    : run.goal_id ?? "standalone run";
+  const context = "standalone workflow";
   const purpose = run.design_intent ?? parsed.criterion ?? "Workflow run";
   const shape = phases.length ? readableWorkflowShape(phases, steps.length) : `${steps.length} stage${steps.length === 1 ? "" : "s"}`;
   const evidenceOutputs = steps.filter((step) => step.output_summary?.trim()).length;
@@ -807,11 +793,6 @@ function WorkflowFailureSummary({
       <p className="mt-1 line-clamp-2 text-[12px] leading-relaxed text-foreground/80">
         {detail}
       </p>
-      {run.phase_id && (
-        <p className="mt-1 text-[11px] text-muted-foreground">
-          Next operator action: review the verdict evidence for phase {run.phase_id}.
-        </p>
-      )}
     </section>
   );
 }
@@ -1115,7 +1096,6 @@ function workflowStepEventDetail(output: string): string {
     || lower.includes("next_action")
     || lower.includes("findings")
     || lower.includes("run plan")
-    || lower.includes("task graph")
     || lower.includes("debug language")
   ) {
     return "Findings and next actions captured for review.";

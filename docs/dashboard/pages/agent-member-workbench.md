@@ -48,8 +48,8 @@ Workflow proof:
 Source docs:
 
 - [../../agent-runtime.md](../../agent-runtime.md)
-- [../../agent-control-plane.md](../../agent-control-plane.md)
-- [../read-model.md](../read-model.md)
+- [../../agent-control-plane.md](../../company-os/execution-foundation.md)
+- [../read-model.md](../../company-os/frontend-information-architecture.md)
 
 Read-model inputs:
 

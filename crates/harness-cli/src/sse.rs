@@ -619,7 +619,7 @@ mod tests {
             from_agent_id: "leader".into(),
             to_agent_id: Some("agent-1".into()),
             channel: Some("assignment".into()),
-            kind: MessageKind::Task,
+            kind: MessageKind::Assignment,
             delivery_status: MessageDeliveryStatus::Queued,
             content: "Do the task".into(),
             evidence_ids: Vec::new(),
@@ -647,8 +647,6 @@ mod tests {
             trace_retention: "durable".into(),
             host_pid: None,
             dry_run: false,
-            goal_id: None,
-            phase_id: None,
         }
     }
 
@@ -664,8 +662,6 @@ mod tests {
             result: None,
             started_at: "unix-ms:1".into(),
             ended_at: None,
-            task_id: None,
-            verdict_outcome: None,
         }
     }
 

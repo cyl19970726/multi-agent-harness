@@ -1,0 +1,347 @@
+{
+  "fixture_id": "company-os-trademark-v1",
+  "version": 1,
+  "purpose": "The single shared, pre-settlement Trademark Management scenario for all twelve Company OS V1 expected pages.",
+  "time_contract": {
+    "timezone": "Asia/Shanghai",
+    "all_timestamps_must_be_in": "2026-07",
+    "fixture_as_of": "2026-07-20T09:30:00+08:00"
+  },
+  "truth_rules": [
+    "Every page renders these records by fixed ID; labels may be localized, but business facts may not be copied or invented per page.",
+    "Organization availability, capacity, and role state appear only when the fixture explicitly reports them. Absence of a report is not a status.",
+    "The ¥3,000 record is a pending-approval commitment, not a payment. No Payment FinancialRecord exists before settlement evidence is recorded.",
+    "The WorkItem role fields are distinct: requester, submitter, accountable owner, assignee, contributor, reviewer, and approver are never inferred from one another.",
+    "No page may render provider thinking, runtime idleness, chat activity, or a familiar name as evidence of organizational status or work ownership."
+  ],
+  "actors": [
+    {
+      "id": "actor-human-brand-owner",
+      "display_name": "Brand Owner",
+      "actor_type": "Human",
+      "created_at": "2026-07-01T09:00:00+08:00"
+    },
+    {
+      "id": "actor-agent-trademark",
+      "display_name": "Trademark Agent",
+      "actor_type": "Standing Agent",
+      "created_at": "2026-07-08T10:00:00+08:00"
+    },
+    {
+      "id": "actor-agent-finance",
+      "display_name": "Finance Agent",
+      "actor_type": "Standing Agent",
+      "created_at": "2026-07-01T09:15:00+08:00"
+    },
+    {
+      "id": "actor-external-lawyer",
+      "display_name": "External Lawyer",
+      "actor_type": "External",
+      "created_at": "2026-07-02T11:00:00+08:00"
+    },
+    {
+      "id": "actor-agent-document-architecture",
+      "display_name": "Document Architecture Agent",
+      "actor_type": "Standing Agent",
+      "created_at": "2026-07-01T09:30:00+08:00"
+    },
+    {
+      "id": "actor-agent-content-strategy",
+      "display_name": "Content Strategy Agent",
+      "actor_type": "Standing Agent",
+      "created_at": "2026-07-01T09:45:00+08:00"
+    },
+    {
+      "id": "actor-agent-ip-lead",
+      "display_name": "IP Lead Agent",
+      "actor_type": "Standing Agent",
+      "created_at": "2026-07-03T09:00:00+08:00"
+    },
+    {
+      "id": "actor-agent-organization-governance",
+      "display_name": "Organization Governance Agent",
+      "actor_type": "Standing Agent",
+      "created_at": "2026-07-01T10:00:00+08:00"
+    },
+    {
+      "id": "actor-agent-analytics",
+      "display_name": "Analytics Agent",
+      "actor_type": "Standing Agent",
+      "created_at": "2026-07-01T10:15:00+08:00"
+    }
+  ],
+  "organization": {
+    "org_units": [
+      { "id": "org-company", "name": "Company", "created_at": "2026-07-01T08:00:00+08:00" },
+      { "id": "org-brand-ip", "name": "Brand & IP", "parent_id": "org-company", "created_at": "2026-07-01T08:05:00+08:00" },
+      { "id": "org-content-operations", "name": "Content Operations", "parent_id": "org-company", "created_at": "2026-07-01T08:10:00+08:00" },
+      { "id": "org-finance", "name": "Finance", "parent_id": "org-company", "created_at": "2026-07-01T08:15:00+08:00" },
+      { "id": "org-governance", "name": "Governance", "parent_id": "org-company", "created_at": "2026-07-01T08:20:00+08:00" }
+    ],
+    "memberships": [
+      { "actor_id": "actor-human-brand-owner", "org_unit_id": "org-brand-ip", "role_label": "Business owner", "created_at": "2026-07-01T09:00:00+08:00" },
+      { "actor_id": "actor-agent-trademark", "org_unit_id": "org-brand-ip", "role_label": "Proposed trademark role", "created_at": "2026-07-08T10:00:00+08:00" },
+      { "actor_id": "actor-agent-ip-lead", "org_unit_id": "org-brand-ip", "role_label": "IP lead", "created_at": "2026-07-03T09:00:00+08:00" },
+      { "actor_id": "actor-external-lawyer", "org_unit_id": "org-brand-ip", "role_label": "Matter-specific legal support", "created_at": "2026-07-02T11:00:00+08:00" },
+      { "actor_id": "actor-agent-content-strategy", "org_unit_id": "org-content-operations", "role_label": "Strategy partner", "created_at": "2026-07-01T09:45:00+08:00" },
+      { "actor_id": "actor-agent-analytics", "org_unit_id": "org-content-operations", "role_label": "Analytics", "created_at": "2026-07-01T10:15:00+08:00" },
+      { "actor_id": "actor-agent-finance", "org_unit_id": "org-finance", "role_label": "Financial review", "created_at": "2026-07-01T09:15:00+08:00" },
+      { "actor_id": "actor-agent-document-architecture", "org_unit_id": "org-governance", "role_label": "Document architecture", "created_at": "2026-07-01T09:30:00+08:00" },
+      { "actor_id": "actor-agent-organization-governance", "org_unit_id": "org-governance", "role_label": "Organization governance", "created_at": "2026-07-01T10:00:00+08:00" }
+    ],
+    "explicitly_reported_statuses": [
+      {
+        "subject_ref": "actor-agent-trademark",
+        "kind": "organization_role_state",
+        "value": "proposed",
+        "reported_at": "2026-07-18T10:00:00+08:00",
+        "source_ref": "governance-proposal-trademark-management"
+      },
+      {
+        "subject_ref": "actor-agent-document-architecture",
+        "kind": "availability",
+        "value": "available",
+        "reported_at": "2026-07-20T09:00:00+08:00",
+        "source_ref": "status-report-document-architecture-july-20"
+      }
+    ]
+  },
+  "documents": [
+    {
+      "id": "document-trademark-application-cn-2026-018",
+      "title": "Trademark application CN-2026-018",
+      "space": "Brand & IP",
+      "owner_ref": "actor-human-brand-owner",
+      "created_at": "2026-07-12T09:00:00+08:00",
+      "updated_at": "2026-07-20T09:10:00+08:00"
+    },
+    {
+      "id": "document-brand-a-content-operating-plan",
+      "title": "Brand A · Content operating plan",
+      "space": "Content Operations",
+      "owner_ref": "actor-human-brand-owner",
+      "created_at": "2026-07-04T09:00:00+08:00",
+      "updated_at": "2026-07-19T16:30:00+08:00"
+    },
+    {
+      "id": "document-trademark-filing-package-cn-2026-018",
+      "title": "Trademark filing package CN-2026-018",
+      "space": "Brand & IP",
+      "created_at": "2026-07-16T14:00:00+08:00",
+      "updated_at": "2026-07-18T11:20:00+08:00"
+    },
+    {
+      "id": "document-lawyer-review-cn-2026-018",
+      "title": "Legal review CN-2026-018",
+      "space": "Brand & IP",
+      "created_at": "2026-07-18T15:00:00+08:00",
+      "updated_at": "2026-07-18T16:15:00+08:00"
+    }
+  ],
+  "business_modules": [
+    {
+      "id": "module-trademark-management",
+      "name": "Trademark Management",
+      "home_org_unit_ref": "org-brand-ip",
+      "owner_ref": "actor-human-brand-owner",
+      "status": "proposed_pending_final_approval",
+      "created_at": "2026-07-18T10:00:00+08:00"
+    }
+  ],
+  "typed_records": [
+    {
+      "id": "trademark-application-cn-2026-018",
+      "record_type": "TrademarkApplication",
+      "display_id": "CN-2026-018",
+      "brand": "Brand A",
+      "jurisdiction": "CN",
+      "status": "filing_preparation_human_approval_needed",
+      "module_ref": "module-trademark-management",
+      "source_document_ref": "document-trademark-application-cn-2026-018",
+      "accountable_owner_ref": "actor-human-brand-owner",
+      "operational_owner_ref": "actor-agent-trademark",
+      "external_legal_support_ref": "actor-external-lawyer",
+      "created_at": "2026-07-12T09:30:00+08:00",
+      "updated_at": "2026-07-20T09:10:00+08:00"
+    },
+    {
+      "id": "brand-brand-a",
+      "record_type": "Brand",
+      "display_name": "Brand A",
+      "owner_ref": "actor-human-brand-owner",
+      "created_at": "2026-07-04T09:00:00+08:00",
+      "updated_at": "2026-07-19T16:30:00+08:00"
+    }
+  ],
+  "work_items": [
+    {
+      "id": "workitem-trademark-filing-brand-a",
+      "title": "Trademark filing for Brand A",
+      "status": "waiting_for_approval",
+      "source_document_ref": "document-trademark-application-cn-2026-018",
+      "source_record_refs": ["trademark-application-cn-2026-018", "brand-brand-a"],
+      "result_document_ref": "document-trademark-application-cn-2026-018",
+      "requested_by_ref": "actor-human-brand-owner",
+      "submitted_by_ref": "actor-agent-trademark",
+      "accountable_owner_ref": "actor-human-brand-owner",
+      "assignee_refs": ["actor-agent-trademark"],
+      "contributor_refs": ["actor-external-lawyer"],
+      "reviewer_ref": "actor-agent-finance",
+      "legal_reviewer_ref": "actor-external-lawyer",
+      "approver_ref": "actor-human-brand-owner",
+      "approval_refs": ["approval-trademark-filing-fee-cn-2026-018"],
+      "financial_record_refs": ["financial-commitment-trademark-filing-fee-cn-2026-018"],
+      "evidence_refs": ["evidence-trademark-filing-package-cn-2026-018", "evidence-legal-review-cn-2026-018"],
+      "created_at": "2026-07-15T10:00:00+08:00",
+      "submitted_at": "2026-07-17T11:00:00+08:00",
+      "updated_at": "2026-07-20T09:10:00+08:00"
+    }
+  ],
+  "assignments": [
+    {
+      "id": "assignment-trademark-agent-trademark-filing-brand-a",
+      "work_item_ref": "workitem-trademark-filing-brand-a",
+      "assignee_ref": "actor-agent-trademark",
+      "status": "accepted",
+      "assigned_at": "2026-07-17T11:05:00+08:00",
+      "accepted_at": "2026-07-17T11:10:00+08:00"
+    }
+  ],
+  "financial_records": [
+    {
+      "id": "financial-commitment-trademark-filing-fee-cn-2026-018",
+      "display_name": "Trademark filing fee",
+      "type": "commitment",
+      "amount": 3000,
+      "currency": "CNY",
+      "display_amount": "¥3,000",
+      "status": "pending_approval",
+      "project_ref": "brand-brand-a",
+      "source_document_ref": "document-trademark-application-cn-2026-018",
+      "business_record_ref": "trademark-application-cn-2026-018",
+      "work_item_ref": "workitem-trademark-filing-brand-a",
+      "submitted_by_ref": "actor-agent-trademark",
+      "accountable_owner_ref": "actor-human-brand-owner",
+      "reviewer_ref": "actor-agent-finance",
+      "approval_refs": ["approval-trademark-filing-fee-cn-2026-018"],
+      "evidence_refs": ["evidence-trademark-filing-package-cn-2026-018", "evidence-legal-review-cn-2026-018"],
+      "created_at": "2026-07-18T09:00:00+08:00",
+      "updated_at": "2026-07-20T09:10:00+08:00"
+    }
+  ],
+  "approvals": [
+    {
+      "id": "approval-trademark-filing-fee-cn-2026-018",
+      "title": "Approve trademark filing fee",
+      "subject_refs": ["workitem-trademark-filing-brand-a", "financial-commitment-trademark-filing-fee-cn-2026-018", "trademark-application-cn-2026-018"],
+      "action_summary": "Authorize a ¥3,000 commitment and legal submission for Trademark application CN-2026-018.",
+      "requested_by_ref": "actor-agent-trademark",
+      "accountable_owner_ref": "actor-human-brand-owner",
+      "finance_reviewer_ref": "actor-agent-finance",
+      "legal_reviewer_ref": "actor-external-lawyer",
+      "required_approver_refs": ["actor-human-brand-owner"],
+      "status": "requested",
+      "policy_ref": "policy-human-approval-financial-and-legal-submission",
+      "evidence_refs": ["evidence-trademark-filing-package-cn-2026-018", "evidence-legal-review-cn-2026-018"],
+      "requested_at": "2026-07-18T16:30:00+08:00",
+      "expires_at": "2026-07-31T18:00:00+08:00"
+    }
+  ],
+  "evidence": [
+    {
+      "id": "evidence-trademark-filing-package-cn-2026-018",
+      "title": "Trademark filing package",
+      "document_ref": "document-trademark-filing-package-cn-2026-018",
+      "submitted_by_ref": "actor-agent-trademark",
+      "created_at": "2026-07-18T11:20:00+08:00"
+    },
+    {
+      "id": "evidence-legal-review-cn-2026-018",
+      "title": "Lawyer review",
+      "document_ref": "document-lawyer-review-cn-2026-018",
+      "submitted_by_ref": "actor-external-lawyer",
+      "created_at": "2026-07-18T16:15:00+08:00"
+    }
+  ],
+  "governance_proposals": [
+    {
+      "id": "governance-proposal-trademark-management",
+      "title": "Create Trademark Management module",
+      "proposed_by_ref": "actor-agent-document-architecture",
+      "module_ref": "module-trademark-management",
+      "status": "awaiting_final_approval",
+      "linked_application_ref": "trademark-application-cn-2026-018",
+      "linked_financial_record_ref": "financial-commitment-trademark-filing-fee-cn-2026-018",
+      "created_at": "2026-07-18T10:00:00+08:00",
+      "updated_at": "2026-07-20T09:00:00+08:00"
+    }
+  ],
+  "explicit_metrics": [
+    {
+      "id": "metric-july-spend",
+      "label": "July spend",
+      "amount": 18400,
+      "currency": "CNY",
+      "display_amount": "¥18,400",
+      "observed_at": "2026-07-20T09:00:00+08:00"
+    }
+  ],
+  "negative_assertions": {
+    "payment_financial_records": [],
+    "settlement_evidence": [],
+    "reason": "No Payment FinancialRecord may be created or rendered until settlement evidence exists after the required human approval."
+  },
+  "page_slices": {
+    "home": {
+      "required_refs": ["approval-trademark-filing-fee-cn-2026-018", "trademark-application-cn-2026-018", "actor-human-brand-owner", "actor-agent-content-strategy", "actor-external-lawyer"],
+      "required_facts": ["CN-2026-018 moved to approval", "Human decision is required for the pending ¥3,000 commitment"],
+      "prohibited_inferences": ["availability from runtime or activity"]
+    },
+    "docs-workspace": {
+      "required_refs": ["document-trademark-application-cn-2026-018", "module-trademark-management", "governance-proposal-trademark-management", "financial-commitment-trademark-filing-fee-cn-2026-018"],
+      "required_facts": ["Trademark Management is proposed", "Trademark application CN-2026-018 links to finance records"]
+    },
+    "document-focus": {
+      "required_refs": ["document-brand-a-content-operating-plan", "document-trademark-application-cn-2026-018", "workitem-trademark-filing-brand-a", "financial-commitment-trademark-filing-fee-cn-2026-018", "actor-human-brand-owner", "actor-agent-content-strategy"],
+      "required_facts": ["Brand A content operating plan is on track", "Trademark filing for Brand A is linked work"]
+    },
+    "workboard": {
+      "required_refs": ["workitem-trademark-filing-brand-a", "actor-human-brand-owner", "actor-agent-trademark", "actor-external-lawyer", "actor-agent-finance", "approval-trademark-filing-fee-cn-2026-018"],
+      "required_facts": ["WorkItem is waiting for approval", "Assignee is Trademark Agent; accountable owner is Brand Owner"]
+    },
+    "work-item-focus": {
+      "required_refs": ["workitem-trademark-filing-brand-a", "document-trademark-application-cn-2026-018", "trademark-application-cn-2026-018", "financial-commitment-trademark-filing-fee-cn-2026-018", "approval-trademark-filing-fee-cn-2026-018", "evidence-trademark-filing-package-cn-2026-018", "evidence-legal-review-cn-2026-018"],
+      "required_facts": ["Requested by Brand Owner · Human", "Submitted and assigned to Trademark Agent · Standing Agent", "Accountable owner and approver are Brand Owner · Human", "Finance Agent is reviewer", "External Lawyer is contributor and legal reviewer", "¥3,000 commitment is pending approval"]
+    },
+    "finance": {
+      "required_refs": ["financial-commitment-trademark-filing-fee-cn-2026-018", "document-trademark-application-cn-2026-018", "approval-trademark-filing-fee-cn-2026-018", "actor-human-brand-owner", "actor-agent-finance", "metric-july-spend"],
+      "required_facts": ["Trademark filing fee · Commitment · ¥3,000 · Pending approval", "This is a pre-approval commitment, not a payment", "July spend is ¥18,400"]
+    },
+    "agents-organization": {
+      "required_refs": ["org-company", "org-brand-ip", "actor-human-brand-owner", "actor-agent-ip-lead", "actor-agent-trademark", "actor-external-lawyer", "actor-agent-document-architecture", "governance-proposal-trademark-management"],
+      "required_facts": ["Trademark Agent role is proposed and related to CN-2026-018", "Document Architecture Agent is available only because it is explicitly reported"],
+      "prohibited_inferences": ["online status", "availability for actors without an explicit report"]
+    },
+    "standing-agent-focus": {
+      "required_refs": ["actor-agent-document-architecture", "governance-proposal-trademark-management", "module-trademark-management"],
+      "required_facts": ["Document Architecture Agent availability is explicitly reported as available", "The agent proposed Trademark Management"],
+      "prohibited_inferences": ["MemberRun ownership", "capacity from idle runtime", "persistent thinking"]
+    },
+    "governance-proposal": {
+      "required_refs": ["governance-proposal-trademark-management", "module-trademark-management", "trademark-application-cn-2026-018", "financial-commitment-trademark-filing-fee-cn-2026-018", "actor-agent-document-architecture", "actor-human-brand-owner", "actor-agent-finance", "actor-external-lawyer"],
+      "required_facts": ["Proposal awaits final approval", "It creates a linked ¥3,000 commitment", "Human approval is required for filing fees and legal submission"]
+    },
+    "approval-focus": {
+      "required_refs": ["approval-trademark-filing-fee-cn-2026-018", "workitem-trademark-filing-brand-a", "document-trademark-application-cn-2026-018", "financial-commitment-trademark-filing-fee-cn-2026-018", "evidence-trademark-filing-package-cn-2026-018", "evidence-legal-review-cn-2026-018"],
+      "required_facts": ["Brand Owner · Human is the required approver", "Trademark Agent requested the action", "Finance Agent reviewed finance and External Lawyer reviewed legal scope", "No payment is authorized or recorded by this pending approval"]
+    },
+    "business-module-focus": {
+      "required_refs": ["module-trademark-management", "trademark-application-cn-2026-018", "workitem-trademark-filing-brand-a", "financial-commitment-trademark-filing-fee-cn-2026-018", "actor-human-brand-owner", "actor-agent-trademark", "actor-external-lawyer", "governance-proposal-trademark-management"],
+      "required_facts": ["CN-2026-018 is in filing preparation and needs human approval", "The finance panel renders the same pending ¥3,000 commitment", "Module was created from an approved Module Design is not asserted in this pending-proposal fixture"]
+    },
+    "human-member-focus": {
+      "required_refs": ["actor-human-brand-owner", "document-brand-a-content-operating-plan", "document-trademark-application-cn-2026-018", "workitem-trademark-filing-brand-a", "approval-trademark-filing-fee-cn-2026-018", "financial-commitment-trademark-filing-fee-cn-2026-018"],
+      "required_facts": ["Brand Owner owns Brand A decisions", "Brand Owner is accountable owner and required human approver", "No human availability or agent-runtime telemetry is shown"]
+    }
+  }
+}
