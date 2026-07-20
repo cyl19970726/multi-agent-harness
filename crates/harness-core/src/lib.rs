@@ -453,6 +453,7 @@ pub struct AgentTeam {
 #[serde(rename_all = "snake_case")]
 pub enum MessageKind {
     Message,
+    #[serde(alias = "task")]
     Assignment,
     Report,
 }
@@ -2425,6 +2426,17 @@ mod tests {
         assert_eq!(parsed, operator);
         assert_eq!(parsed.sender_kind, SenderKind::Operator);
         assert!(parsed.validate().is_ok());
+    }
+
+    #[test]
+    fn legacy_task_message_kind_reads_as_assignment_but_writes_canonical_name() {
+        let legacy: MessageKind =
+            serde_json::from_str(r#""task""#).expect("read legacy task message kind");
+        assert_eq!(legacy, MessageKind::Assignment);
+        assert_eq!(
+            serde_json::to_string(&legacy).expect("write canonical message kind"),
+            r#""assignment""#
+        );
     }
 
     fn sample_member() -> AgentMember {
