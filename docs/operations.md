@@ -51,9 +51,9 @@ npx pnpm@9.15.4 acceptance:autonomous-team
 ```
 
 The quick gate creates an isolated `HARNESS_ROOT`, then exercises the staged
-self-hosting flow: team creation, goal design, task assignment, worker report,
+self-hosting flow: team creation, historical work design, task assignment, worker report,
 provider-event fixture ingestion, negative review-gate rejection, accepted
-proposal, goal evaluation, hook bridge, Dashboard API, and the Earning Engine
+proposal, outcome evaluation, hook bridge, Dashboard API, and the Earning Engine
 adapter surface. The current live gate adds real Codex provider delivery
 smokes, including a single-member transport smoke and a Worker/Critic live
 delivery smoke, and can spend provider tokens.
@@ -67,7 +67,7 @@ decision over those proposals.
 The autonomous-team gate provides this deterministic proof through dry-run
 provider delivery. It must use `autonomy loop` to close an evaluated goal,
 compare the result with a vision reference, create and accept the next goal,
-generate a minimal task graph, carry that generated task through execution and
+generate a minimal legacy dependency graph, carry that generated task through execution and
 evaluation, and then create another accepted follow-up proposal. It does not
 replace the live Codex gate when a change claims real provider transport
 behavior.

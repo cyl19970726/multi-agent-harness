@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-harness.local/schemas/member-run.schema.json",
+  "title": "MemberRun",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "team_run_id", "name", "role", "provider", "status", "started_at"],
+  "properties": {
+    "id": { "type": "string", "minLength": 1 },
+    "team_run_id": { "type": "string", "minLength": 1 },
+    "slot_id": { "type": ["string", "null"], "minLength": 1 },
+    "name": { "type": "string", "minLength": 1 },
+    "role": { "type": "string", "minLength": 1 },
+    "provider": { "type": "string", "minLength": 1 },
+    "model": { "type": ["string", "null"], "minLength": 1 },
+    "status": {
+      "type": "string",
+      "enum": ["starting", "idle", "queued", "running", "waiting", "reviewing", "blocked", "completed", "failed", "stopped"]
+    },
+    "provider_session_id": { "type": ["string", "null"], "minLength": 1 },
+    "acp_session_id": { "type": ["string", "null"], "minLength": 1 },
+    "worktree_ref": { "type": ["string", "null"], "minLength": 1 },
+    "owned_paths": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "started_at": { "type": "string", "minLength": 1 },
+    "last_event_at": { "type": ["string", "null"], "minLength": 1 },
+    "finished_at": { "type": ["string", "null"], "minLength": 1 }
+  }
+}

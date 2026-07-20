@@ -1,1188 +1,8 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum GoalStatus {
-    Active,
-    Blocked,
-    Review,
-    Done,
-    /// Deprecated legacy terminal state (ADR 0019): retained for old rows; new
-    /// writers emit `Done`. Read models fold `Complete` into `Done`.
-    Complete,
-    Archived,
-}
-
-/// Goal lifecycle stage (markdown-first model). Distinct from the legacy
-/// [`GoalStatus`] kanban state, which is kept for back-compat and derived from
-/// the stage via [`GoalStage::to_status`]. Additive: old rows without a `stage`
-/// deserialize as `Draft`.
-///
-/// Phases: exploration (`exploring`→`explored`), work (`working`→`done`),
-/// acceptance (`verifying`→`verified`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum GoalStage {
-    #[default]
-    Draft,
-    Exploring,
-    Explored,
-    Working,
-    Done,
-    Verifying,
-    Verified,
-}
-
-impl GoalStage {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            GoalStage::Draft => "draft",
-            GoalStage::Exploring => "exploring",
-            GoalStage::Explored => "explored",
-            GoalStage::Working => "working",
-            GoalStage::Done => "done",
-            GoalStage::Verifying => "verifying",
-            GoalStage::Verified => "verified",
-        }
-    }
-
-    /// Linear position, for forward / back-edge ordering.
-    fn order(self) -> u8 {
-        match self {
-            GoalStage::Draft => 0,
-            GoalStage::Exploring => 1,
-            GoalStage::Explored => 2,
-            GoalStage::Working => 3,
-            GoalStage::Done => 4,
-            GoalStage::Verifying => 5,
-            GoalStage::Verified => 6,
-        }
-    }
-
-    /// Map the lifecycle stage onto the legacy kanban [`GoalStatus`] so existing
-    /// dashboard filters and gates keep working during migration.
-    pub fn to_status(self) -> GoalStatus {
-        match self {
-            GoalStage::Draft | GoalStage::Exploring | GoalStage::Explored | GoalStage::Working => {
-                GoalStatus::Active
-            }
-            GoalStage::Done | GoalStage::Verifying => GoalStatus::Review,
-            GoalStage::Verified => GoalStatus::Done,
-        }
-    }
-}
-
-/// One exploration contribution toward a Goal's design. Exploration is
-/// multi-agent / multi-round; these raw notes are synthesized into `design_md`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Exploration {
-    pub author: String,
-    #[serde(default)]
-    pub round: u32,
-    pub notes_md: String,
-    pub created_at: String,
-}
-
-// ---------------------------------------------------------------------------
-// Knowledge-driven phased planning (goal-planning-model, Stage S1a — model only).
-// A Goal carries agent-planned, SEQUENTIAL `phases[]` (each owning a task subgraph
-// referenced by `Task.phase_id`) and an append-only `knowledge[]` ledger (the truth,
-// with provenance) that `design_md` becomes a synthesis view of. All additive +
-// `#[serde(default)]` so old goals/tasks still deserialize. Gates/compiler/
-// orchestrator are later stages; this is just the data model.
-// ---------------------------------------------------------------------------
-
-/// Status of one agent-planned phase. Phases run sequentially; a phase must reach
-/// `Passed` (its verdict) before the next begins.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum GoalPhaseStatus {
-    #[default]
-    NotStarted,
-    InProgress,
-    Passed,
-    Failed,
-    Blocked,
-}
-
-/// The class of a phase (built-in-phases). `Execution` is the goal's planned work
-/// — today's only kind and the default, so a legacy row and an agent-planned phase
-/// stay byte-identical. `Building` marks a SYSTEM-PROVIDED phase that the
-/// orchestrator AUTO-APPENDS after a goal's execution phases pass; its body is a
-/// shipped Starlark program named by `GoalPhase.builtin` (NOT a task DAG).
-/// `Remediation` is reserved for the auto-optimise loop (a phase inserted on
-/// failure) and is not produced yet.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum PhaseKind {
-    #[default]
-    Execution,
-    Remediation,
-    Building,
-}
-
-/// The primary executor for a phase. A phase may be planned as durable TaskGraph
-/// work (`Task` + `Message` + persistent `AgentMember`) or as a direct workflow
-/// run (`WorkflowRun` + `WorkflowStep`). This is a mode selector, not a compiler
-/// pipeline: one phase has one primary execution source.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum PhaseExecutionMode {
-    #[default]
-    TaskGraph,
-    Workflow,
-}
-
-/// The class of an artifact a phase or task declares it will produce
-/// (goal-phase-artifacts). The default `Code` matches today's implicit behavior
-/// where a phase's deliverable is a code diff. Serialized snake_case so the wire
-/// form reads `design_doc`, `test_report`, `migration_doc`, `registered_doc`, etc.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum ArtifactKind {
-    DesignDoc,
-    Adr,
-    #[default]
-    Code,
-    TestReport,
-    MigrationDoc,
-    RegisteredDoc,
-    Screenshot,
-    Other,
-}
-
-fn default_artifact_required() -> bool {
-    true
-}
-
-/// One declared deliverable of a phase or task (goal-phase-artifacts). Makes
-/// artifacts first-class and declarative so the verdict gate can VERIFY a phase
-/// produced what it promised, instead of only checking the worker didn't crash.
-/// All-optional except `id`/`kind`/`purpose`; `required` defaults to TRUE so a
-/// declared output is enforced unless explicitly marked optional. An empty
-/// `outputs[]` reproduces today's behavior verbatim (the legacy `design_md` is the
-/// implicit `design_doc`, the `acceptance` string the implicit gate).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ArtifactSpec {
-    /// Stable handle for this artifact within its phase/task.
-    pub id: String,
-    /// What kind of artifact this is (gate/render hint).
-    #[serde(default)]
-    pub kind: ArtifactKind,
-    /// Where the artifact lands (repo-relative path; glob ok). When present and
-    /// `required`, the gate asserts it exists & is non-empty in the worktree diff.
-    #[serde(default)]
-    pub path: Option<String>,
-    /// Why this artifact exists — the human/agent-readable intent.
-    pub purpose: String,
-    /// Whether the gate must enforce this artifact. Defaults to TRUE.
-    #[serde(default = "default_artifact_required")]
-    pub required: bool,
-    /// Optional per-artifact acceptance criterion (a finer gate than its presence).
-    #[serde(default)]
-    pub acceptance: Option<String>,
-}
-
-impl Default for ArtifactSpec {
-    fn default() -> Self {
-        Self {
-            id: String::new(),
-            kind: ArtifactKind::default(),
-            path: None,
-            purpose: String::new(),
-            required: default_artifact_required(),
-            acceptance: None,
-        }
-    }
-}
-
-/// One agent-planned phase of a goal. It owns a task subgraph (the tasks whose
-/// `phase_id == this.id`), and its `acceptance` is the verdict gate before the next
-/// phase. Phases replace the fixed `GoalStage` enum as the source of truth for
-/// "where is this goal" (the legacy `stage` becomes a derived projection — that
-/// rewrite is Stage S1b).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct GoalPhase {
-    pub id: String,
-    pub name: String,
-    pub intent: String,
-    pub status: GoalPhaseStatus,
-    /// Markdown gate condition for this phase (the verdict it must pass).
-    #[serde(default)]
-    pub acceptance: Option<String>,
-    /// The `Decision` recording this phase's verdict, once gated.
-    #[serde(default)]
-    pub verdict_decision_id: Option<String>,
-    pub created_at: String,
-    #[serde(default)]
-    pub started_at: Option<String>,
-    #[serde(default)]
-    pub ended_at: Option<String>,
-    /// Artifacts this phase declares it will produce (goal-phase-artifacts). Empty
-    /// reproduces today's behavior (the implicit `design_doc` + `acceptance` gate);
-    /// non-empty makes the verdict gate enforce each `required` artifact's presence.
-    #[serde(default)]
-    pub outputs: Vec<ArtifactSpec>,
-    /// Artifacts a PRIOR phase must have landed for this phase to run
-    /// (goal-phase-refinements). Before running this phase, each REQUIRED input's
-    /// `path` must exist in the working tree, else the phase fails fast at start.
-    /// Reuses [`ArtifactSpec`] (`path`/`purpose`/`required` are what matter). Empty
-    /// reproduces today's behavior (no precondition). Additive + back-compat.
-    #[serde(default)]
-    pub inputs: Vec<ArtifactSpec>,
-    /// Per-phase retry budget override (goal-phase-refinements). When set, this
-    /// phase's replan/rerun budget is this value instead of the global
-    /// `--max-phase-retries`; `None` falls back to the global default. Lets an
-    /// explore phase and a live-demo phase have distinct budgets. Additive +
-    /// back-compat (a legacy row without the key is `None` == today's behavior).
-    #[serde(default)]
-    pub retry: Option<u32>,
-    /// The commit that landed this phase's writable work onto the goal's branch
-    /// (goal-phase-landing). Set by `run-phases` when a passing phase applies its
-    /// worktree diff, or by `goal reconcile-phase` for out-of-band work. `None`
-    /// for read-only phases and legacy rows. Additive + back-compat.
-    #[serde(default)]
-    pub landed_commit: Option<String>,
-    /// The phase class (built-in-phases). Defaults to `Execution`, so a legacy row
-    /// and any agent-planned phase are byte-identical to today. `Building` marks a
-    /// system-provided phase auto-appended after acceptance, whose body is the
-    /// shipped Starlark program named by [`GoalPhase::builtin`] — not a task DAG.
-    #[serde(default)]
-    pub kind: PhaseKind,
-    /// For a `Building` phase: the id of the built-in body to run (e.g. "doc-sync").
-    /// `None` for execution/remediation phases (their body is the task DAG).
-    #[serde(default)]
-    pub builtin: Option<String>,
-    /// The primary execution backend for this phase. Defaults to `TaskGraph` for
-    /// all legacy rows. Built-in building phases and directly-authored workflow
-    /// phases set this to `Workflow` and must also set `workflow_ref`.
-    #[serde(default)]
-    pub execution_mode: PhaseExecutionMode,
-    /// Optional workflow identity for `execution_mode=workflow`: a built-in id
-    /// (`builtin:doc-sync`) or a safe repo-authored workflow ref
-    /// (`repo:workflows/example.star`). TaskGraph phases leave this empty.
-    #[serde(default)]
-    pub workflow_ref: Option<String>,
-}
-
-/// Where a `Knowledge` entry came from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum KnowledgeSource {
-    #[default]
-    Exploration,
-    Task,
-    Decision,
-    Evidence,
-}
-
-/// One append-only learning in a goal's knowledge ledger — the durable truth that
-/// `design_md` is synthesized from. Carries provenance (`phase_id`/`task_id`/author)
-/// so "which task changed the plan, when, by whom" is always answerable.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Knowledge {
-    pub id: String,
-    pub goal_id: String,
-    #[serde(default)]
-    pub phase_id: Option<String>,
-    #[serde(default)]
-    pub task_id: Option<String>,
-    pub author: String,
-    pub timestamp: String,
-    pub notes_md: String,
-    #[serde(default)]
-    pub tags: Vec<String>,
-    #[serde(default)]
-    pub source: KnowledgeSource,
-    #[serde(default)]
-    pub superseded_by_knowledge_id: Option<String>,
-    pub created_at: String,
-}
-
-/// A workflow step's verdict outcome, distinct from its run status: a step that
-/// completed but returned `verdict(false)` is a `CleanFail` (drives replan/advance
-/// decisions), versus a crash which the step's own `Failed` status carries.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum VerdictOutcome {
-    Pass,
-    CleanFail,
-}
-
-/// Status of a goal-level orchestration run (`harness goal run-phases`): the
-/// durable checkpoint that sequences a goal's phases.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum OrchestrationStatus {
-    #[default]
-    Running,
-    Completed,
-    Failed,
-}
-
-/// One phase's outcome inside a [`GoalOrchestrationRun`] — which compiled
-/// workflow ran it and whether its verdict passed. Append-only audit.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct OrchestrationPhaseRun {
-    pub phase_id: String,
-    #[serde(default)]
-    pub workflow_run_id: Option<String>,
-    #[serde(default)]
-    pub compiled_path: Option<String>,
-    pub passed: bool,
-    pub started_at: String,
-    #[serde(default)]
-    pub ended_at: Option<String>,
-    /// The commit that landed this phase's writable work onto the goal's branch
-    /// (goal-phase-landing). Set when a passing phase applies its worktree diff;
-    /// `None` for read-only / not-yet-landed phases and legacy rows. Additive.
-    #[serde(default)]
-    pub landed_commit: Option<String>,
-}
-
-/// The durable checkpoint for `harness goal run-phases`: it sequences a goal's
-/// phases, gating each on its verdict, and records each phase run so `--resume`
-/// can re-enter without re-spending completed phases. Latest-row-wins like every
-/// other store object (re-appended as the run progresses).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct GoalOrchestrationRun {
-    pub id: String,
-    pub goal_id: String,
-    #[serde(default)]
-    pub status: OrchestrationStatus,
-    #[serde(default)]
-    pub phase_runs: Vec<OrchestrationPhaseRun>,
-    pub created_at: String,
-    pub updated_at: String,
-}
-
-/// Shared git/worktree context for a Goal or Task (ADR 0019). All fields
-/// optional; additive — old rows that omit it deserialize as `None`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct GitMetadata {
-    #[serde(default)]
-    pub repo: Option<String>,
-    #[serde(default)]
-    pub worktree_path: Option<String>,
-    #[serde(default)]
-    pub branch: Option<String>,
-    #[serde(default)]
-    pub base_branch: Option<String>,
-    #[serde(default)]
-    pub pr_ref: Option<String>,
-    #[serde(default)]
-    pub commit: Option<String>,
-    #[serde(default)]
-    pub owned_paths: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Goal {
-    pub id: String,
-    pub title: String,
-    pub owner_agent_id: String,
-    pub status: GoalStatus,
-    pub priority: String,
-    pub created_at: String,
-    pub updated_at: String,
-    #[serde(default)]
-    pub vision_id: Option<String>,
-    #[serde(default)]
-    pub goal_design_id: Option<String>,
-    #[serde(default)]
-    pub closed_by_decision_id: Option<String>,
-    #[serde(default)]
-    pub git_metadata: Option<GitMetadata>,
-    /// Lifecycle stage (markdown-first model). Additive; old rows default to `Draft`.
-    #[serde(default)]
-    pub stage: GoalStage,
-    /// Draft seed: what this goal is and why.
-    #[serde(default)]
-    pub description_md: Option<String>,
-    /// Written after exploration: key problems FIRST, then Big Picture / Overview
-    /// / approach. Absorbs the legacy GoalDesign field soup.
-    #[serde(default)]
-    pub design_md: Option<String>,
-    /// Written BEFORE work starts: the real acceptance — criteria, scenario, and
-    /// how to verify for real.
-    #[serde(default)]
-    pub acceptance_md: Option<String>,
-    /// Multi-agent / multi-round exploration notes feeding `design_md`.
-    #[serde(default)]
-    pub explorations: Vec<Exploration>,
-    /// Domain skills needed to DO this goal's work (distinct from `star-goal`).
-    #[serde(default)]
-    pub skill_refs: Vec<String>,
-    /// When `stage` last changed.
-    #[serde(default)]
-    pub stage_changed_at: Option<String>,
-    /// Agent-planned, SEQUENTIAL phases (goal-planning-model). Empty for legacy
-    /// goals, which run as a single implicit phase. The source of truth for goal
-    /// progress once non-empty; `stage` becomes a derived projection (S1b).
-    #[serde(default)]
-    pub phases: Vec<GoalPhase>,
-    /// Append-only knowledge ledger (the truth `design_md` is synthesized from).
-    #[serde(default)]
-    pub knowledge: Vec<Knowledge>,
-    /// When `design_md` was last (re)synthesized from `knowledge[]`.
-    #[serde(default)]
-    pub design_synthesis_at: Option<String>,
-}
-
-impl Goal {
-    /// The goal's effective lifecycle stage.
-    ///
-    /// For a **phase-driven** goal (`phases` non-empty) the stage is DERIVED
-    /// from phase progress — `phases` is the source of truth and the stored
-    /// `stage` field is only a coarse legacy projection. For a **legacy** goal
-    /// (no `phases`) the stored `stage` field IS the truth (back-compat with
-    /// pre-planning rows, which still load and render via the stage bar).
-    ///
-    /// The derivation is intentionally coarse (the per-phase timeline is the
-    /// real view for phase-driven goals); it exists so legacy consumers
-    /// (`to_status`, kanban) keep working:
-    /// - every phase `Passed` → `Verified` (the whole plan, incl. acceptance, is done)
-    /// - any phase started/failed/blocked → `Working` (active)
-    /// - all phases `NotStarted` → `Draft`
-    pub fn effective_stage(&self) -> GoalStage {
-        if self.phases.is_empty() {
-            return self.stage;
-        }
-        if self
-            .phases
-            .iter()
-            .all(|p| p.status == GoalPhaseStatus::Passed)
-        {
-            GoalStage::Verified
-        } else if self
-            .phases
-            .iter()
-            .any(|p| p.status != GoalPhaseStatus::NotStarted)
-        {
-            GoalStage::Working
-        } else {
-            GoalStage::Draft
-        }
-    }
-
-    /// Validate a lifecycle transition, returning `Err(reason)` when disallowed.
-    /// Forward moves are strictly one stage at a time and may be gated; the only
-    /// back-edges are "re-open exploration" (any → `exploring`) and "real
-    /// acceptance failed → rework" (`verifying` → `working`).
-    ///
-    /// The `from` stage is the [`Goal::effective_stage`], so a phase-driven goal
-    /// is checked against its derived stage. Substance gates (`design_md` /
-    /// `acceptance_md` non-empty) apply ONLY to legacy goals; a phase-driven
-    /// goal gates on per-phase verdicts (driven by the orchestrator), not the
-    /// global markdown.
-    pub fn check_transition(&self, to: GoalStage) -> Result<(), String> {
-        let from = self.effective_stage();
-        if to == from {
-            return Err(format!("goal is already in stage `{}`", from.as_str()));
-        }
-        // Back-edges first.
-        if to == GoalStage::Exploring {
-            return Ok(()); // any stage may re-open exploration
-        }
-        if from == GoalStage::Verifying && to == GoalStage::Working {
-            return Ok(()); // real acceptance failed → back to work
-        }
-        // Forward: exactly one step.
-        if to.order() != from.order() + 1 {
-            return Err(format!(
-                "illegal transition `{}` → `{}` (forward moves are one stage at a time; \
-                 allowed back-edges are any→exploring and verifying→working)",
-                from.as_str(),
-                to.as_str()
-            ));
-        }
-        // Phase-driven goals gate on per-phase verdicts, not the global md.
-        if !self.phases.is_empty() {
-            return Ok(());
-        }
-        // Forward gates — where substance is enforced (legacy goals only).
-        let blank = |s: &Option<String>| s.as_deref().map(str::trim).unwrap_or("").is_empty();
-        match (from, to) {
-            (GoalStage::Exploring, GoalStage::Explored) if blank(&self.design_md) => Err(
-                "cannot enter `explored`: design_md is empty — write the design \
-                     (key problems FIRST, then Big Picture / Overview) before marking \
-                     exploration complete"
-                    .to_string(),
-            ),
-            (GoalStage::Explored, GoalStage::Working) if blank(&self.acceptance_md) => Err(
-                "cannot enter `working`: acceptance_md is empty — write the real \
-                     acceptance (criteria + scenario + how to verify for real) BEFORE \
-                     work starts"
-                    .to_string(),
-            ),
-            _ => Ok(()),
-        }
-    }
-
-    /// Deterministically assemble a `design_md` view from the knowledge ledger,
-    /// grouped by phase. `design_md` is a RE-SYNTHESIZABLE projection of
-    /// `knowledge` (the truth): the body is a pure function of `knowledge` +
-    /// `phases` (no timestamps), so identical input yields identical output —
-    /// the synthesis *time* is recorded separately in `design_synthesis_at`.
-    ///
-    /// Superseded entries are kept (struck through with their abandoning
-    /// knowledge id) so the design carries the full provenance trail. Returns
-    /// `Err` when there is no knowledge to synthesize from — this is the
-    /// "design_md requires non-empty knowledge" gate.
-    pub fn synthesize_design_md(&self) -> Result<String, String> {
-        if self.knowledge.is_empty() {
-            return Err(
-                "cannot synthesize design_md: the goal has no knowledge entries yet — \
-                 capture findings with `goal knowledge-add` first"
-                    .to_string(),
-            );
-        }
-        let live = self
-            .knowledge
-            .iter()
-            .filter(|k| k.superseded_by_knowledge_id.is_none())
-            .count();
-        let mut out = String::new();
-        out.push_str(&format!("# Design — {}\n\n", self.title));
-        out.push_str(&format!(
-            "_Synthesized from {} knowledge entr{} ({live} live). \
-             This is a derived view of the goal's knowledge ledger._\n",
-            self.knowledge.len(),
-            if self.knowledge.len() == 1 {
-                "y"
-            } else {
-                "ies"
-            },
-        ));
-
-        let render = |out: &mut String, k: &Knowledge| {
-            out.push_str(&format!("\n### knowledge#{} · {}", k.id, k.source.as_str()));
-            if let Some(task) = &k.task_id {
-                out.push_str(&format!(" · task#{task}"));
-            }
-            out.push_str(&format!(" · by {}", k.author));
-            if let Some(sup) = &k.superseded_by_knowledge_id {
-                out.push_str(&format!(" · ⚠️ superseded by knowledge#{sup}"));
-            }
-            if !k.tags.is_empty() {
-                out.push_str(&format!(" · [{}]", k.tags.join(", ")));
-            }
-            out.push('\n');
-            out.push_str(k.notes_md.trim_end());
-            out.push('\n');
-        };
-
-        // One section per phase (in plan order), then an "Unscoped" catch-all
-        // for knowledge with no/unknown phase. Within a section insertion order
-        // is preserved (the ledger is append-only → chronological).
-        for phase in &self.phases {
-            let entries: Vec<&Knowledge> = self
-                .knowledge
-                .iter()
-                .filter(|k| k.phase_id.as_deref() == Some(phase.id.as_str()))
-                .collect();
-            if entries.is_empty() {
-                continue;
-            }
-            out.push_str(&format!("\n## Phase: {} ({})\n", phase.name, phase.id));
-            for k in entries {
-                render(&mut out, k);
-            }
-        }
-        let phase_ids: Vec<&str> = self.phases.iter().map(|p| p.id.as_str()).collect();
-        let unscoped: Vec<&Knowledge> = self
-            .knowledge
-            .iter()
-            .filter(|k| match &k.phase_id {
-                None => true,
-                Some(id) => !phase_ids.contains(&id.as_str()),
-            })
-            .collect();
-        if !unscoped.is_empty() {
-            out.push_str("\n## Unscoped\n");
-            for k in unscoped {
-                render(&mut out, k);
-            }
-        }
-        Ok(out)
-    }
-
-    /// Referential-integrity check for a task's placement under this goal
-    /// (goal-task-board-model). Call at every task create site so a typo'd or
-    /// stale `phase_id` is rejected with an actionable message instead of
-    /// silently producing an orphan that disappears from every phase view.
-    ///
-    /// When `task.phase_id` is `Some(p)`, this asserts BOTH:
-    /// - `p` names a real phase in `self.phases[]`, AND
-    /// - `task.goal_id == Some(self.id)` (the phase belongs to THIS goal).
-    ///
-    /// A task with `phase_id == None` is always accepted here (the
-    /// goal-scoped-phaseless and loose shapes are legitimate). Callers that have
-    /// a goal in hand should only invoke this when the task names that goal.
-    pub fn validate_task_placement(&self, task: &Task) -> Result<(), String> {
-        let Some(phase_id) = task.phase_id.as_deref() else {
-            return Ok(());
-        };
-        match task.goal_id.as_deref() {
-            Some(goal_id) if goal_id == self.id => {}
-            Some(goal_id) => {
-                return Err(format!(
-                    "task `{}` has phase_id `{}` but goal_id `{}` (expected goal `{}`): a \
-                     phase_id must belong to the task's own goal",
-                    task.id, phase_id, goal_id, self.id
-                ));
-            }
-            None => {
-                return Err(format!(
-                    "task `{}` has phase_id `{}` but no goal_id: a phased task must name its \
-                     goal (goal `{}`)",
-                    task.id, phase_id, self.id
-                ));
-            }
-        }
-        if !self.phases.iter().any(|p| p.id == phase_id) {
-            let known: Vec<&str> = self.phases.iter().map(|p| p.id.as_str()).collect();
-            return Err(format!(
-                "task `{}` names phase_id `{}` which is not a phase of goal `{}` (known \
-                 phases: [{}])",
-                task.id,
-                phase_id,
-                self.id,
-                known.join(", ")
-            ));
-        }
-        Ok(())
-    }
-}
-
-impl KnowledgeSource {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            KnowledgeSource::Exploration => "exploration",
-            KnowledgeSource::Task => "task",
-            KnowledgeSource::Decision => "decision",
-            KnowledgeSource::Evidence => "evidence",
-        }
-    }
-}
-
-/// Render a Rust string as a Starlark string literal. JSON string escaping
-/// (quotes, backslashes, control chars) is a valid subset of Starlark's, so a
-/// serde_json-encoded string drops straight into generated Starlark.
-fn star_str(s: &str) -> String {
-    serde_json::to_string(s).unwrap_or_else(|_| "\"\"".to_string())
-}
-
-/// Compile one phase's task DAG into a deterministic Starlark workflow program
-/// (the codegen-to-Starlark execution model — the `.star` is a derived, throwaway
-/// view; the task graph is the truth).
-///
-/// Task selection: the phase's LIVE tasks (`task.phase_id == phase.id`, excluding
-/// `Superseded`). Dependencies pointing outside this set are ignored — cross-phase
-/// ordering is the orchestrator's job, not the compiler's.
-///
-/// Shape:
-/// - tasks are layered by longest dependency path; layer N runs before layer N+1;
-/// - within a layer (no intra-layer deps), tasks are greedily partitioned into
-///   groups with pairwise-disjoint `owned_paths`. A group with >1 task →
-///   `parallel([...])`; a singleton → `agent(...)`. Groups run serially (they were
-///   split only because their paths overlap);
-/// - a task with non-empty `owned_paths` is WRITABLE → `writable=True,
-///   isolation="worktree"` (so concurrent writers never collide on disk);
-/// - a non-empty `phase.acceptance` compiles to a judge `agent(schema=…)` plus a
-///   `verdict(...)` so the phase has a hard gate.
-///
-/// The output is a pure function of (goal id/title, phase, tasks) with no
-/// timestamps or randomness, so an identical DAG yields a byte-identical script
-/// (hence a stable content hash).
-pub fn compile_phase_to_starlark(
-    goal: &Goal,
-    phase: &GoalPhase,
-    all_tasks: &[Task],
-) -> Result<String, String> {
-    use std::collections::{HashMap, HashSet};
-
-    let mut tasks: Vec<&Task> = all_tasks
-        .iter()
-        .filter(|t| t.phase_id.as_deref() == Some(phase.id.as_str()))
-        .filter(|t| t.status != TaskStatus::Superseded)
-        .collect();
-    tasks.sort_by(|a, b| a.id.cmp(&b.id));
-    if tasks.is_empty() {
-        return Err(format!(
-            "phase `{}` has no live tasks to compile — add tasks with phase_id = \"{}\" \
-             (superseded tasks are skipped)",
-            phase.id, phase.id
-        ));
-    }
-
-    // Longest-path layering over in-phase deps (iterative relaxation; a cycle
-    // never converges, so cap the passes and report it).
-    let mut layer: HashMap<&str, usize> = tasks.iter().map(|t| (t.id.as_str(), 0usize)).collect();
-    let cap = tasks.len() + 1;
-    let mut changed = true;
-    let mut passes = 0;
-    while changed {
-        changed = false;
-        passes += 1;
-        if passes > cap {
-            return Err(format!(
-                "dependency cycle among phase `{}` tasks — cannot compile",
-                phase.id
-            ));
-        }
-        for t in &tasks {
-            let mut want = 0;
-            for dep in &t.depends_on_task_ids {
-                if let Some(dl) = layer.get(dep.as_str()) {
-                    want = want.max(dl + 1);
-                }
-            }
-            if want != layer[t.id.as_str()] {
-                layer.insert(t.id.as_str(), want);
-                changed = true;
-            }
-        }
-    }
-    let max_layer = tasks
-        .iter()
-        .map(|t| layer[t.id.as_str()])
-        .max()
-        .unwrap_or(0);
-
-    let prompt_of = |t: &Task| -> String {
-        let body = t
-            .design_md
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(str::to_string)
-            .unwrap_or_else(|| {
-                if t.objective.trim().is_empty() {
-                    t.title.clone()
-                } else {
-                    t.objective.clone()
-                }
-            });
-        let mut p = format!("Task {}: {}\n\n{}", t.id, t.title, body);
-        if !t.acceptance_criteria.is_empty() {
-            p.push_str("\n\nAcceptance criteria:");
-            for c in &t.acceptance_criteria {
-                p.push_str(&format!("\n- {c}"));
-            }
-        }
-        if !t.owned_paths.is_empty() {
-            p.push_str(&format!(
-                "\n\nYou own (and may write) these paths: {}.",
-                t.owned_paths.join(", ")
-            ));
-        }
-        if !t.outputs.is_empty() {
-            p.push_str("\n\nRequired artifacts you MUST produce:");
-            for o in &t.outputs {
-                let path = o
-                    .path
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty())
-                    .unwrap_or("(no path declared)");
-                let req = if o.required { "required" } else { "optional" };
-                p.push_str(&format!("\n- {path} — {} ({req})", o.purpose));
-                if let Some(acc) = o
-                    .acceptance
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty())
-                {
-                    p.push_str(&format!(" [acceptance: {acc}]"));
-                }
-            }
-        }
-        p
-    };
-
-    // The provider/executor a task's leaf compiles to. An UNSET `executor`
-    // defaults to "codex" so a legacy task graph compiles byte-identically to the
-    // pre-provider-neutral compiler (goal-provider-neutral). An empty/whitespace
-    // string is treated as unset.
-    let executor_of = |t: &Task| -> String {
-        t.executor
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .unwrap_or("codex")
-            .to_string()
-    };
-
-    let agent_call = |t: &Task| -> String {
-        let mut c = format!("\nagent(\n    {}", star_str(&prompt_of(t)));
-        c.push_str(&format!(",\n    provider={}", star_str(&executor_of(t))));
-        c.push_str(&format!(",\n    label={}", star_str(&t.id)));
-        c.push_str(&format!(",\n    phase={}", star_str(&phase.id)));
-        if !t.owned_paths.is_empty() {
-            c.push_str(",\n    writable=True");
-            c.push_str(",\n    isolation=\"worktree\"");
-        }
-        c.push_str(",\n)\n");
-        c
-    };
-    let spec_dict = |t: &Task| -> String {
-        let mut d = format!("    {{\n        \"prompt\": {}", star_str(&prompt_of(t)));
-        d.push_str(&format!(
-            ",\n        \"provider\": {}",
-            star_str(&executor_of(t))
-        ));
-        d.push_str(&format!(",\n        \"label\": {}", star_str(&t.id)));
-        d.push_str(&format!(",\n        \"phase\": {}", star_str(&phase.id)));
-        if !t.owned_paths.is_empty() {
-            d.push_str(",\n        \"writable\": True");
-            d.push_str(",\n        \"isolation\": \"worktree\"");
-        }
-        d.push_str("\n    }");
-        d
-    };
-
-    let intent = if phase.intent.trim().is_empty() {
-        format!("Execute phase {} of goal {}.", phase.id, goal.id)
-    } else {
-        phase.intent.trim().to_string()
-    };
-    let design_intent = format!(
-        "Compiled task DAG for goal {} phase {} ({}): {} \
-         Auto-generated by `harness phase compile` — do not edit by hand; \
-         recompile from the task graph instead.",
-        goal.id, phase.id, phase.name, intent
-    );
-
-    let mut s = String::new();
-    s.push_str(&format!(
-        "workflow(\n    {},\n    {},\n)\n",
-        star_str(&format!("phase-{}", phase.id)),
-        star_str(&design_intent)
-    ));
-
-    for l in 0..=max_layer {
-        let layer_tasks: Vec<&Task> = tasks
-            .iter()
-            .copied()
-            .filter(|t| layer[t.id.as_str()] == l)
-            .collect();
-        // Greedy disjoint-`owned_paths` partition (id order → deterministic).
-        let mut groups: Vec<(HashSet<String>, Vec<&Task>)> = Vec::new();
-        for t in &layer_tasks {
-            let paths: HashSet<String> = t.owned_paths.iter().cloned().collect();
-            let mut placed = false;
-            for g in groups.iter_mut() {
-                if g.0.is_disjoint(&paths) {
-                    g.0.extend(paths.iter().cloned());
-                    g.1.push(t);
-                    placed = true;
-                    break;
-                }
-            }
-            if !placed {
-                groups.push((paths, vec![t]));
-            }
-        }
-        for (_, members) in &groups {
-            if members.len() == 1 {
-                s.push_str(&agent_call(members[0]));
-            } else {
-                s.push_str("\nparallel([\n");
-                let specs: Vec<String> = members.iter().map(|t| spec_dict(t)).collect();
-                s.push_str(&specs.join(",\n"));
-                s.push_str("\n])\n");
-            }
-        }
-    }
-
-    if let Some(acc) = phase
-        .acceptance
-        .as_deref()
-        .map(str::trim)
-        .filter(|a| !a.is_empty())
-    {
-        // Surface the declared manifest (phase + task `outputs`) to the judge so
-        // the LLM verdict sees the PROMISED deliverables, not just the prose
-        // criterion (goal-phase-artifacts). A deterministic gate already enforces
-        // each `required` artifact's presence in the orchestrator; this gives the
-        // judge the same list so it can reason about partial/empty work. Empty
-        // outputs append nothing — the prompt is byte-identical to today.
-        let render_specs = |label: &str, specs: &[ArtifactSpec], out: &mut String| {
-            if specs.is_empty() {
-                return;
-            }
-            out.push_str(&format!("\n\n{label}"));
-            for o in specs {
-                let path = o
-                    .path
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty())
-                    .unwrap_or("(no path declared)");
-                let req = if o.required { "required" } else { "optional" };
-                out.push_str(&format!("\n- {path} — {} ({req})", o.purpose));
-                if let Some(acc) = o
-                    .acceptance
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty())
-                {
-                    out.push_str(&format!(" [acceptance: {acc}]"));
-                }
-            }
-        };
-        let mut manifest = String::new();
-        render_specs(
-            "Declared phase deliverables:",
-            &phase.outputs,
-            &mut manifest,
-        );
-        for t in &tasks {
-            render_specs(
-                &format!("Declared deliverables for task {}:", t.id),
-                &t.outputs,
-                &mut manifest,
-            );
-        }
-        let judge_prompt = format!(
-            "Acceptance check for phase {} ({}) of goal {}.\n\nCriterion:\n{}{}\n\n\
-             Review the work this phase's tasks produced and decide whether the criterion \
-             is FULLY met (including that every required deliverable above was actually \
-             produced). Set pass=true only if it holds; otherwise pass=false with the gap.",
-            phase.id, phase.name, goal.id, acc, manifest
-        );
-        s.push_str(&format!(
-            "\n_acc = agent(\n    {},\n    provider=\"codex\",\n    label={},\n    phase={},\n    \
-             schema={{\"pass\": \"bool\", \"reason\": \"string\"}},\n)\n",
-            star_str(&judge_prompt),
-            star_str(&format!("verdict-{}", phase.id)),
-            star_str(&phase.id),
-        ));
-        s.push_str(
-            "verdict(bool(_acc) and _acc.get(\"pass\") == True, \
-             _acc.get(\"reason\") if _acc else \"acceptance judge returned no structured verdict\")\n",
-        );
-    }
-
-    Ok(s)
-}
-
-/// The structured shape the planner worker (`harness goal plan`) must return.
-/// The single top-level `phases` key is what the structured-mode runtime keys
-/// on (and the dry-run mock synthesizes); the nested task/phase fields are
-/// documented in [`planner_prompt`]. The value is a human shape-hint, mirroring
-/// the convention `compile_phase_to_starlark`'s judge schema uses.
-pub fn planner_schema() -> serde_json::Value {
-    serde_json::json!({
-        "phases": "list of {id, name, intent, acceptance, execution_mode: task_graph|workflow, \
-                   workflow_ref: repo:path/to/workflow.star when execution_mode=workflow, \
-                   outputs:[{id, kind, path, purpose, required, acceptance}], \
-                   tasks:[{id, title, design_md, \
-                   acceptance:[string], owned_paths:[string], depends_on:[task-id], \
-                   executor, outputs:[{id, kind, path, purpose, required, acceptance}]}]}",
-    })
-}
-
-/// Compose the planner prompt from a goal's `design_md` + `acceptance_md`: ask the
-/// worker to decompose the design into an ORDERED list of sequential phases, each
-/// with a task DAG where tasks with disjoint `owned_paths` and no deps run in
-/// parallel (exactly the grouping [`compile_phase_to_starlark`] performs). A
-/// simple goal may be one phase.
-pub fn planner_prompt(goal: &Goal) -> String {
-    let design = goal
-        .design_md
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .unwrap_or("(no design_md written yet)");
-    let acceptance = goal
-        .acceptance_md
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .unwrap_or("(no acceptance_md written yet)");
-    format!(
-        "You are the PLANNER for goal `{id}` (\"{title}\"). Decompose its design \
-         into an ORDERED list of phases and, within each phase, a task DAG.\n\n\
-         Rules:\n\
-         - Phases run SEQUENTIALLY: a phase must pass its acceptance gate before \
-         the next begins. A simple goal may be ONE phase.\n\
-         - Each phase chooses exactly ONE primary executor. Default \
-         `execution_mode` is `task_graph`, which requires tasks. Set \
-         `execution_mode` to `workflow` only when the phase should directly run \
-         an authored repo workflow; then set `workflow_ref` such as \
-         `repo:workflows/foo.star` and leave `tasks` empty.\n\
-         - Each task is a mini-goal: give it a concrete `design_md` (a grounded \
-         slice of the goal's design), an `acceptance` list, and the `owned_paths` \
-         it may write.\n\
-         - Declare each phase's and task's deliverables in `outputs` — a list of \
-         {{id, kind, path, purpose, required, acceptance}}. `kind` is one of \
-         design_doc/adr/code/test_report/migration_doc/registered_doc/screenshot/other \
-         (default code); `path` is the repo-relative file (glob ok) the artifact lands \
-         at; `required` defaults to true and the verdict gate ENFORCES that each \
-         required artifact with a `path` exists and is non-empty. Leave `outputs` empty \
-         to keep today's default (the diff is the implicit deliverable, the acceptance \
-         string the implicit gate).\n\
-         - Within a phase, two tasks run in PARALLEL iff their `owned_paths` are \
-         disjoint AND neither depends on the other. Use `depends_on` (task ids in \
-         the SAME phase) for ordering; keep owned_paths disjoint where you want \
-         parallelism.\n\
-         - Use short, stable, kebab-case ids for phases and tasks.\n\
-         - Optionally set a task's `executor` to the provider that should run it \
-         (e.g. \"codex\", \"claude\", \"kimi\"); OMIT it (or leave it empty) to use \
-         the default executor (codex). It is compiled to the task's \
-         `agent(provider=…)` leaf.\n\n\
-         ## design_md\n{design}\n\n## acceptance_md\n{acceptance}",
-        id = goal.id,
-        title = goal.title,
-    )
-}
-
-/// Render a flat string→string JSON object as a Starlark dict literal (the
-/// `schema=` argument of the planner's `agent()` leaf). Only the flat key→hint
-/// shape [`planner_schema`] produces is supported; values are emitted as Starlark
-/// string literals.
-fn star_schema_dict(schema: &serde_json::Value) -> String {
-    let mut entries: Vec<String> = Vec::new();
-    if let Some(map) = schema.as_object() {
-        for (k, v) in map {
-            let hint = v.as_str().unwrap_or("string");
-            entries.push(format!("{}: {}", star_str(k), star_str(hint)));
-        }
-    }
-    format!("{{{}}}", entries.join(", "))
-}
-
-/// Generate the one-shot PLANNER Starlark program: a mandatory `workflow(...)`
-/// header, ONE schema-mode `agent(...)` leaf carrying [`planner_prompt`], and
-/// `output(out)` so the run's `final_output.result` carries the planner's
-/// structured decomposition verbatim. Run through the SAME real-driver path
-/// `goal run-phases` uses (honors `--dry-run`, so tests/CI need no provider).
-pub fn compile_planner_script(goal: &Goal) -> String {
-    let design_intent = format!(
-        "Plan goal {} ({}): decompose design_md into sequential phases + a per-phase \
-         task DAG. Auto-generated by `harness goal plan` — do not edit by hand.",
-        goal.id, goal.title
-    );
-    let schema_literal = star_schema_dict(&planner_schema());
-    format!(
-        "workflow(\n    {},\n    {},\n)\nout = agent(\n    {},\n    provider=\"codex\",\n    \
-         label={},\n    schema={},\n)\noutput(out)\n",
-        star_str(&format!("plan-{}", goal.id)),
-        star_str(&design_intent),
-        star_str(&planner_prompt(goal)),
-        star_str(&format!("planner-{}", goal.id)),
-        schema_literal,
-    )
-}
-
-/// The structured shape the REVISER worker (`goal run-phases` replan loop) must
-/// return when a phase fails its verdict: which live tasks to `supersede` and the
-/// `new_tasks` (same task shape as [`planner_schema`]'s tasks) to add in their
-/// place. The top-level `revision` key is what the structured-mode runtime keys
-/// on (and the dry-run mock synthesizes — a degenerate, empty revision). The value
-/// is a human shape-hint, mirroring the convention the other schemas use.
-pub fn reviser_schema() -> serde_json::Value {
-    serde_json::json!({
-        "revision": "{supersede:[task-id], new_tasks:[{id, title, design_md, \
-                     acceptance:[string], owned_paths:[string], depends_on:[task-id], \
-                     outputs:[{id, kind, path, purpose, required, acceptance}]}]}",
-    })
-}
-
-/// Compose the reviser prompt: given a phase that FAILED its verdict, its current
-/// (live, non-superseded) tasks, and the failure finding captured as knowledge,
-/// ask the worker to revise the phase's task graph — supersede the tasks that did
-/// not work and add replacements that address the finding. Same task shape the
-/// planner emits, so the revision feeds the SAME compiler.
-pub fn reviser_prompt(
-    goal: &Goal,
-    phase: &GoalPhase,
-    live_tasks: &[&Task],
-    finding: &str,
-) -> String {
-    let acceptance = phase
-        .acceptance
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .unwrap_or("(no explicit acceptance — use the phase intent as the gate)");
-    let mut task_lines = String::new();
-    for t in live_tasks {
-        let paths = if t.owned_paths.is_empty() {
-            "(none)".to_string()
-        } else {
-            t.owned_paths.join(", ")
-        };
-        task_lines.push_str(&format!(
-            "- `{id}` \"{title}\" — owned_paths: {paths}\n",
-            id = t.id,
-            title = t.title,
-        ));
-    }
-    if task_lines.is_empty() {
-        task_lines.push_str("(this phase currently has no live tasks)\n");
-    }
-    format!(
-        "You are the REVISER for goal `{id}` (\"{title}\"), phase `{phase_id}` \
-         (\"{phase_name}\"). The phase just FAILED its verdict. Revise its task \
-         graph so a re-run can pass.\n\n\
-         Phase intent: {intent}\n\
-         Phase acceptance gate: {acceptance}\n\n\
-         ## Failure finding (captured as knowledge)\n{finding}\n\n\
-         ## Current live tasks in this phase\n{task_lines}\n\
-         Rules:\n\
-         - `supersede`: the ids of the live tasks above that did NOT work and should \
-         be retired (they are kept for audit, struck through).\n\
-         - `new_tasks`: replacement tasks that address the finding. Each is a mini-goal \
-         with a concrete `design_md`, an `acceptance` list, and the `owned_paths` it \
-         may write. Declare each task's deliverables in `outputs` ({{id, kind, path, \
-         purpose, required, acceptance}}) — the verdict gate enforces that each required \
-         artifact with a `path` exists and is non-empty; leave it empty for today's \
-         default. Use `depends_on` (ids in THIS phase) for ordering; keep owned_paths \
-         disjoint where you want parallelism.\n\
-         - Use short, stable, kebab-case ids that do not collide with existing task ids.\n\
-         - If nothing actionable can be revised, return an empty `supersede` and empty \
-         `new_tasks` — the loop will stop rather than churn.",
-        id = goal.id,
-        title = goal.title,
-        phase_id = phase.id,
-        phase_name = phase.name,
-        intent = phase.intent,
-    )
-}
-
-/// Generate the one-shot REVISER Starlark program: a mandatory `workflow(...)`
-/// header, ONE schema-mode `agent(...)` leaf carrying [`reviser_prompt`], and
-/// `output(out)` so the run's `final_output.result` carries the structured
-/// revision verbatim. Runs through the SAME real-driver path `goal run-phases`
-/// uses (honors `--dry-run`, so tests/CI need no provider — the dry-run mock
-/// yields a degenerate, empty revision the loop treats as "no actionable replan").
-pub fn compile_reviser_script(
-    goal: &Goal,
-    phase: &GoalPhase,
-    live_tasks: &[&Task],
-    finding: &str,
-) -> String {
-    let design_intent = format!(
-        "Revise goal {} ({}) phase {}: supersede the failing tasks and add replacements \
-         after a failed verdict. Auto-generated by `harness goal run-phases` — do not \
-         edit by hand.",
-        goal.id, goal.title, phase.id
-    );
-    let schema_literal = star_schema_dict(&reviser_schema());
-    format!(
-        "workflow(\n    {},\n    {},\n)\nout = agent(\n    {},\n    provider=\"codex\",\n    \
-         label={},\n    schema={},\n)\noutput(out)\n",
-        star_str(&format!("revise-{}-{}", goal.id, phase.id)),
-        star_str(&design_intent),
-        star_str(&reviser_prompt(goal, phase, live_tasks, finding)),
-        star_str(&format!("reviser-{}-{}", goal.id, phase.id)),
-        schema_literal,
-    )
-}
+pub mod company_os;
+pub use company_os::*;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -1470,7 +290,7 @@ fn compose_message_content(message: &Message) -> String {
 fn message_kind_wire(kind: &MessageKind) -> &'static str {
     match kind {
         MessageKind::Message => "message",
-        MessageKind::Task => "task",
+        MessageKind::Assignment => "assignment",
         MessageKind::Report => "report",
     }
 }
@@ -1631,100 +451,9 @@ pub struct AgentTeam {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum TaskStatus {
-    Planned,
-    Assigned,
-    Running,
-    Blocked,
-    Review,
-    Done,
-    /// Abandoned because a knowledge finding changed the plan (goal-planning-model).
-    /// The task is kept (never deleted) with `superseded_by_knowledge_id` set.
-    Superseded,
-    Archived,
-}
-
-/// A unit of work. A task has exactly one of three legitimate placements
-/// (validated at create time by [`Goal::validate_task_placement`]):
-/// 1. **Phased** — `goal_id == Some(G)` AND `phase_id == Some(P)` where `P`
-///    names a phase in goal `G`'s `phases[]`. The task belongs to that phase's
-///    subgraph and renders under Goal → Phase → [Graph | Kanban].
-/// 2. **Goal-scoped (phaseless)** — `goal_id == Some(G)` AND `phase_id == None`.
-///    Belongs to the goal but no phase; renders in the goal's "(no phase)" lane.
-/// 3. **Loose** — `goal_id == None` (and `phase_id == None`); not under any goal.
-///
-/// `phase_id` is the single, validated join key; `goal_id` is convenient
-/// denormalization (a `phase_id` already implies the goal) that is
-/// consistency-checked against it. The legacy free-text `phase` field was
-/// retired (goal-task-board-model) — it had zero readers and duplicated
-/// `phase_id`; legacy JSONL rows carrying a `"phase"` key still load (no struct
-/// uses `deny_unknown_fields`, so serde ignores it).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Task {
-    pub id: String,
-    pub goal_id: Option<String>,
-    pub parent_task_id: Option<String>,
-    pub title: String,
-    pub objective: String,
-    pub owner_agent_id: String,
-    pub assignee_agent_id: Option<String>,
-    pub reviewer_agent_id: Option<String>,
-    pub status: TaskStatus,
-    pub depends_on_task_ids: Vec<String>,
-    pub workspace_ref: Option<String>,
-    pub branch_ref: Option<String>,
-    pub pr_ref: Option<String>,
-    pub owned_paths: Vec<String>,
-    pub acceptance_criteria: Vec<String>,
-    pub created_at: String,
-    pub updated_at: String,
-    #[serde(default)]
-    pub scope_refs: Vec<String>,
-    #[serde(default)]
-    pub requires_human_approval: bool,
-    #[serde(default)]
-    pub verdict_decision_id: Option<String>,
-    /// Full task write-up (markdown). `objective` stays the one-line summary.
-    #[serde(default)]
-    pub description: Option<String>,
-    #[serde(default)]
-    pub git_metadata: Option<GitMetadata>,
-    /// Full per-task design (goal-planning-model): a grounded SLICE of the goal's
-    /// design for this task. `description` stays the simple/short version.
-    #[serde(default)]
-    pub design_md: Option<String>,
-    /// The `GoalPhase.id` this task belongs to (goal-planning-model); `None` for
-    /// goal-scoped-phaseless or loose tasks. When `Some`, it MUST name a phase
-    /// in `goal_id`'s `phases[]` (enforced by [`Goal::validate_task_placement`]
-    /// at create sites) — a typo'd `phase_id` is rejected, not silently orphaned.
-    #[serde(default)]
-    pub phase_id: Option<String>,
-    /// When `status == Superseded`, the `Knowledge.id` whose finding killed it.
-    #[serde(default)]
-    pub superseded_by_knowledge_id: Option<String>,
-    /// The `WorkflowStep`s that executed this task (reverse link; goal-planning-model).
-    #[serde(default)]
-    pub workflow_step_ids: Vec<String>,
-    /// Artifacts this task declares it will produce (goal-phase-artifacts). Empty
-    /// reproduces today's behavior (the implicit `design_md` doc + acceptance gate).
-    #[serde(default)]
-    pub outputs: Vec<ArtifactSpec>,
-    /// Which provider/executor should run this task when the phase is compiled to
-    /// Starlark (goal-provider-neutral). `None` (the default, and what every legacy
-    /// row deserializes to) compiles to `provider="codex"` — byte-identical to the
-    /// pre-executor compiler. `Some("kimi")` emits `provider="kimi"` at the
-    /// task's `agent()` / `parallel()` leaf, which the runtime resolves through the
-    /// provider registry. The phase acceptance JUDGE leaf is unaffected (it stays
-    /// codex).
-    #[serde(default)]
-    pub executor: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
 pub enum MessageKind {
     Message,
-    Task,
+    Assignment,
     Report,
 }
 
@@ -2302,116 +1031,7 @@ pub struct Gap {
     pub updated_at: String,
 }
 
-/// Executable thesis for a Goal: the generic subset of let-me-try's strategy
-/// creation checklist. Graduates from `Evidence(source_type=goal_design)`; both
-/// representations coexist (dual-read by `goal_id`, no backfill).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct GoalDesign {
-    pub id: String,
-    pub goal_id: String,
-    pub scenario_summary: String,
-    pub non_goals: Vec<String>,
-    pub risk_and_permission_boundaries: String,
-    pub required_infra: Vec<String>,
-    /// Team id or inline team description; nullable when not yet assigned.
-    pub agent_team: Option<String>,
-    /// Task ids forming the design's task graph.
-    pub task_graph: Vec<String>,
-    pub evidence_plan: Vec<String>,
-    pub acceptance_gates: Vec<String>,
-    pub created_at: String,
-}
-
-/// Outcome of a [`GoalEvaluation`]. Open enum: the canonical generic set is
-/// success/partial/failed/blocked, but an adapter may supply another value that
-/// round-trips through [`EvaluationOutcome::Other`] without a schema bump.
-///
-/// `#[serde(other)]` only supports unit variants and would discard the original
-/// string, so this uses `from`/`into` String conversions to preserve fidelity.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(from = "String", into = "String")]
-pub enum EvaluationOutcome {
-    Success,
-    Partial,
-    Failed,
-    Blocked,
-    Other(String),
-}
-
-impl EvaluationOutcome {
-    pub fn as_str(&self) -> &str {
-        match self {
-            EvaluationOutcome::Success => "success",
-            EvaluationOutcome::Partial => "partial",
-            EvaluationOutcome::Failed => "failed",
-            EvaluationOutcome::Blocked => "blocked",
-            EvaluationOutcome::Other(value) => value,
-        }
-    }
-}
-
-impl From<String> for EvaluationOutcome {
-    fn from(value: String) -> Self {
-        match value.as_str() {
-            "success" => EvaluationOutcome::Success,
-            "partial" => EvaluationOutcome::Partial,
-            "failed" => EvaluationOutcome::Failed,
-            "blocked" => EvaluationOutcome::Blocked,
-            _ => EvaluationOutcome::Other(value),
-        }
-    }
-}
-
-impl From<EvaluationOutcome> for String {
-    fn from(value: EvaluationOutcome) -> Self {
-        value.as_str().to_string()
-    }
-}
-
-/// Retrospective for a Goal: what worked / failed, reusable patterns and
-/// anti-patterns, and the follow-up / proposed-goal pointers that feed the next
-/// round. Graduates from `Evidence(source_type=goal_evaluation)`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct GoalEvaluation {
-    pub id: String,
-    pub goal_id: String,
-    pub evaluator_agent_id: String,
-    pub outcome: EvaluationOutcome,
-    pub what_worked: String,
-    pub what_failed: String,
-    pub missing_infra: Vec<String>,
-    pub missing_evidence: Vec<String>,
-    pub team_design_feedback: String,
-    pub task_graph_feedback: String,
-    pub dashboard_feedback: String,
-    pub reusable_patterns: Vec<String>,
-    pub anti_patterns: Vec<String>,
-    pub follow_up_task_ids: Vec<String>,
-    pub proposed_goal_ids: Vec<String>,
-    pub created_at: String,
-}
-
-/// Reusable teaching artifact distilled from a completed Goal. The human-facing
-/// files under `examples/goal-cases/<case-id>/` remain the artifact; this is the
-/// optional structured manifest over them.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct GoalCase {
-    pub case_id: String,
-    pub source_goal_id: String,
-    pub scenario_type: String,
-    pub project_adapter: Option<String>,
-    pub goal_design_ref: Option<String>,
-    pub evaluation_ref: Option<String>,
-    pub reusable_patterns: Vec<String>,
-    pub anti_patterns: Vec<String>,
-    pub follow_up_refs: Vec<String>,
-    pub tags: Vec<String>,
-    pub created_at: String,
-}
-
-/// A durable product vision a Goal can be scheduled against. The autonomous
-/// next-goal proposal compares a [`GoalEvaluation`] against the linked Vision;
-/// there is no NextRoundPlan object (a proposed goal stays Goal+Task+Message+Decision).
+/// A durable product vision that can guide Missions and Company OS modules.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Vision {
     pub id: String,
@@ -2419,6 +1039,126 @@ pub struct Vision {
     /// PRD / design-basis doc paths backing the vision.
     pub source_refs: Vec<String>,
     pub created_at: String,
+}
+
+// ---------------------------------------------------------------------------
+// Mission / Wave product contracts (ADR 0026)
+//
+// A Mission owns durable intent and outcome; each Wave owns a small, ordered
+// execution attempt and delegates its internal execution semantics to its
+// selected executor.
+// ---------------------------------------------------------------------------
+
+/// Lifecycle of a [`Mission`]. Executor-specific progress belongs to Waves and
+/// their runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum MissionStatus {
+    #[default]
+    Planned,
+    Running,
+    Blocked,
+    Completed,
+    Cancelled,
+}
+
+/// Durable operator intent. `desired_outcome` captures the intended result;
+/// `outcome_summary` is filled only after execution has produced one. A Mission
+/// does not contain a task graph or executor-specific state.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Mission {
+    pub id: String,
+    pub title: String,
+    pub objective: String,
+    #[serde(default)]
+    pub desired_outcome: Option<String>,
+    #[serde(default)]
+    pub status: MissionStatus,
+    /// Ordered Wave identities. Wave rows remain their own append-only ledger;
+    /// this is a convenient explicit membership projection, not a replacement
+    /// for reading the Wave ledger by `mission_id`.
+    #[serde(default)]
+    pub wave_ids: Vec<String>,
+    #[serde(default)]
+    pub outcome_summary: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    #[serde(default)]
+    pub completed_at: Option<String>,
+}
+
+/// The executor selected for a [`Wave`]. Its execution records live in the
+/// executor's own ledger: `AgentTeamRun`, `WorkflowRun`, or a Host-owned run
+/// reference. This enum intentionally has no task-graph variant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WaveExecutorKind {
+    AgentTeam,
+    DynamicWorkflow,
+    Host,
+}
+
+/// Lifecycle of a [`Wave`], kept separate from its lightweight gate result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum WaveStatus {
+    #[default]
+    Planned,
+    Running,
+    Waiting,
+    Completed,
+    Blocked,
+    Failed,
+    Cancelled,
+}
+
+/// Lightweight acceptance state for a [`Wave`]. Repositories may retain
+/// stricter governance on top of this product contract.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum WaveGateStatus {
+    #[default]
+    Pending,
+    Accepted,
+    Revise,
+    Blocked,
+}
+
+/// One ordered unit of a Mission. Retries and replacement attempts are recorded
+/// in `executor_run_ids`; `accepted_run_id` identifies the attempt accepted by
+/// the Wave gate. A Wave has no task graph or executor-specific child model.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Wave {
+    pub id: String,
+    pub mission_id: String,
+    pub index: u32,
+    pub title: String,
+    pub objective: String,
+    #[serde(default)]
+    pub exit_criteria: Option<String>,
+    #[serde(default)]
+    pub status: WaveStatus,
+    pub executor_kind: WaveExecutorKind,
+    #[serde(default)]
+    pub executor_run_ids: Vec<String>,
+    #[serde(default)]
+    pub accepted_run_id: Option<String>,
+    #[serde(default)]
+    pub plan_note: Option<String>,
+    #[serde(default)]
+    pub outcome_summary: Option<String>,
+    #[serde(default)]
+    pub artifact_refs: Vec<String>,
+    #[serde(default)]
+    pub gate_status: WaveGateStatus,
+    #[serde(default)]
+    pub gate_note: Option<String>,
+    #[serde(default)]
+    pub accepted_by: Option<String>,
+    #[serde(default)]
+    pub accepted_at: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
 }
 
 pub trait Validate {
@@ -2458,28 +1198,6 @@ impl Validate for AgentTeam {
         require_non_empty(&self.owner_agent_id, "AgentTeam.owner_agent_id")?;
         require_non_empty(&self.created_at, "AgentTeam.created_at")?;
         require_non_empty(&self.updated_at, "AgentTeam.updated_at")
-    }
-}
-
-impl Validate for Goal {
-    fn validate(&self) -> Result<(), ValidationError> {
-        require_non_empty(&self.id, "Goal.id")?;
-        require_non_empty(&self.title, "Goal.title")?;
-        require_non_empty(&self.owner_agent_id, "Goal.owner_agent_id")?;
-        require_non_empty(&self.priority, "Goal.priority")?;
-        require_non_empty(&self.created_at, "Goal.created_at")?;
-        require_non_empty(&self.updated_at, "Goal.updated_at")
-    }
-}
-
-impl Validate for Task {
-    fn validate(&self) -> Result<(), ValidationError> {
-        require_non_empty(&self.id, "Task.id")?;
-        require_non_empty(&self.title, "Task.title")?;
-        require_non_empty(&self.objective, "Task.objective")?;
-        require_non_empty(&self.owner_agent_id, "Task.owner_agent_id")?;
-        require_non_empty(&self.created_at, "Task.created_at")?;
-        require_non_empty(&self.updated_at, "Task.updated_at")
     }
 }
 
@@ -2576,43 +1294,6 @@ impl Validate for Gap {
     }
 }
 
-impl Validate for GoalDesign {
-    fn validate(&self) -> Result<(), ValidationError> {
-        require_non_empty(&self.id, "GoalDesign.id")?;
-        require_non_empty(&self.goal_id, "GoalDesign.goal_id")?;
-        require_non_empty(&self.scenario_summary, "GoalDesign.scenario_summary")?;
-        require_non_empty(
-            &self.risk_and_permission_boundaries,
-            "GoalDesign.risk_and_permission_boundaries",
-        )?;
-        require_non_empty(&self.created_at, "GoalDesign.created_at")
-    }
-}
-
-impl Validate for GoalEvaluation {
-    fn validate(&self) -> Result<(), ValidationError> {
-        require_non_empty(&self.id, "GoalEvaluation.id")?;
-        require_non_empty(&self.goal_id, "GoalEvaluation.goal_id")?;
-        require_non_empty(
-            &self.evaluator_agent_id,
-            "GoalEvaluation.evaluator_agent_id",
-        )?;
-        require_non_empty(self.outcome.as_str(), "GoalEvaluation.outcome")?;
-        require_non_empty(&self.what_worked, "GoalEvaluation.what_worked")?;
-        require_non_empty(&self.what_failed, "GoalEvaluation.what_failed")?;
-        require_non_empty(&self.created_at, "GoalEvaluation.created_at")
-    }
-}
-
-impl Validate for GoalCase {
-    fn validate(&self) -> Result<(), ValidationError> {
-        require_non_empty(&self.case_id, "GoalCase.case_id")?;
-        require_non_empty(&self.source_goal_id, "GoalCase.source_goal_id")?;
-        require_non_empty(&self.scenario_type, "GoalCase.scenario_type")?;
-        require_non_empty(&self.created_at, "GoalCase.created_at")
-    }
-}
-
 impl Validate for Vision {
     fn validate(&self) -> Result<(), ValidationError> {
         require_non_empty(&self.id, "Vision.id")?;
@@ -2621,13 +1302,32 @@ impl Validate for Vision {
     }
 }
 
+impl Validate for Mission {
+    fn validate(&self) -> Result<(), ValidationError> {
+        require_non_empty(&self.id, "Mission.id")?;
+        require_non_empty(&self.title, "Mission.title")?;
+        require_non_empty(&self.objective, "Mission.objective")?;
+        require_non_empty(&self.created_at, "Mission.created_at")?;
+        require_non_empty(&self.updated_at, "Mission.updated_at")
+    }
+}
+
+impl Validate for Wave {
+    fn validate(&self) -> Result<(), ValidationError> {
+        require_non_empty(&self.id, "Wave.id")?;
+        require_non_empty(&self.mission_id, "Wave.mission_id")?;
+        require_non_empty(&self.title, "Wave.title")?;
+        require_non_empty(&self.objective, "Wave.objective")?;
+        require_non_empty(&self.created_at, "Wave.created_at")?;
+        require_non_empty(&self.updated_at, "Wave.updated_at")
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Dynamic workflow runtime objects (WP1)
 //
-// Additive, ADR-0017-style: a `WorkflowRun` is a standalone object with its own
-// id and lifecycle. It is NOT bound to a `Goal`/`Task` yet (design decision 2 in
-// docs/research/dynamic-workflow-runtime-design.md). Each `WorkflowStep` is the
-// workflow-layer wrapper around one `agent()` call; it references the
+// A `WorkflowRun` is a standalone object with its own id and lifecycle. Each
+// `WorkflowStep` is the workflow-layer wrapper around one `agent()` call and references the
 // `ProviderSession` that the delivery produced rather than re-recording the
 // execution. Both journal to their own append-only JSONL with latest-wins
 // projection, exactly like every other harness object.
@@ -2659,53 +1359,31 @@ pub enum WorkflowStepStatus {
     Cached,
 }
 
-/// Machine-readable CLASS of terminal outcome for a [`WorkflowRun`] / [`WorkflowStep`]
-/// (issue #193). Complements — does NOT replace — the human `summary` /
-/// `output_summary` prose: the prose stays for operators, this enum is the truth a
-/// tool/dashboard branches on. Recorded at every terminal site: the reaper paths
-/// (driver died / orphan reaped), the per-leaf wall & idle timeout kills, a false
-/// `verdict()`, a provider failure, an operator SIGINT/SIGTERM cancel, and normal
-/// completion. `#[serde(default)]` on the carrying field → legacy rows that predate
-/// the field deserialize as `None` (reason unknown), never fail to load.
+/// Machine-readable class describing how a workflow run or step terminated.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkflowTerminalReason {
-    /// Operator interrupted the driver (SIGINT/SIGTERM to `workflow run-script`);
-    /// active leaves' process groups were killed and journaled.
     CanceledByOperator,
-    /// The driver process exited/crashed before finalizing; the abandoned-run
-    /// reaper (host-pid liveness) flipped the run to failed.
     DriverExited,
-    /// An orphaned worker/pidfile was reaped by `workflow reap-workers` after its
-    /// owning run was already gone.
     OrphanReaped,
-    /// A leaf hit its per-leaf wall-clock timeout (#183) and was killed.
     LeafTimeout,
-    /// A leaf produced no output for the idle window and was killed.
     IdleTimeout,
-    /// The provider worker itself failed (nonzero exit / spawn error / crash).
     ProviderFailed,
-    /// The leaf's `verdict()` gate returned false (a clean logical failure, not a
-    /// crash).
     VerdictFailed,
-    /// Reached its terminal state normally (run completed / step succeeded).
     Completed,
 }
 
 impl WorkflowTerminalReason {
-    /// The canonical snake_case wire token (matches the serde representation).
-    /// Used by the CLI when composing JSON/summary strings without a round-trip
-    /// through serde.
     pub fn as_str(self) -> &'static str {
         match self {
-            WorkflowTerminalReason::CanceledByOperator => "canceled_by_operator",
-            WorkflowTerminalReason::DriverExited => "driver_exited",
-            WorkflowTerminalReason::OrphanReaped => "orphan_reaped",
-            WorkflowTerminalReason::LeafTimeout => "leaf_timeout",
-            WorkflowTerminalReason::IdleTimeout => "idle_timeout",
-            WorkflowTerminalReason::ProviderFailed => "provider_failed",
-            WorkflowTerminalReason::VerdictFailed => "verdict_failed",
-            WorkflowTerminalReason::Completed => "completed",
+            Self::CanceledByOperator => "canceled_by_operator",
+            Self::DriverExited => "driver_exited",
+            Self::OrphanReaped => "orphan_reaped",
+            Self::LeafTimeout => "leaf_timeout",
+            Self::IdleTimeout => "idle_timeout",
+            Self::ProviderFailed => "provider_failed",
+            Self::VerdictFailed => "verdict_failed",
+            Self::Completed => "completed",
         }
     }
 }
@@ -2802,28 +1480,8 @@ pub struct WorkflowRun {
     /// `false` (they predate the flag; dry-run journaling is newer).
     #[serde(default)]
     pub dry_run: bool,
-    /// The goal this run belongs to, when it was spawned by the goal orchestrator
-    /// (`goal plan` / `goal run-phases`). `None` for standalone `run-script` /
-    /// registry runs and legacy rows. Together with `phase_id` this closes the
-    /// goal↔run causal link FORWARD (the back link is
-    /// `GoalOrchestrationRun.phase_runs[].workflow_run_id`), so a run is reverse-
-    /// indexable to its goal without parsing `workflow_name`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub goal_id: Option<String>,
-    /// The goal phase this run executed (`phase-*`) or revised (`revise-*`).
-    /// `None` for the goal's planner run (`plan-*`), standalone runs, and legacy
-    /// rows.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub phase_id: Option<String>,
-    /// Machine-readable class of how this run reached its terminal state (issue
-    /// #193), alongside the human `summary`. `None` while running and for legacy
-    /// rows that predate the field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub terminal_reason: Option<WorkflowTerminalReason>,
-    /// True when the run did NOT complete (crashed / canceled / reaped) yet ≥1 of
-    /// its steps had already completed OK, so partial deliverables exist and are
-    /// retrievable with `workflow get-output`. `#[serde(default)]` → legacy rows
-    /// read as `false`.
     #[serde(default)]
     pub partial_output_available: bool,
 }
@@ -2856,22 +1514,8 @@ pub struct WorkflowStep {
     pub started_at: String,
     #[serde(default)]
     pub ended_at: Option<String>,
-    /// The `Task` this step executed (goal-planning-model: the phase compiler stamps
-    /// each step with its task id so outcomes flow back to `Task.status`).
-    #[serde(default)]
-    pub task_id: Option<String>,
-    /// Whether the step's `verdict()` passed or cleanly failed — distinct from a
-    /// crash (carried by `status`). Drives the orchestrator's advance/replan choice.
-    #[serde(default)]
-    pub verdict_outcome: Option<VerdictOutcome>,
-    /// Machine-readable class of how this step reached its terminal state (issue
-    /// #193), alongside the human `output_summary`. `None` while running and for
-    /// legacy rows that predate the field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub terminal_reason: Option<WorkflowTerminalReason>,
-    /// True when the step PRODUCED output but was then reaped/canceled before the
-    /// run finalized — i.e. its deliverable is partial (retrievable, but the step
-    /// did not cleanly complete). `#[serde(default)]` → legacy rows read as `false`.
     #[serde(default)]
     pub partial: bool,
 }
@@ -3000,6 +1644,299 @@ impl Validate for WorkflowArtifactManifest {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Agent Team v0 runtime ledger objects
+//
+// A team run is one execution of an agent team against an objective, hosted on
+// a single host surface (codex-app / kimi-cli / claude-cli). `MemberRun`s are
+// the per-member session rows inside it; `TeamMessage`s the routed mail;
+// `MemberAction`s the fine-grained action journal; `DelegationRun`s the
+// provider-native / harness-worker / dynamic-workflow child runs; and
+// `TeamRunEvent` the folded per-run event log. All journal to their own
+// append-only JSONL with latest-wins projection, like every other harness
+// object. All Option/Vec fields carry `#[serde(default)]` so v0 rows stay
+// forward-compatible as fields are added.
+// ---------------------------------------------------------------------------
+
+/// Lifecycle of an [`AgentTeamRun`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TeamRunStatus {
+    Planning,
+    Running,
+    Waiting,
+    Reviewing,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+/// One execution of an agent team against `objective`. `definition_id` links
+/// back to a TeamDefinition when one exists (v0 runs may be ad-hoc, so it is
+/// nullable). `host_surface` names the hosting surface ("codex-app" /
+/// "kimi-cli" / "claude-cli") and `host_thread_id` its native thread.
+/// `previous_run_id` records retry/replacement lineage. For native Mission/Wave
+/// execution it points to an earlier attempt of the same Wave; legacy unlinked
+/// runs may retain older ad-hoc lineage semantics.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AgentTeamRun {
+    pub id: String,
+    #[serde(default)]
+    pub definition_id: Option<String>,
+    #[serde(default)]
+    pub previous_run_id: Option<String>,
+    /// Optional outer product identity (ADR 0026). Existing v0 team-run rows
+    /// remain readable without these joins during the staged migration.
+    #[serde(default)]
+    pub mission_id: Option<String>,
+    #[serde(default)]
+    pub wave_id: Option<String>,
+    pub host_surface: String,
+    #[serde(default)]
+    pub host_thread_id: Option<String>,
+    pub objective: String,
+    pub status: TeamRunStatus,
+    #[serde(default)]
+    pub member_run_ids: Vec<String>,
+    #[serde(default)]
+    pub budget_limit_usd: Option<f64>,
+    pub created_at: String,
+    pub updated_at: String,
+    #[serde(default)]
+    pub completed_at: Option<String>,
+}
+
+/// Lifecycle of a [`MemberRun`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MemberRunStatus {
+    Starting,
+    Idle,
+    Queued,
+    Running,
+    Waiting,
+    Reviewing,
+    Blocked,
+    Completed,
+    Failed,
+    Stopped,
+}
+
+/// One member's session inside an [`AgentTeamRun`]. `provider` is the neutral
+/// provider spelling (codex|claude|kimi). `provider_session_id` links the
+/// harness [`ProviderSession`] while `acp_session_id` is the provider-side
+/// session handle (e.g. a kimi ACP sessionId).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MemberRun {
+    pub id: String,
+    pub team_run_id: String,
+    #[serde(default)]
+    pub slot_id: Option<String>,
+    pub name: String,
+    pub role: String,
+    pub provider: String,
+    #[serde(default)]
+    pub model: Option<String>,
+    pub status: MemberRunStatus,
+    #[serde(default)]
+    pub provider_session_id: Option<String>,
+    #[serde(default)]
+    pub acp_session_id: Option<String>,
+    #[serde(default)]
+    pub worktree_ref: Option<String>,
+    #[serde(default)]
+    pub owned_paths: Vec<String>,
+    pub started_at: String,
+    #[serde(default)]
+    pub last_event_at: Option<String>,
+    #[serde(default)]
+    pub finished_at: Option<String>,
+}
+
+/// Kind of a routed [`TeamMessage`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TeamMessageKind {
+    Assignment,
+    Question,
+    Answer,
+    Progress,
+    Blocker,
+    Handoff,
+    ReviewRequest,
+    ReviewResult,
+    Control,
+    Broadcast,
+}
+
+/// How a [`TeamMessage`] should be delivered to one recipient.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TeamDeliveryPolicy {
+    Queue,
+    Inject,
+    Interrupt,
+    ManualAck,
+}
+
+/// Per-recipient delivery state of a [`TeamMessage`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TeamDeliveryStatus {
+    Queued,
+    Delivered,
+    Acknowledged,
+    Failed,
+    Expired,
+}
+
+/// One recipient's delivery record inside a [`TeamMessage`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TeamMessageDelivery {
+    pub member_id: String,
+    pub policy: TeamDeliveryPolicy,
+    pub status: TeamDeliveryStatus,
+    pub attempt: u32,
+    pub updated_at: String,
+}
+
+/// A routed message inside an [`AgentTeamRun`]. `from_member_id` is either the
+/// reserved `"host"` id or a `MemberRun` id. `correlation_id` groups a message
+/// with its replies; `causation_id` points at the message this one answers.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TeamMessage {
+    pub id: String,
+    pub team_run_id: String,
+    pub from_member_id: String,
+    #[serde(default)]
+    pub to_member_ids: Vec<String>,
+    pub kind: TeamMessageKind,
+    pub body: String,
+    pub correlation_id: String,
+    #[serde(default)]
+    pub causation_id: Option<String>,
+    #[serde(default)]
+    pub evidence_refs: Vec<String>,
+    #[serde(default)]
+    pub deliveries: Vec<TeamMessageDelivery>,
+    pub created_at: String,
+}
+
+/// Status of a single [`MemberAction`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MemberActionStatus {
+    Started,
+    Progress,
+    Succeeded,
+    Failed,
+    Cancelled,
+}
+
+/// One journaled action by a member inside an [`AgentTeamRun`]. `seq` is
+/// monotonically increasing per team run and is assigned by the caller.
+/// `action_type` is a free-form string in v0 (conventional values:
+/// plan_updated, message_sent, message_received, tool_started, tool_completed,
+/// file_changed, command_started, command_completed, test_started,
+/// test_completed, delegation_started, delegation_completed, review_started,
+/// review_completed, waiting_for_input, waiting_for_approval, blocked, error,
+/// completed).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MemberAction {
+    pub id: String,
+    pub seq: u64,
+    pub team_run_id: String,
+    pub member_run_id: String,
+    #[serde(default)]
+    pub task_id: Option<String>,
+    pub action_type: String,
+    pub status: MemberActionStatus,
+    pub title: String,
+    pub summary: String,
+    #[serde(default)]
+    pub evidence_refs: Vec<String>,
+    pub started_at: String,
+    #[serde(default)]
+    pub completed_at: Option<String>,
+}
+
+/// How a [`DelegationRun`] is executed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DelegationMode {
+    ProviderNative,
+    HarnessWorker,
+    DynamicWorkflow,
+}
+
+/// Lifecycle of a [`DelegationRun`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DelegationStatus {
+    Planned,
+    Running,
+    Waiting,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+/// One delegation of work out of a [`MemberRun`]: a provider-native child
+/// thread, a harness worker, or a dynamic workflow run. Exactly one of
+/// `provider_child_thread_id` / `workflow_run_id` is typically set, matching
+/// `mode`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DelegationRun {
+    pub id: String,
+    pub team_run_id: String,
+    pub parent_member_run_id: String,
+    #[serde(default)]
+    pub parent_task_id: Option<String>,
+    pub mode: DelegationMode,
+    pub provider: String,
+    #[serde(default)]
+    pub provider_child_thread_id: Option<String>,
+    #[serde(default)]
+    pub workflow_run_id: Option<String>,
+    pub objective: String,
+    pub status: DelegationStatus,
+    #[serde(default)]
+    pub evidence_ids: Vec<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// Where a [`TeamRunEvent`] originated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TeamRunEventSourceKind {
+    Host,
+    Member,
+    Delegation,
+}
+
+/// One folded event in an [`AgentTeamRun`]'s per-run event log. `seq` is
+/// monotonically increasing per team run and is assigned by the caller.
+/// `entity_type` (team_run|member_run|assignment|action|message|delegation|
+/// artifact) + `entity_id` + `operation` (created|updated|completed) reference
+/// the ledger row this event summarizes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TeamRunEvent {
+    pub id: String,
+    pub seq: u64,
+    pub team_run_id: String,
+    pub source_kind: TeamRunEventSourceKind,
+    #[serde(default)]
+    pub member_run_id: Option<String>,
+    #[serde(default)]
+    pub delegation_run_id: Option<String>,
+    pub entity_type: String,
+    pub entity_id: String,
+    pub operation: String,
+    pub summary: String,
+    pub occurred_at: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3040,1146 +1977,6 @@ mod tests {
             provider_price_per_mtok("kimi"),
             provider_price_per_mtok("codex")
         );
-    }
-
-    #[test]
-    fn task_round_trips_json() {
-        let task = Task {
-            design_md: None,
-            phase_id: None,
-            superseded_by_knowledge_id: None,
-            workflow_step_ids: Vec::new(),
-            id: "task-1".to_string(),
-            goal_id: Some("goal-1".to_string()),
-            parent_task_id: None,
-            title: "Inspect issue".to_string(),
-            objective: "Find the root cause".to_string(),
-            owner_agent_id: "leader-1".to_string(),
-            assignee_agent_id: Some("agent-1".to_string()),
-            reviewer_agent_id: Some("reviewer-1".to_string()),
-            status: TaskStatus::Assigned,
-            depends_on_task_ids: vec!["task-0".to_string()],
-            workspace_ref: Some("../worktrees/task-1".to_string()),
-            branch_ref: Some("agent/task-1".to_string()),
-            pr_ref: Some("https://github.com/cyl19970726/multi-agent-harness/pull/1".to_string()),
-            owned_paths: vec!["crates/harness-core".to_string()],
-            acceptance_criteria: vec!["Evidence is attached".to_string()],
-            created_at: "2026-05-26T00:00:00Z".to_string(),
-            updated_at: "2026-05-26T00:00:00Z".to_string(),
-            scope_refs: vec!["scope-1".to_string()],
-            requires_human_approval: true,
-            verdict_decision_id: Some("decision-1".to_string()),
-            description: Some("Trace the failing assertion to its root cause.".to_string()),
-            git_metadata: Some(GitMetadata {
-                branch: Some("agent/task-1".to_string()),
-                base_branch: Some("master".to_string()),
-                owned_paths: vec!["crates/harness-core".to_string()],
-                ..Default::default()
-            }),
-            outputs: Vec::new(),
-            executor: Some("kimi".to_string()),
-        };
-
-        let json = serde_json::to_string(&task).expect("serialize task");
-        let parsed: Task = serde_json::from_str(&json).expect("deserialize task");
-
-        assert_eq!(parsed, task);
-        assert!(parsed.validate().is_ok());
-    }
-
-    #[test]
-    fn legacy_task_row_with_dead_phase_key_still_loads() {
-        // goal-task-board-model: the free-text `Task.phase` field was retired.
-        // No struct uses `deny_unknown_fields`, so a stored JSONL row that still
-        // carries a `"phase"` key must deserialize fine (serde ignores it) — the
-        // typed `phase_id` is the only join key now.
-        let legacy = r#"{
-            "id":"task-legacy",
-            "goal_id":"goal-1",
-            "parent_task_id":null,
-            "title":"Legacy task",
-            "objective":"From before phase_id existed",
-            "owner_agent_id":"lead",
-            "assignee_agent_id":null,
-            "reviewer_agent_id":null,
-            "status":"planned",
-            "depends_on_task_ids":[],
-            "workspace_ref":null,
-            "branch_ref":null,
-            "pr_ref":null,
-            "owned_paths":[],
-            "acceptance_criteria":[],
-            "created_at":"2026-01-01T00:00:00Z",
-            "updated_at":"2026-01-01T00:00:00Z",
-            "phase":"design",
-            "phase_id":"p1"
-        }"#;
-        let parsed: Task = serde_json::from_str(legacy).expect("legacy row with dead phase loads");
-        assert_eq!(parsed.id, "task-legacy");
-        assert_eq!(parsed.phase_id.as_deref(), Some("p1"));
-    }
-
-    #[test]
-    fn validate_task_placement_accepts_a_real_phase_of_this_goal() {
-        let mut goal = goal_in_stage(GoalStage::Working);
-        goal.phases = vec![test_phase("p1", GoalPhaseStatus::InProgress)];
-        // compile_task builds a task with goal_id == "g" (== goal_in_stage's id).
-        let task = compile_task("t1", "p1", &[], &["crates/a"]);
-        assert!(goal.validate_task_placement(&task).is_ok());
-    }
-
-    #[test]
-    fn validate_task_placement_rejects_a_phase_not_in_this_goal() {
-        let mut goal = goal_in_stage(GoalStage::Working);
-        goal.phases = vec![test_phase("p1", GoalPhaseStatus::InProgress)];
-        let task = compile_task("t1", "typo-phase", &[], &["crates/a"]);
-        let err = goal
-            .validate_task_placement(&task)
-            .expect_err("a phase_id not in the goal must be rejected");
-        assert!(
-            err.contains("typo-phase"),
-            "message names the bad phase: {err}"
-        );
-        assert!(err.contains("p1"), "message lists the known phases: {err}");
-    }
-
-    #[test]
-    fn validate_task_placement_rejects_phase_id_with_mismatched_goal() {
-        let mut goal = goal_in_stage(GoalStage::Working);
-        goal.phases = vec![test_phase("p1", GoalPhaseStatus::InProgress)];
-        let mut task = compile_task("t1", "p1", &[], &["crates/a"]);
-        task.goal_id = Some("some-other-goal".to_string());
-        let err = goal
-            .validate_task_placement(&task)
-            .expect_err("a phased task naming a different goal must be rejected");
-        assert!(
-            err.contains("some-other-goal"),
-            "message names the goal: {err}"
-        );
-    }
-
-    #[test]
-    fn validate_task_placement_accepts_goal_scoped_phaseless_task() {
-        // Shape 2: goal_id set, phase_id None — the explicitly-blessed legacy
-        // state. Always accepted (renders in the goal's "(no phase)" lane).
-        let goal = goal_in_stage(GoalStage::Working);
-        let mut task = compile_task("t1", "p1", &[], &["crates/a"]);
-        task.phase_id = None;
-        assert!(goal.validate_task_placement(&task).is_ok());
-    }
-
-    #[test]
-    fn goal_round_trips_json() {
-        let goal = Goal {
-            phases: Vec::new(),
-            knowledge: Vec::new(),
-            design_synthesis_at: None,
-            id: "goal-1".to_string(),
-            title: "Self-host MVP".to_string(),
-            owner_agent_id: "leader-1".to_string(),
-            status: GoalStatus::Active,
-            priority: "p0".to_string(),
-            created_at: "2026-05-26T00:00:00Z".to_string(),
-            updated_at: "2026-05-26T00:00:00Z".to_string(),
-            vision_id: Some("vision-1".to_string()),
-            goal_design_id: Some("goal-design-1".to_string()),
-            closed_by_decision_id: Some("decision-1".to_string()),
-            git_metadata: Some(GitMetadata {
-                repo: Some("multi-agent-harness".to_string()),
-                branch: Some("feature/self-host".to_string()),
-                base_branch: Some("master".to_string()),
-                ..Default::default()
-            }),
-            stage: GoalStage::Explored,
-            description_md: Some("what and why".to_string()),
-            design_md: Some("key problems first, then overview".to_string()),
-            acceptance_md: Some("real acceptance: use it for real".to_string()),
-            explorations: vec![Exploration {
-                author: "observer".to_string(),
-                round: 1,
-                notes_md: "first grounded pass".to_string(),
-                created_at: "2026-05-26T00:00:00Z".to_string(),
-            }],
-            skill_refs: vec!["star-goal".to_string()],
-            stage_changed_at: Some("2026-05-26T00:00:00Z".to_string()),
-        };
-
-        let json = serde_json::to_string(&goal).expect("serialize goal");
-        let parsed: Goal = serde_json::from_str(&json).expect("deserialize goal");
-
-        assert_eq!(parsed, goal);
-        assert!(parsed.validate().is_ok());
-    }
-
-    fn goal_in_stage(stage: GoalStage) -> Goal {
-        Goal {
-            phases: Vec::new(),
-            knowledge: Vec::new(),
-            design_synthesis_at: None,
-            id: "g".into(),
-            title: "t".into(),
-            owner_agent_id: "lead".into(),
-            status: GoalStatus::Active,
-            priority: "p0".into(),
-            created_at: "unix-ms:1".into(),
-            updated_at: "unix-ms:1".into(),
-            vision_id: None,
-            goal_design_id: None,
-            closed_by_decision_id: None,
-            git_metadata: None,
-            stage,
-            description_md: None,
-            design_md: None,
-            acceptance_md: None,
-            explorations: vec![],
-            skill_refs: vec![],
-            stage_changed_at: None,
-        }
-    }
-
-    #[test]
-    fn goal_stage_defaults_to_draft_for_legacy_rows() {
-        // A pre-lifecycle goal row (no stage / md fields) must still deserialize.
-        let legacy = r#"{"id":"g","title":"t","owner_agent_id":"lead",
-            "status":"active","priority":"p0",
-            "created_at":"unix-ms:1","updated_at":"unix-ms:1"}"#;
-        let g: Goal = serde_json::from_str(legacy).expect("deserialize legacy goal");
-        assert_eq!(g.stage, GoalStage::Draft);
-        assert!(g.design_md.is_none());
-        assert!(g.explorations.is_empty());
-        assert!(g.skill_refs.is_empty());
-        // goal-planning-model (S1a): legacy rows default the new planning fields.
-        assert!(g.phases.is_empty());
-        assert!(g.knowledge.is_empty());
-        assert!(g.design_synthesis_at.is_none());
-    }
-
-    #[test]
-    fn goal_phase_and_knowledge_round_trip_snake_case() {
-        let phase = GoalPhase {
-            id: "phase-explore".into(),
-            name: "Explore".into(),
-            intent: "ground the problem space".into(),
-            status: GoalPhaseStatus::InProgress,
-            acceptance: Some("design written".into()),
-            verdict_decision_id: None,
-            created_at: "unix-ms:1".into(),
-            started_at: Some("unix-ms:2".into()),
-            ended_at: None,
-            outputs: Vec::new(),
-            inputs: Vec::new(),
-            retry: None,
-            landed_commit: None,
-            kind: PhaseKind::Execution,
-            builtin: None,
-            execution_mode: PhaseExecutionMode::TaskGraph,
-            workflow_ref: None,
-        };
-        let pj = serde_json::to_string(&phase).expect("ser phase");
-        assert!(
-            pj.contains("\"status\":\"in_progress\""),
-            "snake_case status: {pj}"
-        );
-        assert_eq!(
-            serde_json::from_str::<GoalPhase>(&pj).expect("de phase"),
-            phase
-        );
-
-        let k = Knowledge {
-            id: "k1".into(),
-            goal_id: "g".into(),
-            phase_id: Some("phase-explore".into()),
-            task_id: Some("t1".into()),
-            author: "lead".into(),
-            timestamp: "unix-ms:3".into(),
-            notes_md: "approach X is unviable because Y".into(),
-            tags: vec!["risk".into()],
-            source: KnowledgeSource::Task,
-            superseded_by_knowledge_id: None,
-            created_at: "unix-ms:3".into(),
-        };
-        let kj = serde_json::to_string(&k).expect("ser knowledge");
-        assert!(
-            kj.contains("\"source\":\"task\""),
-            "snake_case source: {kj}"
-        );
-        assert_eq!(
-            serde_json::from_str::<Knowledge>(&kj).expect("de knowledge"),
-            k
-        );
-    }
-
-    #[test]
-    fn phase_kind_defaults_to_execution_and_building_round_trips() {
-        // built-in-phases back-compat: a legacy GoalPhase row (no `kind`/`builtin`)
-        // deserializes to the Execution default with no builtin body — byte-identical
-        // intent to today.
-        let legacy = r#"{
-            "id":"p1","name":"Build","intent":"i","status":"not_started",
-            "created_at":"unix-ms:1"
-        }"#;
-        let p: GoalPhase = serde_json::from_str(legacy).expect("legacy phase loads");
-        assert_eq!(
-            p.kind,
-            PhaseKind::Execution,
-            "legacy phase defaults to Execution"
-        );
-        assert_eq!(p.builtin, None, "legacy phase has no builtin body");
-        assert_eq!(
-            p.execution_mode,
-            PhaseExecutionMode::TaskGraph,
-            "legacy phase defaults to task_graph execution"
-        );
-        assert_eq!(p.workflow_ref, None, "legacy phase has no workflow ref");
-
-        // A Building phase carrying a builtin id round-trips with a snake_case kind.
-        let building = GoalPhase {
-            id: "doc-sync".into(),
-            name: "Doc sync".into(),
-            intent: "sync docs after acceptance".into(),
-            status: GoalPhaseStatus::NotStarted,
-            acceptance: Some("declared doc/skill updates written; doc gates green".into()),
-            verdict_decision_id: None,
-            created_at: "unix-ms:1".into(),
-            started_at: None,
-            ended_at: None,
-            outputs: Vec::new(),
-            inputs: Vec::new(),
-            retry: None,
-            landed_commit: None,
-            kind: PhaseKind::Building,
-            builtin: Some("doc-sync".into()),
-            execution_mode: PhaseExecutionMode::Workflow,
-            workflow_ref: Some("builtin:doc-sync".into()),
-        };
-        let j = serde_json::to_string(&building).expect("ser building phase");
-        assert!(j.contains("\"kind\":\"building\""), "snake_case kind: {j}");
-        assert!(
-            j.contains("\"execution_mode\":\"workflow\""),
-            "snake_case execution_mode: {j}"
-        );
-        assert_eq!(
-            serde_json::from_str::<GoalPhase>(&j).expect("de building phase"),
-            building
-        );
-    }
-
-    #[test]
-    fn goal_with_phases_and_knowledge_round_trips() {
-        let mut g = goal_in_stage(GoalStage::Working);
-        g.phases = vec![GoalPhase {
-            id: "p1".into(),
-            name: "Design".into(),
-            intent: "i".into(),
-            status: GoalPhaseStatus::Passed,
-            acceptance: None,
-            verdict_decision_id: None,
-            created_at: "unix-ms:1".into(),
-            started_at: None,
-            ended_at: None,
-            outputs: Vec::new(),
-            inputs: Vec::new(),
-            retry: None,
-            landed_commit: None,
-            kind: PhaseKind::Execution,
-            builtin: None,
-            execution_mode: PhaseExecutionMode::TaskGraph,
-            workflow_ref: None,
-        }];
-        g.knowledge = vec![Knowledge {
-            id: "k1".into(),
-            goal_id: "g".into(),
-            phase_id: Some("p1".into()),
-            task_id: None,
-            author: "lead".into(),
-            timestamp: "unix-ms:1".into(),
-            notes_md: "n".into(),
-            tags: Vec::new(),
-            source: KnowledgeSource::Exploration,
-            superseded_by_knowledge_id: None,
-            created_at: "unix-ms:1".into(),
-        }];
-        g.design_synthesis_at = Some("unix-ms:2".into());
-        let j = serde_json::to_string(&g).expect("ser goal");
-        assert_eq!(serde_json::from_str::<Goal>(&j).expect("de goal"), g);
-    }
-
-    #[test]
-    fn task_superseded_and_planning_fields_round_trip_and_legacy_defaults() {
-        // A legacy task (no planning fields) defaults them.
-        let legacy = r#"{"id":"t","goal_id":null,"parent_task_id":null,"title":"x","objective":"o",
-            "owner_agent_id":"lead","assignee_agent_id":null,"reviewer_agent_id":null,
-            "status":"planned","depends_on_task_ids":[],"workspace_ref":null,"branch_ref":null,
-            "pr_ref":null,"owned_paths":[],"acceptance_criteria":[],
-            "created_at":"unix-ms:1","updated_at":"unix-ms:1"}"#;
-        let mut t: Task = serde_json::from_str(legacy).expect("de legacy task");
-        assert!(
-            t.design_md.is_none()
-                && t.phase_id.is_none()
-                && t.superseded_by_knowledge_id.is_none()
-                && t.workflow_step_ids.is_empty()
-                // goal-phase-artifacts: a legacy task with no `outputs` key defaults empty.
-                && t.outputs.is_empty()
-        );
-        // Superseded + the new fields round-trip.
-        t.status = TaskStatus::Superseded;
-        t.phase_id = Some("p1".into());
-        t.design_md = Some("task design slice".into());
-        t.superseded_by_knowledge_id = Some("k1".into());
-        t.workflow_step_ids = vec!["step-1".into()];
-        let j = serde_json::to_string(&t).expect("ser task");
-        let back: Task = serde_json::from_str(&j).expect("de task");
-        assert_eq!(back, t);
-        assert_eq!(back.status, TaskStatus::Superseded);
-    }
-
-    #[test]
-    fn artifact_spec_and_kind_round_trip_snake_case_and_required_defaults_true() {
-        // ArtifactKind serializes snake_case (the multi-word kinds are the bar).
-        assert_eq!(
-            serde_json::to_string(&ArtifactKind::DesignDoc).unwrap(),
-            "\"design_doc\""
-        );
-        assert_eq!(
-            serde_json::to_string(&ArtifactKind::TestReport).unwrap(),
-            "\"test_report\""
-        );
-        assert_eq!(
-            serde_json::to_string(&ArtifactKind::MigrationDoc).unwrap(),
-            "\"migration_doc\""
-        );
-        assert_eq!(
-            serde_json::to_string(&ArtifactKind::RegisteredDoc).unwrap(),
-            "\"registered_doc\""
-        );
-        // Default kind is Code.
-        assert_eq!(ArtifactKind::default(), ArtifactKind::Code);
-        assert_eq!(
-            serde_json::from_str::<ArtifactKind>("\"adr\"").unwrap(),
-            ArtifactKind::Adr
-        );
-
-        // A fully-specified spec round-trips.
-        let spec = ArtifactSpec {
-            id: "report".into(),
-            kind: ArtifactKind::TestReport,
-            path: Some("reports/r.md".into()),
-            purpose: "the live-acceptance evidence".into(),
-            required: false,
-            acceptance: Some("contains a PASS line".into()),
-        };
-        let j = serde_json::to_string(&spec).expect("ser spec");
-        assert_eq!(
-            serde_json::from_str::<ArtifactSpec>(&j).expect("de spec"),
-            spec
-        );
-
-        // A minimal spec (no kind/path/required/acceptance keys) defaults: kind=Code,
-        // path=None, required=TRUE, acceptance=None.
-        let minimal: ArtifactSpec =
-            serde_json::from_str(r#"{"id":"a","purpose":"p"}"#).expect("de minimal spec");
-        assert_eq!(minimal.kind, ArtifactKind::Code);
-        assert!(minimal.path.is_none());
-        assert!(minimal.required, "required must default to true");
-        assert!(minimal.acceptance.is_none());
-        // And `Default` agrees on the required=true invariant.
-        assert!(ArtifactSpec::default().required);
-    }
-
-    #[test]
-    fn phase_and_task_outputs_round_trip_and_legacy_defaults_empty() {
-        let outputs = vec![
-            ArtifactSpec {
-                id: "design".into(),
-                kind: ArtifactKind::DesignDoc,
-                path: Some("docs/design.md".into()),
-                purpose: "the phase design".into(),
-                required: true,
-                acceptance: None,
-            },
-            ArtifactSpec {
-                id: "shot".into(),
-                kind: ArtifactKind::Screenshot,
-                path: None,
-                purpose: "dashboard picker proof".into(),
-                required: false,
-                acceptance: None,
-            },
-        ];
-
-        // GoalPhase with non-empty outputs round-trips.
-        let mut phase = test_phase("p-out", GoalPhaseStatus::InProgress);
-        phase.outputs = outputs.clone();
-        let pj = serde_json::to_string(&phase).expect("ser phase");
-        assert_eq!(
-            serde_json::from_str::<GoalPhase>(&pj).expect("de phase"),
-            phase
-        );
-
-        // Task with non-empty outputs round-trips.
-        let mut task = compile_task("t-out", "p-out", &[], &["crates/x"]);
-        task.outputs = outputs;
-        let tj = serde_json::to_string(&task).expect("ser task");
-        assert_eq!(serde_json::from_str::<Task>(&tj).expect("de task"), task);
-
-        // A legacy GoalPhase JSON WITHOUT the `outputs` key defaults to empty.
-        let legacy_phase = r#"{"id":"p","name":"P","intent":"i","status":"not_started",
-            "created_at":"unix-ms:1"}"#;
-        let p: GoalPhase = serde_json::from_str(legacy_phase).expect("de legacy phase");
-        assert!(p.outputs.is_empty());
-
-        // A legacy Task JSON WITHOUT the `outputs` key defaults to empty.
-        let legacy_task = r#"{"id":"t","goal_id":null,"parent_task_id":null,"title":"x",
-            "objective":"o","owner_agent_id":"lead","assignee_agent_id":null,
-            "reviewer_agent_id":null,"status":"planned","depends_on_task_ids":[],
-            "workspace_ref":null,"branch_ref":null,"pr_ref":null,"owned_paths":[],
-            "acceptance_criteria":[],"created_at":"unix-ms:1","updated_at":"unix-ms:1"}"#;
-        let lt: Task = serde_json::from_str(legacy_task).expect("de legacy task");
-        assert!(lt.outputs.is_empty());
-    }
-
-    #[test]
-    fn goal_orchestration_run_round_trips_and_status_is_snake_case() {
-        let run = GoalOrchestrationRun {
-            id: "goalrun-1".into(),
-            goal_id: "g".into(),
-            status: OrchestrationStatus::Failed,
-            phase_runs: vec![OrchestrationPhaseRun {
-                phase_id: "p1".into(),
-                workflow_run_id: Some("wfrun-1".into()),
-                compiled_path: Some(".harness/compiled/g__p1__abc.star".into()),
-                passed: false,
-                started_at: "unix-ms:1".into(),
-                ended_at: Some("unix-ms:2".into()),
-                landed_commit: None,
-            }],
-            created_at: "unix-ms:1".into(),
-            updated_at: "unix-ms:2".into(),
-        };
-        let j = serde_json::to_string(&run).expect("ser");
-        assert!(
-            j.contains("\"status\":\"failed\""),
-            "snake_case status: {j}"
-        );
-        assert_eq!(
-            serde_json::from_str::<GoalOrchestrationRun>(&j).expect("de"),
-            run
-        );
-        // Legacy/default: status defaults to running, phase_runs to empty.
-        let legacy =
-            r#"{"id":"r","goal_id":"g","created_at":"unix-ms:1","updated_at":"unix-ms:1"}"#;
-        let d: GoalOrchestrationRun = serde_json::from_str(legacy).expect("de legacy");
-        assert_eq!(d.status, OrchestrationStatus::Running);
-        assert!(d.phase_runs.is_empty());
-    }
-
-    #[test]
-    fn landed_commit_round_trips_and_legacy_defaults_to_none() {
-        // goal-phase-landing: the new `landed_commit` field round-trips when set
-        // and defaults to `None` for old rows written before the field existed.
-        // -- GoalPhase --
-        let mut phase = test_phase("p1", GoalPhaseStatus::Passed);
-        phase.landed_commit = Some("8b81471".into());
-        let pj = serde_json::to_string(&phase).expect("ser phase");
-        assert!(pj.contains("\"landed_commit\":\"8b81471\""), "{pj}");
-        assert_eq!(
-            serde_json::from_str::<GoalPhase>(&pj).expect("de phase"),
-            phase
-        );
-        // A legacy phase JSON WITHOUT the `landed_commit` key defaults to None.
-        let legacy_phase = r#"{"id":"p","name":"n","intent":"i","status":"passed",
-            "created_at":"unix-ms:1"}"#;
-        let lp: GoalPhase = serde_json::from_str(legacy_phase).expect("de legacy phase");
-        assert_eq!(lp.landed_commit, None);
-        // goal-phase-refinements: the new `inputs`/`retry` fields also default on a
-        // legacy row (empty / None == today's behavior), and round-trip when set.
-        assert!(lp.inputs.is_empty());
-        assert_eq!(lp.retry, None);
-        let mut phase = test_phase("p2", GoalPhaseStatus::NotStarted);
-        phase.retry = Some(3);
-        phase.inputs = vec![ArtifactSpec {
-            id: "prior".into(),
-            kind: ArtifactKind::RegisteredDoc,
-            path: Some("docs/prior.md".into()),
-            purpose: "from a prior phase".into(),
-            required: true,
-            acceptance: None,
-        }];
-        let pj = serde_json::to_string(&phase).expect("ser phase");
-        assert!(pj.contains("\"retry\":3"), "{pj}");
-        assert!(pj.contains("docs/prior.md"), "{pj}");
-        assert_eq!(
-            serde_json::from_str::<GoalPhase>(&pj).expect("de phase"),
-            phase
-        );
-
-        // -- OrchestrationPhaseRun --
-        let run = OrchestrationPhaseRun {
-            phase_id: "p1".into(),
-            workflow_run_id: None,
-            compiled_path: None,
-            passed: true,
-            started_at: "unix-ms:1".into(),
-            ended_at: None,
-            landed_commit: Some("deadbeef".into()),
-        };
-        let rj = serde_json::to_string(&run).expect("ser run");
-        assert!(rj.contains("\"landed_commit\":\"deadbeef\""), "{rj}");
-        assert_eq!(
-            serde_json::from_str::<OrchestrationPhaseRun>(&rj).expect("de run"),
-            run
-        );
-        // A legacy phase-run JSON WITHOUT the key defaults to None.
-        let legacy_run = r#"{"phase_id":"p","passed":true,"started_at":"unix-ms:1"}"#;
-        let lr: OrchestrationPhaseRun = serde_json::from_str(legacy_run).expect("de legacy run");
-        assert_eq!(lr.landed_commit, None);
-    }
-
-    #[test]
-    fn workflow_step_task_id_and_verdict_outcome_round_trip_and_legacy_defaults() {
-        let legacy = r#"{"id":"s","run_id":"r","phase":"p","label":"l",
-            "status":"running","started_at":"unix-ms:1"}"#;
-        let mut s: WorkflowStep = serde_json::from_str(legacy).expect("de legacy step");
-        assert!(s.task_id.is_none() && s.verdict_outcome.is_none());
-        s.task_id = Some("t1".into());
-        s.verdict_outcome = Some(VerdictOutcome::CleanFail);
-        let j = serde_json::to_string(&s).expect("ser step");
-        assert!(
-            j.contains("\"verdict_outcome\":\"clean_fail\""),
-            "snake_case verdict_outcome: {j}"
-        );
-        assert_eq!(
-            serde_json::from_str::<WorkflowStep>(&j).expect("de step"),
-            s
-        );
-    }
-
-    #[test]
-    fn workflow_run_goal_phase_link_round_trips_and_legacy_defaults_to_none() {
-        // Legacy rows (predating the goal↔run link) carry no goal_id/phase_id.
-        let legacy = r#"{"id":"wfrun-1","workflow_name":"phase-p1",
-            "status":"running","created_at":"unix-ms:1"}"#;
-        let mut r: WorkflowRun = serde_json::from_str(legacy).expect("de legacy run");
-        assert!(
-            r.goal_id.is_none() && r.phase_id.is_none(),
-            "legacy run has no goal/phase link"
-        );
-        r.goal_id = Some("goal-x".into());
-        r.phase_id = Some("p1".into());
-        let j = serde_json::to_string(&r).expect("ser run");
-        assert!(
-            j.contains("\"goal_id\":\"goal-x\""),
-            "serializes goal_id: {j}"
-        );
-        assert!(
-            j.contains("\"phase_id\":\"p1\""),
-            "serializes phase_id: {j}"
-        );
-        assert_eq!(serde_json::from_str::<WorkflowRun>(&j).expect("de run"), r);
-        // Absent link is omitted from the wire (skip_serializing_if).
-        let plain =
-            serde_json::to_string(&serde_json::from_str::<WorkflowRun>(legacy).expect("de legacy"))
-                .unwrap();
-        assert!(!plain.contains("goal_id"), "None goal_id omitted: {plain}");
-    }
-
-    #[test]
-    fn explored_gate_requires_design_md() {
-        let mut g = goal_in_stage(GoalStage::Exploring);
-        assert!(g.check_transition(GoalStage::Explored).is_err());
-        g.design_md = Some("grounded design with key problems".into());
-        assert!(g.check_transition(GoalStage::Explored).is_ok());
-    }
-
-    #[test]
-    fn working_gate_requires_acceptance_md() {
-        let mut g = goal_in_stage(GoalStage::Explored);
-        assert!(g.check_transition(GoalStage::Working).is_err());
-        g.acceptance_md = Some("real acceptance: use it for real".into());
-        assert!(g.check_transition(GoalStage::Working).is_ok());
-    }
-
-    #[test]
-    fn back_edges_are_allowed() {
-        for s in [GoalStage::Draft, GoalStage::Working, GoalStage::Verified] {
-            assert!(
-                goal_in_stage(s)
-                    .check_transition(GoalStage::Exploring)
-                    .is_ok(),
-                "{:?} should be able to re-open exploration",
-                s
-            );
-        }
-        assert!(goal_in_stage(GoalStage::Verifying)
-            .check_transition(GoalStage::Working)
-            .is_ok());
-    }
-
-    #[test]
-    fn forward_skip_and_same_stage_rejected() {
-        assert!(goal_in_stage(GoalStage::Draft)
-            .check_transition(GoalStage::Working)
-            .is_err());
-        assert!(goal_in_stage(GoalStage::Working)
-            .check_transition(GoalStage::Working)
-            .is_err());
-        // verifying -> verified is a clean one-step forward (no gate).
-        assert!(goal_in_stage(GoalStage::Verifying)
-            .check_transition(GoalStage::Verified)
-            .is_ok());
-    }
-
-    #[test]
-    fn stage_maps_to_legacy_status() {
-        assert_eq!(GoalStage::Working.to_status(), GoalStatus::Active);
-        assert_eq!(GoalStage::Done.to_status(), GoalStatus::Review);
-        assert_eq!(GoalStage::Verified.to_status(), GoalStatus::Done);
-    }
-
-    fn test_phase(id: &str, status: GoalPhaseStatus) -> GoalPhase {
-        GoalPhase {
-            id: id.into(),
-            name: id.into(),
-            intent: "i".into(),
-            status,
-            acceptance: None,
-            verdict_decision_id: None,
-            created_at: "unix-ms:1".into(),
-            started_at: None,
-            ended_at: None,
-            outputs: Vec::new(),
-            inputs: Vec::new(),
-            retry: None,
-            landed_commit: None,
-            kind: PhaseKind::Execution,
-            builtin: None,
-            execution_mode: PhaseExecutionMode::TaskGraph,
-            workflow_ref: None,
-        }
-    }
-
-    #[test]
-    fn effective_stage_falls_back_to_stage_field_when_no_phases() {
-        // Legacy goal (no phases) → the stored stage IS the truth.
-        for s in [GoalStage::Draft, GoalStage::Exploring, GoalStage::Working] {
-            assert_eq!(goal_in_stage(s).effective_stage(), s);
-        }
-    }
-
-    #[test]
-    fn effective_stage_derives_from_phases_when_present() {
-        use GoalPhaseStatus::*;
-        // The stored `stage` is deliberately stale to prove phases win.
-        let with = |statuses: &[GoalPhaseStatus]| {
-            let mut g = goal_in_stage(GoalStage::Draft);
-            g.phases = statuses
-                .iter()
-                .enumerate()
-                .map(|(i, s)| test_phase(&format!("p{i}"), *s))
-                .collect();
-            g.effective_stage()
-        };
-        assert_eq!(with(&[NotStarted, NotStarted]), GoalStage::Draft);
-        assert_eq!(with(&[InProgress, NotStarted]), GoalStage::Working);
-        assert_eq!(with(&[Passed, InProgress]), GoalStage::Working);
-        assert_eq!(with(&[Passed, Failed]), GoalStage::Working);
-        assert_eq!(with(&[Blocked]), GoalStage::Working);
-        assert_eq!(with(&[Passed, Passed]), GoalStage::Verified);
-    }
-
-    #[test]
-    fn phase_driven_goal_skips_legacy_md_gates_but_keeps_structural_rules() {
-        // One in-progress phase → effective_stage == Working, with blank md.
-        let mut g = goal_in_stage(GoalStage::Draft);
-        g.design_md = None;
-        g.acceptance_md = None;
-        g.phases = vec![test_phase("p0", GoalPhaseStatus::InProgress)];
-        assert_eq!(g.effective_stage(), GoalStage::Working);
-        // Working → Done is a clean one-step forward; the md gates do NOT fire.
-        assert!(g.check_transition(GoalStage::Done).is_ok());
-        // Structural rules still hold: can't skip two stages at once.
-        assert!(g.check_transition(GoalStage::Verified).is_err());
-        // Back-edge to exploring is still always allowed.
-        assert!(g.check_transition(GoalStage::Exploring).is_ok());
-    }
-
-    fn test_knowledge(id: &str, phase_id: Option<&str>, superseded: Option<&str>) -> Knowledge {
-        Knowledge {
-            id: id.into(),
-            goal_id: "g".into(),
-            phase_id: phase_id.map(Into::into),
-            task_id: Some(format!("task-{id}")),
-            author: "explorer".into(),
-            timestamp: "unix-ms:1".into(),
-            notes_md: format!("finding {id}"),
-            tags: vec!["risk".into()],
-            source: KnowledgeSource::Exploration,
-            superseded_by_knowledge_id: superseded.map(Into::into),
-            created_at: "unix-ms:1".into(),
-        }
-    }
-
-    #[test]
-    fn synthesize_design_md_rejects_empty_knowledge() {
-        let g = goal_in_stage(GoalStage::Working);
-        assert!(g.knowledge.is_empty());
-        assert!(g.synthesize_design_md().is_err());
-    }
-
-    #[test]
-    fn synthesize_design_md_is_deterministic_and_groups_by_phase() {
-        let mut g = goal_in_stage(GoalStage::Working);
-        g.phases = vec![
-            test_phase("phase-a", GoalPhaseStatus::Passed),
-            test_phase("phase-b", GoalPhaseStatus::InProgress),
-        ];
-        g.knowledge = vec![
-            test_knowledge("k1", Some("phase-a"), None),
-            test_knowledge("k2", Some("phase-b"), None),
-        ];
-        let first = g.synthesize_design_md().expect("synthesize");
-        let second = g.synthesize_design_md().expect("synthesize again");
-        // Pure function of knowledge + phases → byte-identical (no timestamps).
-        assert_eq!(first, second);
-        assert!(first.contains("## Phase: phase-a (phase-a)"));
-        assert!(first.contains("## Phase: phase-b (phase-b)"));
-        assert!(first.contains("knowledge#k1"));
-        assert!(first.contains("task#task-k1"));
-        assert!(first.contains("finding k2"));
-        // phase-a precedes phase-b (plan order).
-        assert!(first.find("phase-a").unwrap() < first.find("phase-b").unwrap());
-    }
-
-    fn compile_task(id: &str, phase_id: &str, deps: &[&str], owned: &[&str]) -> Task {
-        Task {
-            id: id.into(),
-            goal_id: Some("g".into()),
-            parent_task_id: None,
-            title: format!("title {id}"),
-            objective: format!("objective {id}"),
-            owner_agent_id: "lead".into(),
-            assignee_agent_id: None,
-            reviewer_agent_id: None,
-            status: TaskStatus::Planned,
-            depends_on_task_ids: deps.iter().map(|s| s.to_string()).collect(),
-            workspace_ref: None,
-            branch_ref: None,
-            pr_ref: None,
-            owned_paths: owned.iter().map(|s| s.to_string()).collect(),
-            acceptance_criteria: Vec::new(),
-            created_at: "unix-ms:1".into(),
-            updated_at: "unix-ms:1".into(),
-            scope_refs: Vec::new(),
-            requires_human_approval: false,
-            verdict_decision_id: None,
-            description: None,
-            git_metadata: None,
-            design_md: Some(format!("design for {id}")),
-            phase_id: Some(phase_id.into()),
-            superseded_by_knowledge_id: None,
-            workflow_step_ids: Vec::new(),
-            outputs: Vec::new(),
-            executor: None,
-        }
-    }
-
-    #[test]
-    fn compile_phase_parallelizes_disjoint_and_serializes_chain_and_emits_verdict() {
-        let goal = goal_in_stage(GoalStage::Working);
-        let mut phase = test_phase("phase-1", GoalPhaseStatus::InProgress);
-        phase.acceptance = Some("All wiring compiles and the smoke test passes.".into());
-        let tasks = vec![
-            // Layer 0: two independent writers with disjoint paths → parallel().
-            compile_task("t-a", "phase-1", &[], &["crates/a"]),
-            compile_task("t-b", "phase-1", &[], &["crates/b"]),
-            // Layer 1: depends on both → serial agent() after the parallel block.
-            compile_task("t-c", "phase-1", &["t-a", "t-b"], &["crates/c"]),
-            // Different phase / superseded → excluded.
-            compile_task("t-other", "phase-2", &[], &["x"]),
-        ];
-        let mut superseded = compile_task("t-dead", "phase-1", &[], &["crates/a"]);
-        superseded.status = TaskStatus::Superseded;
-        let mut all = tasks;
-        all.push(superseded);
-
-        let script = compile_phase_to_starlark(&goal, &phase, &all).expect("compile");
-        // Header + auto-generated marker.
-        assert!(script.starts_with("workflow(\n    \"phase-phase-1\""));
-        assert!(script.contains("Auto-generated by `harness phase compile`"));
-        // Layer 0 → one parallel() block carrying both disjoint writers.
-        assert!(script.contains("parallel(["));
-        assert!(script.contains("\"label\": \"t-a\""));
-        assert!(script.contains("\"label\": \"t-b\""));
-        // Writers are isolated.
-        assert!(script.contains("\"isolation\": \"worktree\""));
-        assert!(script.contains("\"writable\": True"));
-        // Layer 1 → a serial agent() AFTER the parallel block.
-        let par = script.find("parallel([").unwrap();
-        let tc = script.find("label=\"t-c\"").expect("t-c agent call");
-        assert!(
-            par < tc,
-            "the dependent task must come after the parallel layer"
-        );
-        // Excluded tasks are absent.
-        assert!(!script.contains("t-other"));
-        assert!(!script.contains("t-dead"));
-        // Acceptance → judge agent + verdict gate.
-        assert!(script.contains("label=\"verdict-phase-1\""));
-        assert!(script.contains("\"pass\": \"bool\""));
-        assert!(script.contains("verdict(bool(_acc)"));
-    }
-
-    #[test]
-    fn compile_phase_is_deterministic_for_identical_dag() {
-        let goal = goal_in_stage(GoalStage::Working);
-        let phase = test_phase("p", GoalPhaseStatus::InProgress);
-        let all = vec![
-            compile_task("t2", "p", &["t1"], &["b"]),
-            compile_task("t1", "p", &[], &["a"]),
-        ];
-        let first = compile_phase_to_starlark(&goal, &phase, &all).expect("compile");
-        // Input order shuffled — output must be byte-identical (sorted by id).
-        let shuffled = vec![all[1].clone(), all[0].clone()];
-        let second = compile_phase_to_starlark(&goal, &phase, &shuffled).expect("compile");
-        assert_eq!(first, second);
-        assert_eq!(content_hash_hex16(&first), content_hash_hex16(&second));
-    }
-
-    #[test]
-    fn compile_phase_errors_on_empty_and_on_cycle() {
-        let goal = goal_in_stage(GoalStage::Working);
-        let phase = test_phase("p", GoalPhaseStatus::InProgress);
-        assert!(compile_phase_to_starlark(&goal, &phase, &[]).is_err());
-        let cyclic = vec![
-            compile_task("t1", "p", &["t2"], &["a"]),
-            compile_task("t2", "p", &["t1"], &["b"]),
-        ];
-        let err = compile_phase_to_starlark(&goal, &phase, &cyclic).unwrap_err();
-        assert!(err.contains("cycle"), "got: {err}");
-    }
-
-    #[test]
-    fn compile_phase_injects_required_artifacts_block_for_tasks_with_outputs() {
-        let goal = goal_in_stage(GoalStage::Working);
-        let phase = test_phase("p", GoalPhaseStatus::InProgress);
-        // A task that declares outputs (one required, one optional) — its compiled
-        // worker prompt must list each artifact's path + purpose + required/optional.
-        let mut with_outputs = compile_task("t-doc", "p", &[], &["docs"]);
-        with_outputs.outputs = vec![
-            ArtifactSpec {
-                id: "report".into(),
-                kind: ArtifactKind::TestReport,
-                path: Some("docs/report.md".into()),
-                purpose: "the e2e test report".into(),
-                required: true,
-                acceptance: Some("covers the gate path".into()),
-            },
-            ArtifactSpec {
-                id: "shot".into(),
-                kind: ArtifactKind::Screenshot,
-                path: Some("docs/shot.png".into()),
-                purpose: "dashboard screenshot".into(),
-                required: false,
-                acceptance: None,
-            },
-        ];
-        // A second task with NO outputs must get no artifact block (today's default).
-        let no_outputs = compile_task("t-code", "p", &[], &["crates/x"]);
-        let all = vec![with_outputs, no_outputs];
-
-        let script = compile_phase_to_starlark(&goal, &phase, &all).expect("compile");
-        assert!(
-            script.contains("Required artifacts you MUST produce:"),
-            "the artifact block header must appear"
-        );
-        assert!(script.contains("docs/report.md — the e2e test report (required)"));
-        assert!(script.contains("[acceptance: covers the gate path]"));
-        assert!(script.contains("docs/shot.png — dashboard screenshot (optional)"));
-        // The task without outputs must not carry an artifact block of its own;
-        // the header appears exactly once (only for t-doc).
-        assert_eq!(
-            script
-                .matches("Required artifacts you MUST produce:")
-                .count(),
-            1,
-            "only the task that declared outputs gets the block"
-        );
-    }
-
-    #[test]
-    fn compile_phase_judge_prompt_carries_declared_manifest() {
-        // goal-phase-artifacts s3-gate: the verdict judge must SEE the declared
-        // deliverables (phase + task `outputs`), not just the prose criterion, so
-        // the LLM can reason about whether every promised artifact was produced.
-        let goal = goal_in_stage(GoalStage::Working);
-        let mut phase = test_phase("p", GoalPhaseStatus::InProgress);
-        phase.acceptance = Some("Everything works end to end.".into());
-        phase.outputs = vec![ArtifactSpec {
-            id: "adr".into(),
-            kind: ArtifactKind::Adr,
-            path: Some("docs/adr/0024.md".into()),
-            purpose: "the architecture decision".into(),
-            required: true,
-            acceptance: None,
-        }];
-        let mut t = compile_task("t-doc", "p", &[], &["docs"]);
-        t.outputs = vec![ArtifactSpec {
-            id: "report".into(),
-            kind: ArtifactKind::TestReport,
-            path: Some("docs/report.md".into()),
-            purpose: "the e2e test report".into(),
-            required: true,
-            acceptance: None,
-        }];
-        let script = compile_phase_to_starlark(&goal, &phase, &[t]).expect("compile");
-
-        // The judge agent's prompt (it carries the criterion) must also carry the
-        // phase- and task-level deliverable lists.
-        assert!(script.contains("Declared phase deliverables:"));
-        assert!(script.contains("docs/adr/0024.md — the architecture decision (required)"));
-        assert!(script.contains("Declared deliverables for task t-doc:"));
-        assert!(script.contains("docs/report.md — the e2e test report (required)"));
-    }
-
-    #[test]
-    fn compile_phase_judge_prompt_unchanged_when_no_outputs() {
-        // Back-compat: with empty outputs, the judge prompt appends NOTHING — it
-        // is byte-identical to a phase whose acceptance is the only gate input.
-        let goal = goal_in_stage(GoalStage::Working);
-        let mut phase = test_phase("p", GoalPhaseStatus::InProgress);
-        phase.acceptance = Some("It compiles.".into());
-        let t = compile_task("t1", "p", &[], &["a"]);
-        let script = compile_phase_to_starlark(&goal, &phase, &[t]).expect("compile");
-        assert!(!script.contains("Declared phase deliverables:"));
-        assert!(!script.contains("Declared deliverables for task"));
-    }
-
-    #[test]
-    fn compile_phase_emits_task_executor_at_agent_and_parallel_leaves() {
-        // goal-provider-neutral S2: a task's `executor` selects the provider at its
-        // compiled leaf — at a serial `agent()` AND inside a `parallel([...])` spec
-        // dict — while the acceptance judge leaf stays codex.
-        let goal = goal_in_stage(GoalStage::Working);
-        let mut phase = test_phase("phase-1", GoalPhaseStatus::InProgress);
-        phase.acceptance = Some("It works.".into());
-        // Two disjoint writers in layer 0 → a parallel() block.
-        let mut t_par = compile_task("t-par", "phase-1", &[], &["crates/a"]);
-        t_par.executor = Some("kimi".into());
-        let mut t_par2 = compile_task("t-par2", "phase-1", &[], &["crates/b"]);
-        t_par2.executor = Some("kimi".into());
-        // A dependent layer-1 task → a serial agent().
-        let mut t_serial = compile_task("t-serial", "phase-1", &["t-par", "t-par2"], &[]);
-        t_serial.executor = Some("kimi".into());
-        let script =
-            compile_phase_to_starlark(&goal, &phase, &[t_par, t_par2, t_serial]).expect("compile");
-
-        // The serial agent() leaf carries provider="kimi".
-        assert!(
-            script.contains("provider=\"kimi\""),
-            "serial agent() leaf must use the task executor; got:\n{script}"
-        );
-        // The parallel() spec dict carries "provider": "kimi".
-        assert!(
-            script.contains("\"provider\": \"kimi\""),
-            "parallel() spec dict must use the task executor; got:\n{script}"
-        );
-        // The acceptance judge leaf is unaffected — still codex.
-        assert!(
-            script.contains("label=\"verdict-phase-1\""),
-            "judge leaf present"
-        );
-        assert!(
-            script.contains("provider=\"codex\""),
-            "judge leaf stays codex; got:\n{script}"
-        );
-    }
-
-    #[test]
-    fn compile_phase_unset_executor_is_byte_identical_to_codex() {
-        // goal-provider-neutral S2 back-compat: an UNSET (or empty/whitespace)
-        // executor must compile EXACTLY as the pre-executor compiler did —
-        // provider="codex" at every leaf — byte-for-byte.
-        let goal = goal_in_stage(GoalStage::Working);
-        let mut phase = test_phase("phase-1", GoalPhaseStatus::InProgress);
-        phase.acceptance = Some("It works.".into());
-        let tasks = vec![
-            compile_task("t-a", "phase-1", &[], &["crates/a"]),
-            compile_task("t-b", "phase-1", &[], &["crates/b"]),
-            compile_task("t-c", "phase-1", &["t-a", "t-b"], &["crates/c"]),
-        ];
-        // Baseline: every task has executor == None.
-        let baseline = compile_phase_to_starlark(&goal, &phase, &tasks).expect("compile");
-
-        // Same DAG but executor explicitly set to an empty / whitespace string —
-        // treated as unset, so output is identical.
-        let mut blanked = tasks.clone();
-        blanked[0].executor = Some(String::new());
-        blanked[1].executor = Some("   ".into());
-        // task[2] left as None.
-        let blanked_script = compile_phase_to_starlark(&goal, &phase, &blanked).expect("compile");
-
-        assert_eq!(
-            baseline, blanked_script,
-            "unset/empty executor must be byte-identical to the codex default"
-        );
-        // And it really is codex, not some other default.
-        assert!(baseline.contains("provider=\"codex\""));
-        assert!(baseline.contains("\"provider\": \"codex\""));
-        assert!(!baseline.contains("kimi"));
-    }
-
-    #[test]
-    fn planner_and_reviser_schemas_and_prompts_advertise_outputs() {
-        // The autonomous planner/reviser can only author a manifest if `outputs`
-        // is in the schema shape hint and mentioned in the prompt.
-        let planner = serde_json::to_string(&planner_schema()).unwrap();
-        assert!(
-            planner.contains("outputs"),
-            "planner schema must list outputs"
-        );
-        let reviser = serde_json::to_string(&reviser_schema()).unwrap();
-        assert!(
-            reviser.contains("outputs"),
-            "reviser schema must list outputs"
-        );
-
-        let goal = goal_in_stage(GoalStage::Working);
-        assert!(planner_prompt(&goal).contains("outputs"));
-
-        let phase = test_phase("p", GoalPhaseStatus::InProgress);
-        let prompt = reviser_prompt(&goal, &phase, &[], "the gate found no report");
-        assert!(prompt.contains("outputs"));
-    }
-
-    #[test]
-    fn planner_schema_and_prompt_advertise_executor() {
-        // goal-provider-neutral S2 (nice-to-have): the planner can author a
-        // per-task `executor` only if it is in the schema hint and the prompt.
-        let planner = serde_json::to_string(&planner_schema()).unwrap();
-        assert!(
-            planner.contains("executor"),
-            "planner schema must list executor"
-        );
-        let goal = goal_in_stage(GoalStage::Working);
-        assert!(planner_prompt(&goal).contains("executor"));
-    }
-
-    #[test]
-    fn synthesize_design_md_marks_superseded_and_buckets_unscoped() {
-        let mut g = goal_in_stage(GoalStage::Working);
-        g.phases = vec![test_phase("phase-a", GoalPhaseStatus::InProgress)];
-        g.knowledge = vec![
-            test_knowledge("k1", Some("phase-a"), Some("k3")),
-            test_knowledge("k2", None, None),
-            test_knowledge("k3", Some("unknown-phase"), None),
-        ];
-        let md = g.synthesize_design_md().expect("synthesize");
-        assert!(md.contains("superseded by knowledge#k3"));
-        // k2 (no phase) and k3 (unknown phase) both fall under Unscoped.
-        assert!(md.contains("## Unscoped"));
-        let unscoped = &md[md.find("## Unscoped").unwrap()..];
-        assert!(unscoped.contains("knowledge#k2"));
-        assert!(unscoped.contains("knowledge#k3"));
     }
 
     #[test]
@@ -4302,105 +2099,6 @@ mod tests {
         assert!(parsed.validate().is_ok());
         assert!(json.contains("\"status\":\"in_progress\""));
         assert_eq!(parsed.severity, GapSeverity::P0);
-    }
-
-    #[test]
-    fn goal_design_round_trips_json() {
-        let design = GoalDesign {
-            id: "goal-design-1".to_string(),
-            goal_id: "goal-1".to_string(),
-            scenario_summary: "Render the learning layer on the dashboard.".to_string(),
-            non_goals: vec!["No backfill of legacy Evidence rows.".to_string()],
-            risk_and_permission_boundaries: "Read-only snapshot; no auto-merge.".to_string(),
-            required_infra: vec!["harness-store goal_designs.jsonl".to_string()],
-            agent_team: Some("team-1".to_string()),
-            task_graph: vec!["task-1".to_string(), "task-2".to_string()],
-            evidence_plan: vec!["screenshot of GoalDocument".to_string()],
-            acceptance_gates: vec![
-                "cargo test green".to_string(),
-                "pnpm check green".to_string(),
-            ],
-            created_at: "2026-05-30T00:00:00Z".to_string(),
-        };
-
-        let json = serde_json::to_string(&design).expect("serialize goal design");
-        let parsed: GoalDesign = serde_json::from_str(&json).expect("deserialize goal design");
-
-        assert_eq!(parsed, design);
-        assert!(parsed.validate().is_ok());
-    }
-
-    #[test]
-    fn goal_evaluation_round_trips_json() {
-        let evaluation = GoalEvaluation {
-            id: "goal-eval-1".to_string(),
-            goal_id: "goal-1".to_string(),
-            evaluator_agent_id: "evaluator-1".to_string(),
-            outcome: EvaluationOutcome::Success,
-            what_worked: "Dual-read union surfaced both objects and legacy evidence.".to_string(),
-            what_failed: "Demo snapshot lagged the new keys until late.".to_string(),
-            missing_infra: vec![],
-            missing_evidence: vec!["load test".to_string()],
-            team_design_feedback: "Solo WP was sufficient.".to_string(),
-            task_graph_feedback: "Linear graph held.".to_string(),
-            dashboard_feedback: "GoalDocument now shows real sections.".to_string(),
-            reusable_patterns: vec!["additive-optional fields".to_string()],
-            anti_patterns: vec!["required new fields on existing objects".to_string()],
-            follow_up_task_ids: vec!["task-3".to_string()],
-            proposed_goal_ids: vec!["goal-2".to_string()],
-            created_at: "2026-05-30T00:00:00Z".to_string(),
-        };
-
-        let json = serde_json::to_string(&evaluation).expect("serialize goal evaluation");
-        let parsed: GoalEvaluation =
-            serde_json::from_str(&json).expect("deserialize goal evaluation");
-
-        assert_eq!(parsed, evaluation);
-        assert!(parsed.validate().is_ok());
-        assert!(json.contains("\"outcome\":\"success\""));
-    }
-
-    #[test]
-    fn evaluation_outcome_open_enum_round_trips_unknown_value() {
-        // An adapter-supplied outcome that is not in the canonical set must
-        // round-trip through EvaluationOutcome::Other without losing the string.
-        let outcome = EvaluationOutcome::Other("partially_blocked".to_string());
-        let json = serde_json::to_string(&outcome).expect("serialize outcome");
-        assert_eq!(json, "\"partially_blocked\"");
-
-        let parsed: EvaluationOutcome = serde_json::from_str(&json).expect("deserialize outcome");
-        assert_eq!(
-            parsed,
-            EvaluationOutcome::Other("partially_blocked".to_string())
-        );
-
-        // A canonical value deserialized from the wire collapses to its named variant.
-        let canonical: EvaluationOutcome =
-            serde_json::from_str("\"partial\"").expect("deserialize canonical outcome");
-        assert_eq!(canonical, EvaluationOutcome::Partial);
-    }
-
-    #[test]
-    fn goal_case_round_trips_json() {
-        let case = GoalCase {
-            case_id: "goal-case-1".to_string(),
-            source_goal_id: "goal-1".to_string(),
-            scenario_type: "dashboard-rendering".to_string(),
-            project_adapter: None,
-            goal_design_ref: Some("goal-design-1".to_string()),
-            evaluation_ref: Some("goal-eval-1".to_string()),
-            reusable_patterns: vec!["additive-optional fields".to_string()],
-            anti_patterns: vec![],
-            follow_up_refs: vec!["task-3".to_string()],
-            tags: vec!["learning-layer".to_string()],
-            created_at: "2026-05-30T00:00:00Z".to_string(),
-        };
-
-        let json = serde_json::to_string(&case).expect("serialize goal case");
-        let parsed: GoalCase = serde_json::from_str(&json).expect("deserialize goal case");
-
-        assert_eq!(parsed, case);
-        assert!(parsed.validate().is_ok());
     }
 
     #[test]
@@ -4706,7 +2404,7 @@ mod tests {
             from_agent_id: "operator".to_string(),
             to_agent_id: Some("agent-1".to_string()),
             channel: None,
-            kind: MessageKind::Task,
+            kind: MessageKind::Assignment,
             delivery_status: MessageDeliveryStatus::Queued,
             content: "do the thing".to_string(),
             evidence_ids: vec![],
@@ -4764,7 +2462,7 @@ mod tests {
             from_agent_id: "leader-1".to_string(),
             to_agent_id: Some("agent-1".to_string()),
             channel: Some("team".to_string()),
-            kind: MessageKind::Task,
+            kind: MessageKind::Assignment,
             delivery_status: MessageDeliveryStatus::Queued,
             content: "Implement the launch spec.".to_string(),
             evidence_ids: vec![],
@@ -4797,7 +2495,7 @@ mod tests {
         assert_eq!(spec.workspace.as_deref(), Some("../worktrees/task-1"));
         // The turn input carries the message envelope + content.
         assert!(spec.message_content.contains("message_id: msg-1"));
-        assert!(spec.message_content.contains("kind: task"));
+        assert!(spec.message_content.contains("kind: assignment"));
         assert!(spec.message_content.contains("task_id: task-1"));
         assert!(spec.message_content.contains("Implement the launch spec."));
         // Fields with no neutral source yet are empty/none, not invented.

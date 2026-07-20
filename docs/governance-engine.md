@@ -83,8 +83,8 @@ port drift.
 
 ## Relationship to the doc-sync built-in phase
 
-The doc-sync built-in phase (see [goal-phase-loop.md](goal-phase-loop.md)) is the
-consumer: after a goal's execution phases pass, it runs the
+The historical doc-sync built-in phase is retained only in the legacy archive.
+Its successor runs after execution phases pass, applies the
 bootstrap-project-workflow methodology and then the doc gates. As the engine
 takes over, that phase's gate command becomes `harness governance check` (one
 toolchain-agnostic command) instead of the three Node invocations, so the loop

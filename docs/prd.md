@@ -1,252 +1,195 @@
-# Product Requirements
+# Product Requirements — AI Company OS
 
-## Vision
+## Product mission
 
-Star Harness turns a project or business domain into an
-agent-operable and agent-progressable system.
+Star Harness helps a person and a mixed organization of standing Agents run a
+company through durable documents, explicit responsibility, governed actions,
+and provider-neutral execution tools.
 
-The product is not an agent runner and not a project-specific engine. It is a
-coordination layer for persistent Agent Teams. A standing team can observe
-project state, propose goals, prioritize work, manage a task graph, collaborate
-through messages, produce evidence, make reviewed decisions, evaluate the
-workflow, and continue into the next goal.
-
-The core product loop is:
+The product is not primarily a multi-agent run dashboard. It is a Company OS:
 
 ```text
-persistent AgentTeam
-  -> observe project state and prior goal cases
-  -> propose / prioritize goals
-  -> scenario and infra design
-  -> task graph
-  -> message-driven member collaboration
-  -> evidence -> proposal -> review -> decision
-  -> goal evaluation -> follow-up task or next goal
+Docs organize business intent and knowledge.
+Organization supplies long-lived human and Agent capability.
+WorkItems connect intent to accountable execution.
+Approvals protect high-risk actions.
+Execution tools perform the work.
+Results and effects return to Docs and related records.
 ```
 
-The smaller execution loop inside one accepted goal is:
+## Product thesis
+
+An AI-native company needs more than parallel agents. It needs:
+
+- a place where company context, data, decisions, and operating structures
+  remain understandable as they grow;
+- durable Agent identities with roles, permissions, availability, capacity,
+  responsibilities, and provider runtime history;
+- first-class human, external, service, and Agent participation without
+  pretending their lifecycles are identical;
+- explicit records of who requested, submitted, owns, executes, reviews, and
+  approves work;
+- typed relations so a business action, its cost, its approval, and its result
+  remain one connected truth;
+- execution tools that can be selected when useful without forcing every piece
+  of company work into a predefined execution structure.
+
+## Primary systems
+
+### Docs
+
+Docs is the company memory and operating hub. It must support:
+
+- basic rich documents: hierarchical pages, text, lists, checklists, callouts,
+  media, attachments, comments, mentions, and ordinary tables;
+- structured documents: standard table, board, timeline, calendar, chart, and
+  embedded related-record views over TypedRecords and Relations;
+- typed records and relations rather than copied values;
+- templates and Module Designs for repeatable business domains;
+- actions that create WorkItems and Approvals with source-document provenance;
+- result, evidence, metric, and financial-effect updates back into the source;
+- structure-health, reorganization, archival, and conflict detection.
+
+For a stable, high-value surface that must coordinate several kinds of data and
+actions, a Module may register a custom HTML/React page. An Agent may compose
+this page from approved components, declared queries, and named Action
+Commands. The page is never a data store: it cannot directly write business
+facts or bypass permissions, audit, relation validation, or Approval policy.
+Every custom page links to its underlying Documents and records and has a
+standard document/view fallback.
+
+### Organization
+
+Organization models `HumanMember`, standing `AgentMember`, external
+collaborators, and services through common `ActorRef` references while
+preserving their distinct identity and runtime rules.
+
+The initial operating model is deliberately lead-first: one Human Owner, one
+Lead Agent, and several second-level Standing Agents that report directly to
+the Lead. The Lead receives company intent, assigns WorkItems, starts optional
+long-running execution, monitors blockers, and proposes missing organizational
+capability. `reports_to_actor_ref` and `OrgUnit.parent_unit_id` keep deeper
+hierarchy additive without making it part of the first-release experience.
+
+Organization collaboration is object-centred. Human and Agent conversation,
+handoff, activity, and artifacts remain linked to a Document, BusinessModule,
+Milestone, WorkItem, Approval, or execution attempt. A Lead workspace composes
+those explicit links; it is not a free-floating chat history or provider log.
+
+### Work and approvals
+
+`WorkItem` is the product-level work record. It is distinct from executor
+internals and from ordinary messages.
+
+`Milestone` is the only grouping layer above WorkItems. It records a named
+stage outcome, owner, target date, acceptance criteria, and the WorkItems that
+contribute to it. There is no separate canonical `Project` object. A
+BusinessModule or Document supplies durable business context while Work owns
+Milestones and WorkItems.
+
+Every WorkItem records:
+
+- source document and result document;
+- requested by and submitted by;
+- accountable owner;
+- assignees and contributors;
+- reviewer and approver when required;
+- execution reference;
+- result, evidence, metrics, and linked financial records.
+
+`Approval` records legal, financial, permission, publication, and organization
+gates. Policies may require a human actor; an Agent cannot impersonate that
+approval.
+
+### Relations, finance, and metrics
+
+Structured records are linked, not duplicated. A trademark filing fee shown in
+a trademark document and in Finance is one `FinancialRecord` with relations to
+the application, BusinessModule, Milestone, source document, WorkItem,
+approval, and evidence.
+
+Finance distinguishes budget, commitment, invoice, payment, refund, and
+forecast. Metrics distinguish definitions from timestamped observations and
+retain their source.
+
+### Governance
+
+- Document Architecture Agent proposes new or reorganized Module structures.
+- Organization Governance Agent proposes roles, OrgUnits, permissions, and
+  Agent changes.
+- Finance, legal, security, and domain reviewers evaluate affected relations.
+- A Lead or human authority approves changes according to risk policy.
+- Proposals and decisions remain reconstructable from source to effect.
+
+## Execution foundation
+
+A WorkItem may be executed directly by a human or Standing Agent, or may start
+one of the product's one-time long-task capabilities:
 
 ```text
-scenario -> missing infra -> agent team -> task graph -> message execution
-  -> evidence -> review -> decision -> goal learning
+Mission -> ordered Wave -> executor
+  executor = agent_team | dynamic_workflow | host
 ```
 
-The harness succeeds only when a human or future agent can reconstruct why work
-existed, who owned it, how it was assigned, what evidence was produced, what
-decision was made, and what should improve next.
+- `Mission/Wave` structures one bounded long-running outcome.
+- `AgentTeamRun/MemberRun` records one temporary collaborative attempt inside
+  that execution.
+- `DynamicWorkflow` runs a provider-neutral process for the bounded outcome.
+- provider sessions, plugins, MCP, and child work remain execution evidence.
 
-## Product Thesis
+No executor owns the originating document, organization, approval, or company
+record. Results return through the WorkItem relation.
 
-Modern projects already expose valuable capability through CLI commands, APIs,
-dashboards, artifacts, logs, tests, and domain-specific tools. Raw agents can
-call those tools, but they often see too much unstructured context and too
-little structured feedback.
+## Required product experiences
 
-The harness makes those capabilities usable by agents through:
+1. Company Home surfaces decisions, milestone state, metrics, financial pressure,
+   and organization capacity with links to source documents.
+2. Docs supports Notion-like editing and nesting, ordinary tables, structured
+   relations, Module templates, embedded operating views, and governed custom
+   pages for core surfaces.
+3. Organization shows a mixed company and distinct details for humans and
+   standing Agents.
+4. Work is the company-wide ledger of Milestones and typed WorkItems and makes
+   submission, responsibility, remaining work, and acceptance visible.
+5. Approvals provides a focused `Needs You` queue and complete audit history.
+6. Finance provides typed, permissioned records linked to business origin.
+7. Governance handles new business domains, document growth, organization
+   change, and missing capability.
+8. Execution pages retain Mission/Wave, Team, MemberRun, Workflow, and provider
+   observability as professional drill-ins.
 
-- stable project adapters and tool descriptors;
-- scenario-specific skills;
-- durable agent teams, agent members, and task graphs;
-- message-first assignment and reporting;
-- peer-to-peer agent communication;
-- evidence-backed proposals, reviews, and decisions;
-- Dashboard visibility;
-- goal evaluation, reusable cases, and agent-proposed follow-up goals.
+## Near-term acceptance scenario
 
-The Lead Agent is therefore an organization and decision owner before it is an
-executor. It accepts or rejects proposed goals, designs the workflow, delegates
-through messages, and records decisions. It should not be the only source of
-new work once a standing team is operating.
+The first Company OS scenario is a new Trademark Management module:
 
-The default standing team should include an `Observer` role when the goal is
-long-running. The Observer watches repository state, Dashboard warnings, CI
-results, adapter outputs, prior GoalCases, and stale task graphs. Its output is
-not a final decision; it produces proposed goals, blockers, graph-change
-proposals, or follow-up tasks for the Lead and reviewers to accept, reject, or
-prioritize.
+- Document Architecture proposes its document space, templates, record types,
+  relations, views, permissions, and archival rules.
+- Organization Governance identifies a Brand Owner human, Trademark Agent,
+  Finance Agent, and External Lawyer participation.
+- a filing WorkItem preserves requester, submitter, owner, contributors,
+  reviewer, and human approver;
+- the ¥3,000 filing fee is one linked FinancialRecord, not copied text;
+- approval updates Work, Finance, and the trademark application;
+- documents receive the filing result, evidence, dates, cost, and next action.
 
-For each goal, the Lead must decide:
+## Non-goals
 
-- which scenario is being operated;
-- which missing CLI, adapter, skill, Dashboard, or CI/CD surface would shorten
-  future work;
-- which agent members are needed and what each owns;
-- which tasks can run in parallel and which require worktree or PR boundaries;
-- what evidence proves the work happened through the harness;
-- which critic, reviewer, or gate decides whether the result is acceptable.
-- which agent-proposed follow-up goals should enter the backlog.
+- do not make raw provider transcripts or thinking the company knowledge base;
+- do not infer assignment from matching names, roles, providers, or sessions;
+- do not make every message a WorkItem;
+- do not introduce a separate Project object above Milestone and WorkItem;
+- do not force every WorkItem into Mission/Wave or another executor;
+- do not use runtime status as business availability;
+- do not let an Agent satisfy a human-required approval;
+- do not copy finance or metric values between modules;
+- do not let page code become a second source of truth or a policy bypass.
 
-## Final Acceptance
+## Implementation truth
 
-The product is accepted when it can manage two real pilots with the same
-generic workflow and a standing team that continues across multiple tasks:
+The execution foundation is substantially implemented. The Company OS objects
+and primary frontend are an additive migration in progress. Documentation must
+label planned fields and projections honestly until schemas, store, APIs,
+fixtures, and acceptance checks exist.
 
-1. self-hosting development of this repository;
-2. LetMeTry / Earning Engine strategy-matrix iteration through an adapter.
-
-Both pilots must use the same core chain:
-
-```text
-Standing AgentTeam -> Proposed Goal -> GoalDesign -> Task Graph
-  -> Message -> AgentMember work
-  -> Evidence -> Proposal -> Critic/Review -> Decision
-  -> GoalEvaluation -> Follow-up Task or GoalCase
-```
-
-The self-hosting pilot has first priority. The product must prove it can
-develop its own docs, schemas, CLI, CI/CD, provider integration, and Dashboard
-before it can reliably coordinate another project's strategy work.
-
-A create-deliver-close smoke test is not final acceptance. It can prove
-provider transport, but it does not prove a team can keep working. Final
-acceptance requires durable members that return to idle, receive more messages,
-collaborate with peers, and produce or prioritize follow-up goals without being
-recreated as job runners.
-
-Detailed MVP gates are in [mvp.md](mvp.md).
-
-## Critical Mechanisms
-
-The product vision depends on these mechanisms working together:
-
-| Mechanism | Key question | Canonical doc |
-| --- | --- | --- |
-| Goal and learning loop | Why does the work exist and how does the system learn from it? | [goal-learning-loop.md](goal-learning-loop.md) |
-| Concept model | What do Goal, Task, Message, AgentMember, Evidence, Proposal, and Decision mean? | [concept-model.md](concept-model.md) |
-| Data model | What is source of truth and what is only projection? | [data-model.md](data-model.md) |
-| Core modules | Which modules exist because the vision would fail without them? | [core-modules.md](core-modules.md) |
-| Agent runtime | How do persistent provider-backed members receive work and emit events? | [agent-runtime.md](agent-runtime.md) |
-| Agent control plane | How are lifecycle, queues, peer messages, and reductions operated? | [agent-control-plane.md](agent-control-plane.md) |
-| Dashboard | What must the user see to know the workflow really happened? | [dashboard.md](dashboard.md) |
-| Git / PR workflow | How do worktrees, branches, PRs, proposals, reviews, and decisions relate? | [workflow-git-pr.md](workflow-git-pr.md) |
-| Provider integration | How can Codex and future providers implement the same runtime contract? | [integration/README.md](integration/README.md) |
-| Decisions | Which hard-to-reverse tradeoffs must future agents preserve? | [decisions/README.md](decisions/README.md) |
-
-## Scenarios
-
-### Persistent Autonomous Team Operation
-
-The central scenario is a long-lived team that can keep moving after one task
-or one user turn ends.
-
-```mermaid
-flowchart TD
-  Team[Standing AgentTeam] --> Observe[Observe repo, adapter, dashboard, prior cases]
-  Observe --> Gap[Gap / opportunity / blocker]
-  Gap --> Proposed[Proposed Goal]
-  Proposed --> Lead[Lead prioritizes / accepts / rejects]
-  Lead --> Design[GoalDesign]
-  Design --> Graph[Task Graph]
-  Graph --> Msg[Task and peer messages]
-  Msg --> Members[Persistent AgentMembers]
-  Members --> Evidence[Reports and evidence]
-  Evidence --> Review[Critic / Review]
-  Review --> Decision[Leader Decision]
-  Decision --> Eval[GoalEvaluation]
-  Eval --> Next[Follow-up task or next goal]
-  Next --> Observe
-```
-
-This is what distinguishes the product from provider subagents. The team has a
-stable identity, shared task graph, durable mailboxes, persistent members, and
-an evaluation loop that generates the next work.
-
-### Self-Hosting Development
-
-The harness must develop itself through its own protocol.
-
-```mermaid
-flowchart TD
-  U[User request] --> L[Leader Agent]
-  L --> GD[GoalDesign]
-  GD --> TG[Task Graph]
-  TG --> M[Message kind=task]
-  M --> A[AgentMember]
-  A --> Repo[Repository / CLI / Tests]
-  Repo --> E[Evidence]
-  E --> P[Proposal]
-  P --> R[Critic / Review]
-  R --> D[Decision]
-  D --> GE[GoalEvaluation]
-  GE --> F[Follow-up Task or GoalCase]
-```
-
-This scenario proves that the harness is not just documentation. It must use
-durable agent members, message delivery, provider sessions, proposals, review
-gates, decisions, and Dashboard visibility for real repository work.
-
-### Project Adapter Operation
-
-The harness must operate external projects without importing their domain logic
-into the generic core.
-
-```mermaid
-flowchart TD
-  G[Project goal] --> L[Leader Agent]
-  L --> S[Scenario workflow]
-  S --> Adapter[Project adapter]
-  Adapter --> CLI[CLI / API / Dashboard / Artifacts]
-  CLI --> E[Evidence]
-  E --> Review[Domain review / Critic]
-  Review --> D[Decision]
-  D --> Next[Strategy or infrastructure task]
-```
-
-The first adapter pilot is LetMeTry / Earning Engine strategy-matrix work.
-Strategy-specific logic, wallet/order safety, backtests, live artifacts, and
-domain dashboards stay in the project or adapter. The generic harness owns
-coordination, evidence, decisions, and follow-up work.
-
-### Self-Improving Workflow
-
-Every significant goal should produce learning.
-
-```mermaid
-flowchart TD
-  D[Decision] --> Eval[GoalEvaluation]
-  Eval --> Gap[Gap or reusable lesson]
-  Gap --> Task[Follow-up Task]
-  Gap --> Case[GoalCase]
-  Task --> Better[Better CLI / skill / schema / dashboard / CI]
-  Better --> Next[Next goal]
-```
-
-Repeated manual effort should become infrastructure. Repeated confusion should
-become docs, ADR, schema, skill, Dashboard visibility, or CI/CD.
-
-## Non-Goals
-
-- Do not build project-specific business logic into the generic core.
-- Do not make a large workflow DSL before the task/message/evidence loop works.
-- Do not treat provider chat or transcripts as canonical state.
-- Do not claim multi-agent execution from one-shot helper output unless it is
-  recorded through harness messages, evidence, and decisions.
-- Do not claim autonomous team acceptance from create-agent, deliver-one-turn,
-  close-agent smoke tests.
-- Do not make the Agent Dashboard replace project-specific dashboards.
-- Do not use docs as the source of truth for stable fields, commands, runtime
-  state, or checks.
-
-## Acceptance Summary
-
-The product is useful when:
-
-- a Lead Agent can turn a goal into scenario workflow, infra gaps, agent team,
-  task graph, evidence plan, and reviewer gates;
-- standing teams can propose useful goals or follow-up tasks from observed
-  gaps, evaluations, or dashboard warnings;
-- an Observer or equivalent role continuously scans project state and turns
-  drift, stale warnings, repeated manual work, or new opportunities into
-  reviewable proposals;
-- work is assigned through `Message(kind=task)`, not hidden chat or field-only
-  mutation;
-- persistent Agent Members can receive multiple messages over time, report,
-  return to idle, and be observed;
-- agents can communicate peer-to-peer through durable messages when work needs
-  clarification, handoff, or critique;
-- proposals are backed by evidence and reviewed before Leader decisions;
-- Dashboard views show goals, tasks, teams, messages, runtime health, evidence,
-  proposals, reviews, decisions, and goal-learning warnings;
-- completed goals produce evaluations and reusable cases or follow-up tasks;
-- stable commitments are verified by schema, CLI/API, Dashboard, CI/CD, or
-  skills rather than prose alone.
+See [Company OS docs](company-os/README.md) and
+[ADR 0027](decisions/0027-company-os-primary-model.md).

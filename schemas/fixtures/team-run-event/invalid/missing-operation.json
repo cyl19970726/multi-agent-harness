@@ -1,0 +1,10 @@
+{
+  "id": "trev-1",
+  "seq": 3,
+  "team_run_id": "trun-1",
+  "source_kind": "member",
+  "entity_type": "action",
+  "entity_id": "mact-1",
+  "summary": "worker-1 finished cargo test.",
+  "occurred_at": "2026-07-18T00:01:00Z"
+}

@@ -1,6 +1,6 @@
 ---
 name: star-workflow
-description: "Use when an agent needs to author a dynamic multi-agent workflow at runtime, including workflow-mode GoalPhases: write a Starlark program (loops, conditionals, data-driven fan-out) that calls agent()/parallel()/phase()/log() over the harness runtime, declare a mandatory workflow(name, design_intent) header, run it with `harness workflow run-script`, and read the resulting WorkflowRun/WorkflowStep records back from the dashboard snapshot or store. For task_graph GoalPhases, use star-planner instead."
+description: "Use when an agent needs to author a standalone Dynamic Workflow at runtime: write a Starlark program (loops, conditionals, data-driven fan-out) that calls agent()/parallel()/phase()/log() over the harness runtime, declare a mandatory workflow(name, design_intent) header, run it with `harness workflow run-script`, and read the resulting WorkflowRun/WorkflowStep records back from the dashboard snapshot or store."
 ---
 
 # Author Workflow
@@ -44,21 +44,17 @@ should edit the selected project root immediately.
 Do not use this skill to do the domain work yourself. Use it to author the
 program, run it, and then read the recorded run.
 
-## Harness Self-Hosting Boundary
+## Product Boundary
 
-In the Multi-Agent Harness repo, a workflow run is execution evidence, not the
-canonical `Task` assignment. Before assigning implementation work for a harness
-goal, record a `GoalDesign` first. If urgent Lead-local work genuinely cannot
-wait, assignment must use the explicit waiver path:
+Dynamic Workflow is a standalone executor. Its Starlark program owns internal
+steps, fan-out, retries, structured output, and patch decisions. A host may
+attach the completed `WorkflowRun`, its artifacts, and its result to an outer
+Mission/Wave gate, but the workflow does not create or require a dependency graph,
+agent-team assignment, or compatibility lifecycle record.
 
-```bash
-harness task assign --id <task> --assignee <agent> \
-  --allow-missing-goal-design --waiver-decision <decision>
-```
-
-The waiver decision must have evidence, belong to a task in the same goal, and
-name a real follow-up task that will restore the missing design/evaluation
-chain. Do not run a workflow first and treat post-hoc design as equivalent.
+Do not reconstruct a workflow as a second plan after it runs. Treat the
+program, its `WorkflowRun`, `WorkflowStep` records, artifacts, and final
+`verdict()`/`output()` as the executor's durable truth.
 
 ## Choose The Write Scenario
 
@@ -74,15 +70,12 @@ come from mixing permission (`writable=True`) with landing semantics.
 | Simple direct edit | One serial `agent(..., writable=True, write_mode="direct")` against a clean git project. Use for small docs/config edits the operator intends to land in the current tree now. | Do not use direct mode inside `parallel()` / `pipeline()`, and do not split direct edit/repair across multiple writable leaves: after the first leaf dirties the repo, another direct leaf is refused. |
 | Parallel fixes | `parallel([{..., "writable": True, "owned_paths": [...]}, ...])`; each slot gets its own worktree and patch. Use unique labels such as `fix:1`, `fix:2`. | Never use `write_mode="direct"` for concurrent mutations. Avoid duplicate labels if humans must apply/reject individual patches. |
 | File/artifact generation | `writable=True`, `expected_artifacts=[...]`, and `artifact_manifest([...], artifact_root=..., write_roots=[...])`. | Do not write artifacts to absolute paths or outside declared roots; those writes escape worktree cleanup/accounting. |
-| Goal phase execution | For a workflow-mode GoalPhase, author a repo `.star` workflow and attach it as `workflow_ref=repo:workflows/name.star`; `goal run-phases` loads that script directly and links the resulting `WorkflowRun` to the GoalPhase. TaskGraph phases remain owned by `star-planner`. | Do not put a TaskGraph in front of a workflow-mode phase, and do not assume standalone `run-script` auto-lands worktree diffs; goal-managed runs have separate landing semantics. |
-| Landing mode choice | Use `examples/landing-mode-chooser.star` when deciding between ad-hoc `run-script` and goal-managed `run-phases`. | Do not describe "writable" as one landing behavior; the same runtime has different landing semantics depending on the front-end. |
 
 Good starting points:
 [`examples/direct-doc-edit.star`](examples/direct-doc-edit.star),
 [`examples/patch-review-apply.star`](examples/patch-review-apply.star),
 [`examples/pending-manual-review.star`](examples/pending-manual-review.star),
 [`examples/failure-aware-retry.star`](examples/failure-aware-retry.star),
-[`examples/landing-mode-chooser.star`](examples/landing-mode-chooser.star),
 [`examples/artifact-manifest.star`](examples/artifact-manifest.star),
 [`examples/scan-then-parallel-fix.star`](examples/scan-then-parallel-fix.star).
 
@@ -95,13 +88,12 @@ unless it covers a scenario this map does not already make obvious.
 | --- | --- | --- |
 | `closed-loop.star` | Canonical read-only plan -> draft -> bounded verify/refine -> `output()` -> `verdict()` skeleton. | You are producing an answer/artifact in variables, not editing files. |
 | `bug-hunt-verify.star` | Multi-modal bug finding plus skeptic-panel majority verification. | You need a review-quality defect hunt, not a single auditor. |
-| `design-tournament.star` | Divergent/convergent design with STRICT quality gates: understand constraints, generate orthogonal proposals as one prose field each, bound every leaf with `return_status`/`timeout_s`, retry-or-drop a failing leaf, gate the synthesized winner on content-quality checks, default-strict with an explicit `smoke` escape hatch. | The solution space is wide, design quality varies run-to-run, and a placeholder/mock/empty result must NOT read as a passing design. |
+| `design-tournament.star` | Divergent/convergent design: understand constraints, generate orthogonal proposals, judge/synthesize one winner. | The solution space is wide and design quality varies run-to-run. |
 | `assess-verify-synthesize.star` | Streaming `pipeline()` per item: assess -> adversarial verify -> synthesize, with no unnecessary barrier. | Each item should flow through stages independently. |
 | `failure-aware-retry.star` | `return_status=True` with explicit timeout/failure/structured-result branching and fallback. | The workflow must retry, degrade, or abort based on how a leaf failed. |
 | `direct-doc-edit.star` | The explicit `write_mode="direct"` exception for one small serial live-checkout edit. | The operator intentionally wants the current repo changed now. |
 | `patch-review-apply.star` | Default standalone code landing: writable worktree patch, schema'd review, apply/reject/pending decision. | Code should be reviewed before landing in the selected repo. |
 | `pending-manual-review.star` | Dedicated pending path: create a patch, make no internal apply/reject call, output operator commands. | Evidence is insufficient for an automated decision but the workflow should complete. |
-| `landing-mode-chooser.star` | Front-end choice: standalone `run-script` pending patches vs goal `run-phases` landing commits. | You need to explain or choose the correct landing surface before authoring. |
 | `build-and-gate.star` | One writable worker owns edit/test/repair inside its worktree; Starlark gates the worker report. | The edit and gate must share one temporary checkout. |
 | `artifact-manifest.star` | Generated file copy-back plus durable artifact manifest tracking. | The important output is a file/report/asset, not only a source diff. |
 | `scan-then-parallel-fix.star` | Runtime-determined fan-out into multiple isolated writable patches. | A scan decides how many independent fixes should run concurrently. |
@@ -148,10 +140,10 @@ A program calls these globals (no `import`; they are pre-bound):
 | Call | Returns | Meaning |
 | --- | --- | --- |
 | `workflow(name, design_intent, budget_usd=, success_criterion=)` | — | REQUIRED header. Declares the run name + the WHY behind its shape. Optional `budget_usd=N` caps the run's cumulative spend; `success_criterion="..."` declares the bar `verdict()` is judged against. Must run once before the body. |
-| `agent(prompt, provider="codex", label=, phase=, model=, effort=, service_tier=, fallback_model=, timeout_s=, image=, add_dir=, expected_artifacts=, persist_changes=, write_mode=, owned_paths=, artifact_root=, write_roots=, auto_apply_on_verdict=False, isolation=, schema=, schema_strict=False, return_status=False, writable=False)` | output text, dict, or status dict | Run ONE ephemeral worker synchronously. `prompt` is positional; the rest are keyword args. `model=` overrides the provider default model; `effort=` overrides reasoning effort (see the rules below); `service_tier=` overrides the Codex CLI service tier for this leaf; `fallback_model=` sets a provider fallback model when supported; `timeout_s=` is a per-leaf wall-clock cap in seconds; `image=` is a list of image file paths; `add_dir=` is a list of extra directory paths; `expected_artifacts=` is a list of repo-relative output files to assert and copy back; `persist_changes="discard"` opts out of default patch capture; `write_mode="direct"` makes a simple serial writable leaf edit the selected repo directly; `owned_paths=` guards patch apply. READ-ONLY by default; `writable=True` lets it edit / run shell AND normally auto-isolates it into a throwaway worktree. With `schema={...}` it returns a parsed dict (or `None`). `schema_strict=True` REJECTS a candidate object whose top-level string fields are all empty (skipping it to select a later meaningful object, or failing the step if none survives) — top-level type success is NOT semantic acceptance, so use it whenever an empty `{"winner":"", ...}` must not silently pass; requires a `schema=`. With `return_status=True`, it returns an inspectable status dict instead — see [Error Tolerance](#error-tolerance). |
-| `parallel([dict, ...])` | list (input order) | Barrier fan-out: run every spec concurrently, block until ALL finish. Each element is the parsed dict (if that spec had a `schema` that parsed), a status dict (if `return_status=True`), else its output string. Each dict needs a `prompt` and may set `provider` (default `"codex"`), `label`, `phase`, `model`, `effort`, `service_tier`, `fallback_model`, `timeout_s`, `image`, `add_dir`, `expected_artifacts`, `persist_changes`, `owned_paths`, `artifact_root`, `write_roots`, `auto_apply_on_verdict`, `isolation`, `schema`, `schema_strict`, `return_status`, `writable`. `write_mode="direct"` is rejected here; use worktree isolation for concurrent edits. |
-| `pipeline(items, stages)` | list (one per item) | No-barrier streaming: each item flows through every stage independently. `stages` is a list of dicts `{prompt, provider?, label?, phase?, model?, effort?, service_tier?, fallback_model?, timeout_s?, image?, add_dir?, expected_artifacts?, persist_changes?, owned_paths?, artifact_root?, write_roots?, auto_apply_on_verdict?, isolation?, schema?, schema_strict?, return_status?, writable?}` (or pass the stages as positional args: `pipeline(items, s1, s2)`) whose `prompt` is a TEMPLATE containing `{input}` — replaced with the item for stage 1, then the prior stage's output for each next stage (forward-injection). Returns each item's LAST stage result. `write_mode="direct"` is rejected here; keep pipeline stages read-only or worktree-isolated. |
-| `apply_patch(label, reason="")` / `reject_patch(label, reason="")` | — | Declare a workflow-internal decision over a captured patch. For a STANDALONE `run-script`, the CLI applies/rejects after the run journals durable `WorkflowPatch` rows, with the same guards as manual `workflow patch apply/reject`. Under `goal run-phases` (an orchestrated run), no `WorkflowPatch` rows exist to mutate: `apply_patch` is journaled as intent only (phase landing is the landing authority, [see below](#goal-layer-workflow-mode-goalphases)), and `reject_patch` excludes that step's diff from the phase's landing commit. |
+| `agent(prompt, provider="codex", label=, phase=, model=, effort=, service_tier=, fallback_model=, timeout_s=, image=, add_dir=, expected_artifacts=, persist_changes=, write_mode=, owned_paths=, artifact_root=, write_roots=, auto_apply_on_verdict=False, isolation=, schema=, schema_strict=False, return_status=False, writable=False)` | output text, dict, or status dict | Run ONE ephemeral worker synchronously. `prompt` is positional; the rest are keyword args. `model=` overrides the provider default model; `effort=` overrides reasoning effort; `service_tier=` overrides the Codex CLI service tier; `fallback_model=` sets a provider fallback when supported; `timeout_s=` is a per-leaf wall-clock cap; `expected_artifacts=` validates output files; `persist_changes="discard"` opts out of patch capture; `write_mode="direct"` edits the selected repo for a serial writable leaf; `owned_paths=` guards patch apply. READ-ONLY by default; `writable=True` permits edits and normally uses a throwaway worktree. With `schema={...}` it returns a parsed dict. `schema_strict=True` rejects candidates whose top-level string fields are all empty and requires `schema=`. With `return_status=True`, it returns an inspectable status dict. |
+| `parallel([dict, ...])` | list (input order) | Barrier fan-out. Specs may set the same leaf options as `agent()`, including `schema_strict`; `write_mode="direct"` is rejected for concurrent edits. |
+| `pipeline(items, stages)` | list (one per item) | No-barrier streaming. Stage specs may set the same leaf options as `agent()`, including `schema_strict`; `write_mode="direct"` is rejected here. |
+| `apply_patch(label, reason="")` / `reject_patch(label, reason="")` | — | Declare a workflow-internal decision over a captured patch. The CLI applies or rejects the durable `WorkflowPatch` after the standalone `run-script` journals it, with the same guards as manual `workflow patch apply/reject`. |
 | `artifact_manifest(paths, label=, artifact_root=, write_roots=)` | — | Declare durable artifact files to validate into `WorkflowArtifactManifest` rows with exists/size/hash/status. |
 | `verdict(ok, reason="")` | — | Declare the run's TYPED outcome. `reason` may be positional or keyword (`verdict(ok, "why")` ≡ `verdict(ok, reason="why")`). `ok=False` finalizes the run `Failed` even if every worker ran — so "workers ran" ≠ "intent satisfied". A closed-loop program's final gate calls this. |
 | `output(value)` | — | Declare the run's RESULT — the one unambiguous answer the calling agent reads back. `value` (a string or dict) is persisted verbatim under `final_output.result`, UNCAPPED, so the caller reads one field instead of digging the answer out of a step by label. Last call wins; pass a `schema`'d dict when you want the answer typed (a free-text `agent()` return is the worker's FULL reply — not truncated). |
@@ -428,47 +420,6 @@ Standalone `run-script` still discards the temporary worktree, but not the diff:
 the patch is durable in the store. Apply or reject it explicitly, or have the
 workflow declare `apply_patch()` / `reject_patch()` after a review leaf.
 
-## Goal layer: workflow-mode GoalPhases
-
-`GoalPhase` is the Goal checkpoint. It is not the same as the Starlark
-`phase("...")` grouping label inside a workflow.
-
-`goal run-phases` is a second front-end onto this exact runtime. Each
-`GoalPhase` chooses one executor:
-
-- `execution_mode="task_graph"`: compile the phase's task DAG to a `.star`
-  program (`compile_phase_to_starlark`) and run it here.
-- `execution_mode="workflow"`: load the authored Starlark program named by
-  `workflow_ref` (`repo:workflows/foo.star` or `builtin:<id>`) and run it here
-  directly. The primary truth is `WorkflowRun` / `WorkflowStep` / artifacts /
-  verdict, not a duplicate TaskGraph.
-
-The landing distinction still matters: standalone `run-script` creates pending
-patches that need explicit apply/reject, but under the goal layer a passing phase's
-writable diffs LAND on the branch via a per-phase landing commit. So the trap —
-"writable edits always vanish" — does not apply to phased goal execution.
-
-Any run `goal run-phases` executes — task-graph or workflow-mode — is an
-ORCHESTRATED run with a single landing authority: per-phase landing. It persists
-NO `WorkflowPatch` rows at all. `apply_patch(label, reason)` in an authored
-workflow-mode script performs no tree mutation there — it is journaled as intent
-only ("phase landing is the landing authority"), a no-op beyond the audit trail.
-`reject_patch(label, reason)` DOES have an effect: it excludes that step's diff
-from the phase's landing commit, same as a step that set
-`persist_changes="discard"`. Landing lands every other non-empty writable diff in
-one per-phase commit, same as before.
-
-The verdict gate is also per-mode. A task-graph phase keeps the strict clause
-"every task step `ok` is true" — a bare compiled `parallel()` has no `verdict()`,
-so a failed task inside it must fail the phase some other way. A workflow-mode
-phase instead trusts the run's own status: it passes when
-`run.status == Completed` and every required artifact is satisfied, full stop —
-it does NOT require every step to have succeeded. This lets an authored script
-legitimately tolerate a failed leaf (retry/fallback via `return_status=True`,
-landing a `verdict(True)` despite one journaled `ok=false` step — see
-[Error Tolerance](#error-tolerance)) without the phase gate second-guessing the
-script's own verdict.
-
 ## Structured Output: the foundation
 
 A worker called WITHOUT `schema` returns free text — and you cannot reliably
@@ -498,23 +449,6 @@ instruction, and if the first reply is not a valid JSON object with those keys i
 re-runs the worker ONCE with a corrective nudge. If it STILL fails, the call
 returns **`None`** (and the step is journaled as a schema failure). Always handle
 `None`.
-
-**Type success is NOT semantic acceptance — `schema_strict=True` for non-empty.**
-A reply like `{"winner":"","reject":""}` carries every required key and every
-right-typed string, so by default it is ACCEPTED even though it is semantically
-empty. Set `schema_strict=True` (on `agent()`, a `parallel()` spec, or a
-`pipeline()` stage) to REJECT any candidate whose top-level string fields are all
-empty after trim: the runtime treats it as if it did not parse, so an early
-all-empty object is skipped in favour of a later meaningful one, and the corrective
-re-run then a `None`/schema-failure fire only if NO candidate survives. In the full
-JSON-Schema form it enforces non-empty on required string props that do not already
-declare their own `minLength`/`enum`. Every schema'd step (strict or not) journals
-`schema_attempt_count`, `selected_json_index`, `schema_candidate_count`,
-`empty_field_count`, and `schema_strict` onto its result; `harness workflow
-get-output <run> --step <label>` surfaces these under `schema_selection` alongside
-the SELECTED candidate, so the operator sees which JSON object was chosen and how
-many of its fields were empty — even in permissive mode, where emptiness is made
-visible without failing.
 
 This is what makes verify / judge / synthesis reliable: a verifier that returns
 `{"ok": bool}` is something you can branch on; a verifier that returns a paragraph
@@ -769,66 +703,6 @@ elif type(status) == "dict":
 Use this for retry/abort/fallback logic. Use `schema={...}` when the worker
 completed and the workflow needs typed domain facts.
 
-## Design-quality gates: creative outputs need a different contract
-
-A real Goal Workbench design run "passed" while producing nothing usable. The
-root cause was not one bug but a missing contract for CREATIVE leaves (designs,
-proposals, prose reports): too many structured sub-fields forced onto an
-open-ended output, no check that the extracted content was actually
-substantial after schema extraction, no `return_status`/`timeout_s` on
-expensive leaves, one slow/failed leaf blocking an entire `parallel()`
-tournament, no repair path before final synthesis, and — the sharpest trap —
-`--dry-run` treated as if it proved semantic quality.
-
-**`--dry-run`'s mock proves PLUMBING, not QUALITY.** The mock driver fills a
-`schema={"content": "..."}` hint with the literal string `"mock content"` (see
-[Field types](#structured-output-the-foundation)) — a workflow that does not
-gate on real content will show a green `--dry-run` verdict forever, even
-though no real model ever produced a single word. Strict-by-default is the
-only way `--dry-run` stays a useful smoke test instead of a false signal.
-
-The pattern, all demonstrated in
-[`examples/design-tournament.star`](examples/design-tournament.star):
-
-1. **One prose field for creative output.** Prefer `schema={"content": "..."}`
-   over a dozen typed sub-fields — a design/proposal/report is prose written
-   for a human, not a form. (Multi-field schemas are still right for FACTS —
-   the understand-phase probes in the same example keep several named keys.)
-2. **`return_status=True` + `timeout_s` on every expensive leaf**, so the
-   script can tell "timed out" from "produced garbage" from "produced a
-   placeholder" instead of guessing from prose.
-3. **Semantic content gates AFTER schema extraction** — schema success only
-   proves the worker returned valid JSON with the right keys, not that the
-   value inside is real. Check, at minimum: a minimum length, required
-   headings/sections present, and forbidden placeholder/mock markers absent
-   (the dry-run mock's own `"mock <key>"` echo, `"lorem ipsum"`, `"TODO: fill
-   in"`, or an empty/near-empty string).
-4. **Degrade a failing leaf instead of letting it sink the tournament.** A
-   barrier `parallel()` blocks on every slot; one dead or gate-failing leaf
-   should not fail the whole run. Retry that one leaf once with the concrete
-   gate failure fed back as a repair note, then DROP it (continue with fewer
-   surviving proposals) rather than letting it block synthesis indefinitely —
-   the same bounded-retry discipline as [verify + repair + stop](#verify--repair--stop),
-   applied per fan-out slot.
-5. **Gate the final synthesis too**, with the SAME content-quality function —
-   a judge that only grades its inputs can still emit a hollow synthesis.
-   `verdict(False, reason="...")` naming the concrete gate failure (not just
-   "quality insufficient") when the bar is not met.
-6. **An explicit, default-off `smoke` escape hatch.** An `args`-driven
-   `smoke` flag (default `False`) is the ONLY way placeholder/mock content is
-   allowed to pass — it relaxes the gates to a bare non-empty check so
-   `--dry-run` can still prove the workflow's WIRING. When `smoke` is true,
-   `log()` a loud warning up front and echo the smoke flag in the verdict
-   reason, so a smoke-mode green run can never be mistaken for a real
-   quality signal downstream (in a dashboard, a PR description, a goal
-   evidence trail).
-
-This is a SIBLING concern to [Error Tolerance](#error-tolerance) and
-[`examples/failure-aware-retry.star`](examples/failure-aware-retry.star), not
-a replacement: `return_status=True` tells you a leaf failed or timed out;
-the content-quality gate tells you a leaf SUCCEEDED but produced something
-worthless. A design/creative workflow needs both.
-
 ## Right-size it, and never cap silently
 
 Scale the STRUCTURE to what was asked. "find any bugs" wants a few finders and a
@@ -920,16 +794,6 @@ no `apply_patch()` / `reject_patch()` call and outputs the exact
 `workflow patch list/show/apply/reject` commands for the operator. The workflow
 finishes; the patch state remains pending.
 
-## Worked Example: landing mode chooser
-
-[`examples/landing-mode-chooser.star`](examples/landing-mode-chooser.star)
-teaches the front-end distinction: standalone `workflow run-script` is the
-ad-hoc surface where writable leaves preserve patches for explicit review, while
-`goal run-phases` is the goal-managed surface where a passing phase lands its
-writable diff through the goal layer. Use it before authoring when the user is
-really asking "will this change land now, wait for review, or become a goal
-phase commit?"
-
 ## Worked Example: artifact manifest
 
 [`examples/artifact-manifest.star`](examples/artifact-manifest.star) shows the
@@ -998,24 +862,16 @@ can still conflict later when applied to the live repo. The fan-out WIDTH is
 decided at runtime from the scan's output — a comprehension over its lines —
 which no static shape could express.
 
-## Worked Example: a design tournament (divergent → convergent, quality-gated)
+## Worked Example: a design tournament (divergent → convergent)
 
 The fullest **divergent-then-convergent** shape — the pattern the real internal
-design runs use, HARDENED with the [design-quality gates](#design-quality-gates-creative-outputs-need-a-different-contract)
-below after a real Goal Workbench run produced a "passing" result that was
-actually schema-shaped filler. Two parallel TYPED probes map the domain + the
-constraints (multi-field schemas are fine here — it is not the creative
-output); three complete designs are generated from orthogonal philosophies,
-**each seeded with the understanding injected forward** (`json.encode`) as ONE
-prose `content` field bounded by `return_status=True` + `timeout_s`; a leaf
-that fails the content-quality gate gets ONE repair retry before being dropped
-so it cannot sink the whole tournament; a judge synthesizes ONE winner from
-whichever proposals survived; then the SAME content-quality gate runs on the
-synthesis and `verdict(False, reason=...)` fires if it does not pass.
-[`examples/design-tournament.star`](examples/design-tournament.star) — under
-plain `--dry-run` the verdict correctly reports `Failed` (the mock's
-placeholder content cannot pass the gate); pass `--args '{"smoke": true, ...}'`
-to prove the wiring instead, which the run logs loudly as smoke-only.
+design runs use. Two parallel TYPED probes map the domain + the constraints;
+three complete designs are generated from orthogonal philosophies, **each seeded
+with the understanding injected forward** (`json.encode`); then a judge scores
+them on named dimensions and grafts ONE winner. Every handoff is a multi-field
+schema, so each step reads typed fields, not prose.
+[`examples/design-tournament.star`](examples/design-tournament.star) — runs under
+`--dry-run`.
 
 ## Worked Example: assess → adversarial-verify → synthesize (`pipeline`)
 
@@ -1142,10 +998,7 @@ Pick by how live you need it:
   the var is unset; best-effort (a hook error is logged, never fails the run); keep
   the hook quick (the run waits for it) or self-detach with a trailing `&`. E.g.
   `HARNESS_WORKFLOW_ON_COMPLETE='harness message send --from lead --content "wf $HARNESS_RUN_ID $HARNESS_RUN_STATUS"' harness workflow run-script prog.star &`.
-  Scope: this hook is for `run-script` (and the stale-run reaper). `goal run-phases`
-  (the [Goal layer](#goal-layer-a-second-front-end-onto-this-runtime)) is a blocking
-  foreground orchestrator — its completion signal is the command RETURNING — so it
-  is not covered by this hook.
+  Scope: this hook is for `run-script` (and the stale-run reaper).
 
 ## Permission Note
 
@@ -1185,10 +1038,9 @@ its permission profile must allow it:
 - [ ] If a workflow should decide landing internally, it has a review/gate leaf and calls `apply_patch(label, reason)` or `reject_patch(label, reason)` only for explicit apply/reject; insufficient evidence leaves the patch pending.
 - [ ] Every leaf whose output drives control flow uses `schema={...}` and the script handles a `None` (and, in fan-outs, a non-dict) result.
 - [ ] Any branch that depends on timeout/provider failure uses `return_status=True` and checks `ok` / `reason` / `detail` rather than parsing prose.
-- [ ] The chosen landing surface is explicit: standalone `run-script` creates pending patches unless the script applies/rejects them; `goal run-phases` lands passing phase diffs.
+- [ ] The standalone landing decision is explicit: `run-script` creates pending patches unless the script applies or rejects them, while `write_mode="direct"` changes the selected working tree immediately.
 - [ ] If the workflow has only one `agent()` call and no branch/fan-out/loop, it is NOT a workflow — collapse it to that one call.
 - [ ] Quality steps (verify / adversarial / judge / loop-until-dry / completeness) cross-check rather than trust a single pass, where the task warrants it.
-- [ ] A workflow producing a CREATIVE artifact (design/proposal/report) gates the extracted content itself — min length, required structure, forbidden placeholder markers — not just schema-shape success; see [Design-quality gates](#design-quality-gates-creative-outputs-need-a-different-contract). Any escape hatch that lets mock/placeholder content pass (e.g. `smoke`) defaults OFF and logs loudly when on.
 - [ ] Ran it: `harness workflow run-script <prog.star>` (no member binding needed).
 - [ ] The run is visible in `harness dashboard snapshot` (`workflow_runs` / `workflow_steps`) with its `design_intent`.
 - [ ] The runner's profile allows the `harness` binary and what each leaf's prompt does.

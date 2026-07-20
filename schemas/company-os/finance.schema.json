@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://star-harness.local/schemas/company-os/finance.schema.json",
+  "title": "Company OS commitment and payment records",
+  "oneOf": [
+    { "$ref": "#/$defs/commitment" },
+    { "$ref": "#/$defs/payment" }
+  ],
+  "$defs": {
+    "string": { "type": "string", "minLength": 1 },
+    "refs": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/string" } },
+    "actorRef": {
+      "type": "object", "additionalProperties": false,
+      "required": ["actor_type", "actor_id"],
+      "properties": {
+        "actor_type": { "enum": ["human", "agent", "external", "service"] },
+        "actor_id": { "$ref": "#/$defs/string" }
+      }
+    },
+    "money": {
+      "type": "object", "additionalProperties": false,
+      "required": ["amount", "currency"],
+      "properties": {
+        "amount": { "type": "string", "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?$", "not": { "const": "0" } },
+        "currency": { "type": "string", "pattern": "^[A-Z]{3}$" }
+      }
+    },
+    "financialBase": {
+      "type": "object",
+      "required": [
+        "id", "amount", "status", "source_document_id", "submitted_by", "accountable_owner",
+        "relation_ids", "evidence_refs", "approval_refs", "audit_event_ids", "created_at", "updated_at"
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/string" },
+        "amount": { "$ref": "#/$defs/money" },
+        "source_document_id": { "$ref": "#/$defs/string" },
+        "submitted_by": { "$ref": "#/$defs/actorRef" },
+        "accountable_owner": { "$ref": "#/$defs/actorRef" },
+        "relation_ids": { "$ref": "#/$defs/refs" },
+        "evidence_refs": { "$ref": "#/$defs/refs" },
+        "approval_refs": { "$ref": "#/$defs/refs" },
+        "audit_event_ids": { "$ref": "#/$defs/refs" },
+        "created_at": { "$ref": "#/$defs/string" },
+        "updated_at": { "$ref": "#/$defs/string" }
+      }
+    },
+    "commitment": {
+      "allOf": [
+        { "$ref": "#/$defs/financialBase" },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": [
+            "id", "amount", "status", "source_document_id", "submitted_by", "accountable_owner",
+            "relation_ids", "evidence_refs", "approval_refs", "audit_event_ids", "due_at", "created_at", "updated_at"
+          ],
+          "properties": {
+            "id": true, "amount": true, "source_document_id": true, "submitted_by": true,
+            "accountable_owner": true, "relation_ids": true, "evidence_refs": true,
+            "approval_refs": true, "audit_event_ids": true, "created_at": true, "updated_at": true,
+            "status": { "enum": ["proposed", "pending_approval", "approved", "cancelled", "fulfilled"] },
+            "due_at": { "type": ["string", "null"], "minLength": 1 }
+          }
+        }
+      ]
+    },
+    "payment": {
+      "allOf": [
+        { "$ref": "#/$defs/financialBase" },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": [
+            "id", "amount", "status", "source_document_id", "submitted_by", "accountable_owner",
+            "related_commitment_refs", "relation_ids", "evidence_refs", "approval_refs",
+            "audit_event_ids", "occurred_at", "created_at", "updated_at"
+          ],
+          "properties": {
+            "id": true, "amount": true, "source_document_id": true, "submitted_by": true,
+            "accountable_owner": true, "relation_ids": true, "evidence_refs": true,
+            "approval_refs": true, "audit_event_ids": true, "created_at": true, "updated_at": true,
+            "status": { "enum": ["prepared", "pending_approval", "processing", "settled", "failed", "reversed", "cancelled"] },
+            "related_commitment_refs": { "$ref": "#/$defs/refs" },
+            "occurred_at": { "type": ["string", "null"], "minLength": 1 }
+          }
+        }
+      ]
+    }
+  }
+}

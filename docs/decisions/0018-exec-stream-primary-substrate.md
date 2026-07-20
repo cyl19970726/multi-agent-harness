@@ -99,7 +99,7 @@ risk below). It is no longer the default or the acceptance target.
   Codex `app-server` vocabulary (`approval_policy`, `sandbox_policy`,
   `service_tier`, `collaboration_mode`, `developerInstructions`) that currently
   leaks into `AgentProviderConfig`. Abstracting those schema fields is additive
-  future work under [0017](0017-generic-object-model.md); this ADR fixes only
+  future additive work under current schema governance; this ADR fixes only
   the substrate direction.
 - **Honest capability state:** providers declare unsupported surfaces (e.g.
   Claude exec has no mid-turn interrupt) so the Dashboard does not fake them.

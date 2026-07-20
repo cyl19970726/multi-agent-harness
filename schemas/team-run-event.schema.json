@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-harness.local/schemas/team-run-event.schema.json",
+  "title": "TeamRunEvent",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "seq", "team_run_id", "source_kind", "entity_type", "entity_id", "operation", "summary", "occurred_at"],
+  "properties": {
+    "id": { "type": "string", "minLength": 1 },
+    "seq": { "type": "integer", "minimum": 0 },
+    "team_run_id": { "type": "string", "minLength": 1 },
+    "source_kind": { "type": "string", "enum": ["host", "member", "delegation"] },
+    "member_run_id": { "type": ["string", "null"], "minLength": 1 },
+    "delegation_run_id": { "type": ["string", "null"], "minLength": 1 },
+    "entity_type": { "type": "string", "minLength": 1 },
+    "entity_id": { "type": "string", "minLength": 1 },
+    "operation": { "type": "string", "minLength": 1 },
+    "summary": { "type": "string" },
+    "occurred_at": { "type": "string", "minLength": 1 }
+  }
+}

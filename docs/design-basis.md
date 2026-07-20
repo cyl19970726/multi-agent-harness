@@ -27,7 +27,7 @@ flowchart TD
   Adapter[Adapter Layer: skills and tool descriptors]
   Execution[Execution Layer: project CLI / API / dashboard / artifacts]
   Evidence[Evidence Layer: Evidence, Report, Decision]
-  Learning[Learning Layer: GoalEvaluation and GoalCase]
+  Learning[Learning Layer: outcome evaluation and reusable learning note]
   Governance[Governance Layer: permissions, CI/CD, release gates]
   Interface[Interface Layer: Agent Dashboard and human review]
 
@@ -53,7 +53,7 @@ how results become evidence, and how evidence feeds governance and future work.
 | Adapter | The generic harness should not know project internals. | Domain tools enter through skills, descriptors, APIs, and artifacts. |
 | Execution | Real value comes from using the project's actual capabilities. | Commands and dashboards must produce evidence, not just text. |
 | Evidence | Decisions should be based on references that can be inspected later. | Important claims need evidence refs. |
-| Learning | Completed goals should improve future Lead designs. | Goal evaluations produce reusable cases and follow-up infra tasks. |
+| Learning | Completed goals should improve future Lead designs. | outcome evaluations produce reusable cases and follow-up infra tasks. |
 | Governance | Repeated mistakes should become checks, not memories. | CI/CD gates validate project promises and permission boundaries. |
 | Interface | Humans and agents need a shared operational view. | Agent Dashboard is separate from the project dashboard but links to it. |
 
@@ -70,7 +70,7 @@ refuses to own, and which invariant should survive implementation changes.
 | Message System | Collaboration should be reconstructable. | Agent-to-agent communication and reports | Hidden side channels as the only source of truth | Task assignment and reports can be replayed. |
 | Evidence System | Claims need inspectable support. | References to proof | Treating unsupported summaries as facts | Decisions point to evidence. |
 | Decision System | Outcomes need explicit rationale. | Accept, reject, retry, block, escalate | Silent implicit conclusions | The leader's rationale is durable. |
-| Goal Learning System | Finished goals should improve the next goal. | GoalDesign, GoalEvaluation, GoalCase examples | Raw transcripts as reusable knowledge | Every important goal can become a reviewed case or follow-up task. |
+| operational learning System | Finished goals should improve the next goal. | legacy plan record, outcome evaluation, reusable learning note examples | Raw transcripts as reusable knowledge | Every important goal can become a reviewed case or follow-up task. |
 | Skill System | Repeated working knowledge should become reusable. | How agents should use a scenario or tool | Copying project business logic into generic core | Skills guide usage without owning domain execution. |
 | Tool Adapter System | Project capability needs a stable agent-facing contract. | CLI/API/dashboard/artifact access | Direct coupling to a specific project runtime | Domain tools enter through descriptors and adapters. |
 | Agent Dashboard | Coordination state needs a shared view. | Operational read model for tasks and evidence | Replacing the project dashboard | It links to domain evidence instead of duplicating it. |
@@ -87,13 +87,13 @@ The documentation structure should mirror the system thinking:
 | `docs/design-basis.md` | Layering, module core ideas, and the reasoning that connects product to architecture. |
 | `docs/concept-model.md` | Canonical object relationships and anti-drift invariants. |
 | `docs/architecture.md` | Concrete modules, data flow, object contracts, package boundaries. |
-| `docs/data-model.md` | Source-of-truth rules, projections, and task graph edges. |
+| `docs/data-model.md` | Source-of-truth rules, projections, and legacy dependency graph edges. |
 | `docs/agent-runtime.md` | Provider-neutral Agent Runtime Object Model and interfaces. |
 | `docs/dashboard.md` | Dashboard information architecture and backward data requirements. |
 | `docs/dashboard/` | Dashboard module internals such as frontend architecture, read model, and runbook. |
 | `docs/workflow-git-pr.md` | Task, worktree, branch, PR, proposal, review, and decision flow. |
 | `docs/integration/README.md` | Provider integration boundaries and provider-specific doc template. |
-| `docs/goal-learning-loop.md` | How completed goals become evaluator output and reusable examples. |
+| `docs/company-os/governance.md` | Company governance, Approval boundaries, and durable operating learning. |
 | `docs/operations.md` | How the system is run, checked, released, and recovered. |
 | `docs/schemas.md` | Machine-readable contracts that stabilize the workflow. |
 | `docs/decisions/` | Durable tradeoffs that future agents should not re-litigate casually. |

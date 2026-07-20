@@ -50,8 +50,8 @@ Workflow proof:
 Source docs:
 
 - [../../dashboard.md](../../dashboard.md)
-- [../../agent-control-plane.md](../../agent-control-plane.md)
-- [../design-principles.md](../design-principles.md)
+- [../../agent-control-plane.md](../../company-os/execution-foundation.md)
+- [../design-principles.md](../../company-os/frontend-information-architecture.md)
 
 Read-model inputs:
 

@@ -1,0 +1,10 @@
+{
+  "id": "tmsg-1",
+  "team_run_id": "trun-1",
+  "from_member_id": "host",
+  "to_member_ids": ["mrun-1"],
+  "kind": "assignment",
+  "body": "Take task-1.",
+  "deliveries": [],
+  "created_at": "2026-07-18T00:00:00Z"
+}

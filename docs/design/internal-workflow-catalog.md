@@ -3,7 +3,7 @@
 A study set of **12 real internal Claude Code Workflow programs**, mined from
 `~/.claude/projects/<slug>/<session>/workflows/wf_*.json`, chosen to span the
 whole pattern space (not 12 lookalikes). Each entry links the **full original
-source** (extracted verbatim under [`internal-workflows/`](internal-workflows/))
+source** (extracted verbatim under [`internal-workflows/`](../archive/legacy-goal-task-v1/design/internal-workflows/))
 and analyses its control flow, the transferable idiom, and which **external
 workflow gap** (see [external-workflow-gap-analysis.md](external-workflow-gap-analysis.md))
 it teaches us to close.
@@ -28,18 +28,18 @@ These programs are JavaScript over a runtime that injects:
 
 | # | program | agents | pattern | teaches gap |
 | --- | --- | --- | --- | --- |
-| 1 | [dynamic-workflow-impl](internal-workflows/dynamic-workflow-impl-wf_f6900ec3.js) | 5 | serial stages + `STAGE_RESULT.ok` gate + **1 repair pass** + stop-on-fail | A, B, D |
-| 2 | [resident-daemon](internal-workflows/resident-daemon-wf_07defa4e.js) | 5 | design→impl→review→**conditional fix**→**verify loop ≤6** | A, B, C |
-| 3 | [resident-agent-impl](internal-workflows/resident-agent-impl-wf_fbda5429.js) | 6 | parallel probe → **DECIDE(winner enum) → branch** → impl | C, B |
-| 4 | [workflow-layout-design](internal-workflows/workflow-layout-design-wf_f91ff6a5.js) | 6 | understand → **3-way proposal tournament** → judge/synthesize | C, D |
-| 5 | [multica-layout-review](internal-workflows/multica-layout-review-wf_f86139b9.js) | 26 | review → **one verifier per finding** (runtime-sized) → triage | dynamic |
-| 6 | [object-model-research](internal-workflows/generic-harness-object-model-research-wf_e37ff5d7.js) | 6 | **Enumerate scout → scout-sized gather** → synthesize | dynamic |
-| 7 | [object-model-build](internal-workflows/generic-harness-object-model-build-wf_6eabf27a.js) | 7 | 7-WP serial gated migration, auto-merge, `GATE_FAILED` cascade | A, E |
-| 8 | [member-lead-claude-build](internal-workflows/member-lead-claude-build-wf_56fc2f22.js) | 8 | **two concurrent serial tracks** (`Promise.all`) merging one trunk | topology |
-| 9 | [evaluate-external-workflow](internal-workflows/evaluate-external-workflow-wf_961f46bb.js) | 9 | assess → **adversarial verify** → synthesize (META: evals US) | B, E |
-| 10 | [agent-live-tui-design](internal-workflows/agent-live-tui-design-wf_a8874e2e.js) | 8 | audit → **multi-angle design** → synthesize, audit-ctx injected | C, D |
-| 11 | [operator-drives-team](internal-workflows/operator-drives-team-wf_b0be908d.js) | 5 | 4 WP + **real browser/CLI acceptance** (`ACCEPT_PASS`) | E |
-| 12 | [xhs-market-research-routes](internal-workflows/xhs-market-research-routes-wf_d792276e.js) | 5 | non-coding map-reduce — **the contrast** (no gate, no loop) | contrast |
+| 1 | [dynamic-workflow-impl](../archive/legacy-goal-task-v1/design/internal-workflows/dynamic-workflow-impl-wf_f6900ec3.js) | 5 | serial stages + `STAGE_RESULT.ok` gate + **1 repair pass** + stop-on-fail | A, B, D |
+| 2 | [resident-daemon](../archive/legacy-goal-task-v1/design/internal-workflows/resident-daemon-wf_07defa4e.js) | 5 | design→impl→review→**conditional fix**→**verify loop ≤6** | A, B, C |
+| 3 | [resident-agent-impl](../archive/legacy-goal-task-v1/design/internal-workflows/resident-agent-impl-wf_fbda5429.js) | 6 | parallel probe → **DECIDE(winner enum) → branch** → impl | C, B |
+| 4 | [workflow-layout-design](../archive/legacy-goal-task-v1/design/internal-workflows/workflow-layout-design-wf_f91ff6a5.js) | 6 | understand → **3-way proposal tournament** → judge/synthesize | C, D |
+| 5 | [multica-layout-review](../archive/legacy-goal-task-v1/design/internal-workflows/multica-layout-review-wf_f86139b9.js) | 26 | review → **one verifier per finding** (runtime-sized) → triage | dynamic |
+| 6 | [object-model-research](../archive/legacy-goal-task-v1/design/internal-workflows/generic-harness-object-model-research-wf_e37ff5d7.js) | 6 | **Enumerate scout → scout-sized gather** → synthesize | dynamic |
+| 7 | [object-model-build](../archive/legacy-goal-task-v1/design/internal-workflows/generic-harness-object-model-build-wf_6eabf27a.js) | 7 | 7-WP serial gated migration, auto-merge, `GATE_FAILED` cascade | A, E |
+| 8 | [member-lead-claude-build](../archive/legacy-goal-task-v1/design/internal-workflows/member-lead-claude-build-wf_56fc2f22.js) | 8 | **two concurrent serial tracks** (`Promise.all`) merging one trunk | topology |
+| 9 | [evaluate-external-workflow](../archive/legacy-goal-task-v1/design/internal-workflows/evaluate-external-workflow-wf_961f46bb.js) | 9 | assess → **adversarial verify** → synthesize (META: evals US) | B, E |
+| 10 | [agent-live-tui-design](../archive/legacy-goal-task-v1/design/internal-workflows/agent-live-tui-design-wf_a8874e2e.js) | 8 | audit → **multi-angle design** → synthesize, audit-ctx injected | C, D |
+| 11 | [operator-drives-team](../archive/legacy-goal-task-v1/design/internal-workflows/operator-drives-team-wf_b0be908d.js) | 5 | 4 WP + **real browser/CLI acceptance** (`ACCEPT_PASS`) | E |
+| 12 | [xhs-market-research-routes](../archive/legacy-goal-task-v1/design/internal-workflows/xhs-market-research-routes-wf_d792276e.js) | 5 | non-coding map-reduce — **the contrast** (no gate, no loop) | contrast |
 
 ---
 
@@ -51,7 +51,7 @@ agent until green, with a hard attempt bound and stop-on-fail.
 
 ### 1. `dynamic-workflow-impl` · `wf_f6900ec3` · 5 agents · completed (~79 min)
 
-[source](internal-workflows/dynamic-workflow-impl-wf_f6900ec3.js) — five sequential implementation stages, each verified before the next; **stop the chain on failure** so a human can intervene.
+[source](../archive/legacy-goal-task-v1/design/internal-workflows/dynamic-workflow-impl-wf_f6900ec3.js) — five sequential implementation stages, each verified before the next; **stop the chain on failure** so a human can intervene.
 
 **Control-flow skeleton.** A `STAGES[]` array of `{id, prompt}` (the plan is the
 array). The loop is the whole engine:
@@ -87,7 +87,7 @@ Starlark.
 
 ### 2. `resident-daemon` · `wf_07defa4e` · 5 agents · completed
 
-[source](internal-workflows/resident-daemon-wf_07defa4e.js) — the **most complete single-pass engineering loop** in the corpus: design → implement → adversarial review → *conditional* fix → bounded verify loop.
+[source](../archive/legacy-goal-task-v1/design/internal-workflows/resident-daemon-wf_07defa4e.js) — the **most complete single-pass engineering loop** in the corpus: design → implement → adversarial review → *conditional* fix → bounded verify loop.
 
 **Control-flow skeleton.**
 
@@ -128,7 +128,7 @@ is then `JSON.stringify`'d into downstream prompts as ground truth. This is gap
 
 ### 3. `resident-agent-impl` · `wf_fbda5429` · 6 agents · completed
 
-[source](internal-workflows/resident-agent-impl-wf_fbda5429.js) — parallel probe → **decide a winner** → branch implementation on the verdict.
+[source](../archive/legacy-goal-task-v1/design/internal-workflows/resident-agent-impl-wf_fbda5429.js) — parallel probe → **decide a winner** → branch implementation on the verdict.
 
 **Control-flow skeleton.**
 
@@ -158,7 +158,7 @@ on it is the smallest possible step toward real agent-planning.
 
 ### 4. `workflow-layout-design` · `wf_f91ff6a5` · 6 agents · completed
 
-[source](internal-workflows/workflow-layout-design-wf_f91ff6a5.js) — a **generate→evaluate→synthesize tournament**: understand the domain, generate 3 competing designs from orthogonal angles, judge & merge one winner.
+[source](../archive/legacy-goal-task-v1/design/internal-workflows/workflow-layout-design-wf_f91ff6a5.js) — a **generate→evaluate→synthesize tournament**: understand the domain, generate 3 competing designs from orthogonal angles, judge & merge one winner.
 
 **Control-flow skeleton.**
 
@@ -192,7 +192,7 @@ concrete form of "locked shared context."
 
 ### 10. `agent-live-tui-design` · `wf_a8874e2e` · 8 agents · completed
 
-[source](internal-workflows/agent-live-tui-design-wf_a8874e2e.js) — same divergent-convergent shape, one stage deeper: a parallel **audit** of 4 fixed areas feeds an `AUDIT_CTX` into a parallel **design** of 3 fixed angles, then a synthesizer picks the best angle/hybrid. Schemas `AUDIT` / `DESIGN(angle+mockup)` / `FINAL(recommendation+wps[])`, all `additionalProperties:false`. Audits run with `agentType:'Explore'` (cheaper read-only). The lesson layered on #4: **the understanding phase's structured output is the shared context the proposal phase consumes** — `understand → propose → judge` generalizes to `audit → design → judge`.
+[source](../archive/legacy-goal-task-v1/design/internal-workflows/agent-live-tui-design-wf_a8874e2e.js) — same divergent-convergent shape, one stage deeper: a parallel **audit** of 4 fixed areas feeds an `AUDIT_CTX` into a parallel **design** of 3 fixed angles, then a synthesizer picks the best angle/hybrid. Schemas `AUDIT` / `DESIGN(angle+mockup)` / `FINAL(recommendation+wps[])`, all `additionalProperties:false`. Audits run with `agentType:'Explore'` (cheaper read-only). The lesson layered on #4: **the understanding phase's structured output is the shared context the proposal phase consumes** — `understand → propose → judge` generalizes to `audit → design → judge`.
 
 **For us (C, D).** Confirms the pattern is a reusable *spine* (`understand* →
 generate* → judge`), not a one-off; this is what a "design" external workflow
@@ -206,7 +206,7 @@ The only programs whose fan-out is sized/seeded by an agent's *runtime* output.
 
 ### 5. `multica-layout-review` · `wf_f86139b9` · 26 agents · completed
 
-[source](internal-workflows/multica-layout-review-wf_f86139b9.js) — the only run whose parallel **width is parameterized by an earlier agent's output**: review emits a variable findings list, then one adversarial verifier is spawned **per finding**.
+[source](../archive/legacy-goal-task-v1/design/internal-workflows/multica-layout-review-wf_f86139b9.js) — the only run whose parallel **width is parameterized by an earlier agent's output**: review emits a variable findings list, then one adversarial verifier is spawned **per finding**.
 
 **Control-flow skeleton.**
 
@@ -240,7 +240,7 @@ agents most of the cost is this per-finding cross-examination.
 
 ### 6. `object-model-research` · `wf_e37ff5d7` · 6 agents · completed
 
-[source](internal-workflows/generic-harness-object-model-research-wf_e37ff5d7.js) — the cleanest **scout-first** decomposition: a leading agent *discovers* the work, and its output sizes the next phase.
+[source](../archive/legacy-goal-task-v1/design/internal-workflows/generic-harness-object-model-research-wf_e37ff5d7.js) — the cleanest **scout-first** decomposition: a leading agent *discovers* the work, and its output sizes the next phase.
 
 **Control-flow skeleton.**
 
@@ -278,7 +278,7 @@ Author-static phases, but with strong delivery rigor: per-WP gate-before-commit,
 
 ### 7. `object-model-build` · `wf_6eabf27a` · 7 agents · completed (~98 min, the longest)
 
-[source](internal-workflows/generic-harness-object-model-build-wf_6eabf27a.js) — a 7-work-package migration (schema → core → review → gap → learning → closeout → docs). Each WP runs on a clean checkout off latest `master`, **gates** (`cargo test` + `pnpm check` + tsc/vite, ~3 honest attempts), commits, opens+merges its PR, then `git pull --ff-only` so the next WP builds on merged work. A shared `APPROVED` design preamble + `.harness-genplan.md` carry the field anchors. The uniform short-circuit `if (out.startsWith('GATE_FAILED')) return {stoppedAt}` cascades prior results out on the first WP that cannot go green. The governing rule: **additive-optional schema** (new fields default-valued so existing jsonl/fixtures still validate).
+[source](../archive/legacy-goal-task-v1/design/internal-workflows/generic-harness-object-model-build-wf_6eabf27a.js) — a 7-work-package migration (schema → core → review → gap → learning → closeout → docs). Each WP runs on a clean checkout off latest `master`, **gates** (`cargo test` + `pnpm check` + tsc/vite, ~3 honest attempts), commits, opens+merges its PR, then `git pull --ff-only` so the next WP builds on merged work. A shared `APPROVED` design preamble + `.harness-genplan.md` carry the field anchors. The uniform short-circuit `if (out.startsWith('GATE_FAILED')) return {stoppedAt}` cascades prior results out on the first WP that cannot go green. The governing rule: **additive-optional schema** (new fields default-valued so existing jsonl/fixtures still validate).
 
 **Transferable idiom.** *Sequential, independently-mergeable WPs, each its own
 gate, fail-fast cascade.* The "plan" is human-authored; the agents execute and
@@ -290,7 +290,7 @@ program checks before proceeding.
 
 ### 8. `member-lead-claude-build` · `wf_56fc2f22` · 8 agents · completed (~53 min)
 
-[source](internal-workflows/member-lead-claude-build-wf_56fc2f22.js) — the most elaborate **topology**: two concurrent serial pipelines (5 FE WPs ∥ 3 BE WPs) each independently gating and merging to the **same trunk**.
+[source](../archive/legacy-goal-task-v1/design/internal-workflows/member-lead-claude-build-wf_56fc2f22.js) — the most elaborate **topology**: two concurrent serial pipelines (5 FE WPs ∥ 3 BE WPs) each independently gating and merging to the **same trunk**.
 
 **Control-flow skeleton.**
 
@@ -322,7 +322,7 @@ you keep N agents on the same page.
 
 ### 11. `operator-drives-team` · `wf_b0be908d` · 5 agents · completed (~62 min)
 
-[source](internal-workflows/operator-drives-team-wf_b0be908d.js) — 4 sequenced WPs then a **real browser + CLI acceptance** agent. The acceptance step is the lesson:
+[source](../archive/legacy-goal-task-v1/design/internal-workflows/operator-drives-team-wf_b0be908d.js) — 4 sequenced WPs then a **real browser + CLI acceptance** agent. The acceptance step is the lesson:
 
 ```js
 phase('Acceptance');
@@ -355,7 +355,7 @@ what an eval needs so a run can't score by fabricating its own evidence.
 
 ### 9. `evaluate-external-workflow` · `wf_961f46bb` · 9 agents · completed
 
-[source](internal-workflows/evaluate-external-workflow-wf_961f46bb.js) — **meta**: an *internal* workflow that evaluates *our external* runtime, across observability / execution / evaluability / production-readiness. Directly relevant to the eval-harness work.
+[source](../archive/legacy-goal-task-v1/design/internal-workflows/evaluate-external-workflow-wf_961f46bb.js) — **meta**: an *internal* workflow that evaluates *our external* runtime, across observability / execution / evaluability / production-readiness. Directly relevant to the eval-harness work.
 
 **Control-flow skeleton** — note `pipeline` (no barrier), so each dimension's
 adversarial verify starts the moment its assessment lands:
@@ -389,7 +389,7 @@ keep judges honest.
 
 ### 12. `xhs-market-research-routes` · `wf_d792276e` · 5 agents · completed — THE CONTRAST
 
-[source](internal-workflows/xhs-market-research-routes-wf_d792276e.js) — a **non-coding** market-research workflow (Xiaohongshu/小红书 cultural-IP research). Deliberately included to show what falls away when the domain has no programmatic gate.
+[source](../archive/legacy-goal-task-v1/design/internal-workflows/xhs-market-research-routes-wf_d792276e.js) — a **non-coding** market-research workflow (Xiaohongshu/小红书 cultural-IP research). Deliberately included to show what falls away when the domain has no programmatic gate.
 
 ```js
 phase('Research');

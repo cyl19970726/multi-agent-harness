@@ -6,7 +6,7 @@ description: "Use when designing, auditing, or productizing a multi-agent system
 # Multi-Agent System Design
 
 Use this skill before implementing or changing a multi-agent team, provider
-integration, agent runtime, task graph, message bus, dashboard, or agent
+integration, agent runtime, dependency graph, message bus, dashboard, or agent
 collaboration protocol.
 
 The goal is not to make agents talk. The goal is to make collaboration

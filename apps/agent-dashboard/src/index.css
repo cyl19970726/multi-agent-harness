@@ -21,8 +21,8 @@
   --popover: oklch(1 0 0);
   --popover-foreground: oklch(0.27 0.006 60);
 
-  /* Primary — restrained Notion blue (links / active / primary action) */
-  --primary: oklch(0.58 0.14 250);
+  /* Primary — warm coral for navigation, links, and operator actions. */
+  --primary: oklch(0.64 0.21 18);
   --primary-foreground: oklch(0.99 0 0);
 
   --secondary: oklch(0.965 0.003 90);
@@ -39,7 +39,7 @@
 
   --border: oklch(0.92 0.003 90);
   --input: oklch(0.9 0.004 90);
-  --ring: oklch(0.58 0.14 250);
+  --ring: oklch(0.64 0.21 18);
 
   /* Semantic status — mid-tone so chips read on white */
   --status-running: oklch(0.6 0.13 240);

@@ -137,8 +137,8 @@ export function Section({
 }
 
 /**
- * Centered Notion-style document column for text-heavy detail pages (Goal /
- * Task). Caps line length for readability and sets vertical rhythm between
+ * Centered Notion-style document column for text-heavy detail pages. Caps line
+ * length for readability and sets vertical rhythm between
  * document sections.
  */
 export function DocumentSurface({

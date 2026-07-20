@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-harness.local/schemas/delegation-run.schema.json",
+  "title": "DelegationRun",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "team_run_id", "parent_member_run_id", "mode", "provider", "objective", "status", "created_at", "updated_at"],
+  "properties": {
+    "id": { "type": "string", "minLength": 1 },
+    "team_run_id": { "type": "string", "minLength": 1 },
+    "parent_member_run_id": { "type": "string", "minLength": 1 },
+    "parent_task_id": { "type": ["string", "null"], "minLength": 1 },
+    "mode": {
+      "type": "string",
+      "enum": ["provider_native", "harness_worker", "dynamic_workflow"]
+    },
+    "provider": { "type": "string", "minLength": 1 },
+    "provider_child_thread_id": { "type": ["string", "null"], "minLength": 1 },
+    "workflow_run_id": { "type": ["string", "null"], "minLength": 1 },
+    "objective": { "type": "string", "minLength": 1 },
+    "status": {
+      "type": "string",
+      "enum": ["planned", "running", "waiting", "completed", "failed", "cancelled"]
+    },
+    "evidence_ids": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "created_at": { "type": "string", "minLength": 1 },
+    "updated_at": { "type": "string", "minLength": 1 }
+  }
+}

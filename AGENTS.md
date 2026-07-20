@@ -1,120 +1,115 @@
 # Agent Operating Rules
 
-This repository builds Star Harness itself. Work in this repo must use
-the harness objects as the canonical coordination state.
+This repository builds Star Harness itself. Product truth lives in canonical
+docs, schemas, ADRs, and implemented stores. Execution claims must additionally
+be reconstructable from the native runtime records of the executor used.
 
 ## Product We Are Building
 
-Star Harness is a goal-task-multi-agent development system. Its purpose
-is to turn a high-level goal into an executable, reviewable, reusable workflow:
+Star Harness is an AI Company OS with two primary systems: a Notion-like Docs
+system for company memory and operating structure, and a mixed Organization of
+humans, Standing Agents, external collaborators, and services. Documents create
+WorkItems and Approvals; accountable actors execute them; results, evidence,
+metrics, and financial effects return to the originating records.
+
+Mission/Wave, Agent Team, Dynamic Workflow, Host execution, providers, plugins,
+and MCP are the shared execution foundation. Their native hierarchy is:
 
 ```text
-Goal -> GoalDesign -> AgentTeam -> GoalPhase
-  -> task_graph executor (Task -> Message -> AgentMember work)
-     OR workflow executor (WorkflowRun -> WorkflowStep)
-  -> Evidence -> Proposal -> Critic/Gate -> Decision -> GoalEvaluation
-  -> GoalCase / Follow-up Task
+Mission -> ordered Wave -> executor
+  executor = agent_team | dynamic_workflow | host
 ```
 
-The product is not just a wrapper around coding agents. It must help a Lead
-Agent understand a project scenario, decide what infra is missing, design the
-right team, assign work through durable messages, observe execution, verify
-claims with evidence, and convert every useful lesson into future workflow
-improvements.
+`Mission` is durable intent. `Wave` is a lightweight ordered unit with an
+objective, executor, outcome, artifacts, and gate. Agent Team uses
+assignment-message correlation for member
+ownership; Dynamic Workflow owns its workflow steps; Host execution may use
+provider-native subagents as an implementation detail, with optional hooks for
+honest observation. The target contract allows thinking only as sanitized
+transient live state: it must not be persisted, replayed, treated as evidence,
+or forwarded to peers. New Kimi writes already drop thinking instead of
+persisting it; a transient live display channel is still pending.
 
-For this repository, the first product scenario is self-hosting: the harness
-must be able to develop, evaluate, and improve itself through its own objects.
-The second scenario is project adaptation, starting with the LetMeTry / Earning
-Engine strategy-matrix workflow. Project-specific logic belongs in adapters and
-skills, not in the generic harness core.
+The shared substrate includes provider sessions/runtimes, capability snapshots,
+permission and budget ceilings, messages, artifacts, events, plugins/MCP, and
+Dashboard projections. It does not collapse WorkflowRun, AgentTeamRun,
+Host-native subagents, or future Standing Agents into one universal object.
 
-## Core Objects And Responsibilities
+Standing Agents + Docs are the current product direction. Their Company OS
+contracts are additive and still being implemented; do not claim planned
+objects or fields exist until schemas, stores, APIs, and acceptance checks prove
+them. See `docs/company-os/README.md` and ADR 0027.
 
-- `Goal`: the durable user or product objective. A goal is not complete until
-  it has evidence-backed acceptance or an explicit blocker.
-- `GoalDesign`: the Lead's plan for scenario, non-goals, permissions, infra,
-  agent team, task graph, evidence, and evaluator gates.
-- `AgentTeam`: the role composition for the goal. Teams should be designed from
-  the scenario, not copied blindly from a template.
-- `AgentMember`: a persistent or logically durable agent instance with id,
-  name, role, prompt, skills, runtime state, current task, and provider session
-  history.
-- `GoalPhase`: a sequential checkpoint inside a Goal. A phase chooses one
-  primary executor: `task_graph` for durable Task/Message/AgentMember work, or
-  `workflow` for direct WorkflowRun/WorkflowStep execution. It is not the same as
-  the Starlark workflow `phase("...")` label.
-- `Task`: a unit of work owned by an agent, with dependencies, worktree/branch
-  refs, owned paths, reviewer, and acceptance criteria.
-- `Message`: the communication protocol. Assignment, handoff, review request,
-  clarification, and report flow through messages so context is inspectable.
-- `Evidence`: a file, command output, provider session, check, review note,
-  screenshot, adapter artifact, or dashboard snapshot that supports a claim.
-- `Proposal`: the implementation or decision candidate, usually backed by a
-  diff, changed paths, checks, and evidence.
-- `Decision`: the Leader/Gate outcome: accept, reject, split, block, kill,
-  promote, or create follow-up work.
-- `GoalEvaluation`: the evaluator's closeout explaining what worked, what
-  failed, where the workflow helped, and what should become infra, docs, skill,
-  schema, CLI, dashboard, adapter, or plugin work.
-- `GoalCase`: a sanitized reusable example for future Lead Agents.
+The first Company OS acceptance scenario is a governed Trademark Management
+module whose filing WorkItem, human approval, ¥3,000 financial commitment,
+participants, evidence, and source/result documents remain one linked truth.
+Repository self-hosting remains the first execution-foundation scenario.
+Project-specific logic belongs in modules, adapters, and scenario skills, not
+in the generic core.
 
-## Canonical Agent Members
+## Native Product And Execution Objects
 
-For harness-managed work, the canonical agents are `AgentMember` records in the
-harness store plus their `Message`, `Task`, `Evidence`, `Decision`, and
-`ProviderSession` records.
+For company operations, the native product objects are `Document`,
+`BusinessModule`, `TypedRecord`, `Relation`, `ActorRef`, `HumanMember`,
+`AgentMember`, `OrgUnit`, `WorkItem`, `Assignment`, `Approval`,
+`FinancialRecord`, and `MetricObservation`. Some of these are currently design
+contracts rather than implemented schemas; keep that distinction explicit.
 
-External coding subagents or chat-side helpers may be used only as temporary
-inputs. They do not count as harness execution unless their output is recorded
-through a harness `AgentMember` report message and evidence refs.
+`Mission` and `Wave` are the only native coordination objects for new work.
+The superseded coordination stack is being removed under ADR 0028: do not load
+it into normal planning context, create new records, use its commands, or add
+new dependencies. Historical stores must be exported and verified before their
+old ledgers or code are deleted.
 
-Do not claim a task was run by the multi-agent harness unless the store shows:
+For `executor_kind=agent_team`, the canonical execution records are
+`AgentTeamRun`, `MemberRun`, `TeamMessage`, explicit `MemberAction` summaries,
+artifacts, and the Wave gate. Assignment ownership is proven by
+`TeamMessage(kind=assignment)` plus `correlation_id`.
 
-- an assigned `Task`;
-- a role-specific `AgentMember`;
-- a `Message(kind=task)` from the Lead before implementation;
-- a `Message(kind=report)` from the assignee;
-- evidence refs for claims;
-- critic/evaluator or review output before acceptance;
-- a Leader `Decision`.
+Provider-native or chat-side subagents are implementation details of the Host
+or member that invoked them. Optional hooks may record honest attribution, but
+the harness must not claim lifecycle control it does not have.
+
+Do not claim that an Agent Team Wave was accepted unless the store shows:
+
+- a native Mission and native `Wave(executor_kind=agent_team)`;
+- one or more linked `AgentTeamRun` attempts;
+- role-specific MemberRuns and assignment messages for actual members;
+- correlation-backed blocker, handoff, or review messages where those events
+  occurred;
+- an explicit outcome, plus artifact/check references when they are useful;
+- a Wave gate naming the accepted completed attempt.
+
+For `dynamic_workflow`, WorkflowRun/WorkflowStep and its result/artifacts are
+the execution truth. For `host`, record the observable outcome and artifacts
+without inventing controlled child objects.
 
 ## How To Develop This Repository With The Harness
 
-The Lead Agent should use this sequence for every non-trivial change:
+The Lead Agent should use this sequence for non-trivial new work:
 
-1. Load the required Lead skill:
-   `.agents/skills/generic-agent-harness/SKILL.md`.
-2. Inspect current state:
-   `target/debug/harness goal list`, `target/debug/harness task list`,
-   `target/debug/harness agent list`, and relevant docs.
-3. Create or reuse a goal. If the goal is new, record `goal_design` evidence
-   before assigning implementation tasks.
-4. Design the team and each phase's execution mode. Use `task_graph` when the
-   phase needs persistent AgentMember assignment and message/report proof. Use
-   `workflow` when the phase is naturally a direct Starlark workflow with
-   WorkflowRun/WorkflowStep as the runtime truth. Add Dashboard, Schema,
-   Provider, Adapter, or Docs agents only when the scenario needs those roles.
-5. For task_graph phases, create tasks with explicit owner, assignee, reviewer,
-   dependencies, owned paths, workspace or worktree refs, and acceptance
-   criteria. For workflow phases, author the workflow and record the
-   run/artifact evidence instead of inventing a duplicate task graph.
-6. Assign work through `task assign` or `agent send`; do not treat a private
-   chat instruction as an assignment.
-7. For concurrent code work, give each implementation task a separate worktree
-   or clearly disjoint owned paths. Shared-file conflicts must be escalated to
-   the Lead before merging.
-8. When a claim depends on real provider behavior, use persistent Codex
-   `AgentMember` runtimes and `agent deliver`; one-shot helper output is not
-   enough.
-9. Attach evidence with `evidence add`: checks, logs, provider sessions,
-   dashboard snapshots, diffs, review notes, adapter artifacts, or screenshots.
-10. Create a proposal from a diff or explicit changed paths before acceptance.
-11. Run the review gate. Acceptance requires check evidence, worker or provider
-    output, critic findings, valid evidence refs, and owned-path compliance
-    unless an explicit waiver decision records the exception.
-12. Record the Leader decision and update task status.
-13. At goal close, add `goal_evaluation` evidence and create follow-up tasks or
-    a reusable GoalCase when the run teaches a reusable workflow pattern.
+1. Inspect relevant code/docs and native state with `harness mission list`,
+   `harness wave list`, and the Agent Team/Dynamic Workflow surfaces needed by
+   the selected executor.
+2. Create or select the Mission, define its ordered Waves, each Wave's executor,
+   and its lightweight gate.
+   When `executor_kind=agent_team`, define only the roles, permissions, model
+   tiers, depth, owned surfaces, and artifacts that Wave needs.
+3. Let the selected executor own its internal plan; a Wave remains a lightweight
+   outcome, executor, artifact, and gate boundary.
+4. For Agent Team work, create the linked TeamRun, then use its Assignment
+   messages and correlations for lane ownership. Give concurrent members
+   disjoint owned paths or worktrees and surface shared-file conflicts to the
+   Host.
+5. Keep explicit actions, checks, artifacts, blockers, handoffs, reviews, and
+   outcomes durable. Do not persist provider thinking.
+6. Apply review proportional to risk. A reviewer member or stricter repository
+   governance may be added when useful, but Proposal/Decision/outcome evaluation is
+   not a universal product chain.
+7. Gate the Wave as `accepted`, `revise`, or `blocked`. A retry creates another
+   executor run; it never mutates away the earlier attempt.
+8. Re-plan the next Wave from plan-vs-actual deviation and close the Mission
+   with an explicit outcome summary when Mission closeout support is available.
 
 ## Project Selection (Multi-Project)
 
@@ -134,18 +129,18 @@ worker's cwd derives from `project_root`, not the harness process cwd.
   with no data loss; marks the old store). Full reference:
   [docs/multi-project.md](docs/multi-project.md).
 
-## Required Skills For Lead
+## Skills Are Optional Capabilities
 
-The Lead Agent must load `.agents/skills/generic-agent-harness/SKILL.md` before
-planning or accepting non-trivial work in this repository. It is the operating
-contract for the product itself: goal design, task graph design, message-first
-assignment, provider sessions, evidence, critic review, decisions, goal
-evaluation, and follow-up tasks.
+Repository skills are implementation and distribution artifacts, not the
+authority for product architecture or Lead behavior. Agents must not load a
+skill merely because they are working in this repository. Use a retained skill
+only when the user requests it or the current task explicitly needs that
+capability, and prefer canonical architecture, schemas, code, and ADRs when a
+skill conflicts with them.
 
-Load `skills/bootstrap-project-workflow/SKILL.md` only when the goal is about
-project bootstrapping or governance: docs and CI/CD design, directory reorg,
-new requirement workflow design, adapter boundaries, skill design, task-system
-design, or migrating a project into a harness-operable shape.
+Retired planning skills must not be installed, loaded, or referenced from
+active repository instructions. Skills are optional capabilities, never the
+authority for product architecture.
 
 Do not make Earning Engine or other domain skills mandatory for this
 repository. Domain workflows enter through adapters and scenario-specific
@@ -155,7 +150,13 @@ Useful local commands:
 
 ```bash
 target/debug/harness init
-target/debug/harness goal learning-status --id <goal> --strict --require-evaluation
+target/debug/harness mission create --title <title> --objective <objective>
+target/debug/harness wave create --mission-id <mission> --title <title> \
+  --objective <objective> --executor-kind agent_team
+target/debug/harness team-run create --mission-id <mission> --wave-id <wave> \
+  --objective <objective> --member name:role:provider
+target/debug/harness wave gate --id <wave> --status accepted \
+  --run-id <completed-run> --accepted-by <actor> --outcome <summary>
 target/debug/harness dashboard snapshot
 target/debug/harness serve --addr 127.0.0.1:8787
 npx pnpm@9.15.4 acceptance:mvp
@@ -169,17 +170,19 @@ single-member smoke and the Worker/Critic live dogfood gate.
 
 ## Self-Hosting Rules
 
-This repository must dogfood the workflow it is building.
+This repository should dogfood native Mission/Wave and the executor it is
+changing once that slice is capable of running the work. A bootstrap change
+that creates or repairs the native path may use the current host/subagent
+mechanism, but must say so and add focused acceptance for the path it creates.
 
-- Do not bypass the harness for meaningful product, schema, CLI, dashboard,
-  provider, adapter, or skill changes.
+- For meaningful product, schema, CLI, dashboard, provider, adapter, or skill
+  changes, prefer a native Mission/Wave run when the needed executor path works.
 - A small typo or single-line doc fix may be Lead-local, but the final summary
   must say that it was a Lead-local exception.
-- Any feature claim about multi-agent behavior must be backed by store-visible
-  tasks, messages, provider sessions or reports, critic evidence, and a
-  decision.
-- When the current workflow feels slow or manual, create an infra task instead
-  of normalizing hidden local reasoning.
+- Any feature claim about Agent Team behavior must be backed by linked run,
+  member, assignment/correlation, explicit action/outcome, and Wave-gate state.
+- When the current workflow feels slow or manual, record a follow-up Wave or
+  issue instead of normalizing hidden local reasoning.
 - Prefer the progression `doc -> skill -> schema -> CLI/API -> dashboard ->
   plugin`. A plugin is justified only after the object contracts and commands
   are stable enough to reduce variance.
@@ -188,45 +191,34 @@ This repository must dogfood the workflow it is building.
 
 ## Staged Acceptance
 
-Every non-trivial goal must be accepted in stages:
+Every non-trivial native Wave is accepted in four small stages:
 
-1. GoalDesign acceptance: scenario, non-goals, infra gaps, team, task graph,
-   evidence plan, evaluator plan, and risks are recorded before implementation.
-2. Assignment acceptance: tasks are split by owner, dependencies, and owned
-   paths; task messages are sent before work starts.
-3. Implementation acceptance: each worker report has evidence and checks.
-4. Review/Gate acceptance: critic or evaluator output exists before the Leader
-   decision.
-5. GoalEvaluation acceptance: goal close records what worked, what failed,
-   missing infra, event-order health, follow-up tasks, and whether a GoalCase is
-   needed.
+1. Context: Mission, Wave objective, executor kind, exit criteria, permissions,
+   and risk are clear.
+2. Execution: the selected executor owns its internal plan and emits its honest
+   run records. Agent Team lanes start from assignment messages.
+3. Outcome: explicit checks, artifacts, blockers, handoffs, and review results
+   needed for this Wave are recorded. Review depth is proportional to risk.
+4. Gate: the Host records `accepted | revise | blocked`; acceptance names one
+   completed attempt and preserves all earlier attempts.
 
-Skipping a stage requires an explicit waiver decision with rationale, evidence,
-owner, and follow-up task.
-
-## Goal Learning Gate
-
-For goals managed by the harness:
-
-- `goal_design` evidence must exist before implementation tasks move forward;
-- `goal_evaluation` evidence must exist before final close, or an explicit
-  waiver decision must explain why not;
-- final chat summaries are not durable evidence;
-- Dashboard visibility is useful, but CLI/review-gate checks remain the source
-  of acceptance truth.
+Company-level acceptance is separate: a WorkItem must preserve source/result
+provenance and responsibility, sensitive actions must satisfy their Approval
+policy, and durable effects must update their related document and typed
+records. An accepted Wave alone does not approve a payment, legal submission,
+permission change, or organization change.
 
 ## What Counts As Done
 
-A goal or substantial task is done only when the harness store can explain:
+A native Mission/Wave slice is done only when the store can explain:
 
 - why the work existed;
-- which scenario and workflow the Lead designed;
-- which agents were responsible for which tasks;
-- which messages assigned or handed off the work;
-- what evidence supports each claim;
-- what the Critic/Gate accepted, rejected, or questioned;
-- what decision was made;
+- which Wave and executor were selected;
+- which run attempts occurred and which one was accepted;
+- which TeamMessages assigned or handed off Agent Team lanes;
+- which explicit outcomes, checks, and artifacts support acceptance;
+- what the Wave gate accepted, revised, or blocked;
 - what should be reused, improved, split, or followed up next.
 
 If a future agent cannot reconstruct the answer from repository files and
-harness state, the work is not fully accepted.
+native harness state, the work is not fully accepted.

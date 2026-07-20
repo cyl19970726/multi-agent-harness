@@ -77,7 +77,7 @@ Provider
 | --- | --- | --- | --- |
 | Codex | [codex.md](codex.md) | planned / implemented in slices | First provider: headless exec-stream primary (app-server retained as fallback design) + hooks + skills + plugin path. |
 | Codex message delivery | [codex-message-delivery.md](codex-message-delivery.md) | planned / implemented in slices | Persistent member mailbox, dispatcher, queue policy, and delivery proof. |
-| Codex source audit | [codex-source-audit.md](codex-source-audit.md) | planned / reference | Source-level notes that support Codex integration decisions. |
+| Codex source audit | [codex-source-audit.md](codex.md) | planned / reference | Source-level notes that support Codex integration decisions. |
 | Claude Code | [claude.md](claude.md) | planned / implemented in slices | On-demand provider via claude CLI, native subagent-to-child-thread mapping. |
 | Kimi (Moonshot) | [kimi.md](kimi.md) | implemented in slices | Third registered exec-stream adapter (`kimi -p --output-format stream-json`); `kimi -p` accepts no permission flags, so the harness worktree-isolates its read-only leaves. |
 | OpenClaw / cloud agent | not yet created | idea | Future remote or cloud-hosted provider implementation. |

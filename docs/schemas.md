@@ -3,24 +3,23 @@
 Schemas define object contracts shared by Rust types, API responses, CLI
 outputs, adapters, and the Agent Dashboard.
 
-## First Objects
-
-Only seven core objects are required for the first version:
+## Native Mission/Wave Objects
 
 | Object | Purpose |
 | --- | --- |
-| `Goal` | What durable outcome the task graph is pursuing |
-| `AgentTeam` | Which Agent Members work together |
-| `AgentMember` | Who can do work and which provider backs it |
-| `Task` | What needs to be done, by whom, with which dependencies, workspace, branch, and PR |
-| `Message` | How agents communicate |
-| `AgentRuntime` | How a persistent provider process is tracked |
-| `AgentEvent` | What happened inside a provider runtime |
-| `ProviderChildThread` | Provider-native child threads, such as Codex native subagents spawned under one AgentMember |
-| `Proposal` | What an agent proposes for a task before final decision |
-| `Evidence` | What supports a claim or result |
-| `Decision` | What the Leader decided |
-| `ProviderSession` | How an external agent execution is recorded |
+| `Mission` | Durable intent, desired outcome, ordered Wave membership, and closeout |
+| `Wave` | One lightweight ordered objective, executor attempts, outcome/artifacts, and gate |
+| `AgentTeamRun` | One `agent_team` attempt linked to a Mission/Wave |
+| `MemberRun` | One role/provider execution instance inside a TeamRun |
+| `TeamMessage` | Assignment, correlation/causation, handoff, review, and delivery state |
+| `MemberAction` | Explicit durable work facts; never provider thinking |
+| `DelegationRun` | Honest attribution for observed or harness-controlled delegation |
+| `TeamRunEvent` | Ordered sanitized event projection for one TeamRun |
+
+Dynamic Workflow and Host execution retain their distinct executor-specific
+objects. Existing Goal/Task/Evidence/Proposal/Decision schemas remain supported
+for compatibility and optional stricter governance; they are not required
+inside a native Wave.
 
 `Skill`, `ToolAdapter`, and `Dashboard` can start as configuration or views.
 
@@ -28,6 +27,9 @@ Only seven core objects are required for the first version:
 
 | Concept | Current maturity | Gateable now |
 | --- | --- | --- |
+| `Mission` | Rust + JSON schema + JSONL store + CLI/API/MCP/read model | yes |
+| `Wave` | Rust + JSON schema + JSONL store + Agent Team attempts/gate | yes for `agent_team`; other executors pending |
+| `AgentTeamRun` family | Rust + JSON schemas + store + CLI/API/MCP/read model | yes |
 | `Goal` | Rust + JSON schema | yes |
 | `AgentTeam` | Rust + JSON schema | yes |
 | `AgentMember` | Rust + JSON schema | yes |
@@ -55,10 +57,16 @@ schema contracts are checked with valid and invalid fixtures.
 
 | Schema | File |
 | --- | --- |
-| Goal | [goal.schema.json](../schemas/goal.schema.json) |
+| Mission | [mission.schema.json](../schemas/mission.schema.json) |
+| Wave | [wave.schema.json](../schemas/wave.schema.json) |
+| Agent Team run | [agent-team-run.schema.json](../schemas/agent-team-run.schema.json) |
+| Member run | [member-run.schema.json](../schemas/member-run.schema.json) |
+| Team message | [team-message.schema.json](../schemas/team-message.schema.json) |
+| Member action | [member-action.schema.json](../schemas/member-action.schema.json) |
+| Delegation run | [delegation-run.schema.json](../schemas/delegation-run.schema.json) |
+| Team run event | [team-run-event.schema.json](../schemas/team-run-event.schema.json) |
 | Agent team | [agent-team.schema.json](../schemas/agent-team.schema.json) |
 | Agent member | [agent-member.schema.json](../schemas/agent-member.schema.json) |
-| Task | [task.schema.json](../schemas/task.schema.json) |
 | Message | [message.schema.json](../schemas/message.schema.json) |
 | Agent runtime | [agent-runtime.schema.json](../schemas/agent-runtime.schema.json) |
 | Agent event | [agent-event.schema.json](../schemas/agent-event.schema.json) |
@@ -71,15 +79,12 @@ schema contracts are checked with valid and invalid fixtures.
 | Doc descriptor | [doc-descriptor.schema.json](../schemas/doc-descriptor.schema.json) |
 | Review | [review.schema.json](../schemas/review.schema.json) |
 | Gap | [gap.schema.json](../schemas/gap.schema.json) |
-| Goal design | [goal-design.schema.json](../schemas/goal-design.schema.json) |
-| Goal evaluation | [goal-evaluation.schema.json](../schemas/goal-evaluation.schema.json) |
-| Goal case | [goal-case.schema.json](../schemas/goal-case.schema.json) |
 | Vision | [vision.schema.json](../schemas/vision.schema.json) |
 
 ## Schema Evolution
 
-Schemas evolve **additive-optional**: see
-[decisions/0017-generic-object-model.md](decisions/0017-generic-object-model.md).
+Schemas evolve additively where a current contract permits it; Company OS
+contracts define their own required migration and validation rules.
 
 - New fields on existing objects are added as property-but-NOT-required, using
   nullable type unions (`["string","null"]`) for scalars, arrays for lists, and

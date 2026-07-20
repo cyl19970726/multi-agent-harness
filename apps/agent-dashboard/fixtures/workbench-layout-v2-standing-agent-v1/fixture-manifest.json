@@ -1,0 +1,22 @@
+{
+  "id": "workbench-layout-v2-standing-agent-v1",
+  "description": "Deterministic available Standing Agent state for current-page baseline capture. It intentionally contains no Mission, Wave, TeamRun, MemberRun, or Workflow assignment projection.",
+  "capture_now": "2026-07-20T09:30:00Z",
+  "standing_agent_id": "agent-research-partner",
+  "routes": {
+    "standing-agent-focus": "/?surface=agents&agent=agent-research-partner"
+  },
+  "ledgers": [
+    "members.jsonl",
+    "agent_runtimes.jsonl",
+    "provider_sessions.jsonl",
+    "messages.jsonl",
+    "agent_events.jsonl"
+  ],
+  "invariants": [
+    "Research Partner is a durable AgentMember with an available (idle) status and a healthy runtime.",
+    "Provider sessions and ordinary messages provide continuous standing-agent activity without a current task.",
+    "The fixture contains no Mission, Wave, TeamRun, MemberRun, WorkflowRun, or WorkflowStep rows, so it cannot imply cross-executor assignment ownership.",
+    "No durable thinking is present."
+  ]
+}

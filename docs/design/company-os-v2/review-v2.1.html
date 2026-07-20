@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Company OS V2.1 · Desirable Workbench Review</title>
+  <style>
+    :root{--bg:#f3eee6;--paper:#fffdf9;--ink:#26231f;--muted:#716b63;--line:#ddd4c8;--coral:#e95a3c;--sage:#708166}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.55 Inter,ui-sans-serif,system-ui,sans-serif}header{position:sticky;top:0;z-index:4;display:flex;justify-content:space-between;align-items:center;padding:21px 32px;background:rgba(243,238,230,.93);backdrop-filter:blur(18px);border-bottom:1px solid var(--line)}h1,h2,h3,p{margin:0}h1,h2{font-family:Georgia,serif;font-weight:500}h1{font-size:28px}.pending{padding:7px 11px;border:1px solid #ecad9e;border-radius:999px;background:#fff6f2;color:#b8452e;font-size:12px}main{max-width:1660px;margin:auto;padding:38px 32px 80px}.intro{max-width:980px;color:var(--muted);font-size:17px;margin:10px 0 28px}.principle{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--line);border:1px solid var(--line);border-radius:14px;overflow:hidden;margin-bottom:40px}.principle div{padding:17px 18px;background:var(--paper)}.principle strong{display:block;margin-bottom:4px}.principle span{color:var(--muted);font-size:12px}.case{margin:0 0 34px;background:var(--paper);border:1px solid var(--line);border-radius:16px;overflow:hidden;box-shadow:0 14px 44px rgba(54,43,28,.045)}.case-head{display:flex;justify-content:space-between;align-items:end;padding:16px 18px;border-bottom:1px solid var(--line)}.case-head h2{font-size:23px}.case-head p{color:var(--muted);font-size:12px}.compare{display:grid;grid-template-columns:1fr 1fr}figure{margin:0;min-width:0}figure+figure{border-left:1px solid var(--line)}figcaption{padding:9px 13px;background:#faf7f1;color:var(--muted);font-size:11px;letter-spacing:.08em;text-transform:uppercase;border-bottom:1px solid var(--line)}img{display:block;width:100%;height:auto}.identity{margin-top:48px}.identity h2{font-size:26px;margin-bottom:8px}.identity>p{color:var(--muted);margin-bottom:18px}.avatars{display:grid;grid-template-columns:repeat(5,1fr);gap:16px}.avatar{background:var(--paper);border:1px solid var(--line);border-radius:15px;padding:12px;text-align:center}.avatar img{border-radius:50%;margin-bottom:10px}.avatar strong{display:block;font-size:12px}.avatar span{color:var(--muted);font-size:11px}.note{margin-top:28px;padding:18px 20px;background:#fff7f3;border-left:3px solid var(--coral);color:#5b514a}@media(max-width:900px){.principle,.compare{grid-template-columns:1fr}figure+figure{border-left:0;border-top:1px solid var(--line)}.avatars{grid-template-columns:repeat(2,1fr)}}
+  </style>
+</head>
+<body>
+  <header><h1>Company OS V2.1 · Desirable Workbench</h1><span class="pending">Expected revision · Human review pending</span></header>
+  <main>
+    <p class="intro">V2.1 不反对工作台。它保留完整功能与信息密度，同时通过视觉节奏、角色识别和触感更好的控件，让工作台更舒服、更美、更值得长时间使用。</p>
+    <section class="principle"><div><strong>功能深度保留</strong><span>Document、Milestone、WorkItem、Agent、Approval 与执行入口都在。</span></div><div><strong>认知负担降低</strong><span>减少等权边框，建立一个首屏焦点和更清楚的阅读顺序。</span></div><div><strong>美感成为生产力</strong><span>稳定头像、温暖材质、排版和留白提高停留意愿与专注度。</span></div></section>
+
+    <section class="case"><div class="case-head"><div><h2>Company Home</h2><p>从管理面板到真正的每日工作简报</p></div></div><div class="compare"><figure><figcaption>V2.0 first pass</figcaption><img src="expected/home--morning-operating-review--desktop-1536x1024.png" /></figure><figure><figcaption>V2.1 desirable workbench</figcaption><img src="expected/home--morning-operating-review-v2-1--desktop-1536x1024.png" /></figure></div></section>
+    <section class="case"><div class="case-head"><div><h2>Docs Workspace</h2><p>功能仍然完整，但文档纸面成为主工作区</p></div></div><div class="compare"><figure><figcaption>V2.0 first pass</figcaption><img src="expected/docs--company-knowledge-workspace--desktop-1536x1024.png" /></figure><figure><figcaption>V2.1 desirable workbench</figcaption><img src="expected/docs--company-knowledge-workspace-v2-1--desktop-1536x1024.png" /></figure></div></section>
+    <section class="case"><div class="case-head"><div><h2>Lead Agent Workspace</h2><p>长期组织协作工作台，而不是卡片化审计日志</p></div></div><div class="compare"><figure><figcaption>V2.0 first pass</figcaption><img src="expected/lead-agent--coordinating-direct-reports--desktop-1536x1024.png" /></figure><figure><figcaption>V2.1 desirable workbench</figcaption><img src="expected/lead-agent--coordinating-direct-reports-v2-1--desktop-1536x1024.png" /></figure></div></section>
+
+    <section class="identity"><h2>Canonical Agent identity assets</h2><p>生成效果图中的小头像只是布局示意；最终 HTML 和产品实现必须直接使用以下稳定资产与 ActorRef，不从截图重建身份。</p><div class="avatars">
+      <div class="avatar"><img src="identity/avatars/company-lead.png" /><strong>Company Lead</strong><span>Lead Agent</span></div>
+      <div class="avatar"><img src="identity/avatars/document-architecture-agent.png" /><strong>Document Architecture</strong><span>Standing Agent</span></div>
+      <div class="avatar"><img src="identity/avatars/finance-agent.png" /><strong>Finance</strong><span>Standing Agent</span></div>
+      <div class="avatar"><img src="identity/avatars/content-strategy-agent.png" /><strong>Content Strategy</strong><span>Standing Agent</span></div>
+      <div class="avatar"><img src="identity/avatars/trademark-agent.png" /><strong>Trademark</strong><span>Proposed Standing Agent</span></div>
+    </div></section>
+    <p class="note">下一道门禁不是“是否像工作台”，而是：这个工作台是否让人一眼理解、愿意进入、能长时间舒服使用，同时不牺牲任何关键业务能力。</p>
+  </main>
+</body>
+</html>

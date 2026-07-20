@@ -1,0 +1,13 @@
+{
+  "id": "wave-invalid-revise-completed",
+  "mission_id": "mission-1",
+  "index": 1,
+  "title": "Contradictory revise Wave",
+  "objective": "A revise gate returns the Wave to planned status.",
+  "status": "completed",
+  "executor_kind": "agent_team",
+  "executor_run_ids": ["team-run-1"],
+  "gate_status": "revise",
+  "created_at": "unix-ms:1",
+  "updated_at": "unix-ms:2"
+}

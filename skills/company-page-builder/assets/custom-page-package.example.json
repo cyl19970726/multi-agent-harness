@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "package_id": "custom-page-trademark-management-v1",
+  "definition_id": "page-definition-trademark-management",
+  "version": "1.0.0",
+  "entrypoint": "src/TrademarkManagementPage.tsx",
+  "declared_queries": ["trademark-overview", "pending-commitments"],
+  "declared_actions": ["request-trademark-approval"],
+  "fallback_document_id": "document-trademark-application-cn-2026-018",
+  "fallback_view_ids": ["view-trademark-applications", "view-pending-commitments"],
+  "fixture_id": "company-os-trademark-v1",
+  "expected_artifact": "docs/design/company-os-v1/expected/business-module-focus/trademark-management--desktop-concept-1536x1024.png",
+  "expected_hash": "sha256:replace-after-generation",
+  "approval_ref": "approval-custom-page-design-required",
+  "permissions": ["documents:read", "views:read", "actions:request"],
+  "audit_events": ["custom_page.opened", "action.requested", "fallback.rendered"],
+  "rollback_to_version": "standard-view"
+}

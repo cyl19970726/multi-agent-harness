@@ -1,9 +1,15 @@
 export type SurfaceId =
+  | "home"
+  | "organization"
+  | "work"
+  | "approvals"
+  | "finance"
+  | "providers"
+  | "plugins"
+  | "settings"
   | "agents"
-  | "vision"
-  | "goal"
-  | "task"
-  | "tasks"
+  | "missions"
+  | "team"
   | "workflows"
   | "docs"
   | "debug";
@@ -13,58 +19,67 @@ export type AgentTab = "conversation" | "tasks" | "config";
 
 const agentTabs: AgentTab[] = ["conversation", "tasks", "config"];
 
-/** Tabs on the task document. "overview" is the default. */
-export type TaskTab = "overview" | "deps" | "proof" | "activity";
-
-const taskTabs: TaskTab[] = ["overview", "deps", "proof", "activity"];
-
 export interface SelectionState {
   surface: SurfaceId;
-  goalId?: string;
+  /** Company OS document focus. Distinct from the legacy repository-doc path. */
+  documentId?: string;
+  /** Company OS WorkItem focus. */
+  workItemId?: string;
+  /** Durable Standing Agent organization identity, never a MemberRun. */
+  standingAgentId?: string;
+  /** First-class Human organization member identity. */
+  personId?: string;
+  /** Governance proposal focus. */
+  proposalId?: string;
+  /** Approval record focus. */
+  approvalId?: string;
+  /** BusinessModule focus. */
+  moduleId?: string;
+  /** Native Mission detail, addressed as `?mission=<id>`. */
+  missionId?: string;
+  /** Native Wave detail inside a Mission, addressed as `?wave=<id>`. */
+  waveId?: string;
   /**
-   * Retained so the read model can still resolve an AgentTeam for data
-   * continuity (fixtures + historical jsonl keep the AgentTeam object). There is
-   * no Team concept in the UI; nothing sets this from a user gesture.
+   * The selected Agent Team run id (a team_run id), addressed as `?team=<id>`.
+   * Opens the Team surface's run detail when set; the list shows when absent.
    */
   teamId?: string;
   /** The selected agent id (the AgentMember opened on the agent detail page). */
   memberId?: string;
+  /**
+   * The selected Agent Team participation record, addressed as
+   * `?memberRun=<id>`. This deliberately remains distinct from `memberId`:
+   * a MemberRun is a one-attempt participation, while `memberId` identifies a
+   * standing AgentMember.
+   */
+  memberRunId?: string;
   /** Which tab is open on the agent detail page; defaults to "conversation". */
   agentTab?: AgentTab;
-  taskId?: string;
-  /** The phase opened within a goal (Goal -> Phase drill-in), addressed as `?phase=<id>`. */
-  phaseId?: string;
   /**
    * The doc opened on the Docs surface, addressed by its repo path
    * (e.g. "docs/prd.md"); setting it implies the docs surface.
    */
   docPath?: string;
-  /** Which tab is open on the task document; defaults to "overview". */
-  taskTab?: TaskTab;
   /** The selected workflow run id (opens WorkflowRunDetail on the workflows surface). */
   workflowRunId?: string;
-  /**
-   * Retained for URL/back-compat (goal-task-board-model retired the flat global
-   * task board). The Work board now shows the Goal collection by default; a
-   * `boardGoal` filter pins it to one legacy goal's task columns. Nothing reads
-   * `boardScope` for view selection anymore.
-   */
-  boardScope?: "goals" | "tasks";
-  /** Work board filter: pin to one goal's task columns (legacy phaseless fallback). */
-  boardGoal?: string;
 }
 
 export const defaultSelection: SelectionState = {
-  surface: "agents",
-  boardScope: "tasks",
+  surface: "home",
 };
 
 const surfaceIds: SurfaceId[] = [
+  "home",
+  "organization",
+  "work",
+  "approvals",
+  "finance",
+  "providers",
+  "plugins",
+  "settings",
   "agents",
-  "vision",
-  "goal",
-  "task",
-  "tasks",
+  "team",
+  "missions",
   "workflows",
   "docs",
   "debug",
@@ -72,18 +87,21 @@ const surfaceIds: SurfaceId[] = [
 
 const selectionParamKeys = [
   "surface",
+  "document",
+  "workItem",
+  "person",
+  "proposal",
+  "approval",
+  "module",
   "agent",
   "member",
+  "memberRun",
   "agentTab",
   "team",
-  "goal",
-  "task",
-  "phase",
+  "mission",
+  "wave",
   "doc",
-  "taskTab",
   "workflowRun",
-  "board",
-  "boardGoal",
 ];
 
 /**
@@ -94,7 +112,10 @@ const selectionParamKeys = [
  */
 export function selectionFromLocation(base: SelectionState): SelectionState {
   if (typeof window === "undefined") return base;
-  const next: SelectionState = { ...base };
+  // URL state is authoritative. Starting from a clean default prevents a
+  // previously-open Company OS record from leaking into Back/Forward routes
+  // after its query parameter has disappeared.
+  const next: SelectionState = { ...defaultSelection };
 
   // Legacy path form: /members/:memberId → Agents area, that agent open.
   const pathMatch = window.location.pathname.match(/\/members\/([^/?#]+)/);
@@ -108,34 +129,81 @@ export function selectionFromLocation(base: SelectionState): SelectionState {
   if (surface && (surfaceIds as string[]).includes(surface)) {
     next.surface = surface as SurfaceId;
   }
-  // Canonical agent address: ?agent=<id>. Accept the legacy ?member= alias too.
+  // `?agent=` is contextual: Organization resolves a durable Standing Agent;
+  // the retained execution compatibility route resolves an AgentMember.
   const agent = params.get("agent") ?? params.get("member");
   if (agent) {
-    next.memberId = agent;
-    if (!surface) next.surface = "agents";
+    if (next.surface === "organization") next.standingAgentId = agent;
+    else {
+      next.memberId = agent;
+      if (!surface) next.surface = "agents";
+    }
+  }
+  const documentId = params.get("document");
+  if (documentId) {
+    next.documentId = documentId;
+    if (!surface) next.surface = "docs";
+  }
+  const workItemId = params.get("workItem");
+  if (workItemId) {
+    next.workItemId = workItemId;
+    if (!surface) next.surface = "work";
+  }
+  const personId = params.get("person");
+  if (personId) {
+    next.personId = personId;
+    if (!surface) next.surface = "organization";
+  }
+  const proposalId = params.get("proposal");
+  if (proposalId) {
+    next.proposalId = proposalId;
+    if (!surface) next.surface = "organization";
+  }
+  const approvalId = params.get("approval");
+  if (approvalId) {
+    next.approvalId = approvalId;
+    if (!surface) next.surface = "approvals";
+  }
+  const moduleId = params.get("module");
+  if (moduleId) {
+    next.moduleId = moduleId;
+    if (!surface) next.surface = "docs";
+  }
+  // A MemberRun belongs to an AgentTeamRun attempt, not to the standing Agent
+  // directory. Do not translate it into `memberId` even if a future provider
+  // happens to expose a related standing identity.
+  const memberRun = params.get("memberRun");
+  if (memberRun) {
+    next.memberRunId = memberRun;
+    if (!surface) next.surface = "team";
   }
   const agentTab = params.get("agentTab");
   if (agentTab && (agentTabs as string[]).includes(agentTab)) {
     next.agentTab = agentTab as AgentTab;
   }
   const team = params.get("team");
-  if (team) next.teamId = team;
-  const goal = params.get("goal");
-  if (goal) next.goalId = goal;
-  const task = params.get("task");
-  if (task) next.taskId = task;
-  const phase = params.get("phase");
-  if (phase) next.phaseId = phase;
+  // Canonical team-run address: ?team=<run id>; setting it implies the Team
+  // surface (mirror of the ?agent= / ?workflowRun= rules).
+  if (team) {
+    next.teamId = team;
+    if (!surface) next.surface = "team";
+  }
+  const mission = params.get("mission");
+  if (mission) {
+    next.missionId = mission;
+    if (!surface) next.surface = "missions";
+  }
+  const wave = params.get("wave");
+  if (wave) {
+    next.waveId = wave;
+    if (!surface) next.surface = "missions";
+  }
   // Canonical doc address: ?doc=<path>; setting it implies the docs surface
   // (mirror of the ?agent= / ?workflowRun= rules).
   const doc = params.get("doc");
   if (doc) {
     next.docPath = doc;
     if (!surface) next.surface = "docs";
-  }
-  const taskTab = params.get("taskTab");
-  if (taskTab && (taskTabs as string[]).includes(taskTab)) {
-    next.taskTab = taskTab as TaskTab;
   }
   // Canonical run address: ?workflowRun=<id>; setting it implies the workflows
   // surface (mirror of the ?agent= rule above).
@@ -144,10 +212,6 @@ export function selectionFromLocation(base: SelectionState): SelectionState {
     next.workflowRunId = workflowRun;
     if (!surface) next.surface = "workflows";
   }
-  const boardScope = params.get("board");
-  if (boardScope === "goals" || boardScope === "tasks") next.boardScope = boardScope;
-  const boardGoal = params.get("boardGoal");
-  if (boardGoal) next.boardGoal = boardGoal;
   return next;
 }
 
@@ -161,26 +225,27 @@ export function syncSelectionToLocation(selection: SelectionState): void {
   if (typeof window === "undefined") return;
   const params = new URLSearchParams(window.location.search);
   for (const key of selectionParamKeys) params.delete(key);
-  if (selection.surface && selection.surface !== "agents") {
+  if (selection.surface && selection.surface !== "home") {
     params.set("surface", selection.surface);
   }
-  if (selection.memberId) params.set("agent", selection.memberId);
+  if (selection.documentId) params.set("document", selection.documentId);
+  if (selection.workItemId) params.set("workItem", selection.workItemId);
+  if (selection.standingAgentId) params.set("agent", selection.standingAgentId);
+  if (selection.personId) params.set("person", selection.personId);
+  if (selection.proposalId) params.set("proposal", selection.proposalId);
+  if (selection.approvalId) params.set("approval", selection.approvalId);
+  if (selection.moduleId) params.set("module", selection.moduleId);
+  if (selection.memberId && selection.surface !== "organization") params.set("agent", selection.memberId);
   // Only persist a non-default agent tab, and only when an agent is open.
   if (selection.memberId && selection.agentTab && selection.agentTab !== "conversation") {
     params.set("agentTab", selection.agentTab);
   }
+  if (selection.memberRunId) params.set("memberRun", selection.memberRunId);
   if (selection.teamId) params.set("team", selection.teamId);
-  if (selection.goalId) params.set("goal", selection.goalId);
-  if (selection.taskId) params.set("task", selection.taskId);
-  if (selection.phaseId) params.set("phase", selection.phaseId);
+  if (selection.missionId) params.set("mission", selection.missionId);
+  if (selection.waveId) params.set("wave", selection.waveId);
   if (selection.docPath) params.set("doc", selection.docPath);
-  // Only persist a non-default task tab, and only when a task is open.
-  if (selection.taskId && selection.taskTab && selection.taskTab !== "overview") {
-    params.set("taskTab", selection.taskTab);
-  }
   if (selection.workflowRunId) params.set("workflowRun", selection.workflowRunId);
-  if (selection.boardScope === "goals") params.set("board", "goals");
-  if (selection.boardGoal) params.set("boardGoal", selection.boardGoal);
 
   const query = params.toString();
   const url = `${window.location.pathname}${query ? `?${query}` : ""}${window.location.hash}`;

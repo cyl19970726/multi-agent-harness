@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-harness.local/schemas/mission.schema.json",
+  "title": "Mission",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id",
+    "title",
+    "objective",
+    "status",
+    "created_at",
+    "updated_at"
+  ],
+  "properties": {
+    "id": { "type": "string", "minLength": 1 },
+    "title": { "type": "string", "minLength": 1 },
+    "objective": { "type": "string", "minLength": 1 },
+    "desired_outcome": { "type": ["string", "null"], "minLength": 1 },
+    "status": {
+      "type": "string",
+      "enum": ["planned", "running", "blocked", "completed", "cancelled"]
+    },
+    "wave_ids": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "outcome_summary": { "type": ["string", "null"], "minLength": 1 },
+    "created_at": { "type": "string", "minLength": 1 },
+    "updated_at": { "type": "string", "minLength": 1 },
+    "completed_at": { "type": ["string", "null"], "minLength": 1 }
+  }
+}

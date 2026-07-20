@@ -22,10 +22,10 @@ export interface UseEventStreamOptions {
    * project B frames. Absent/empty subscribes to the active/`_global` channel.
    */
   project?: string | null;
-  /** Connection confirmed (initial `snapshot` frame); caller resyncs full state. */
-  onConnect: (generatedAt?: string) => void;
-  /** A delta frame arrived; caller merges it into the in-memory snapshot. */
-  onFrame: (frame: SseFrame) => void;
+  /** Connection confirmed; includes the project captured when this stream opened. */
+  onConnect: (streamProject: string, generatedAt?: string) => void;
+  /** A delta frame arrived; includes the project captured when this stream opened. */
+  onFrame: (streamProject: string, frame: SseFrame) => void;
 }
 
 /** Reconnect backoff: 1s, 2s, 4s, 8s, capped at 15s. */
@@ -68,6 +68,10 @@ export function useEventStream({
     let closeSource: (() => void) | null = null;
     let retryTimer: number | null = null;
     let attempt = 0;
+    // Capture this effect's project, rather than reading a callback ref's latest
+    // selection. A late event from a just-disposed A stream can then be rejected
+    // by App after the user has synchronously selected B.
+    const streamProject = project ?? "";
 
     const clearRetry = () => {
       if (retryTimer !== null) {
@@ -87,11 +91,11 @@ export function useEventStream({
               if (disposed) return;
               attempt = 0; // a clean connect resets the backoff ladder
               setMode("sse");
-              onConnectRef.current(generatedAt);
+              onConnectRef.current(streamProject, generatedAt);
             },
             onFrame: (frame) => {
               if (disposed) return;
-              onFrameRef.current(frame);
+              onFrameRef.current(streamProject, frame);
             },
             onError: () => {
               if (disposed) return;

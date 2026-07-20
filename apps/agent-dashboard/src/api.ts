@@ -3,9 +3,17 @@ import type {
   DashboardSnapshot,
   DocRegistryEntry,
   HarnessTurnEvent,
+  LiveMemberActivity,
+  MemberAction,
+  MemberRun,
   Message,
+  Mission,
   Project,
   ProviderSession,
+  TeamMessage,
+  TeamRun,
+  TeamRunEvent,
+  Wave,
   WorkflowDef,
   WorkflowRun,
   WorkflowStep,
@@ -21,6 +29,14 @@ export interface ActionResponse {
 /** Trim a trailing slash so `${base}/v1/...` never double-slashes. */
 export function normalizeBaseUrl(baseUrl: string): string {
   return baseUrl.trim().replace(/\/$/, "");
+}
+
+/** True only when an SSE callback belongs to the currently selected project. */
+export function matchesStreamProject(
+  selectedProject: string | null | undefined,
+  streamProject: string | null | undefined,
+): boolean {
+  return (selectedProject ?? "") === (streamProject ?? "");
 }
 
 /**
@@ -179,7 +195,17 @@ export type SseFrame =
   // re-normalizing at the render layer. Merged by `seq` against the snapshot.
   | { kind: "provider_turn_event_normalized"; sessionId: string; events: HarnessTurnEvent[] }
   | { kind: "workflow_run"; run: WorkflowRun }
-  | { kind: "workflow_step"; step: WorkflowStep };
+  | { kind: "workflow_step"; step: WorkflowStep }
+  // A single team-run log entry (team-console): appended to team_run_events,
+  // latest-wins by id so a replayed frame self-heals.
+  | { kind: "team_run_event"; event: TeamRunEvent }
+  | { kind: "mission"; mission: Mission }
+  | { kind: "wave"; wave: Wave }
+  | { kind: "agent_team_run"; run: TeamRun }
+  | { kind: "member_run"; member: MemberRun }
+  | { kind: "team_message"; message: TeamMessage }
+  | { kind: "member_action"; action: MemberAction }
+  | { kind: "member_activity"; activity: LiveMemberActivity };
 
 export interface EventStreamHandlers {
   /** Connection established (the initial `snapshot` frame arrived). */
@@ -258,6 +284,38 @@ export function openEventStream(
   source.addEventListener("workflow_step", (event) => {
     const data = parse<WorkflowStep>(event as MessageEvent);
     if (data) handlers.onFrame({ kind: "workflow_step", step: data });
+  });
+  source.addEventListener("team_run_event", (event) => {
+    const data = parse<TeamRunEvent>(event as MessageEvent);
+    if (data) handlers.onFrame({ kind: "team_run_event", event: data });
+  });
+  source.addEventListener("mission", (event) => {
+    const data = parse<Mission>(event as MessageEvent);
+    if (data) handlers.onFrame({ kind: "mission", mission: data });
+  });
+  source.addEventListener("wave", (event) => {
+    const data = parse<Wave>(event as MessageEvent);
+    if (data) handlers.onFrame({ kind: "wave", wave: data });
+  });
+  source.addEventListener("agent_team_run", (event) => {
+    const data = parse<TeamRun>(event as MessageEvent);
+    if (data) handlers.onFrame({ kind: "agent_team_run", run: data });
+  });
+  source.addEventListener("member_run", (event) => {
+    const data = parse<MemberRun>(event as MessageEvent);
+    if (data) handlers.onFrame({ kind: "member_run", member: data });
+  });
+  source.addEventListener("team_message", (event) => {
+    const data = parse<TeamMessage>(event as MessageEvent);
+    if (data) handlers.onFrame({ kind: "team_message", message: data });
+  });
+  source.addEventListener("member_action", (event) => {
+    const data = parse<MemberAction>(event as MessageEvent);
+    if (data) handlers.onFrame({ kind: "member_action", action: data });
+  });
+  source.addEventListener("member_activity", (event) => {
+    const data = parse<LiveMemberActivity>(event as MessageEvent);
+    if (data) handlers.onFrame({ kind: "member_activity", activity: data });
   });
   source.addEventListener("error", handlers.onError);
 
@@ -343,6 +401,246 @@ export function applyFrame(snapshot: DashboardSnapshot, frame: SseFrame): Dashbo
         workflow_steps: upsertById(snapshot.workflow_steps, frame.step),
         generated_at: new Date().toISOString(),
       };
+    case "team_run_event":
+      return {
+        ...snapshot,
+        team_run_events: upsertById(snapshot.team_run_events, frame.event),
+        generated_at: new Date().toISOString(),
+      };
+    case "mission":
+      return {
+        ...snapshot,
+        missions: upsertById(snapshot.missions, frame.mission),
+        generated_at: new Date().toISOString(),
+      };
+    case "wave":
+      return {
+        ...snapshot,
+        waves: upsertById(snapshot.waves, frame.wave),
+        generated_at: new Date().toISOString(),
+      };
+    case "agent_team_run":
+      return {
+        ...snapshot,
+        team_runs: upsertById(snapshot.team_runs, frame.run),
+        generated_at: new Date().toISOString(),
+      };
+    case "member_run":
+      return {
+        ...snapshot,
+        member_runs: upsertById(snapshot.member_runs, frame.member),
+        generated_at: new Date().toISOString(),
+      };
+    case "team_message":
+      return {
+        ...snapshot,
+        team_messages: upsertById(snapshot.team_messages, frame.message),
+        generated_at: new Date().toISOString(),
+      };
+    case "member_action":
+      return {
+        ...snapshot,
+        member_actions: upsertById(snapshot.member_actions, frame.action),
+        generated_at: new Date().toISOString(),
+      };
+    case "member_activity": {
+      const current = snapshot.live_member_activity ?? {};
+      const existing = current[frame.activity.member_run_id];
+      if (existing && existing.revision >= frame.activity.revision) return snapshot;
+      return {
+        ...snapshot,
+        live_member_activity: {
+          ...current,
+          [frame.activity.member_run_id]: frame.activity,
+        },
+        generated_at: new Date().toISOString(),
+      };
+    }
+  }
+}
+
+/**
+ * A request token for a full snapshot read. The token remembers the exact SSE
+ * position at which the request began, so the response can be made current by
+ * replaying every delta received while that read was in flight.
+ */
+export interface SnapshotRequestToken {
+  id: number;
+  frameSequence: number;
+  kind: "read" | "mutation";
+  generation: number;
+}
+
+/**
+ * Coordinates full snapshot responses with the live SSE stream.
+ *
+ * A snapshot is a point-in-time read, but HTTP and SSE race in normal use: an
+ * SSE delta may arrive after the HTTP request begins and before its response is
+ * rendered. Replacing the client state with that response would lose the delta
+ * until some unrelated future refresh. This small client-only journal fixes the
+ * race by recording live frames and replaying the frames newer than each
+ * request's starting position onto its response.
+ *
+ * Reads are latest-wins among reads. Mutations take causal priority over reads:
+ * a read cannot begin while an action POST is in flight, and all pre-mutation
+ * reads are invalidated. `reset` is used at a project boundary to invalidate
+ * requests, frames, and transient activity together.
+ */
+export class SnapshotFrameBuffer {
+  private static readonly MAX_BUFFERED_FRAMES = 4_096;
+  private nextRequestId = 0;
+  private nextFrameSequence = 0;
+  private frames: Array<{ sequence: number; frame: SseFrame }> = [];
+  private pendingRequests = new Map<number, SnapshotRequestToken>();
+  private latestReadId = 0;
+  private latestMutationId = 0;
+  private mutationGeneration = 0;
+  private activeMutations = new Set<number>();
+  // This lives only in the browser process. It is never written to or accepted
+  // from a server snapshot, but lets an unexpired preview survive a crossing
+  // with a snapshot that correctly omits thinking.
+  private liveMemberActivity = new Map<string, LiveMemberActivity>();
+
+  /** Begin a background/full read, unless an action mutation is in flight. */
+  beginReadRequest(): SnapshotRequestToken | null {
+    if (this.activeMutations.size > 0) return null;
+    // Only the newest overlapping read may commit, so an older read no longer
+    // needs to hold a journal claim while its HTTP request winds down.
+    if (this.latestReadId) this.dropPending(this.latestReadId);
+    const request = this.begin("read");
+    this.latestReadId = request.id;
+    return request;
+  }
+
+  /** Begin an action whose response may carry a snapshot. */
+  beginMutationRequest(): SnapshotRequestToken {
+    // A mutation invalidates every read that began before its POST. Its response
+    // (or a fresh read after completion) is the first state allowed to commit.
+    if (this.latestReadId) this.dropPending(this.latestReadId);
+    this.latestReadId = 0;
+    const request = this.begin("mutation");
+    this.latestMutationId = request.id;
+    this.activeMutations.add(request.id);
+    this.mutationGeneration += 1;
+    return { ...request, generation: this.mutationGeneration };
+  }
+
+  finishMutation(request: SnapshotRequestToken): void {
+    if (request.kind !== "mutation") return;
+    this.activeMutations.delete(request.id);
+    this.dropPending(request.id);
+  }
+
+  /** Release a failed/cancelled HTTP request so an idle stream retains no log. */
+  discardRequest(request: SnapshotRequestToken): void {
+    if (request.kind === "read" && request.id === this.latestReadId) {
+      this.latestReadId = 0;
+    }
+    this.dropPending(request.id);
+  }
+
+  /** Record a delta; durable frames are journaled only while a request is pending. */
+  recordFrame(frame: SseFrame): void {
+    if (frame.kind === "member_activity") {
+      const current = this.liveMemberActivity.get(frame.activity.member_run_id);
+      if (!current || current.revision < frame.activity.revision) {
+        this.liveMemberActivity.set(frame.activity.member_run_id, frame.activity);
+      }
+    }
+    if (this.pendingRequests.size === 0) return;
+    this.frames.push({ sequence: ++this.nextFrameSequence, frame });
+    if (this.frames.length > SnapshotFrameBuffer.MAX_BUFFERED_FRAMES) {
+      this.frames = this.frames.slice(-SnapshotFrameBuffer.MAX_BUFFERED_FRAMES);
+    }
+  }
+
+  /** Keep the client-only preview registry aligned with expiry/disconnect UI. */
+  replaceLiveMemberActivity(activity: Record<string, LiveMemberActivity> | undefined): void {
+    this.liveMemberActivity = new Map(Object.entries(activity ?? {}));
+  }
+
+  clearLiveMemberActivity(): void {
+    this.liveMemberActivity.clear();
+  }
+
+  /**
+   * Return a response merged with in-flight deltas, or `null` when it is no
+   * longer causally current. A successful/ignored resolution releases its
+   * journal claim, so idle streams retain no durable frame history.
+   */
+  resolveResponse(
+    request: SnapshotRequestToken,
+    snapshot: DashboardSnapshot,
+  ): DashboardSnapshot | null {
+    const isCurrentRead =
+      request.kind === "read" &&
+      this.activeMutations.size === 0 &&
+      request.id === this.latestReadId &&
+      request.generation === this.mutationGeneration;
+    const isCurrentMutation =
+      request.kind === "mutation" && request.id === this.latestMutationId;
+    if (!isCurrentRead && !isCurrentMutation) {
+      this.dropPending(request.id);
+      return null;
+    }
+
+    // The server snapshot must never establish/replay thinking. Strip any
+    // accidental field, then overlay only active in-memory ephemeral state.
+    const { live_member_activity: _serverActivity, ...withoutServerActivity } = snapshot;
+    let merged: DashboardSnapshot = withoutServerActivity;
+    for (const entry of this.frames) {
+      if (entry.sequence > request.frameSequence) {
+        merged = applyFrame(merged, entry.frame);
+      }
+    }
+    if (this.liveMemberActivity.size > 0) {
+      merged = {
+        ...merged,
+        live_member_activity: Object.fromEntries(this.liveMemberActivity),
+      };
+    }
+    this.dropPending(request.id);
+    return merged;
+  }
+
+  reset(): void {
+    this.pendingRequests.clear();
+    this.activeMutations.clear();
+    this.latestReadId = 0;
+    this.latestMutationId = 0;
+    this.mutationGeneration += 1;
+    this.frames = [];
+    this.liveMemberActivity.clear();
+  }
+
+  private begin(kind: SnapshotRequestToken["kind"]): SnapshotRequestToken {
+    const request: SnapshotRequestToken = {
+      id: ++this.nextRequestId,
+      frameSequence: this.nextFrameSequence,
+      kind,
+      generation: this.mutationGeneration,
+    };
+    this.pendingRequests.set(request.id, request);
+    this.pruneFrames();
+    return request;
+  }
+
+  private dropPending(id: number): void {
+    this.pendingRequests.delete(id);
+    this.pruneFrames();
+  }
+
+  /** Retain only frames still needed by at least one unresolved response. */
+  private pruneFrames(): void {
+    if (this.pendingRequests.size === 0) {
+      this.frames = [];
+      return;
+    }
+    let earliestSequence = Number.POSITIVE_INFINITY;
+    for (const request of this.pendingRequests.values()) {
+      earliestSequence = Math.min(earliestSequence, request.frameSequence);
+    }
+    this.frames = this.frames.filter((entry) => entry.sequence > earliestSequence);
   }
 }
 
@@ -358,12 +656,17 @@ function upsertById<T extends { id: string }>(list: T[] | undefined, incoming: T
   return next;
 }
 
-export async function postAction(baseUrl: string, path: string, body: unknown = {}): Promise<ActionResponse> {
+export async function postAction(
+  baseUrl: string,
+  path: string,
+  body: unknown = {},
+  project?: string | null,
+): Promise<ActionResponse> {
   const normalized = baseUrl.trim().replace(/\/$/, "");
   if (!normalized) {
     throw new Error("Harness API URL is required");
   }
-  const response = await fetch(`${normalized}${path}`, {
+  const response = await fetch(`${normalized}${withProject(path, project)}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),

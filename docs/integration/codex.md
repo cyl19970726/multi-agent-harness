@@ -12,7 +12,7 @@ object semantics such as `Task`, `Message`, `Evidence`, `Proposal`, and
 `Decision` must not be redefined here.
 
 Detailed source-audit notes live in
-[codex-source-audit.md](codex-source-audit.md). Keep long source findings out
+[codex-source-audit.md](codex.md). Keep long source findings out
 of this integration contract unless they change the provider boundary.
 Detailed persistent mailbox and delivery semantics live in
 [codex-message-delivery.md](codex-message-delivery.md). Keep that file aligned
@@ -199,12 +199,12 @@ Codex 的 transcript 或进程内状态。
 - 只用 hooks：hooks 不能创建常驻 member，也不能可靠投递 queued message；
 - 只用 plugin：plugin 解决分发，不解决 runtime 生命周期和 durable state；
 - 只用 `codex exec resume`：适合一次性任务，不适合常驻 AgentMember；
-- 通过 TUI/PTY 自动化：状态不可结构化，Dashboard 和 task graph 无法可靠验收。
+- 通过 TUI/PTY 自动化：状态不可结构化，Dashboard 和 legacy dependency graph 无法可靠验收。
 
 ## Codex 全局接入面审计
 
 长源代码审计和模块表放在
-[codex-source-audit.md](codex-source-audit.md)。本文件只保留会改变 provider
+[codex-source-audit.md](codex.md)。本文件只保留会改变 provider
 边界和 MVP 验收的结论。
 
 这次审计后，V1 设计需要保留四个关键判断：
@@ -303,7 +303,7 @@ member 内部真的 spawn 了 native subagent，Dashboard 会只看到父 member
   store；
 - `exec-server` / environment 是 worktree 和远程执行的未来边界，不能在
   `AgentMember` schema 里缺席；
-- cloud-tasks/agent-jobs 可参考，但我们的 goal/task graph 仍应由 harness
+- cloud-tasks/agent-jobs 可参考，但我们的 goal/legacy dependency graph 仍应由 harness
   自己定义。
 
 ## Transport 和协议（app-server fallback）
@@ -410,7 +410,7 @@ command；生产路径应切到 trusted harness plugin 或 managed requirements 
 Skills 是 “Codex 如何工作” 的操作指南，不是运行时对象。我们需要两类 skill：
 
 - generic harness skill：如何使用 `Goal -> Task -> Message -> Evidence ->
-  Decision -> GoalEvaluation` 工作流；
+  Decision -> outcome evaluation` 工作流；
 - project adapter skill：如何使用某个项目的 CLI、Dashboard、回测、实盘、
   CI/CD 和证据体系。
 
@@ -455,7 +455,7 @@ canonical state 仍在 harness backend/store。
 | Codex TUI `--remote` | 人连接远端 app-server | 是交互入口，不是 harness backend 控制面。 |
 | Codex SDK / Responses / Agents SDK | 自研 provider、非 Codex agent | 会重建 Codex repo/tool/approval/skill 能力。 |
 | Codex native subagents | Codex 内部并行辅助 | 可以作为 provider child graph 观察；默认不能替代 harness AgentMember。 |
-| Hooks only | 观测、治理、回写 | 不能投递消息、管理 runtime、维护 task graph。 |
+| Hooks only | 观测、治理、回写 | 不能投递消息、管理 runtime、维护 legacy dependency graph。 |
 | Plugin only | 分发 skills/hooks/MCP | 不能替代 app-server runtime 或 harness store。 |
 
 ## 验收标准

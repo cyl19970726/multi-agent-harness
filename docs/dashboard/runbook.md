@@ -6,9 +6,9 @@ commands and package paths still use `dashboard`.
 Product-level design and acceptance are in
 [../dashboard.md](../dashboard.md). Frontend architecture is in
 [frontend-architecture.md](frontend-architecture.md). UI/UX principles are in
-[design-principles.md](design-principles.md). Frontend design is in
+[design-principles.md](../company-os/frontend-information-architecture.md). Frontend design is in
 [frontend-design.md](frontend-design.md). Frontend acceptance is in
-[acceptance.md](acceptance.md). The read model is in [read-model.md](read-model.md).
+[acceptance.md](../company-os/frontend-information-architecture.md). The read model is in [read-model.md](../company-os/frontend-information-architecture.md).
 The React/Vite decision is in
 [../decisions/0014-react-vite-agent-dashboard.md](../decisions/0014-react-vite-agent-dashboard.md).
 

@@ -1,19 +1,23 @@
-import { useEffect, useState, type ComponentProps, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import {
   BookOpen,
-  Bot,
+  BriefcaseBusiness,
   Bug,
+  Building2,
+  CheckCircle2,
   ChevronDown,
   Clock,
+  Coins,
   FolderGit2,
-  GitBranch,
   Globe,
-  Inbox,
+  Home,
+  Menu,
   Pause,
   Play,
+  Plug,
   RefreshCw,
   Search,
-  Send,
+  Settings2,
   ShieldAlert,
   Target,
   Users,
@@ -30,15 +34,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import {
-  EmptyState,
-  Kbd,
-  MonoId,
-  StatusDot,
-  TimelineRow,
-} from "@/components/workbench/atoms";
-import { Avatar } from "@/components/workbench/Avatar";
-import { memberTone, taskTone, timelineTone } from "@/components/workbench/tones";
+import { Kbd, MonoId, StatusDot } from "@/components/workbench/atoms";
 
 import type { WorkbenchModel } from "../model/readModel";
 import type { Project } from "../types";
@@ -46,14 +42,13 @@ import {
   AgentDetail,
   AgentsList,
   DebugSurface,
-  DocsBrowser,
-  GoalDocument,
-  GraphKanban,
-  TaskDocument,
-  VisionOverview,
 } from "../surfaces/Surfaces";
 import { WorkflowRunDetail, WorkflowsList } from "../surfaces/Workflows";
-import { deliverQueued } from "../api/actions";
+import { TeamRunsList } from "../surfaces/TeamRuns";
+import { TeamWarRoom } from "../surfaces/TeamWarRoom";
+import { MemberRunFocus } from "../surfaces/MemberRuns";
+import { MissionsSurface } from "../surfaces/Missions";
+import { CompanyOsRouter, isCompanyOsSurface, resolveCompanyOsRouteData } from "../company-os/CompanyOsRouter";
 import type { SelectionState, SurfaceId } from "./selection";
 
 interface WorkbenchShellProps {
@@ -85,14 +80,38 @@ interface WorkbenchShellProps {
   onTogglePoll: () => void;
 }
 
-/** Primary navigation rail: Agents, Vision, Work, Workflows, Docs. */
-const navItems: { id: SurfaceId; label: string; icon: typeof Users }[] = [
-  { id: "agents", label: "Agents", icon: Bot },
-  { id: "vision", label: "Vision", icon: Target },
-  { id: "tasks", label: "Work", icon: GitBranch },
-  { id: "workflows", label: "Workflows", icon: Workflow },
-  { id: "docs", label: "Docs", icon: BookOpen },
+interface NavigationItem {
+  id: SurfaceId;
+  label: string;
+  icon: typeof Users;
+}
+
+const navigationGroups: Array<{ label: "PRIMARY" | "OPERATIONS" | "EXECUTION" | "PLATFORM"; items: NavigationItem[] }> = [
+  { label: "PRIMARY", items: [
+    { id: "home", label: "Home", icon: Home },
+    { id: "docs", label: "Docs", icon: BookOpen },
+    { id: "organization", label: "Organization", icon: Building2 },
+  ] },
+  { label: "OPERATIONS", items: [
+    { id: "work", label: "Work", icon: BriefcaseBusiness },
+    { id: "approvals", label: "Approvals", icon: CheckCircle2 },
+    { id: "finance", label: "Finance", icon: Coins },
+  ] },
+  { label: "EXECUTION", items: [
+    { id: "missions", label: "Missions", icon: Target },
+    { id: "workflows", label: "Workflows", icon: Workflow },
+    { id: "team", label: "Agent Teams", icon: Users },
+  ] },
+  { label: "PLATFORM", items: [
+    { id: "providers", label: "Providers", icon: Globe },
+    { id: "plugins", label: "Plugins", icon: Plug },
+    { id: "settings", label: "Settings", icon: Settings2 },
+  ] },
 ];
+
+const navItems = navigationGroups.flatMap((group) => group.items);
+const mobilePrimaryItems = navigationGroups[0].items;
+const mobileMoreGroups = navigationGroups.slice(1);
 
 /**
  * Surfaces reachable in code but intentionally off the primary rail:
@@ -124,42 +143,38 @@ export function WorkbenchShell({
     onSelectionChange({ ...selection, ...next });
   }
 
-  // The Agents area (list + agent detail) owns its own layout; the Work board
-  // needs full width for its columns; the Goal/Task detail pages are centered
-  // Notion documents that read better without a competing rail. All suppress the
-  // global Inspector; the rest keep it.
-  const noInspector: SurfaceId[] = ["agents", "tasks", "goal", "task", "workflows", "docs"];
-  const showInspector = !noInspector.includes(selection.surface);
-
   return (
-    <div className="flex h-screen flex-col overflow-hidden text-foreground">
-      <TopBar
-        apiUrl={apiUrl}
-        currentSurface={surfaceLabel(selection.surface)}
-        isLoading={isLoading}
+    <div className="flex h-screen overflow-hidden text-foreground">
+      <AppRail
         model={model}
-        projects={projects}
-        selectedProjectId={selectedProjectId}
-        onSelectProject={onSelectProject}
-        onApiUrlChange={onApiUrlChange}
-        onRefresh={onRefresh}
-        sourceError={sourceError}
-        sourceLabel={sourceLabel}
-        debugActive={selection.surface === "debug"}
-        onToggleDebug={() =>
-          updateSelection({ surface: selection.surface === "debug" ? "agents" : "debug" })
-        }
-        pollEnabled={pollEnabled}
-        canPoll={canPoll}
-        onTogglePoll={onTogglePoll}
+        selection={selection}
+        onSelectionChange={updateSelection}
       />
-      <ActionErrorBanner error={sourceError} />
-      <div className="flex min-h-0 flex-1 flex-col-reverse sm:flex-row">
-        <AppRail
-          selection={selection}
-          onSurfaceChange={(surface) => updateSelection({ surface })}
+      <div className="flex min-w-0 flex-1 flex-col pb-14 sm:pb-0">
+        <TopBar
+          apiUrl={apiUrl}
+          currentSurface={surfaceLabel(selection.surface)}
+          contextLabel={nativeContextLabel(model, selection)}
+          isLoading={isLoading}
+          model={model}
+          projects={projects}
+          selectedProjectId={selectedProjectId}
+          onSelectProject={onSelectProject}
+          onApiUrlChange={onApiUrlChange}
+          onRefresh={onRefresh}
+          sourceError={sourceError}
+          sourceLabel={sourceLabel}
+          prototypeMode={isCompanyOsSurface(selection.surface) && resolveCompanyOsRouteData(model).mode !== "store-live"}
+          debugActive={selection.surface === "debug"}
+          onToggleDebug={() =>
+            updateSelection({ surface: selection.surface === "debug" ? "home" : "debug" })
+          }
+          pollEnabled={pollEnabled}
+          canPoll={canPoll}
+          onTogglePoll={onTogglePoll}
         />
-        <main className="relative flex min-w-0 flex-1 flex-col overflow-hidden">
+        <ActionErrorBanner error={sourceError} />
+        <main className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden">
           {(() => {
             const surface = (
               <SurfaceSwitch
@@ -177,10 +192,13 @@ export function WorkbenchShell({
             // ActionErrorBanner via the column, with no fragile calc). Every
             // other surface keeps the centered, padded, scrollable document.
             const fullBleed =
+              isCompanyOsSurface(selection.surface) ||
               (selection.surface === "agents" && Boolean(selection.memberId)) ||
+              (selection.surface === "team" && Boolean(selection.teamId || selection.memberRunId)) ||
+              (selection.surface === "missions" && Boolean(selection.missionId)) ||
               selection.surface === "docs";
             return fullBleed ? (
-              <div className="min-h-0 flex-1">{surface}</div>
+              <div className="flex h-full min-h-0 flex-1">{surface}</div>
             ) : (
               <div className="flex-1 overflow-y-auto">
                 <div className="mx-auto w-full max-w-[1480px] p-3 sm:p-5 xl:p-6">{surface}</div>
@@ -188,15 +206,6 @@ export function WorkbenchShell({
             );
           })()}
         </main>
-        {showInspector && (
-          <Inspector
-            className="hidden xl:flex"
-            model={model}
-            onSelectionChange={updateSelection}
-            actionsEnabled={actionsEnabled}
-            onAction={onAction}
-          />
-        )}
       </div>
     </div>
   );
@@ -204,7 +213,7 @@ export function WorkbenchShell({
 
 /**
  * A dismissible banner that surfaces the last failed action / fetch. Without it
- * a rejected write (e.g. the goal-design assignment gate returning 400, or a
+ * a rejected write (for example, a governed action returning 400, or a
  * delivery failure) only nudged a status dot amber — the operator would @-assign
  * and see nothing happen. Re-shows whenever a new, different error arrives.
  */
@@ -230,6 +239,7 @@ function ActionErrorBanner({ error }: { error: string | null }) {
 function TopBar({
   apiUrl,
   currentSurface,
+  contextLabel,
   isLoading,
   model,
   projects,
@@ -244,38 +254,37 @@ function TopBar({
   pollEnabled,
   canPoll,
   onTogglePoll,
+  prototypeMode,
 }: Omit<
   WorkbenchShellProps,
   "selection" | "onSelectionChange" | "actionsEnabled" | "onAction"
 > & {
   currentSurface: string;
+  contextLabel: string;
   debugActive: boolean;
   onToggleDebug: () => void;
+  prototypeMode: boolean;
 }) {
   // Source mode reflected in the chip: "live (SSE)" while the stream is
   // connected, "polling" once we fall back, "offline fixture" otherwise. The
   // pulsing green dot is reserved for a connected stream; polling (live but no
   // push) gets a steady "good" dot; offline is neutral. The freshness
   // ("updated Ns ago") shows in any online mode.
-  const isStreaming = sourceLabel.includes("SSE");
-  const isOnline = isStreaming || sourceLabel === "polling";
-  const statusTone = sourceError ? "warn" : isOnline ? "good" : "info";
+  const transportStreaming = sourceLabel.includes("SSE");
+  const transportOnline = transportStreaming || sourceLabel === "polling";
+  const isStreaming = !prototypeMode && transportStreaming;
+  const statusTone = sourceError ? "warn" : prototypeMode ? "info" : transportOnline ? "good" : "info";
+  const displayedSourceLabel = prototypeMode ? "prototype fixture" : sourceLabel;
   return (
     <header className="flex h-14 min-w-0 shrink-0 items-center gap-2 border-b border-border bg-card/70 px-3 backdrop-blur-md lg:gap-3">
       <div className="flex min-w-0 shrink items-center gap-2.5">
-        <div className="grid size-8 place-items-center rounded-md bg-primary/15 text-primary ring-1 ring-primary/40">
+        <div className="grid size-8 place-items-center rounded-md bg-primary/15 text-primary ring-1 ring-primary/40 sm:hidden">
           <Workflow className="size-4" />
         </div>
         <div className="min-w-0 leading-tight">
-          <div className="text-[13px] font-semibold tracking-tight">
-            Agent Workbench
-          </div>
+          <div className="truncate text-[13px] font-semibold tracking-tight">{currentSurface}</div>
           <div className="truncate text-[11px] text-muted-foreground">
-            {currentSurface}
-            <span className="mx-1 text-border">/</span>
-            <span className="text-foreground/70">
-              {model.selectedGoal?.title ?? "No active goal"}
-            </span>
+            <span className="text-foreground/70">{contextLabel}</span>
           </div>
         </div>
         <ProjectPicker
@@ -301,10 +310,10 @@ function TopBar({
       <div className="ml-auto flex shrink-0 items-center gap-2">
         <div className="hidden items-center gap-1.5 rounded-md border border-border bg-background/50 px-2 py-1.5 sm:flex">
           <StatusDot tone={statusTone} pulse={isStreaming} />
-          <span className="text-[11px] text-muted-foreground">{sourceLabel}</span>
+          <span className="text-[11px] text-muted-foreground">{displayedSourceLabel}</span>
         </div>
-        {isOnline && <FreshnessChip generatedAt={model.generatedAt} />}
-        <Tooltip>
+        {!prototypeMode && transportOnline && <FreshnessChip generatedAt={model.generatedAt} />}
+        {!prototypeMode && <Tooltip>
           <TooltipTrigger asChild>
             <button
               type="button"
@@ -329,7 +338,7 @@ function TopBar({
                 ? "Stop auto-refresh (~5s)"
                 : "Auto-refresh every ~5s"}
           </TooltipContent>
-        </Tooltip>
+        </Tooltip>}
         <Tooltip>
           <TooltipTrigger asChild>
             <button
@@ -353,7 +362,7 @@ function TopBar({
             auto-retries while offline, so there is no "Load live" button. The
             URL field + a manual Reconnect appear only when not connected (e.g.
             to point at a non-default backend or recover from an outage). */}
-        {!isOnline && (
+        {!transportOnline && (
           <>
             <input
               aria-label="Harness API URL"
@@ -477,46 +486,248 @@ function formatAge(ageS: number): string {
 }
 
 function AppRail({
+  model,
   selection,
-  onSurfaceChange,
+  onSelectionChange,
 }: {
+  model: WorkbenchModel;
   selection: SelectionState;
-  onSurfaceChange: (surface: SurfaceId) => void;
+  onSelectionChange: (selection: Partial<SelectionState>) => void;
 }) {
+  const selectedRun = (model.snapshot.team_runs ?? []).find((run) => run.id === selection.teamId);
+  const missionId = selection.missionId ?? selectedRun?.mission_id;
+  const waveId = selection.waveId ?? selectedRun?.wave_id;
+  const mission = (model.snapshot.missions ?? []).find((item) => item.id === missionId);
+  const wave = (model.snapshot.waves ?? []).find((item) => item.id === waveId);
+  const contextRun = selectedRun ?? (model.snapshot.team_runs ?? []).find(
+    (run) => run.wave_id === waveId && run.mission_id === missionId,
+  );
+  const contextMembers = (model.snapshot.member_runs ?? []).filter(
+    (member) => member.team_run_id === contextRun?.id,
+  );
+
+  function navigate(id: SurfaceId) {
+    onSelectionChange({
+      surface: id,
+      documentId: undefined,
+      workItemId: undefined,
+      standingAgentId: undefined,
+      personId: undefined,
+      proposalId: undefined,
+      approvalId: undefined,
+      moduleId: undefined,
+      memberId: undefined,
+      memberRunId: undefined,
+      workflowRunId: undefined,
+    });
+  }
+
   return (
-    <nav
-      aria-label="Workbench navigation"
-      className="flex h-14 w-full shrink-0 flex-row items-center justify-around gap-1 border-t border-border bg-card/40 px-2 py-1 sm:h-auto sm:w-16 sm:flex-col sm:justify-start sm:border-r sm:border-t-0 sm:px-0 sm:py-3"
-    >
-      {navItems.map((item) => {
-        const active = selection.surface === item.id;
-        const Icon = item.icon;
-        return (
-          <Tooltip key={item.id}>
+    <>
+      <aside className="hidden h-full w-[17rem] shrink-0 flex-col border-r border-sidebar-border bg-sidebar xl:flex">
+        <div className="flex h-14 shrink-0 items-center gap-2.5 border-b border-border px-4">
+          <div className="grid size-8 place-items-center rounded-lg bg-primary text-primary-foreground shadow-sm">
+            <Building2 className="size-4" />
+          </div>
+          <div className="min-w-0">
+            <p className="text-[13px] font-semibold tracking-tight">Company OS</p>
+            <p className="text-[10px] text-muted-foreground">Docs · organization · execution</p>
+          </div>
+        </div>
+
+        <ScrollArea className="min-h-0 flex-1">
+          <div className="space-y-5 px-3 py-4">
+            <nav aria-label="Product navigation" className="space-y-5">
+              {navigationGroups.map((group) => (
+                <section key={group.label} aria-labelledby={`nav-${group.label.toLowerCase()}`}>
+                  <p id={`nav-${group.label.toLowerCase()}`} className="mb-1 px-2.5 text-[9px] font-semibold tracking-[0.14em] text-muted-foreground">
+                    {group.label}
+                  </p>
+                  <div className="space-y-0.5">
+                    {group.items.map((item) => {
+                      const active = selection.surface === item.id;
+                      const Icon = item.icon;
+                      return (
+                        <button
+                          key={item.id}
+                          type="button"
+                          onClick={() => navigate(item.id)}
+                          className={cn(
+                            "flex h-9 w-full items-center gap-2.5 rounded-md px-2.5 text-left text-[13px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground",
+                            active && "bg-primary/10 font-medium text-primary hover:bg-primary/10 hover:text-primary",
+                          )}
+                        >
+                          <Icon className="size-4 shrink-0" />
+                          <span className="whitespace-nowrap">{item.label}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </section>
+              ))}
+            </nav>
+
+            <section className="space-y-1.5">
+              <p className="px-2.5 text-[9px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+                Active context
+              </p>
+              {mission ? (
+                <div className="space-y-0.5">
+                  <ContextTreeButton
+                    depth={0}
+                    icon={<Target className="size-3.5" />}
+                    label={`Mission: ${mission.title}`}
+                    active={selection.surface === "missions" && selection.missionId === mission.id && !selection.waveId}
+                    onClick={() => onSelectionChange({ surface: "missions", missionId: mission.id, waveId: undefined, teamId: undefined, memberRunId: undefined })}
+                  />
+                  {wave && (
+                    <ContextTreeButton
+                      depth={1}
+                      icon={<Workflow className="size-3.5" />}
+                      label={`Wave ${wave.index} · ${wave.title}`}
+                      active={selection.surface === "missions" && selection.waveId === wave.id}
+                      onClick={() => onSelectionChange({ surface: "missions", missionId: mission.id, waveId: wave.id, teamId: undefined, memberRunId: undefined })}
+                    />
+                  )}
+                  {contextRun && (
+                    <ContextTreeButton
+                      depth={2}
+                      icon={<Users className="size-3.5" />}
+                      label="Agent Team"
+                      active={selection.surface === "team" && selection.teamId === contextRun.id && !selection.memberRunId}
+                      onClick={() => onSelectionChange({ surface: "team", teamId: contextRun.id, memberRunId: undefined })}
+                    />
+                  )}
+                  {contextMembers.map((member) => (
+                    <ContextTreeButton
+                      key={member.id}
+                      depth={3}
+                      icon={<StatusDot tone={member.status === "blocked" || member.status === "failed" ? "bad" : member.status === "running" ? "running" : member.status === "completed" ? "good" : "idle"} />}
+                      label={member.name ?? member.id}
+                      active={selection.memberRunId === member.id}
+                      onClick={() => onSelectionChange({ surface: "team", teamId: contextRun?.id, memberRunId: member.id })}
+                    />
+                  ))}
+                </div>
+              ) : (
+                <p className="px-2.5 py-2 text-[11px] leading-relaxed text-muted-foreground">
+                  Open a Mission to keep its Wave, Team, and Members in reach.
+                </p>
+              )}
+            </section>
+
+          </div>
+        </ScrollArea>
+      </aside>
+
+      <aside className="hidden h-full w-16 shrink-0 flex-col items-center border-r border-sidebar-border bg-sidebar py-3 sm:flex xl:hidden">
+        <div className="grid size-9 shrink-0 place-items-center rounded-lg bg-primary text-primary-foreground shadow-sm" aria-label="Company OS">
+          <Building2 className="size-4" />
+        </div>
+        <nav aria-label="Compact product navigation" className="mt-4 flex min-h-0 flex-1 flex-col items-center gap-1 overflow-y-auto px-2">
+          {navigationGroups.map((group, index) => (
+            <div key={group.label} className={cn("flex flex-col items-center gap-1", index > 0 && "mt-2 border-t border-border pt-2")}>
+              {group.items.map((item) => {
+                const active = selection.surface === item.id;
+                const Icon = item.icon;
+                return (
+                  <Tooltip key={item.id}>
+                    <TooltipTrigger asChild>
+                      <button
+                        type="button"
+                        aria-label={`${group.label}: ${item.label}`}
+                        onClick={() => navigate(item.id)}
+                        className={cn(
+                          "grid size-9 shrink-0 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground",
+                          active && "bg-primary/10 text-primary hover:bg-primary/10 hover:text-primary",
+                        )}
+                      >
+                        <Icon className="size-4" />
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent side="right">{group.label} · {item.label}</TooltipContent>
+                  </Tooltip>
+                );
+              })}
+            </div>
+          ))}
+        </nav>
+        {mission && (
+          <Tooltip>
             <TooltipTrigger asChild>
               <button
                 type="button"
-                aria-label={item.label}
-                onClick={() => onSurfaceChange(item.id)}
-                className={cn(
-                  "relative grid size-10 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground",
-                  active && "bg-primary/12 text-primary hover:bg-primary/12 hover:text-primary",
-                )}
+                aria-label={`Active Mission: ${mission.title}`}
+                onClick={() => onSelectionChange({ surface: "missions", missionId: mission.id, waveId: waveId ?? undefined })}
+                className="mb-2 grid size-10 place-items-center rounded-lg border border-primary/20 bg-primary/5 text-primary"
               >
-                {active && (
-                  <>
-                    <span className="absolute -bottom-1 left-1/2 h-0.5 w-5 -translate-x-1/2 rounded-t bg-primary sm:hidden" />
-                    <span className="absolute -left-3 top-1/2 hidden h-5 w-0.5 -translate-y-1/2 rounded-r bg-primary sm:block" />
-                  </>
-                )}
-                <Icon className="size-[18px]" />
+                <Target className="size-[18px]" />
               </button>
             </TooltipTrigger>
-            <TooltipContent side="right">{item.label}</TooltipContent>
+            <TooltipContent side="right">{wave ? `Wave ${wave.index} · ${wave.title}` : mission.title}</TooltipContent>
           </Tooltip>
-        );
-      })}
-    </nav>
+        )}
+      </aside>
+
+      <nav aria-label="Mobile navigation" className="fixed inset-x-0 bottom-0 z-50 flex h-14 items-center justify-around border-t border-border bg-card px-1 sm:hidden">
+        {mobilePrimaryItems.map((item) => {
+          const active = selection.surface === item.id;
+          const Icon = item.icon;
+          return (
+            <button key={item.id} type="button" aria-label={item.label} onClick={() => navigate(item.id)} className={cn("flex h-12 min-w-[74px] flex-col items-center justify-center gap-0.5 rounded-lg px-1 text-[10px] text-muted-foreground", active && "bg-primary/10 font-medium text-primary")}>
+              <Icon className="size-4" />
+              <span className="whitespace-nowrap">{item.label}</span>
+            </button>
+          );
+        })}
+        <details className="group relative">
+          <summary className="flex h-12 min-w-[74px] cursor-pointer list-none flex-col items-center justify-center gap-0.5 rounded-lg px-1 text-[10px] text-muted-foreground hover:bg-accent">
+            <Menu className="size-4" />
+            <span>More</span>
+          </summary>
+          <div className="absolute bottom-14 right-0 w-56 rounded-lg border border-border bg-card p-2 shadow-lg">
+            {mobileMoreGroups.map((group) => (
+              <section key={group.label} className="mb-2 last:mb-0">
+                <p className="px-2 py-1 text-[9px] font-semibold tracking-wider text-muted-foreground">{group.label}</p>
+                {group.items.map((item) => {
+                  const Icon = item.icon;
+                  return <button key={item.id} type="button" onClick={() => navigate(item.id)} className="flex h-9 w-full items-center gap-2 rounded-md px-2 text-left text-xs text-foreground hover:bg-accent"><Icon className="size-4 text-muted-foreground" />{item.label}</button>;
+                })}
+              </section>
+            ))}
+          </div>
+        </details>
+      </nav>
+    </>
+  );
+}
+
+function ContextTreeButton({
+  depth,
+  icon,
+  label,
+  active,
+  onClick,
+}: {
+  depth: number;
+  icon: ReactNode;
+  label: string;
+  active: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        "flex h-8 w-full items-center gap-2 rounded-md pr-2 text-left text-[11px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground",
+        active && "bg-primary/10 font-medium text-primary hover:bg-primary/10 hover:text-primary",
+      )}
+      style={{ paddingLeft: `${10 + depth * 12}px` }}
+    >
+      <span className="shrink-0">{icon}</span>
+      <span className="truncate">{label}</span>
+    </button>
   );
 }
 
@@ -538,23 +749,16 @@ function SurfaceSwitch({
   apiUrl: string;
 }) {
   const shared = { model, onSelectionChange, actionsEnabled, onAction, apiUrl };
+  if (isCompanyOsSurface(selection.surface)) {
+    return <CompanyOsRouter model={model} selection={selection} />;
+  }
   switch (selection.surface) {
-    case "vision":
-      return <VisionOverview {...shared} />;
-    case "goal":
-      return <GoalDocument {...shared} />;
-    case "task":
-      return <TaskDocument {...shared} taskTab={selection.taskTab} />;
-    case "tasks":
-      // The Work board is the Goal collection; a `boardGoal` filter pins it to
-      // one goal's task columns. Accept `?surface=tasks&goal=<id>` as a deep
-      // link alias because Goal pages and user-shared URLs already carry
-      // `goal`, while the older Work-specific filter was named `boardGoal`.
+    case "missions":
       return (
-        <GraphKanban
+        <MissionsSurface
           {...shared}
-          boardGoal={selection.boardGoal ?? selection.goalId}
-          peekTaskId={selection.taskId}
+          missionId={selection.missionId}
+          waveId={selection.waveId}
         />
       );
     case "workflows":
@@ -564,8 +768,14 @@ function SurfaceSwitch({
       ) : (
         <WorkflowsList {...shared} />
       );
-    case "docs":
-      return <DocsBrowser {...shared} docPath={selection.docPath} />;
+    case "team":
+      return selection.memberRunId ? (
+        <MemberRunFocus {...shared} memberRunId={selection.memberRunId} />
+      ) : selection.teamId ? (
+        <TeamWarRoom {...shared} teamRunId={selection.teamId} />
+      ) : (
+        <TeamRunsList {...shared} />
+      );
     case "debug":
       return <DebugSurface model={model} sourceLabel={sourceLabel} />;
     case "agents":
@@ -573,217 +783,76 @@ function SurfaceSwitch({
       // The Agents area is one surface: the list, or an agent's detail page when
       // an agent is selected (?agent=<id>). Both own their layout.
       return selection.memberId ? (
-        <AgentDetail {...shared} agentTab={selection.agentTab} />
+        <AgentDetail {...shared} />
       ) : (
         <AgentsList {...shared} />
       );
   }
 }
 
-function Inspector({
-  className,
-  model,
-  onSelectionChange,
-  actionsEnabled,
-  onAction,
-}: {
-  className?: string;
-  model: WorkbenchModel;
-  onSelectionChange: (selection: Partial<SelectionState>) => void;
-  actionsEnabled: boolean;
-  onAction: (path: string, body?: unknown) => void;
-}) {
-  const member = model.selectedMember;
-  const task = model.selectedTask;
-  return (
-    <aside
-      aria-label="Selected object inspector"
-      className={cn(
-        "w-80 shrink-0 flex-col border-l border-border bg-card/40",
-        className,
-      )}
-    >
-      <div className="flex h-14 shrink-0 items-center gap-2.5 border-b border-border px-4">
-        {member ? (
-          <Avatar
-            name={member.name ?? member.id}
-            tone={memberTone(member.runtime_status ?? member.status)}
-          />
-        ) : (
-          <div className="grid size-8 place-items-center rounded-md bg-secondary text-muted-foreground">
-            <Inbox className="size-4" />
-          </div>
-        )}
-        <div className="min-w-0">
-          <p className="text-[10px] uppercase tracking-wider text-muted-foreground">
-            {member ? "Selected member" : task ? "Selected task" : "Inspector"}
-          </p>
-          <p className="truncate text-[13px] font-semibold">
-            {member?.name ?? task?.title ?? "Nothing selected"}
-          </p>
-        </div>
-      </div>
-
-      <ScrollArea className="min-h-0 flex-1">
-        <div className="space-y-4 p-4">
-          {member && (
-            <section className="space-y-2.5">
-              <div className="flex flex-wrap items-center gap-1.5">
-                <Badge tone={memberTone(member.runtime_status ?? member.status)}>
-                  {member.runtime_status ?? member.status ?? "unknown"}
-                </Badge>
-                <Badge tone="info">{member.role ?? "Member"}</Badge>
-                {member.provider && <Badge tone="muted">{member.provider}</Badge>}
-              </div>
-              <p className="text-xs leading-relaxed text-muted-foreground">
-                {member.description ??
-                  "Persistent AgentMember with role, prompt, runtime state, inbox/outbox and a current task."}
-              </p>
-              <div className="flex gap-2">
-                <Button
-                  variant="default"
-                  size="sm"
-                  className="flex-1"
-                  onClick={() =>
-                    onSelectionChange({ memberId: member.id, surface: "agents" })
-                  }
-                >
-                  <Send className="size-3.5" />
-                  Open agent
-                </Button>
-                <InspectorAction
-                  enabled={actionsEnabled}
-                  variant="secondary"
-                  className="flex-1"
-                  onClick={() => {
-                    // Pass start_runtime so a runtime is spun up if none is
-                    // alive — otherwise queued messages just sit in Queued
-                    // because deliver against a dead/absent runtime fails.
-                    const d = deliverQueued(member.id, { startRuntime: true });
-                    onAction(d.path, d.body);
-                  }}
-                >
-                  <Inbox className="size-3.5" />
-                  Deliver
-                </InspectorAction>
-              </div>
-            </section>
-          )}
-
-          <section className="grid grid-cols-2 gap-2">
-            <Metric label="Inbox" value={member?.inbox_count ?? 0} />
-            <Metric label="Queued" value={member?.queued_count ?? 0} />
-          </section>
-
-          {task && (
-            <section className="rounded-lg border border-border bg-background/40 p-3">
-              <p className="text-[10px] uppercase tracking-wider text-muted-foreground">
-                Current task
-              </p>
-              <button
-                type="button"
-                onClick={() => onSelectionChange({ surface: "task", taskId: task.id })}
-                className="mt-0.5 block text-left text-[13px] font-medium text-foreground hover:text-primary"
-              >
-                {task.title ?? task.id}
-              </button>
-              <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">
-                {task.objective}
-              </p>
-              <div className="mt-2 flex flex-wrap items-center gap-1.5">
-                <Badge tone={taskTone(task.status)}>{task.status}</Badge>
-                {task.branch_ref && (
-                  <span className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
-                    <GitBranch className="size-3" />
-                    <MonoId>{shortBranch(task.branch_ref)}</MonoId>
-                  </span>
-                )}
-              </div>
-            </section>
-          )}
-
-          <section>
-            <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-              Recent activity
-            </p>
-            <div className="overflow-hidden rounded-lg border border-border bg-background/40">
-              {model.selectedMemberTimeline.length ? (
-                model.selectedMemberTimeline.slice(0, 5).map((item) => (
-                  <TimelineRow
-                    key={item.id}
-                    kind={item.kind}
-                    title={item.title}
-                    meta={item.meta}
-                    body={item.body}
-                    tone={timelineTone(item.kind, item.severity)}
-                    onClick={() =>
-                      item.objectRef &&
-                      onSelectionChange({ taskId: item.objectRef, surface: "task" })
-                    }
-                  />
-                ))
-              ) : (
-                <EmptyState title="No recent activity" />
-              )}
-            </div>
-          </section>
-        </div>
-      </ScrollArea>
-    </aside>
-  );
-}
-
-const ACTIONS_DISABLED_HINT = "Connect a live source to enable actions";
-
-/** Inspector action button: visibly disabled with a tooltip when read-only. */
-function InspectorAction({
-  enabled,
-  children,
-  ...props
-}: ComponentProps<typeof Button> & { enabled: boolean; children: ReactNode }) {
-  if (enabled) {
-    return (
-      <Button size="sm" {...props}>
-        {children}
-      </Button>
-    );
-  }
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <span className={cn("inline-flex", props.className)}>
-          <Button size="sm" {...props} className="w-full" disabled title={ACTIONS_DISABLED_HINT}>
-            {children}
-          </Button>
-        </span>
-      </TooltipTrigger>
-      <TooltipContent side="bottom">{ACTIONS_DISABLED_HINT}</TooltipContent>
-    </Tooltip>
-  );
-}
-
-function Metric({ label, value }: { label: string; value: number }) {
-  return (
-    <div className="rounded-md border border-border bg-background/40 px-3 py-2">
-      <div className="text-lg font-semibold tabular-nums">{value}</div>
-      <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
-        {label}
-      </div>
-    </div>
-  );
-}
-
-function shortBranch(value: string): string {
-  const parts = value.split("/");
-  return parts.length > 2 ? `…/${parts.slice(-1)[0]}` : value;
-}
-
 const offRailLabels: Partial<Record<SurfaceId, string>> = {
-  goal: "Goal",
-  task: "Task",
-  docs: "Docs",
+  team: "Agent Team",
+  agents: "Execution agent",
   debug: "Debug",
 };
+
+function nativeContextLabel(model: WorkbenchModel, selection: SelectionState): string {
+  if (selection.surface === "missions") {
+    const mission = (model.snapshot.missions ?? []).find(
+      (candidate) => candidate.id === selection.missionId,
+    );
+    return mission?.title ?? "Mission control";
+  }
+
+  if (selection.surface === "team") {
+    const memberRun = (model.snapshot.member_runs ?? []).find(
+      (candidate) => candidate.id === selection.memberRunId,
+    );
+    const run = (model.snapshot.team_runs ?? []).find(
+      (candidate) => candidate.id === (selection.teamId ?? memberRun?.team_run_id),
+    );
+    const mission = run?.mission_id
+      ? (model.snapshot.missions ?? []).find((candidate) => candidate.id === run.mission_id)
+      : undefined;
+    return memberRun?.name ?? mission?.title ?? (run ? "Compatibility Team Run" : "Agent Team attempts");
+  }
+
+  switch (selection.surface) {
+    case "home":
+      return "Company attention";
+    case "organization":
+      if (selection.personId === "actor-human-brand-owner") return "Brand Owner";
+      if (selection.standingAgentId === "actor-agent-document-architecture") return "Document Architecture Agent";
+      if (selection.proposalId === "governance-proposal-trademark-management") return "Create Trademark Management module";
+      return selection.personId ?? selection.standingAgentId ?? selection.proposalId ?? "Mixed organization";
+    case "work":
+      return selection.workItemId === "workitem-trademark-filing-brand-a"
+        ? "Trademark filing for Brand A"
+        : selection.workItemId ?? "Company work";
+    case "approvals":
+      return selection.approvalId === "approval-trademark-filing-fee-cn-2026-018"
+        ? "Approve trademark filing fee"
+        : selection.approvalId ?? "Approval inbox";
+    case "finance":
+      return "Financial records";
+    case "providers":
+    case "plugins":
+    case "settings":
+      return "Platform";
+    case "agents":
+      return "Execution compatibility";
+    case "workflows":
+      return "Dynamic workflows";
+    case "docs":
+      if (selection.documentId === "document-brand-a-content-operating-plan") return "Brand A content operating plan";
+      if (selection.moduleId === "module-trademark-management") return "Trademark Management";
+      return selection.documentId ?? selection.moduleId ?? "Company knowledge";
+    case "debug":
+      return "Diagnostics";
+    default:
+      return "Control plane";
+  }
+}
 
 function surfaceLabel(surface: SurfaceId): string {
   return (

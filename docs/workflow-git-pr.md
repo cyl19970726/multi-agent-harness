@@ -1,6 +1,6 @@
 # Git, PR, And Review Workflow
 
-This document defines how task graph work integrates with Git worktrees,
+This document defines how legacy dependency graph work integrates with Git worktrees,
 branches, pull requests, review, proposals, and Leader decisions.
 
 ## Vision Link
@@ -23,7 +23,7 @@ Goal
   -> Evidence and review
   -> Leader Decision
   -> task merge / revise / split / follow-up
-  -> GoalEvaluation
+  -> outcome evaluation
   -> goal PR into production branch
 ```
 
@@ -67,8 +67,8 @@ Rules:
   orchestrated `goal run-phases` flow (see Phase Landing below);
 - task PRs, where used, target the goal branch, not the production branch;
 - goal branch integration into production happens only after goal acceptance:
-  task graph complete or explicitly blocked, evidence present, review complete,
-  Leader decision recorded, and GoalEvaluation present or waived;
+  legacy dependency graph complete or explicitly blocked, evidence present, review complete,
+  Leader decision recorded, and outcome evaluation present or waived;
 - a documentation-only, investigation-only, or no-file task may report evidence
   without a task branch, but that exception should be visible in the task's
   workspace/proposal state;
@@ -124,7 +124,7 @@ sequenceDiagram
   C->>H: critic/review evidence
   L->>H: Decision(accept/revise/split/reject/follow-up task)
   L->>G: merge accepted task PR into goal branch
-  L->>H: GoalEvaluation and goal close decision
+  L->>H: outcome evaluation and goal close decision
   L->>G: open/merge goal PR into production branch
 ```
 
@@ -148,7 +148,7 @@ Rules:
 
 - a standing team can work across multiple goals and preserve role identity,
   inbox/outbox history, provider sessions, and prior decisions;
-- `GoalDesign` chooses the team shape for one goal by reusing standing members,
+- `legacy plan record` chooses the team shape for one goal by reusing standing members,
   adding specialist members when needed, or explicitly recording a role gap;
 - creating a new team for every task or closing a team when one task completes
   is a workflow smell unless a Leader decision explains why the team is
@@ -222,7 +222,7 @@ messages.
 Observer is the durable AgentMember role that coordinates these watches across
 a long-running goal or project. A watcher may observe one PR, runtime, or
 warning stream; Observer turns repeated watch output into proposed goals,
-task-graph changes, blockers, or follow-up work for Lead decision.
+dependency graph changes, blockers, or follow-up work for Lead decision.
 
 ## Invariants
 
@@ -231,7 +231,7 @@ task-graph changes, blockers, or follow-up work for Lead decision.
 3. Task PR merge is not equal to task acceptance.
 4. Goal PR merge is not equal to goal acceptance.
 5. Review evidence precedes Leader decision for non-trivial changes.
-6. Concurrent work must be visible in task graph and workspace refs.
+6. Concurrent work must be visible in legacy dependency graph and workspace refs.
 7. Task branches target the goal branch; goal branches target production.
 8. AgentTeams persist across tasks and goals unless retired by explicit
    lifecycle decision.

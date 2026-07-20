@@ -4,7 +4,7 @@ This document defines the canonical workflow runtime for `crates/harness-workflo
 
 ## Vision Link
 
-The product needs a programmable orchestration layer between a high-level goal/task graph and provider-specific worker CLIs. A workflow is useful only after the harness can explain:
+The product needs a programmable orchestration layer between a high-level goal/legacy dependency graph and provider-specific worker CLIs. A workflow is useful only after the harness can explain:
 
 ```text
 Starlark program
@@ -13,7 +13,7 @@ Starlark program
   -> ephemeral provider workers
   -> WorkflowStep rows
   -> WorkflowRun terminal summary/output
-  -> optional goal-phase landing
+  -> optional historical phase landing
 ```
 
 The workflow runtime is not the durable goal/task/message protocol. It is the execution substrate that a Lead-authored `.star` program and `goal run-phases` both use to fan out provider work and record the result.
@@ -25,7 +25,7 @@ The workflow runtime is not the durable goal/task/message protocol. It is the ex
 | `crates/harness-workflow` | Provider-neutral `AgentStepSpec`, `StepResult`, scheduler, `parallel()`, streaming `pipeline()`, built-in registry workflows, Starlark evaluation, outcome shaping | Provider CLI spawning, store writes, project selection, worktree creation/cleanup, goal/task status updates |
 | `starlark_front` | Hermetic script evaluation, host globals, required `workflow(...)` metadata, `args` injection, deterministic leaf ordinals, budget/replay control | Provider behavior, filesystem effects, CLI flag parsing |
 | `harness-cli workflow run-script` | Reads scripts, builds the real provider driver, appends `WorkflowRun` / `WorkflowStep`, retention/progress/resume policy | Starlark language semantics and scheduler internals |
-| `goal run-phases` | Compiles goal phases to Starlark, gates phase results, lands passing writable diffs | The lower-level leaf execution runtime |
+| `goal run-phases` | Compiles historical phases to Starlark, gates phase results, lands passing writable diffs | The lower-level leaf execution runtime |
 
 The crate was explicitly extracted so it contains no Codex or Claude provider code; the binary injects real delivery through `AgentStepFn`, while tests inject a mock driver (`crates/harness-workflow/src/lib.rs:1`, `crates/harness-workflow/src/lib.rs:3`, `crates/harness-workflow/src/lib.rs:4`, `crates/harness-workflow/src/lib.rs:146`). `AgentStepFn` returns `StepResult` instead of panicking so workflow control flow owns failure handling (`crates/harness-workflow/src/lib.rs:146`, `crates/harness-workflow/src/lib.rs:150`).
 
@@ -35,7 +35,7 @@ The Starlark front-end is the sole dynamic authoring surface: it lets an agent w
 
 ### `AgentStepSpec`
 
-`AgentStepSpec` is the provider-neutral leaf description produced by `agent()`, `parallel()`, `pipeline()`, and compiled goal phases. It carries:
+`AgentStepSpec` is the provider-neutral leaf description produced by `agent()`, `parallel()`, `pipeline()`, and compiled historical phases. It carries:
 
 | Field | Meaning |
 | --- | --- |
@@ -329,7 +329,7 @@ The fields are defined at `crates/harness-core/src/lib.rs:2612` through `crates/
 | `result` | Structured machine payload from `step_result_json()` |
 | `started_at` | Step start time |
 | `ended_at` | Terminal time, if finished |
-| `task_id` | Goal task id when the goal phase compiler/linker stamps it |
+| `task_id` | Goal task id when the historical phase compiler/linker stamps it |
 | `verdict_outcome` | Phase verdict marker used by the goal orchestrator |
 
 The fields are defined at `crates/harness-core/src/lib.rs:2689` through `crates/harness-core/src/lib.rs:2713`. `WorkflowStep.run_id` points back to the run; `WorkflowRun.step_ids` preserves ordered membership. `provider_session_id` links the step to the provider session produced by the leaf (`crates/harness-core/src/lib.rs:2684`, `crates/harness-core/src/lib.rs:2686`, `crates/harness-core/src/lib.rs:2690`, `crates/harness-core/src/lib.rs:2694`).
@@ -366,7 +366,7 @@ Standalone `run-script` writable work is durable-but-not-implicitly-landed. The 
 
 The diff itself is captured with `git diff --binary` (`ephemeral_worktree_diff`, `crates/harness-cli/src/main.rs:10038`) so a worktree that touched binary files produces a patch that applies cleanly instead of one that silently corrupts or refuses to apply.
 
-Orchestrated runs — any run `goal run-phases` executes, task-graph or workflow-mode, marked by `spec.orchestrated == true` and detected by `is_orchestrated_run` (`crates/harness-cli/src/main.rs:11653`) — persist NO `WorkflowPatch` rows at all (`persist_workflow_patches` short-circuits to an empty list). Per-phase landing (below) is the single landing authority for those runs. An in-script `apply_patch()` call under orchestration performs no tree mutation — it is journaled as intent only; `reject_patch()` has a real effect, excluding that step's diff from the phase's landing commit (`process_workflow_patch_actions`, `crates/harness-cli/src/main.rs:11864`).
+Orchestrated runs — any run `goal run-phases` executes, dependency graph or workflow-mode, marked by `spec.orchestrated == true` and detected by `is_orchestrated_run` (`crates/harness-cli/src/main.rs:11653`) — persist NO `WorkflowPatch` rows at all (`persist_workflow_patches` short-circuits to an empty list). Per-phase landing (below) is the single landing authority for those runs. An in-script `apply_patch()` call under orchestration performs no tree mutation — it is journaled as intent only; `reject_patch()` has a real effect, excluding that step's diff from the phase's landing commit (`process_workflow_patch_actions`, `crates/harness-cli/src/main.rs:11864`).
 
 Direct write mode is for the opposite case: a small serial edit where the caller intentionally wants the worker to modify the selected project root now. A direct leaf must set both `writable=True` and `write_mode="direct"`, cannot also set `isolation="worktree"`, requires a git-backed clean project root before the step starts, and records the resulting shared-cwd diff as `direct_diff` evidence. It does not create a pending `WorkflowPatch` because the change is already in the working tree. The Starlark front-end rejects `write_mode="direct"` inside `parallel()` and `pipeline()` specs for now, because concurrent shared-tree mutations are not attributable or conflict-safe.
 
@@ -376,7 +376,7 @@ Security note: the throwaway worktree only contains writes made inside that chec
 
 `harness workflow run-script` is the raw dynamic runtime. It evaluates an authored `.star` file, journals a `WorkflowRun` plus `WorkflowStep` rows, saves writable diffs as `WorkflowPatch` rows, and discards writable worktrees after capture.
 
-`harness goal run-phases` is the goal-layer front-end onto the same runtime. It compiles each goal phase's task DAG into a Starlark program with `compile_phase_to_starlark()` (`crates/harness-core/src/lib.rs:651`). The compiler layers dependencies, groups pairwise-disjoint writable tasks into `parallel([...])`, emits singleton `agent(...)` calls, marks tasks with owned paths as `writable=True, isolation="worktree"`, and adds a structured acceptance judge plus `verdict(...)` when the phase has acceptance criteria (`crates/harness-core/src/lib.rs:640`, `crates/harness-core/src/lib.rs:641`, `crates/harness-core/src/lib.rs:643`, `crates/harness-core/src/lib.rs:645`, `crates/harness-core/src/lib.rs:770`, `crates/harness-core/src/lib.rs:775`, `crates/harness-core/src/lib.rs:790`, `crates/harness-core/src/lib.rs:908`, `crates/harness-core/src/lib.rs:916`).
+`harness goal run-phases` is the goal-layer front-end onto the same runtime. It compiles each historical phase's task DAG into a Starlark program with `compile_phase_to_starlark()` (`crates/harness-core/src/lib.rs:651`). The compiler layers dependencies, groups pairwise-disjoint writable tasks into `parallel([...])`, emits singleton `agent(...)` calls, marks tasks with owned paths as `writable=True, isolation="worktree"`, and adds a structured acceptance judge plus `verdict(...)` when the phase has acceptance criteria (`crates/harness-core/src/lib.rs:640`, `crates/harness-core/src/lib.rs:641`, `crates/harness-core/src/lib.rs:643`, `crates/harness-core/src/lib.rs:645`, `crates/harness-core/src/lib.rs:770`, `crates/harness-core/src/lib.rs:775`, `crates/harness-core/src/lib.rs:790`, `crates/harness-core/src/lib.rs:908`, `crates/harness-core/src/lib.rs:916`).
 
 During `goal run-phases`, the CLI writes the compiled script into the store, runs it through the workflow runtime, gates the outcome, links steps back to tasks, and records a phase verdict decision (`crates/harness-cli/src/main.rs:2396`, `crates/harness-cli/src/main.rs:2399`, `crates/harness-cli/src/main.rs:2410`, `crates/harness-cli/src/main.rs:2439`, `crates/harness-cli/src/main.rs:2471`, `crates/harness-cli/src/main.rs:2493`). If the phase passes, the goal layer lands writable work: it applies each captured worktree diff in deterministic ordinal order and makes one commit named `phase <phase_id> landed (run-phases)` (`crates/harness-cli/src/main.rs:2101`, `crates/harness-cli/src/main.rs:2102`, `crates/harness-cli/src/main.rs:2103`, `crates/harness-cli/src/main.rs:2104`, `crates/harness-cli/src/main.rs:2212`, `crates/harness-cli/src/main.rs:2217`). Passing phase landing is recorded back on the phase and orchestration run as `landed_commit` (`crates/harness-cli/src/main.rs:2517`, `crates/harness-cli/src/main.rs:2519`, `crates/harness-cli/src/main.rs:2530`).
 
@@ -385,7 +385,7 @@ The distinction is deliberate:
 | Surface | Executes with | Writable leaf behavior | Landing authority |
 | --- | --- | --- | --- |
 | `workflow run-script` | Authored Starlark program | Capture worktree diff as pending `WorkflowPatch` (only for a leaf that succeeded AND was `writable=True`), discard worktree; or leave direct-mode diff in the selected project root | Explicit patch apply/reject or workflow patch action for worktree mode; normal git review for direct mode |
-| `goal run-phases` | Compiled task-graph Starlark (`execution_mode="task_graph"`) or an authored Starlark program loaded via `workflow_ref` (`execution_mode="workflow"`) — both marked `orchestrated: true` | Capture each writable leaf's worktree diff as run-scoped evidence only; NO `WorkflowPatch` rows are persisted | Per-phase landing is the sole authority: a passing phase lands every non-rejected, non-`discard`ed diff in one commit; `reject_patch()` / `persist_changes="discard"` exclude a step's diff from that commit |
+| `goal run-phases` | Compiled dependency graph Starlark (`execution_mode="dependency graph"`) or an authored Starlark program loaded via `workflow_ref` (`execution_mode="workflow"`) — both marked `orchestrated: true` | Capture each writable leaf's worktree diff as run-scoped evidence only; NO `WorkflowPatch` rows are persisted | Per-phase landing is the sole authority: a passing phase lands every non-rejected, non-`discard`ed diff in one commit; `reject_patch()` / `persist_changes="discard"` exclude a step's diff from that commit |
 
 ## Invariants
 
@@ -398,5 +398,5 @@ The distinction is deliberate:
 7. `writable=True` implies throwaway worktree isolation unless `write_mode="direct"` is explicit.
 8. Standalone workflow worktrees become durable pending patches, not implicit landing.
 9. Direct write mode requires a clean git project root and records `direct_diff` rather than `WorkflowPatch`.
-10. Goal-phase execution may land only after the goal layer's gates pass.
+10. historical phase execution may land only after the goal layer's gates pass.
 11. The selected project root defines worker cwd and worktree base; the store root defines journal location.

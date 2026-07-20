@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Install the Star Harness authoring skill kit into a target project
+# Install an optional Star Harness authoring skill into a target project
 # (or your user-level library) for Claude Code and/or Codex.
 #
-# The kit ships three skills: star-workflow, star-goal, star-planner.
+# The default kit ships star-workflow.
 #
 #   Claude Code reads skills from   <base>/.claude/skills/<name>/
 #   Codex      reads skills from     <base>/.agents/skills/<name>/
@@ -14,8 +14,7 @@
 #   --agent   which agent's skill dir to install into       (default: claude)
 #   --scope   project = <cwd>, user = $HOME                  (default: project)
 #   --dest    explicit base dir (overrides --scope)
-#   --skill   install only this skill (repeatable; picks a   (default: all three)
-#             subset of star-workflow star-goal star-planner)
+#   --skill   install an explicit skill directory (repeatable; default: star-workflow)
 #   --repo    git url to clone when run standalone           (default: this project)
 #   --ref     git ref to clone                               (default: master)
 #
@@ -23,8 +22,8 @@
 #   curl -fsSL https://raw.githubusercontent.com/cyl19970726/multi-agent-harness/master/scripts/install-skill.sh | bash -s -- --agent both
 set -euo pipefail
 
-# All shipped skills; --skill narrows this to a subset.
-DEFAULT_SKILLS="star-workflow star-goal star-planner bootstrap-project-workflow"
+# Default shipped skill; --skill may select an explicit source directory.
+DEFAULT_SKILLS="star-workflow"
 SKILLS=""
 AGENT="claude"
 SCOPE="project"
@@ -45,7 +44,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-# Default to the whole kit when no --skill was given.
+# Default to the standalone Dynamic Workflow skill when no --skill was given.
 [ -n "$SKILLS" ] || SKILLS="$DEFAULT_SKILLS"
 
 # Base dir the skill dirs are created under.

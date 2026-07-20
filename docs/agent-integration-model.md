@@ -5,7 +5,7 @@ provider, or platform into Star Harness, what do you have to define?**
 
 It sits above the provider-neutral runtime contract in
 [agent-runtime.md](agent-runtime.md) and the prompt/identity contract in
-[agent-control-plane.md](agent-control-plane.md), and above the concrete
+[agent-control-plane.md](company-os/execution-foundation.md), and above the concrete
 provider implementations in [integration/codex.md](integration/codex.md),
 [integration/claude.md](integration/claude.md), and
 [integration/kimi.md](integration/kimi.md). It does not redefine `Goal`,
@@ -32,7 +32,7 @@ in [decisions/0018-exec-stream-primary-substrate.md](decisions/0018-exec-stream-
 
 ## Why Three Pillars
 
-An `AgentMember` (see [agent-control-plane.md](agent-control-plane.md)) is a
+An `AgentMember` (see [agent-control-plane.md](company-os/execution-foundation.md)) is a
 durable identity. To make that identity *executable on a given platform* you
 must answer three independent questions, and the launch spec is how the harness
 hands a single turn to whatever platform sits behind the member:
@@ -66,7 +66,7 @@ prompt artifact, not inline chat text**. The contract:
   prompts that change permissions or evidence policy must be files/refs, not
   hidden chat context.
 - The role prompt is **one layer** in the documented prompt stack from
-  [agent-control-plane.md](agent-control-plane.md). The harness composes the
+  [agent-control-plane.md](company-os/execution-foundation.md). The harness composes the
   full system prompt per delivery from this stack:
 
 ```text
@@ -75,7 +75,7 @@ harness base system prompt          (message-first workflow, evidence, gates)
   -> role-specific prompt            (prompt_ref → this member's responsibility)
   -> standing team context           (teammates, peer norms, reviewers)
   -> active vision context           (long-term target state)
-  -> selected goal-design context    (scenario, non-goals, task graph)
+  -> selected historical work design context    (scenario, non-goals, legacy dependency graph)
   -> task message envelope           (current Message(kind=task))
   -> permission and evidence policy   (allowed tools, approval, report format)
 ```
@@ -110,7 +110,7 @@ contract for resolving and injecting skills:
   injects via the system prompt. Either way the rule is the same: the harness
   chooses skills, the platform consumes them.
 - **Kinds.** Two skill kinds are recognized: a **generic harness skill** (how to
-  use the `Goal -> Task -> Message -> Evidence -> Decision -> GoalEvaluation`
+  use the `Goal -> Task -> Message -> Evidence -> Decision -> outcome evaluation`
   workflow) and a **project/adapter skill** (how to use a project's CLI,
   dashboard, evidence, and safety boundaries).
 
@@ -340,7 +340,7 @@ coordination. Generalized:
 
 | Generic harness owns | Adapter / platform owns |
 | --- | --- |
-| task graph, agent messages, role assignment | domain tool descriptors |
+| legacy dependency graph, agent messages, role assignment | domain tool descriptors |
 | evidence references, review gates, decisions | project dashboard, artifacts |
 | member identity, prompt/skill refs, permissions | domain logic, live execution, secrets |
 | the neutral launch spec and event reduction | platform-native CLI/SDK call shape |

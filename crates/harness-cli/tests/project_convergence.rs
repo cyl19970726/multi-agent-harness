@@ -22,9 +22,9 @@ fn init_project(home: &TempHome, name: &str) -> (std::path::PathBuf, String) {
     (root, current_project_id(home))
 }
 
-/// `harness --store-source goal list` from `cwd`; return the resolved `root=<path>`.
+/// `harness --store-source mission list` from `cwd`; return the resolved `root=<path>`.
 fn resolved_store_root(home: &TempHome, cwd: &Path) -> String {
-    let out = run_harness(home, cwd, &["--store-source", "goal", "list"]);
+    let out = run_harness(home, cwd, &["--store-source", "mission", "list"]);
     let stderr = String::from_utf8_lossy(&out.stderr);
     stderr
         .lines()
@@ -93,29 +93,29 @@ fn cli_write_after_switch_is_visible_in_serve_snapshot() {
         serve.post_json("/v1/projects/switch", &serde_json::json!({"project": id_a}));
     assert_eq!(status, 200);
 
-    // CLI from a different cwd creates a goal; it lands in project A's central store.
+    // CLI from a different cwd creates a Mission; it lands in project A's central store.
     let elsewhere = home.base().join("elsewhere");
     std::fs::create_dir_all(&elsewhere).unwrap();
     let out = run_harness(
         &home,
         &elsewhere,
         &[
-            "goal",
+            "mission",
             "create",
             "--id",
-            "converge-goal",
+            "converge-mission",
             "--title",
             "Converged",
-            "--owner",
-            "t",
+            "--objective",
+            "Prove project convergence",
         ],
     );
-    assert!(out.status.success(), "goal create failed: {out:?}");
+    assert!(out.status.success(), "mission create failed: {out:?}");
 
     // serve (started from root_a, default project now A) sees it in its snapshot.
     let (status, snap_a) = serve.get_json(&format!("/v1/snapshot?project={id_a}"));
     assert_eq!(status, 200);
-    let ids: Vec<String> = snap_a["goals"]
+    let ids: Vec<String> = snap_a["missions"]
         .as_array()
         .map(|a| {
             a.iter()
@@ -124,7 +124,7 @@ fn cli_write_after_switch_is_visible_in_serve_snapshot() {
         })
         .unwrap_or_default();
     assert!(
-        ids.contains(&"converge-goal".to_string()),
+        ids.contains(&"converge-mission".to_string()),
         "serve snapshot missing the sibling CLI write: {ids:?}"
     );
 }

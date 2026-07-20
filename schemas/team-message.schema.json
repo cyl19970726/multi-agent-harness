@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-harness.local/schemas/team-message.schema.json",
+  "title": "TeamMessage",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "team_run_id", "from_member_id", "kind", "body", "correlation_id", "created_at"],
+  "properties": {
+    "id": { "type": "string", "minLength": 1 },
+    "team_run_id": { "type": "string", "minLength": 1 },
+    "from_member_id": { "type": "string", "minLength": 1 },
+    "to_member_ids": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "kind": {
+      "type": "string",
+      "enum": ["assignment", "question", "answer", "progress", "blocker", "handoff", "review_request", "review_result", "control", "broadcast"]
+    },
+    "body": { "type": "string" },
+    "correlation_id": { "type": "string", "minLength": 1 },
+    "causation_id": { "type": ["string", "null"], "minLength": 1 },
+    "evidence_refs": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "deliveries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["member_id", "policy", "status", "attempt", "updated_at"],
+        "properties": {
+          "member_id": { "type": "string", "minLength": 1 },
+          "policy": { "type": "string", "enum": ["queue", "inject", "interrupt", "manual_ack"] },
+          "status": { "type": "string", "enum": ["queued", "delivered", "acknowledged", "failed", "expired"] },
+          "attempt": { "type": "integer", "minimum": 0 },
+          "updated_at": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "created_at": { "type": "string", "minLength": 1 }
+  }
+}

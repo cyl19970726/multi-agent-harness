@@ -385,8 +385,8 @@ Promote deeper gates when stable:
 - dashboard fixture render;
 - critical diagram parse/render;
 - ADR and docs governance metadata;
-- architecture invariants such as "accepted task has evidence" or "assigned
-  task has delivery event".
+- architecture invariants such as "accepted work has evidence" or "an
+  assignment has an auditable delivery event".
 
 Use `warning` for immature commitments and `blocker` for stable high-risk
 commitments.
@@ -439,7 +439,7 @@ User request
   -> coordinator identifies vision link and acceptance
   -> coordinator identifies key mechanisms and risks
   -> coordinator routes docs / ADR / contracts / checks
-  -> coordinator creates work plan or task graph
+  -> coordinator creates work plan or dependency graph
   -> coordinator sends an auditable assignment event
   -> executor uses skill + adapter or project tools
   -> executor returns report with evidence refs

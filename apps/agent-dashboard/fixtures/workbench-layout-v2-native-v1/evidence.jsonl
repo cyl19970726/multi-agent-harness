@@ -1,0 +1,3 @@
+{"id":"evidence-contract-check","source_type":"check","source_ref":"reports/contract-schema.json","summary":"Mission/Wave contracts and joins are valid.","created_at":"2026-07-19T10:09:45Z","evidence_kind":"check"}
+{"id":"evidence-team-console-e2e","source_type":"check","source_ref":"reports/team-console-e2e.json","summary":"Dashboard selectors, SSE merge behavior, and production build passed.","created_at":"2026-07-19T10:13:00Z","evidence_kind":"test_report"}
+{"id":"evidence-mobile-blocker","source_type":"screenshot_review","source_ref":"reports/mobile-layout-check.json","summary":"Responsive acceptance requires the final fixed-fixture capture.","created_at":"2026-07-19T10:13:20Z","evidence_kind":"review_note"}

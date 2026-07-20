@@ -232,8 +232,10 @@ Kimi interactive CLI exposes standalone permission flags:
 -y / --yolo
 ```
 
-The adapter keeps a `map_permission` implementation for trait conformance and possible future
-interactive/ACP invocation:
+The adapter keeps a `map_permission` implementation for trait conformance and for the ACP
+session driver below — what was previously "possible future interactive/ACP invocation" is now
+the v0 selected path for Agent Team member runs (see
+[../decisions/0025-agent-team-run-control-plane.md](../decisions/0025-agent-team-run-control-plane.md)):
 
 ```text
 ReadOnly        -> --plan
@@ -273,6 +275,31 @@ Provider config remains provider-neutral:
   }
 }
 ```
+
+## ACP Session Driver (Agent Team v0)
+
+For Agent Team (ADR
+[0025](../decisions/0025-agent-team-run-control-plane.md)) the kimi member drive surface is the
+ACP (Agent Client Protocol) JSON-RPC session over stdio, not one-shot print mode:
+
+```text
+initialize -> session/new -> session/prompt (streaming notifications) -> session/cancel
+```
+
+- The ACP `sessionId` is recorded as `ProviderSession.provider_thread_id` (and as
+  `MemberRun.acp_session_id` once the Agent Team objects land).
+- A `MemberRun(provider=kimi)` needs resume, mid-turn message injection, cancel, and streaming
+  observation. Print mode cannot provide these, so `kimi -p` is repositioned: it remains the V1
+  message-delivery substrate above, and under Agent Team it serves only as the
+  `dynamic_workflow` leaf executor.
+- `map_permission` (above) now has a real consumer: the driver applies the mapped mode when
+  establishing the ACP session.
+- Delegation capture: Kimi `SubagentStart` / `SubagentStop` hooks plus the session `wire.jsonl`
+  are reported to the harness and reduced into `DelegationRun` + `MemberAction` rows.
+- Capability honesty still applies: until the ACP adapter lands and the capture path is
+  verified, `ProviderCapabilities::kimi_exec()` stays degraded, and any Kimi-native sub-agent
+  fan-out (`Agent` / `AgentSwarm`) degrades to `dynamic_workflow` with the delegation labeled
+  `unverified` rather than presented as a unified capability.
 
 ## Workspace Model
 

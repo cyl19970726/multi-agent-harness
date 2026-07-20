@@ -2,6 +2,7 @@ node_modules/
 dist/
 target/
 .harness/
+.visual-evidence/
 .turbo/
 .DS_Store
 *.tsbuildinfo

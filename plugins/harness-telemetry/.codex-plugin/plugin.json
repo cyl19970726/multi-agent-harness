@@ -19,7 +19,7 @@
   "interface": {
     "displayName": "Harness Telemetry",
     "shortDescription": "Record Codex lifecycle events for Agent Dashboard.",
-    "longDescription": "Provides Codex hook handlers that forward lifecycle payloads into Multi-Agent Harness state or plugin data without writing runtime files into task worktrees.",
+    "longDescription": "Provides Codex hook handlers that forward lifecycle payloads into Star Harness runtime state or plugin data without writing into the selected project.",
     "developerName": "Multi-Agent Harness",
     "category": "Developer Tools",
     "capabilities": [

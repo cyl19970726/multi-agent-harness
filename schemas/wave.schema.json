@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-harness.local/schemas/wave.schema.json",
+  "title": "Wave",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id",
+    "mission_id",
+    "index",
+    "title",
+    "objective",
+    "status",
+    "executor_kind",
+    "created_at",
+    "updated_at"
+  ],
+  "allOf": [
+    {
+      "if": {
+        "required": ["gate_status"],
+        "properties": { "gate_status": { "const": "accepted" } }
+      },
+      "then": {
+        "required": ["accepted_run_id", "outcome_summary", "accepted_by", "accepted_at"],
+        "properties": {
+          "status": { "const": "completed" },
+          "accepted_run_id": { "type": "string", "minLength": 1 },
+          "outcome_summary": { "type": "string", "minLength": 1 },
+          "accepted_by": { "type": "string", "minLength": 1 },
+          "accepted_at": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": ["gate_status"],
+        "properties": { "gate_status": { "const": "revise" } }
+      },
+      "then": {
+        "properties": { "status": { "const": "planned" } }
+      }
+    },
+    {
+      "if": {
+        "required": ["gate_status"],
+        "properties": { "gate_status": { "const": "blocked" } }
+      },
+      "then": {
+        "properties": { "status": { "const": "blocked" } }
+      }
+    }
+  ],
+  "properties": {
+    "id": { "type": "string", "minLength": 1 },
+    "mission_id": { "type": "string", "minLength": 1 },
+    "index": { "type": "integer", "minimum": 1 },
+    "title": { "type": "string", "minLength": 1 },
+    "objective": { "type": "string", "minLength": 1 },
+    "exit_criteria": { "type": ["string", "null"], "minLength": 1 },
+    "status": {
+      "type": "string",
+      "enum": ["planned", "running", "waiting", "completed", "blocked", "failed", "cancelled"]
+    },
+    "executor_kind": {
+      "type": "string",
+      "enum": ["agent_team", "dynamic_workflow", "host"]
+    },
+    "executor_run_ids": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "accepted_run_id": { "type": ["string", "null"], "minLength": 1 },
+    "plan_note": { "type": ["string", "null"], "minLength": 1 },
+    "outcome_summary": { "type": ["string", "null"], "minLength": 1 },
+    "artifact_refs": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "gate_status": {
+      "type": "string",
+      "enum": ["pending", "accepted", "revise", "blocked"]
+    },
+    "gate_note": { "type": ["string", "null"], "minLength": 1 },
+    "accepted_by": { "type": ["string", "null"], "minLength": 1 },
+    "accepted_at": { "type": ["string", "null"], "minLength": 1 },
+    "created_at": { "type": "string", "minLength": 1 },
+    "updated_at": { "type": "string", "minLength": 1 }
+  }
+}

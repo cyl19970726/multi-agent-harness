@@ -106,6 +106,18 @@ impl ServeHandle {
     /// `--no-truncate` preserves any pre-seeded `provider_turn_events.jsonl` rows.
     /// Extra env can pin `--project`/`HARNESS_PROJECT` via the args/env.
     pub fn spawn(home: &TempHome, cwd: &Path, extra_args: &[&str]) -> Self {
+        Self::spawn_with_env(home, cwd, extra_args, &[])
+    }
+
+    /// Spawn serve with additional environment entries. Provider-execution
+    /// tests use this to place deterministic adapter shims on PATH without
+    /// mutating the parent test process.
+    pub fn spawn_with_env(
+        home: &TempHome,
+        cwd: &Path,
+        extra_args: &[&str],
+        extra_env: &[(&str, &str)],
+    ) -> Self {
         let port = free_port();
         let addr = format!("127.0.0.1:{port}");
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_harness"));
@@ -120,6 +132,9 @@ impl ServeHandle {
             .envs(home.envs())
             .env_remove("HARNESS_ROOT")
             .env_remove("HARNESS_PROJECT");
+        for (key, value) in extra_env {
+            cmd.env(key, value);
+        }
         let child = cmd.spawn().expect("spawn harness serve");
         let handle = Self { child, port };
         handle.wait_until_ready();
@@ -170,16 +185,55 @@ impl ServeHandle {
         (status, json)
     }
 
-    /// POST a JSON body to a path, returning (status_code, parsed JSON body).
-    pub fn post_json(&self, path: &str, body: &serde_json::Value) -> (u16, serde_json::Value) {
-        let payload = body.to_string();
-        let mut stream = TcpStream::connect(self.addr()).expect("connect post");
+    /// GET a path, returning (status_code, raw response INCLUDING headers) —
+    /// for content-type assertions on non-JSON responses (e.g. HTML pages).
+    pub fn get_raw(&self, path: &str) -> (u16, String) {
+        let mut stream = TcpStream::connect(self.addr()).expect("connect get");
         stream
             .set_read_timeout(Some(Duration::from_secs(5)))
             .expect("timeout");
         write!(
             stream,
-            "POST {path} HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}",
+            "GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+        )
+        .expect("write get");
+        let mut raw = String::new();
+        stream.read_to_string(&mut raw).expect("read get");
+        (split_status_body(&raw).0, raw)
+    }
+
+    /// POST a JSON body to a path, returning (status_code, parsed JSON body).
+    pub fn post_json(&self, path: &str, body: &serde_json::Value) -> (u16, serde_json::Value) {
+        self.post_json_with_header(path, body, None)
+    }
+
+    /// POST JSON with the server-held Company OS capability token.
+    pub fn post_json_with_token(
+        &self,
+        path: &str,
+        body: &serde_json::Value,
+        token: &str,
+    ) -> (u16, serde_json::Value) {
+        self.post_json_with_header(path, body, Some(token))
+    }
+
+    fn post_json_with_header(
+        &self,
+        path: &str,
+        body: &serde_json::Value,
+        token: Option<&str>,
+    ) -> (u16, serde_json::Value) {
+        let payload = body.to_string();
+        let mut stream = TcpStream::connect(self.addr()).expect("connect post");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("timeout");
+        let token_header = token
+            .map(|value| format!("X-Harness-Company-OS-Token: {value}\r\n"))
+            .unwrap_or_default();
+        write!(
+            stream,
+            "POST {path} HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\n{token_header}Content-Length: {}\r\nConnection: close\r\n\r\n{payload}",
             payload.len()
         )
         .expect("write post");

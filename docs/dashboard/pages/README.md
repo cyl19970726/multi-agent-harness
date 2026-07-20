@@ -48,18 +48,18 @@ open_questions:
 
 ## Core Page Specs
 
-The Vision, Task, Work-board (graph/Kanban), and Docs surfaces are still owned
-by [../work-board-design.md](../work-board-design.md) and ADR
-[0019](../../decisions/0019-vision-goal-task-workbench-redesign.md) (light Notion
-document layout + unified Work board). The Goal surface now has a page-local
-contract again because `goal-goal-workbench-v1` narrows Goal detail into the
-phase-first workbench and screenshot-gated acceptance surface.
+The current product direction is Mission -> ordered Wave -> executor, owned by
+[the architecture map](../../architecture-map.md) and
+[ADR 0026](../../decisions/0026-mission-wave-architecture.md). The next primary
+page is the Agent Team war room in Mission/Wave context. Historical
+Vision/Goal/Task Work-board and Goal Workbench specs are archived; they do not
+define the new information architecture.
 
 | Page | Status | Layout |
 | --- | --- | --- |
-| [Goal Workbench](goal.md) | active | page-local contract |
-| [Team workspace](team-workspace.md) | planned | page-local contract |
-| [AgentMember workbench](agent-member-workbench.md) | planned | page-local contract |
+| [Agent Team page](team-run-console.md) | planned current product page | page-local Mission/Wave contract |
+| [Team workspace](team-workspace.md) | future Standing Agents | page-local concept |
+| [AgentMember workbench](agent-member-workbench.md) | compatibility/future Standing Agent | page-local contract |
 | [Evidence/Review/Decision](evidence-review-decision.md) | planned | page-local contract |
 | [Warnings/repair](warnings-repair.md) | planned | page-local contract |
 | [Debug](debug.md) | planned | page-local contract |
@@ -69,5 +69,5 @@ phase-first workbench and screenshot-gated acceptance surface.
 - Update the same page spec when the page purpose, canonical object ownership,
   information architecture, action model, dimensions, first viewport,
   breakpoint behavior, or scroll ownership changes.
-- Update [../layout-history.md](../layout-history.md) when a selected,
+- Update [../layout-history.md](../../company-os/frontend-information-architecture.md) when a selected,
   rejected, or borrowed design decision changes.

@@ -1,4 +1,0 @@
-interface:
-  display_name: "Generic Agent Harness"
-  short_description: "Turn goals and scenarios into agent-operable workflows."
-  default_prompt: "Use the generic harness to model the goal and scenario, design required infra, create the agent team and task graph, assign work through messages, and close only with evidence, review, and decisions."

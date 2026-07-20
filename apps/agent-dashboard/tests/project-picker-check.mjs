@@ -130,13 +130,12 @@ async function emitAgentEvent(storeRoot, label) {
   // Must be a fully-valid AgentEvent row: serde requires every non-defaulted
   // field key to be present (the watcher silently drops a row it cannot
   // deserialize, which would make the positive control never see its own frame).
-  // Required keys: id, agent_member_id, provider_runtime_id, task_id, provider,
+  // Required keys: id, agent_member_id, provider_runtime_id, provider,
   // event_type, summary, payload_ref, created_at.
   const row = {
     id,
     agent_member_id: "picker-check",
     provider_runtime_id: null,
-    task_id: null,
     provider: "verify",
     event_type: "verification",
     summary: `dashboard-browser-check ${label}`,

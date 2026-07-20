@@ -1,0 +1,174 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://star-harness.local/schemas/company-os/knowledge.schema.json",
+  "title": "Company OS knowledge substrate",
+  "oneOf": [
+    { "$ref": "#/$defs/document" },
+    { "$ref": "#/$defs/block" },
+    { "$ref": "#/$defs/typedRecord" },
+    { "$ref": "#/$defs/relation" },
+    { "$ref": "#/$defs/view" },
+    { "$ref": "#/$defs/businessModule" }
+  ],
+  "$defs": {
+    "string": { "type": "string", "minLength": 1 },
+    "refs": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/string" } },
+    "actorRef": {
+      "type": "object", "additionalProperties": false,
+      "required": ["actor_type", "actor_id"],
+      "properties": {
+        "actor_type": { "enum": ["human", "agent", "external", "service"] },
+        "actor_id": { "$ref": "#/$defs/string" }
+      }
+    },
+    "entityKind": {
+      "enum": [
+        "actor", "document", "typed_record", "business_module", "work_item",
+        "approval", "financial_record", "evidence", "execution"
+      ]
+    },
+    "entityRef": {
+      "type": "object", "additionalProperties": false,
+      "required": ["kind", "id"],
+      "properties": {
+        "kind": { "$ref": "#/$defs/entityKind" },
+        "id": { "$ref": "#/$defs/string" }
+      }
+    },
+    "lifecycle": { "enum": ["draft", "active", "paused", "completed", "archived"] },
+    "document": {
+      "type": "object", "additionalProperties": false,
+      "required": [
+        "id", "space_id", "parent_document_id", "title", "kind", "lifecycle_status",
+        "block_ids", "template_ref", "permission_policy_refs", "reference_refs",
+        "created_by", "updated_by", "created_at", "updated_at"
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/string" },
+        "space_id": { "$ref": "#/$defs/string" },
+        "parent_document_id": { "type": ["string", "null"], "minLength": 1 },
+        "title": { "$ref": "#/$defs/string" },
+        "kind": { "enum": ["page", "database", "dashboard", "template", "policy", "record"] },
+        "lifecycle_status": { "$ref": "#/$defs/lifecycle" },
+        "block_ids": { "$ref": "#/$defs/refs" },
+        "template_ref": { "type": ["string", "null"], "minLength": 1 },
+        "permission_policy_refs": { "$ref": "#/$defs/refs" },
+        "reference_refs": { "type": "array", "items": { "$ref": "#/$defs/entityRef" } },
+        "created_by": { "$ref": "#/$defs/actorRef" },
+        "updated_by": { "$ref": "#/$defs/actorRef" },
+        "created_at": { "$ref": "#/$defs/string" },
+        "updated_at": { "$ref": "#/$defs/string" }
+      }
+    },
+    "block": {
+      "type": "object", "additionalProperties": false,
+      "required": [
+        "id", "document_id", "kind", "position", "content", "referenced_entities",
+        "created_by", "updated_by", "created_at", "updated_at"
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/string" },
+        "document_id": { "$ref": "#/$defs/string" },
+        "kind": {
+          "enum": [
+            "rich_text", "heading", "list", "checklist", "callout", "code", "media",
+            "attachment", "simple_table", "comment", "mention", "embedded_view", "metric",
+            "decision", "work_item", "relation_summary"
+          ]
+        },
+        "position": { "type": "integer", "minimum": 0 },
+        "content": { "type": "object" },
+        "referenced_entities": { "type": "array", "items": { "$ref": "#/$defs/entityRef" } },
+        "created_by": { "$ref": "#/$defs/actorRef" },
+        "updated_by": { "$ref": "#/$defs/actorRef" },
+        "created_at": { "$ref": "#/$defs/string" },
+        "updated_at": { "$ref": "#/$defs/string" }
+      }
+    },
+    "typedRecord": {
+      "type": "object", "additionalProperties": false,
+      "required": [
+        "id", "module_id", "record_type", "title", "fields", "lifecycle_status",
+        "source_document_ref", "created_by", "updated_by", "created_at", "updated_at"
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/string" },
+        "module_id": { "$ref": "#/$defs/string" },
+        "record_type": { "$ref": "#/$defs/string" },
+        "title": { "$ref": "#/$defs/string" },
+        "fields": { "type": "object" },
+        "lifecycle_status": { "$ref": "#/$defs/string" },
+        "source_document_ref": { "type": ["string", "null"], "minLength": 1 },
+        "created_by": { "$ref": "#/$defs/actorRef" },
+        "updated_by": { "$ref": "#/$defs/actorRef" },
+        "created_at": { "$ref": "#/$defs/string" },
+        "updated_at": { "$ref": "#/$defs/string" }
+      }
+    },
+    "relation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "from_ref", "relation_type", "to_ref", "provenance_ref", "created_by", "created_at"],
+      "properties": {
+        "id": { "$ref": "#/$defs/string" },
+        "from_ref": { "$ref": "#/$defs/entityRef" },
+        "relation_type": { "$ref": "#/$defs/string" },
+        "to_ref": { "$ref": "#/$defs/entityRef" },
+        "provenance_ref": { "oneOf": [{ "$ref": "#/$defs/entityRef" }, { "type": "null" }] },
+        "created_by": { "$ref": "#/$defs/actorRef" },
+        "created_at": { "$ref": "#/$defs/string" }
+      }
+    },
+    "view": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "module_id", "title", "mode", "source_kinds", "query", "owner", "policy_refs", "created_at", "updated_at"],
+      "properties": {
+        "id": { "$ref": "#/$defs/string" },
+        "module_id": { "type": ["string", "null"], "minLength": 1 },
+        "title": { "$ref": "#/$defs/string" },
+        "mode": { "enum": ["table", "board", "timeline", "calendar", "chart", "dashboard"] },
+        "source_kinds": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/entityKind" } },
+        "query": { "type": "object" },
+        "owner": { "$ref": "#/$defs/actorRef" },
+        "policy_refs": { "$ref": "#/$defs/refs" },
+        "created_at": { "$ref": "#/$defs/string" },
+        "updated_at": { "$ref": "#/$defs/string" }
+      }
+    },
+    "relationRule": {
+      "type": "object", "additionalProperties": false,
+      "required": ["relation_type", "from_kind", "to_kind", "required", "cross_module"],
+      "properties": {
+        "relation_type": { "$ref": "#/$defs/string" },
+        "from_kind": { "$ref": "#/$defs/entityKind" },
+        "to_kind": { "$ref": "#/$defs/entityKind" },
+        "required": { "type": "boolean" },
+        "cross_module": { "type": "boolean" }
+      }
+    },
+    "businessModule": {
+      "type": "object", "additionalProperties": false,
+      "required": [
+        "id", "name", "purpose", "root_document_ref", "record_types", "relation_rules",
+        "default_view_refs", "policy_refs", "lifecycle_rules", "metric_definition_refs",
+        "custom_page_definition_refs", "status", "owner", "created_at", "updated_at"
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/string" },
+        "name": { "$ref": "#/$defs/string" },
+        "purpose": { "$ref": "#/$defs/string" },
+        "root_document_ref": { "$ref": "#/$defs/string" },
+        "record_types": { "$ref": "#/$defs/refs" },
+        "relation_rules": { "type": "array", "items": { "$ref": "#/$defs/relationRule" } },
+        "default_view_refs": { "$ref": "#/$defs/refs" },
+        "policy_refs": { "$ref": "#/$defs/refs" },
+        "lifecycle_rules": { "$ref": "#/$defs/refs" },
+        "metric_definition_refs": { "$ref": "#/$defs/refs" },
+        "custom_page_definition_refs": { "$ref": "#/$defs/refs" },
+        "status": { "$ref": "#/$defs/lifecycle" },
+        "owner": { "$ref": "#/$defs/actorRef" },
+        "created_at": { "$ref": "#/$defs/string" },
+        "updated_at": { "$ref": "#/$defs/string" }
+      }
+    }
+  }
+}

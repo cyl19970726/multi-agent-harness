@@ -8,9 +8,9 @@
   },
   "plugins": [
     {
-      "name": "author-workflow",
-      "displayName": "Author Workflow",
-      "description": "Author a Starlark multi-agent workflow (loops, conditionals, data-driven fan-out, verify-repair, budgets, verdicts) and run it with `harness workflow run-script`.",
+      "name": "star-workflow",
+      "displayName": "Dynamic Workflow",
+      "description": "Author a standalone Starlark Dynamic Workflow (loops, conditionals, data-driven fan-out, verify-repair, budgets, verdicts) and run it with `harness workflow run-script`.",
       "version": "0.1.0",
       "category": "orchestration",
       "keywords": [
@@ -18,60 +18,6 @@
         "orchestration",
         "starlark",
         "multi-agent"
-      ],
-      "source": {
-        "source": "github",
-        "repo": "cyl19970726/multi-agent-harness"
-      }
-    },
-    {
-      "name": "author-goal",
-      "displayName": "Author Goal",
-      "description": "Create or advance a Goal in the harness: write the description / design / real-acceptance markdown, accumulate a knowledge ledger, run multi-agent exploration, and move the goal through its lifecycle (manual gated stages and the knowledge-driven phased model executed by `harness goal run-phases`).",
-      "version": "0.1.0",
-      "category": "orchestration",
-      "keywords": [
-        "goal",
-        "orchestration",
-        "lifecycle",
-        "multi-agent"
-      ],
-      "source": {
-        "source": "github",
-        "repo": "cyl19970726/multi-agent-harness"
-      }
-    },
-    {
-      "name": "author-planner",
-      "displayName": "Author Planner",
-      "description": "Decompose an explored Goal into an executable plan: an ordered list of sequential phases, each owning a task DAG where tasks with disjoint owned_paths run in parallel. Covers `harness goal plan`, the phase/task shape it produces, and how the plan feeds the phase→Starlark compiler and `goal run-phases` orchestrator.",
-      "version": "0.1.0",
-      "category": "orchestration",
-      "keywords": [
-        "planner",
-        "phases",
-        "task-graph",
-        "orchestration",
-        "multi-agent"
-      ],
-      "source": {
-        "source": "github",
-        "repo": "cyl19970726/multi-agent-harness"
-      }
-    },
-    {
-      "name": "bootstrap-project-workflow",
-      "displayName": "Bootstrap Project Workflow",
-      "description": "Make a project agent-operable: vision-driven docs, key-mechanism/key-module identification that shapes the doc directory, source-of-truth routing, ADRs, CI/CD gates, doc governance + reorg, and evidence-backed acceptance.",
-      "version": "0.1.0",
-      "category": "governance",
-      "keywords": [
-        "documentation",
-        "governance",
-        "architecture",
-        "adr",
-        "reorg",
-        "doc-sync"
       ],
       "source": {
         "source": "github",

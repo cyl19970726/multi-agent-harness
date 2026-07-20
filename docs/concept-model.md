@@ -1,260 +1,279 @@
 # Concept Model
 
-This document defines the canonical object relationships for Multi-Agent
-Harness. It exists to prevent architecture drift: implementation may add
-fields, commands, and views, but it must not change the meaning of the core
-objects without updating this model first.
+This document defines the canonical object relationships for Star Harness. It
+exists to prevent architecture drift: implementation may add fields, commands,
+and views, but it must not change the meaning of the core objects without
+updating this model first.
+
+Source-of-truth rules and gate invariants live in
+[data-model.md](data-model.md). This document owns product meaning,
+relationship rules, compatibility vocabulary, and anti-drift invariants.
 
 ## Vision
 
-The product vision is:
+The accepted product vision is:
 
 ```text
-Turn a project goal into an agent-operable workflow:
-Goal -> Scenario -> Infra -> Agent Team -> Task Graph -> Message Delivery
-  -> Evidence -> Proposal -> Review -> Decision -> Goal Evaluation
+Turn a project objective into an agent-operable workflow:
+Mission -> Scenario -> Infra -> Wave -> executor
+  -> Message delivery / actions / artifacts
+  -> lightweight Wave gate -> Mission outcome
 ```
 
-The harness is the coordination and evidence system. Project-specific tools
-are connected through adapters.
+The harness is the coordination and evidence system. Project-specific tools are
+connected through adapters.
 
-Source-of-truth rules and gate invariants now live in [data-model.md](data-model.md). This document keeps object meaning, relationship rules, and open-enum vocabularies.
+## Compatibility Terms
+
+Mission/Wave is the canonical product vocabulary and native contract for new
+work. Existing Goal data remains visible through an explicit read-only
+compatibility projection.
+
+| Canonical term | Current compatibility surface | Rule |
+| --- | --- | --- |
+| `Mission` | `Goal` compatibility projection with provenance | Native Mission is used for new execution; the projection cannot be mutated as a Mission. |
+| `Wave` | legacy phase record ids exposed only as compatibility provenance | A native Wave is not a renamed legacy phase record and never inherits its legacy dependency graph. |
+| Mission closeout | Optional `outcome evaluation` compatibility object | Native Mission closeout is an explicit outcome summary; evaluation may be layered on when useful. |
 
 ## Core Object Relationships
 
 ```mermaid
 flowchart TD
   Vision[Product Vision]
-  Goal[Goal]
-  GoalDesign[GoalDesign Evidence]
-  Team[AgentTeam]
-  Member[AgentMember]
-  Task[Task]
+  Mission[Mission / read-only Goal projection]
+  Wave[Native Wave]
+  TeamRun[AgentTeamRun]
+  WorkflowRun[WorkflowRun]
+  HostExec[Host execution]
+  Task[Task compat / internal execution unit]
   Message[Message]
-  Runtime[AgentRuntime]
-  Provider[ProviderSession]
-  Event[AgentEvent]
-  Evidence[Evidence]
+  TeamMessage[TeamMessage]
+  Member[AgentMember or MemberRun]
+  Provider[ProviderSession / execution session]
+  Event[Durable event stream]
+  Evidence[Artifacts / optional Evidence]
+  Gate[Lightweight Wave gate]
+  Outcome[Mission outcome]
   Proposal[Proposal]
   Review[Review / Critic]
   Decision[Decision]
-  Eval[GoalEvaluation]
-  Case[GoalCase]
+  Eval[Optional evaluation / outcome evaluation compat]
+  Case[reusable learning note]
 
-  Vision --> Goal
-  Goal --> GoalDesign
-  Goal --> Team
-  Goal --> Task
-  Team --> Member
+  Vision --> Mission
+  Mission --> Wave
+  Wave --> TeamRun
+  Wave --> WorkflowRun
+  Wave --> HostExec
+  TeamRun --> TeamMessage
+  TeamRun --> Member
+  WorkflowRun --> Event
+  HostExec --> Event
   Task --> Message
   Message --> Member
-  Member --> Runtime
-  Runtime --> Provider
+  TeamMessage --> Member
+  Member --> Provider
   Provider --> Event
   Event --> Evidence
   Message --> Evidence
-  Task --> Proposal
-  Evidence --> Proposal
+  TeamMessage --> Evidence
+  Evidence --> Gate
+  Gate --> Outcome
+  Mission --> Outcome
+  Outcome -. optional evaluation .-> Eval
+  Evidence -. repository governance .-> Proposal
   Proposal --> Review
   Review --> Decision
-  Decision --> Eval
+  Decision -. repository governance .-> Eval
   Eval --> Case
-  Eval --> Task
 ```
 
-## Goal And Task
+## Mission And Wave
 
-A `Goal` is the durable outcome. A `Task` is the smallest assignable and
-reviewable unit of work inside or near that outcome.
+A `Mission` is the durable objective. A `Wave` is the lightweight ordered unit
+inside a Mission.
 
 Rules:
 
-- a goal owns the objective, success criteria, priority, owner, and closeout
+- a Mission owns objective, success interpretation, priority, and closeout
   standard;
-- a task may belong to one goal, or no goal only for short administrative work;
-- a goal is not complete because all tasks are `done`; it is complete only
-  after a decision and goal evaluation show that the success criteria are met;
-- task decomposition can change while the goal remains stable;
-- follow-up tasks are created when evidence changes the plan.
+- a Wave owns objective, exit criteria, status, executor reference, outcome,
+  and a lightweight gate;
+- a Wave does not require or expose a legacy dependency graph as a product concept;
+- replanning happens between Waves as an explicit design/update step, not as a
+  hidden side effect;
+- a Mission is not complete because activity happened; it is complete when its
+  Wave gates and explicit closeout summary support the desired outcome. Stricter
+  evidence or evaluation may be layered on when the domain or risk requires it.
 
-Failure mode this prevents: replacing a hard goal with a sequence of convenient
-tasks and then claiming completion from activity.
+Failure mode this prevents: replacing a durable objective with a sequence of
+convenient implementation steps and then claiming completion from activity
+alone.
 
-## Agent, Goal, And Task
+## Executors
 
-An `AgentMember` is a durable teammate identity. It is not just a provider
-thread.
+A Wave chooses one executor kind:
 
-Rules:
+- `agent_team`
+- `dynamic_workflow`
+- `host`
 
-- a goal has an owner agent, normally the Leader, who interprets success;
-- a task has one owner, zero or one current assignee, and optionally one
-  reviewer;
-- the owner is accountable for task definition and acceptance criteria;
-- the assignee is accountable for producing the task output and evidence;
-- the reviewer or critic is accountable for checking evidence and risks;
-- workers can propose task splits or follow-ups, but the Leader owns graph
-  changes that affect the goal.
+### `agent_team`
 
-Failure mode this prevents: anonymous provider output being treated as owned
-work, or a worker silently changing the global plan.
+Agent Team is for living collaborators with persistent session state, explicit
+assignment, handoff, review, and lane ownership inside the Wave.
 
-## Task And Message
+The target proof is assignment-message correlation:
 
-A `Task` is the canonical work item. A `Message` is the communication and
-delivery envelope.
+```text
+TeamMessage(kind=assignment)
+  -> correlation_id
+  -> MemberAction / blocker / handoff / review_result / delegation
+  -> artifacts, checks, summaries, explicit outcome
+```
 
-The system intentionally supports `Message(kind=task)` because task assignment
-must be visible in the same channel as reports, questions, handoffs, and peer
-coordination.
+Automatic handoff preserves this correlation. Manual progress, blocker, review,
+and control messages can explicitly reuse the same-run Assignment correlation;
+a causation-only reply inherits its direct cause's correlation. Cross-run,
+unknown, and mismatched lineage is rejected before persistence.
 
-Rules:
+### `dynamic_workflow`
 
-- creating a task is not enough to assign it;
-- setting `assignee_agent_id` is a projection of assignment state, not by
-  itself proof of assignment;
-- assigning work requires a `Message(kind=task)` from the Lead or owner to the
-  target member or channel;
-- the task message should include objective, acceptance criteria, owned paths,
-  permissions, expected evidence, and reviewer when relevant;
-- a member report is a `Message(kind=report)` linked to the task;
-- peer questions and handoffs are normal messages and should link to the task
-  when they affect task execution;
-- message delivery status records whether the member actually received or
-  failed to receive the instruction.
+Dynamic Workflow is a one-shot structured executor. It may share runtime
+infrastructure with other executors, but it is not an Agent Team and should not
+be described with Agent Team semantics.
 
-Failure mode this prevents: direct field mutation that makes the Dashboard show
-an assigned task even though no agent member received an actionable instruction.
+### `host`
 
-## Task, Evidence, Proposal, And Decision
+The Host executor is direct work by the resident Host Agent. The host may use
+provider-native subagents internally. Those subagents are optional observation
+targets, not canonical child records unless the harness actually controls them.
 
-`Evidence` supports claims. `Proposal` packages a change or conclusion for
-review. `Decision` records the accepted outcome or next action.
+## Tasks And Messages
+
+`Task` and `Message` remain important current-runtime objects, but they are no
+longer the canonical explanation of a Wave.
 
 Rules:
 
-- a task can move to review only when it has evidence or an explicit blocker;
-- implementation work should produce a proposal with changed paths, checks, and
-  evidence refs;
-- critic or reviewer output is evidence, not the final decision;
-- the Leader records accept, revise, split, reject, waive, or follow up;
-- waivers must name evidence and follow-up tasks instead of weakening the
-  workflow silently.
+- a `Task` is still the smallest assignable and reviewable unit in the current
+  task system and in compatibility flows;
+- `Message(kind=task)` remains current proof of assignment for classic task
+  execution;
+- task DAGs, `Task.phase_id`, and `legacy phase record` joins may continue internally
+  while Mission/Wave migration is underway;
+- not every Wave must expose a legacy dependency graph to the user or planner;
+- when Agent Team is the executor, TeamMessage assignment correlation explains
+  ownership more directly than a task DAG does.
 
-Failure mode this prevents: treating a confident summary as proof or letting a
-worker self-merge a cross-module decision.
+Failure mode this prevents: forcing every orchestration mode through the legacy
+dependency graph story even when the real proof is message-driven collaboration or a
+one-shot workflow run.
 
-## Generic Object Model (Review, Gap, Learning Layer, Vision)
+## Agent Team Objects
 
-The object model was extended with six generic objects so that evaluator
-output, defect ledgers, and the learning loop are first-class records instead of
-unstructured report messages or flat files. Each object is domain-neutral; the
-exact vocabularies are documented below and validated in Rust. The schema
-evolution rule (additive-optional, no `schema_version` field) and the design
-rationale live in [decisions/0017-generic-object-model.md](decisions/0017-generic-object-model.md)
-and [schemas.md](schemas.md).
+`AgentTeamRun` is one wave-scoped execution owned by the `agent_team`
+executor kind. It is not a standing organization.
 
-| Object | Replaces | Rule |
+| Object | Meaning | Rule |
 | --- | --- | --- |
-| `Review` | unstructured report `Message` | A `Review` is the structured evaluator/critic output: `review_kind`, `verdict`, `summary`, `blockers`, `residual_risk`, `missing_validation`, `evidence_ids`. It is **evidence for** a `Decision`, never the global decision itself. |
-| `Gap` | the `product-gap-inbox.md` flat file and a separate bug ledger | A `Gap` is a defect/risk ledger row with `category`, `severity`, `status`, `summary`, and `evidence_ids`. **A Bug is a `Gap` with `category=bug`** plus optional `repro_ref` / `closing_test_ref`. There is no separate Bug object. |
-| `GoalDesign` | `Evidence(source_type=goal_design)` | The Lead's executable plan: `scenario_summary`, `non_goals`, `risk_and_permission_boundaries`, `required_infra`, `agent_team`, `task_graph`, `evidence_plan`, `acceptance_gates`. |
-| `GoalEvaluation` | `Evidence(source_type=goal_evaluation)` | The evaluator's retrospective: `outcome`, `what_worked`, `what_failed`, missing-infra/evidence, design/graph/dashboard feedback, reusable patterns, anti-patterns, follow-up tasks, proposed goals. |
-| `GoalCase` | `examples/goal-cases/<case-id>/` files | A sanitized, reusable teaching artifact distilled from a goal. The committed files remain the human artifact; the schema validates an optional `case.json` manifest. |
-| `Vision` | loose `vision_ref` / `vision_summary` fields | A long-lived target a `Goal` points to via `Goal.vision_id`; the next-goal proposal compares a `GoalEvaluation` against the linked `Vision`. |
+| `AgentTeamRun` | One team execution attempt for one Wave. | One Wave may have multiple attempts; every terminal attempt becomes read-only history. |
+| `MemberRun` | One member instance inside a run: role, provider, model, status, worktree, owned paths. | Exists only for that run; it is not a durable standing employee record. |
+| `TeamMessage` | Run-scoped communication envelope with delivery records. | Assignment, handoff, blocker, review, and control messages live here. |
+| `MemberAction` | Normalized explicit work/action record: plan update, file change, command, test, review, delegation, waiting, blocked, completed, error. | Stores explicit action facts, not private reasoning. |
+| `DelegationRun` | Attribution record for observed or orchestrated delegation. | Parent permissions, paths, and budgets bound the child. |
+| `TeamRunEvent` | Ordered durable event log for one run. | Payloads are sanitized before storage. |
 
-`Phase` is now a first-class object (`GoalPhase`), superseding the earlier
-"a phase is just a `Task` with a `phase` label" model. A `Goal` carries an
-agent-planned, sequential `phases: Vec<GoalPhase>`, and a `Task` joins its phase
-through `Task.phase_id` (the legacy free-text `Task.phase` label was retired).
-See `crates/harness-core/src/lib.rs` (`struct GoalPhase`, `Goal.phases`,
-`Task.phase_id`) and the phase model in
-[goal-phase-loop.md](goal-phase-loop.md). The phase shape, the phase→task
-DAG, and the `goal run-phases` orchestrator shipped in #146–#153.
+Relationship rules:
 
-### Closeout Gate
+- a Wave using `agent_team` may instantiate one or more `AgentTeamRun` attempts
+  and records which attempt its gate accepted;
+- ownership inside the Wave is explained by `TeamMessage(kind=assignment)` plus
+  `correlation_id`;
+- `TeamMessage` and `MemberAction` may reference artifacts or `Evidence`; the
+  Wave gate needs an explicit outcome and acceptance note but does not require
+  Proposal/Review/Decision objects;
+- current runtime code may still reference Goal/legacy phase record/task fields during
+  migration, but those fields are compatibility seams, not the product model.
 
-A `Goal` may move to `complete` only when a closeout `Decision`
-(`decision_kind=closeout`) scoped to the goal with at least one backing
-`evidence_id` exists **and** a `GoalEvaluation` exists for the goal — or an
-explicit waiver `Decision` (`is_waiver=true`) names a follow-up task and backing
-evidence. This generalizes "a verdict must be backed by evidence, never activity
-alone". The gate is enforced by the CLI `goal close` command and surfaced in the
-`goal_learning_status` snapshot. The self-evaluation stop loop generalizes to a
-`Decision(decision_kind=stop_gate)` whose `decision` is `stop_approved` or
-`continue_required`; `Task.requires_human_approval` blocks auto-advance without
-encoding what "dangerous" means (that meaning is supplied by adapters/skills).
+## Generic Object Model
 
-### Open-Enum Vocabularies
+The learning and governance layer remains domain-neutral.
 
-Useful but domain-flavored taxonomies are **open enums**: a canonical
-harness-owned set is modeled in Rust (an enum with an `Other(String)` fallback),
-the JSON Schema keeps the field as a free `string`, and adapters may supply
-extra values without a schema bump. The canonical sets are:
+| Object | Rule |
+| --- | --- |
+| `Review` | Structured evaluator or critic output. Evidence for a Decision, never the Decision itself. |
+| `Gap` | Defect/risk ledger row. `category=bug` is a bug; there is no separate Bug object. |
+| `legacy plan record` | Current compatibility object for the Mission design/plan. |
+| `outcome evaluation` | Current compatibility object for Mission closeout and learning. |
+| `reusable learning note` | Reusable teaching artifact distilled from a closed Mission/Goal. |
+| `Vision` | Long-lived target that Missions/Goals advance toward. |
+
+## Agent Runtime And Provider Session
+
+`AgentRuntime` and `ProviderSession` connect durable members, Wave executors,
+and host tools to external providers such as Codex, Claude, or Kimi.
+
+Rules:
+
+- the harness owns assignment, artifacts, evidence, review, and decisions;
+- the provider owns model execution and transcript details;
+- provider output becomes useful only after it is reduced into explicit actions,
+  artifacts, evidence, or outcomes;
+- hooks are observation inputs, not the canonical message bus;
+- runtime health is represented as lifecycle state, not inferred only from raw
+  provider output.
+
+Failure mode this prevents: the provider transcript becoming the hidden source
+of truth for ownership, status, or acceptance.
+
+## Thinking Policy
+
+The target contract makes thinking transient live-only state.
+
+- It may be shown live when a provider exposes it.
+- It is bounded and sanitized.
+- It is never persisted in canonical harness history.
+- It is never replayable state.
+- It is never execution evidence.
+- It is never forwarded into another member's context.
+
+Persist explicit actions, artifacts, summaries, blockers, and outcomes instead.
+
+New Kimi execution no longer writes durable `thinking` actions. Historical rows
+stay in JSONL but are excluded from current snapshots and status reads. The
+transient display channel remains follow-up work, so thinking is currently
+dropped at the adapter boundary.
+
+## Closeout Gates
+
+The product contract and this repository's current self-hosting governance are
+deliberately different:
+
+- a Wave product gate records `accepted | revise | blocked`, the accepted run
+  attempt, actor/time, outcome summary, a short note, and useful artifact refs;
+- a Mission outcome is based on its Wave gates and an explicit Mission-level
+  closeout summary;
+- this repository may layer review, evidence, or evaluation on high-risk Waves,
+  but those objects are not mandatory for every self-hosting change.
+
+The legacy governance chain must not leak into every Agent Team product Wave as
+a mandatory object graph.
+
+## Open-Enum Vocabularies
+
+Useful but workflow-flavored taxonomies remain open enums: harness defines a
+canonical starter set in Rust, JSON keeps the field as `string`, and adapters
+may add values without a schema bump.
 
 | Field | Object | Canonical values |
 | --- | --- | --- |
 | `review_kind` | Review | `acceptance`, `correctness`, `safety`, `design`, `data_flow`, `docs`, `other` |
-| `verdict` | Review | `pass`, `fail`, `blocked`, `needs_changes` (let-me-try `keep`/`kill`/`refine` map to `pass`/`fail`/`needs_changes`) |
+| `verdict` | Review | `pass`, `fail`, `blocked`, `needs_changes` |
 | `decision` | Decision | `accept`, `reject`, `revise`, `split`, `block`, `promote`, `waive`, `follow_up`, `stop_approved`, `continue_required` |
 | `decision_kind` | Decision | `verdict`, `gate`, `stop_gate`, `waiver`, `closeout`, `promotion`, `other` |
-| `evidence_kind` | Evidence | `check`, `log`, `session`, `diff`, `review_note`, `screenshot`, `artifact`, `snapshot`, `goal_design`, `goal_evaluation`, `other` |
+| `evidence_kind` | Evidence | `check`, `log`, `session`, `diff`, `review_note`, `screenshot`, `artifact`, `snapshot`, `historical work design`, `outcome evaluation`, `other` |
 | `category` | Gap | `ux`, `data`, `observability`, `parity`, `tooling`, `workflow`, `docs`, `bug`, `other` |
-| `outcome` | GoalEvaluation | `success`, `partial`, `failed`, `blocked` |
+| `outcome` | outcome evaluation | `success`, `partial`, `failed`, `blocked` |
 
-Only truly closed, harness-owned sets use a hard JSON `enum`: `Gap.severity`
-(`p0`/`p1`/`p2`) and `Gap.status` (`open`/`in_progress`/`fixed`/`blocked`/
-`deferred`/`wontfix`). Harness core carries zero domain vocabulary; a domain
-label (for example a market or strategy name) lives in a free `*_detail` /
-`source_type` field or in an adapter tool descriptor, never in core.
-
-## Agent Runtime And Provider Session
-
-`AgentRuntime` and `ProviderSession` connect durable members to external agent
-providers such as Codex.
-
-Rules:
-
-- the harness owns member identity and task/message state;
-- the provider owns model execution and transcript details;
-- provider output becomes useful only after it is reduced into messages,
-  evidence, events, or proposals;
-- hooks are event inputs, not the message bus;
-- process health must be represented as lifecycle state, not inferred only from
-  pids or stdout.
-
-Failure mode this prevents: the provider becoming the hidden source of truth
-for task ownership, status, or acceptance.
-
-## Dashboard
-
-The Agent Dashboard is a control-plane projection over harness objects.
-
-Rules:
-
-- Dashboard lanes are read models over goals, teams, members, tasks, messages,
-  runtimes, proposals, evidence, decisions, and warnings;
-- safe Dashboard actions create or update canonical harness objects;
-- project dashboards remain domain-specific and are linked through adapters;
-- the Agent Dashboard must show assignment messages and member reports, not
-  only task assignees.
-
-Failure mode this prevents: a polished UI that hides whether the harness
-workflow really happened.
-
-Gate invariants are maintained in [data-model.md](data-model.md).
-
-## What To Ask Before Adding A Module
-
-Before adding a module, ask:
-
-- which product or workflow problem does it solve;
-- which existing module cannot solve that problem without losing its boundary;
-- what canonical object or contract it owns;
-- what failure mode appears if it does not exist;
-- which docs, schema, CLI, Dashboard view, or CI gate will eventually verify it;
-- whether the idea should start as docs, skill, schema, CLI/API, Dashboard, or
-  plugin.
-
-If these questions cannot be answered, keep the idea as a note or task rather
-than adding a new core module.
+Only truly closed, harness-owned sets should use hard JSON enums.

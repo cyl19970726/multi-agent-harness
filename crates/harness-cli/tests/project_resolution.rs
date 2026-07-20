@@ -13,7 +13,7 @@ mod harness_env;
 use harness_env::TempHome;
 
 /// Run `harness --store-source <args...>` in `cwd` with the given extra env, and
-/// return (stdout, stderr). `goal list` is a harmless read used as the subcommand.
+/// return (stdout, stderr). `mission list` is a harmless read used as the subcommand.
 fn resolve(
     home: &TempHome,
     cwd: &Path,
@@ -25,7 +25,7 @@ fn resolve(
     for a in extra_args {
         cmd.arg(a);
     }
-    cmd.arg("goal").arg("list");
+    cmd.arg("mission").arg("list");
     cmd.current_dir(cwd)
         .envs(home.envs())
         .env_remove("HARNESS_ROOT")

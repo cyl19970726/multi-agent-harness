@@ -84,6 +84,66 @@ fn shell_single_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
+/// Create a `bin/` dir holding a fake `kimi` executable speaking just enough
+/// line-delimited ACP JSON-RPC (stdio) for `team-run start` integration tests.
+///
+/// The shim answers `initialize` / `session/new` with canned results, and for
+/// `session/prompt` streams (in order): one `agent_thought_chunk` (eligible
+/// only for the volatile live preview; never journaled), one `tool_call` + terminal
+/// `tool_call_update`, one `agent_message_chunk` carrying a `## RESULT` /
+/// `## SUMMARY` report, then the terminal `{"result":{"stopReason":...}}`
+/// response. `FAKE_KIMI_RESULT` (done|blocked|failed, default done) selects
+/// the RESULT word so tests can drive both run outcomes. Prepend the returned
+/// dir to PATH so [`resolve_kimi_bin`] picks the shim over a real install.
+pub fn install_kimi_acp_shim(base: &Path) -> PathBuf {
+    let bin_dir = base.join("fakebin-kimi");
+    fs::create_dir_all(&bin_dir).expect("mk fake kimi bin dir");
+    let shim_path = bin_dir.join("kimi");
+    // printf format strings: `\\n` emits a literal backslash-n (a JSON escape
+    // inside string values); a trailing `\n` emits the record newline.
+    let script = r###"#!/bin/sh
+# Fake `kimi acp` (Agent Team v0 tests): line-delimited JSON-RPC over stdio.
+result="${FAKE_KIMI_RESULT:-done}"
+if [ "$1" != "acp" ]; then
+  echo "fake kimi: only 'acp' is implemented" >&2
+  exit 2
+fi
+session_id="session_fake_$$"
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+  case "$line" in
+    *'"method":"initialize"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":1,"agentCapabilities":{},"authMethods":[],"agentInfo":{"name":"fake-kimi","version":"0.0.0"}}}\n' "$id"
+      ;;
+    *'"method":"session/new"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"sessionId":"%s","configOptions":[]}}\n' "$id" "$session_id"
+      printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"%s","update":{"sessionUpdate":"available_commands_update","availableCommands":[]}}}\n' "$session_id"
+      ;;
+    *'"method":"session/prompt"'*)
+      printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"%s","update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"hidden reasoning"}}}}\n' "$session_id"
+      printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"%s","update":{"sessionUpdate":"tool_call","toolCallId":"tool-1","title":"fake_edit","kind":"edit","status":"in_progress"}}}\n' "$session_id"
+      printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"%s","update":{"sessionUpdate":"tool_call_update","toolCallId":"tool-1","status":"completed"}}}\n' "$session_id"
+      printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"%s","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"## RESULT\\n%s\\n## SUMMARY\\nfake member finished round\\n"}}}}\n' "$session_id" "$result"
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}\n' "$id"
+      ;;
+    *'"method":"session/cancel"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id"
+      ;;
+  esac
+done
+exit 0
+"###;
+    fs::write(&shim_path, script).expect("write fake kimi shim");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&shim_path).expect("stat shim").permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&shim_path, perms).expect("chmod shim");
+    }
+    bin_dir
+}
+
 /// One spawned `harness` invocation's result.
 pub struct CliOutput {
     pub stdout: String,

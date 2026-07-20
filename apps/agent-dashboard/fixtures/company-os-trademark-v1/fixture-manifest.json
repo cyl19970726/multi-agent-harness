@@ -1,0 +1,57 @@
+{
+  "id": "company-os-trademark-v1",
+  "version": 1,
+  "authoritative_source": "../../../../docs/design/company-os-v1/fixtures/company-os-trademark-v1.json",
+  "authoritative_sha256": "eb9371f486ac59398623b1e94a424ad3f5fa107d648f941a8db38024fd63e9b9",
+  "capture_now": "2026-07-20T09:30:00+08:00",
+  "timezone": "Asia/Shanghai",
+  "locale": "en-US",
+  "project_id": "company-os-trademark-v1",
+  "readiness": {
+    "selector": "[data-company-os-ready=\"true\"]",
+    "page_attribute": "data-company-os-page",
+    "fixture_attribute": "data-company-os-fixture",
+    "record_attribute": "data-company-os-ref"
+  },
+  "viewports": {
+    "desktop-1440x1000": {
+      "width": 1440,
+      "height": 1000,
+      "device_scale_factor": 1
+    },
+    "tablet-900x1180": {
+      "width": 900,
+      "height": 1180,
+      "device_scale_factor": 1
+    },
+    "mobile-390x844": {
+      "width": 390,
+      "height": 844,
+      "device_scale_factor": 1
+    }
+  },
+  "responsive_pages": [
+    "document-focus",
+    "work-item-focus",
+    "standing-agent-focus",
+    "governance-proposal",
+    "approval-focus",
+    "business-module-focus",
+    "human-member-focus"
+  ],
+  "route_tokens": {
+    "<brand-a-content-plan-id>": "document-brand-a-content-operating-plan",
+    "<trademark-filing-id>": "workitem-trademark-filing-brand-a",
+    "<document-architecture-agent-id>": "actor-agent-document-architecture",
+    "<trademark-management-module-id>": "governance-proposal-trademark-management",
+    "<trademark-filing-fee-id>": "approval-trademark-filing-fee-cn-2026-018",
+    "<trademark-management-id>": "module-trademark-management",
+    "<brand-owner-id>": "actor-human-brand-owner"
+  },
+  "browser_contract": {
+    "financial_record_type_attribute": "data-financial-record-type",
+    "actor_type_attribute": "data-actor-type",
+    "settlement_evidence_selector": "[data-settlement-evidence]",
+    "forbidden_financial_record_type": "payment"
+  }
+}

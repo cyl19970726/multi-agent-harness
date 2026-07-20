@@ -45,11 +45,9 @@ async function loadWorkflowSelectors() {
   const { default: ts } = await import("typescript");
   const dir = await mkdtemp(join(tmpdir(), "workflow-diagnosis-"));
   const opts = { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 };
-  for (const name of ["warnings", "readModel", "workflowSelectors"]) {
+  for (const name of ["workflowSelectors"]) {
     const src = await readFile(join(modelDir, `${name}.ts`), "utf8");
     let js = ts.transpileModule(src, { compilerOptions: opts }).outputText;
-    js = js.replace(/from\s+["']\.\/warnings["']/g, 'from "./warnings.mjs"');
-    js = js.replace(/from\s+["']\.\/readModel["']/g, 'from "./readModel.mjs"');
     await writeFile(join(dir, `${name}.mjs`), js, "utf8");
   }
   const mod = await import(pathToFileURL(join(dir, "workflowSelectors.mjs")).href);

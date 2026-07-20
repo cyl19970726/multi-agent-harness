@@ -1,0 +1,13 @@
+{
+  "id": "wave-invalid-accepted",
+  "mission_id": "mission-1",
+  "index": 1,
+  "title": "Invalid accepted Wave",
+  "objective": "Must carry accepted outcome fields",
+  "status": "planned",
+  "executor_kind": "agent_team",
+  "executor_run_ids": ["team-run-1"],
+  "gate_status": "accepted",
+  "created_at": "unix-ms:1",
+  "updated_at": "unix-ms:2"
+}

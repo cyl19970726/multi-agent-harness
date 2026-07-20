@@ -6,28 +6,31 @@ use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use harness_core::{
-    build_launch_spec, compile_phase_to_starlark, compile_planner_script, content_hash_hex16,
-    AgentEvent, AgentMember, AgentMemberStatus, AgentProviderConfig, AgentRuntime,
-    AgentRuntimeHealth, AgentRuntimeStatus, AgentTeam, AgentTeamStatus, ArtifactKind, ArtifactSpec,
-    Decision, EvaluationOutcome, Evidence, Exploration, Gap, GapSeverity, GapStatus, Goal,
-    GoalCase, GoalDesign, GoalEvaluation, GoalOrchestrationRun, GoalPhaseStatus, GoalStage,
-    GoalStatus, HarnessTokenUsage, HarnessToolCall, HarnessToolResult, HarnessTurnEvent,
-    HarnessTurnEventKind, Knowledge, KnowledgeSource, LaunchMcp, LaunchPermission, LaunchSpec,
-    Message, MessageDelivery, MessageDeliveryStatus, MessageKind, MessageTerminalSource,
-    OrchestrationPhaseRun, OrchestrationStatus, ProjectContext, ProjectKind, Proposal,
-    ProposalStatus, ProviderCapabilities, ProviderChildThread, ProviderChildThreadStatus,
-    ProviderSession, ProviderSessionStatus, Review, ReviewVerdict, SenderKind, Task, TaskStatus,
-    VerdictOutcome, Vision, WorkflowArtifactFile, WorkflowArtifactManifest,
+    build_launch_spec, content_hash_hex16, AgentEvent, AgentMember, AgentMemberStatus,
+    AgentProviderConfig, AgentRuntime, AgentRuntimeHealth, AgentRuntimeStatus, AgentTeam,
+    AgentTeamRun, AgentTeamStatus, DelegationRun, Evidence, HarnessTokenUsage, HarnessToolCall,
+    HarnessToolResult, HarnessTurnEvent, HarnessTurnEventKind, LaunchMcp, LaunchPermission,
+    LaunchSpec, MemberAction, MemberActionStatus, MemberRun, MemberRunStatus, Message,
+    MessageDelivery, MessageDeliveryStatus, MessageKind, MessageTerminalSource, Mission,
+    MissionStatus, ProjectContext, ProjectKind, Proposal, ProposalStatus, ProviderCapabilities,
+    ProviderChildThread, ProviderChildThreadStatus, ProviderSession, ProviderSessionStatus,
+    SenderKind, TeamDeliveryPolicy, TeamDeliveryStatus, TeamMessage, TeamMessageDelivery,
+    TeamMessageKind, TeamRunEvent, TeamRunEventSourceKind, TeamRunStatus, Wave, WaveExecutorKind,
+    WaveGateStatus, WaveStatus, WorkflowArtifactFile, WorkflowArtifactManifest,
     WorkflowArtifactManifestStatus, WorkflowPatch, WorkflowPatchStatus, WorkflowRun,
     WorkflowRunStatus, WorkflowStep, WorkflowStepStatus, WorkflowTerminalReason,
 };
-use harness_store::{HarnessStore, MessageDeliveryClaimResult};
+use harness_store::{HarnessStore, MessageDeliveryClaimResult, StoreError};
 use thiserror::Error;
 
+mod company_os_api;
+mod kimi_acp;
+mod legacy_export;
+mod mcp;
 mod project;
 mod resident;
 #[cfg(unix)]
@@ -48,6 +51,14 @@ enum CliError {
 }
 
 type CliResult<T> = Result<T, CliError>;
+
+fn store_conflict_as_usage<T>(result: Result<T, StoreError>) -> CliResult<T> {
+    match result {
+        Ok(value) => Ok(value),
+        Err(StoreError::Conflict(message)) => Err(CliError::Usage(message)),
+        Err(error) => Err(CliError::Store(error)),
+    }
+}
 
 fn main() {
     if let Err(error) = run() {
@@ -806,6 +817,13 @@ fn run() -> CliResult<()> {
     if args.first().map(String::as_str) == Some("governance") {
         return governance_command(&args[1..]);
     }
+    // Legacy export is deliberately resolved outside the normal store fallback
+    // chain. It requires one valid explicit project, wins over workflow-child
+    // store guards, and never falls back to cwd/current/global when the selector
+    // is invalid. Verification is fully offline and resolves no live store.
+    if args.first().map(String::as_str) == Some("legacy-goal-task") {
+        return legacy_goal_task_command(&mut args);
+    }
     // Resolve the store root FIRST (strips a global `--store`/`--project` from
     // `args` so the subcommand parsers never see them). `serve` and `run-script`
     // started from different working directories converge on ONE store via the
@@ -832,32 +850,101 @@ fn run() -> CliResult<()> {
         "project" => project_command(&args[1..])?,
         "agent" => agent_command(&store, &args[1..])?,
         "team" => team_command(&store, &args[1..])?,
+        "mission" => mission_command(&store, &args[1..])?,
+        "wave" => wave_command(&store, &args[1..])?,
+        "team-run" => team_run_command(&store, &resolved, &args[1..])?,
         "member" => member_command(&store, &args[1..])?,
-        "goal" => goal_command(&store, &args[1..])?,
-        "phase" => phase_command(&store, &args[1..])?,
-        "task" => task_command(&store, &args[1..])?,
-        "message" => message_command(&store, &args[1..])?,
-        "event" => event_command(&store, &args[1..])?,
-        "proposal" => proposal_command(&store, &args[1..])?,
-        "git" => git_command(&store, &args[1..])?,
-        "review" => review_command(&store, &args[1..])?,
-        "gap" => gap_command(&store, &args[1..])?,
-        "goal-design" => goal_design_command(&store, &args[1..])?,
-        "goal-evaluation" => goal_evaluation_command(&store, &args[1..])?,
-        "goal-case" => goal_case_command(&store, &args[1..])?,
-        "vision" => vision_command(&store, &args[1..])?,
-        "evidence" => evidence_command(&store, &args[1..])?,
-        "decision" => decision_command(&store, &args[1..])?,
-        "autonomy" => autonomy_command(&store, &args[1..])?,
         "dashboard" => dashboard_command(&store, &args[1..])?,
-        "board" => board_command(&store)?,
-        "codex" => codex_command(&store, &args[1..])?,
         "workflow" => workflow_command(&store, &args[1..])?,
         "hook" => hook_command(&store, &args[1..])?,
         "serve" => serve_command(&store, &resolved, &args[1..])?,
+        "mcp" => mcp::run(&store)?,
         #[cfg(unix)]
         "daemon" => daemon_command(&store, &args[1..])?,
+        command if retired_command(command) => return Err(retired_surface_error(command)),
         command => return Err(CliError::Usage(format!("unknown command: {command}"))),
+    }
+    Ok(())
+}
+
+fn retired_command(command: &str) -> bool {
+    matches!(
+        command,
+        "goal"
+            | "phase"
+            | "task"
+            | "proposal"
+            | "git"
+            | "review"
+            | "gap"
+            | "goal-design"
+            | "goal-evaluation"
+            | "goal-case"
+            | "vision"
+            | "decision"
+            | "autonomy"
+            | "board"
+            | "codex"
+    )
+}
+
+fn retired_surface_error(command: &str) -> CliError {
+    CliError::Usage(format!(
+        "`harness {command}` was retired with the Goal/GoalPhase/Task Graph coordination stack; use Mission/Wave plus agent-team, dynamic-workflow, or host execution. Historical data remains available only through `harness legacy-goal-task export|verify`."
+    ))
+}
+
+/// Read-only export/verification boundary for the retired Goal/Task ledgers.
+fn legacy_goal_task_command(args: &mut Vec<String>) -> CliResult<()> {
+    if args.first().map(String::as_str) != Some("legacy-goal-task") {
+        return Err(CliError::Usage(
+            "usage: harness legacy-goal-task export|verify".into(),
+        ));
+    }
+    args.remove(0);
+    require_subcommand(args, "legacy-goal-task export|verify")?;
+    match args[0].as_str() {
+        "export" => {
+            if args.iter().any(|arg| arg == "--store") {
+                return Err(CliError::Usage(
+                    "legacy-goal-task export requires --project; --store is not allowed".into(),
+                ));
+            }
+            let project_flag_count = args.iter().filter(|arg| *arg == "--project").count();
+            if project_flag_count != 1 {
+                return Err(CliError::Usage(
+                    "legacy-goal-task export requires exactly one --project <id|path>".into(),
+                ));
+            }
+            let selector = take_flag_value(args, "--project").ok_or_else(|| {
+                CliError::Usage("--project requires an id or existing project path".into())
+            })?;
+            let harness_home = project::harness_home().map_err(project_err)?;
+            let context = resolve_project_selector(&harness_home, &selector).ok_or_else(|| {
+                CliError::Usage(format!(
+                    "project selector did not resolve; refusing fallback: {selector}"
+                ))
+            })?;
+            let output = PathBuf::from(required(args, "--output")?);
+            let summary = legacy_export::export_archive(
+                &context.store_root,
+                Some(context.id.as_str()),
+                Some(&context.project_root),
+                &output,
+            )
+            .map_err(CliError::Usage)?;
+            print_json(&summary)?;
+        }
+        "verify" => {
+            let archive = PathBuf::from(required(args, "--archive")?);
+            let summary = legacy_export::verify_archive(&archive).map_err(CliError::Usage)?;
+            print_json(&summary)?;
+        }
+        other => {
+            return Err(CliError::Usage(format!(
+                "unknown legacy-goal-task command: {other}"
+            )))
+        }
     }
     Ok(())
 }
@@ -994,6 +1081,12 @@ fn agent_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     )?;
     match args[0].as_str() {
         "create" => {
+            if value(args, "--wave").is_some() {
+                return Err(CliError::Usage(
+                    "--wave was retired; link the run with --wave-id and derive order from the native Wave"
+                        .to_string(),
+                ));
+            }
             let mut member = build_member_from_args(args, AgentMemberStatus::Creating)?;
             let prompt_ref = ensure_agent_prompt(store, &member, args)?;
             member.prompt_ref = Some(prompt_ref);
@@ -1214,1023 +1307,2351 @@ fn team_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     Ok(())
 }
 
-/// Read a markdown field value from either an inline `--<name>` flag or a
-/// `--<name>-file <path>` (file content). Long markdown is awkward as a shell
-/// arg, so the `-file` form is the ergonomic path for design/acceptance bodies.
-fn md_value(args: &[String], name: &str) -> CliResult<Option<String>> {
-    if let Some(v) = value(args, &format!("--{name}")) {
-        return Ok(Some(v));
-    }
-    if let Some(path) = value(args, &format!("--{name}-file")) {
-        let content = std::fs::read_to_string(&path)
-            .map_err(|e| CliError::Usage(format!("cannot read --{name}-file {path}: {e}")))?;
-        return Ok(Some(content));
-    }
-    Ok(None)
-}
+// ---------------------------------------------------------------------------
+// Mission / Wave — lightweight product-control surfaces (ADR 0026).
+// ---------------------------------------------------------------------------
 
-/// Load the latest row for a goal id, or a clear not-found error.
-fn goal_load(store: &HarnessStore, id: &str) -> CliResult<Goal> {
-    latest_goals(store)?
-        .remove(id)
-        .ok_or_else(|| CliError::Usage(format!("goal not found: {id}")))
-}
-
-/// Parse a lifecycle stage string via the serde snake_case mapping.
-fn parse_goal_stage(s: &str) -> CliResult<GoalStage> {
-    serde_json::from_value(serde_json::Value::String(s.to_string())).map_err(|_| {
-        CliError::Usage(format!(
-            "unknown stage `{s}` (draft|exploring|explored|working|done|verifying|verified)"
-        ))
-    })
-}
-
-fn parse_phase_execution_mode(s: &str) -> CliResult<harness_core::PhaseExecutionMode> {
-    serde_json::from_value(serde_json::Value::String(s.to_string())).map_err(|_| {
-        CliError::Usage(format!(
-            "unknown phase execution mode `{s}` (task_graph|workflow)"
-        ))
-    })
-}
-
-fn parse_knowledge_source(s: &str) -> CliResult<KnowledgeSource> {
-    serde_json::from_value(serde_json::Value::String(s.to_string())).map_err(|_| {
-        CliError::Usage(format!(
-            "unknown knowledge source `{s}` (exploration|task|decision|evidence)"
-        ))
-    })
-}
-
-/// Keep a goal/phase id filesystem-safe for a compiled-script filename.
-fn slug_for_filename(s: &str) -> String {
-    s.chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-' {
-                c
-            } else {
-                '-'
-            }
-        })
-        .collect()
-}
-
-fn phase_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    require_subcommand(args, "phase compile")?;
+fn mission_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    require_subcommand(args, "mission create|list|show")?;
+    let json = has_flag(args, "--json");
     match args[0].as_str() {
-        "compile" => {
-            // Goal id: a bare positional (`phase compile <goal> --phase x`) or
-            // `--goal`/`--id`.
-            let goal_id = args
-                .get(1)
-                .filter(|a| !a.starts_with("--"))
-                .cloned()
-                .or_else(|| value(args, "--goal"))
-                .or_else(|| value(args, "--id"))
-                .ok_or_else(|| {
-                    CliError::Usage(
-                        "phase compile needs a goal (`phase compile <goal> --phase <id>` \
-                         or --goal <id>)"
-                            .into(),
-                    )
-                })?;
-            let phase_id = required(args, "--phase")?;
-            let goal = goal_load(store, &goal_id)?;
-            let phase = goal
-                .phases
-                .iter()
-                .find(|p| p.id == phase_id)
-                .ok_or_else(|| {
-                    CliError::Usage(format!("goal `{goal_id}` has no phase `{phase_id}`"))
-                })?;
-            // Compile from THIS goal's tasks (a phase id is only unique per goal).
-            // Latest-wins (NOT the raw append log): write_back re-appends each
-            // task per status change, so the raw log holds stale duplicate rows
-            // that would be compiled twice.
-            let goal_tasks: Vec<Task> = latest_tasks(store)?
-                .into_values()
-                .filter(|t| t.goal_id.as_deref() == Some(goal.id.as_str()))
-                .collect();
-            let repo_root = workflow_project_context(store).project_root;
-            let script = compile_phase_script(&goal, phase, &goal_tasks, &repo_root)
-                .map_err(CliError::Usage)?;
-            let hash = content_hash_hex16(&script);
-            let dir = store.root().join("compiled");
-            std::fs::create_dir_all(&dir)?;
-            let file_name = format!(
-                "{}__{}__{}.star",
-                slug_for_filename(&goal.id),
-                slug_for_filename(&phase_id),
-                hash
-            );
-            let path = dir.join(&file_name);
-            std::fs::write(&path, &script)?;
-            print_json(&serde_json::json!({
-                "goal": goal.id,
-                "phase": phase_id,
-                "hash": hash,
-                "path": path.display().to_string(),
-                "bytes": script.len(),
-                "execution_mode": phase_execution_mode_wire(effective_phase_execution_mode(phase)),
-                "workflow_ref": phase.workflow_ref.as_deref(),
-                "tasks_compiled": if effective_phase_execution_mode(phase) == harness_core::PhaseExecutionMode::TaskGraph {
-                    goal_tasks
-                        .iter()
-                        .filter(|t| t.phase_id.as_deref() == Some(phase_id.as_str())
-                            && t.status != TaskStatus::Superseded)
-                        .count()
-                } else {
-                    0
-                },
-            }))?;
-        }
-        other => return Err(CliError::Usage(format!("unknown phase command: {other}"))),
-    }
-    Ok(())
-}
-
-/// Run ONE compiled phase script with the real provider driver, journal each
-/// step + finalize the run, and return `(run_id, outcome)` so the orchestrator
-/// can gate on the verdict. Mirrors the `workflow run-script` core. When
-/// `resume_from` is `Some(prior_run_id)` (a re-entered phase), the succeeded
-/// leaves of that prior phase run are reused via a replay map — so a killed /
-/// failed phase does not re-spend tokens on already-done task steps. `None` runs
-/// the phase fresh.
-/// The goal↔run link stamped on an orchestrated `WorkflowRun` (Stage 0: close the
-/// chain). `default()` (both `None`) is the standalone `run-script` case.
-#[derive(Clone, Default)]
-struct RunGoalLink {
-    goal_id: Option<String>,
-    phase_id: Option<String>,
-}
-
-fn run_phase_compiled_script(
-    store: &HarnessStore,
-    script: &str,
-    name: &str,
-    options: &WorkflowDeliveryOptions,
-    link: &RunGoalLink,
-    resume_from: Option<&str>,
-) -> CliResult<(String, workflow::WorkflowOutcome)> {
-    // Optional intra-phase resume: reuse the prior phase run's succeeded leaves.
-    // Guard exactly as `workflow run-script --resume` does — the prior run must
-    // exist and have snapshotted the IDENTICAL script, else the deterministic
-    // leaf ordinals would misalign against a different program.
-    let replay = match resume_from {
-        Some(prior_run_id) => {
-            let prior = latest_workflow_runs_in_append_order(store)?
-                .into_iter()
-                .find(|r| r.id == prior_run_id)
-                .ok_or_else(|| {
-                    CliError::Usage(format!("cannot resume {prior_run_id}: no such run"))
-                })?;
-            let prior_script = prior
-                .spec
-                .as_ref()
-                .and_then(|s| s.get("script"))
-                .and_then(|v| v.as_str());
-            match prior_script {
-                Some(prev) if prev == script => {}
-                Some(_) => {
-                    return Err(CliError::Usage(format!(
-                        "cannot resume {prior_run_id}: the script changed since that run"
-                    )))
-                }
-                None => {
-                    return Err(CliError::Usage(format!(
-                        "cannot resume {prior_run_id}: that run has no snapshotted script"
-                    )))
-                }
-            }
-            Some(build_replay_map(store, prior_run_id)?)
-        }
-        None => None,
-    };
-
-    let _ = reap_stale_workflow_runs(store);
-    let run_id = generated_id("wfrun");
-    let initiated_by = std::env::var("HARNESS_AGENT_MEMBER_ID")
-        .ok()
-        .filter(|id| !id.is_empty())
-        .unwrap_or_else(|| "operator".to_string());
-    let mut run = WorkflowRun {
-        id: run_id.clone(),
-        workflow_name: name.to_string(),
-        status: WorkflowRunStatus::Running,
-        step_ids: Vec::new(),
-        created_at: now_string(),
-        ended_at: None,
-        summary: None,
-        args: None,
-        agents_spawned: 0,
-        final_output: None,
-        initiated_by: Some(initiated_by),
-        design_intent: None,
-        spec: Some(match resume_from {
-            Some(prior) => serde_json::json!({
-                "lang": "starlark", "script": script, "orchestrated": true,
-                "resumed_from": prior,
-            }),
-            None => serde_json::json!({
-                "lang": "starlark", "script": script, "orchestrated": true,
-            }),
-        }),
-        trace_retention: options.trace_retention.clone(),
-        host_pid: Some(std::process::id()),
-        dry_run: options.dry_run,
-        goal_id: link.goal_id.clone(),
-        phase_id: link.phase_id.clone(),
-        // A fresh Running row carries no terminal classification yet; a terminal
-        // journal / reaper / cancel path stamps it (issue #193).
-        terminal_reason: None,
-        partial_output_available: false,
-    };
-    store.append_workflow_run(&run)?;
-
-    let started = {
-        let run_id = run_id.clone();
-        let driver = move |step: &workflow::AgentStepSpec| {
-            workflow_real_agent_step(store, &run_id, options, step)
-        };
-        harness_workflow::starlark_front::run_starlark_with_budget(
-            script,
-            name,
-            None,
-            &driver,
-            options.max_budget_usd,
-            replay,
-        )
-        .map_err(|error| CliError::Usage(error.to_string()))?
-    };
-    run.design_intent = Some(started.meta.design_intent.clone());
-    run.workflow_name = started.meta.name.clone();
-    let outcome = started.outcome;
-    journal_workflow_outcome(store, run, &outcome)?;
-    Ok((run_id, outcome))
-}
-
-/// Write a finished phase's per-task outcome back onto each `Task.status`. A
-/// compiled task's step carries `label == task.id`, so we map by label: an `ok`
-/// step → `Done`, a failed step → `Blocked`. Each step id is linked onto the
-/// task's `workflow_step_ids`.
-fn write_back_phase_tasks(
-    store: &HarnessStore,
-    goal: &Goal,
-    phase_id: &str,
-    outcome: &workflow::WorkflowOutcome,
-) -> CliResult<()> {
-    use std::collections::HashMap;
-    let mut by_label: HashMap<&str, &workflow::StepResult> = HashMap::new();
-    for step in &outcome.steps {
-        by_label.insert(step.label.as_str(), step); // last row wins
-    }
-    let tasks = latest_tasks(store)?;
-    for mut task in tasks.into_values() {
-        if task.goal_id.as_deref() != Some(goal.id.as_str())
-            || task.phase_id.as_deref() != Some(phase_id)
-            || task.status == TaskStatus::Superseded
-        {
-            continue;
-        }
-        if let Some(step) = by_label.get(task.id.as_str()) {
-            task.status = if step.ok {
-                TaskStatus::Done
+        "create" => {
+            let mission = create_mission(
+                store,
+                value(args, "--id"),
+                &required(args, "--title")?,
+                &required(args, "--objective")?,
+                value(args, "--desired-outcome"),
+            )?;
+            if json {
+                print_json(&mission)?;
             } else {
-                TaskStatus::Blocked
-            };
-            if let Some(step_id) = &step.step_id {
-                if !task.workflow_step_ids.contains(step_id) {
-                    task.workflow_step_ids.push(step_id.clone());
+                println!("{}", mission.id);
+            }
+        }
+        "list" => print_json(&store.latest_missions()?)?,
+        "show" => {
+            let id = required(args, "--id")?;
+            let mission = store
+                .latest_missions()?
+                .into_iter()
+                .find(|mission| mission.id == id)
+                .ok_or_else(|| CliError::Usage(format!("mission not found: {id}")))?;
+            print_json(&mission)?;
+        }
+        other => return Err(CliError::Usage(format!("unknown mission command: {other}"))),
+    }
+    Ok(())
+}
+
+fn wave_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    require_subcommand(args, "wave create|list|show|gate")?;
+    let json = has_flag(args, "--json");
+    match args[0].as_str() {
+        "create" => {
+            let wave = create_wave(
+                store,
+                value(args, "--id"),
+                &required(args, "--mission-id")?,
+                value(args, "--index")
+                    .map(|index| {
+                        index.parse::<u32>().map_err(|_| {
+                            CliError::Usage("--index must be a positive integer".to_string())
+                        })
+                    })
+                    .transpose()?,
+                &required(args, "--title")?,
+                &required(args, "--objective")?,
+                parse_wave_executor_kind(&required(args, "--executor-kind")?)?,
+                value(args, "--exit-criteria"),
+                value(args, "--plan-note"),
+            )?;
+            if json {
+                print_json(&wave)?;
+            } else {
+                println!("{}", wave.id);
+            }
+        }
+        "list" => {
+            let mission_id = value(args, "--mission-id");
+            let waves = store
+                .latest_waves()?
+                .into_iter()
+                .filter(|wave| {
+                    mission_id
+                        .as_deref()
+                        .is_none_or(|mission_id| wave.mission_id == mission_id)
+                })
+                .collect::<Vec<_>>();
+            print_json(&waves)?;
+        }
+        "show" => print_json(&latest_wave(store, &required(args, "--id")?)?)?,
+        "gate" => {
+            let wave = gate_wave(
+                store,
+                &required(args, "--id")?,
+                &required(args, "--status")?,
+                value(args, "--run-id"),
+                &value(args, "--accepted-by").unwrap_or_else(|| "host".to_string()),
+                value(args, "--note"),
+                value(args, "--outcome"),
+                many(args, "--artifact"),
+            )?;
+            if json {
+                print_json(&wave)?;
+            } else {
+                println!("{}\t{}", wave.id, serde_snake_label(&wave.gate_status));
+            }
+        }
+        other => return Err(CliError::Usage(format!("unknown wave command: {other}"))),
+    }
+    Ok(())
+}
+
+/// Create one native Mission. Compatibility Mission projections are read-only,
+/// so native ids are checked only against the native ledger.
+pub(crate) fn create_mission(
+    store: &HarnessStore,
+    id: Option<String>,
+    title: &str,
+    objective: &str,
+    desired_outcome: Option<String>,
+) -> CliResult<Mission> {
+    let id = id.unwrap_or_else(|| generated_id("mission"));
+    if id.trim().is_empty() {
+        return Err(CliError::Usage("mission id must not be empty".to_string()));
+    }
+    if id.starts_with("compat-goal:") {
+        return Err(CliError::Usage(
+            "mission ids beginning with `compat-goal:` are reserved for read-only Goal projections"
+                .to_string(),
+        ));
+    }
+    if title.trim().is_empty() || objective.trim().is_empty() {
+        return Err(CliError::Usage(
+            "mission title and objective must not be empty".to_string(),
+        ));
+    }
+    if desired_outcome
+        .as_ref()
+        .is_some_and(|outcome| outcome.trim().is_empty())
+    {
+        return Err(CliError::Usage(
+            "mission desired outcome must not be empty when supplied".to_string(),
+        ));
+    }
+    let mission = Mission {
+        id,
+        title: title.to_string(),
+        objective: objective.to_string(),
+        desired_outcome,
+        status: MissionStatus::Planned,
+        wave_ids: Vec::new(),
+        outcome_summary: None,
+        created_at: now_string(),
+        updated_at: now_string(),
+        completed_at: None,
+    };
+    store_conflict_as_usage(store.insert_mission(&mission))?;
+    Ok(mission)
+}
+
+/// Create a native Wave and append the owning Mission's latest row with the
+/// Wave id exactly once. The read model is intentionally ordered by index,
+/// rather than a hidden scheduler-owned plan.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn create_wave(
+    store: &HarnessStore,
+    id: Option<String>,
+    mission_id: &str,
+    index: Option<u32>,
+    title: &str,
+    objective: &str,
+    executor_kind: WaveExecutorKind,
+    exit_criteria: Option<String>,
+    plan_note: Option<String>,
+) -> CliResult<Wave> {
+    if mission_id.trim().is_empty() || title.trim().is_empty() || objective.trim().is_empty() {
+        return Err(CliError::Usage(
+            "wave mission id, title, and objective must not be empty".to_string(),
+        ));
+    }
+    if exit_criteria
+        .as_ref()
+        .is_some_and(|criteria| criteria.trim().is_empty())
+        || plan_note
+            .as_ref()
+            .is_some_and(|note| note.trim().is_empty())
+    {
+        return Err(CliError::Usage(
+            "wave exit criteria and plan note must not be empty when supplied".to_string(),
+        ));
+    }
+    if index == Some(0) {
+        return Err(CliError::Usage("wave index must be at least 1".to_string()));
+    }
+    let id = id.unwrap_or_else(|| generated_id("wave"));
+    if id.trim().is_empty() {
+        return Err(CliError::Usage("wave id must not be empty".to_string()));
+    }
+    let now = now_string();
+    let wave = Wave {
+        id,
+        mission_id: mission_id.to_string(),
+        index: index.unwrap_or(0),
+        title: title.to_string(),
+        objective: objective.to_string(),
+        exit_criteria,
+        status: WaveStatus::Planned,
+        executor_kind,
+        executor_run_ids: Vec::new(),
+        accepted_run_id: None,
+        plan_note,
+        outcome_summary: None,
+        artifact_refs: Vec::new(),
+        gate_status: WaveGateStatus::Pending,
+        gate_note: None,
+        accepted_by: None,
+        accepted_at: None,
+        created_at: now.clone(),
+        updated_at: now,
+    };
+    store_conflict_as_usage(store.insert_wave_and_update_mission(wave, index, &now_string()))
+}
+
+/// Apply the lightweight Wave gate. This is deliberately separate from the
+/// legacy Goal/Proposal evidence chain; it validates only executor attempt
+/// identity and the accepted outcome, preserving all recorded attempts.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn gate_wave(
+    store: &HarnessStore,
+    wave_id: &str,
+    gate: &str,
+    run_id: Option<String>,
+    accepted_by: &str,
+    note: Option<String>,
+    outcome: Option<String>,
+    artifact_refs: Vec<String>,
+) -> CliResult<Wave> {
+    let mut wave = latest_wave(store, wave_id)?;
+    if accepted_by.trim().is_empty()
+        || note.as_ref().is_some_and(|value| value.trim().is_empty())
+        || outcome
+            .as_ref()
+            .is_some_and(|value| value.trim().is_empty())
+        || artifact_refs.iter().any(|value| value.trim().is_empty())
+    {
+        return Err(CliError::Usage(
+            "wave gate actor, note, outcome, and artifact refs must not be empty when supplied"
+                .to_string(),
+        ));
+    }
+    if wave.accepted_run_id.is_some() {
+        if gate == "accepted" && run_id.as_deref() == wave.accepted_run_id.as_deref() {
+            return Ok(wave);
+        }
+        return Err(CliError::Usage(format!(
+            "wave {wave_id} already accepted by run {}; create a later Wave for new work",
+            wave.accepted_run_id.as_deref().unwrap_or_default()
+        )));
+    }
+    let expected = wave.clone();
+
+    // A Wave gate is a decision about a settled attempt set. Applying revise
+    // or blocked while an attempt is still live creates contradictory state:
+    // the next TeamRun transition would otherwise overwrite Wave.status while
+    // leaving gate_status untouched. The Wave CAS below also protects this
+    // check from a concurrent attempt registration or lifecycle transition.
+    if wave.executor_kind == WaveExecutorKind::AgentTeam {
+        if let Some(active) = latest_team_runs_in_append_order(store)?
+            .into_iter()
+            .find(|attempt| {
+                wave.executor_run_ids.contains(&attempt.id)
+                    && matches!(
+                        attempt.status,
+                        TeamRunStatus::Planning
+                            | TeamRunStatus::Running
+                            | TeamRunStatus::Waiting
+                            | TeamRunStatus::Reviewing
+                    )
+            })
+        {
+            return Err(CliError::Usage(format!(
+                "wave {wave_id} still has active attempt {} in status {}; finish or cancel it before applying a gate",
+                active.id,
+                serde_snake_label(&active.status)
+            )));
+        }
+    }
+
+    match gate {
+        "accepted" => {
+            if outcome.is_none() {
+                return Err(CliError::Usage(
+                    "wave gate accepted requires an explicit outcome".to_string(),
+                ));
+            }
+            let run_id = run_id.ok_or_else(|| {
+                CliError::Usage("wave gate accepted requires --run-id".to_string())
+            })?;
+            if !wave.executor_run_ids.contains(&run_id) {
+                return Err(CliError::Usage(format!(
+                    "run {run_id} is not an eligible attempt of wave {wave_id}"
+                )));
+            }
+            if wave.executor_kind == WaveExecutorKind::AgentTeam {
+                let run = latest_team_run(store, &run_id)?;
+                if run.mission_id.as_deref() != Some(wave.mission_id.as_str())
+                    || run.wave_id.as_deref() != Some(wave.id.as_str())
+                {
+                    return Err(CliError::Usage(format!(
+                        "team run {run_id} does not belong to mission {} wave {}",
+                        wave.mission_id, wave.id
+                    )));
+                }
+                if run.status != TeamRunStatus::Completed {
+                    return Err(CliError::Usage(format!(
+                        "team run {run_id} is {}, not completed",
+                        serde_snake_label(&run.status)
+                    )));
                 }
             }
-            task.updated_at = now_string();
-            store.append_task(&task)?;
+            wave.gate_status = WaveGateStatus::Accepted;
+            wave.status = WaveStatus::Completed;
+            wave.accepted_run_id = Some(run_id);
+            wave.accepted_by = Some(accepted_by.to_string());
+            wave.accepted_at = Some(now_string());
+        }
+        "revise" => {
+            wave.gate_status = WaveGateStatus::Revise;
+            wave.status = WaveStatus::Planned;
+        }
+        "blocked" => {
+            wave.gate_status = WaveGateStatus::Blocked;
+            wave.status = WaveStatus::Blocked;
+        }
+        other => {
+            return Err(CliError::Usage(format!(
+                "unknown wave gate status `{other}` (accepted|revise|blocked)"
+            )))
+        }
+    }
+    if note.is_some() {
+        wave.gate_note = note;
+    }
+    if outcome.is_some() {
+        wave.outcome_summary = outcome;
+    }
+    if !artifact_refs.is_empty() {
+        for artifact in artifact_refs {
+            if !wave.artifact_refs.contains(&artifact) {
+                wave.artifact_refs.push(artifact);
+            }
+        }
+    }
+    wave.updated_at = now_string();
+    store_conflict_as_usage(store.compare_and_append_wave(&expected, &wave))?;
+    Ok(wave)
+}
+
+fn latest_wave(store: &HarnessStore, id: &str) -> CliResult<Wave> {
+    store
+        .latest_waves()?
+        .into_iter()
+        .find(|wave| wave.id == id)
+        .ok_or_else(|| CliError::Usage(format!("wave not found: {id}")))
+}
+
+pub(crate) fn parse_wave_executor_kind(value: &str) -> CliResult<WaveExecutorKind> {
+    serde_json::from_value(serde_json::Value::String(value.to_string())).map_err(|_| {
+        CliError::Usage(format!(
+            "unknown wave executor kind `{value}` (agent_team|dynamic_workflow|host)"
+        ))
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Agent Team v0 — `harness team-run` command group
+//
+// A team run (AgentTeamRun) is one execution of an agent team against an
+// objective; MemberRuns are its per-member session rows, TeamMessages the
+// routed mail, and TeamRunEvents the folded per-run event log (seq is
+// monotonically increasing per run, assigned by the writer). All rows journal
+// to their own append-only JSONL with latest-wins projection, like every
+// other harness object. The CLI arms and the HTTP routes
+// (POST /v1/team-runs[...]) share the create/send helpers below so behaviour
+// cannot diverge (same pattern as the WP-ii entity helpers). The `start` arm
+// is the v0 orchestrator (see the "team-run start orchestration" block below);
+// create/send only journal planning rows — a handoff/blocker message sent via
+// `send` is only folded into the event log, the MemberRun row is untouched.
+// ---------------------------------------------------------------------------
+
+/// Next event seq for a team run: max existing seq + 1 (1 when the run has no
+/// events yet). Scans the run's folded event log.
+fn next_team_run_seq(store: &HarnessStore, team_run_id: &str) -> CliResult<u64> {
+    let max_seq = store
+        .team_run_events()?
+        .into_iter()
+        .filter(|event| event.team_run_id == team_run_id)
+        .map(|event| event.seq)
+        .max()
+        .unwrap_or(0);
+    Ok(max_seq + 1)
+}
+
+/// Append one folded event to a team run's event log. The store allocates the
+/// authoritative sequence under its global lock; the caller-provided value is
+/// retained only as a source-compatible hint for existing call sites.
+#[allow(clippy::too_many_arguments)]
+fn append_team_run_event(
+    store: &HarnessStore,
+    team_run_id: &str,
+    _seq: u64,
+    source_kind: TeamRunEventSourceKind,
+    member_run_id: Option<String>,
+    entity_type: &str,
+    entity_id: &str,
+    operation: &str,
+    summary: &str,
+) -> CliResult<TeamRunEvent> {
+    let event = TeamRunEvent {
+        id: generated_id("trev"),
+        seq: 0,
+        team_run_id: team_run_id.to_string(),
+        source_kind,
+        member_run_id,
+        delegation_run_id: None,
+        entity_type: entity_type.to_string(),
+        entity_id: entity_id.to_string(),
+        operation: operation.to_string(),
+        summary: summary.to_string(),
+        occurred_at: now_string(),
+    };
+    Ok(store.append_team_run_event_next(event)?)
+}
+
+/// One member spec for team-run creation, parsed from either the CLI
+/// `--member name:role:provider[:model][@path1,path2]` spelling or the HTTP
+/// JSON body.
+struct TeamMemberSpec {
+    name: String,
+    role: String,
+    provider: String,
+    model: Option<String>,
+    owned_paths: Vec<String>,
+}
+
+/// Parse one `--member name:role:provider[:model][@path1,path2]` spec.
+fn parse_team_member_spec(raw: &str) -> CliResult<TeamMemberSpec> {
+    let (identity, owned_paths) = match raw.split_once('@') {
+        Some((identity, paths)) => (
+            identity,
+            paths
+                .split(',')
+                .map(str::trim)
+                .filter(|path| !path.is_empty())
+                .map(str::to_string)
+                .collect(),
+        ),
+        None => (raw, Vec::new()),
+    };
+    let parts: Vec<&str> = identity.split(':').collect();
+    if parts.len() < 3 || parts[0].is_empty() || parts[1].is_empty() || parts[2].is_empty() {
+        return Err(CliError::Usage(format!(
+            "invalid --member `{raw}` (expected name:role:provider[:model][@path1,path2])"
+        )));
+    }
+    Ok(TeamMemberSpec {
+        name: parts[0].to_string(),
+        role: parts[1].to_string(),
+        provider: parts[2].to_string(),
+        model: parts
+            .get(3)
+            .map(|model| model.to_string())
+            .filter(|model| !model.is_empty()),
+        owned_paths,
+    })
+}
+
+/// Everything `team-run create` journals, returned so the CLI/HTTP layers can
+/// render it.
+struct CreatedTeamRun {
+    team_run: AgentTeamRun,
+    member_runs: Vec<MemberRun>,
+    assignment_messages: Vec<TeamMessage>,
+}
+
+fn created_team_run_json(created: &CreatedTeamRun) -> serde_json::Value {
+    serde_json::json!({
+        "team_run": created.team_run,
+        "member_runs": created.member_runs,
+        "assignment_messages": created.assignment_messages,
+    })
+}
+
+/// Persist a new team run: the AgentTeamRun (status planning), one idle
+/// MemberRun per member, one queued assignment TeamMessage per member
+/// (from the reserved "host" sender), and a folded TeamRunEvent per created
+/// entity (host-sourced, seq increasing). Shared by the `team-run create` CLI
+/// arm and POST /v1/team-runs. `previous_run_id` records retry lineage. For a
+/// native Wave it must name an earlier attempt of that same Mission/Wave.
+#[allow(clippy::too_many_arguments)]
+fn create_team_run(
+    store: &HarnessStore,
+    objective: &str,
+    budget_limit_usd: Option<f64>,
+    host_surface: &str,
+    host_thread_id: Option<String>,
+    previous_run_id: Option<String>,
+    mission_id: Option<String>,
+    wave_id: Option<String>,
+    members: &[TeamMemberSpec],
+) -> CliResult<CreatedTeamRun> {
+    if objective.trim().is_empty() {
+        return Err(CliError::Usage(
+            "team-run objective must not be empty".to_string(),
+        ));
+    }
+    if host_surface.trim().is_empty() {
+        return Err(CliError::Usage(
+            "team-run host surface must not be empty".to_string(),
+        ));
+    }
+    if host_thread_id
+        .as_ref()
+        .is_some_and(|id| id.trim().is_empty())
+        || previous_run_id
+            .as_ref()
+            .is_some_and(|id| id.trim().is_empty())
+    {
+        return Err(CliError::Usage(
+            "host_thread_id and previous_run_id must not be empty when supplied".to_string(),
+        ));
+    }
+    if budget_limit_usd.is_some_and(|budget| !budget.is_finite() || budget < 0.0) {
+        return Err(CliError::Usage(
+            "team-run budget must be a finite non-negative number".to_string(),
+        ));
+    }
+    if members.is_empty() {
+        return Err(CliError::Usage(
+            "agent_team runs require at least one member".to_string(),
+        ));
+    }
+    let mut member_names = std::collections::HashSet::new();
+    for member in members {
+        if member.name.trim().is_empty()
+            || member.role.trim().is_empty()
+            || member.provider.trim().is_empty()
+            || member
+                .model
+                .as_ref()
+                .is_some_and(|model| model.trim().is_empty())
+        {
+            return Err(CliError::Usage(
+                "team member name, role, and provider must not be empty".to_string(),
+            ));
+        }
+        if !member_names.insert(member.name.as_str()) {
+            return Err(CliError::Usage(format!(
+                "duplicate team member name: {}",
+                member.name
+            )));
+        }
+        if member.owned_paths.iter().any(|path| path.trim().is_empty()) {
+            return Err(CliError::Usage(format!(
+                "team member {} has an empty owned path",
+                member.name
+            )));
+        }
+    }
+    let (mission_id, wave_id, wave) = resolve_team_run_mission_wave(store, mission_id, wave_id)?;
+    // A wave chained onto a previous run must name a run that exists. Linked
+    // retries must stay inside the exact same native Mission/Wave.
+    if let Some(previous) = previous_run_id.as_deref() {
+        let previous = latest_team_run(store, previous)?;
+        if let Some(wave) = wave.as_ref() {
+            if previous.mission_id.as_deref() != Some(wave.mission_id.as_str())
+                || previous.wave_id.as_deref() != Some(wave.id.as_str())
+            {
+                return Err(CliError::Usage(format!(
+                    "previous run {} is not an attempt of mission {} wave {}",
+                    previous.id, wave.mission_id, wave.id
+                )));
+            }
+        }
+    }
+    let run_id = generated_id("team-run");
+    let mut member_runs = Vec::new();
+    let mut member_run_ids = Vec::new();
+    for member in members {
+        let member_run = MemberRun {
+            id: generated_id("member-run"),
+            team_run_id: run_id.clone(),
+            slot_id: None,
+            name: member.name.clone(),
+            role: member.role.clone(),
+            provider: member.provider.clone(),
+            model: member.model.clone(),
+            status: MemberRunStatus::Idle,
+            provider_session_id: None,
+            acp_session_id: None,
+            worktree_ref: None,
+            owned_paths: member.owned_paths.clone(),
+            started_at: now_string(),
+            last_event_at: None,
+            finished_at: None,
+        };
+        member_run_ids.push(member_run.id.clone());
+        member_runs.push(member_run);
+    }
+    let team_run = AgentTeamRun {
+        id: run_id.clone(),
+        definition_id: None,
+        previous_run_id,
+        mission_id,
+        wave_id,
+        host_surface: host_surface.to_string(),
+        host_thread_id,
+        objective: objective.to_string(),
+        status: TeamRunStatus::Planning,
+        member_run_ids,
+        budget_limit_usd,
+        created_at: now_string(),
+        updated_at: now_string(),
+        completed_at: None,
+    };
+
+    // A freshly-generated run id has no events yet, so seq starts at 1.
+    let mut seq = next_team_run_seq(store, &run_id)?;
+    store_conflict_as_usage(store.insert_team_run_and_register_attempt(&team_run, &now_string()))?;
+    append_team_run_event(
+        store,
+        &run_id,
+        seq,
+        TeamRunEventSourceKind::Host,
+        None,
+        "team_run",
+        &team_run.id,
+        "created",
+        &format!("team run created: {objective}"),
+    )?;
+    seq += 1;
+
+    let mut assignment_messages = Vec::new();
+    for member_run in &member_runs {
+        store.append_member_run(member_run)?;
+        append_team_run_event(
+            store,
+            &run_id,
+            seq,
+            TeamRunEventSourceKind::Host,
+            Some(member_run.id.clone()),
+            "member_run",
+            &member_run.id,
+            "created",
+            &format!(
+                "member {} ({}/{}) joined",
+                member_run.name, member_run.role, member_run.provider
+            ),
+        )?;
+        seq += 1;
+
+        let message = TeamMessage {
+            id: generated_id("tmsg"),
+            team_run_id: run_id.clone(),
+            from_member_id: "host".to_string(),
+            to_member_ids: vec![member_run.id.clone()],
+            kind: TeamMessageKind::Assignment,
+            body: format!(
+                "Assignment for {} ({}): {}",
+                member_run.name, member_run.role, objective
+            ),
+            correlation_id: generated_id("corr"),
+            causation_id: None,
+            evidence_refs: Vec::new(),
+            deliveries: vec![TeamMessageDelivery {
+                member_id: member_run.id.clone(),
+                policy: TeamDeliveryPolicy::Queue,
+                status: TeamDeliveryStatus::Queued,
+                attempt: 0,
+                updated_at: now_string(),
+            }],
+            created_at: now_string(),
+        };
+        store.append_team_message(&message)?;
+        append_team_run_event(
+            store,
+            &run_id,
+            seq,
+            TeamRunEventSourceKind::Host,
+            Some(member_run.id.clone()),
+            "message",
+            &message.id,
+            "created",
+            &format!("assignment queued for {}", member_run.name),
+        )?;
+        seq += 1;
+        assignment_messages.push(message);
+    }
+
+    Ok(CreatedTeamRun {
+        team_run,
+        member_runs,
+        assignment_messages,
+    })
+}
+
+/// Validate optional outer Mission/Wave joins for a new AgentTeamRun. A Wave
+/// is owned by one native Mission, so `--wave-id` can safely supply a missing
+/// mission id; conflicting or unknown joins fail before any run rows append.
+fn resolve_team_run_mission_wave(
+    store: &HarnessStore,
+    mission_id: Option<String>,
+    wave_id: Option<String>,
+) -> CliResult<(Option<String>, Option<String>, Option<Wave>)> {
+    if mission_id.as_ref().is_some_and(|id| id.trim().is_empty()) {
+        return Err(CliError::Usage(
+            "mission_id must not be empty when supplied".to_string(),
+        ));
+    }
+    if wave_id.as_ref().is_some_and(|id| id.trim().is_empty()) {
+        return Err(CliError::Usage(
+            "wave_id must not be empty when supplied".to_string(),
+        ));
+    }
+    let mut mission_id = mission_id;
+
+    if mission_id.is_some() && wave_id.is_none() {
+        return Err(CliError::Usage(
+            "a native Mission-linked TeamRun requires --wave-id; omit both ids only for an unlinked compatibility run"
+                .to_string(),
+        ));
+    }
+
+    if mission_id.is_some()
+        && !store.latest_missions()?.iter().any(|mission| {
+            mission_id
+                .as_deref()
+                .is_some_and(|mission_id| mission.id == mission_id)
+        })
+    {
+        return Err(CliError::Usage(format!(
+            "mission not found: {}",
+            mission_id.as_deref().unwrap_or_default()
+        )));
+    }
+
+    let wave = if let Some(wave_id) = wave_id.as_deref() {
+        let wave = store
+            .latest_waves()?
+            .into_iter()
+            .find(|wave| wave.id == wave_id)
+            .ok_or_else(|| CliError::Usage(format!("wave not found: {wave_id}")))?;
+        if let Some(requested_mission_id) = mission_id.as_deref() {
+            if wave.mission_id != requested_mission_id {
+                return Err(CliError::Usage(format!(
+                    "wave {wave_id} belongs to mission {}, not {requested_mission_id}",
+                    wave.mission_id
+                )));
+            }
+        } else {
+            mission_id = Some(wave.mission_id.clone());
+        }
+        if wave.executor_kind != WaveExecutorKind::AgentTeam {
+            return Err(CliError::Usage(format!(
+                "wave {wave_id} uses executor_kind {}, not agent_team",
+                serde_snake_label(&wave.executor_kind)
+            )));
+        }
+        if !matches!(
+            wave.status,
+            WaveStatus::Planned | WaveStatus::Running | WaveStatus::Waiting
+        ) {
+            return Err(CliError::Usage(format!(
+                "wave {wave_id} is {} and cannot accept another team-run attempt; revise or create a later Wave",
+                serde_snake_label(&wave.status)
+            )));
+        }
+        Some(wave)
+    } else {
+        None
+    };
+
+    Ok((mission_id, wave_id, wave))
+}
+
+/// Route a message inside a team run and fold it into the event log. Shared
+/// by the `team-run send` CLI arm and POST /v1/team-runs/{id}/messages. v0
+/// does not drive the member state machine: a handoff/blocker from a member is
+/// only recorded as an event — the member's MemberRun row is left untouched.
+#[allow(clippy::too_many_arguments)]
+fn send_team_message(
+    store: &HarnessStore,
+    team_run_id: &str,
+    from_member_id: &str,
+    to_member_ids: Vec<String>,
+    kind: TeamMessageKind,
+    body: &str,
+    correlation_id: Option<String>,
+    causation_id: Option<String>,
+) -> CliResult<TeamMessage> {
+    // Fail fast on an unknown run id rather than journaling an orphan message.
+    let run = latest_team_run(store, team_run_id)?;
+    if body.trim().is_empty() {
+        return Err(CliError::Usage(
+            "team message body must not be empty".to_string(),
+        ));
+    }
+    let valid_member = |id: &str| id == "host" || run.member_run_ids.iter().any(|row| row == id);
+    if !valid_member(from_member_id) {
+        return Err(CliError::Usage(format!(
+            "message sender {from_member_id} does not belong to team run {team_run_id}"
+        )));
+    }
+    if to_member_ids.is_empty() {
+        return Err(CliError::Usage(
+            "team message requires at least one recipient".to_string(),
+        ));
+    }
+    let mut recipients = std::collections::HashSet::new();
+    for recipient in &to_member_ids {
+        if !valid_member(recipient) {
+            return Err(CliError::Usage(format!(
+                "message recipient {recipient} does not belong to team run {team_run_id}"
+            )));
+        }
+        if !recipients.insert(recipient.as_str()) {
+            return Err(CliError::Usage(format!(
+                "duplicate message recipient: {recipient}"
+            )));
+        }
+    }
+    let (correlation_id, causation_id) =
+        resolve_team_message_lineage(store, team_run_id, &kind, correlation_id, causation_id)?;
+    let message = TeamMessage {
+        id: generated_id("tmsg"),
+        team_run_id: team_run_id.to_string(),
+        from_member_id: from_member_id.to_string(),
+        to_member_ids: to_member_ids.clone(),
+        kind,
+        body: body.to_string(),
+        correlation_id,
+        causation_id,
+        evidence_refs: Vec::new(),
+        deliveries: to_member_ids
+            .iter()
+            .map(|member_id| TeamMessageDelivery {
+                member_id: member_id.clone(),
+                policy: TeamDeliveryPolicy::Queue,
+                status: TeamDeliveryStatus::Queued,
+                attempt: 0,
+                updated_at: now_string(),
+            })
+            .collect(),
+        created_at: now_string(),
+    };
+    store_conflict_as_usage(store.append_team_message_checked(&message))?;
+    let from_host = from_member_id == "host";
+    let seq = next_team_run_seq(store, team_run_id)?;
+    append_team_run_event(
+        store,
+        team_run_id,
+        seq,
+        if from_host {
+            TeamRunEventSourceKind::Host
+        } else {
+            TeamRunEventSourceKind::Member
+        },
+        if from_host {
+            None
+        } else {
+            Some(from_member_id.to_string())
+        },
+        "message",
+        &message.id,
+        "created",
+        &format!(
+            "{} from {} to [{}]",
+            team_message_kind_label(&message.kind),
+            from_member_id,
+            to_member_ids.join(",")
+        ),
+    )?;
+    Ok(message)
+}
+
+/// Resolve and verify manual message lineage without requiring legacy Task
+/// records. An Assignment establishes a unique correlation anchor. A
+/// non-assignment message that explicitly names a correlation must point at an
+/// existing assignment in this run; a causation-only reply inherits its direct
+/// cause's correlation (which may be an intentionally uncorrelated message).
+///
+/// Omitted lineage retains the v0 generated-default behavior and makes no
+/// claim of assignment proof. Every validation happens before the append, so
+/// bad cross-run, unknown, or mismatched lineage is atomic.
+fn resolve_team_message_lineage(
+    store: &HarnessStore,
+    team_run_id: &str,
+    kind: &TeamMessageKind,
+    supplied_correlation_id: Option<String>,
+    supplied_causation_id: Option<String>,
+) -> CliResult<(String, Option<String>)> {
+    let messages = latest_team_messages_in_append_order(store)?;
+    let has_explicit_correlation = supplied_correlation_id.is_some();
+
+    if let Some(correlation_id) = supplied_correlation_id.as_deref() {
+        if correlation_id.trim().is_empty() {
+            return Err(CliError::Usage(
+                "--correlation-id must not be empty".to_string(),
+            ));
+        }
+    }
+
+    let cause = if let Some(causation_id) = supplied_causation_id.as_deref() {
+        if causation_id.trim().is_empty() {
+            return Err(CliError::Usage(
+                "--causation-id must not be empty".to_string(),
+            ));
+        }
+        Some(
+            messages
+            .iter()
+            .find(|message| message.team_run_id == team_run_id && message.id == causation_id)
+            .cloned()
+            .ok_or_else(|| {
+                CliError::Usage(format!(
+                    "causation_id `{causation_id}` does not identify a message in team run {team_run_id}"
+                ))
+            })?,
+        )
+    } else {
+        None
+    };
+
+    if let (Some(correlation_id), Some(cause)) =
+        (supplied_correlation_id.as_deref(), cause.as_ref())
+    {
+        if cause.correlation_id != correlation_id {
+            return Err(CliError::Usage(format!(
+                "causation_id `{causation_id}` has correlation_id `{}`, not `{correlation_id}`",
+                cause.correlation_id,
+                causation_id = supplied_causation_id.as_deref().unwrap_or_default(),
+            )));
+        }
+    }
+
+    let correlation_id = supplied_correlation_id
+        .or_else(|| cause.as_ref().map(|message| message.correlation_id.clone()))
+        .unwrap_or_else(|| generated_id("corr"));
+
+    if *kind == TeamMessageKind::Assignment {
+        if messages.iter().any(|message| {
+            message.team_run_id == team_run_id
+                && message.kind == TeamMessageKind::Assignment
+                && message.correlation_id == correlation_id
+        }) {
+            return Err(CliError::Usage(format!(
+                "correlation_id `{correlation_id}` already identifies an assignment in team run {team_run_id}"
+            )));
+        }
+    } else if has_explicit_correlation
+        && !messages.iter().any(|message| {
+            message.team_run_id == team_run_id
+                && message.kind == TeamMessageKind::Assignment
+                && message.correlation_id == correlation_id
+        })
+    {
+        return Err(CliError::Usage(format!(
+            "correlation_id `{correlation_id}` does not identify an assignment in team run {team_run_id}"
+        )));
+    }
+
+    Ok((correlation_id, supplied_causation_id))
+}
+
+/// Load the latest row for a team run id, or a clear not-found error.
+fn latest_team_run(store: &HarnessStore, id: &str) -> CliResult<AgentTeamRun> {
+    latest_team_runs_in_append_order(store)?
+        .into_iter()
+        .find(|run| run.id == id)
+        .ok_or_else(|| CliError::Usage(format!("team run not found: {id}")))
+}
+
+fn team_run_wave_index(store: &HarnessStore, run: &AgentTeamRun) -> CliResult<Option<u32>> {
+    let Some(wave_id) = run.wave_id.as_deref() else {
+        return Ok(None);
+    };
+    Ok(store
+        .latest_waves()?
+        .into_iter()
+        .find(|wave| wave.id == wave_id)
+        .map(|wave| wave.index))
+}
+
+fn team_run_display_json(store: &HarnessStore, run: &AgentTeamRun) -> CliResult<serde_json::Value> {
+    let mut value = serde_json::to_value(run)?;
+    if let Some(object) = value.as_object_mut() {
+        object.insert(
+            "wave_index".to_string(),
+            serde_json::to_value(team_run_wave_index(store, run)?)?,
+        );
+    }
+    Ok(value)
+}
+
+/// Parse a team run status from its snake_case wire name.
+fn parse_team_run_status(s: &str) -> CliResult<TeamRunStatus> {
+    serde_json::from_value(serde_json::Value::String(s.to_string())).map_err(|_| {
+        CliError::Usage(format!(
+            "unknown team run status `{s}` (planning|running|waiting|reviewing|completed|failed|cancelled)"
+        ))
+    })
+}
+
+/// Transition a team-run attempt. Only these moves are legal:
+/// `reviewing → completed` (the attempt-level integration check passes) and
+/// `planning|waiting|reviewing → cancelled`. Cancelling a reviewing
+/// attempt is the explicit rejection path that permits a later retry without
+/// falsely making the failed attempt acceptance-eligible. Anything else is a usage error
+/// (HTTP 400) so an attempt cannot skip review or resurrect after termination.
+/// A running attempt cannot be status-cancelled until provider execution has a
+/// real cooperative interruption path; accepting that transition would leave
+/// background work running behind a false terminal state.
+/// Completing an attempt only makes it eligible for the separate Wave gate; it
+/// does not accept the Wave.
+/// Appends the new AgentTeamRun row (latest-wins) and folds a TeamRunEvent so
+/// the dashboard timeline narrates the gate decision. Shared by
+/// POST /v1/team-runs/{id}/transition and the `team-run complete|cancel` arms.
+fn transition_team_run(
+    store: &HarnessStore,
+    team_run_id: &str,
+    target: TeamRunStatus,
+) -> CliResult<AgentTeamRun> {
+    let current = latest_team_run(store, team_run_id)?;
+    let previous_status = current.status;
+    let allowed = matches!(
+        (previous_status, target),
+        (TeamRunStatus::Reviewing, TeamRunStatus::Completed)
+            | (TeamRunStatus::Planning, TeamRunStatus::Cancelled)
+            | (TeamRunStatus::Waiting, TeamRunStatus::Cancelled)
+            | (TeamRunStatus::Reviewing, TeamRunStatus::Cancelled)
+    );
+    if !allowed {
+        return Err(CliError::Usage(format!(
+            "invalid team-run transition: {} → {} (allowed: reviewing → completed, planning|waiting|reviewing → cancelled; running cancellation requires provider interruption)",
+            serde_snake_label(&previous_status),
+            serde_snake_label(&target),
+        )));
+    }
+    let mut next = current.clone();
+    next.status = target;
+    next.updated_at = now_string();
+    if target == TeamRunStatus::Completed {
+        next.completed_at = Some(now_string());
+    }
+    let wave_status = if target == TeamRunStatus::Completed {
+        WaveStatus::Waiting
+    } else {
+        WaveStatus::Planned
+    };
+    store_conflict_as_usage(store.compare_and_append_team_run_with_wave_status(
+        &current,
+        &next,
+        wave_status,
+        &now_string(),
+    ))?;
+    let seq = next_team_run_seq(store, team_run_id)?;
+    let (operation, summary) = match target {
+        TeamRunStatus::Completed => (
+            "completed",
+            "team-run attempt completed: reviewing → completed".to_string(),
+        ),
+        _ => (
+            "updated",
+            format!(
+                "team run cancelled: {} → cancelled",
+                serde_snake_label(&previous_status)
+            ),
+        ),
+    };
+    append_team_run_event(
+        store,
+        team_run_id,
+        seq,
+        TeamRunEventSourceKind::Host,
+        None,
+        "team_run",
+        &next.id,
+        operation,
+        &summary,
+    )?;
+    Ok(next)
+}
+
+/// Parse a team message kind from its snake_case wire name.
+fn parse_team_message_kind(s: &str) -> CliResult<TeamMessageKind> {
+    serde_json::from_value(serde_json::Value::String(s.to_string())).map_err(|_| {
+        CliError::Usage(format!(
+            "unknown team message kind `{s}` (assignment|question|answer|progress|blocker|handoff|review_request|review_result|control|broadcast)"
+        ))
+    })
+}
+
+fn team_message_kind_label(kind: &TeamMessageKind) -> &'static str {
+    match kind {
+        TeamMessageKind::Assignment => "assignment",
+        TeamMessageKind::Question => "question",
+        TeamMessageKind::Answer => "answer",
+        TeamMessageKind::Progress => "progress",
+        TeamMessageKind::Blocker => "blocker",
+        TeamMessageKind::Handoff => "handoff",
+        TeamMessageKind::ReviewRequest => "review_request",
+        TeamMessageKind::ReviewResult => "review_result",
+        TeamMessageKind::Control => "control",
+        TeamMessageKind::Broadcast => "broadcast",
+    }
+}
+
+/// The snake_case wire label of a serde `rename_all = "snake_case"` enum, for
+/// human-readable CLI output.
+fn serde_snake_label<T: serde::Serialize>(value: &T) -> String {
+    match serde_json::to_value(value) {
+        Ok(serde_json::Value::String(label)) => label,
+        _ => "unknown".to_string(),
+    }
+}
+
+fn team_run_command(
+    store: &HarnessStore,
+    resolved: &ResolvedStore,
+    args: &[String],
+) -> CliResult<()> {
+    require_subcommand(
+        args,
+        "team-run create|list|status|start|send|events|complete|cancel",
+    )?;
+    let json = has_flag(args, "--json");
+    match args[0].as_str() {
+        "create" => {
+            let members: Vec<TeamMemberSpec> = many(args, "--member")
+                .iter()
+                .map(|raw| parse_team_member_spec(raw))
+                .collect::<CliResult<_>>()?;
+            let budget_limit_usd = value(args, "--budget-usd")
+                .map(|raw| {
+                    raw.parse::<f64>()
+                        .map_err(|_| CliError::Usage("--budget-usd must be a number".to_string()))
+                })
+                .transpose()?;
+            let created = create_team_run(
+                store,
+                &required(args, "--objective")?,
+                budget_limit_usd,
+                &value(args, "--host-surface").unwrap_or_else(|| "cli".into()),
+                value(args, "--host-thread-id"),
+                value(args, "--previous"),
+                value(args, "--mission-id"),
+                value(args, "--wave-id"),
+                &members,
+            )?;
+            if json {
+                print_json(&created_team_run_json(&created))?;
+            } else {
+                println!("{}", created.team_run.id);
+            }
+        }
+        // complete / cancel share the HTTP attempt-transition logic, so CLI
+        // and dashboard cannot disagree about attempt eligibility.
+        "complete" => {
+            let id = required(args, "--id")?;
+            let run = transition_team_run(store, &id, TeamRunStatus::Completed)?;
+            if json {
+                print_json(&serde_json::json!(run))?;
+            } else {
+                println!("{}\t{}", run.id, serde_snake_label(&run.status));
+            }
+        }
+        "cancel" => {
+            let id = required(args, "--id")?;
+            let run = transition_team_run(store, &id, TeamRunStatus::Cancelled)?;
+            if json {
+                print_json(&serde_json::json!(run))?;
+            } else {
+                println!("{}\t{}", run.id, serde_snake_label(&run.status));
+            }
+        }
+        "list" => {
+            let runs = latest_team_runs_in_append_order(store)?;
+            if json {
+                let display = runs
+                    .iter()
+                    .map(|run| team_run_display_json(store, run))
+                    .collect::<CliResult<Vec<_>>>()?;
+                print_json(&display)?;
+            } else {
+                for run in &runs {
+                    let wave_index = team_run_wave_index(store, run)?
+                        .map(|index| index.to_string())
+                        .unwrap_or_else(|| "unresolved".to_string());
+                    println!(
+                        "{}\t{}\twave={}\tmembers={}\t{}\t{}",
+                        run.id,
+                        serde_snake_label(&run.status),
+                        wave_index,
+                        run.member_run_ids.len(),
+                        run.created_at,
+                        run.objective
+                    );
+                }
+            }
+        }
+        "status" => {
+            let id = required(args, "--id")?;
+            let run = latest_team_run(store, &id)?;
+            let member_runs: Vec<MemberRun> = latest_member_runs_in_append_order(store)?
+                .into_iter()
+                .filter(|member| member.team_run_id == id)
+                .collect();
+            let actions = visible_member_actions_in_append_order(store)?;
+            let messages = latest_team_messages_in_append_order(store)?;
+            let latest_action_of = |member_run_id: &str| {
+                actions
+                    .iter()
+                    .filter(|action| {
+                        action.team_run_id == id && action.member_run_id == member_run_id
+                    })
+                    .max_by_key(|action| action.seq)
+            };
+            let unacked_messages = messages
+                .iter()
+                .filter(|message| message.team_run_id == id)
+                .filter(|message| {
+                    message
+                        .deliveries
+                        .iter()
+                        .any(|delivery| delivery.status != TeamDeliveryStatus::Acknowledged)
+                })
+                .count();
+            if json {
+                let members: Vec<serde_json::Value> = member_runs
+                    .iter()
+                    .map(|member| {
+                        serde_json::json!({
+                            "member_run": member,
+                            "latest_action": latest_action_of(&member.id),
+                        })
+                    })
+                    .collect();
+                print_json(&serde_json::json!({
+                    "team_run": run,
+                    "wave_index": team_run_wave_index(store, &run)?,
+                    "members": members,
+                    "unacked_messages": unacked_messages,
+                }))?;
+            } else {
+                let wave_index = team_run_wave_index(store, &run)?
+                    .map(|index| index.to_string())
+                    .unwrap_or_else(|| "unresolved".to_string());
+                println!(
+                    "{}\t{}\twave={}\t{}",
+                    run.id,
+                    serde_snake_label(&run.status),
+                    wave_index,
+                    run.objective
+                );
+                for member in &member_runs {
+                    let last = match latest_action_of(&member.id) {
+                        Some(action) => format!("[{}] {}", action.action_type, action.title),
+                        None => "-".to_string(),
+                    };
+                    println!(
+                        "  {} ({}/{})\t{}\tlast: {}",
+                        member.name,
+                        member.role,
+                        member.provider,
+                        serde_snake_label(&member.status),
+                        last
+                    );
+                }
+                println!("unacked_messages: {unacked_messages}");
+            }
+        }
+        "send" => {
+            let to_member_ids: Vec<String> = required(args, "--to")?
+                .split(',')
+                .map(str::trim)
+                .filter(|id| !id.is_empty())
+                .map(str::to_string)
+                .collect();
+            if to_member_ids.is_empty() {
+                return Err(CliError::Usage(
+                    "--to must name at least one member id".to_string(),
+                ));
+            }
+            let message = send_team_message(
+                store,
+                &required(args, "--id")?,
+                &required(args, "--from")?,
+                to_member_ids,
+                parse_team_message_kind(&required(args, "--kind")?)?,
+                &required(args, "--body")?,
+                value(args, "--correlation-id"),
+                value(args, "--causation-id"),
+            )?;
+            if json {
+                print_json(&message)?;
+            } else {
+                println!("{}", message.id);
+            }
+        }
+        "start" => {
+            // Foreground orchestration: this process is the WRITER driving
+            // member sessions; `harness serve` stays the read/broadcast side.
+            let id = required(args, "--id")?;
+            let max_concurrency = value(args, "--max-concurrency")
+                .and_then(|raw| raw.parse::<usize>().ok())
+                .filter(|n| *n > 0)
+                .unwrap_or(TEAM_RUN_START_DEFAULT_CONCURRENCY);
+            let idle_timeout_s = value(args, "--idle-timeout-s")
+                .and_then(|raw| raw.parse::<u64>().ok())
+                .filter(|n| *n > 0)
+                .unwrap_or(kimi_acp::DEFAULT_PROMPT_IDLE_TIMEOUT_SECS);
+            team_run_start(
+                store,
+                resolved,
+                &id,
+                max_concurrency,
+                Duration::from_secs(idle_timeout_s),
+            )?;
+        }
+        "events" => {
+            let id = required(args, "--id")?;
+            let after_seq = value(args, "--after-seq")
+                .and_then(|raw| raw.parse::<u64>().ok())
+                .unwrap_or(0);
+            let mut events: Vec<TeamRunEvent> = store
+                .team_run_events()?
+                .into_iter()
+                .filter(|event| event.team_run_id == id && event.seq > after_seq)
+                .collect();
+            events.sort_by_key(|event| event.seq);
+            if json {
+                print_json(&events)?;
+            } else {
+                for event in &events {
+                    println!(
+                        "seq={}\t{}\t{}:{}\t{}\t{}",
+                        event.seq,
+                        serde_snake_label(&event.source_kind),
+                        event.entity_type,
+                        event.entity_id,
+                        event.operation,
+                        event.summary
+                    );
+                }
+            }
+        }
+        other => {
+            return Err(CliError::Usage(format!(
+                "unknown team-run command: {other}"
+            )))
         }
     }
     Ok(())
 }
 
-/// Link a finished phase run's journaled `WorkflowStep`s back to their `Task`s and
-/// stamp the verdict step's outcome (the structured Task<->Step link, acceptance
-/// #1). A compiled task step carries `label == task.id`; the acceptance judge step
-/// is labelled `verdict-<phase_id>`. Re-appends each updated step (latest-wins).
-fn link_workflow_steps_to_tasks(
+// ---------------------------------------------------------------------------
+// `harness team-run start` — Agent Team v0 orchestration loop.
+//
+// The orchestrator is a FOREGROUND CLI process and the single WRITER of member
+// state transitions; `harness serve` stays a pure read/broadcast surface (its
+// SSE watcher tails the same JSONL files, so a live console sees every row the
+// orchestrator journals). v0 implements exactly one member adapter — kimi over
+// ACP ([`kimi_acp::KimiAcpClient`]). Members of any other provider are
+// journaled as failed with an honest "adapter not implemented in v0" summary
+// instead of being silently skipped.
+//
+// Concurrency: one OS thread per member, bounded by a semaphore
+// (--max-concurrency, default 4). All seq-assigning ledger writes serialize
+// through one mutex — `next_team_run_seq` is a read-max-then-append pair that
+// would race across member threads otherwise.
+// ---------------------------------------------------------------------------
+
+/// Default cap on concurrently-running member ACP sessions.
+const TEAM_RUN_START_DEFAULT_CONCURRENCY: usize = 4;
+
+/// Hard cap on prompt rounds per member (round 1 = the assignment; later
+/// rounds deliver messages queued while the member worked). Prevents a
+/// message ping-pong from looping the orchestrator forever.
+const TEAM_RUN_START_MAX_ROUNDS: u32 = 5;
+
+/// Throttle for `progress` MemberActions while assistant text streams: at
+/// most one per member per window, no matter how chatty the chunks are.
+const TEAM_RUN_PROGRESS_THROTTLE: Duration = Duration::from_secs(5);
+
+/// Live member thinking is an ephemeral operator hint, never a ledger row.
+/// Each preview expires in the browser shortly after publication and is not
+/// available to reconnecting clients.
+const LIVE_MEMBER_ACTIVITY_TTL_MS: u128 = 10_000;
+const LIVE_MEMBER_ACTIVITY_MAX_CHARS: usize = 240;
+const LIVE_MEMBER_ACTIVITY_THROTTLE: Duration = Duration::from_secs(1);
+static LIVE_MEMBER_ACTIVITY_REVISION: AtomicU64 = AtomicU64::new(1);
+static LIVE_MEMBER_ACTIVITY_INGRESS: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
+
+#[derive(Clone, Debug)]
+struct LiveMemberActivityPreview {
+    team_run_id: String,
+    member_run_id: String,
+    provider: String,
+    preview: String,
+}
+
+type LiveMemberActivitySink = Arc<dyn Fn(LiveMemberActivityPreview) + Send + Sync>;
+
+/// Minimal counting semaphore (std has none) bounding how many member threads
+/// run an ACP session at once.
+struct Semaphore {
+    permits: Mutex<usize>,
+    condvar: Condvar,
+}
+
+impl Semaphore {
+    fn new(permits: usize) -> Self {
+        Self {
+            permits: Mutex::new(permits.max(1)),
+            condvar: Condvar::new(),
+        }
+    }
+
+    fn acquire(&self) -> SemaphorePermit<'_> {
+        let mut guard = self.permits.lock().unwrap_or_else(|e| e.into_inner());
+        while *guard == 0 {
+            guard = self.condvar.wait(guard).unwrap_or_else(|e| e.into_inner());
+        }
+        *guard -= 1;
+        SemaphorePermit { semaphore: self }
+    }
+
+    fn release(&self) {
+        let mut guard = self.permits.lock().unwrap_or_else(|e| e.into_inner());
+        *guard += 1;
+        drop(guard);
+        self.condvar.notify_one();
+    }
+}
+
+struct SemaphorePermit<'a> {
+    semaphore: &'a Semaphore,
+}
+
+impl Drop for SemaphorePermit<'_> {
+    fn drop(&mut self) {
+        self.semaphore.release();
+    }
+}
+
+/// The orchestrator's serialized view of one run's ledger. Read paths are
+/// unlocked (append-only JSONL); every "compute next seq + append" pair holds
+/// `write_lock` so concurrent member threads never allocate duplicate seqs.
+struct TeamRunLedger {
+    store: HarnessStore,
+    run_id: String,
+    write_lock: Mutex<()>,
+}
+
+impl TeamRunLedger {
+    fn new(store: &HarnessStore, run_id: &str) -> Self {
+        Self {
+            store: HarnessStore::new(store.root().to_path_buf()),
+            run_id: run_id.to_string(),
+            write_lock: Mutex::new(()),
+        }
+    }
+
+    fn write_lock(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.write_lock.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Fold one event into the run's event log (seq assigned under the lock).
+    #[allow(clippy::too_many_arguments)]
+    fn fold_event(
+        &self,
+        source_kind: TeamRunEventSourceKind,
+        member_run_id: Option<String>,
+        entity_type: &str,
+        entity_id: &str,
+        operation: &str,
+        summary: &str,
+    ) -> CliResult<TeamRunEvent> {
+        let _guard = self.write_lock();
+        let seq = next_team_run_seq(&self.store, &self.run_id)?;
+        append_team_run_event(
+            &self.store,
+            &self.run_id,
+            seq,
+            source_kind,
+            member_run_id,
+            entity_type,
+            entity_id,
+            operation,
+            summary,
+        )
+    }
+
+    /// Append one MemberAction (seq = max existing action seq for the run + 1,
+    /// assigned under the lock).
+    fn append_action(
+        &self,
+        member_run_id: &str,
+        action_type: &str,
+        status: MemberActionStatus,
+        title: &str,
+        summary: &str,
+    ) -> CliResult<MemberAction> {
+        let _guard = self.write_lock();
+        let seq = self
+            .store
+            .member_actions()?
+            .into_iter()
+            .filter(|action| action.team_run_id == self.run_id)
+            .map(|action| action.seq)
+            .max()
+            .unwrap_or(0)
+            + 1;
+        let action = MemberAction {
+            id: generated_id("mact"),
+            seq,
+            team_run_id: self.run_id.clone(),
+            member_run_id: member_run_id.to_string(),
+            task_id: None,
+            action_type: action_type.to_string(),
+            status,
+            title: title.to_string(),
+            summary: summary.to_string(),
+            evidence_refs: Vec::new(),
+            started_at: now_string(),
+            completed_at: Some(now_string()),
+        };
+        self.store.append_member_action(&action)?;
+        Ok(action)
+    }
+
+    fn save_member_run(&self, member: &MemberRun) -> CliResult<()> {
+        let _guard = self.write_lock();
+        Ok(self.store.append_member_run(member)?)
+    }
+
+    fn save_message(&self, message: &TeamMessage) -> CliResult<()> {
+        let _guard = self.write_lock();
+        Ok(self.store.append_team_message(message)?)
+    }
+
+    fn latest_member_run(&self, member_run_id: &str) -> CliResult<Option<MemberRun>> {
+        Ok(latest_member_runs_in_append_order(&self.store)?
+            .into_iter()
+            .find(|member| member.id == member_run_id))
+    }
+
+    /// Latest-wins messages of this run, in append order.
+    fn team_messages(&self) -> CliResult<Vec<TeamMessage>> {
+        Ok(latest_team_messages_in_append_order(&self.store)?
+            .into_iter()
+            .filter(|message| message.team_run_id == self.run_id)
+            .collect())
+    }
+
+    /// Messages with a still-queued delivery to `member_id` (excluding the
+    /// member's own sends, which it obviously already "has").
+    fn queued_messages_for(&self, member_id: &str) -> CliResult<Vec<TeamMessage>> {
+        Ok(self
+            .team_messages()?
+            .into_iter()
+            .filter(|message| message.from_member_id != member_id)
+            .filter(|message| {
+                message.deliveries.iter().any(|delivery| {
+                    delivery.member_id == member_id && delivery.status == TeamDeliveryStatus::Queued
+                })
+            })
+            .collect())
+    }
+}
+
+/// Terminal outcome of one member's orchestration, for the run summary.
+struct MemberOutcome {
+    name: String,
+    role: String,
+    provider: String,
+    status: MemberRunStatus,
+    summary: String,
+}
+
+impl MemberOutcome {
+    fn new(member: &MemberRun, status: MemberRunStatus, summary: String) -> Self {
+        Self {
+            name: member.name.clone(),
+            role: member.role.clone(),
+            provider: member.provider.clone(),
+            status,
+            summary,
+        }
+    }
+}
+
+struct PreparedTeamRunStart {
+    run_id: String,
+    objective: String,
+    running: AgentTeamRun,
+    members: Vec<MemberRun>,
+    ledger: Arc<TeamRunLedger>,
+}
+
+/// Reserve a planning attempt synchronously before any provider thread starts.
+/// Both CLI and HTTP use this CAS, so two start requests cannot both be
+/// accepted while orchestration boots in the background.
+fn prepare_team_run_start(
     store: &HarnessStore,
     run_id: &str,
-    phase_id: &str,
-    phase_task_ids: &std::collections::HashSet<String>,
-    phase_passed: bool,
-) -> CliResult<()> {
-    use std::collections::BTreeMap;
-    // Latest-wins projection of this run's steps (the driver re-appends a
-    // terminal row over the running row).
-    let mut latest: BTreeMap<String, WorkflowStep> = BTreeMap::new();
-    for step in store.workflow_steps()? {
-        if step.run_id == run_id {
-            latest.insert(step.id.clone(), step);
-        }
+    max_concurrency: usize,
+) -> CliResult<PreparedTeamRunStart> {
+    let run = latest_team_run(store, run_id)?;
+    if run.status != TeamRunStatus::Planning {
+        return Err(CliError::Usage(format!(
+            "team run {run_id} is {} — only a planning attempt can be started; create a new attempt to retry",
+            serde_snake_label(&run.status)
+        )));
     }
-    let verdict_label = format!("verdict-{phase_id}");
-    for mut step in latest.into_values() {
-        let mut changed = false;
-        if phase_task_ids.contains(&step.label) && step.task_id.as_deref() != Some(&step.label) {
-            step.task_id = Some(step.label.clone());
-            changed = true;
-        }
-        if step.label == verdict_label && step.verdict_outcome.is_none() {
-            step.verdict_outcome = Some(if phase_passed {
-                VerdictOutcome::Pass
-            } else {
-                VerdictOutcome::CleanFail
-            });
-            changed = true;
-        }
-        if changed {
-            store.append_workflow_step(&step)?;
-        }
-    }
-    Ok(())
-}
-
-/// Re-project the goal's legacy `stage` from its phases (the derived stage) and
-/// persist. Keeps `to_status` / kanban consumers correct for phase-driven goals.
-fn sync_goal_stage(store: &HarnessStore, goal: &mut Goal) -> CliResult<()> {
-    let derived = goal.effective_stage();
-    if goal.stage != derived {
-        goal.stage = derived;
-        goal.status = derived.to_status();
-        goal.stage_changed_at = Some(now_string());
-    }
-    goal.updated_at = now_string();
-    store.append_goal(goal)?;
-    Ok(())
-}
-
-/// Derive a goal's terminal readiness from its constituent work (goal-auto-finalize).
-/// Returns the derived [`GoalStage`] WITHOUT mutating/persisting — the FORWARD-advance
-/// gate lives in [`reconcile_goal_stage`]. Pure over `(goal, tasks)` so it is directly
-/// unit-testable.
-///
-/// - `phases[]` non-empty → `Goal::effective_stage()` (the phase derivation: all
-///   `Passed` → `Verified`; any started → `Working`; …).
-/// - else this goal's non-superseded tasks non-empty → ALL `Done`/`Archived` → `Verified`;
-///   any `Running`/`Review`/`Assigned`/`Blocked`/`Planned` started (i.e. past `Planned`,
-///   or simply present and active) → `Working`; none started → leave the stored stage
-///   (returns `goal.stage`).
-/// - else (no phases, no tasks) → leave the stored stage (out-of-band goal; needs an
-///   explicit `finalize`).
-fn derive_goal_stage(goal: &Goal, tasks: &[Task]) -> GoalStage {
-    if !goal.phases.is_empty() {
-        return goal.effective_stage();
-    }
-    // Task-driven derivation: only this goal's NON-superseded tasks count.
-    let live: Vec<&Task> = tasks
-        .iter()
-        .filter(|t| {
-            t.goal_id.as_deref() == Some(goal.id.as_str()) && t.status != TaskStatus::Superseded
-        })
-        .collect();
-    if live.is_empty() {
-        // No phases and no live tasks → out-of-band; the stored stage is the truth.
-        return goal.stage;
-    }
-    if live
-        .iter()
-        .all(|t| matches!(t.status, TaskStatus::Done | TaskStatus::Archived))
-    {
-        return GoalStage::Verified;
-    }
-    // Any task past the initial `Planned` state means work has actually begun.
-    let any_started = live.iter().any(|t| {
-        matches!(
-            t.status,
-            TaskStatus::Assigned
-                | TaskStatus::Running
-                | TaskStatus::Review
-                | TaskStatus::Blocked
-                | TaskStatus::Done
-                | TaskStatus::Archived
-        )
-    });
-    if any_started {
-        GoalStage::Working
-    } else {
-        // All tasks are still `Planned` → nothing has started; don't fabricate progress.
-        goal.stage
-    }
-}
-
-/// FORWARD-advance a goal's stored `stage` to its derived terminal readiness when its
-/// constituent work has progressed (goal-auto-finalize). The single derivation+sync
-/// seam called on every completion mutation so finishing the last phase/task
-/// auto-finalizes the goal. Returns `true` when it advanced the stored stage.
-///
-/// Forward-only + back-compat:
-/// - Never REGRESSES a stage (only advances when the derived stage is strictly later).
-/// - Never *fabricates* progress for a goal whose work has not actually started:
-///   [`derive_goal_stage`] returns the stored stage verbatim for a goal with no phases
-///   and only not-yet-started (`Planned`) or zero live tasks, so a `draft`/`exploring`/
-///   `explored` goal sitting on merely-planned work is left untouched. A below-`working`
-///   goal advances only when its tasks are genuinely active (`→ working`) or all done
-///   (`→ verified`) — i.e. real work the stored stage hasn't caught up with.
-/// - A goal with neither phases nor live tasks is left unchanged (out-of-band → explicit
-///   `finalize --force`).
-///
-/// On a real advance it persists the goal (stage + projected status + `stage_changed_at`)
-/// and appends a `decision`-sourced [`Knowledge`] entry (author `auto-finalize`) recording
-/// the provenance, mirroring the `reconcile_phase` append pattern.
-fn reconcile_goal_stage(store: &HarnessStore, goal: &mut Goal) -> CliResult<bool> {
-    let tasks: Vec<Task> = latest_tasks(store)?.into_values().collect();
-    let derived = derive_goal_stage(goal, &tasks);
-    let from = goal.stage;
-    // Forward-only: advance only when the derived stage is strictly later than the
-    // stored one. The "no fabricated progress below working" guard lives in
-    // `derive_goal_stage` (it returns the stored stage for not-started / empty work),
-    // so by the time we have a strictly-later derived stage, real work has progressed.
-    if !stage_is_forward(from, derived) {
-        return Ok(false);
-    }
-    let now = now_string();
-    goal.stage = derived;
-    goal.status = derived.to_status();
-    goal.stage_changed_at = Some(now.clone());
-    let knowledge = Knowledge {
-        id: generated_id("knowledge"),
-        goal_id: goal.id.clone(),
-        phase_id: None,
-        task_id: None,
-        author: "auto-finalize".to_string(),
-        timestamp: now.clone(),
-        notes_md: format!(
-            "Goal stage auto-advanced `{}` → `{}` (derived from constituent {}; all \
-             work complete).",
-            from.as_str(),
-            derived.as_str(),
-            if goal.phases.is_empty() {
-                "tasks"
-            } else {
-                "phases"
-            }
-        ),
-        tags: vec!["auto-finalize".to_string()],
-        source: KnowledgeSource::Decision,
-        superseded_by_knowledge_id: None,
-        created_at: now.clone(),
-    };
-    goal.knowledge.push(knowledge);
-    goal.updated_at = now;
-    store.append_goal(goal)?;
-    Ok(true)
-}
-
-/// True when `to` is a strictly-later lifecycle stage than `from` (the forward-only
-/// guard for [`reconcile_goal_stage`]). Mirrors the private `GoalStage::order` ranking
-/// in harness-core; auto-finalize only ever derives `Working`/`Verified`, so an exact
-/// rank table keeps the comparison total and obvious.
-fn stage_rank(s: GoalStage) -> u8 {
-    match s {
-        GoalStage::Draft => 0,
-        GoalStage::Exploring => 1,
-        GoalStage::Explored => 2,
-        GoalStage::Working => 3,
-        GoalStage::Done => 4,
-        GoalStage::Verifying => 5,
-        GoalStage::Verified => 6,
-    }
-}
-
-fn stage_is_forward(from: GoalStage, to: GoalStage) -> bool {
-    stage_rank(to) > stage_rank(from)
-}
-
-/// Force-finalize a goal whose work shipped entirely out-of-band (no phases / no
-/// tasks, e.g. built by an external workflow + a merged PR) — the `--force` path of
-/// `goal finalize` (goal-auto-finalize). Records `landed_commit` (on the goal's
-/// `git_metadata`), appends a `decision`-sourced [`Knowledge`] entry (author
-/// `auto-finalize`, provenance = the operator-asserted out-of-band landing), advances
-/// the stage straight to `verified` (status Done), and persists. Returns the appended
-/// knowledge id. Pure store/model mutation — directly unit-testable.
-fn force_finalize_goal(
-    store: &HarnessStore,
-    goal: &mut Goal,
-    landed_commit: Option<String>,
-    note_md: Option<&str>,
-) -> CliResult<String> {
-    let now = now_string();
-    let from = goal.stage;
-    if let Some(commit) = &landed_commit {
-        let meta = goal.git_metadata.get_or_insert_with(Default::default);
-        meta.commit = Some(commit.clone());
-    }
-    goal.stage = GoalStage::Verified;
-    goal.status = GoalStage::Verified.to_status();
-    goal.stage_changed_at = Some(now.clone());
-    let commit_md = landed_commit
-        .as_deref()
-        .map(|c| format!(" landed_commit=`{c}`."))
-        .unwrap_or_default();
-    let extra_md = note_md
-        .map(|n| format!("\n\n{}", n.trim()))
-        .unwrap_or_default();
-    let knowledge = Knowledge {
-        id: generated_id("knowledge"),
-        goal_id: goal.id.clone(),
-        phase_id: None,
-        task_id: None,
-        author: "auto-finalize".to_string(),
-        timestamp: now.clone(),
-        notes_md: format!(
-            "Goal force-finalized `{}` → `verified` (work shipped out-of-band; no \
-             phases/tasks to derive from).{commit_md}{extra_md}",
-            from.as_str()
-        ),
-        tags: vec!["auto-finalize".to_string(), "force".to_string()],
-        source: KnowledgeSource::Decision,
-        superseded_by_knowledge_id: None,
-        created_at: now.clone(),
-    };
-    let knowledge_id = knowledge.id.clone();
-    goal.knowledge.push(knowledge);
-    goal.updated_at = now;
-    store.append_goal(goal)?;
-    Ok(knowledge_id)
-}
-
-/// The injectable phase runner: `(script, name, resume_from) -> (run_id,
-/// outcome)`. `resume_from` is `Some(prior_run_id)` when the orchestrator is
-/// re-entering a phase that already has a prior workflow run, so its succeeded
-/// leaves can be reused; `None` runs the phase fresh. The CLI passes the real
-/// provider runner; tests pass a mock.
-type PhaseRunFn<'a> = dyn Fn(&str, &str, Option<&str>, Option<&str>) -> CliResult<(String, workflow::WorkflowOutcome)>
-    + 'a;
-
-/// The injectable phase REVISER: given the goal, the failed phase, its current
-/// live (non-superseded) tasks, and the failure captured as `Knowledge`, return
-/// the structured revision `{supersede:[task-id...], new_tasks:[{...}]}`. The CLI
-/// passes a runner that compiles + runs a one-shot reviser worker (honoring
-/// `--dry-run`); tests pass a mock returning the revision object directly.
-type PhaseReviseFn<'a> = dyn Fn(&Goal, &harness_core::GoalPhase, &[&Task], &Knowledge) -> CliResult<serde_json::Value>
-    + 'a;
-
-/// Append an orchestrator-authored `Knowledge` entry summarizing a phase failure
-/// (which phase, the workflow run id, and the failing/blocked task labels from the
-/// outcome), persist it onto the goal, and return its id. Uses the SAME append +
-/// persist pattern as `goal knowledge-add`, with `source = Task` and the phase id
-/// set for provenance.
-fn append_failure_knowledge(
-    store: &HarnessStore,
-    goal: &mut Goal,
-    phase_id: &str,
-    workflow_run_id: &str,
-    outcome: &workflow::WorkflowOutcome,
-) -> CliResult<String> {
-    let failing: Vec<&str> = outcome
-        .steps
-        .iter()
-        .filter(|s| !s.ok)
-        .map(|s| s.label.as_str())
-        .collect();
-    let failing_md = if failing.is_empty() {
-        // The phase failed its verdict without any individual task step failing
-        // (e.g. the verdict leaf itself returned `pass=false`).
-        "the phase verdict did not pass (no individual task step reported failure)".to_string()
-    } else {
-        format!("failing/blocked tasks: {}", failing.join(", "))
-    };
-    let now = now_string();
-    let knowledge = Knowledge {
-        id: generated_id("knowledge"),
-        goal_id: goal.id.clone(),
-        phase_id: Some(phase_id.to_string()),
-        task_id: None,
-        author: "orchestrator".to_string(),
-        timestamp: now.clone(),
-        notes_md: format!(
-            "Phase `{phase_id}` failed its verdict during `goal run-phases` \
-             (workflow run `{workflow_run_id}`): {failing_md}."
-        ),
-        tags: Vec::new(),
-        source: KnowledgeSource::Task,
-        superseded_by_knowledge_id: None,
-        created_at: now.clone(),
-    };
-    let knowledge_id = knowledge.id.clone();
-    goal.knowledge.push(knowledge);
-    goal.updated_at = now;
-    store.append_goal(goal)?;
-    Ok(knowledge_id)
-}
-
-/// Reconcile a phase's status to reality for work that shipped out-of-band
-/// (goal-phase-landing). Sets the phase's `status` to the operator-asserted
-/// verdict, records `landed_commit` on the `GoalPhase`, appends a `decision`
-/// `Knowledge` entry (provenance = phase id, author = the operator), and SYNCS
-/// the goal's derived stage via [`sync_goal_stage`] so the dashboard reads the
-/// truth. Returns the appended knowledge id. Pure store/model mutation — no
-/// provider/worktree side effects — so it is directly unit-testable.
-#[allow(clippy::too_many_arguments)]
-fn reconcile_phase(
-    store: &HarnessStore,
-    goal: &mut Goal,
-    phase_id: &str,
-    to: GoalPhaseStatus,
-    landed_commit: Option<String>,
-    author: &str,
-    note_md: Option<&str>,
-) -> CliResult<String> {
-    let idx = goal
-        .phases
-        .iter()
-        .position(|p| p.id == phase_id)
-        .ok_or_else(|| {
-            CliError::Usage(format!("phase not found on goal `{}`: {phase_id}", goal.id))
-        })?;
-
-    let now = now_string();
-    goal.phases[idx].status = to;
-    // A reconciled pass/fail is terminal for the phase; stamp `ended_at` if unset
-    // so the timeline reads as resolved. `landed_commit` records where the work
-    // actually shipped (a PR-merge sha, typically) — only meaningful on a pass.
-    if goal.phases[idx].ended_at.is_none() {
-        goal.phases[idx].ended_at = Some(now.clone());
-    }
-    if landed_commit.is_some() {
-        goal.phases[idx].landed_commit = landed_commit.clone();
-    }
-
-    // Append a `decision`-sourced Knowledge entry recording the manual reconcile,
-    // with the phase id for provenance (mirrors `append_failure_knowledge`).
-    let commit_md = landed_commit
-        .as_deref()
-        .map(|c| format!(" landed_commit=`{c}`."))
-        .unwrap_or_default();
-    let extra_md = note_md
-        .map(|n| format!("\n\n{}", n.trim()))
-        .unwrap_or_default();
-    let knowledge = Knowledge {
-        id: generated_id("knowledge"),
-        goal_id: goal.id.clone(),
-        phase_id: Some(phase_id.to_string()),
-        task_id: None,
-        author: author.to_string(),
-        timestamp: now.clone(),
-        notes_md: format!(
-            "Phase `{phase_id}` reconciled to `{}` by `{author}` (work shipped \
-             out-of-band).{commit_md}{extra_md}",
-            to_phase_status_str(to)
-        ),
-        tags: vec!["reconcile".to_string()],
-        source: KnowledgeSource::Decision,
-        superseded_by_knowledge_id: None,
-        created_at: now.clone(),
-    };
-    let knowledge_id = knowledge.id.clone();
-    goal.knowledge.push(knowledge);
-    goal.updated_at = now;
-
-    // Persist the phase/knowledge mutation, then re-derive the goal's stage
-    // (goal-auto-finalize: reconciling the LAST phase to passed advances the goal to
-    // verified). Forward-only; re-appends the goal with the advanced `stage`/`status`.
-    store.append_goal(goal)?;
-    reconcile_goal_stage(store, goal)?;
-    Ok(knowledge_id)
-}
-
-/// snake_case label for a phase status (matches the serde wire form), for human
-/// messages where we don't want to round-trip through JSON.
-fn to_phase_status_str(s: GoalPhaseStatus) -> &'static str {
-    match s {
-        GoalPhaseStatus::NotStarted => "not_started",
-        GoalPhaseStatus::InProgress => "in_progress",
-        GoalPhaseStatus::Passed => "passed",
-        GoalPhaseStatus::Failed => "failed",
-        GoalPhaseStatus::Blocked => "blocked",
-    }
-}
-
-/// Apply a reviser's structured revision to a phase's task graph: mark each
-/// `supersede` id `Superseded` with `superseded_by_knowledge_id = knowledge_id`,
-/// and append each `new_tasks` entry as a `Planned` task scoped to this phase.
-/// Returns `(superseded_ids, new_task_ids)`. A revision that supersedes nothing
-/// AND adds nothing is "no actionable replan" — both vectors come back empty, and
-/// the caller stops the loop rather than churning.
-fn apply_phase_revision(
-    store: &HarnessStore,
-    goal: &Goal,
-    phase_id: &str,
-    revision: &serde_json::Value,
-    knowledge_id: &str,
-) -> CliResult<(Vec<String>, Vec<String>)> {
-    // The structured revision lands under `final_output.result.revision` (the
-    // schema's single top-level key). In --dry-run the mock makes `revision` a
-    // STRING, which yields an empty revision — handled by the `as_object` guards.
-    let rev = revision.get("revision").unwrap_or(revision);
-
-    let mut superseded = Vec::new();
-    let supersede_ids: std::collections::HashSet<String> = rev
-        .get("supersede")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|e| e.as_str())
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(str::to_string)
-                .collect()
-        })
-        .unwrap_or_default();
-    if !supersede_ids.is_empty() {
-        let tasks = latest_tasks(store)?;
-        for mut task in tasks.into_values() {
-            if task.goal_id.as_deref() != Some(goal.id.as_str())
-                || task.phase_id.as_deref() != Some(phase_id)
-                || task.status == TaskStatus::Superseded
-                || !supersede_ids.contains(&task.id)
-            {
-                continue;
-            }
-            task.status = TaskStatus::Superseded;
-            task.superseded_by_knowledge_id = Some(knowledge_id.to_string());
-            task.updated_at = now_string();
-            store.append_task(&task)?;
-            superseded.push(task.id.clone());
-        }
-    }
-
-    let mut new_task_ids = Vec::new();
-    let new_tasks = rev.get("new_tasks").and_then(|t| t.as_array());
-    if let Some(new_tasks) = new_tasks {
-        let now = now_string();
-        let mut existing: std::collections::HashSet<String> =
-            latest_tasks(store)?.into_keys().collect();
-        for (idx, t) in new_tasks.iter().enumerate() {
-            let task_id =
-                json_str_nonempty(t, "id").unwrap_or_else(|| format!("{phase_id}-r{}", idx + 1));
-            if existing.contains(&task_id) {
-                // Never duplicate an existing task id (idempotent re-revise).
-                continue;
-            }
-            let title = json_str_nonempty(t, "title").unwrap_or_else(|| format!("Task {task_id}"));
-            let task = Task {
-                id: task_id.clone(),
-                goal_id: Some(goal.id.clone()),
-                parent_task_id: None,
-                title: title.clone(),
-                objective: title,
-                owner_agent_id: goal.owner_agent_id.clone(),
-                assignee_agent_id: None,
-                reviewer_agent_id: None,
-                status: TaskStatus::Planned,
-                depends_on_task_ids: json_str_list(t, "depends_on"),
-                workspace_ref: None,
-                branch_ref: None,
-                pr_ref: None,
-                owned_paths: json_str_list(t, "owned_paths"),
-                acceptance_criteria: json_str_list(t, "acceptance"),
-                created_at: now.clone(),
-                updated_at: now.clone(),
-                scope_refs: Vec::new(),
-                requires_human_approval: false,
-                verdict_decision_id: None,
-                description: None,
-                git_metadata: None,
-                design_md: json_str_nonempty(t, "design_md"),
-                phase_id: Some(phase_id.to_string()),
-                superseded_by_knowledge_id: None,
-                workflow_step_ids: Vec::new(),
-                outputs: parse_outputs(t, "outputs"),
-                executor: json_str_nonempty(t, "executor"),
-            };
-            // goal-task-board-model: reject a revised task that names a phase
-            // not on this goal (the replan model only ever revises an existing
-            // phase, so this normally passes; it guards a malformed revision).
-            goal.validate_task_placement(&task)
-                .map_err(CliError::Usage)?;
-            store.append_task(&task)?;
-            existing.insert(task_id.clone());
-            new_task_ids.push(task_id);
-        }
-    }
-
-    Ok((superseded, new_task_ids))
-}
-
-/// Decide whether a `git diff` blob produced a NON-EMPTY created/modified file at
-/// the given repo-relative `path` (goal-phase-artifacts gate). A standard
-/// `git diff` lists each touched file as a `diff --git a/<p> b/<p>` header
-/// followed by `+++ b/<p>` and one or more `+`-prefixed content lines (an EMPTY
-/// new file has the header but no `+` content). We scan for the file's `+++ b/`
-/// (or `+++ <path>`) marker, then require at least one added content line before
-/// the next file header — so a touched-but-empty file does NOT count.
-fn diff_has_nonempty_file(diff: &str, path: &str) -> bool {
-    let target_b = format!("+++ b/{path}");
-    let target_plain = format!("+++ {path}");
-    let mut in_target = false;
-    for line in diff.lines() {
-        if line.starts_with("diff --git ") || line.starts_with("--- ") {
-            // A new file section begins; reset unless THIS header is our target's
-            // `+++` (handled below).
-            in_target = false;
-        }
-        if line.starts_with("+++ ") {
-            in_target = line == target_b || line == target_plain;
-            continue;
-        }
-        if in_target
-            && line.starts_with('+')
-            && !line.starts_with("+++")
-            && !line[1..].trim().is_empty()
-        {
-            return true;
-        }
-    }
-    false
-}
-
-/// Does the captured phase evidence (worker `worktree_diff`s) and/or the repo
-/// working tree show a non-empty file at `path`? The diff is authoritative for the
-/// isolated worktree path (writes never land in `repo_root`); the working-tree
-/// fallback covers the shared-cwd path where writes ARE in `repo_root`.
-fn artifact_path_satisfied(
-    path: &str,
-    outcome: &workflow::WorkflowOutcome,
-    repo_root: &Path,
-) -> bool {
-    let in_diff = outcome.steps.iter().any(|s| {
-        s.details
-            .as_ref()
-            .and_then(|d| d.get("worktree_diff"))
-            .and_then(|v| v.as_str())
-            .map(|diff| diff_has_nonempty_file(diff, path))
-            .unwrap_or(false)
-    });
-    if in_diff {
-        return true;
-    }
-    let abs = repo_root.join(path);
-    std::fs::metadata(&abs)
-        .map(|m| m.is_file() && m.len() > 0)
-        .unwrap_or(false)
-}
-
-/// The deterministic REQUIRED-ARTIFACT gate (goal-phase-artifacts). For every
-/// `required` [`ArtifactSpec`] with a non-empty `path` declared by the phase OR by
-/// one of its live tasks, assert the artifact was produced — present & non-empty
-/// in the phase run's evidence (a worker `worktree_diff`) or the repo working
-/// tree. Back-compat: a phase/task with no `outputs` (or no required+path specs)
-/// yields an EMPTY requirement set, so the gate is VACUOUSLY satisfied (today's
-/// behavior verbatim). Returns the list of unmet artifact paths (empty == passed).
-fn unmet_required_artifacts(
-    phase: &harness_core::GoalPhase,
-    phase_tasks: &[Task],
-    outcome: &workflow::WorkflowOutcome,
-    repo_root: &Path,
-) -> Vec<String> {
-    let required_paths = |specs: &[ArtifactSpec]| -> Vec<String> {
-        specs
-            .iter()
-            .filter(|s| s.required)
-            .filter_map(|s| {
-                s.path
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|p| !p.is_empty())
-                    .map(str::to_string)
-            })
-            .collect::<Vec<_>>()
-    };
-
-    let mut wanted: Vec<String> = required_paths(&phase.outputs);
-    for t in phase_tasks {
-        wanted.extend(required_paths(&t.outputs));
-    }
-    wanted.sort();
-    wanted.dedup();
-
-    wanted
+    let members: Vec<MemberRun> = latest_member_runs_in_append_order(store)?
         .into_iter()
-        .filter(|p| !artifact_path_satisfied(p, outcome, repo_root))
-        .collect()
+        .filter(|member| member.team_run_id == run_id)
+        .collect();
+    let ledger = Arc::new(TeamRunLedger::new(store, run_id));
+    let mut running = run.clone();
+    running.status = TeamRunStatus::Running;
+    running.updated_at = now_string();
+    store_conflict_as_usage(store.compare_and_append_team_run_with_wave_status(
+        &run,
+        &running,
+        WaveStatus::Running,
+        &now_string(),
+    ))?;
+    ledger.fold_event(
+        TeamRunEventSourceKind::Host,
+        None,
+        "team_run",
+        run_id,
+        "updated",
+        &format!(
+            "team run started ({} member(s), max-concurrency {max_concurrency})",
+            members.len()
+        ),
+    )?;
+    Ok(PreparedTeamRunStart {
+        run_id: run_id.to_string(),
+        objective: run.objective,
+        running,
+        members,
+        ledger,
+    })
 }
 
-/// The active registry path for `repo_root` per `.governance.toml`
-/// (`registry.path`), falling back to `docs/registry.json` when no governance
-/// config or registry block is present. Lets the registered_doc gate follow a
-/// project whose registry lives elsewhere (governance-engine generalization).
-fn governance_registry_path(repo_root: &Path) -> String {
-    harness_governance::GovernanceConfig::load(repo_root)
-        .ok()
-        .and_then(|c| c.registry)
-        .map(|r| r.path)
-        .unwrap_or_else(|| "docs/registry.json".to_string())
-}
-
-/// Read the set of registered doc paths from the registry declared by
-/// `<repo_root>/.governance.toml` (default `docs/registry.json`)
-/// (goal-phase-refinements). The registry is the `agent_harness.docs_registry.v1`
-/// schema: `{ "documents": [{ "path": ... }, ...] }`. Returns `None` when the
-/// registry is absent or unparseable (a registered_doc requirement can't be
-/// satisfied without a registry — the caller treats that as "not registered").
-fn registered_doc_paths(repo_root: &Path) -> Option<std::collections::HashSet<String>> {
-    let raw = std::fs::read_to_string(repo_root.join(governance_registry_path(repo_root))).ok()?;
-    let json: serde_json::Value = serde_json::from_str(&raw).ok()?;
-    let docs = json.get("documents")?.as_array()?;
-    Some(
-        docs.iter()
-            .filter_map(|d| d.get("path").and_then(|p| p.as_str()))
-            .map(|p| p.trim().to_string())
-            .collect(),
+/// `harness team-run start`: reserve the run, drive every member to a terminal
+/// state, then fold the run's own terminal status + a human summary.
+fn team_run_start(
+    store: &HarnessStore,
+    resolved: &ResolvedStore,
+    run_id: &str,
+    max_concurrency: usize,
+    idle_timeout: Duration,
+) -> CliResult<()> {
+    let prepared = prepare_team_run_start(store, run_id, max_concurrency)?;
+    drive_prepared_team_run(
+        prepared,
+        resolved.context.clone(),
+        max_concurrency,
+        idle_timeout,
+        None,
     )
 }
 
-/// The REGISTERED-DOC gate (goal-phase-refinements). Extends the #149 artifact gate:
-/// for every `required` [`ArtifactSpec`] whose `kind` is `RegisteredDoc` with a
-/// non-empty `path` declared by the phase OR one of its live tasks, assert the path
-/// is registered in `docs/registry.json`. A produced-but-unregistered doc (the
-/// `docs/multi-project.md` gap) FAILS with an actionable message. Back-compat: a
-/// phase/task with no `registered_doc` outputs yields an EMPTY requirement set, so
-/// this gate is vacuously satisfied (today's behavior). Returns actionable messages
-/// for each unregistered required doc (empty == passed).
-fn unmet_registered_docs(
-    phase: &harness_core::GoalPhase,
-    phase_tasks: &[Task],
-    repo_root: &Path,
-) -> Vec<String> {
-    let registered_doc_specs = |specs: &[ArtifactSpec]| -> Vec<String> {
-        specs
-            .iter()
-            .filter(|s| s.required && s.kind == ArtifactKind::RegisteredDoc)
-            .filter_map(|s| {
-                s.path
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|p| !p.is_empty())
-                    .map(str::to_string)
-            })
-            .collect::<Vec<_>>()
-    };
-
-    let mut wanted: Vec<String> = registered_doc_specs(&phase.outputs);
-    for t in phase_tasks {
-        wanted.extend(registered_doc_specs(&t.outputs));
-    }
-    wanted.sort();
-    wanted.dedup();
-    if wanted.is_empty() {
-        return Vec::new();
-    }
-
-    let registry = registered_doc_paths(repo_root).unwrap_or_default();
-    let registry_path = governance_registry_path(repo_root);
-    wanted
-        .into_iter()
-        .filter(|p| !registry.contains(p))
-        .map(|p| {
-            format!(
-                "{p} (registered_doc not present in {registry_path} — add an entry \
-                 with \"path\": \"{p}\")"
+fn drive_prepared_team_run(
+    prepared: PreparedTeamRunStart,
+    project_context: Option<ProjectContext>,
+    max_concurrency: usize,
+    idle_timeout: Duration,
+    live_sink: Option<LiveMemberActivitySink>,
+) -> CliResult<()> {
+    let PreparedTeamRunStart {
+        run_id,
+        objective,
+        running,
+        members,
+        ledger,
+    } = prepared;
+    let semaphore = Arc::new(Semaphore::new(max_concurrency));
+    let mut handles = Vec::new();
+    for member in members {
+        let ledger = Arc::clone(&ledger);
+        let semaphore = Arc::clone(&semaphore);
+        let objective = objective.clone();
+        let cwd = member_spawn_cwd(project_context.as_ref(), &member);
+        let handle_member = member.clone();
+        let live_sink = live_sink.clone();
+        let handle = std::thread::spawn(move || {
+            let _permit = semaphore.acquire();
+            run_member_orchestration(
+                &ledger,
+                &objective,
+                handle_member,
+                &cwd,
+                idle_timeout,
+                live_sink,
             )
-        })
-        .collect()
-}
+        });
+        handles.push((member, handle));
+    }
 
-/// The CROSS-PHASE INPUTS precondition (goal-phase-refinements). Before a phase
-/// runs, each REQUIRED [`ArtifactSpec`] in `phase.inputs` with a non-empty `path`
-/// must already exist as a non-empty file in the working tree (a prior phase landed
-/// it, goal-phase-landing). A missing required input is a fail-fast at phase start —
-/// instead of surfacing later as a confusing downstream gate failure. Back-compat:
-/// an empty `inputs` yields no requirement (today's behavior). Returns the list of
-/// absent required input paths (empty == precondition satisfied).
-fn missing_required_inputs(phase: &harness_core::GoalPhase, repo_root: &Path) -> Vec<String> {
-    let mut wanted: Vec<String> = phase
-        .inputs
+    let mut outcomes = Vec::new();
+    for (member, handle) in handles {
+        match handle.join() {
+            Ok(outcome) => outcomes.push(outcome),
+            Err(_) => {
+                // A panicked member thread must not take the run down with it.
+                journal_member_failure(&ledger, &member, "orchestration thread panicked");
+                outcomes.push(MemberOutcome::new(
+                    &member,
+                    MemberRunStatus::Failed,
+                    "orchestration thread panicked".to_string(),
+                ));
+            }
+        }
+    }
+
+    // Terminal run status. The spec's reviewing condition ("member
+    // blocked/failed AND a waiting_for_approval-class signal exists") is
+    // satisfied by construction: every non-completed member journaled a
+    // blocked/error MemberAction, which IS the review signal.
+    let any_unfinished = outcomes
         .iter()
-        .filter(|s| s.required)
-        .filter_map(|s| {
-            s.path
-                .as_deref()
-                .map(str::trim)
-                .filter(|p| !p.is_empty())
-                .map(str::to_string)
-        })
-        .collect();
-    wanted.sort();
-    wanted.dedup();
+        .any(|outcome| outcome.status != MemberRunStatus::Completed);
+    let final_status = if any_unfinished {
+        TeamRunStatus::Reviewing
+    } else {
+        TeamRunStatus::Completed
+    };
+    let completed_count = outcomes
+        .iter()
+        .filter(|outcome| outcome.status == MemberRunStatus::Completed)
+        .count();
+    let mut finished = running.clone();
+    finished.status = final_status;
+    finished.updated_at = now_string();
+    if final_status == TeamRunStatus::Completed {
+        finished.completed_at = Some(now_string());
+    }
+    store_conflict_as_usage(ledger.store.compare_and_append_team_run_with_wave_status(
+        &running,
+        &finished,
+        WaveStatus::Waiting,
+        &now_string(),
+    ))?;
+    ledger.fold_event(
+        TeamRunEventSourceKind::Host,
+        None,
+        "team_run",
+        &run_id,
+        if final_status == TeamRunStatus::Completed {
+            "completed"
+        } else {
+            "updated"
+        },
+        &format!(
+            "team run {} ({completed_count}/{} members completed)",
+            serde_snake_label(&final_status),
+            outcomes.len()
+        ),
+    )?;
 
-    wanted
-        .into_iter()
-        .filter(|p| {
-            !std::fs::metadata(repo_root.join(p))
-                .map(|m| m.is_file() && m.len() > 0)
-                .unwrap_or(false)
-        })
-        .collect()
+    println!("team run {run_id}\t{}", serde_snake_label(&final_status));
+    for outcome in &outcomes {
+        println!(
+            "  {} ({}/{})\t{}",
+            outcome.name,
+            outcome.role,
+            outcome.provider,
+            serde_snake_label(&outcome.status)
+        );
+        for line in outcome.summary.lines().take(3) {
+            println!("    {line}");
+        }
+    }
+    Ok(())
 }
 
-/// The full diff a writable task step produced in its (now-dropped) worktree, for
-/// durable landing (goal-phase-landing). Prefers the uncapped `landing_diff` the
-/// runtime stores when the displayed `worktree_diff` was truncated; otherwise the
-/// `worktree_diff` itself is the full diff (it was under the cap). An empty/blank
-/// diff yields `None` (a read-only step or a no-op writable step lands nothing).
+/// One member thread: dispatch on provider, converting every failure into
+/// journaled member-failure state (never a crashed orchestrator).
+fn run_member_orchestration(
+    ledger: &TeamRunLedger,
+    objective: &str,
+    member: MemberRun,
+    cwd: &Path,
+    idle_timeout: Duration,
+    live_sink: Option<LiveMemberActivitySink>,
+) -> MemberOutcome {
+    if !member.provider.eq_ignore_ascii_case("kimi") {
+        let reason = format!(
+            "adapter not implemented in v0 (provider {})",
+            member.provider
+        );
+        journal_member_failure(ledger, &member, &reason);
+        return MemberOutcome::new(&member, MemberRunStatus::Failed, reason);
+    }
+    match run_kimi_member(ledger, objective, &member, cwd, idle_timeout, live_sink) {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            let reason = error.to_string();
+            journal_member_failure(ledger, &member, &reason);
+            MemberOutcome::new(&member, MemberRunStatus::Failed, reason)
+        }
+    }
+}
+
+/// Drive one kimi member: spawn its ACP session, deliver the assignment as a
+/// contract prompt, journal streamed updates, then loop follow-up rounds for
+/// messages queued while it worked (capped at [`TEAM_RUN_START_MAX_ROUNDS`]).
+fn run_kimi_member(
+    ledger: &TeamRunLedger,
+    objective: &str,
+    member: &MemberRun,
+    cwd: &Path,
+    idle_timeout: Duration,
+    live_sink: Option<LiveMemberActivitySink>,
+) -> CliResult<MemberOutcome> {
+    let mut member_row = member.clone();
+    member_row.status = MemberRunStatus::Starting;
+    member_row.last_event_at = Some(now_string());
+    ledger.save_member_run(&member_row)?;
+    ledger.fold_event(
+        TeamRunEventSourceKind::Member,
+        Some(member.id.clone()),
+        "member_run",
+        &member.id,
+        "updated",
+        &format!(
+            "member {} starting (kimi acp, cwd {})",
+            member.name,
+            cwd.display()
+        ),
+    )?;
+
+    let mut client = kimi_acp::KimiAcpClient::spawn(cwd, member.model.as_deref())?;
+    member_row.status = MemberRunStatus::Running;
+    member_row.acp_session_id = client.session_id().map(str::to_string);
+    member_row.last_event_at = Some(now_string());
+    ledger.save_member_run(&member_row)?;
+    ledger.fold_event(
+        TeamRunEventSourceKind::Member,
+        Some(member.id.clone()),
+        "member_run",
+        &member.id,
+        "updated",
+        &format!(
+            "member {} running (acp session {})",
+            member.name,
+            member_row.acp_session_id.as_deref().unwrap_or("?")
+        ),
+    )?;
+
+    // The assignment is the newest Assignment-kind message with a still-queued
+    // delivery to this member; absent one, the run objective is the contract.
+    let assignment = latest_queued_assignment(ledger, &member.id)?;
+    let assignment_body = assignment
+        .as_ref()
+        .map(|message| message.body.clone())
+        .unwrap_or_else(|| objective.to_string());
+    if let Some(assignment) = &assignment {
+        mark_message_delivered(ledger, assignment, &member.id, &member.name)?;
+    }
+
+    let mut round = 0u32;
+    let mut next_prompt = Some(contract_prompt(objective, &member_row, &assignment_body));
+    let mut final_status = MemberRunStatus::Failed;
+    let mut final_summary = String::new();
+    while let Some(prompt_text) = next_prompt.take() {
+        round += 1;
+        let mut mapper = MemberUpdateMapper::new(ledger, member_row.clone(), live_sink.clone());
+        let outcome = client.prompt(&prompt_text, idle_timeout, |update| mapper.handle(update))?;
+        let final_text = mapper.text().to_string();
+        member_row = mapper.into_member();
+        let result = parse_round_result(&final_text);
+
+        // Handoff to the host: the full final report, manual-ack delivery.
+        let handoff = TeamMessage {
+            id: generated_id("tmsg"),
+            team_run_id: ledger.run_id.clone(),
+            from_member_id: member.id.clone(),
+            to_member_ids: vec!["host".to_string()],
+            kind: TeamMessageKind::Handoff,
+            body: final_text.clone(),
+            correlation_id: assignment
+                .as_ref()
+                .map(|message| message.correlation_id.clone())
+                .unwrap_or_else(|| generated_id("corr")),
+            causation_id: assignment.as_ref().map(|message| message.id.clone()),
+            evidence_refs: Vec::new(),
+            deliveries: vec![TeamMessageDelivery {
+                member_id: "host".to_string(),
+                policy: TeamDeliveryPolicy::ManualAck,
+                status: TeamDeliveryStatus::Delivered,
+                attempt: 1,
+                updated_at: now_string(),
+            }],
+            created_at: now_string(),
+        };
+        ledger.save_message(&handoff)?;
+        ledger.fold_event(
+            TeamRunEventSourceKind::Member,
+            Some(member.id.clone()),
+            "message",
+            &handoff.id,
+            "created",
+            &format!("handoff from {} to host (round {round})", member.name),
+        )?;
+
+        let (action_type, action_status, member_status) = match result {
+            MemberRoundResult::Done => (
+                "completed",
+                MemberActionStatus::Succeeded,
+                MemberRunStatus::Completed,
+            ),
+            MemberRoundResult::Blocked => (
+                "blocked",
+                MemberActionStatus::Failed,
+                MemberRunStatus::Blocked,
+            ),
+            MemberRoundResult::Failed => {
+                ("error", MemberActionStatus::Failed, MemberRunStatus::Failed)
+            }
+        };
+        let result_section =
+            extract_report_section(&final_text, "RESULT").unwrap_or_else(|| "done".to_string());
+        let action = ledger.append_action(
+            &member.id,
+            action_type,
+            action_status,
+            &format!("round {round} {action_type}"),
+            &result_section,
+        )?;
+        ledger.fold_event(
+            TeamRunEventSourceKind::Member,
+            Some(member.id.clone()),
+            "action",
+            &action.id,
+            "created",
+            &format!("{} round {round}: {action_type}", member.name),
+        )?;
+
+        member_row.status = member_status;
+        member_row.finished_at = Some(now_string());
+        member_row.last_event_at = Some(now_string());
+        ledger.save_member_run(&member_row)?;
+        ledger.fold_event(
+            TeamRunEventSourceKind::Member,
+            Some(member.id.clone()),
+            "member_run",
+            &member.id,
+            if member_status == MemberRunStatus::Completed {
+                "completed"
+            } else {
+                "updated"
+            },
+            &format!(
+                "member {} {} (round {round}, stop {})",
+                member.name,
+                serde_snake_label(&member_status),
+                outcome.stop_reason
+            ),
+        )?;
+        final_status = member_status;
+        final_summary = extract_report_section(&final_text, "SUMMARY")
+            .unwrap_or_else(|| final_text.lines().take(3).collect::<Vec<_>>().join("\n"));
+
+        // Follow-up rounds: deliver whatever queued up while the member worked.
+        if round >= TEAM_RUN_START_MAX_ROUNDS {
+            break;
+        }
+        let queued = ledger.queued_messages_for(&member.id)?;
+        if queued.is_empty() {
+            break;
+        }
+        let mut follow_up = format!(
+            "FOLLOW-UP MESSAGES arrived while you worked (round {round}). Address them, then report again in the SAME format (## RESULT / ## SUMMARY / ...).\n\n"
+        );
+        for message in &queued {
+            follow_up.push_str(&format!(
+                "--- {} ({}) ---\n{}\n\n",
+                message.from_member_id,
+                team_message_kind_label(&message.kind),
+                message.body
+            ));
+            mark_message_delivered(ledger, message, &member.id, &member.name)?;
+        }
+        member_row.status = MemberRunStatus::Running;
+        member_row.last_event_at = Some(now_string());
+        ledger.save_member_run(&member_row)?;
+        next_prompt = Some(follow_up);
+    }
+    client.shutdown();
+    Ok(MemberOutcome::new(member, final_status, final_summary))
+}
+
+/// Journal a member failure on any error path (best-effort: we are already on
+/// the failure path, so secondary journaling errors are dropped).
+fn journal_member_failure(ledger: &TeamRunLedger, member: &MemberRun, reason: &str) {
+    let mut failed = ledger
+        .latest_member_run(&member.id)
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| member.clone());
+    failed.status = MemberRunStatus::Failed;
+    failed.finished_at = Some(now_string());
+    failed.last_event_at = Some(now_string());
+    let _ = ledger.save_member_run(&failed);
+    let _ = ledger.append_action(
+        &member.id,
+        "error",
+        MemberActionStatus::Failed,
+        "member failed",
+        reason,
+    );
+    let _ = ledger.fold_event(
+        TeamRunEventSourceKind::Member,
+        Some(member.id.clone()),
+        "member_run",
+        &member.id,
+        "updated",
+        &format!("member {} failed: {reason}", member.name),
+    );
+}
+
+/// The most recent Assignment message with a still-queued delivery to
+/// `member_id` (append order is chronological under the single-writer v0).
+fn latest_queued_assignment(
+    ledger: &TeamRunLedger,
+    member_id: &str,
+) -> CliResult<Option<TeamMessage>> {
+    Ok(ledger.team_messages()?.into_iter().rfind(|message| {
+        message.kind == TeamMessageKind::Assignment
+            && message.deliveries.iter().any(|delivery| {
+                delivery.member_id == member_id && delivery.status == TeamDeliveryStatus::Queued
+            })
+    }))
+}
+
+/// Flip every queued delivery of `message` addressed to `member_id` to
+/// delivered (append a new TeamMessage row — the store is latest-wins) and
+/// fold the delivery event.
+fn mark_message_delivered(
+    ledger: &TeamRunLedger,
+    message: &TeamMessage,
+    member_id: &str,
+    member_name: &str,
+) -> CliResult<()> {
+    let mut updated = message.clone();
+    for delivery in &mut updated.deliveries {
+        if delivery.member_id == member_id && delivery.status == TeamDeliveryStatus::Queued {
+            delivery.status = TeamDeliveryStatus::Delivered;
+            delivery.attempt += 1;
+            delivery.updated_at = now_string();
+        }
+    }
+    ledger.save_message(&updated)?;
+    ledger.fold_event(
+        TeamRunEventSourceKind::Member,
+        Some(member_id.to_string()),
+        "message",
+        &message.id,
+        "updated",
+        &format!(
+            "{} delivered to {}",
+            team_message_kind_label(&message.kind),
+            member_name
+        ),
+    )?;
+    Ok(())
+}
+
+/// Where a member's ACP session runs: its pinned worktree when set, else the
+/// selected project's root, else (unrouted raw-store invocation) the CLI cwd.
+fn member_spawn_cwd(project_context: Option<&ProjectContext>, member: &MemberRun) -> PathBuf {
+    if let Some(worktree) = &member.worktree_ref {
+        if !worktree.is_empty() {
+            return PathBuf::from(worktree);
+        }
+    }
+    if let Some(context) = project_context {
+        return context.project_root.clone();
+    }
+    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+}
+
+/// Reduce a provider-approved thought chunk to a short, single-preview string.
+/// This value is only eligible for the volatile SSE channel; callers must not
+/// place it in a ledger, snapshot, message, or evidence record.
+fn sanitize_live_member_preview(value: &str) -> Option<String> {
+    let normalized = value
+        .chars()
+        .filter(|character| !character.is_control() || character.is_whitespace())
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let preview = normalized
+        .chars()
+        .take(LIVE_MEMBER_ACTIVITY_MAX_CHARS)
+        .collect::<String>();
+    (!preview.is_empty()).then_some(preview)
+}
+
+/// Maps `session/update` frames of one prompt round onto the member ledger.
+/// Reasoning streams (`agent_thought_chunk`) are intentionally ignored here:
+/// no MemberAction or other durable record may contain thinking. A future
+/// transient live channel can surface a sanitized, non-replayable indicator
+/// without changing this ledger contract.
+struct MemberUpdateMapper<'a> {
+    ledger: &'a TeamRunLedger,
+    member: MemberRun,
+    live_sink: Option<LiveMemberActivitySink>,
+    last_live_activity_at: Instant,
+    text: String,
+    last_progress_at: std::time::Instant,
+    /// toolCallId → title of tools we journaled `tool_started` for, so the
+    /// completion action can carry a name even when the update frame omits it.
+    open_tools: std::collections::HashMap<String, String>,
+}
+
+impl<'a> MemberUpdateMapper<'a> {
+    fn new(
+        ledger: &'a TeamRunLedger,
+        member: MemberRun,
+        live_sink: Option<LiveMemberActivitySink>,
+    ) -> Self {
+        Self {
+            ledger,
+            member,
+            live_sink,
+            last_live_activity_at: Instant::now() - LIVE_MEMBER_ACTIVITY_THROTTLE,
+            text: String::new(),
+            // Arm the throttle already expired so the FIRST chunk journals one
+            // progress action immediately (the console shows life), then at
+            // most one per TEAM_RUN_PROGRESS_THROTTLE window.
+            last_progress_at: std::time::Instant::now() - TEAM_RUN_PROGRESS_THROTTLE,
+            open_tools: std::collections::HashMap::new(),
+        }
+    }
+
+    fn handle(&mut self, update: &serde_json::Value) {
+        let Some(kind) = update.get("sessionUpdate").and_then(|v| v.as_str()) else {
+            return;
+        };
+        if kind.contains("thought") {
+            if self.last_live_activity_at.elapsed() < LIVE_MEMBER_ACTIVITY_THROTTLE {
+                return;
+            }
+            let preview = update
+                .get("content")
+                .and_then(|content| content.get("text"))
+                .and_then(|text| text.as_str())
+                .and_then(sanitize_live_member_preview);
+            if let (Some(sink), Some(preview)) = (&self.live_sink, preview) {
+                self.last_live_activity_at = Instant::now();
+                sink(LiveMemberActivityPreview {
+                    team_run_id: self.ledger.run_id.clone(),
+                    member_run_id: self.member.id.clone(),
+                    provider: self.member.provider.clone(),
+                    preview,
+                });
+            }
+            return;
+        }
+        if kind == "agent_message_chunk" {
+            if let Some(text) = update
+                .get("content")
+                .and_then(|content| content.get("text"))
+                .and_then(|text| text.as_str())
+            {
+                self.text.push_str(text);
+            }
+            if self.last_progress_at.elapsed() >= TEAM_RUN_PROGRESS_THROTTLE {
+                self.last_progress_at = std::time::Instant::now();
+                let summary = format!("{} chars streamed", self.text.len());
+                if self
+                    .ledger
+                    .append_action(
+                        &self.member.id,
+                        "progress",
+                        MemberActionStatus::Progress,
+                        "assistant streaming",
+                        &summary,
+                    )
+                    .is_ok()
+                {
+                    self.touch_member();
+                }
+            }
+            return;
+        }
+        if kind.contains("tool") {
+            let tool_id = update
+                .get("toolCallId")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let title = update
+                .get("title")
+                .and_then(|v| v.as_str())
+                .or_else(|| update.get("kind").and_then(|v| v.as_str()))
+                .unwrap_or("tool call")
+                .to_string();
+            let status = update.get("status").and_then(|v| v.as_str()).unwrap_or("");
+            let terminal = matches!(status, "completed" | "failed" | "error" | "cancelled");
+            // Loose ACP mapping: `tool_call` starts; `tool_call_update` only
+            // completes when its status is terminal (a mid-flight "running"
+            // update journals nothing new); any other *tool* frame starts.
+            let journaled = if kind == "tool_call" || !kind.contains("update") {
+                self.open_tools.insert(tool_id, title.clone());
+                self.ledger.append_action(
+                    &self.member.id,
+                    "tool_started",
+                    MemberActionStatus::Started,
+                    &title,
+                    &format!("tool started: {title}"),
+                )
+            } else if terminal {
+                let title = self.open_tools.remove(&tool_id).unwrap_or(title);
+                self.ledger.append_action(
+                    &self.member.id,
+                    "tool_completed",
+                    if status == "completed" {
+                        MemberActionStatus::Succeeded
+                    } else {
+                        MemberActionStatus::Failed
+                    },
+                    &title,
+                    &format!("tool {status}: {title}"),
+                )
+            } else {
+                return;
+            };
+            if journaled.is_ok() {
+                self.touch_member();
+            }
+        }
+        // Anything else (available_commands_update, plan, ...): not journaled.
+    }
+
+    /// Refresh `last_event_at` whenever something was journaled for the member
+    /// (throttled to the journaling cadence, not per chunk).
+    fn touch_member(&mut self) {
+        self.member.last_event_at = Some(now_string());
+        let _ = self.ledger.save_member_run(&self.member);
+    }
+
+    /// The accumulated assistant text of this round (all message chunks).
+    fn text(&self) -> &str {
+        &self.text
+    }
+
+    fn into_member(self) -> MemberRun {
+        self.member
+    }
+}
+
+/// The round outcome parsed from the report's `## RESULT` section.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MemberRoundResult {
+    Done,
+    Blocked,
+    Failed,
+}
+
+/// Loose `## RESULT` parse: missing section defaults to done (the agent wrote
+/// a report without the contract heading — treat the work as finished, the
+/// report itself is journaled for review either way).
+fn parse_round_result(final_text: &str) -> MemberRoundResult {
+    match extract_report_section(final_text, "RESULT") {
+        Some(section) => {
+            let lower = section.to_lowercase();
+            if lower.contains("blocked") {
+                MemberRoundResult::Blocked
+            } else if lower.contains("fail") {
+                MemberRoundResult::Failed
+            } else {
+                MemberRoundResult::Done
+            }
+        }
+        None => MemberRoundResult::Done,
+    }
+}
+
+/// Loose `## <NAME>` section extractor: the trimmed body between the heading
+/// (matched case-insensitively) and the next `## ` heading or EOF.
+fn extract_report_section(text: &str, name: &str) -> Option<String> {
+    let marker = format!("## {name}").to_uppercase();
+    let mut in_section = false;
+    let mut body = Vec::new();
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.to_uppercase().starts_with(&marker) {
+            in_section = true;
+            continue;
+        }
+        if in_section && trimmed.starts_with("## ") {
+            break;
+        }
+        if in_section {
+            body.push(line);
+        }
+    }
+    if !in_section {
+        return None;
+    }
+    let joined = body.join("\n").trim().to_string();
+    (!joined.is_empty()).then_some(joined)
+}
+
+/// The delivery-contract prompt every member's first round runs on.
+fn contract_prompt(objective: &str, member: &MemberRun, assignment_body: &str) -> String {
+    let owned_paths = if member.owned_paths.is_empty() {
+        "(none — read-only)".to_string()
+    } else {
+        member.owned_paths.join(", ")
+    };
+    format!(
+        "You are {name}, the {role} member of agent team run \"{objective}\".\n\
+         \n\
+         CONTRACT\n\
+         - Owned paths (only modify files under these; empty = read-only): {owned_paths}\n\
+         - Definition of done: {assignment_body}\n\
+         - Evidence: every claim in your report must be backed by something another agent can re-run (commands, tests, file diffs).\n\
+         - Boundaries: do NOT deploy, push, merge, or delete anything; do not modify files outside owned paths. If the task needs an external change or an ambiguous product decision, STOP and report BLOCKER instead of deciding yourself.\n\
+         - You may use your own sub-agents freely; keep their permissions within yours.\n\
+         \n\
+         Report format (your final message MUST follow this):\n\
+         ## RESULT\n\
+         done | blocked | failed\n\
+         ## SUMMARY\n\
+         <=10 lines\n\
+         ## FILES CHANGED\n\
+         ## COMMANDS & TESTS\n\
+         ## EVIDENCE\n\
+         ## BLOCKERS / DECISIONS NEEDED\n\
+         ## SUGGESTED NEXT\n",
+        name = member.name,
+        role = member.role,
+    )
+}
+
 fn step_landing_diff(step: &workflow::StepResult) -> Option<String> {
     let details = step.details.as_ref()?;
     let diff = details
@@ -2262,3505 +3683,36 @@ fn git_in(repo_root: &Path, args: &[&str]) -> CliResult<String> {
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
-/// Land a PASSED phase's writable work onto the orchestrator's working branch
-/// (goal-phase-landing). For each writable task step that produced a worktree diff
-/// (in deterministic order — by leaf `ordinal`, then journaled order), `git apply`
-/// the diff onto `repo_root`'s working tree, then make ONE commit
-/// `"phase <phase_id> landed (run-phases)"`. Parallel tasks have DISJOINT
-/// `owned_paths` (the compiler invariant), so their diffs touch disjoint files and
-/// apply conflict-free. Returns the new commit sha, or `Ok(None)` when the phase
-/// produced NO writable diffs (a read-only phase lands + commits nothing). A diff
-/// that fails to apply cleanly is a phase failure (`Err`) with an actionable
-/// message — we never `--force` / `-3` auto-merge (the disjoint invariant means a
-/// real conflict signals an upstream bug, not something to paper over).
-///
-/// Safety on the user's real project tree: landing REFUSES to start unless the
-/// repo index + working tree are clean (`git status --porcelain` empty), since the
-/// pathspec-less commit would otherwise sweep unrelated pre-staged work into the
-/// phase commit; and on a mid-sequence apply failure it `git reset --hard`s back to
-/// the pre-landing HEAD so a failed landing leaves the tree exactly as it found it
-/// (no orphaned staged files for a later phase to absorb).
-/// The set of step labels the workflow explicitly `reject_patch()`ed (a `reject`
-/// entry in the run's `final_output.patch_actions`). Landing skips these steps'
-/// diffs (D1c): the script declared it does NOT want that change landed.
-fn workflow_rejected_labels(outcome: &workflow::WorkflowOutcome) -> BTreeSet<String> {
-    outcome
-        .final_output
-        .as_ref()
-        .and_then(|v| v.get("patch_actions"))
-        .and_then(|v| v.as_array())
-        .map(|actions| {
-            actions
-                .iter()
-                .filter(|a| a.get("action").and_then(|v| v.as_str()) == Some("reject"))
-                .filter_map(|a| a.get("label").and_then(|v| v.as_str()))
-                .map(str::to_string)
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-/// Whether a step opted its diff OUT of landing via `persist_changes="discard"`
-/// (D1c). The default (absent / "patch") lands normally; only "discard" is skipped.
-fn step_discards_changes(step: &workflow::StepResult) -> bool {
-    step.details
-        .as_ref()
-        .and_then(|d| d.get("persist_changes"))
-        .and_then(|v| v.as_str())
-        == Some("discard")
-}
-
-fn land_phase_diffs(
-    phase_id: &str,
-    outcome: &workflow::WorkflowOutcome,
-    repo_root: &Path,
-) -> CliResult<Option<String>> {
-    // D1c: honor the workflow's declared intents. Skip a step's diff when the
-    // script `reject_patch()`ed it (a reject in final_output.patch_actions) or when
-    // the leaf declared `persist_changes="discard"`. An APPLY intent is the default
-    // (landing lands it), so it needs no special casing.
-    let rejected = workflow_rejected_labels(outcome);
-    // Collect diffs in a deterministic order: a leaf's `ordinal` (assigned by the
-    // Starlark front-end in issue order) when present, else the journaled index.
-    let mut diffs: Vec<(u64, usize, String)> = Vec::new();
-    for (idx, step) in outcome.steps.iter().enumerate() {
-        if rejected.contains(&step.label) || step_discards_changes(step) {
-            continue;
-        }
-        if let Some(diff) = step_landing_diff(step) {
-            diffs.push((step.ordinal.unwrap_or(idx as u64), idx, diff));
-        }
-    }
-    if diffs.is_empty() {
-        // A read-only phase (no writable diffs) lands + commits nothing.
-        return Ok(None);
-    }
-    diffs.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
-
-    if !is_git_repo(repo_root) {
+fn command_stdout(command: &str, args: &[&str]) -> CliResult<String> {
+    let output = Command::new(command).args(args).output()?;
+    if !output.status.success() {
         return Err(CliError::Usage(format!(
-            "phase '{phase_id}' produced writable work to land, but {} is not a git \
-             repository — run `harness goal run-phases` from a git repo so passing \
-             phases can land their work onto the branch.",
-            repo_root.display()
+            "{command} {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr).trim()
         )));
     }
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
 
-    // Landing must START from a clean index + working tree. `git commit` (below) has
-    // no pathspec, so it would sweep ANY pre-staged/unrelated work into the
-    // "phase landed" commit and silently entangle it with phase output. Refuse up
-    // front with an actionable message rather than mislabel a developer's own
-    // changes. This also makes the post-apply state knowable for rollback below.
-    let status = git_in(repo_root, &["status", "--porcelain"])?;
-    if !status.trim().is_empty() {
-        return Err(CliError::Usage(format!(
-            "phase '{phase_id}' is ready to LAND, but {} has uncommitted changes \
-             (staged or in the working tree):\n{}\nlanding would sweep them into the \
-             phase commit. Commit, stash, or discard them, then re-run \
-             `harness goal run-phases`.",
-            repo_root.display(),
-            status.trim()
-        )));
+fn owned_path_violations(changed_paths: &[String], owned_paths: &[String]) -> Vec<String> {
+    if owned_paths.is_empty() {
+        return Vec::new();
     }
-
-    // The exact HEAD we started from: a clean `git reset --hard <head>` restores the
-    // repo to this state if any diff fails to apply midway (partial-apply rollback).
-    let head_before = git_in(repo_root, &["rev-parse", "HEAD"])?
-        .trim()
-        .to_string();
-
-    // Apply each diff onto the working tree (index + worktree). `git apply --index`
-    // keeps the index in sync so the single commit below captures every landed file
-    // (including brand-new ones). No `-3` / `--force`: a clean apply is REQUIRED.
-    for (_, _, diff) in &diffs {
-        let mut child = Command::new("git")
-            .arg("-C")
-            .arg(repo_root)
-            .args(["apply", "--index", "--whitespace=nowarn", "-"])
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()?;
-        if let Some(mut stdin) = child.stdin.take() {
-            use std::io::Write;
-            stdin.write_all(diff.as_bytes())?;
-        }
-        let out = child.wait_with_output()?;
-        if !out.status.success() {
-            let apply_err = String::from_utf8_lossy(&out.stderr).trim().to_string();
-            // Roll back any diffs already applied this run so a failed landing leaves
-            // the tree EXACTLY as it found it (clean @ head_before) — otherwise the
-            // orphaned staged files would be swept into a LATER phase's landing
-            // commit on the next run-phases invocation.
-            let rollback = git_in(repo_root, &["reset", "--hard", &head_before]);
-            let rollback_note = match rollback {
-                Ok(_) => String::new(),
-                Err(e) => format!(" (WARNING: rollback to {head_before} also failed: {e})"),
-            };
-            return Err(CliError::Usage(format!(
-                "phase '{phase_id}' could not LAND a writable task's diff onto {} \
-                 (git apply failed): {apply_err}. Parallel tasks must own disjoint \
-                 paths; a genuine apply conflict is a phase failure, not \
-                 auto-merged.{rollback_note}",
-                repo_root.display(),
-            )));
-        }
-    }
-
-    // ONE commit for the whole phase's landed work. `git apply --index` already
-    // staged everything; the clean-tree guard above guarantees NOTHING else is
-    // staged, so the pathspec-less commit captures only this phase's landed files.
-    // `--no-verify` is intentionally NOT used.
-    git_in(
-        repo_root,
-        &[
-            "commit",
-            "-m",
-            &format!("phase {phase_id} landed (run-phases)"),
-        ],
-    )?;
-    let sha = git_in(repo_root, &["rev-parse", "HEAD"])?
-        .trim()
-        .to_string();
-    Ok(Some(sha))
-}
-
-/// A Starlark string literal for `s`. JSON string escaping is a valid Starlark
-/// double-quoted string, so this reuses serde_json to escape `\`, `"`, newlines.
-fn star_lit(s: &str) -> String {
-    serde_json::to_string(s).unwrap_or_else(|_| "\"\"".to_string())
-}
-
-/// A SYSTEM-PROVIDED "building" phase (built-in-phases). Its body is a shipped
-/// Starlark program (`build_builtin_phase_script`), NOT an agent-planned task DAG;
-/// the orchestrator AUTO-APPENDS these after a goal's execution phases pass.
-/// `blocking` building phases fail the goal if they don't pass; soft ones are
-/// best-effort (a failure is recorded but does not block verification).
-struct BuiltinPhaseDef {
-    id: &'static str,
-    name: &'static str,
-    intent: &'static str,
-    acceptance: &'static str,
-    /// Consumed by S2b (auto-append): a failed `blocking` building phase fails the
-    /// goal; a soft one is best-effort (recorded, does not block verification).
-    #[allow(dead_code)]
-    blocking: bool,
-}
-
-/// The built-in building phases, in append order. `doc-sync` is blocking (docs may
-/// not silently drift after a goal ships); `skill-extract` / `self-improve` are
-/// soft (best-effort distillation). Bodies are in `build_builtin_phase_script`.
-const BUILTIN_BUILDING_PHASES: &[BuiltinPhaseDef] = &[
-    BuiltinPhaseDef {
-        id: "doc-sync",
-        name: "Doc sync",
-        intent: "Govern the docs this goal touched (fix drift, register/deprecate, keep the tree mirroring the system) so docs can't silently drift after the goal ships.",
-        acceptance: "The goal's declared doc/skill updates are written, the doc registry is consistent, and the doc CI gates pass.",
-        blocking: true,
-    },
-    BuiltinPhaseDef {
-        id: "skill-extract",
-        name: "Skill extract",
-        intent: "Distil any recurring, contract-stable practice from this goal's run into a Skill (knowledge-lifecycle promotion), or record there is nothing to extract.",
-        acceptance: "A skill was extracted, or an explicit no-op was recorded.",
-        blocking: false,
-    },
-    BuiltinPhaseDef {
-        id: "self-improve",
-        name: "Self improve",
-        intent: "Reflect on the goal: what worked, what failed, anti-patterns, and candidate next goals — a written evaluation.",
-        acceptance: "A goal evaluation was written.",
-        blocking: false,
-    },
-];
-
-fn builtin_phase_def(id: &str) -> Option<&'static BuiltinPhaseDef> {
-    BUILTIN_BUILDING_PHASES.iter().find(|b| b.id == id)
-}
-
-/// The docs a goal declares it must UPDATE (the doc-sync inputs): the `path`s of
-/// its phases' doc-class artifact outputs. Empty → doc-sync audits broadly.
-fn declared_doc_updates(goal: &Goal) -> Vec<String> {
-    use harness_core::ArtifactKind;
-    goal.phases
+    changed_paths
         .iter()
-        .flat_map(|p| p.outputs.iter())
-        .filter(|o| {
-            matches!(
-                o.kind,
-                ArtifactKind::DesignDoc
-                    | ArtifactKind::Adr
-                    | ArtifactKind::MigrationDoc
-                    | ArtifactKind::RegisteredDoc
-            )
-        })
-        .filter_map(|o| {
-            o.path
-                .as_deref()
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(str::to_string)
-        })
-        .collect()
-}
-
-/// A minimal built-in-phase Starlark body: one schema'd agent + a `verdict` on its
-/// `pass` (so the orchestrator's existing status gate enforces it) + `output`.
-fn builtin_single_agent_star(
-    id: &str,
-    def: &BuiltinPhaseDef,
-    prompt: &str,
-    writable: bool,
-) -> String {
-    format!(
-        "workflow({wf}, {intent})\nlog({log})\n_r = agent(\n    {p},\n    provider=\"codex\",\n    label={lbl},\n    writable={w},\n    schema={{\"pass\": \"bool\", \"reason\": \"string\"}},\n)\nverdict(bool(_r) and _r.get(\"pass\") == True, _r.get(\"reason\") if _r else \"built-in phase produced no structured verdict\")\noutput(_r)\n",
-        wf = star_lit(id),
-        intent = star_lit(&format!("{} Acceptance: {}", def.intent, def.acceptance)),
-        log = star_lit(&format!("built-in phase {id}: {}", def.name)),
-        p = star_lit(prompt),
-        lbl = star_lit(id),
-        w = if writable { "True" } else { "False" },
-    )
-}
-
-/// Build the Starlark body for a built-in (building) phase, interpolating the
-/// goal's context. The building-phase counterpart to `compile_phase_to_starlark`
-/// (which compiles an execution phase's task DAG).
-fn build_builtin_phase_script(
-    goal: &Goal,
-    phase: &harness_core::GoalPhase,
-) -> Result<String, String> {
-    let id = phase
-        .builtin
-        .as_deref()
-        .ok_or_else(|| format!("building phase `{}` has no `builtin` id", phase.id))?;
-    let def = builtin_phase_def(id).ok_or_else(|| format!("unknown built-in phase `{id}`"))?;
-    match id {
-        "doc-sync" => {
-            let updates = declared_doc_updates(goal);
-            let updates_md = if updates.is_empty() {
-                "(none declared — audit docs/ for drift this goal may have introduced)".to_string()
-            } else {
-                updates.join(", ")
-            };
-            let prompt = format!(
-                "Built-in doc-sync phase for goal {gid}. Use the bootstrap-project-workflow \
-                 doc-governance skill (its references/governance.md) to govern this repo's docs now \
-                 that the goal's execution phases passed. Apply ONLY conservative, high-confidence \
-                 fixes: factual drift (match code, cite file:line), broken links/refs, register orphan \
-                 docs in the registry declared by .governance.toml (default docs/registry.json), mark \
-                 superseded ADRs deprecated with a link to the replacement. Do NOT do structural reorg \
-                 (propose it in your reason instead). Declared docs to update: {updates_md}. Then run \
-                 the governance gate: `harness governance check` (the harness-native links/registry/size/\
-                 skills gates) — it must pass. Return pass=true only if your fixes are applied AND \
-                 `harness governance check` is green; otherwise pass=false with the blocking gap.",
-                gid = goal.id,
-                updates_md = updates_md,
-            );
-            Ok(builtin_single_agent_star("doc-sync", def, &prompt, true))
-        }
-        "skill-extract" => {
-            let prompt = format!(
-                "Built-in skill-extract phase for goal {gid}. Review this goal's run (phases, knowledge \
-                 ledger, what was built) and decide whether a recurring, contract-stable practice should \
-                 be distilled into a Skill (knowledge-lifecycle note->docs->skill). If yes, draft \
-                 skills/<name>/SKILL.md and report it. If nothing is stable/recurring enough, return \
-                 pass=true reason \"nothing to extract\". Best-effort; pass=false only on an actual error.",
-                gid = goal.id,
-            );
-            Ok(builtin_single_agent_star(
-                "skill-extract",
-                def,
-                &prompt,
-                true,
-            ))
-        }
-        "self-improve" => {
-            let prompt = format!(
-                "Built-in self-improve phase for goal {gid}. Reflect and write a short evaluation: what \
-                 worked, what failed, anti-patterns, and 1-3 candidate next goals. Return pass=true with \
-                 the evaluation; pass=false only on error.",
-                gid = goal.id,
-            );
-            Ok(builtin_single_agent_star(
-                "self-improve",
-                def,
-                &prompt,
-                false,
-            ))
-        }
-        _ => Err(format!("no Starlark body for built-in phase `{id}`")),
-    }
-}
-
-/// Compile a phase to its Starlark body: a `Building` phase uses its shipped
-/// built-in body (`build_builtin_phase_script`); a workflow-mode execution phase
-/// loads the authored workflow named by `workflow_ref`; a task_graph phase compiles
-/// its task DAG (`compile_phase_to_starlark`). The single seam the orchestrator
-/// and `phase compile` call.
-fn effective_phase_execution_mode(
-    phase: &harness_core::GoalPhase,
-) -> harness_core::PhaseExecutionMode {
-    if phase.kind == harness_core::PhaseKind::Building {
-        harness_core::PhaseExecutionMode::Workflow
-    } else {
-        phase.execution_mode
-    }
-}
-
-fn validate_phase_execution_config(
-    mode: harness_core::PhaseExecutionMode,
-    workflow_ref: Option<&str>,
-) -> CliResult<()> {
-    match (mode, workflow_ref.map(str::trim).filter(|s| !s.is_empty())) {
-        (harness_core::PhaseExecutionMode::Workflow, Some(_)) => Ok(()),
-        (harness_core::PhaseExecutionMode::Workflow, None) => Err(CliError::Usage(
-            "workflow-mode phases require --workflow-ref (for example repo:workflows/foo.star)"
-                .into(),
-        )),
-        (harness_core::PhaseExecutionMode::TaskGraph, Some(_)) => Err(CliError::Usage(
-            "task_graph phases must not set --workflow-ref; use --execution-mode workflow".into(),
-        )),
-        (harness_core::PhaseExecutionMode::TaskGraph, None) => Ok(()),
-    }
-}
-
-fn phase_execution_mode_wire(mode: harness_core::PhaseExecutionMode) -> &'static str {
-    match mode {
-        harness_core::PhaseExecutionMode::TaskGraph => "task_graph",
-        harness_core::PhaseExecutionMode::Workflow => "workflow",
-    }
-}
-
-fn safe_repo_workflow_ref_path(workflow_ref: &str) -> Result<&str, String> {
-    let raw = workflow_ref.trim();
-    let rel = raw.strip_prefix("repo:").unwrap_or(raw).trim();
-    if rel.is_empty() {
-        return Err("workflow_ref path is empty".into());
-    }
-    if raw.contains(':') && !raw.starts_with("repo:") {
-        return Err(format!(
-            "unsupported workflow_ref scheme in `{workflow_ref}` (use repo:<path> or builtin:<id>)"
-        ));
-    }
-    let path = Path::new(rel);
-    if path.extension().and_then(|e| e.to_str()) != Some("star") {
-        return Err(format!(
-            "workflow_ref `{workflow_ref}` must point at a .star workflow"
-        ));
-    }
-    if path.components().any(|c| {
-        matches!(
-            c,
-            std::path::Component::ParentDir
-                | std::path::Component::RootDir
-                | std::path::Component::Prefix(_)
-        )
-    }) {
-        return Err(format!(
-            "workflow_ref `{workflow_ref}` must be a safe repo-relative path"
-        ));
-    }
-    Ok(rel)
-}
-
-fn load_workflow_ref_phase_script(
-    goal: &Goal,
-    phase: &harness_core::GoalPhase,
-    repo_root: &Path,
-) -> Result<String, String> {
-    let workflow_ref = match phase
-        .workflow_ref
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
-        Some(workflow_ref) => workflow_ref,
-        None if phase.kind == harness_core::PhaseKind::Building && phase.builtin.is_some() => {
-            return build_builtin_phase_script(goal, phase);
-        }
-        None => {
-            return Err(format!(
-                "phase `{}` is workflow-mode but has no workflow_ref",
-                phase.id
-            ));
-        }
-    };
-    if let Some(id) = workflow_ref.trim().strip_prefix("builtin:") {
-        let mut built_in_phase = phase.clone();
-        built_in_phase.builtin = Some(id.trim().to_string());
-        return build_builtin_phase_script(goal, &built_in_phase);
-    }
-    let rel = safe_repo_workflow_ref_path(workflow_ref)?;
-    let path = repo_root.join(rel);
-    let script = fs::read_to_string(&path).map_err(|e| {
-        format!(
-            "cannot read workflow_ref `{workflow_ref}` for phase `{}` at {}: {e}",
-            phase.id,
-            path.display()
-        )
-    })?;
-    if script.trim().is_empty() {
-        return Err(format!(
-            "workflow_ref `{workflow_ref}` for phase `{}` is empty",
-            phase.id
-        ));
-    }
-    Ok(script)
-}
-
-fn compile_phase_script(
-    goal: &Goal,
-    phase: &harness_core::GoalPhase,
-    all_tasks: &[Task],
-    repo_root: &Path,
-) -> Result<String, String> {
-    match effective_phase_execution_mode(phase) {
-        harness_core::PhaseExecutionMode::Workflow => {
-            load_workflow_ref_phase_script(goal, phase, repo_root)
-        }
-        harness_core::PhaseExecutionMode::TaskGraph => {
-            compile_phase_to_starlark(goal, phase, all_tasks)
-        }
-    }
-}
-
-/// Idempotently append the built-in BUILDING phases AFTER a goal's execution
-/// phases (built-in-phases S2b). Because they are last, the orchestrator runs them
-/// only once the execution phases pass — a failed execution phase returns before
-/// reaching them, so this is the "trigger after acceptance" semantic via ordering.
-/// No-op when any Building phase is already present (resume) or the goal has no
-/// execution phase. Built-in bodies have no task DAG to replan, so `retry=0`.
-/// Returns true when it appended.
-fn ensure_builtin_phases_appended(store: &HarnessStore, goal: &mut Goal) -> CliResult<bool> {
-    if goal
-        .phases
-        .iter()
-        .any(|p| p.kind == harness_core::PhaseKind::Building)
-    {
-        return Ok(false);
-    }
-    if !goal
-        .phases
-        .iter()
-        .any(|p| p.kind == harness_core::PhaseKind::Execution)
-    {
-        return Ok(false);
-    }
-    let now = now_string();
-    for def in BUILTIN_BUILDING_PHASES {
-        goal.phases.push(harness_core::GoalPhase {
-            id: format!("builtin-{}", def.id),
-            name: def.name.to_string(),
-            intent: def.intent.to_string(),
-            status: harness_core::GoalPhaseStatus::NotStarted,
-            acceptance: Some(def.acceptance.to_string()),
-            verdict_decision_id: None,
-            created_at: now.clone(),
-            started_at: None,
-            ended_at: None,
-            outputs: Vec::new(),
-            inputs: Vec::new(),
-            retry: Some(0),
-            landed_commit: None,
-            kind: harness_core::PhaseKind::Building,
-            builtin: Some(def.id.to_string()),
-            execution_mode: harness_core::PhaseExecutionMode::Workflow,
-            workflow_ref: Some(format!("builtin:{}", def.id)),
-        });
-    }
-    goal.updated_at = now;
-    store.append_goal(goal)?;
-    Ok(true)
-}
-
-/// True if `phase` is a SOFT (non-blocking) built-in phase: a failure is recorded
-/// but must not block goal verification (built-in-phases S2b).
-fn is_soft_building_phase(phase: &harness_core::GoalPhase) -> bool {
-    phase.kind == harness_core::PhaseKind::Building
-        && phase
-            .builtin
-            .as_deref()
-            .and_then(builtin_phase_def)
-            .map(|d| !d.blocking)
-            .unwrap_or(false)
-}
-
-/// Sequence a goal's phases: gate each on its verdict before the next, write each
-/// phase's task outcomes back, advance the goal's derived stage, and persist a
-/// durable [`GoalOrchestrationRun`] checkpoint. Already-`Passed` phases are
-/// skipped (the resume primitive). When a phase does NOT pass, the failure is
-/// captured as `Knowledge` and — if retries remain — `revise_phase` revises the
-/// phase's task graph (supersede + new tasks), and the SAME phase recompiles +
-/// reruns, up to `max_phase_retries` times. `run_phase` and `revise_phase` are
-/// injectable so the sequencing / gating / replan / checkpoint logic is testable
-/// without real workers.
-fn orchestrate_goal_phases(
-    store: &HarnessStore,
-    goal_id: &str,
-    run_phase: &PhaseRunFn<'_>,
-    revise_phase: &PhaseReviseFn<'_>,
-    max_phase_retries: u32,
-    repo_root: &Path,
-    append_builtin: bool,
-) -> CliResult<serde_json::Value> {
-    let mut goal = goal_load(store, goal_id)?;
-    if goal.phases.is_empty() {
-        return Err(CliError::Usage(format!(
-            "goal `{goal_id}` has no phases to run — plan it first (`goal phase-add` or the planner)"
-        )));
-    }
-
-    // built-in-phases S2b: append the BUILDING phases (doc-sync / skill-extract /
-    // self-improve) after the execution phases (idempotent). They run last, so they
-    // fire only once the execution phases pass — a failed execution phase returns
-    // before reaching them. A resume sees them already present and skips. Gated by
-    // `append_builtin` (opt-in: CLI `--builtin-phases`; default off until proven).
-    if append_builtin {
-        ensure_builtin_phases_appended(store, &mut goal)?;
-    }
-
-    // Snapshot this goal's prior orchestration history (append-ordered) BEFORE we
-    // mutate state. The intra-phase resume lookup falls back to it so a phase can
-    // be resumed even when the previous orchestration ended `Failed` (which marks
-    // the old checkpoint non-`Running`, so a fresh checkpoint is started below).
-    let prior_runs: Vec<GoalOrchestrationRun> = store
-        .goal_orchestration_runs()?
-        .into_iter()
-        .filter(|o| o.goal_id == goal_id)
-        .collect();
-
-    // Reuse an in-flight checkpoint for this goal (resume), else start a fresh one.
-    let mut orch = prior_runs
-        .iter()
-        .rev()
-        .find(|o| o.status == OrchestrationStatus::Running)
-        .cloned()
-        .unwrap_or_else(|| GoalOrchestrationRun {
-            id: generated_id("goalrun"),
-            goal_id: goal_id.to_string(),
-            status: OrchestrationStatus::Running,
-            phase_runs: Vec::new(),
-            created_at: now_string(),
-            updated_at: now_string(),
-        });
-
-    let mut ran = Vec::new();
-    let mut skipped = Vec::new();
-    for idx in 0..goal.phases.len() {
-        let phase_id = goal.phases[idx].id.clone();
-        if goal.phases[idx].status == GoalPhaseStatus::Passed {
-            skipped.push(phase_id);
-            continue;
-        }
-
-        // goal-phase-refinements: cross-phase inputs precondition. A phase that
-        // declares REQUIRED `inputs` must find each input's path present in the
-        // working tree (a prior phase landed it, goal-phase-landing) BEFORE it runs.
-        // A missing required input fails the phase FAST here — instead of surfacing
-        // later as a confusing downstream gate failure. We mark the phase Failed,
-        // record a phase_verdict Decision naming the missing input, fail the
-        // orchestration, and return without spending the worker.
-        let missing_inputs = missing_required_inputs(&goal.phases[idx], repo_root);
-        if !missing_inputs.is_empty() {
-            let detail = missing_inputs
-                .iter()
-                .map(|p| {
-                    format!(
-                        "phase {phase_id}: required input {p} not present \
-                         (expected from a prior phase)"
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join("; ");
-            goal.phases[idx].status = GoalPhaseStatus::Failed;
-            goal.phases[idx].started_at.get_or_insert_with(now_string);
-            goal.phases[idx].ended_at = Some(now_string());
-            let verdict_decision = Decision {
-                id: generated_id("decision"),
-                task_id: goal.id.clone(),
-                decision: format!("phase {phase_id} verdict: clean_fail"),
-                rationale: format!("Missing required inputs: {detail}"),
-                evidence_ids: Vec::new(),
-                created_at: now_string(),
-                decision_kind: Some("phase_verdict".to_string()),
-                goal_id: Some(goal.id.clone()),
-                is_waiver: false,
-                follow_up_task_id: None,
-            };
-            store.append_decision(&verdict_decision)?;
-            goal.phases[idx].verdict_decision_id = Some(verdict_decision.id.clone());
-            goal.updated_at = now_string();
-            store.append_goal(&goal)?;
-
-            orch.status = OrchestrationStatus::Failed;
-            orch.updated_at = now_string();
-            store.append_goal_orchestration_run(&orch)?;
-            sync_goal_stage(store, &mut goal)?;
-            return Ok(serde_json::json!({
-                "orchestration_run": orch.id,
-                "goal": goal.id,
-                "status": "failed",
-                "failed_phase": phase_id,
-                "stage": goal.stage.as_str(),
-                "ran": ran,
-                "skipped": skipped,
-            }));
-        }
-
-        // Intra-phase resume: a phase being RE-RUN (its persisted status is
-        // already `InProgress` or `Failed`) whose checkpoint carries a prior
-        // workflow run reuses that run's succeeded leaves, so completed in-phase
-        // task steps are not re-spent. A first-time phase resumes from nothing.
-        // Look in the current (possibly reused `Running`) checkpoint first, then
-        // fall back to the goal's prior orchestration history — the latter covers
-        // re-entry after a `Failed` run, whose old checkpoint is non-`Running`.
-        let resume_from = if matches!(
-            goal.phases[idx].status,
-            GoalPhaseStatus::InProgress | GoalPhaseStatus::Failed
-        ) {
-            orch.phase_runs
-                .iter()
-                .rev()
-                .find(|r| r.phase_id == phase_id)
-                .and_then(|r| r.workflow_run_id.clone())
-                .or_else(|| {
-                    prior_runs.iter().rev().find_map(|o| {
-                        o.phase_runs
-                            .iter()
-                            .rev()
-                            .find(|r| r.phase_id == phase_id)
-                            .and_then(|r| r.workflow_run_id.clone())
-                    })
-                })
-        } else {
-            None
-        };
-
-        goal.phases[idx].status = GoalPhaseStatus::InProgress;
-        if goal.phases[idx].started_at.is_none() {
-            goal.phases[idx].started_at = Some(now_string());
-        }
-        goal.updated_at = now_string();
-        store.append_goal(&goal)?;
-
-        // The replan loop: run the phase; on a non-pass, capture the failure as
-        // knowledge and — while retries remain — ask the reviser to revise the
-        // task graph, then recompile + rerun the SAME phase. Each attempt after
-        // the first consumes one retry from the budget. `resume_from` reuses the
-        // PREVIOUS attempt's succeeded leaves on a same-script re-run (intra-phase
-        // resume); after a revision the recompiled script differs, so we run fresh.
-        let mut resume_from = resume_from;
-        // goal-phase-refinements: a phase's own `retry` overrides the global
-        // `--max-phase-retries`, so an explore phase and a live-demo phase no longer
-        // share one budget. `None` falls back to the global default (today's
-        // behavior).
-        let mut retries_left = if effective_phase_execution_mode(&goal.phases[idx])
-            == harness_core::PhaseExecutionMode::Workflow
-        {
-            0
-        } else {
-            goal.phases[idx].retry.unwrap_or(max_phase_retries)
-        };
-        let passed;
-        loop {
-            let phase = goal.phases[idx].clone();
-            // Latest-wins (NOT the raw append log): write_back re-appends each
-            // task per status change, so the raw log holds stale duplicate rows
-            // that would be compiled twice.
-            let goal_tasks: Vec<Task> = latest_tasks(store)?
-                .into_values()
-                .filter(|t| t.goal_id.as_deref() == Some(goal.id.as_str()))
-                .collect();
-            let script = compile_phase_script(&goal, &phase, &goal_tasks, repo_root)
-                .map_err(CliError::Usage)?;
-            let hash = content_hash_hex16(&script);
-            let dir = store.root().join("compiled");
-            std::fs::create_dir_all(&dir)?;
-            let compiled_path = dir.join(format!(
-                "{}__{}__{}.star",
-                slug_for_filename(&goal.id),
-                slug_for_filename(&phase_id),
-                hash
-            ));
-            std::fs::write(&compiled_path, &script)?;
-
-            let started_at = now_string();
-            let (run_id, outcome) = run_phase(
-                &script,
-                &format!("phase-{phase_id}"),
-                Some(&phase_id),
-                resume_from.as_deref(),
-            )?;
-            // A phase passes only if the run completed AND no task step failed AND
-            // every declared REQUIRED artifact was produced. The second clause is
-            // the gate for phases with no `acceptance` (no `verdict()` is
-            // compiled): a failed task inside a `parallel()` block leaves the run
-            // Completed, so check the steps directly. The third clause
-            // (goal-phase-artifacts) is the deterministic required-artifact gate:
-            // for each `required` ArtifactSpec with a `path` declared by the phase
-            // or its live tasks, assert the file exists & is non-empty in the run's
-            // evidence (a worker `worktree_diff`) or the repo working tree — BEFORE
-            // any LLM judge. A phase/task with no `outputs` yields an empty
-            // requirement set, so this clause is vacuously true (today's behavior).
-            let phase_live_tasks: Vec<Task> = goal_tasks
-                .iter()
-                .filter(|t| t.phase_id.as_deref() == Some(phase_id.as_str()))
-                .filter(|t| t.status != TaskStatus::Superseded)
-                .cloned()
-                .collect();
-            let mut unmet =
-                unmet_required_artifacts(&phase, &phase_live_tasks, &outcome, repo_root);
-            // goal-phase-refinements: a `registered_doc` output must ALSO be present
-            // in docs/registry.json (extends the #149 path gate). Merge its
-            // actionable messages into the unmet set so the verdict rationale names
-            // every reason the phase did not pass.
-            unmet.extend(unmet_registered_docs(&phase, &phase_live_tasks, repo_root));
-            // D2: per-mode gate. A TASK-GRAPH phase has no `verdict()` compiled for
-            // a bare `parallel()` block, so a failed task there leaves the run
-            // Completed — hence the all-steps-ok clause catches it. A WORKFLOW-mode
-            // phase runs an AUTHORED program that may legitimately TOLERATE a failed
-            // leaf (return_status + retry + verdict(True) → status Completed with a
-            // journaled ok=false step; see skills/star-workflow/examples/
-            // failure-aware-retry.star). Requiring all-steps-ok there would wrongly
-            // fail such a run, so the workflow-mode gate trusts the run's own status
-            // + verdict (surfaced as Completed) and the required-artifact set only.
-            let gate_passed = if effective_phase_execution_mode(&phase)
-                == harness_core::PhaseExecutionMode::Workflow
-            {
-                outcome.status == WorkflowRunStatus::Completed && unmet.is_empty()
-            } else {
-                outcome.status == WorkflowRunStatus::Completed
-                    && outcome.steps.iter().all(|s| s.ok)
-                    && unmet.is_empty()
-            };
-
-            write_back_phase_tasks(store, &goal, &phase_id, &outcome)?;
-
-            // Durable landing (goal-phase-landing): a phase that cleared the gate
-            // LANDS its writable tasks' work onto the orchestrator branch — apply
-            // each worktree diff + ONE commit `phase <id> landed (run-phases)`. A
-            // read-only phase lands nothing (`landed_commit` stays None). A diff
-            // that fails to apply cleanly DEMOTES the pass to a clean failure (the
-            // existing failure path then captures it as knowledge / replans), with
-            // an actionable message — we never force-merge. Sequential phases build
-            // on this because the next phase's worktrees branch from the updated
-            // HEAD that now includes this landing commit.
-            let mut landed_commit: Option<String> = None;
-            let mut landing_error: Option<String> = None;
-            if gate_passed {
-                match land_phase_diffs(&phase_id, &outcome, repo_root) {
-                    Ok(sha) => landed_commit = sha,
-                    Err(err) => landing_error = Some(err.to_string()),
-                }
-            }
-            let attempt_passed = gate_passed && landing_error.is_none();
-
-            // Link each journaled step back to its Task + stamp the verdict step's
-            // outcome (acceptance #1: the structured Task<->Step link).
-            let phase_task_ids: std::collections::HashSet<String> = goal_tasks
-                .iter()
-                .filter(|t| t.phase_id.as_deref() == Some(phase_id.as_str()))
-                .map(|t| t.id.clone())
-                .collect();
-            link_workflow_steps_to_tasks(
-                store,
-                &run_id,
-                &phase_id,
-                &phase_task_ids,
-                attempt_passed,
-            )?;
-
-            // Record the phase verdict as a Decision and point the phase at it
-            // (acceptance #4: Decision(decision_kind=phase_verdict) +
-            // GoalPhase.verdict_decision_id).
-            let rationale = if let Some(err) = &landing_error {
-                format!("{}\n\nLanding failed: {}", outcome.summary, err)
-            } else if !attempt_passed && !unmet.is_empty() {
-                format!(
-                    "{}\n\nMissing required artifacts (not produced or empty): {}",
-                    outcome.summary,
-                    unmet.join(", ")
-                )
-            } else {
-                outcome.summary.clone()
-            };
-            let verdict_decision = Decision {
-                id: generated_id("decision"),
-                task_id: goal.id.clone(),
-                decision: format!(
-                    "phase {phase_id} verdict: {}",
-                    if attempt_passed { "pass" } else { "clean_fail" }
-                ),
-                rationale,
-                evidence_ids: Vec::new(),
-                created_at: now_string(),
-                decision_kind: Some("phase_verdict".to_string()),
-                goal_id: Some(goal.id.clone()),
-                is_waiver: false,
-                follow_up_task_id: None,
-            };
-            store.append_decision(&verdict_decision)?;
-            goal.phases[idx].verdict_decision_id = Some(verdict_decision.id.clone());
-
-            goal.phases[idx].status = if attempt_passed {
-                GoalPhaseStatus::Passed
-            } else {
-                GoalPhaseStatus::Failed
-            };
-            goal.phases[idx].ended_at = Some(now_string());
-            // Record where this phase's writable work landed (None for a read-only
-            // phase or a non-pass). Mirrored onto the OrchestrationPhaseRun below.
-            goal.phases[idx].landed_commit = landed_commit.clone();
-            goal.updated_at = now_string();
-            store.append_goal(&goal)?;
-
-            orch.phase_runs.push(OrchestrationPhaseRun {
-                phase_id: phase_id.clone(),
-                workflow_run_id: Some(run_id.clone()),
-                compiled_path: Some(compiled_path.display().to_string()),
-                passed: attempt_passed,
-                started_at,
-                ended_at: Some(now_string()),
-                // L2 (durable landing): the commit a passing phase landed onto the
-                // branch; None for read-only / non-passing phases.
-                landed_commit: landed_commit.clone(),
-            });
-            orch.updated_at = now_string();
-            ran.push(serde_json::json!({ "phase": phase_id, "passed": attempt_passed }));
-            store.append_goal_orchestration_run(&orch)?;
-
-            if attempt_passed {
-                passed = true;
-                break;
-            }
-
-            // The phase did not pass. Capture the finding as knowledge regardless
-            // of whether we will retry (it is the durable truth of what failed).
-            let knowledge_id =
-                append_failure_knowledge(store, &mut goal, &phase_id, &run_id, &outcome)?;
-
-            if retries_left == 0 {
-                passed = false;
-                break;
-            }
-
-            // Retries remain: ask the reviser to revise this phase's task graph.
-            let phase = goal.phases[idx].clone();
-            let knowledge = goal
-                .knowledge
-                .iter()
-                .find(|k| k.id == knowledge_id)
-                .cloned()
-                .expect("the knowledge entry just appended must be present");
-            let live_tasks: Vec<Task> = store
-                .tasks()?
-                .into_iter()
-                .filter(|t| {
-                    t.goal_id.as_deref() == Some(goal.id.as_str())
-                        && t.phase_id.as_deref() == Some(phase_id.as_str())
-                        && t.status != TaskStatus::Superseded
-                })
-                .collect();
-            let live_refs: Vec<&Task> = live_tasks.iter().collect();
-            let revision = revise_phase(&goal, &phase, &live_refs, &knowledge)?;
-            let (superseded, new_task_ids) =
-                apply_phase_revision(store, &goal, &phase_id, &revision, &knowledge_id)?;
-
-            // A revision that supersedes nothing AND adds nothing is "no actionable
-            // replan" — do NOT loop forever. Count this attempt against the cap and
-            // stop (the phase stays Failed).
-            if superseded.is_empty() && new_task_ids.is_empty() {
-                passed = false;
-                break;
-            }
-
-            // The task graph changed → recompile + rerun fresh (the new script
-            // differs from the prior run, so no leaf replay applies).
-            retries_left -= 1;
-            resume_from = None;
-            goal.phases[idx].status = GoalPhaseStatus::InProgress;
-            goal.phases[idx].ended_at = None;
-            goal.updated_at = now_string();
-            store.append_goal(&goal)?;
-        }
-
-        if !passed {
-            // built-in-phases S2b: a SOFT building phase (skill-extract / self-improve)
-            // is best-effort — its failure is already captured (knowledge + the
-            // clean_fail verdict Decision + the passed=false OrchestrationPhaseRun) — but
-            // it must NOT block the goal. Mark it Passed (settled, non-blocking) and
-            // continue; only execution + BLOCKING built-in phases (doc-sync) fail the run.
-            if is_soft_building_phase(&goal.phases[idx]) {
-                goal.phases[idx].status = GoalPhaseStatus::Passed;
-                goal.updated_at = now_string();
-                store.append_goal(&goal)?;
-                continue;
-            }
-            orch.status = OrchestrationStatus::Failed;
-            store.append_goal_orchestration_run(&orch)?;
-            sync_goal_stage(store, &mut goal)?;
-            return Ok(serde_json::json!({
-                "orchestration_run": orch.id,
-                "goal": goal.id,
-                "status": "failed",
-                "failed_phase": phase_id,
-                "stage": goal.stage.as_str(),
-                "ran": ran,
-                "skipped": skipped,
-            }));
-        }
-    }
-
-    orch.status = OrchestrationStatus::Completed;
-    orch.updated_at = now_string();
-    store.append_goal_orchestration_run(&orch)?;
-    // goal-auto-finalize: completing the last phase is a completion seam — re-derive
-    // the goal's stage (all phases passed → Verified), forward-only, recording an
-    // `auto-finalize` Knowledge entry on the advance. Subsumes the prior
-    // `sync_goal_stage` call for this (phase-driven) success terminal.
-    reconcile_goal_stage(store, &mut goal)?;
-    Ok(serde_json::json!({
-        "orchestration_run": orch.id,
-        "goal": goal.id,
-        "status": "completed",
-        "stage": goal.stage.as_str(),
-        "ran": ran,
-        "skipped": skipped,
-    }))
-}
-
-// ---------------------------------------------------------------------------
-// The PLANNER (`harness goal plan`): decompose a goal's `design_md` (+
-// `acceptance_md`) into agent-planned, sequential `phases[]` and a per-phase task
-// DAG, then persist them. It reuses the EXISTING real-driver execution path: a
-// tiny one-shot Starlark program runs ONE worker (`output(agent(prompt,
-// schema=...))`) through the same engine `goal run-phases` uses, so `--dry-run`
-// works with no real provider. The worker's structured reply is parsed and
-// written back as `GoalPhase`s + `Task`s. Re-running is idempotent-ish — existing
-// phase/task ids are skipped, never duplicated.
-// ---------------------------------------------------------------------------
-
-/// Read a JSON value as a non-empty trimmed string, else `None`.
-fn json_str_nonempty(v: &serde_json::Value, key: &str) -> Option<String> {
-    v.get(key)
-        .and_then(|x| x.as_str())
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
-}
-
-/// Read a JSON value as a Vec of trimmed non-empty strings (a missing/`null`/
-/// non-array value yields an empty Vec).
-fn json_str_list(v: &serde_json::Value, key: &str) -> Vec<String> {
-    v.get(key)
-        .and_then(|x| x.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|e| e.as_str())
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(str::to_string)
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-/// Read a field as free text whether the worker returned a STRING or a LIST of
-/// strings (planners often emit `acceptance` as a bulleted array). A list is
-/// joined newline-separated; empty/absent → None.
-fn json_text_or_list(v: &serde_json::Value, key: &str) -> Option<String> {
-    if let Some(s) = json_str_nonempty(v, key) {
-        return Some(s);
-    }
-    let joined = json_str_list(v, key).join("\n");
-    (!joined.trim().is_empty()).then_some(joined)
-}
-
-/// Coerce a value that a flat-schema worker may return EITHER as a JSON array
-/// OR as a JSON-encoded string (codex commonly stringifies a nested array under a
-/// `"key":"<shape>"` hint) into an owned array of values.
-fn json_array_or_parsed(structured: &serde_json::Value, key: &str) -> Vec<serde_json::Value> {
-    match structured.get(key) {
-        Some(serde_json::Value::Array(arr)) => arr.clone(),
-        Some(serde_json::Value::String(s)) => serde_json::from_str::<serde_json::Value>(s)
-            .ok()
-            .and_then(|v| v.as_array().cloned())
-            .unwrap_or_default(),
-        _ => Vec::new(),
-    }
-}
-
-/// Parse a planner JSON value's `outputs` key into a `Vec<ArtifactSpec>`
-/// (goal-phase-artifacts). Tolerates the same stringified-JSON/array forms
-/// `json_array_or_parsed` handles. An absent/empty key yields an empty Vec (today's
-/// default). Each entry's `kind` is parsed leniently (snake_case via serde, falling
-/// back to the `Code` default for unknown values); `required` defaults to TRUE to
-/// match `ArtifactSpec`'s serde default; entries without a usable `id` are skipped.
-fn parse_outputs(v: &serde_json::Value, key: &str) -> Vec<ArtifactSpec> {
-    json_array_or_parsed(v, key)
-        .iter()
-        .filter_map(|o| {
-            let id = json_str_nonempty(o, "id")?;
-            let kind = json_str_nonempty(o, "kind")
-                .and_then(|k| {
-                    serde_json::from_value::<ArtifactKind>(serde_json::Value::String(k)).ok()
-                })
-                .unwrap_or_default();
-            Some(ArtifactSpec {
-                id,
-                kind,
-                path: json_str_nonempty(o, "path"),
-                purpose: json_text_or_list(o, "purpose").unwrap_or_default(),
-                required: json_bool(o, "required").unwrap_or(true),
-                acceptance: json_text_or_list(o, "acceptance"),
+        .filter(|path| {
+            !owned_paths.iter().any(|owned| {
+                let owned = owned.trim_end_matches('/');
+                path.as_str() == owned || path.starts_with(&format!("{owned}/"))
             })
         })
+        .cloned()
         .collect()
 }
 
-/// Parse a planner JSON value's `retry` key into a per-phase retry budget override
-/// (goal-phase-refinements). An absent/non-numeric key yields `None` (the phase
-/// inherits the global `--max-phase-retries`); a tolerated stringified number ("2")
-/// is also accepted, matching the stringified-JSON forms the planner emits.
-fn parse_retry(v: &serde_json::Value) -> Option<u32> {
-    json_u64(v, "retry")
-        .or_else(|| {
-            v.get("retry")
-                .and_then(|r| r.as_str())
-                .and_then(|s| s.trim().parse::<u64>().ok())
-        })
-        .and_then(|n| u32::try_from(n).ok())
-}
-
-/// The result of `plan_into_goal`: which phase/task ids were created (and which
-/// existing ids were skipped), so the command can report idempotent re-runs.
-#[derive(Debug, Default, PartialEq, Eq)]
-struct PlanResult {
-    phases_added: Vec<String>,
-    phases_skipped: Vec<String>,
-    tasks_created: Vec<String>,
-    tasks_skipped: Vec<String>,
-}
-
-/// Parse the planner's structured object and PERSIST it onto the goal: append new
-/// phases onto `goal.phases` (skipping ids that already exist) and create `Task`s
-/// (status `Planned`) with `goal_id` / `phase_id` / `design_md` / acceptance /
-/// owned_paths / depends_on. Idempotent-ish: an existing phase or task id is never
-/// duplicated. Returns the created/skipped ids; persists the goal + tasks.
-///
-/// `structured` is the planner run's `final_output.result`. In `--dry-run` it is
-/// the mock object (`{"phases": "mock phases"}`), where `phases` is a STRING — that
-/// (or a missing/empty `phases` array) yields an empty plan, which the caller
-/// reports rather than panicking.
-fn plan_into_goal(
-    store: &HarnessStore,
-    goal: &mut Goal,
-    structured: &serde_json::Value,
-    owner: &str,
-) -> CliResult<PlanResult> {
-    let mut result = PlanResult::default();
-    // `phases` may arrive as a real array OR as a JSON-encoded string (codex
-    // stringifies the nested array under the flat schema hint). The dry-run mock
-    // returns a plain placeholder string that parses to nothing → degrade.
-    let phases = json_array_or_parsed(structured, "phases");
-    if phases.is_empty() {
-        return Ok(result);
-    }
-    let phases = &phases;
-
-    let now = now_string();
-    for (p_idx, p) in phases.iter().enumerate() {
-        let phase_id = slug_for_filename(
-            &json_str_nonempty(p, "id").unwrap_or_else(|| format!("phase-{}", p_idx + 1)),
-        );
-        let execution_mode = json_str_nonempty(p, "execution_mode")
-            .as_deref()
-            .map(parse_phase_execution_mode)
-            .transpose()?
-            .unwrap_or(harness_core::PhaseExecutionMode::TaskGraph);
-        let workflow_ref = json_str_nonempty(p, "workflow_ref");
-        validate_phase_execution_config(execution_mode, workflow_ref.as_deref())?;
-        if let Some(r) = workflow_ref.as_deref() {
-            if !r.trim().starts_with("builtin:") {
-                safe_repo_workflow_ref_path(r).map_err(CliError::Usage)?;
-            }
-        }
-        let tasks = json_array_or_parsed(p, "tasks");
-        if execution_mode == harness_core::PhaseExecutionMode::Workflow && !tasks.is_empty() {
-            return Err(CliError::Usage(format!(
-                "phase `{phase_id}` is execution_mode=workflow but also includes tasks; choose workflow_ref or task graph tasks, not both"
-            )));
-        }
-        if goal.phases.iter().any(|existing| existing.id == phase_id) {
-            result.phases_skipped.push(phase_id.clone());
-        } else {
-            goal.phases.push(harness_core::GoalPhase {
-                id: phase_id.clone(),
-                name: json_str_nonempty(p, "name").unwrap_or_else(|| phase_id.clone()),
-                intent: json_str_nonempty(p, "intent")
-                    .unwrap_or_else(|| format!("Execute phase {phase_id}.")),
-                status: harness_core::GoalPhaseStatus::NotStarted,
-                acceptance: json_text_or_list(p, "acceptance"),
-                verdict_decision_id: None,
-                created_at: now.clone(),
-                started_at: None,
-                ended_at: None,
-                outputs: parse_outputs(p, "outputs"),
-                inputs: parse_outputs(p, "inputs"),
-                retry: parse_retry(p),
-                landed_commit: None,
-                kind: harness_core::PhaseKind::Execution,
-                builtin: None,
-                execution_mode,
-                workflow_ref: workflow_ref.clone(),
-            });
-            result.phases_added.push(phase_id.clone());
-        }
-
-        // Tasks for this phase (created regardless of whether the phase was new,
-        // so a re-run can backfill tasks onto an existing phase — but never
-        // duplicate a task id).
-        let existing_task_ids: std::collections::HashSet<String> = latest_tasks(store)?
-            .into_keys()
-            .chain(result.tasks_created.iter().cloned())
-            .collect();
-        for (t_idx, t) in tasks.iter().enumerate() {
-            let task_id =
-                json_str_nonempty(t, "id").unwrap_or_else(|| format!("{phase_id}-t{}", t_idx + 1));
-            if existing_task_ids.contains(&task_id) {
-                result.tasks_skipped.push(task_id);
-                continue;
-            }
-            let title = json_str_nonempty(t, "title").unwrap_or_else(|| format!("Task {task_id}"));
-            let task = Task {
-                id: task_id.clone(),
-                goal_id: Some(goal.id.clone()),
-                parent_task_id: None,
-                title: title.clone(),
-                objective: title,
-                owner_agent_id: owner.to_string(),
-                assignee_agent_id: None,
-                reviewer_agent_id: None,
-                status: TaskStatus::Planned,
-                depends_on_task_ids: json_str_list(t, "depends_on"),
-                workspace_ref: None,
-                branch_ref: None,
-                pr_ref: None,
-                owned_paths: json_str_list(t, "owned_paths"),
-                acceptance_criteria: json_str_list(t, "acceptance"),
-                created_at: now.clone(),
-                updated_at: now.clone(),
-                scope_refs: Vec::new(),
-                requires_human_approval: false,
-                verdict_decision_id: None,
-                description: None,
-                git_metadata: None,
-                design_md: json_str_nonempty(t, "design_md"),
-                phase_id: Some(phase_id.clone()),
-                superseded_by_knowledge_id: None,
-                workflow_step_ids: Vec::new(),
-                outputs: parse_outputs(t, "outputs"),
-                executor: json_str_nonempty(t, "executor"),
-            };
-            // goal-task-board-model: fail-fast if the planned placement is
-            // inconsistent (the phase was just pushed onto `goal.phases`, so this
-            // normally passes; it guards against a malformed plan).
-            goal.validate_task_placement(&task)
-                .map_err(CliError::Usage)?;
-            store.append_task(&task)?;
-            result.tasks_created.push(task_id);
-        }
-    }
-
-    goal.updated_at = now_string();
-    store.append_goal(goal)?;
-    Ok(result)
-}
-
-fn goal_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    require_subcommand(
-        args,
-        "goal create|list|show|describe-set|design-set|acceptance-set|explore-add|phase-add|knowledge-add|design-synthesize|reconcile-phase|finalize|plan|run-phases|stage|learning-status|evaluate|close",
-    )?;
-    match args[0].as_str() {
-        "create" => {
-            let goal = Goal {
-                phases: Vec::new(),
-                knowledge: Vec::new(),
-                design_synthesis_at: None,
-                id: value(args, "--id").unwrap_or_else(|| generated_id("goal")),
-                title: required(args, "--title")?,
-                owner_agent_id: required(args, "--owner")?,
-                status: GoalStatus::Active,
-                priority: value(args, "--priority").unwrap_or_else(|| "p0".into()),
-                created_at: now_string(),
-                updated_at: now_string(),
-                vision_id: value(args, "--vision"),
-                goal_design_id: value(args, "--goal-design"),
-                closed_by_decision_id: value(args, "--closed-by-decision"),
-                git_metadata: None,
-                // A goal is born in `draft`; it must be explored before it can work.
-                stage: GoalStage::Draft,
-                description_md: md_value(args, "description")?,
-                design_md: md_value(args, "design")?,
-                acceptance_md: md_value(args, "acceptance")?,
-                explorations: Vec::new(),
-                skill_refs: many(args, "--skill-ref"),
-                stage_changed_at: Some(now_string()),
-            };
-            persist_new_goal(store, &goal)?;
-            print_json(&goal)?;
-        }
-        "show" => {
-            let id = required(args, "--id").or_else(|_| required(args, "--goal"))?;
-            print_json(&goal_load(store, &id)?)?;
-        }
-        "describe-set" | "design-set" | "acceptance-set" => {
-            let id = required(args, "--id").or_else(|_| required(args, "--goal"))?;
-            let mut goal = goal_load(store, &id)?;
-            let body = md_value(args, "md")?.ok_or_else(|| {
-                CliError::Usage(format!("{} needs --md <text> or --md-file <path>", args[0]))
-            })?;
-            match args[0].as_str() {
-                "describe-set" => goal.description_md = Some(body),
-                "design-set" => goal.design_md = Some(body),
-                "acceptance-set" => goal.acceptance_md = Some(body),
-                _ => unreachable!(),
-            }
-            goal.updated_at = now_string();
-            store.append_goal(&goal)?;
-            print_json(&goal)?;
-        }
-        "explore-add" => {
-            let id = required(args, "--id").or_else(|_| required(args, "--goal"))?;
-            let mut goal = goal_load(store, &id)?;
-            let author = required(args, "--author")?;
-            let round = value(args, "--round")
-                .and_then(|r| r.parse::<u32>().ok())
-                .unwrap_or_else(|| {
-                    goal.explorations
-                        .iter()
-                        .map(|e| e.round)
-                        .max()
-                        .map_or(1, |m| m + 1)
-                });
-            let notes = md_value(args, "notes")?.ok_or_else(|| {
-                CliError::Usage("explore-add needs --notes <text> or --notes-file <path>".into())
-            })?;
-            goal.explorations.push(Exploration {
-                author,
-                round,
-                notes_md: notes,
-                created_at: now_string(),
-            });
-            goal.updated_at = now_string();
-            store.append_goal(&goal)?;
-            print_json(&goal)?;
-        }
-        "phase-add" => {
-            let id = required(args, "--id").or_else(|_| required(args, "--goal"))?;
-            let mut goal = goal_load(store, &id)?;
-            let phase_id = value(args, "--phase-id").unwrap_or_else(|| generated_id("phase"));
-            if goal.phases.iter().any(|p| p.id == phase_id) {
-                return Err(CliError::Usage(format!(
-                    "goal `{id}` already has a phase `{phase_id}`"
-                )));
-            }
-            let name = required(args, "--name")?;
-            let intent = md_value(args, "intent")?
-                .or_else(|| value(args, "--intent"))
-                .ok_or_else(|| {
-                    CliError::Usage(
-                        "phase-add needs --intent <text> or --intent-file <path>".into(),
-                    )
-                })?;
-            let execution_mode = value(args, "--execution-mode")
-                .as_deref()
-                .map(parse_phase_execution_mode)
-                .transpose()?
-                .unwrap_or(harness_core::PhaseExecutionMode::TaskGraph);
-            let workflow_ref = value(args, "--workflow-ref")
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty());
-            validate_phase_execution_config(execution_mode, workflow_ref.as_deref())?;
-            if let Some(r) = workflow_ref.as_deref() {
-                if !r.trim().starts_with("builtin:") {
-                    safe_repo_workflow_ref_path(r).map_err(CliError::Usage)?;
-                }
-            }
-            goal.phases.push(harness_core::GoalPhase {
-                id: phase_id,
-                name,
-                intent,
-                status: harness_core::GoalPhaseStatus::NotStarted,
-                acceptance: md_value(args, "acceptance")?,
-                verdict_decision_id: None,
-                created_at: now_string(),
-                started_at: None,
-                ended_at: None,
-                outputs: parse_output_flags(args)?,
-                inputs: parse_input_flags(args)?,
-                retry: value(args, "--retry")
-                    .map(|r| {
-                        r.trim().parse::<u32>().map_err(|_| {
-                            CliError::Usage(format!(
-                                "--retry must be a non-negative integer, got `{r}`"
-                            ))
-                        })
-                    })
-                    .transpose()?,
-                landed_commit: None,
-                kind: harness_core::PhaseKind::Execution,
-                builtin: None,
-                execution_mode,
-                workflow_ref,
-            });
-            goal.updated_at = now_string();
-            store.append_goal(&goal)?;
-            print_json(&goal)?;
-        }
-        "knowledge-add" => {
-            let id = required(args, "--id").or_else(|_| required(args, "--goal"))?;
-            let mut goal = goal_load(store, &id)?;
-            let author = required(args, "--author")?;
-            let notes = md_value(args, "notes")?.ok_or_else(|| {
-                CliError::Usage("knowledge-add needs --notes <text> or --notes-file <path>".into())
-            })?;
-            let source = match value(args, "--source").as_deref() {
-                None => KnowledgeSource::Exploration,
-                Some(s) => parse_knowledge_source(s)?,
-            };
-            let now = now_string();
-            let knowledge = Knowledge {
-                id: value(args, "--knowledge-id").unwrap_or_else(|| generated_id("knowledge")),
-                goal_id: goal.id.clone(),
-                phase_id: value(args, "--phase"),
-                task_id: value(args, "--task"),
-                author,
-                timestamp: now.clone(),
-                notes_md: notes,
-                tags: many(args, "--tag"),
-                source,
-                superseded_by_knowledge_id: None,
-                created_at: now.clone(),
-            };
-            goal.knowledge.push(knowledge);
-            goal.updated_at = now;
-            store.append_goal(&goal)?;
-            print_json(&goal)?;
-        }
-        "design-synthesize" => {
-            let id = required(args, "--id").or_else(|_| required(args, "--goal"))?;
-            let mut goal = goal_load(store, &id)?;
-            // The gate ("requires non-empty knowledge") lives in the model.
-            let design = goal.synthesize_design_md().map_err(CliError::Usage)?;
-            let now = now_string();
-            goal.design_md = Some(design);
-            goal.design_synthesis_at = Some(now.clone());
-            goal.updated_at = now;
-            store.append_goal(&goal)?;
-            print_json(&goal)?;
-        }
-        "reconcile-phase" => {
-            // True up a phase's status to reality when its work shipped
-            // out-of-band (e.g. via a PR-merge), without re-running it.
-            let goal_id = required(args, "--goal").or_else(|_| required(args, "--id"))?;
-            let phase_id = required(args, "--phase")?;
-            let to = match required(args, "--to")?.as_str() {
-                "passed" => GoalPhaseStatus::Passed,
-                "failed" => GoalPhaseStatus::Failed,
-                other => {
-                    return Err(CliError::Usage(format!(
-                        "--to must be `passed` or `failed`, got `{other}`"
-                    )))
-                }
-            };
-            let landed_commit = value(args, "--landed-commit");
-            let note_md = md_value(args, "note")?;
-            // Default the author to "operator" (human-triggered CLI), overridable.
-            let author = value(args, "--author").unwrap_or_else(|| "operator".to_string());
-            let mut goal = goal_load(store, &goal_id)?;
-            let knowledge_id = reconcile_phase(
-                store,
-                &mut goal,
-                &phase_id,
-                to,
-                landed_commit,
-                &author,
-                note_md.as_deref(),
-            )?;
-            print_json(&serde_json::json!({
-                "goal": goal.id,
-                "phase": phase_id,
-                "status": to_phase_status_str(to),
-                "landed_commit": value(args, "--landed-commit"),
-                "knowledge_id": knowledge_id,
-                "effective_stage": goal.effective_stage().as_str(),
-            }))?;
-        }
-        "finalize" => {
-            // goal-auto-finalize: one-shot finalize instead of the 4-step stage walk.
-            // Re-derive the goal's stage from its constituent work; if it is
-            // structurally complete (phases all passed, or all tasks done) it advances
-            // to verified. An incomplete goal is REFUSED with an actionable message
-            // UNLESS --force (out-of-band work shipped via an external workflow / merged
-            // PR): --force records the landed commit + a Knowledge entry and advances to
-            // verified.
-            let goal_id = args
-                .get(1)
-                .filter(|a| !a.starts_with("--"))
-                .cloned()
-                .or_else(|| value(args, "--goal"))
-                .or_else(|| value(args, "--id"))
-                .ok_or_else(|| {
-                    CliError::Usage(
-                        "finalize needs a goal (`goal finalize <goal>` or --goal <id>)".into(),
-                    )
-                })?;
-            let force = has_flag(args, "--force");
-            let landed_commit = value(args, "--landed-commit");
-            let note_md = md_value(args, "note")?;
-            let mut goal = goal_load(store, &goal_id)?;
-            let advanced = reconcile_goal_stage(store, &mut goal)?;
-            if goal.stage == GoalStage::Verified {
-                // Structurally complete (or already verified) — the derivation finalized it.
-                print_json(&serde_json::json!({
-                    "goal": goal.id,
-                    "stage": goal.stage.as_str(),
-                    "status": goal.status,
-                    "advanced": advanced,
-                    "forced": false,
-                }))?;
-            } else if force {
-                // Out-of-band finalize: record the landed commit (if any) + a
-                // decision-sourced Knowledge entry, and advance to verified directly.
-                let knowledge_id = force_finalize_goal(
-                    store,
-                    &mut goal,
-                    landed_commit.clone(),
-                    note_md.as_deref(),
-                )?;
-                print_json(&serde_json::json!({
-                    "goal": goal.id,
-                    "stage": goal.stage.as_str(),
-                    "status": goal.status,
-                    "advanced": true,
-                    "forced": true,
-                    "landed_commit": landed_commit,
-                    "knowledge_id": knowledge_id,
-                }))?;
-            } else {
-                return Err(CliError::Usage(format!(
-                    "goal `{goal_id}` is not structurally complete (derived stage `{}`): its \
-                     phases are not all passed and/or its tasks are not all done. Finish the \
-                     remaining work, or pass --force (with --landed-commit <sha> for work that \
-                     shipped out-of-band) to finalize it explicitly.",
-                    goal.stage.as_str()
-                )));
-            }
-        }
-        "plan" => {
-            let goal_id = args
-                .get(1)
-                .filter(|a| !a.starts_with("--"))
-                .cloned()
-                .or_else(|| value(args, "--goal"))
-                .or_else(|| value(args, "--id"))
-                .ok_or_else(|| {
-                    CliError::Usage("plan needs a goal (`goal plan <goal>` or --goal <id>)".into())
-                })?;
-            let trace_retention = value(args, "--trace").unwrap_or_else(|| "durable".to_string());
-            if trace_retention != "durable" && trace_retention != "live" {
-                return Err(CliError::Usage(format!(
-                    "--trace must be 'durable' or 'live', got '{trace_retention}'"
-                )));
-            }
-            let mut goal = goal_load(store, &goal_id)?;
-            // Run ONE planner worker by GENERATING a tiny one-shot Starlark
-            // program and running it through the SAME real-driver path
-            // `run-phases` uses (honors --dry-run, so tests/CI need no provider).
-            let script = compile_planner_script(&goal);
-            let options = WorkflowDeliveryOptions {
-                dry_run: has_flag(args, "--dry-run"),
-                start_runtime: has_flag(args, "--start-runtime"),
-                timeout_ms: value(args, "--timeout-ms")
-                    .and_then(|v| v.parse::<u64>().ok())
-                    .unwrap_or(900_000),
-                default_model: value(args, "--model"),
-                default_effort: value(args, "--effort"),
-                max_budget_usd: value(args, "--max-budget-usd").and_then(|v| v.parse::<f64>().ok()),
-                trace_retention,
-                progress: has_flag(args, "--progress"),
-                project: workflow_project_context(store),
-            };
-            let (run_id, outcome) = run_phase_compiled_script(
-                store,
-                &script,
-                &format!("plan-{goal_id}"),
-                &options,
-                &RunGoalLink {
-                    goal_id: Some(goal_id.clone()),
-                    phase_id: None,
-                },
-                None,
-            )?;
-            // The planner's structured decomposition lands verbatim under
-            // `final_output.result`. In --dry-run that is the mock object (where
-            // `phases` is a STRING) — `plan_into_goal` degrades to an empty plan.
-            let structured = outcome
-                .final_output
-                .as_ref()
-                .and_then(|fo| fo.get("result"))
-                .cloned()
-                .unwrap_or(serde_json::Value::Null);
-            let owner = goal.owner_agent_id.clone();
-            let result = plan_into_goal(store, &mut goal, &structured, &owner)?;
-            let planned_anything =
-                !result.phases_added.is_empty() || !result.tasks_created.is_empty();
-            print_json(&serde_json::json!({
-                "goal": goal.id,
-                "plan_run": run_id,
-                "dry_run": options.dry_run,
-                "planned": planned_anything,
-                "phases_added": result.phases_added,
-                "phases_skipped": result.phases_skipped,
-                "tasks_created": result.tasks_created,
-                "tasks_skipped": result.tasks_skipped,
-                "note": if planned_anything {
-                    serde_json::Value::Null
-                } else {
-                    serde_json::Value::String(
-                        "no phases planned — the planner returned no structured \
-                         decomposition (expected in --dry-run, which produces a mock \
-                         object); run without --dry-run with a real provider to plan"
-                            .into(),
-                    )
-                },
-            }))?;
-        }
-        "run-phases" => {
-            let goal_id = args
-                .get(1)
-                .filter(|a| !a.starts_with("--"))
-                .cloned()
-                .or_else(|| value(args, "--goal"))
-                .or_else(|| value(args, "--id"))
-                .ok_or_else(|| {
-                    CliError::Usage(
-                        "run-phases needs a goal (`goal run-phases <goal>` or --goal <id>)".into(),
-                    )
-                })?;
-            let trace_retention = value(args, "--trace").unwrap_or_else(|| "durable".to_string());
-            if trace_retention != "durable" && trace_retention != "live" {
-                return Err(CliError::Usage(format!(
-                    "--trace must be 'durable' or 'live', got '{trace_retention}'"
-                )));
-            }
-            // `--resume` documents the intent to re-enter the existing `Running`
-            // checkpoint and reuse completed work. The orchestrator already
-            // reuses a `Running` checkpoint unconditionally (phase-level resume)
-            // and reuses a re-run phase's succeeded leaves (intra-phase resume),
-            // so the flag is an explicit, auditable opt-in rather than a behavior
-            // toggle — running with or without it is equivalent today.
-            let _resume = has_flag(args, "--resume");
-            // How many times a failing phase may be revised + re-run before the
-            // orchestration gives up (the replan-loop cap). Default 1.
-            let max_phase_retries = value(args, "--max-phase-retries")
-                .and_then(|v| v.parse::<u32>().ok())
-                .unwrap_or(1);
-            let options = WorkflowDeliveryOptions {
-                dry_run: has_flag(args, "--dry-run"),
-                start_runtime: has_flag(args, "--start-runtime"),
-                timeout_ms: value(args, "--timeout-ms")
-                    .and_then(|v| v.parse::<u64>().ok())
-                    .unwrap_or(900_000),
-                default_model: value(args, "--model"),
-                default_effort: value(args, "--effort"),
-                max_budget_usd: value(args, "--max-budget-usd").and_then(|v| v.parse::<f64>().ok()),
-                trace_retention,
-                progress: has_flag(args, "--progress"),
-                project: workflow_project_context(store),
-            };
-            let run_phase =
-                |script: &str, name: &str, phase_id: Option<&str>, resume_from: Option<&str>| {
-                    run_phase_compiled_script(
-                        store,
-                        script,
-                        name,
-                        &options,
-                        &RunGoalLink {
-                            goal_id: Some(goal_id.clone()),
-                            phase_id: phase_id.map(str::to_string),
-                        },
-                        resume_from,
-                    )
-                };
-            // The real reviser: compile a one-shot reviser worker and run it
-            // through the SAME real-driver path (honors --dry-run, where the mock
-            // yields a degenerate empty revision the loop treats as "no replan").
-            let revise_phase = |goal: &Goal,
-                                phase: &harness_core::GoalPhase,
-                                live_tasks: &[&Task],
-                                knowledge: &Knowledge|
-             -> CliResult<serde_json::Value> {
-                let script = harness_core::compile_reviser_script(
-                    goal,
-                    phase,
-                    live_tasks,
-                    &knowledge.notes_md,
-                );
-                let (_run_id, outcome) = run_phase_compiled_script(
-                    store,
-                    &script,
-                    &format!("revise-{}-{}", goal.id, phase.id),
-                    &options,
-                    &RunGoalLink {
-                        goal_id: Some(goal.id.clone()),
-                        phase_id: Some(phase.id.clone()),
-                    },
-                    None,
-                )?;
-                Ok(outcome
-                    .final_output
-                    .as_ref()
-                    .and_then(|fo| fo.get("result"))
-                    .cloned()
-                    .unwrap_or(serde_json::Value::Null))
-            };
-            let repo_root = options.project.project_root.clone();
-            let report = orchestrate_goal_phases(
-                store,
-                &goal_id,
-                &run_phase,
-                &revise_phase,
-                max_phase_retries,
-                &repo_root,
-                has_flag(args, "--builtin-phases"),
-            )?;
-            print_json(&report)?;
-            if report.get("status").and_then(|s| s.as_str()) == Some("failed") {
-                let phase = report
-                    .get("failed_phase")
-                    .and_then(|p| p.as_str())
-                    .unwrap_or("?");
-                return Err(CliError::Usage(format!(
-                    "orchestration stopped: phase `{phase}` did not pass its verdict"
-                )));
-            }
-        }
-        "stage" => {
-            let id = required(args, "--id").or_else(|_| required(args, "--goal"))?;
-            let to = parse_goal_stage(&required(args, "--to")?)?;
-            let mut goal = goal_load(store, &id)?;
-            // The gate is where substance is enforced (design before explored,
-            // real acceptance before working). Refuse otherwise.
-            goal.check_transition(to).map_err(CliError::Usage)?;
-            goal.stage = to;
-            goal.status = to.to_status();
-            let now = now_string();
-            goal.stage_changed_at = Some(now.clone());
-            goal.updated_at = now;
-            store.append_goal(&goal)?;
-            append_agent_event(
-                store,
-                &goal.owner_agent_id,
-                None,
-                None,
-                "goal_stage_changed",
-                &format!("Goal {id} → stage {}", to.as_str()),
-                None,
-            )?;
-            print_json(&goal)?;
-        }
-        "learning-status" => {
-            let goal_id = required(args, "--id").or_else(|_| required(args, "--goal"))?;
-            let status = goal_learning_status(store, &goal_id)?;
-            print_json(&status.to_json())?;
-            if has_flag(args, "--strict") {
-                let waiver_decision_id = value(args, "--waiver-decision");
-                status.require_for_gate(
-                    store,
-                    has_flag(args, "--require-evaluation"),
-                    has_flag(args, "--allow-waiver"),
-                    waiver_decision_id.as_deref(),
-                )?;
-            }
-        }
-        "evaluate" => goal_evaluate(store, &args[1..])?,
-        "close" => goal_close(store, &args[1..])?,
-        "list" => print_json(&store.goals()?)?,
-        other => return Err(CliError::Usage(format!("unknown goal command: {other}"))),
-    }
-    Ok(())
-}
-
-/// Transition a Goal to `complete`, enforcing the §3.7 closeout gate: a goal may
-/// only close with a closeout Decision (decision_kind=closeout, >=1 evidence) AND a
-/// GoalEvaluation, OR an explicit valid waiver. Refuses otherwise with a clear error.
-fn goal_close(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    let goal_id = required(args, "--id").or_else(|_| required(args, "--goal"))?;
-    let mut goal = latest_goals(store)?
-        .remove(&goal_id)
-        .ok_or_else(|| CliError::Usage(format!("goal not found: {goal_id}")))?;
-    let status = goal_learning_status(store, &goal_id)?;
-    status.require_closeout()?;
-
-    // Record the decision id that satisfied the gate so the close is auditable and
-    // the Goal carries closed_by_decision_id (the field added in WP-B).
-    let closing_decision_id = status
-        .closeout_decisions
-        .last()
-        .map(|decision| decision.id.clone())
-        .or_else(|| {
-            status
-                .valid_closeout_waivers()
-                .last()
-                .map(|decision| decision.id.clone())
-        });
-
-    if goal.status != GoalStatus::Done {
-        goal.status = GoalStatus::Done;
-    }
-    if goal.closed_by_decision_id.is_none() {
-        goal.closed_by_decision_id = closing_decision_id.clone();
-    }
-    goal.updated_at = now_string();
-    store.append_goal(&goal)?;
-    append_agent_event(
-        store,
-        &goal.owner_agent_id,
-        None,
-        None,
-        "goal_closed",
-        &format!("Goal {goal_id} marked done via closeout gate"),
-        closing_decision_id.as_deref(),
-    )?;
-    print_json(&goal)?;
-    Ok(())
-}
-
-/// Build a TYPED [`GoalEvaluation`] (per schemas/goal-evaluation.schema.json) for a
-/// goal and persist it via `append_goal_evaluation`. This is the producer the
-/// closeout gate and `goal_learning_status.has_evaluation` read through the typed
-/// dual-read seam — it is NOT an untyped `Evidence(source_type=goal_evaluation)`
-/// note. The evaluation references the goal's task evidence: every Evidence row
-/// attached to a task in the goal's graph is surfaced under
-/// `referenced_evidence_ids` in the JSON output, and any evidence ids passed via
-/// `--missing-evidence` are kept as the evaluator's gaps. Existing
-/// `goal-evaluation create` remains the lower-level form; `goal evaluate` is the
-/// goal-scoped path that wires in the trace automatically.
-fn goal_evaluate(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    let goal_id = required(args, "--id").or_else(|_| required(args, "--goal"))?;
-    // Validate the goal exists and gather its trace (errors if the goal is unknown).
-    let status = goal_learning_status(store, &goal_id)?;
-
-    // Reference the goal's task evidence: collect every Evidence row attached to a
-    // task in this goal's graph so the evaluation points at the real trace.
-    let task_id_set: BTreeSet<String> = status.task_ids.iter().cloned().collect();
-    let mut referenced_evidence_ids: Vec<String> = latest_evidence(store)?
-        .into_values()
-        .filter(|item| {
-            item.task_id
-                .as_ref()
-                .is_some_and(|task_id| task_id_set.contains(task_id))
-        })
-        .map(|item| item.id)
-        .collect();
-    referenced_evidence_ids.sort();
-    referenced_evidence_ids.dedup();
-
-    let evaluation = GoalEvaluation {
-        id: value(args, "--id-out").unwrap_or_else(|| generated_id("goal-evaluation")),
-        goal_id: goal_id.clone(),
-        evaluator_agent_id: required(args, "--evaluator")?,
-        outcome: EvaluationOutcome::from(required(args, "--outcome")?),
-        what_worked: required(args, "--what-worked")?,
-        what_failed: required(args, "--what-failed")?,
-        missing_infra: many(args, "--missing-infra"),
-        missing_evidence: many(args, "--missing-evidence"),
-        team_design_feedback: value(args, "--team-feedback").unwrap_or_default(),
-        task_graph_feedback: value(args, "--task-graph-feedback").unwrap_or_default(),
-        dashboard_feedback: value(args, "--dashboard-feedback").unwrap_or_default(),
-        reusable_patterns: many(args, "--pattern"),
-        anti_patterns: many(args, "--anti-pattern"),
-        follow_up_task_ids: many(args, "--follow-up-task"),
-        proposed_goal_ids: many(args, "--proposed-goal"),
-        created_at: now_string(),
-    };
-    store.append_goal_evaluation(&evaluation)?;
-    append_agent_event(
-        store,
-        &evaluation.evaluator_agent_id,
-        None,
-        None,
-        "goal_evaluated",
-        &format!(
-            "GoalEvaluation {} recorded for goal {goal_id} ({})",
-            evaluation.id,
-            evaluation.outcome.as_str()
-        ),
-        None,
-    )?;
-    print_json(&serde_json::json!({
-        "evaluation": evaluation,
-        "referenced_evidence_ids": referenced_evidence_ids,
-    }))?;
-    Ok(())
-}
-
-fn task_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    require_subcommand(args, "task create|assign|status|list|show")?;
-    match args[0].as_str() {
-        "create" => {
-            let task = Task {
-                design_md: md_value(args, "design")?,
-                phase_id: value(args, "--phase-id"),
-                superseded_by_knowledge_id: None,
-                workflow_step_ids: Vec::new(),
-                id: value(args, "--id").unwrap_or_else(|| generated_id("task")),
-                goal_id: value(args, "--goal"),
-                parent_task_id: value(args, "--parent"),
-                title: required(args, "--title")?,
-                objective: required(args, "--objective")?,
-                owner_agent_id: required(args, "--owner")?,
-                assignee_agent_id: value(args, "--assignee"),
-                reviewer_agent_id: value(args, "--reviewer"),
-                status: TaskStatus::Planned,
-                depends_on_task_ids: many(args, "--depends-on"),
-                workspace_ref: value(args, "--workspace"),
-                branch_ref: value(args, "--branch"),
-                pr_ref: value(args, "--pr"),
-                owned_paths: many(args, "--owned-path"),
-                acceptance_criteria: many(args, "--acceptance"),
-                created_at: now_string(),
-                updated_at: now_string(),
-                scope_refs: many(args, "--scope-ref"),
-                requires_human_approval: has_flag(args, "--requires-human-approval"),
-                verdict_decision_id: value(args, "--verdict-decision"),
-                description: value(args, "--description"),
-                git_metadata: None,
-                outputs: parse_output_flags(args)?,
-                executor: value(args, "--executor"),
-            };
-            persist_new_task(store, &task)?;
-            print_json(&task)?;
-        }
-        "assign" => {
-            let task = assign_task(
-                store,
-                &required(args, "--id")?,
-                &TaskAssignment {
-                    assignee: required(args, "--assignee")?,
-                    channel: value(args, "--channel"),
-                    allow_missing_goal_design: has_flag(args, "--allow-missing-goal-design"),
-                    waiver_decision_id: value(args, "--waiver-decision"),
-                },
-            )?;
-            print_json(&task)?;
-        }
-        "status" => {
-            let task_id = required(args, "--id")?;
-            let mut task = latest_task(store, &task_id)?;
-            task.status = parse_task_status(&required(args, "--status")?)?;
-            task.updated_at = now_string();
-            store.append_task(&task)?;
-            // goal-auto-finalize: a task status change is a completion seam — when the
-            // task belongs to a goal, re-derive that goal's stage so finishing the LAST
-            // task auto-finalizes the goal (forward-only; no-op for goals below working
-            // or with open work).
-            if let Some(goal_id) = task.goal_id.as_deref() {
-                if let Ok(mut goal) = goal_load(store, goal_id) {
-                    reconcile_goal_stage(store, &mut goal)?;
-                }
-            }
-            print_json(&task)?;
-        }
-        "list" => print_json(&latest_tasks(store)?.into_values().collect::<Vec<_>>())?,
-        "show" => print_json(&latest_task(store, &required(args, "--id")?)?)?,
-        other => return Err(CliError::Usage(format!("unknown task command: {other}"))),
-    }
-    Ok(())
-}
-
-fn message_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    require_subcommand(args, "message send|list|status")?;
-    match args[0].as_str() {
-        "send" => {
-            let message = Message {
-                id: value(args, "--id").unwrap_or_else(|| generated_id("msg")),
-                task_id: value(args, "--task"),
-                from_agent_id: required(args, "--from")?,
-                to_agent_id: value(args, "--to"),
-                channel: value(args, "--channel"),
-                kind: parse_message_kind(
-                    &value(args, "--kind").unwrap_or_else(|| "message".into()),
-                )?,
-                delivery_status: MessageDeliveryStatus::Queued,
-                content: required(args, "--content")?,
-                evidence_ids: many(args, "--evidence"),
-                created_at: now_string(),
-                delivery: None,
-                sender_kind: sender_kind_from_args(args)?,
-            };
-            store.append_message(&message)?;
-            print_json(&message)?;
-        }
-        "list" => {
-            let mut messages = latest_messages_in_append_order(store)?;
-            if let Some(channel) = value(args, "--channel") {
-                messages.retain(|message| message.channel.as_deref() == Some(channel.as_str()));
-            }
-            if let Some(task_id) = value(args, "--task") {
-                messages.retain(|message| message.task_id.as_deref() == Some(task_id.as_str()));
-            }
-            print_json(&messages)?;
-        }
-        "status" => {
-            let id = required(args, "--id")?;
-            let mut message = latest_message(store, &id)?;
-            message.delivery_status = parse_delivery_status(&required(args, "--status")?)?;
-            store.append_message(&message)?;
-            print_json(&message)?;
-        }
-        other => return Err(CliError::Usage(format!("unknown message command: {other}"))),
-    }
-    Ok(())
-}
-
-fn event_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    require_subcommand(args, "event add|list")?;
-    match args[0].as_str() {
-        "add" => {
-            let event = AgentEvent {
-                id: value(args, "--id").unwrap_or_else(|| generated_id("event")),
-                agent_member_id: required(args, "--agent")?,
-                provider_runtime_id: value(args, "--runtime"),
-                task_id: value(args, "--task"),
-                provider: value(args, "--provider").unwrap_or_else(|| "codex".into()),
-                provider_thread_id: value(args, "--provider-thread"),
-                provider_turn_id: value(args, "--provider-turn"),
-                provider_child_thread_id: value(args, "--provider-child-thread"),
-                event_type: required(args, "--type")?,
-                summary: required(args, "--summary")?,
-                payload_ref: value(args, "--payload-ref"),
-                created_at: now_string(),
-            };
-            store.append_event(&event)?;
-            print_json(&event)?;
-        }
-        "list" => {
-            let mut events = store.events()?;
-            if let Some(agent_id) = value(args, "--agent") {
-                events.retain(|event| event.agent_member_id == agent_id);
-            }
-            if let Some(task_id) = value(args, "--task") {
-                events.retain(|event| event.task_id.as_deref() == Some(task_id.as_str()));
-            }
-            print_json(&events)?;
-        }
-        other => return Err(CliError::Usage(format!("unknown event command: {other}"))),
-    }
-    Ok(())
-}
-
-fn hook_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    require_subcommand(
-        args,
-        "hook record --agent <agent> [--runtime <runtime>] [--task <task>]",
-    )?;
-    match args[0].as_str() {
-        "record" => {
-            // Hooks are codex's runtime mechanism. Default to codex (today's only
-            // caller passes no provider), but honor an explicit --provider /
-            // HARNESS_PROVIDER override; a non-codex provider gets the trait default
-            // (an explicit "does not support hook events" error), never a mis-stamped
-            // codex event.
-            let provider = value(args, "--provider")
-                .or_else(|| std::env::var("HARNESS_PROVIDER").ok())
-                .filter(|p| !p.is_empty())
-                .unwrap_or_else(|| CodexAdapter.name().to_string());
-            let adapter = provider_adapter(&provider)
-                .ok_or_else(|| unknown_provider_error(&provider, "hook record"))?;
-            adapter.record_hook_event(store, args)?;
-        }
-        other => return Err(CliError::Usage(format!("unknown hook command: {other}"))),
-    }
-    Ok(())
-}
-
-fn proposal_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    require_subcommand(args, "proposal create|from-diff|list|status")?;
-    match args[0].as_str() {
-        "create" => {
-            let proposal = Proposal {
-                id: value(args, "--id").unwrap_or_else(|| generated_id("proposal")),
-                task_id: required(args, "--task")?,
-                agent_member_id: required(args, "--agent")?,
-                title: required(args, "--title")?,
-                summary: required(args, "--summary")?,
-                status: ProposalStatus::Draft,
-                changed_paths: many(args, "--changed-path"),
-                evidence_ids: many(args, "--evidence"),
-                created_at: now_string(),
-                updated_at: now_string(),
-            };
-            store.append_proposal(&proposal)?;
-            print_json(&proposal)?;
-        }
-        "from-diff" => proposal_from_diff(store, args)?,
-        "list" => {
-            let mut proposals = store.proposals()?;
-            if let Some(agent_id) = value(args, "--agent") {
-                proposals.retain(|proposal| proposal.agent_member_id == agent_id);
-            }
-            if let Some(task_id) = value(args, "--task") {
-                proposals.retain(|proposal| proposal.task_id == task_id);
-            }
-            print_json(&proposals)?;
-        }
-        "status" => {
-            let id = required(args, "--id")?;
-            let mut proposal = latest_proposal(store, &id)?;
-            proposal.status = parse_proposal_status(&required(args, "--status")?)?;
-            proposal.updated_at = now_string();
-            store.append_proposal(&proposal)?;
-            print_json(&proposal)?;
-        }
-        other => {
-            return Err(CliError::Usage(format!(
-                "unknown proposal command: {other}"
-            )))
-        }
-    }
-    Ok(())
-}
-
-fn evidence_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    require_subcommand(args, "evidence add|list")?;
-    match args[0].as_str() {
-        "add" => {
-            let evidence = Evidence {
-                id: value(args, "--id").unwrap_or_else(|| generated_id("evidence")),
-                task_id: value(args, "--task"),
-                source_type: required(args, "--source-type")?,
-                source_ref: required(args, "--source-ref")?,
-                summary: required(args, "--summary")?,
-                created_at: now_string(),
-                evidence_kind: value(args, "--evidence-kind"),
-                goal_id: value(args, "--goal"),
-            };
-            store.append_evidence(&evidence)?;
-            print_json(&evidence)?;
-        }
-        "list" => print_json(&store.evidence()?)?,
-        other => {
-            return Err(CliError::Usage(format!(
-                "unknown evidence command: {other}"
-            )))
-        }
-    }
-    Ok(())
-}
-
-fn decision_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    require_subcommand(args, "decision record|list")?;
-    match args[0].as_str() {
-        "record" => {
-            let decision = Decision {
-                id: value(args, "--id").unwrap_or_else(|| generated_id("decision")),
-                task_id: required(args, "--task")?,
-                decision: required(args, "--decision")?,
-                rationale: required(args, "--rationale")?,
-                evidence_ids: many(args, "--evidence"),
-                created_at: now_string(),
-                decision_kind: value(args, "--decision-kind"),
-                goal_id: value(args, "--goal"),
-                is_waiver: has_flag(args, "--waiver"),
-                follow_up_task_id: value(args, "--follow-up-task"),
-            };
-            validate_decision(&decision)?;
-            store.append_decision(&decision)?;
-            print_json(&decision)?;
-        }
-        "list" => print_json(&store.decisions()?)?,
-        other => {
-            return Err(CliError::Usage(format!(
-                "unknown decision command: {other}"
-            )))
-        }
-    }
-    Ok(())
-}
-
-/// Canonical stop-gate decision values (§3.6). Kept domain-neutral: the harness
-/// only knows "stop" vs "continue", never *why* a run must stop.
-const STOP_GATE_DECISIONS: [&str; 2] = ["stop_approved", "continue_required"];
-
-/// Validate a Decision before it is persisted. Enforces the WP-F write-time rules:
-/// - is_waiver=true requires a follow_up_task_id AND >=1 evidence_ids (§3.6).
-/// - decision_kind=stop_gate requires decision in {stop_approved, continue_required}.
-fn validate_decision(decision: &Decision) -> CliResult<()> {
-    if decision.is_waiver {
-        if decision.follow_up_task_id.is_none() {
-            return Err(CliError::Usage(
-                "a waiver decision (--waiver) must name a --follow-up-task".into(),
-            ));
-        }
-        if decision.evidence_ids.is_empty() {
-            return Err(CliError::Usage(
-                "a waiver decision (--waiver) must reference at least one --evidence".into(),
-            ));
-        }
-    }
-    if decision.decision_kind.as_deref() == Some("stop_gate")
-        && !STOP_GATE_DECISIONS.contains(&decision.decision.as_str())
-    {
-        return Err(CliError::Usage(format!(
-            "decision_kind=stop_gate requires --decision one of {}; got \"{}\"",
-            STOP_GATE_DECISIONS.join("|"),
-            decision.decision
-        )));
-    }
-    Ok(())
-}
-
-fn autonomy_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    require_subcommand(args, "autonomy observe|plan-next|decide|tick|loop")?;
-    match args[0].as_str() {
-        "observe" => print_json(&autonomy_observe_value(store, &args[1..])?)?,
-        "plan-next" => print_json(&autonomy_plan_next_value(store, &args[1..])?)?,
-        "decide" => print_json(&autonomy_decide_value(store, &args[1..])?)?,
-        "tick" => print_json(&autonomy_tick_value(store, &args[1..])?)?,
-        "loop" => run_autonomy_loop(store, &args[1..])?,
-        other => {
-            return Err(CliError::Usage(format!(
-                "unknown autonomy command: {other}"
-            )))
-        }
-    }
-    Ok(())
-}
-
-fn autonomy_observe_value(store: &HarnessStore, args: &[String]) -> CliResult<serde_json::Value> {
-    let goal_id = required(args, "--goal")?;
-    let task_id = value(args, "--task");
-    let observer = required(args, "--observer")?;
-    let lead = required(args, "--lead")?;
-    let kind = value(args, "--kind").unwrap_or_else(|| "goal_proposal".into());
-    validate_autonomy_proposal_kind(&kind)?;
-    let goal = latest_goals(store)?
-        .remove(&goal_id)
-        .ok_or_else(|| CliError::Usage(format!("goal not found: {goal_id}")))?;
-    if let Some(task_id) = task_id.as_deref() {
-        let task = latest_task(store, task_id)?;
-        if task.goal_id.as_deref() != Some(goal_id.as_str()) {
-            return Err(CliError::Usage(format!(
-                "task {task_id} does not belong to goal {goal_id}"
-            )));
-        }
-    }
-    latest_member(store, &observer)?;
-    let lead_member = latest_member(store, &lead)?;
-    ensure_member_accepts_delivery(&lead_member)?;
-    let summary = value(args, "--summary").unwrap_or_else(|| {
-        autonomy_observation_summary(store, &goal_id)
-            .unwrap_or_else(|_| format!("{observer} proposes {kind} for goal {goal_id}"))
-    });
-    let title = value(args, "--title").unwrap_or_else(|| format!("{kind}: {}", goal.title));
-    let evidence = autonomy_evidence(
-        store,
-        task_id.clone(),
-        &kind,
-        &summary,
-        &format!("# {title}\n\nkind: {kind}\ngoal: {goal_id}\nobserver: {observer}\nlead: {lead}\n\n{summary}\n"),
-    )?;
-    let message = Message {
-        id: value(args, "--message-id").unwrap_or_else(|| generated_id("msg")),
-        task_id,
-        from_agent_id: observer.clone(),
-        to_agent_id: Some(lead.clone()),
-        channel: Some(value(args, "--channel").unwrap_or_else(|| "observer-proposal".into())),
-        kind: MessageKind::Message,
-        delivery_status: MessageDeliveryStatus::Queued,
-        content: format!("{title}\n\n{summary}"),
-        evidence_ids: vec![evidence.id.clone()],
-        created_at: now_string(),
-        delivery: None,
-        sender_kind: SenderKind::Agent,
-    };
-    store.append_evidence(&evidence)?;
-    store.append_message(&message)?;
-    append_agent_event(
-        store,
-        &observer,
-        None,
-        message.task_id.as_deref(),
-        "autonomy_proposal_created",
-        &format!("Observer created {kind}"),
-        Some(evidence.source_ref.as_str()),
-    )?;
-    Ok(serde_json::json!({
-        "goal_id": goal_id,
-        "proposal": evidence,
-        "message": message
-    }))
-}
-
-fn autonomy_plan_next_value(store: &HarnessStore, args: &[String]) -> CliResult<serde_json::Value> {
-    let goal_id = required(args, "--goal")?;
-    let task_id = required(args, "--task")?;
-    let observer = required(args, "--observer")?;
-    let lead = required(args, "--lead")?;
-    let task = latest_task(store, &task_id)?;
-    if task.goal_id.as_deref() != Some(goal_id.as_str()) {
-        return Err(CliError::Usage(format!(
-            "task {task_id} does not belong to goal {goal_id}"
-        )));
-    }
-    latest_member(store, &observer)?;
-    let lead_member = latest_member(store, &lead)?;
-    ensure_member_accepts_delivery(&lead_member)?;
-    let status = goal_learning_status(store, &goal_id)?;
-    let status_json = status.to_json();
-    let warnings = status.warnings(true);
-    let vision_ref = value(args, "--vision-ref");
-    let vision_summary = value(args, "--vision-summary").unwrap_or_else(|| {
-        vision_ref
-            .as_ref()
-            .map(|vision_ref| format!("Vision reference: {vision_ref}"))
-            .unwrap_or_else(|| "No explicit vision reference supplied.".into())
-    });
-    let summary = value(args, "--summary").unwrap_or_else(|| {
-        if warnings.is_empty() {
-            format!(
-                "Next-round plan for {goal_id}: prior goal has complete learning evidence; compare GoalEvaluation with vision and propose the next goal."
-            )
-        } else {
-            format!(
-                "Next-round plan for {goal_id}: unresolved warnings require follow-up: {}",
-                warnings.join("; ")
-            )
-        }
-    });
-    let plan = autonomy_evidence(
-        store,
-        Some(task_id.clone()),
-        "next_round_plan",
-        &summary,
-        &format!(
-            "# Next Round Plan\n\ngoal: {goal_id}\nobserver: {observer}\nlead: {lead}\nvision_ref: {}\nvision_summary: {vision_summary}\n\nsummary: {summary}\n\nstatus:\n```json\n{}\n```\n",
-            vision_ref.as_deref().unwrap_or("-"),
-            serde_json::to_string_pretty(&status_json).expect("serialize goal learning status")
-        ),
-    )?;
-    let proposal_summary = value(args, "--proposal-summary").unwrap_or_else(|| {
-        format!(
-            "Observer proposes the next goal/task graph from GoalEvaluation and dashboard learning for {goal_id}."
-        )
-    });
-    let proposal = autonomy_evidence(
-        store,
-        Some(task_id.clone()),
-        "goal_proposal",
-        &proposal_summary,
-        &format!(
-            "# Goal Proposal\n\ngoal: {goal_id}\nobserver: {observer}\nlead: {lead}\nsource_plan: {}\nvision_ref: {}\n\n{proposal_summary}\n",
-            plan.id,
-            vision_ref.as_deref().unwrap_or("-")
-        ),
-    )?;
-    store.append_evidence(&plan)?;
-    store.append_evidence(&proposal)?;
-    let message = Message {
-        id: value(args, "--message-id").unwrap_or_else(|| generated_id("msg")),
-        task_id: Some(task_id.clone()),
-        from_agent_id: observer.clone(),
-        to_agent_id: Some(lead.clone()),
-        channel: Some(value(args, "--channel").unwrap_or_else(|| "next-round-proposal".into())),
-        kind: MessageKind::Message,
-        delivery_status: MessageDeliveryStatus::Queued,
-        content: format!("Next-round proposal for {goal_id}\n\n{proposal_summary}"),
-        evidence_ids: vec![plan.id.clone(), proposal.id.clone()],
-        created_at: now_string(),
-        delivery: None,
-        sender_kind: SenderKind::Agent,
-    };
-    store.append_message(&message)?;
-    append_agent_event(
-        store,
-        &observer,
-        None,
-        Some(task_id.as_str()),
-        "next_round_planned",
-        "Observer created next-round plan and goal proposal",
-        Some(plan.source_ref.as_str()),
-    )?;
-    Ok(serde_json::json!({
-        "goal_id": goal_id,
-        "plan": plan,
-        "proposal": proposal,
-        "message": message
-    }))
-}
-
-fn autonomy_decide_value(store: &HarnessStore, args: &[String]) -> CliResult<serde_json::Value> {
-    let task_id = required(args, "--task")?;
-    let lead = required(args, "--lead")?;
-    let proposal_id = required(args, "--proposal")?;
-    let disposition = required(args, "--decision")?;
-    validate_autonomy_disposition(&disposition)?;
-    latest_member(store, &lead)?;
-    let source_task = latest_task(store, &task_id)?;
-    let evidence_by_id = latest_evidence(store)?;
-    let proposal = evidence_by_id
-        .get(&proposal_id)
-        .ok_or_else(|| CliError::Usage(format!("proposal evidence not found: {proposal_id}")))?;
-    if !autonomy_proposal_source_type(&proposal.source_type) {
-        return Err(CliError::Usage(format!(
-            "evidence {proposal_id} is {}, not an autonomous proposal",
-            proposal.source_type
-        )));
-    }
-    if proposal.task_id.as_deref() != Some(task_id.as_str()) {
-        return Err(CliError::Usage(format!(
-            "proposal {proposal_id} is not attached to task {task_id}"
-        )));
-    }
-    let mut evidence_ids = vec![proposal_id.clone()];
-    evidence_ids.extend(many(args, "--evidence"));
-    evidence_ids.sort();
-    evidence_ids.dedup();
-    for evidence_id in &evidence_ids {
-        if !evidence_by_id.contains_key(evidence_id) {
-            return Err(CliError::Usage(format!(
-                "decision references missing evidence {evidence_id}"
-            )));
-        }
-    }
-    let decision = Decision {
-        id: value(args, "--id").unwrap_or_else(|| generated_id("decision")),
-        task_id: task_id.clone(),
-        decision: format!("autonomy {disposition} by {lead}"),
-        rationale: required(args, "--rationale")?,
-        evidence_ids: evidence_ids.clone(),
-        created_at: now_string(),
-        decision_kind: Some("verdict".to_string()),
-        goal_id: None,
-        is_waiver: false,
-        follow_up_task_id: None,
-    };
-    store.append_decision(&decision)?;
-
-    let mut created_goal = None;
-    let mut created_task = None;
-    let mut goal_design = None;
-    let mut assignment_message = None;
-    if disposition == "accept" {
-        if let Some(goal_id) = value(args, "--create-goal") {
-            let goal = Goal {
-                phases: Vec::new(),
-                knowledge: Vec::new(),
-                design_synthesis_at: None,
-                id: goal_id,
-                title: required(args, "--goal-title")?,
-                owner_agent_id: lead.clone(),
-                status: GoalStatus::Active,
-                priority: value(args, "--priority").unwrap_or_else(|| "p0".into()),
-                created_at: now_string(),
-                updated_at: now_string(),
-                vision_id: value(args, "--goal-vision"),
-                goal_design_id: None,
-                closed_by_decision_id: None,
-                git_metadata: None,
-                stage: GoalStage::default(),
-                description_md: None,
-                design_md: None,
-                acceptance_md: None,
-                explorations: Vec::new(),
-                skill_refs: Vec::new(),
-                stage_changed_at: None,
-            };
-            store.append_goal(&goal)?;
-            created_goal = Some(goal);
-        }
-        if let Some(next_task_id) = value(args, "--create-task") {
-            let next_goal_id = created_goal
-                .as_ref()
-                .map(|goal| goal.id.clone())
-                .or_else(|| value(args, "--task-goal"))
-                .or(source_task.goal_id.clone());
-            let assignee = value(args, "--assignee");
-            let reviewer = value(args, "--reviewer");
-            let task = Task {
-                design_md: None,
-                phase_id: None,
-                superseded_by_knowledge_id: None,
-                workflow_step_ids: Vec::new(),
-                id: next_task_id,
-                goal_id: next_goal_id.clone(),
-                parent_task_id: Some(source_task.id.clone()),
-                title: required(args, "--task-title")?,
-                objective: required(args, "--task-objective")?,
-                owner_agent_id: lead.clone(),
-                assignee_agent_id: assignee.clone(),
-                reviewer_agent_id: reviewer,
-                status: if assignee.is_some() {
-                    TaskStatus::Assigned
-                } else {
-                    TaskStatus::Planned
-                },
-                depends_on_task_ids: many(args, "--depends-on"),
-                workspace_ref: value(args, "--workspace"),
-                branch_ref: value(args, "--branch"),
-                pr_ref: value(args, "--pr"),
-                owned_paths: many(args, "--owned-path"),
-                acceptance_criteria: many(args, "--acceptance"),
-                created_at: now_string(),
-                updated_at: now_string(),
-                scope_refs: many(args, "--task-scope-ref"),
-                requires_human_approval: has_flag(args, "--task-requires-human-approval"),
-                verdict_decision_id: None,
-                description: value(args, "--task-description"),
-                git_metadata: None,
-                outputs: Vec::new(),
-                executor: value(args, "--executor"),
-            };
-            // Write a TYPED GoalDesign (graduated object) rather than an untyped
-            // Evidence(source_type=goal_design): the next-round goal is designed
-            // through the same first-class object the design gate / dashboard read,
-            // scoped to the accepted goal so goal_learning_status.has_goal_design
-            // sees it via the typed dual-read seam. Falls back to the source goal id
-            // when the accept did not create a new goal.
-            let design_goal_id = next_goal_id
-                .clone()
-                .or_else(|| source_task.goal_id.clone())
-                .unwrap_or_else(|| task.id.clone());
-            let design = GoalDesign {
-                id: generated_id("goal-design"),
-                goal_id: design_goal_id,
-                scenario_summary: format!(
-                    "Next-round design generated from accepted autonomous proposal {proposal_id}: {}",
-                    task.objective
-                ),
-                non_goals: Vec::new(),
-                risk_and_permission_boundaries: format!(
-                    "Inherits permission boundaries of source goal {} / task {}; gated behind closeout decision {}.",
-                    source_task.goal_id.as_deref().unwrap_or("-"),
-                    source_task.id,
-                    decision.id
-                ),
-                required_infra: Vec::new(),
-                agent_team: assignee.clone(),
-                task_graph: vec![task.id.clone()],
-                evidence_plan: vec![format!("proposal:{proposal_id}")],
-                acceptance_gates: task.acceptance_criteria.clone(),
-                created_at: now_string(),
-            };
-            store.append_goal_design(&design)?;
-            store.append_task(&task)?;
-            if let Some(assignee_id) = assignee {
-                let assignee_member = latest_member(store, &assignee_id)?;
-                ensure_member_accepts_delivery(&assignee_member)?;
-                let message = Message {
-                    id: generated_id("msg"),
-                    task_id: Some(task.id.clone()),
-                    from_agent_id: lead.clone(),
-                    to_agent_id: Some(assignee_id),
-                    channel: Some("next-round-task-assignment".into()),
-                    kind: MessageKind::Task,
-                    delivery_status: MessageDeliveryStatus::Queued,
-                    content: format!(
-                        "Assigned next-round task {} from proposal {proposal_id}",
-                        task.id
-                    ),
-                    evidence_ids: vec![proposal_id.clone()],
-                    created_at: now_string(),
-                    delivery: None,
-                    sender_kind: SenderKind::Agent,
-                };
-                store.append_message(&message)?;
-                assignment_message = Some(message);
-            }
-            goal_design = Some(design);
-            created_task = Some(task);
-        }
-    }
-    append_agent_event(
-        store,
-        &lead,
-        None,
-        Some(task_id.as_str()),
-        "autonomy_proposal_decided",
-        &format!("Lead {disposition} autonomous proposal {proposal_id}"),
-        None,
-    )?;
-    Ok(serde_json::json!({
-        "decision": decision,
-        "created_goal": created_goal,
-        "created_task": created_task,
-        "goal_design": goal_design,
-        "assignment_message": assignment_message
-    }))
-}
-
-#[derive(Debug, Clone)]
-struct AutonomyTickOptions {
-    observer: String,
-    lead: String,
-    assignee: Option<String>,
-    reviewer: Option<String>,
-    goal_filter: Option<String>,
-    vision_ref: Option<String>,
-    vision_summary: Option<String>,
-    auto_accept: bool,
-    force: bool,
-    max_new_goals: usize,
-    dry_run: bool,
-    start_runtime: bool,
-    timeout_ms: u64,
-    claim_ttl_ms: u64,
-    goal_prefix: String,
-    task_prefix: String,
-    workspace: Option<String>,
-    branch: Option<String>,
-    owned_paths: Vec<String>,
-    acceptance: Vec<String>,
-    goal_success: Vec<String>,
-}
-
-#[derive(Debug, Clone)]
-struct AutonomyCandidate {
-    goal_id: String,
-    source_task_id: String,
-    evaluation_evidence_id: String,
-}
-
-fn autonomy_tick_value(store: &HarnessStore, args: &[String]) -> CliResult<serde_json::Value> {
-    let options = parse_autonomy_tick_options(args)?;
-    let gateway_before = provider_gateway_tick_value(
-        store,
-        GatewayOptions {
-            dry_run: options.dry_run,
-            start_runtime: options.start_runtime,
-            timeout_ms: options.timeout_ms,
-            claim_ttl_ms: options.claim_ttl_ms,
-        },
-    )?;
-    let scheduled = schedule_autonomy_next_rounds(store, &options)?;
-    let gateway_after = if scheduled.iter().any(|item| item.get("decision").is_some()) {
-        provider_gateway_tick_value(
-            store,
-            GatewayOptions {
-                dry_run: options.dry_run,
-                start_runtime: options.start_runtime,
-                timeout_ms: options.timeout_ms,
-                claim_ttl_ms: options.claim_ttl_ms,
-            },
-        )?
-    } else {
-        serde_json::json!({
-            "generated_at": now_string(),
-            "agent_count": 0,
-            "expired_claims": [],
-            "results": [],
-            "note": "no accepted generated assignments to deliver"
-        })
-    };
-    Ok(serde_json::json!({
-        "generated_at": now_string(),
-        "gateway_before": gateway_before,
-        "scheduled": scheduled,
-        "gateway_after": gateway_after
-    }))
-}
-
-fn run_autonomy_loop(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    let forever = has_flag(args, "--forever");
-    let iterations = value(args, "--iterations")
-        .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(1);
-    let interval_ms = value(args, "--interval-ms")
-        .and_then(|value| value.parse::<u64>().ok())
-        .unwrap_or(1_000);
-    let mut results = Vec::new();
-    let mut iteration = 0usize;
-    loop {
-        iteration += 1;
-        let tick = autonomy_tick_value(store, args)?;
-        if forever {
-            print_json(&serde_json::json!({
-                "iteration": iteration,
-                "tick": tick
-            }))?;
-        } else {
-            results.push(serde_json::json!({
-                "iteration": iteration,
-                "tick": tick
-            }));
-        }
-        if !forever && iteration >= iterations {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(interval_ms));
-    }
-    if !forever {
-        print_json(&serde_json::json!({
-            "iterations": iterations,
-            "results": results
-        }))?;
-    }
-    Ok(())
-}
-
-fn parse_autonomy_tick_options(args: &[String]) -> CliResult<AutonomyTickOptions> {
-    let max_new_goals = value(args, "--max-new-goals")
-        .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(1);
-    Ok(AutonomyTickOptions {
-        observer: required(args, "--observer")?,
-        lead: required(args, "--lead")?,
-        assignee: value(args, "--assignee"),
-        reviewer: value(args, "--reviewer"),
-        goal_filter: value(args, "--goal"),
-        vision_ref: value(args, "--vision-ref"),
-        vision_summary: value(args, "--vision-summary"),
-        auto_accept: has_flag(args, "--auto-accept"),
-        force: has_flag(args, "--force"),
-        max_new_goals,
-        dry_run: has_flag(args, "--dry-run"),
-        start_runtime: has_flag(args, "--start-runtime"),
-        timeout_ms: value(args, "--timeout-ms")
-            .and_then(|value| value.parse::<u64>().ok())
-            .unwrap_or(3_000),
-        claim_ttl_ms: value(args, "--claim-ttl-ms")
-            .and_then(|value| value.parse::<u64>().ok())
-            .unwrap_or(300_000),
-        goal_prefix: value(args, "--goal-prefix").unwrap_or_else(|| "goal-autonomous-round".into()),
-        task_prefix: value(args, "--task-prefix").unwrap_or_else(|| "task-autonomous-round".into()),
-        workspace: value(args, "--workspace"),
-        branch: value(args, "--branch"),
-        owned_paths: many(args, "--owned-path"),
-        acceptance: many(args, "--acceptance"),
-        goal_success: many(args, "--goal-success"),
-    })
-}
-
-fn schedule_autonomy_next_rounds(
-    store: &HarnessStore,
-    options: &AutonomyTickOptions,
-) -> CliResult<Vec<serde_json::Value>> {
-    if options.vision_ref.is_none() && options.vision_summary.is_none() {
-        return Err(CliError::Usage(
-            "autonomy tick/loop requires --vision-ref or --vision-summary".into(),
-        ));
-    }
-    latest_member(store, &options.observer)?;
-    latest_member(store, &options.lead)?;
-    if let Some(assignee) = options.assignee.as_deref() {
-        let member = latest_member(store, assignee)?;
-        ensure_member_accepts_delivery(&member)?;
-    }
-    if let Some(reviewer) = options.reviewer.as_deref() {
-        latest_member(store, reviewer)?;
-    }
-    let candidates = autonomy_next_round_candidates(store, options)?;
-    let mut scheduled = Vec::new();
-    for candidate in candidates.into_iter().take(options.max_new_goals) {
-        let close_result = close_goal_for_next_round(store, options, &candidate)?;
-        let planned =
-            autonomy_plan_next_value(store, &autonomy_plan_next_args(&candidate, options))?;
-        let mut row = serde_json::json!({
-            "goal_id": candidate.goal_id,
-            "source_task_id": candidate.source_task_id,
-            "evaluation_evidence_id": candidate.evaluation_evidence_id,
-            "goal_close": close_result,
-            "plan": planned.get("plan").cloned(),
-            "proposal": planned.get("proposal").cloned(),
-            "message": planned.get("message").cloned()
-        });
-        if options.auto_accept {
-            let proposal_id = planned
-                .get("proposal")
-                .and_then(|value| value.get("id"))
-                .and_then(|value| value.as_str())
-                .ok_or_else(|| CliError::Usage("planned proposal missing id".into()))?;
-            let plan_id = planned
-                .get("plan")
-                .and_then(|value| value.get("id"))
-                .and_then(|value| value.as_str())
-                .ok_or_else(|| CliError::Usage("planned next_round_plan missing id".into()))?;
-            let decision = accept_scheduled_next_round(
-                store,
-                options,
-                row.get("goal_id")
-                    .and_then(|value| value.as_str())
-                    .unwrap_or("-"),
-                row.get("source_task_id")
-                    .and_then(|value| value.as_str())
-                    .unwrap_or("-"),
-                proposal_id,
-                plan_id,
-            )?;
-            row.as_object_mut()
-                .expect("row is object")
-                .insert("decision".into(), decision);
-        }
-        scheduled.push(row);
-    }
-    Ok(scheduled)
-}
-
-fn autonomy_plan_next_args(
-    candidate: &AutonomyCandidate,
-    options: &AutonomyTickOptions,
-) -> Vec<String> {
-    let mut args = vec![
-        "--goal".into(),
-        candidate.goal_id.clone(),
-        "--task".into(),
-        candidate.source_task_id.clone(),
-        "--observer".into(),
-        options.observer.clone(),
-        "--lead".into(),
-        options.lead.clone(),
-        "--proposal-summary".into(),
-        format!(
-            "Scheduler compared completed goal {} with vision and proposed the next goal from source task {}.",
-            candidate.goal_id, candidate.source_task_id
-        ),
-    ];
-    if let Some(vision_ref) = &options.vision_ref {
-        push_arg(&mut args, "--vision-ref", vision_ref);
-    }
-    if let Some(vision_summary) = &options.vision_summary {
-        push_arg(&mut args, "--vision-summary", vision_summary);
-    }
-    args
-}
-
-fn autonomy_next_round_candidates(
-    store: &HarnessStore,
-    options: &AutonomyTickOptions,
-) -> CliResult<Vec<AutonomyCandidate>> {
-    let goals = latest_goals(store)?;
-    let evidence = latest_evidence(store)?;
-    let mut candidates = Vec::new();
-    for goal in goals.values() {
-        if goal.status != GoalStatus::Active {
-            continue;
-        }
-        if options
-            .goal_filter
-            .as_ref()
-            .is_some_and(|goal_id| goal_id != &goal.id)
-        {
-            continue;
-        }
-        let status = goal_learning_status(store, &goal.id)?;
-        if !goal_task_graph_complete(&status.task_ids, store)? {
-            continue;
-        }
-        if !status.warnings(true).is_empty() {
-            continue;
-        }
-        if !options.force && goal_has_next_round_plan(&status.task_ids, &evidence) {
-            continue;
-        }
-        // Dual-read: the goal is a next-round candidate if it carries EITHER a
-        // typed GoalEvaluation object OR a legacy Evidence(source_type=goal_evaluation)
-        // note. The typed producer is the primary path (item 3 of WP-7); the legacy
-        // note remains a valid back-compat source so old goals keep firing.
-        let Some((evaluation_evidence_id, source_task_id)) =
-            latest_goal_evaluation_source(&status, store)?
-        else {
-            continue;
-        };
-        candidates.push(AutonomyCandidate {
-            goal_id: goal.id.clone(),
-            source_task_id,
-            evaluation_evidence_id,
-        });
-    }
-    Ok(candidates)
-}
-
-fn goal_task_graph_complete(task_ids: &[String], store: &HarnessStore) -> CliResult<bool> {
-    if task_ids.is_empty() {
-        return Ok(false);
-    }
-    let tasks = latest_tasks(store)?;
-    Ok(task_ids.iter().all(|task_id| {
-        tasks
-            .get(task_id)
-            .is_some_and(|task| matches!(task.status, TaskStatus::Done | TaskStatus::Archived))
-    }))
-}
-
-fn goal_has_next_round_plan(
-    task_ids: &[String],
-    evidence_by_id: &BTreeMap<String, Evidence>,
-) -> bool {
-    evidence_by_id.values().any(|item| {
-        item.source_type == "next_round_plan"
-            && item
-                .task_id
-                .as_ref()
-                .is_some_and(|task_id| task_ids.contains(task_id))
-    })
-}
-
-/// Resolve the goal's evaluation into `(evaluation_id, source_task_id)` for the
-/// next-round runner, reading BOTH learning representations (WP-7 dual-read). The
-/// most-recent evaluation wins across the typed [`GoalEvaluation`] objects and the
-/// legacy `Evidence(source_type=goal_evaluation)` notes. A typed object has no
-/// `task_id`, so the source task is the latest task in the goal's graph — the task
-/// the closeout decision and next-round plan hang off. Returns `None` only when
-/// the goal has no evaluation at all (caller skips it as a candidate).
-fn latest_goal_evaluation_source(
-    status: &GoalLearningStatus,
-    store: &HarnessStore,
-) -> CliResult<Option<(String, String)>> {
-    // Best legacy candidate: (time, evidence_id, source_task_id).
-    let legacy = status
-        .goal_evaluation
-        .iter()
-        .filter_map(|item| {
-            Some((
-                parse_unix_ms(&item.created_at).unwrap_or_default(),
-                item.id.clone(),
-                item.task_id.clone()?,
-            ))
-        })
-        .max_by_key(|(created_at, _, _)| *created_at);
-
-    // Best typed candidate: resolve a source task from the goal's graph (latest by
-    // task created_at, falling back to the last task id) so the typed evaluation
-    // can drive the same close/plan path.
-    let latest_typed = status
-        .goal_evaluation_objects
-        .iter()
-        .max_by_key(|evaluation| parse_unix_ms(&evaluation.created_at).unwrap_or_default());
-    let typed = match latest_typed {
-        // Anchor the typed evaluation on a task in the goal's graph; without one
-        // there is nothing for the closeout decision / next-round plan to hang off.
-        Some(evaluation) => goal_graph_source_task(status, store)?.map(|task_id| {
-            (
-                parse_unix_ms(&evaluation.created_at).unwrap_or_default(),
-                evaluation.id.clone(),
-                task_id,
-            )
-        }),
-        None => None,
-    };
-
-    let best = match (legacy, typed) {
-        (Some(legacy), Some(typed)) => {
-            if typed.0 >= legacy.0 {
-                Some(typed)
-            } else {
-                Some(legacy)
-            }
-        }
-        (Some(legacy), None) => Some(legacy),
-        (None, Some(typed)) => Some(typed),
-        (None, None) => None,
-    };
-    Ok(best.map(|(_, evaluation_id, source_task_id)| (evaluation_id, source_task_id)))
-}
-
-/// The task in the goal's graph that anchors a typed-evaluation next round: the
-/// most recently created task, falling back to the lexically-last task id when no
-/// timestamp is parseable. Returns `None` when the goal has no tasks.
-fn goal_graph_source_task(
-    status: &GoalLearningStatus,
-    store: &HarnessStore,
-) -> CliResult<Option<String>> {
-    if status.task_ids.is_empty() {
-        return Ok(None);
-    }
-    let tasks = latest_tasks(store)?;
-    let source = status
-        .task_ids
-        .iter()
-        .map(|task_id| {
-            let created_at = tasks
-                .get(task_id)
-                .and_then(|task| parse_unix_ms(&task.created_at))
-                .unwrap_or_default();
-            (created_at, task_id.clone())
-        })
-        .max_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)))
-        .map(|(_, task_id)| task_id);
-    Ok(source)
-}
-
-fn close_goal_for_next_round(
-    store: &HarnessStore,
-    options: &AutonomyTickOptions,
-    candidate: &AutonomyCandidate,
-) -> CliResult<serde_json::Value> {
-    let mut goal = latest_goals(store)?
-        .remove(&candidate.goal_id)
-        .ok_or_else(|| CliError::Usage(format!("goal not found: {}", candidate.goal_id)))?;
-    if goal.status != GoalStatus::Complete {
-        goal.status = GoalStatus::Complete;
-        goal.updated_at = now_string();
-        store.append_goal(&goal)?;
-    }
-    let decision = Decision {
-        id: generated_id("decision"),
-        task_id: candidate.source_task_id.clone(),
-        decision: format!("autonomy goal_complete by {}", options.lead),
-        rationale: format!(
-            "GoalClose gate passed for {}; task graph is complete and GoalEvaluation {} is present. Runner will compare this goal with vision before proposing the next goal.",
-            candidate.goal_id, candidate.evaluation_evidence_id
-        ),
-        evidence_ids: vec![candidate.evaluation_evidence_id.clone()],
-        created_at: now_string(),
-        decision_kind: Some("closeout".to_string()),
-        goal_id: Some(candidate.goal_id.clone()),
-        is_waiver: false,
-        follow_up_task_id: None,
-    };
-    store.append_decision(&decision)?;
-    append_agent_event(
-        store,
-        &options.lead,
-        None,
-        Some(candidate.source_task_id.as_str()),
-        "autonomy_goal_closed",
-        &format!("Goal {} marked done by runner", candidate.goal_id),
-        None,
-    )?;
-    Ok(serde_json::json!({
-        "goal": goal,
-        "decision": decision
-    }))
-}
-
-fn accept_scheduled_next_round(
-    store: &HarnessStore,
-    options: &AutonomyTickOptions,
-    source_goal_id: &str,
-    source_task_id: &str,
-    proposal_id: &str,
-    plan_id: &str,
-) -> CliResult<serde_json::Value> {
-    let next_goal_id = generated_id(&options.goal_prefix);
-    let next_task_id = generated_id(&options.task_prefix);
-    let mut args = vec![
-        "--task".into(),
-        source_task_id.into(),
-        "--lead".into(),
-        options.lead.clone(),
-        "--proposal".into(),
-        proposal_id.into(),
-        "--decision".into(),
-        "accept".into(),
-        "--rationale".into(),
-        format!(
-            "Autonomy runner accepted scheduler proposal {proposal_id} from goal {source_goal_id}."
-        ),
-        "--evidence".into(),
-        plan_id.into(),
-        "--create-goal".into(),
-        next_goal_id.clone(),
-        "--goal-title".into(),
-        format!("Next autonomous round from {source_goal_id}"),
-        "--create-task".into(),
-        next_task_id.clone(),
-        "--task-title".into(),
-        format!("Follow-up: continue from {source_task_id}"),
-        "--task-objective".into(),
-        format!("Execute the next autonomous runner task generated from proposal {proposal_id}."),
-    ];
-    let goal_success = if options.goal_success.is_empty() {
-        vec!["Generated next-round task is assigned and visible in Dashboard state.".into()]
-    } else {
-        options.goal_success.clone()
-    };
-    push_repeated_args(&mut args, "--goal-success", &goal_success);
-    if let Some(assignee) = &options.assignee {
-        push_arg(&mut args, "--assignee", assignee);
-    }
-    if let Some(reviewer) = &options.reviewer {
-        push_arg(&mut args, "--reviewer", reviewer);
-    }
-    if let Some(workspace) = &options.workspace {
-        push_arg(&mut args, "--workspace", workspace);
-    }
-    if let Some(branch) = &options.branch {
-        push_arg(&mut args, "--branch", branch);
-    }
-    push_repeated_args(&mut args, "--owned-path", &options.owned_paths);
-    let acceptance = if options.acceptance.is_empty() {
-        vec![
-            "Standing runner assignment is delivered or records terminal delivery evidence.".into(),
-        ]
-    } else {
-        options.acceptance.clone()
-    };
-    push_repeated_args(&mut args, "--acceptance", &acceptance);
-    autonomy_decide_value(store, &args)
-}
-
-fn push_arg(args: &mut Vec<String>, name: &str, value: &str) {
-    args.push(name.into());
-    args.push(value.into());
-}
-
-fn push_repeated_args(args: &mut Vec<String>, name: &str, values: &[String]) {
-    for value in values {
-        push_arg(args, name, value);
-    }
-}
-
-fn autonomy_evidence(
-    store: &HarnessStore,
-    task_id: Option<String>,
-    source_type: &str,
-    summary: &str,
-    body: &str,
-) -> CliResult<Evidence> {
-    let evidence_id = generated_id("evidence");
-    let source_ref = write_autonomy_artifact(store, &evidence_id, body)?;
-    Ok(Evidence {
-        id: evidence_id,
-        task_id,
-        source_type: source_type.into(),
-        source_ref,
-        summary: summary.into(),
-        created_at: now_string(),
-        evidence_kind: None,
-        goal_id: None,
-    })
-}
-
-fn write_autonomy_artifact(
-    store: &HarnessStore,
-    evidence_id: &str,
-    body: &str,
-) -> CliResult<String> {
-    let dir = store.root().join("autonomy");
-    fs::create_dir_all(&dir)?;
-    let path = dir.join(format!("{evidence_id}.md"));
-    fs::write(&path, body)?;
-    Ok(path.display().to_string())
-}
-
-fn autonomy_observation_summary(store: &HarnessStore, goal_id: &str) -> CliResult<String> {
-    let status = goal_learning_status(store, goal_id)?;
-    let warnings = status.warnings(true);
-    if warnings.is_empty() {
-        Ok(format!(
-            "Observer found goal {goal_id} has complete learning evidence and is ready for a follow-up proposal."
-        ))
-    } else {
-        Ok(format!(
-            "Observer found goal {goal_id} warnings: {}",
-            warnings.join("; ")
-        ))
-    }
-}
-
-fn validate_autonomy_proposal_kind(kind: &str) -> CliResult<()> {
-    if autonomy_proposal_source_type(kind) {
-        Ok(())
-    } else {
-        Err(CliError::Usage(format!(
-            "unknown autonomy proposal kind: {kind}"
-        )))
-    }
-}
-
-fn autonomy_proposal_source_type(source_type: &str) -> bool {
-    matches!(
-        source_type,
-        "goal_proposal" | "graph_change_proposal" | "blocker" | "follow_up"
-    )
-}
-
-fn validate_autonomy_disposition(disposition: &str) -> CliResult<()> {
-    match disposition {
-        "accept" | "reject" | "defer" | "request_evidence" => Ok(()),
-        other => Err(CliError::Usage(format!(
-            "unknown autonomy decision: {other}"
-        ))),
-    }
-}
-
-fn git_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    require_subcommand(args, "git worktree-create|attach|status|changed-paths")?;
-    match args[0].as_str() {
-        "worktree-create" => {
-            let task_id = required(args, "--task")?;
-            let repo = required(args, "--repo")?;
-            let path = required(args, "--path")?;
-            let branch = required(args, "--branch")?;
-            let base = value(args, "--base").unwrap_or_else(|| "HEAD".into());
-            if !has_flag(args, "--no-create") {
-                let status = Command::new("git")
-                    .args(["-C", &repo, "worktree", "add", "-b", &branch, &path, &base])
-                    .status()?;
-                if !status.success() {
-                    return Err(CliError::Usage(format!(
-                        "git worktree add failed for task {task_id}"
-                    )));
-                }
-            }
-            let mut task = latest_task(store, &task_id)?;
-            task.workspace_ref = Some(path.clone());
-            task.branch_ref = Some(branch.clone());
-            task.updated_at = now_string();
-            store.append_task(&task)?;
-            let evidence = Evidence {
-                id: generated_id("evidence"),
-                task_id: Some(task_id),
-                source_type: "git_worktree".into(),
-                source_ref: path,
-                summary: format!("Attached git worktree branch {branch} from {base}"),
-                created_at: now_string(),
-                evidence_kind: None,
-                goal_id: None,
-            };
-            store.append_evidence(&evidence)?;
-            print_json(&serde_json::json!({ "task": task, "evidence": evidence }))?;
-        }
-        "attach" => {
-            let task_id = required(args, "--task")?;
-            let mut task = latest_task(store, &task_id)?;
-            task.workspace_ref = Some(required(args, "--workspace")?);
-            task.branch_ref = Some(required(args, "--branch")?);
-            task.pr_ref = value(args, "--pr").or(task.pr_ref);
-            let owned_paths = many(args, "--owned-path");
-            if !owned_paths.is_empty() {
-                task.owned_paths = owned_paths;
-            }
-            task.updated_at = now_string();
-            store.append_task(&task)?;
-            print_json(&task)?;
-        }
-        "status" => {
-            let task = if let Some(task_id) = value(args, "--task") {
-                Some(latest_task(store, &task_id)?)
-            } else {
-                None
-            };
-            let worktree = value(args, "--worktree")
-                .or_else(|| task.as_ref().and_then(|task| task.workspace_ref.clone()))
-                .ok_or_else(|| {
-                    CliError::Usage("--worktree or --task with workspace_ref is required".into())
-                })?;
-            let base = value(args, "--base").unwrap_or_else(|| "HEAD".into());
-            print_json(&git_status_snapshot(
-                &worktree,
-                &base,
-                task.as_ref()
-                    .map(|task| task.owned_paths.as_slice())
-                    .unwrap_or(&[]),
-            )?)?;
-        }
-        "changed-paths" => {
-            let worktree = required(args, "--worktree")?;
-            let base = value(args, "--base").unwrap_or_else(|| "HEAD".into());
-            print_json(&git_changed_paths(&worktree, &base)?)?;
-        }
-        other => return Err(CliError::Usage(format!("unknown git command: {other}"))),
-    }
-    Ok(())
-}
-
-fn review_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    require_subcommand(args, "review create|list|gate")?;
-    match args[0].as_str() {
-        "create" => review_create(store, &args[1..]),
-        "list" => {
-            print_json(&store.reviews()?)?;
-            Ok(())
-        }
-        "gate" => review_gate(store, args),
-        other => Err(CliError::Usage(format!("unknown review command: {other}"))),
-    }
-}
-
-fn review_create(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    let task_id = value(args, "--task");
-    let goal_id = value(args, "--goal");
-    if task_id.is_none() && goal_id.is_none() {
-        return Err(CliError::Usage(
-            "review create requires --task or --goal".into(),
-        ));
-    }
-    let review = Review {
-        id: value(args, "--id").unwrap_or_else(|| generated_id("review")),
-        task_id,
-        goal_id,
-        reviewer_agent_id: required(args, "--reviewer")?,
-        review_kind: required(args, "--kind")?,
-        verdict: ReviewVerdict::from(required(args, "--verdict")?),
-        summary: required(args, "--summary")?,
-        blockers: many(args, "--blocker"),
-        residual_risk: value(args, "--residual-risk"),
-        missing_validation: many(args, "--missing-validation"),
-        evidence_ids: many(args, "--evidence"),
-        created_at: now_string(),
-    };
-    store.append_review(&review)?;
-    print_json(&review)?;
-    Ok(())
-}
-
-fn gap_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    require_subcommand(args, "gap create|list|export")?;
-    match args[0].as_str() {
-        "create" => gap_create(store, &args[1..]),
-        "list" => {
-            print_json(&latest_gaps_in_append_order(store)?)?;
-            Ok(())
-        }
-        "export" => gap_export(store),
-        other => Err(CliError::Usage(format!("unknown gap command: {other}"))),
-    }
-}
-
-fn gap_create(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    let now = now_string();
-    let gap = Gap {
-        id: value(args, "--id").unwrap_or_else(|| generated_id("gap")),
-        goal_id: value(args, "--goal"),
-        task_id: value(args, "--task"),
-        category: required(args, "--category")?,
-        severity: parse_gap_severity(&required(args, "--severity")?)?,
-        status: match value(args, "--status") {
-            Some(raw) => parse_gap_status(&raw)?,
-            None => GapStatus::Open,
-        },
-        summary: required(args, "--summary")?,
-        evidence_ids: many(args, "--evidence"),
-        next_step: value(args, "--next-step"),
-        owner_agent_id: value(args, "--owner"),
-        repro_ref: value(args, "--repro"),
-        closing_test_ref: value(args, "--closing-test"),
-        created_at: now.clone(),
-        updated_at: now,
-    };
-    store.append_gap(&gap)?;
-    print_json(&gap)?;
-    Ok(())
-}
-
-/// Print a markdown projection of the Gap ledger (the generated successor to the
-/// flat-file gap inbox). Open/in-progress gaps first, grouped by severity.
-fn gap_export(store: &HarnessStore) -> CliResult<()> {
-    let gaps = latest_gaps_in_append_order(store)?;
-    println!("# Gap ledger\n");
-    if gaps.is_empty() {
-        println!("_No gaps recorded._");
-        return Ok(());
-    }
-    for severity in [GapSeverity::P0, GapSeverity::P1, GapSeverity::P2] {
-        let rows: Vec<&Gap> = gaps.iter().filter(|gap| gap.severity == severity).collect();
-        if rows.is_empty() {
-            continue;
-        }
-        println!("## {}\n", gap_severity_label(&severity).to_uppercase());
-        for gap in rows {
-            let checkbox = if matches!(gap.status, GapStatus::Fixed | GapStatus::Wontfix) {
-                "x"
-            } else {
-                " "
-            };
-            println!(
-                "- [{}] {} | {} | {} | {} | evidence={} | next={}",
-                checkbox,
-                gap.id,
-                gap.category,
-                gap_status_label(&gap.status),
-                gap.summary,
-                if gap.evidence_ids.is_empty() {
-                    "-".to_string()
-                } else {
-                    gap.evidence_ids.join(",")
-                },
-                gap.next_step.as_deref().unwrap_or("-"),
-            );
-        }
-        println!();
-    }
-    Ok(())
-}
-
-fn parse_gap_severity(value: &str) -> CliResult<GapSeverity> {
-    match value {
-        "p0" => Ok(GapSeverity::P0),
-        "p1" => Ok(GapSeverity::P1),
-        "p2" => Ok(GapSeverity::P2),
-        other => Err(CliError::Usage(format!(
-            "unknown gap severity: {other} (expected p0|p1|p2)"
-        ))),
-    }
-}
-
-fn parse_gap_status(value: &str) -> CliResult<GapStatus> {
-    match value {
-        "open" => Ok(GapStatus::Open),
-        "in_progress" => Ok(GapStatus::InProgress),
-        "fixed" => Ok(GapStatus::Fixed),
-        "blocked" => Ok(GapStatus::Blocked),
-        "deferred" => Ok(GapStatus::Deferred),
-        "wontfix" => Ok(GapStatus::Wontfix),
-        other => Err(CliError::Usage(format!(
-            "unknown gap status: {other} (expected open|in_progress|fixed|blocked|deferred|wontfix)"
-        ))),
-    }
-}
-
-fn gap_severity_label(severity: &GapSeverity) -> &'static str {
-    match severity {
-        GapSeverity::P0 => "p0",
-        GapSeverity::P1 => "p1",
-        GapSeverity::P2 => "p2",
-    }
-}
-
-fn gap_status_label(status: &GapStatus) -> &'static str {
-    match status {
-        GapStatus::Open => "open",
-        GapStatus::InProgress => "in_progress",
-        GapStatus::Fixed => "fixed",
-        GapStatus::Blocked => "blocked",
-        GapStatus::Deferred => "deferred",
-        GapStatus::Wontfix => "wontfix",
-    }
-}
-
-fn goal_design_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    require_subcommand(args, "goal-design create|list")?;
-    match args[0].as_str() {
-        "create" => goal_design_create(store, &args[1..]),
-        "list" => {
-            print_json(&latest_goal_designs_in_append_order(store)?)?;
-            Ok(())
-        }
-        other => Err(CliError::Usage(format!(
-            "unknown goal-design command: {other}"
-        ))),
-    }
-}
-
-fn goal_design_create(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    let design = GoalDesign {
-        id: value(args, "--id").unwrap_or_else(|| generated_id("goal-design")),
-        goal_id: required(args, "--goal")?,
-        scenario_summary: required(args, "--scenario")?,
-        non_goals: many(args, "--non-goal"),
-        risk_and_permission_boundaries: required(args, "--risk-boundaries")?,
-        required_infra: many(args, "--required-infra"),
-        agent_team: value(args, "--team"),
-        task_graph: many(args, "--task"),
-        evidence_plan: many(args, "--evidence-plan"),
-        acceptance_gates: many(args, "--acceptance-gate"),
-        created_at: now_string(),
-    };
-    store.append_goal_design(&design)?;
-    print_json(&design)?;
-    Ok(())
-}
-
-fn goal_evaluation_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    require_subcommand(args, "goal-evaluation create|list")?;
-    match args[0].as_str() {
-        "create" => goal_evaluation_create(store, &args[1..]),
-        "list" => {
-            print_json(&latest_goal_evaluations_in_append_order(store)?)?;
-            Ok(())
-        }
-        other => Err(CliError::Usage(format!(
-            "unknown goal-evaluation command: {other}"
-        ))),
-    }
-}
-
-fn goal_evaluation_create(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    let evaluation = GoalEvaluation {
-        id: value(args, "--id").unwrap_or_else(|| generated_id("goal-evaluation")),
-        goal_id: required(args, "--goal")?,
-        evaluator_agent_id: required(args, "--evaluator")?,
-        outcome: EvaluationOutcome::from(required(args, "--outcome")?),
-        what_worked: required(args, "--what-worked")?,
-        what_failed: required(args, "--what-failed")?,
-        missing_infra: many(args, "--missing-infra"),
-        missing_evidence: many(args, "--missing-evidence"),
-        team_design_feedback: value(args, "--team-feedback").unwrap_or_default(),
-        task_graph_feedback: value(args, "--task-graph-feedback").unwrap_or_default(),
-        dashboard_feedback: value(args, "--dashboard-feedback").unwrap_or_default(),
-        reusable_patterns: many(args, "--pattern"),
-        anti_patterns: many(args, "--anti-pattern"),
-        follow_up_task_ids: many(args, "--follow-up-task"),
-        proposed_goal_ids: many(args, "--proposed-goal"),
-        created_at: now_string(),
-    };
-    store.append_goal_evaluation(&evaluation)?;
-    print_json(&evaluation)?;
-    Ok(())
-}
-
-fn goal_case_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    require_subcommand(args, "goal-case create|list")?;
-    match args[0].as_str() {
-        "create" => goal_case_create(store, &args[1..]),
-        "list" => {
-            print_json(&latest_goal_cases_in_append_order(store)?)?;
-            Ok(())
-        }
-        other => Err(CliError::Usage(format!(
-            "unknown goal-case command: {other}"
-        ))),
-    }
-}
-
-fn goal_case_create(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    let case = GoalCase {
-        case_id: value(args, "--id").unwrap_or_else(|| generated_id("goal-case")),
-        source_goal_id: required(args, "--goal")?,
-        scenario_type: required(args, "--scenario-type")?,
-        project_adapter: value(args, "--adapter"),
-        goal_design_ref: value(args, "--design-ref"),
-        evaluation_ref: value(args, "--evaluation-ref"),
-        reusable_patterns: many(args, "--pattern"),
-        anti_patterns: many(args, "--anti-pattern"),
-        follow_up_refs: many(args, "--follow-up"),
-        tags: many(args, "--tag"),
-        created_at: now_string(),
-    };
-    store.append_goal_case(&case)?;
-    print_json(&case)?;
-    Ok(())
-}
-
-fn vision_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    require_subcommand(args, "vision create|list")?;
-    match args[0].as_str() {
-        "create" => vision_create(store, &args[1..]),
-        "list" => {
-            print_json(&latest_visions_in_append_order(store)?)?;
-            Ok(())
-        }
-        other => Err(CliError::Usage(format!("unknown vision command: {other}"))),
-    }
-}
-
-fn vision_create(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    let vision = Vision {
-        id: value(args, "--id").unwrap_or_else(|| generated_id("vision")),
-        summary: required(args, "--summary")?,
-        source_refs: many(args, "--source-ref"),
-        created_at: now_string(),
-    };
-    store.append_vision(&vision)?;
-    print_json(&vision)?;
-    Ok(())
+fn parse_unix_ms(value: &str) -> Option<u128> {
+    value.strip_prefix("unix-ms:")?.parse().ok()
 }
 
 fn dashboard_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
@@ -5776,69 +3728,41 @@ fn dashboard_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     Ok(())
 }
 
-fn board_command(store: &HarnessStore) -> CliResult<()> {
-    let tasks = latest_tasks(store)?;
-    let messages = latest_messages_in_append_order(store)?;
-    let evidence = store.evidence()?;
-    let decisions = store.decisions()?;
-    let sessions = latest_provider_sessions_in_append_order(store)?;
-    let columns = [
-        TaskStatus::Planned,
-        TaskStatus::Assigned,
-        TaskStatus::Running,
-        TaskStatus::Blocked,
-        TaskStatus::Review,
-        TaskStatus::Done,
-        TaskStatus::Archived,
-    ];
-
-    for column in columns {
-        println!("## {}", status_label(&column));
-        for task in tasks.values().filter(|task| task.status == column) {
-            let message_count = messages
-                .iter()
-                .filter(|message| message.task_id.as_ref() == Some(&task.id))
-                .count();
-            let evidence_count = evidence
-                .iter()
-                .filter(|item| item.task_id.as_ref() == Some(&task.id))
-                .count();
-            let decision_count = decisions
-                .iter()
-                .filter(|item| item.task_id == task.id)
-                .count();
-            let session_count = sessions
-                .iter()
-                .filter(|item| item.task_id.as_ref() == Some(&task.id))
-                .count();
-            println!(
-                "- {} | owner={} assignee={} reviewer={} workspace={} branch={} pr={} evidence={} messages={} sessions={} decisions={} paths={}",
-                task.id,
-                task.owner_agent_id,
-                task.assignee_agent_id.as_deref().unwrap_or("-"),
-                task.reviewer_agent_id.as_deref().unwrap_or("-"),
-                task.workspace_ref.as_deref().unwrap_or("-"),
-                task.branch_ref.as_deref().unwrap_or("-"),
-                task.pr_ref.as_deref().unwrap_or("-"),
-                evidence_count,
-                message_count,
-                session_count,
-                decision_count,
-                task.owned_paths.join(",")
-            );
-            println!("  {}", task.title);
+fn hook_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    require_subcommand(args, "hook record --agent <agent> [--runtime <runtime>]")?;
+    match args[0].as_str() {
+        "record" => {
+            let provider = value(args, "--provider")
+                .or_else(|| std::env::var("HARNESS_PROVIDER").ok())
+                .filter(|provider| !provider.is_empty())
+                .unwrap_or_else(|| CodexAdapter.name().to_string());
+            let adapter = provider_adapter(&provider)
+                .ok_or_else(|| unknown_provider_error(&provider, "hook record"))?;
+            adapter.record_hook_event(store, args)?;
         }
+        other => return Err(CliError::Usage(format!("unknown hook command: {other}"))),
     }
     Ok(())
 }
 
-fn codex_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    require_subcommand(args, "codex run|review")?;
-    match args[0].as_str() {
-        "run" => codex_run(store, &args[1..]),
-        "review" => codex_review(store, &args[1..]),
-        other => Err(CliError::Usage(format!("unknown codex command: {other}"))),
-    }
+fn broadcast_live_member_activity(
+    manager: &sse::SseManager,
+    project_id: &str,
+    activity: LiveMemberActivityPreview,
+) -> serde_json::Value {
+    let emitted_ms = current_unix_ms();
+    let value = serde_json::json!({
+        "team_run_id": activity.team_run_id,
+        "member_run_id": activity.member_run_id,
+        "provider": activity.provider,
+        "kind": "thinking",
+        "preview": activity.preview,
+        "revision": LIVE_MEMBER_ACTIVITY_REVISION.fetch_add(1, Ordering::Relaxed),
+        "emitted_at": format!("unix-ms:{emitted_ms}"),
+        "expires_at": format!("unix-ms:{}", emitted_ms + LIVE_MEMBER_ACTIVITY_TTL_MS),
+    });
+    manager.broadcast_member_activity(project_id, value.clone());
+    value
 }
 
 fn handle_sse_stream(
@@ -5945,6 +3869,63 @@ fn handle_sse_stream(
                             break; // Client disconnected
                         }
                     }
+                    // Agent Team v0: folded per-run events (team console merges
+                    // these incrementally).
+                    sse::SseEventFrame::TeamRunEvent(event) => {
+                        if let Ok(json) = serde_json::to_value(&event) {
+                            if sse::write_sse_frame(&mut stream, "team_run_event", &json).is_err() {
+                                break; // Client disconnected
+                            }
+                        }
+                    }
+                    sse::SseEventFrame::Mission(mission) => {
+                        if let Ok(json) = serde_json::to_value(&mission) {
+                            if sse::write_sse_frame(&mut stream, "mission", &json).is_err() {
+                                break;
+                            }
+                        }
+                    }
+                    sse::SseEventFrame::Wave(wave) => {
+                        if let Ok(json) = serde_json::to_value(&wave) {
+                            if sse::write_sse_frame(&mut stream, "wave", &json).is_err() {
+                                break;
+                            }
+                        }
+                    }
+                    sse::SseEventFrame::AgentTeamRun(run) => {
+                        if let Ok(json) = serde_json::to_value(&run) {
+                            if sse::write_sse_frame(&mut stream, "agent_team_run", &json).is_err() {
+                                break;
+                            }
+                        }
+                    }
+                    sse::SseEventFrame::MemberRun(member) => {
+                        if let Ok(json) = serde_json::to_value(&member) {
+                            if sse::write_sse_frame(&mut stream, "member_run", &json).is_err() {
+                                break;
+                            }
+                        }
+                    }
+                    sse::SseEventFrame::TeamMessage(message) => {
+                        if let Ok(json) = serde_json::to_value(&message) {
+                            if sse::write_sse_frame(&mut stream, "team_message", &json).is_err() {
+                                break;
+                            }
+                        }
+                    }
+                    sse::SseEventFrame::MemberAction(action) => {
+                        if let Ok(json) = serde_json::to_value(&action) {
+                            if sse::write_sse_frame(&mut stream, "member_action", &json).is_err() {
+                                break;
+                            }
+                        }
+                    }
+                    sse::SseEventFrame::MemberActivity(activity) => {
+                        if sse::write_sse_frame(&mut stream, "member_activity", &activity).is_err()
+                        {
+                            break;
+                        }
+                    }
                 }
                 last_keepalive = std::time::Instant::now();
             }
@@ -6011,6 +3992,25 @@ impl ServeProjects {
             }
         }
         (self.default_id.clone(), self.default_store.clone())
+    }
+
+    /// Resolve the project execution context paired with a routed store. Raw
+    /// store mode has no registry identity, so it gets an honest synthetic
+    /// context rooted at the served store rather than falling back to the
+    /// harness server process cwd.
+    fn context_for(&self, project_id: &str, store: &HarnessStore) -> ProjectContext {
+        if let Some(home) = &self.harness_home {
+            if let Ok(Some(context)) = project::context_for_id(home, project_id) {
+                return context;
+            }
+        }
+        ProjectContext {
+            id: project_id.to_string(),
+            project_root: store.root().to_path_buf(),
+            store_root: store.root().to_path_buf(),
+            kind: ProjectKind::Repo,
+            is_git_repo: false,
+        }
     }
 
     /// The currently-active project id, read live so a `POST /v1/projects/switch`
@@ -6290,11 +4290,13 @@ fn handle_http_connection(
     let path = parts.next().unwrap_or_default().to_string();
     let path_only = path.split('?').next().unwrap_or_default().to_string();
     // `?project=<id>` selects which project store this request reads/streams.
-    // Absent or unknown → the active/default project (back-compat for old clients).
+    // Reads keep the historical unknown→default fallback. Authenticated Company
+    // OS writes reject an explicit unknown selector below to prevent misrouting.
     let project_param = query_param(&path, "project");
     let (project_id, store_owned) = projects.store_for(project_param.as_deref());
     let store = &store_owned;
     let mut content_length = 0usize;
+    let mut company_os_token = None;
     loop {
         let mut line = String::new();
         reader.read_line(&mut line)?;
@@ -6305,6 +4307,9 @@ fn handle_http_connection(
         if let Some((name, value)) = trimmed.split_once(':') {
             if name.eq_ignore_ascii_case("content-length") {
                 content_length = value.trim().parse().unwrap_or(0);
+            }
+            if name.eq_ignore_ascii_case("x-harness-company-os-token") {
+                company_os_token = Some(value.trim().to_string());
             }
         }
     }
@@ -6325,8 +4330,41 @@ fn handle_http_connection(
         )?;
         return Ok(());
     }
+    if retired_http_path(&path_only) {
+        write_http_json(
+            &mut stream,
+            "410 Gone",
+            &serde_json::json!({
+                "ok": false,
+                "error": "retired_coordination_surface",
+                "detail": "This Goal/GoalPhase/Task Graph API was retired. Use /v1/missions, /v1/waves, /v1/team-runs, or /v1/company-os/*; historical rows are export-only through `harness legacy-goal-task export|verify`."
+            }),
+        )?;
+        return Ok(());
+    }
+    if method == "POST"
+        && path_only.starts_with("/v1/company-os/")
+        && project_param
+            .as_deref()
+            .is_some_and(|requested| requested != project_id)
+    {
+        write_http_json(
+            &mut stream,
+            "404 Not Found",
+            &serde_json::json!({
+                "ok": false,
+                "error": "project_not_found",
+                "detail": "explicit Company OS write project selector is unknown",
+            }),
+        )?;
+        return Ok(());
+    }
 
     if method == "GET" {
+        if let Some(response) = company_os_api::handle_get(store, &path_only) {
+            write_http_json(&mut stream, response.status, &response.body)?;
+            return Ok(());
+        }
         match path_only.as_str() {
             "/health" | "/v1/health" => write_http_json(
                 &mut stream,
@@ -6584,6 +4622,18 @@ fn handle_http_connection(
             }
         }
     };
+    if let Some(response) =
+        company_os_api::handle_post(store, &path_only, &body_json, company_os_token.as_deref())
+    {
+        let mut response_body = response.body;
+        if response.status.starts_with('2') {
+            if let Some(object) = response_body.as_object_mut() {
+                object.insert("snapshot".to_string(), dashboard_snapshot(store)?);
+            }
+        }
+        write_http_json(&mut stream, response.status, &response_body)?;
+        return Ok(());
+    }
     // POST /v1/projects/switch — flip the active project in the registry +
     // `ACTIVE_PROJECT` marker so CLI-spawned workers and a live serve converge on
     // the same central store (multi-project P6 #89 invariant). This is a serve-level
@@ -6609,6 +4659,162 @@ fn handle_http_connection(
         return Ok(());
     }
 
+    // POST /v1/live/member-activity — optional ingress for provider adapters
+    // running outside this process. It validates the project/run/member join,
+    // sanitizes one short preview, and broadcasts only to current subscribers.
+    // No store method is called and reconnecting clients cannot replay it.
+    if path_only == "/v1/live/member-activity" {
+        let result = (|| -> CliResult<serde_json::Value> {
+            let team_run_id = required_json_string(&body_json, "team_run_id")?;
+            let member_run_id = required_json_string(&body_json, "member_run_id")?;
+            let preview =
+                sanitize_live_member_preview(&required_json_string(&body_json, "preview")?)
+                    .ok_or_else(|| {
+                        CliError::Usage("member activity preview must not be empty".to_string())
+                    })?;
+            let run = latest_team_run(store, &team_run_id)?;
+            if run.status != TeamRunStatus::Running {
+                return Err(CliError::Usage(format!(
+                    "team run {team_run_id} is {}, not running",
+                    serde_snake_label(&run.status)
+                )));
+            }
+            let member = latest_member_runs_in_append_order(store)?
+                .into_iter()
+                .find(|member| member.id == member_run_id)
+                .ok_or_else(|| CliError::Usage(format!("member run not found: {member_run_id}")))?;
+            if member.team_run_id != team_run_id {
+                return Err(CliError::Usage(format!(
+                    "member run {member_run_id} does not belong to team run {team_run_id}"
+                )));
+            }
+            if matches!(
+                member.status,
+                MemberRunStatus::Completed
+                    | MemberRunStatus::Failed
+                    | MemberRunStatus::Stopped
+                    | MemberRunStatus::Blocked
+            ) {
+                return Err(CliError::Usage(format!(
+                    "member run {member_run_id} is terminal and cannot publish live activity"
+                )));
+            }
+            let ingress_key = format!("{project_id}:{member_run_id}");
+            let ingress = LIVE_MEMBER_ACTIVITY_INGRESS.get_or_init(|| Mutex::new(HashMap::new()));
+            let mut last_by_member = ingress.lock().unwrap_or_else(|error| error.into_inner());
+            // This registry is only a short-lived ingress throttle. Drop stale
+            // member keys so transient provider sessions cannot grow it without
+            // bound over the lifetime of the server.
+            last_by_member.retain(|_, last| last.elapsed() < Duration::from_secs(60));
+            if last_by_member
+                .get(&ingress_key)
+                .is_some_and(|last| last.elapsed() < LIVE_MEMBER_ACTIVITY_THROTTLE)
+            {
+                return Err(CliError::Usage(
+                    "member activity preview is rate limited".to_string(),
+                ));
+            }
+            last_by_member.insert(ingress_key, Instant::now());
+            drop(last_by_member);
+            Ok(broadcast_live_member_activity(
+                &sse_manager,
+                &project_id,
+                LiveMemberActivityPreview {
+                    team_run_id,
+                    member_run_id,
+                    provider: member.provider,
+                    preview,
+                },
+            ))
+        })();
+        match result {
+            Ok(activity) => write_http_json(
+                &mut stream,
+                "202 Accepted",
+                &serde_json::json!({"ok": true, "result": activity}),
+            )?,
+            Err(error) => write_http_json(
+                &mut stream,
+                "400 Bad Request",
+                &serde_json::json!({"ok": false, "error": error.to_string()}),
+            )?,
+        }
+        return Ok(());
+    }
+
+    // POST /v1/team-runs/{id}/start — reserve the planning attempt under the
+    // store CAS, then run providers on a background thread. The immediate 202
+    // lets the Console keep its SSE connection responsive while member turns
+    // execute; durable state still flows through the normal ledgers.
+    if let Some(team_run_id) = path_only
+        .strip_prefix("/v1/team-runs/")
+        .and_then(|rest| rest.strip_suffix("/start"))
+    {
+        let parse_positive = |key: &str, default: u64| -> CliResult<u64> {
+            match body_json.get(key) {
+                None | Some(serde_json::Value::Null) => Ok(default),
+                Some(value) => value.as_u64().filter(|value| *value > 0).ok_or_else(|| {
+                    CliError::Usage(format!("JSON field {key} must be a positive integer"))
+                }),
+            }
+        };
+        let result = (|| -> CliResult<(PreparedTeamRunStart, usize, Duration)> {
+            let max_concurrency_u64 =
+                parse_positive("max_concurrency", TEAM_RUN_START_DEFAULT_CONCURRENCY as u64)?;
+            let max_concurrency = usize::try_from(max_concurrency_u64)
+                .ok()
+                .filter(|value| *value <= 64)
+                .ok_or_else(|| {
+                    CliError::Usage("max_concurrency must be between 1 and 64".to_string())
+                })?;
+            let idle_timeout_s =
+                parse_positive("idle_timeout_s", kimi_acp::DEFAULT_PROMPT_IDLE_TIMEOUT_SECS)?;
+            let prepared = prepare_team_run_start(store, team_run_id, max_concurrency)?;
+            Ok((
+                prepared,
+                max_concurrency,
+                Duration::from_secs(idle_timeout_s),
+            ))
+        })();
+        match result {
+            Ok((prepared, max_concurrency, idle_timeout)) => {
+                let context = projects.context_for(&project_id, store);
+                let activity_manager = sse_manager.clone();
+                let activity_project = project_id.clone();
+                let live_sink: LiveMemberActivitySink = Arc::new(move |activity| {
+                    broadcast_live_member_activity(&activity_manager, &activity_project, activity);
+                });
+                let accepted_run_id = prepared.run_id.clone();
+                std::thread::spawn(move || {
+                    if let Err(error) = drive_prepared_team_run(
+                        prepared,
+                        Some(context),
+                        max_concurrency,
+                        idle_timeout,
+                        Some(live_sink),
+                    ) {
+                        eprintln!("team-run HTTP start failed: {error}");
+                    }
+                });
+                write_http_json(
+                    &mut stream,
+                    "202 Accepted",
+                    &serde_json::json!({
+                        "ok": true,
+                        "result": {"id": accepted_run_id, "status": "running"},
+                        "snapshot": dashboard_snapshot(store)?,
+                    }),
+                )?;
+            }
+            Err(error) => write_http_json(
+                &mut stream,
+                "400 Bad Request",
+                &serde_json::json!({"ok": false, "error": error.to_string()}),
+            )?,
+        }
+        return Ok(());
+    }
+
     match handle_http_action(store, &path_only, &body_json) {
         Ok(response) => write_http_json(
             &mut stream,
@@ -6622,6 +4828,15 @@ fn handle_http_connection(
         )?,
     }
     Ok(())
+}
+
+fn retired_http_path(path: &str) -> bool {
+    path == "/v1/goals"
+        || path.starts_with("/v1/goals/")
+        || path == "/v1/tasks"
+        || path.starts_with("/v1/tasks/")
+        || path == "/v1/phases"
+        || path.starts_with("/v1/phases/")
 }
 
 /// Apply a `POST /v1/projects/switch {project: <id>}` request: switch the active
@@ -6678,6 +4893,33 @@ fn handle_http_action(
     path: &str,
     body: &serde_json::Value,
 ) -> CliResult<serde_json::Value> {
+    if path == "/v1/missions" {
+        return create_mission_value(store, body);
+    }
+    if path == "/v1/waves" {
+        return create_wave_value(store, body);
+    }
+    if let Some(wave_id) = path
+        .strip_prefix("/v1/waves/")
+        .and_then(|rest| rest.strip_suffix("/gate"))
+    {
+        return gate_wave_value(store, wave_id, body);
+    }
+    if path == "/v1/team-runs" {
+        return create_team_run_value(store, body);
+    }
+    if let Some(team_run_id) = path
+        .strip_prefix("/v1/team-runs/")
+        .and_then(|rest| rest.strip_suffix("/messages"))
+    {
+        return send_team_message_value(store, team_run_id, body);
+    }
+    if let Some(team_run_id) = path
+        .strip_prefix("/v1/team-runs/")
+        .and_then(|rest| rest.strip_suffix("/transition"))
+    {
+        return transition_team_run_value(store, team_run_id, body);
+    }
     if path == "/v1/messages" {
         return create_message_value(store, body);
     }
@@ -6686,24 +4928,6 @@ fn handle_http_action(
     }
     if path == "/v1/agents" {
         return create_agent_value(store, body);
-    }
-    if path == "/v1/goals" {
-        return create_goal_value(store, body);
-    }
-    if path == "/v1/tasks" {
-        return create_task_value(store, body);
-    }
-    if let Some(task_id) = path
-        .strip_prefix("/v1/tasks/")
-        .and_then(|rest| rest.strip_suffix("/assign"))
-    {
-        return assign_task_value(store, task_id, body);
-    }
-    if let Some(task_id) = path
-        .strip_prefix("/v1/tasks/")
-        .and_then(|rest| rest.strip_suffix("/reviewer"))
-    {
-        return set_task_reviewer_value(store, task_id, body);
     }
     if path == "/v1/gateway/tick" {
         return provider_gateway_tick_value(
@@ -6775,13 +4999,71 @@ fn handle_http_action(
             store, agent_id,
         )?)?);
     }
-    if let Some(task_id) = path
-        .strip_prefix("/v1/tasks/")
-        .and_then(|rest| rest.strip_suffix("/request-review"))
-    {
-        return request_task_review_value(store, task_id, body);
-    }
     Err(CliError::Usage(format!("unknown action path: {path}")))
+}
+
+/// POST /v1/missions — create native Mission intent. Goal compatibility
+/// projections are read-only and intentionally have no creation endpoint.
+fn create_mission_value(
+    store: &HarnessStore,
+    body: &serde_json::Value,
+) -> CliResult<serde_json::Value> {
+    Ok(serde_json::to_value(create_mission(
+        store,
+        optional_json_string(body, "id")?,
+        &required_json_string(body, "title")?,
+        &required_json_string(body, "objective")?,
+        optional_json_string(body, "desired_outcome")?,
+    )?)?)
+}
+
+/// POST /v1/waves — add one ordered, executor-specific Wave to a native
+/// Mission. Its membership is recorded on both append-only ledgers.
+fn create_wave_value(
+    store: &HarnessStore,
+    body: &serde_json::Value,
+) -> CliResult<serde_json::Value> {
+    let index = match body.get("index") {
+        None => None,
+        Some(value) => {
+            let raw = value.as_u64().ok_or_else(|| {
+                CliError::Usage("JSON field index must be a positive integer".to_string())
+            })?;
+            Some(u32::try_from(raw).map_err(|_| {
+                CliError::Usage("JSON field index must fit a positive u32".to_string())
+            })?)
+        }
+    };
+    Ok(serde_json::to_value(create_wave(
+        store,
+        optional_json_string(body, "id")?,
+        &required_json_string(body, "mission_id")?,
+        index,
+        &required_json_string(body, "title")?,
+        &required_json_string(body, "objective")?,
+        parse_wave_executor_kind(&required_json_string(body, "executor_kind")?)?,
+        optional_json_string(body, "exit_criteria")?,
+        optional_json_string(body, "plan_note")?,
+    )?)?)
+}
+
+/// POST /v1/waves/{id}/gate — write a lightweight acceptance, revise, or
+/// blocked result without deleting executor-attempt lineage.
+fn gate_wave_value(
+    store: &HarnessStore,
+    wave_id: &str,
+    body: &serde_json::Value,
+) -> CliResult<serde_json::Value> {
+    Ok(serde_json::to_value(gate_wave(
+        store,
+        wave_id,
+        &required_json_string(body, "status")?,
+        optional_json_string(body, "run_id")?,
+        &optional_json_string(body, "accepted_by")?.unwrap_or_else(|| "host".to_string()),
+        optional_json_string(body, "note")?,
+        optional_json_string(body, "outcome")?,
+        optional_json_string_array(body, "artifact_refs")?,
+    )?)?)
 }
 
 fn create_message_value(
@@ -6846,40 +5128,6 @@ fn persist_new_team(store: &HarnessStore, team: &AgentTeam) -> CliResult<()> {
 }
 
 /// Persist a freshly-built goal. Mirrors the `goal create` CLI arm.
-fn persist_new_goal(store: &HarnessStore, goal: &Goal) -> CliResult<()> {
-    store.append_goal(goal)?;
-    Ok(())
-}
-
-/// Persist a freshly-built task. Mirrors the `task create` CLI arm.
-fn persist_new_task(store: &HarnessStore, task: &Task) -> CliResult<()> {
-    // goal-task-board-model: a phased task (phase_id Some) must name a real phase
-    // of its own goal. Validate fail-fast at the create seam so a typo'd/stale
-    // phase_id is rejected with an actionable message, not silently orphaned.
-    // Goal-scoped-phaseless (phase_id None) and loose (goal_id None) shapes skip
-    // straight through — `validate_task_placement` is a no-op when phase_id is None,
-    // and we only load the goal when there is a phase_id to check.
-    if task.phase_id.is_some() {
-        if let Some(goal_id) = task.goal_id.as_deref() {
-            let goal = goal_load(store, goal_id)?;
-            goal.validate_task_placement(task)
-                .map_err(CliError::Usage)?;
-        } else {
-            // phase_id set but no goal_id: still invalid. Surface it (an empty Goal
-            // with this id won't match, so validate_task_placement rejects it).
-            return Err(CliError::Usage(format!(
-                "task `{}` has a phase_id but no goal_id: a phased task must name its goal",
-                task.id
-            )));
-        }
-    }
-    store.append_task(task)?;
-    Ok(())
-}
-
-/// Persist a freshly-built member (no runtime start) and emit the
-/// `agent_created` event. Shared by the non-`--start` CLI path and the
-/// POST /v1/agents route. Runtime start stays a separate action.
 fn finalize_member_creation(store: &HarnessStore, member: &AgentMember) -> CliResult<()> {
     store.append_member(member)?;
     append_agent_event(
@@ -6896,69 +5144,6 @@ fn finalize_member_creation(store: &HarnessStore, member: &AgentMember) -> CliRe
 
 /// Parameters for assigning a task, shared by the `task assign` CLI arm and the
 /// POST /v1/tasks/{id}/assign route.
-struct TaskAssignment {
-    assignee: String,
-    channel: Option<String>,
-    allow_missing_goal_design: bool,
-    waiver_decision_id: Option<String>,
-}
-
-/// Assign a task to an agent, enforcing the goal-design gate, and queue the
-/// task-assignment message. Shared by the CLI and HTTP assign paths.
-fn assign_task(
-    store: &HarnessStore,
-    task_id: &str,
-    assignment: &TaskAssignment,
-) -> CliResult<Task> {
-    let mut task = latest_task(store, task_id)?;
-    if let Some(goal_id) = task.goal_id.as_deref() {
-        let status = goal_learning_status(store, goal_id)?;
-        if !status.has_goal_design() {
-            if assignment.allow_missing_goal_design {
-                status.require_valid_waiver(store, assignment.waiver_decision_id.as_deref())?;
-            } else {
-                return Err(CliError::Usage(format!(
-                    "task {task_id} cannot be assigned before goal {goal_id} has goal_design evidence; use --allow-missing-goal-design with --waiver-decision <id> only for an explicit design-stage waiver"
-                )));
-            }
-        }
-    }
-    task.assignee_agent_id = Some(assignment.assignee.clone());
-    task.status = TaskStatus::Assigned;
-    task.updated_at = now_string();
-    store.append_task(&task)?;
-    let message = Message {
-        id: generated_id("msg"),
-        task_id: Some(task.id.clone()),
-        from_agent_id: task.owner_agent_id.clone(),
-        to_agent_id: Some(assignment.assignee.clone()),
-        channel: Some(
-            assignment
-                .channel
-                .clone()
-                .unwrap_or_else(|| "task-assignment".into()),
-        ),
-        kind: MessageKind::Task,
-        delivery_status: MessageDeliveryStatus::Queued,
-        content: format!("Assigned task {}", task.id),
-        evidence_ids: Vec::new(),
-        created_at: now_string(),
-        delivery: None,
-        sender_kind: SenderKind::Agent,
-    };
-    store.append_message(&message)?;
-    Ok(task)
-}
-
-// ---------------------------------------------------------------------------
-// HTTP create value-fns (WP-ii)
-//
-// Thin wrappers that build each entity from a JSON body and delegate to the
-// shared persistence helpers above. Missing required fields surface as
-// `CliError::Usage`, which the serve loop maps to a 400 response.
-// ---------------------------------------------------------------------------
-
-/// POST /v1/teams — build a team from the JSON body and persist it.
 fn create_team_value(
     store: &HarnessStore,
     body: &serde_json::Value,
@@ -6978,6 +5163,113 @@ fn create_team_value(
     Ok(serde_json::to_value(team)?)
 }
 
+/// POST /v1/team-runs — create a team run from the JSON body (same semantics
+/// as `team-run create`; the host surface defaults to "http").
+fn create_team_run_value(
+    store: &HarnessStore,
+    body: &serde_json::Value,
+) -> CliResult<serde_json::Value> {
+    if body.get("wave_index").is_some() {
+        return Err(CliError::Usage(
+            "JSON field wave_index was retired; supply wave_id and derive order from the native Wave"
+                .to_string(),
+        ));
+    }
+    let member_values = body
+        .get("members")
+        .and_then(|value| value.as_array())
+        .ok_or_else(|| CliError::Usage("missing JSON field: members".to_string()))?;
+    let mut members = Vec::new();
+    for (member_index, member) in member_values.iter().enumerate() {
+        let owned_paths = match member.get("owned_paths") {
+            None => Vec::new(),
+            Some(serde_json::Value::Array(paths)) => paths
+                .iter()
+                .enumerate()
+                .map(|(path_index, path)| {
+                    path.as_str().map(str::to_string).ok_or_else(|| {
+                        CliError::Usage(format!(
+                            "members[{member_index}].owned_paths[{path_index}] must be a string"
+                        ))
+                    })
+                })
+                .collect::<CliResult<Vec<_>>>()?,
+            Some(_) => {
+                return Err(CliError::Usage(format!(
+                    "members[{member_index}].owned_paths must be an array"
+                )));
+            }
+        };
+        members.push(TeamMemberSpec {
+            name: required_json_string(member, "name")?,
+            role: required_json_string(member, "role")?,
+            provider: required_json_string(member, "provider")?,
+            model: optional_json_string(member, "model")?,
+            owned_paths,
+        });
+    }
+    let budget_limit_usd = match body.get("budget_limit_usd") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(value) => Some(value.as_f64().ok_or_else(|| {
+            CliError::Usage("JSON field budget_limit_usd must be a number or null".to_string())
+        })?),
+    };
+    let host_surface =
+        optional_json_string(body, "host_surface")?.unwrap_or_else(|| "http".to_string());
+    let created = create_team_run(
+        store,
+        &required_json_string(body, "objective")?,
+        budget_limit_usd,
+        &host_surface,
+        optional_json_string(body, "host_thread_id")?,
+        optional_json_string(body, "previous_run_id")?,
+        optional_json_string(body, "mission_id")?,
+        optional_json_string(body, "wave_id")?,
+        &members,
+    )?;
+    Ok(created_team_run_json(&created))
+}
+
+/// POST /v1/team-runs/{id}/transition — attempt lifecycle. Body `{status}`; only
+/// `reviewing → completed` and
+/// `planning|waiting|reviewing → cancelled` are legal
+/// (same logic as `team-run complete|cancel`, so CLI and UI cannot diverge).
+fn transition_team_run_value(
+    store: &HarnessStore,
+    team_run_id: &str,
+    body: &serde_json::Value,
+) -> CliResult<serde_json::Value> {
+    let target = parse_team_run_status(&required_json_string(body, "status")?)?;
+    let run = transition_team_run(store, team_run_id, target)?;
+    Ok(serde_json::to_value(run)?)
+}
+
+/// POST /v1/team-runs/{id}/messages — route a message inside the run (same
+/// semantics as `team-run send`).
+fn send_team_message_value(
+    store: &HarnessStore,
+    team_run_id: &str,
+    body: &serde_json::Value,
+) -> CliResult<serde_json::Value> {
+    let to_member_ids = json_string_array(body, "to_member_ids");
+    if to_member_ids.is_empty() {
+        return Err(CliError::Usage(
+            "missing JSON field: to_member_ids".to_string(),
+        ));
+    }
+    let message = send_team_message(
+        store,
+        team_run_id,
+        &required_json_string(body, "from_member_id")?,
+        to_member_ids,
+        parse_team_message_kind(&required_json_string(body, "kind")?)?,
+        &required_json_string(body, "body")?,
+        json_string(body, "correlation_id"),
+        json_string(body, "causation_id"),
+    )?;
+    Ok(serde_json::to_value(message)?)
+}
+
 /// POST /v1/agents — build an Agent Member from the JSON body and persist it.
 /// Does NOT start a runtime: `--start` / runtime spawn stays a separate action.
 fn create_agent_value(
@@ -6994,127 +5286,6 @@ fn create_agent_value(
 }
 
 /// POST /v1/goals — build a goal from the JSON body and persist it.
-fn create_goal_value(
-    store: &HarnessStore,
-    body: &serde_json::Value,
-) -> CliResult<serde_json::Value> {
-    let goal = Goal {
-        phases: Vec::new(),
-        knowledge: Vec::new(),
-        design_synthesis_at: None,
-        id: json_string(body, "id").unwrap_or_else(|| generated_id("goal")),
-        title: required_json_string(body, "title")?,
-        owner_agent_id: required_json_string(body, "owner")
-            .or_else(|_| required_json_string(body, "owner_agent_id"))?,
-        status: GoalStatus::Active,
-        priority: json_string(body, "priority").unwrap_or_else(|| "p0".into()),
-        created_at: now_string(),
-        updated_at: now_string(),
-        vision_id: json_string(body, "vision"),
-        goal_design_id: json_string(body, "goal_design"),
-        closed_by_decision_id: json_string(body, "closed_by_decision"),
-        git_metadata: None,
-        stage: GoalStage::default(),
-        description_md: None,
-        design_md: None,
-        acceptance_md: None,
-        explorations: Vec::new(),
-        skill_refs: Vec::new(),
-        stage_changed_at: None,
-    };
-    persist_new_goal(store, &goal)?;
-    Ok(serde_json::to_value(goal)?)
-}
-
-/// POST /v1/tasks — build a task from the JSON body and persist it.
-fn create_task_value(
-    store: &HarnessStore,
-    body: &serde_json::Value,
-) -> CliResult<serde_json::Value> {
-    let task = Task {
-        design_md: None,
-        // goal-task-board-model: read the typed phase_id from the body (the dead
-        // free-text `phase` key is gone). `goal` names the task's goal; `phase_id`
-        // (when set) is validated against that goal's phases[] in persist_new_task.
-        phase_id: json_string(body, "phase_id"),
-        superseded_by_knowledge_id: None,
-        workflow_step_ids: Vec::new(),
-        id: json_string(body, "id").unwrap_or_else(|| generated_id("task")),
-        goal_id: json_string(body, "goal"),
-        parent_task_id: json_string(body, "parent"),
-        title: required_json_string(body, "title")?,
-        objective: required_json_string(body, "objective")?,
-        owner_agent_id: required_json_string(body, "owner")
-            .or_else(|_| required_json_string(body, "owner_agent_id"))?,
-        assignee_agent_id: json_string(body, "assignee"),
-        reviewer_agent_id: json_string(body, "reviewer"),
-        status: TaskStatus::Planned,
-        depends_on_task_ids: json_string_array(body, "depends_on"),
-        workspace_ref: json_string(body, "workspace"),
-        branch_ref: json_string(body, "branch"),
-        pr_ref: json_string(body, "pr"),
-        owned_paths: json_string_array(body, "owned_path"),
-        acceptance_criteria: json_string_array(body, "acceptance"),
-        created_at: now_string(),
-        updated_at: now_string(),
-        scope_refs: json_string_array(body, "scope_ref"),
-        requires_human_approval: json_bool(body, "requires_human_approval").unwrap_or(false),
-        verdict_decision_id: json_string(body, "verdict_decision"),
-        description: json_string(body, "description"),
-        git_metadata: None,
-        outputs: Vec::new(),
-        executor: json_string(body, "executor"),
-    };
-    persist_new_task(store, &task)?;
-    Ok(serde_json::to_value(task)?)
-}
-
-/// POST /v1/tasks/{id}/assign — assign a task to an agent from the JSON body.
-fn assign_task_value(
-    store: &HarnessStore,
-    task_id: &str,
-    body: &serde_json::Value,
-) -> CliResult<serde_json::Value> {
-    let task = assign_task(
-        store,
-        task_id,
-        &TaskAssignment {
-            assignee: required_json_string(body, "assignee")
-                .or_else(|_| required_json_string(body, "assignee_agent_id"))?,
-            channel: json_string(body, "channel"),
-            allow_missing_goal_design: json_bool(body, "allow_missing_goal_design")
-                .unwrap_or(false),
-            waiver_decision_id: json_string(body, "waiver_decision"),
-        },
-    )?;
-    Ok(serde_json::to_value(task)?)
-}
-
-/// POST /v1/tasks/{id}/reviewer — set the task's reviewer agent from the JSON
-/// body (the `@reviewer` gesture on the dashboard). This only records the
-/// reviewer accountability on the existing nullable `Task.reviewer_agent_id`
-/// field (no schema change); it deliberately does NOT change status or queue a
-/// message. Review delivery is a separate hand-off (`/request-review`,
-/// `request_task_review_value`) so the assignment-proof chain stays explicit:
-/// naming a reviewer is not the same as handing the work off to them.
-fn set_task_reviewer_value(
-    store: &HarnessStore,
-    task_id: &str,
-    body: &serde_json::Value,
-) -> CliResult<serde_json::Value> {
-    let reviewer = required_json_string(body, "reviewer")
-        .or_else(|_| required_json_string(body, "reviewer_agent_id"))?;
-    // Fail fast if the named reviewer is not a real member, mirroring assign.
-    let _ = latest_member(store, &reviewer)?;
-    let mut task = latest_task(store, task_id)?;
-    task.reviewer_agent_id = Some(reviewer);
-    task.updated_at = now_string();
-    store.append_task(&task)?;
-    Ok(serde_json::to_value(task)?)
-}
-
-/// Build an Agent Member from a JSON body, mirroring `build_member_from_args`.
-/// The member is created in `Creating` status; callers set the final status.
 fn build_member_from_json(body: &serde_json::Value) -> CliResult<AgentMember> {
     Ok(AgentMember {
         id: json_string(body, "id").unwrap_or_else(|| generated_id("agent")),
@@ -7160,58 +5331,6 @@ fn build_member_from_json(body: &serde_json::Value) -> CliResult<AgentMember> {
     })
 }
 
-fn request_task_review_value(
-    store: &HarnessStore,
-    task_id: &str,
-    body: &serde_json::Value,
-) -> CliResult<serde_json::Value> {
-    let mut task = latest_task(store, task_id)?;
-    let reviewer = json_string(body, "to_agent_id")
-        .or_else(|| json_string(body, "reviewer_agent_id"))
-        .or_else(|| task.reviewer_agent_id.clone())
-        .ok_or_else(|| {
-            CliError::Usage(format!(
-                "task {task_id} has no reviewer; provide to_agent_id"
-            ))
-        })?;
-    let reviewer_member = latest_member(store, &reviewer)?;
-    ensure_member_accepts_delivery(&reviewer_member)?;
-    let from_agent_id =
-        json_string(body, "from_agent_id").unwrap_or_else(|| task.owner_agent_id.clone());
-    let message = Message {
-        id: generated_id("msg"),
-        task_id: Some(task.id.clone()),
-        from_agent_id,
-        to_agent_id: Some(reviewer.clone()),
-        channel: Some("review-request".into()),
-        kind: MessageKind::Message,
-        delivery_status: MessageDeliveryStatus::Queued,
-        content: json_string(body, "content")
-            .unwrap_or_else(|| format!("Please review task {}", task.id)),
-        evidence_ids: json_string_array(body, "evidence_ids"),
-        created_at: now_string(),
-        delivery: None,
-        sender_kind: SenderKind::Agent,
-    };
-    store.append_message(&message)?;
-    task.status = TaskStatus::Review;
-    task.updated_at = now_string();
-    store.append_task(&task)?;
-    append_agent_event(
-        store,
-        &reviewer,
-        reviewer_member.provider_runtime_id.as_deref(),
-        Some(task_id),
-        "review_requested",
-        "Task review requested",
-        None,
-    )?;
-    Ok(serde_json::json!({
-        "task": task,
-        "message": message
-    }))
-}
-
 fn json_string(body: &serde_json::Value, key: &str) -> Option<String> {
     body.get(key)
         .and_then(|value| value.as_str())
@@ -7220,6 +5339,16 @@ fn json_string(body: &serde_json::Value, key: &str) -> Option<String> {
 
 fn required_json_string(body: &serde_json::Value, key: &str) -> CliResult<String> {
     json_string(body, key).ok_or_else(|| CliError::Usage(format!("missing JSON field: {key}")))
+}
+
+fn optional_json_string(body: &serde_json::Value, key: &str) -> CliResult<Option<String>> {
+    match body.get(key) {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(value) => value
+            .as_str()
+            .map(|text| Some(text.to_string()))
+            .ok_or_else(|| CliError::Usage(format!("JSON field {key} must be a string or null"))),
+    }
 }
 
 fn json_bool(body: &serde_json::Value, key: &str) -> Option<bool> {
@@ -7240,6 +5369,24 @@ fn json_string_array(body: &serde_json::Value, key: &str) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+fn optional_json_string_array(body: &serde_json::Value, key: &str) -> CliResult<Vec<String>> {
+    match body.get(key) {
+        None => Ok(Vec::new()),
+        Some(serde_json::Value::Array(values)) => values
+            .iter()
+            .enumerate()
+            .map(|(index, value)| {
+                value.as_str().map(str::to_string).ok_or_else(|| {
+                    CliError::Usage(format!("JSON field {key}[{index}] must be a string"))
+                })
+            })
+            .collect(),
+        Some(_) => Err(CliError::Usage(format!(
+            "JSON field {key} must be an array"
+        ))),
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -7324,239 +5471,10 @@ fn write_http_response(
 ) -> CliResult<()> {
     write!(
         stream,
-        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         body.len()
     )?;
     stream.write_all(body)?;
-    Ok(())
-}
-
-fn codex_run(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    let task_id = required(args, "--task")?;
-    let agent_id = required(args, "--agent")?;
-    let worktree = required(args, "--worktree")?;
-    let prompt = required(args, "--prompt")?;
-    let session_id = value(args, "--id").unwrap_or_else(|| generated_id("session"));
-    let session_dir = store.root().join("provider-sessions").join(&session_id);
-    fs::create_dir_all(&session_dir)?;
-
-    let jsonl_ref = session_dir.join("events.jsonl");
-    let last_message_ref = session_dir.join("last-message.md");
-    let stdout_ref = session_dir.join("stdout.log");
-    let started_at = now_string();
-    let sandbox = value(args, "--sandbox").unwrap_or_else(|| "workspace-write".into());
-
-    let mut command_args = vec![
-        "exec".to_string(),
-        "-C".to_string(),
-        worktree.clone(),
-        "--sandbox".to_string(),
-        sandbox,
-        "--json".to_string(),
-        "--output-last-message".to_string(),
-        last_message_ref.display().to_string(),
-    ];
-    if let Some(model) = value(args, "--model") {
-        command_args.push("--model".into());
-        command_args.push(model);
-    }
-    command_args.push(prompt.clone());
-
-    // Redirect stdin to /dev/null: `codex exec` with an inherited (empty) stdin
-    // can wedge forever on "Reading additional input from stdin…" (issue #139
-    // item 1). `.output()` leaves stdin inherited, so null it explicitly — the
-    // same guard run_ndjson_child already applies to the ephemeral/persistent paths.
-    let output = Command::new("codex")
-        .args(&command_args)
-        .stdin(Stdio::null())
-        .output()?;
-    fs::write(&jsonl_ref, &output.stdout)?;
-    fs::write(&stdout_ref, &output.stderr)?;
-
-    let exit_code = output.status.code();
-    let status = if output.status.success() {
-        ProviderSessionStatus::Succeeded
-    } else {
-        ProviderSessionStatus::Failed
-    };
-    let evidence_id = generated_id("evidence");
-    let session_ref = session_dir.display().to_string();
-    let evidence = Evidence {
-        id: evidence_id.clone(),
-        task_id: Some(task_id.clone()),
-        source_type: "codex_provider_session".into(),
-        source_ref: session_ref.clone(),
-        summary: format!("Codex provider session {session_id} for task {task_id}"),
-        created_at: now_string(),
-        evidence_kind: None,
-        goal_id: None,
-    };
-    store.append_evidence(&evidence)?;
-
-    let session = ProviderSession {
-        id: session_id.clone(),
-        provider: "codex".into(),
-        agent_member_id: agent_id.clone(),
-        task_id: Some(task_id.clone()),
-        workspace_ref: Some(worktree),
-        provider_thread_id: None,
-        provider_turn_id: None,
-        terminal_source: Some(if exit_code == Some(0) {
-            MessageTerminalSource::Unknown
-        } else {
-            MessageTerminalSource::Failed
-        }),
-        status: status.clone(),
-        command: "codex".into(),
-        args: command_args,
-        prompt_ref: Some(prompt),
-        prompt_summary: None,
-        provider_session_ref: None,
-        stdout_ref: Some(stdout_ref.display().to_string()),
-        jsonl_ref: Some(jsonl_ref.display().to_string()),
-        transcript_ref: None,
-        last_message_ref: Some(last_message_ref.display().to_string()),
-        exit_code,
-        started_at,
-        ended_at: Some(now_string()),
-        evidence_ids: vec![evidence_id.clone()],
-    };
-    store.append_provider_session(&session)?;
-
-    let report = Message {
-        id: generated_id("msg"),
-        task_id: Some(task_id),
-        from_agent_id: agent_id,
-        to_agent_id: None,
-        channel: Some("provider-session".into()),
-        kind: MessageKind::Report,
-        delivery_status: MessageDeliveryStatus::Delivered,
-        content: format!(
-            "Codex provider session {session_id} finished with exit_code={exit_code:?}"
-        ),
-        evidence_ids: vec![evidence_id.clone()],
-        created_at: now_string(),
-        delivery: Some(MessageDelivery {
-            provider_session_id: Some(session_id),
-            provider_request_id: None,
-            provider_thread_id: None,
-            provider_turn_id: None,
-            terminal_source: Some(MessageTerminalSource::Unknown),
-            delivered_at: Some(now_string()),
-            last_error: None,
-        }),
-        sender_kind: SenderKind::Agent,
-    };
-    store.append_message(&report)?;
-    print_json(&session)?;
-    Ok(())
-}
-
-fn codex_review(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    let task_id = required(args, "--task")?;
-    let agent_id = required(args, "--agent")?;
-    let worktree = required(args, "--worktree")?;
-    let base = value(args, "--base").unwrap_or_else(|| "master".into());
-    let prompt = value(args, "--prompt");
-    let session_id = value(args, "--id").unwrap_or_else(|| generated_id("session"));
-    let session_dir = store.root().join("provider-sessions").join(&session_id);
-    fs::create_dir_all(&session_dir)?;
-
-    let stdout_ref = session_dir.join("review-stdout.log");
-    let stderr_ref = session_dir.join("review-stderr.log");
-    let started_at = now_string();
-    let mut command_args = vec!["review".to_string(), "--base".to_string(), base];
-    if has_flag(args, "--uncommitted") {
-        command_args.push("--uncommitted".into());
-    }
-    if let Some(prompt) = prompt.clone() {
-        command_args.push(prompt);
-    }
-
-    // Null stdin so a no-TTY `codex exec` can't wedge on "Reading additional
-    // input from stdin…" (issue #139 item 1); `.output()` leaves it inherited.
-    let output = Command::new("codex")
-        .args(&command_args)
-        .current_dir(&worktree)
-        .stdin(Stdio::null())
-        .output()?;
-    fs::write(&stdout_ref, &output.stdout)?;
-    fs::write(&stderr_ref, &output.stderr)?;
-
-    let exit_code = output.status.code();
-    let status = if output.status.success() {
-        ProviderSessionStatus::Succeeded
-    } else {
-        ProviderSessionStatus::Failed
-    };
-    let evidence_id = generated_id("evidence");
-    let session_ref = session_dir.display().to_string();
-    let evidence = Evidence {
-        id: evidence_id.clone(),
-        task_id: Some(task_id.clone()),
-        source_type: "codex_review_session".into(),
-        source_ref: session_ref.clone(),
-        summary: format!("Codex review session {session_id} for task {task_id}"),
-        created_at: now_string(),
-        evidence_kind: None,
-        goal_id: None,
-    };
-    store.append_evidence(&evidence)?;
-
-    let session = ProviderSession {
-        id: session_id.clone(),
-        provider: "codex".into(),
-        agent_member_id: agent_id.clone(),
-        task_id: Some(task_id.clone()),
-        workspace_ref: Some(worktree),
-        provider_thread_id: None,
-        provider_turn_id: None,
-        terminal_source: Some(if exit_code == Some(0) {
-            MessageTerminalSource::Unknown
-        } else {
-            MessageTerminalSource::Failed
-        }),
-        status: status.clone(),
-        command: "codex".into(),
-        args: command_args,
-        prompt_ref: None,
-        prompt_summary: prompt,
-        provider_session_ref: None,
-        stdout_ref: Some(stdout_ref.display().to_string()),
-        jsonl_ref: None,
-        transcript_ref: Some(stderr_ref.display().to_string()),
-        last_message_ref: None,
-        exit_code,
-        started_at,
-        ended_at: Some(now_string()),
-        evidence_ids: vec![evidence_id.clone()],
-    };
-    store.append_provider_session(&session)?;
-
-    let report = Message {
-        id: generated_id("msg"),
-        task_id: Some(task_id),
-        from_agent_id: agent_id,
-        to_agent_id: None,
-        channel: Some("provider-review".into()),
-        kind: MessageKind::Report,
-        delivery_status: MessageDeliveryStatus::Delivered,
-        content: format!("Codex review session {session_id} finished with exit_code={exit_code:?}"),
-        evidence_ids: vec![evidence_id.clone()],
-        created_at: now_string(),
-        sender_kind: SenderKind::Agent,
-        delivery: Some(MessageDelivery {
-            provider_session_id: Some(session_id),
-            provider_request_id: None,
-            provider_thread_id: None,
-            provider_turn_id: None,
-            terminal_source: Some(MessageTerminalSource::Unknown),
-            delivered_at: Some(now_string()),
-            last_error: None,
-        }),
-    };
-    store.append_message(&report)?;
-    print_json(&session)?;
     Ok(())
 }
 
@@ -7899,54 +5817,6 @@ fn workflow_effective_effort<'a>(
 /// the same `now`, which would make a serial step falsely overlap the later
 /// parallel ones. Shared by the live per-step journal (in the driver) and the
 /// finalize journal (for mock/test drivers).
-/// Classify a completed [`workflow::StepResult`] into a machine-readable
-/// [`WorkflowTerminalReason`] (issue #193 G1). A successful step is `Completed`;
-/// a failed one is disambiguated from its `details`: a per-leaf wall-clock kill
-/// (`wall_timed_out`) → `LeafTimeout`; an idle-since-output kill
-/// (`failure.reason == "timeout"`) → `IdleTimeout`; anything else that failed →
-/// `ProviderFailed`. (A `verdict()`-false step is journaled separately via the
-/// orchestrator's `verdict_outcome`, which the caller may override afterwards.)
-fn classify_step_terminal_reason(result: &workflow::StepResult) -> WorkflowTerminalReason {
-    if result.ok {
-        return WorkflowTerminalReason::Completed;
-    }
-    let details = result.details.as_ref();
-    let wall_timed_out = details
-        .and_then(|d| d.get("wall_timed_out"))
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    if wall_timed_out {
-        return WorkflowTerminalReason::LeafTimeout;
-    }
-    let idle_timeout = details
-        .and_then(|d| d.get("failure"))
-        .and_then(|f| f.get("reason"))
-        .and_then(|v| v.as_str())
-        == Some("timeout");
-    if idle_timeout {
-        return WorkflowTerminalReason::IdleTimeout;
-    }
-    WorkflowTerminalReason::ProviderFailed
-}
-
-/// Classify a normally-finalized [`workflow::WorkflowOutcome`] into a run-level
-/// [`WorkflowTerminalReason`] (issue #193 G1). A completed run is `Completed`; a
-/// failed finalize adopts the class of its FIRST failed step (a wall/idle timeout
-/// or a provider failure), falling back to `ProviderFailed`. This is the CLEAN
-/// finalize path — driver-death / operator-cancel / orphan reasons are stamped by
-/// their own reaper / signal paths, not here.
-fn classify_run_terminal_reason(outcome: &workflow::WorkflowOutcome) -> WorkflowTerminalReason {
-    if outcome.status == WorkflowRunStatus::Completed {
-        return WorkflowTerminalReason::Completed;
-    }
-    outcome
-        .steps
-        .iter()
-        .find(|s| !s.ok)
-        .map(classify_step_terminal_reason)
-        .unwrap_or(WorkflowTerminalReason::ProviderFailed)
-}
-
 fn build_terminal_step(
     run_id: &str,
     step_id: String,
@@ -7968,8 +5838,6 @@ fn build_terminal_step(
         _ => now,
     };
     WorkflowStep {
-        task_id: None,
-        verdict_outcome: None,
         id: step_id,
         run_id: run_id.to_string(),
         phase: result.phase.clone(),
@@ -7980,11 +5848,11 @@ fn build_terminal_step(
         result: Some(workflow::step_result_json(result)),
         started_at,
         ended_at: Some(ended_at),
-        // Machine-readable class of this step's outcome, alongside the prose
-        // summary (issue #193 G1).
-        terminal_reason: Some(classify_step_terminal_reason(result)),
-        // A cleanly-journaled terminal step is not "partial" — that flag is set
-        // only when a reaper/cancel path closes a step that had produced output.
+        terminal_reason: Some(if result.ok {
+            WorkflowTerminalReason::Completed
+        } else {
+            WorkflowTerminalReason::ProviderFailed
+        }),
         partial: false,
     }
 }
@@ -8007,8 +5875,6 @@ fn workflow_real_agent_step(
     let session_id = generated_id("session");
     let started_at = now_string();
     let running = WorkflowStep {
-        task_id: None,
-        verdict_outcome: None,
         id: step_id.clone(),
         run_id: run_id.to_string(),
         phase: spec.phase.clone(),
@@ -8019,8 +5885,6 @@ fn workflow_real_agent_step(
         result: None,
         started_at: started_at.clone(),
         ended_at: None,
-        // A start row carries no terminal classification yet; the terminal row
-        // (build_terminal_step) or a reaper/cancel path stamps it (issue #193).
         terminal_reason: None,
         partial: false,
     };
@@ -8155,26 +6019,6 @@ fn try_workflow_real_agent_step(
                 .collect();
             serde_json::Value::Object(obj)
         });
-        // No worker ran (dry-run), so there is no usage/exit telemetry; we still
-        // surface the requested model. For schema'd steps the mock synthesizes a
-        // single, non-empty candidate (index 0), so strict mode passes under
-        // --dry-run (#192 D6); mirror the real path's #192 metadata for parity.
-        let mut mock_details = serde_json::json!({ "model": spec.model });
-        if spec.schema.is_some() {
-            if let Some(map) = mock_details.as_object_mut() {
-                let empties = structured
-                    .as_ref()
-                    .map(empty_string_field_count)
-                    .unwrap_or(0);
-                map.insert("schema_attempt_count".into(), serde_json::json!(1));
-                map.insert("selected_json_index".into(), serde_json::json!(0));
-                map.insert("empty_field_count".into(), serde_json::json!(empties));
-                map.insert(
-                    "schema_strict".into(),
-                    serde_json::json!(spec.schema_strict),
-                );
-            }
-        }
         return Ok(workflow::StepResult {
             phase: spec.phase.clone(),
             label: spec.label.clone(),
@@ -8189,7 +6033,9 @@ fn try_workflow_real_agent_step(
             // journaled the `running` start row before this step began.
             step_id: None,
             started_at: None,
-            details: Some(mock_details),
+            // No worker ran (dry-run), so there is no usage/exit telemetry; we
+            // still surface the requested model so the dashboard can label it.
+            details: Some(serde_json::json!({ "model": spec.model })),
             structured,
             ordinal: spec.ordinal,
         });
@@ -8696,66 +6542,42 @@ fn spawn_ephemeral_worker(
     let mut structured: Option<serde_json::Value> = None;
     let mut schema_retry_limits: Option<(u64, Option<u64>)> = None;
     let mut schema_retry_timed_out = false;
-    // #192 journal metadata (recorded for ALL schema'd steps, not just strict):
-    // how many provider attempts ran, which JSON candidate was selected, and how
-    // many top-level string fields in the selected candidate were empty.
-    let mut schema_attempt_count: u64 = 0;
-    let mut selected_json_index: Option<u64> = None;
-    let mut empty_field_count: u64 = 0;
-    let mut schema_candidate_count: u64 = 0;
     let spawn = if let Some(schema) = &spec.schema {
         let instruction = schema_instruction(schema);
-        // The strict predicate reasons over the NORMALIZED JSON Schema (flat form
-        // wrapped into `properties`/`required`) so it can tell a plain required
-        // string prop from one already constrained by `minLength`/`enum` (#192 D3).
-        let normalized_schema = schema_json.clone().unwrap_or_else(|| schema.clone());
 
-        // First attempt: prompt + the JSON-only instruction. `select_structured`
-        // prefers the provider-validated `structured` (native flags); otherwise it
-        // enumerates the reply's JSON candidates and, under strict, skips a
-        // semantically-empty object to pick a later meaningful one (#192).
+        // First attempt: prompt + the JSON-only instruction. Prefer the
+        // provider-validated `structured` (native --json-schema/--output-schema);
+        // fall back to extracting JSON from the reply text (the prompt-hint path).
         let mut spawn = spawn_once_resilient(&format!("{}{instruction}", spec.prompt))?;
-        schema_attempt_count += 1;
-        let mut selection = select_structured(
-            spawn.structured.as_ref(),
-            spawn.reply.as_deref(),
-            &required_keys,
-            &normalized_schema,
-            spec.schema_strict,
-        );
+        structured = spawn.structured.clone().or_else(|| {
+            spawn
+                .reply
+                .as_deref()
+                .and_then(extract_json_object)
+                .filter(|obj| object_has_required_keys(obj, &required_keys))
+        });
 
-        // ONE corrective retry when no candidate survived (no valid JSON with the
-        // required keys, or strict rejected every candidate as empty).
-        if selection.selected.is_none() {
+        // ONE corrective retry when the worker produced no valid JSON.
+        if structured.is_none() {
             let (retry_timeout_ms, retry_wall_clock_ms) =
                 schema_correction_retry_limits(options.timeout_ms, default_wall_clock_ms);
             schema_retry_limits = Some((retry_timeout_ms, retry_wall_clock_ms));
             let retry_prompt = format!(
-                "{}{instruction}\n\nYour previous reply was not valid JSON with keys [{}]{}; \
+                "{}{instruction}\n\nYour previous reply was not valid JSON with keys [{}]; \
                  return ONLY that JSON object.",
                 spec.prompt,
                 required_keys.join(", "),
-                if spec.schema_strict {
-                    " (every string field must be non-empty)"
-                } else {
-                    ""
-                },
             );
             spawn = spawn_once_with_limits(&retry_prompt, retry_timeout_ms, retry_wall_clock_ms)?;
-            schema_attempt_count += 1;
             schema_retry_timed_out = spawn.timed_out;
-            selection = select_structured(
-                spawn.structured.as_ref(),
-                spawn.reply.as_deref(),
-                &required_keys,
-                &normalized_schema,
-                spec.schema_strict,
-            );
+            structured = spawn.structured.clone().or_else(|| {
+                spawn
+                    .reply
+                    .as_deref()
+                    .and_then(extract_json_object)
+                    .filter(|obj| object_has_required_keys(obj, &required_keys))
+            });
         }
-        structured = selection.selected;
-        selected_json_index = selection.selected_index;
-        empty_field_count = selection.empty_field_count;
-        schema_candidate_count = selection.candidate_count;
         spawn
     } else {
         spawn_once_resilient(&spec.prompt)?
@@ -8908,35 +6730,6 @@ fn spawn_ephemeral_worker(
                     "wall_clock_ms": retry_wall_clock_ms,
                     "timed_out": schema_retry_timed_out,
                 }),
-            );
-        }
-    }
-    // #192 (D4): journal the schema-extraction metadata for EVERY schema'd step —
-    // how many provider attempts ran, which JSON candidate was selected, the empty
-    // top-level string-field count in the selected candidate (visible even in
-    // permissive mode), and an echo of the strict flag. Serde-default on read so
-    // steps journaled before #192 still load.
-    if spec.schema.is_some() {
-        if let Some(map) = details.as_object_mut() {
-            map.insert(
-                "schema_attempt_count".into(),
-                serde_json::json!(schema_attempt_count),
-            );
-            map.insert(
-                "selected_json_index".into(),
-                serde_json::json!(selected_json_index),
-            );
-            map.insert(
-                "empty_field_count".into(),
-                serde_json::json!(empty_field_count),
-            );
-            map.insert(
-                "schema_candidate_count".into(),
-                serde_json::json!(schema_candidate_count),
-            );
-            map.insert(
-                "schema_strict".into(),
-                serde_json::json!(spec.schema_strict),
             );
         }
     }
@@ -9152,199 +6945,6 @@ fn object_has_required_keys(obj: &serde_json::Value, required: &[String]) -> boo
     }
 }
 
-/// Enumerate EVERY balanced `{ ... }` object substring of a worker reply, in text
-/// order, parsing each into a JSON object (#192). Where [`extract_json_object`]
-/// returns only the FIRST object, this returns them all so strict extraction can
-/// skip an early all-empty object and select a LATER meaningful one. Non-object
-/// balanced spans and unparseable spans are dropped. The whole reply (fence-
-/// stripped) is tried first as a single object, matching `extract_json_object`.
-fn all_json_object_candidates(reply: &str) -> Vec<serde_json::Value> {
-    let trimmed = reply.trim();
-    let mut out = Vec::new();
-
-    // Whole reply (fence-stripped) as one object — the common single-object case.
-    let unfenced = strip_code_fence(trimmed).trim();
-    if let Ok(value) = serde_json::from_str::<serde_json::Value>(unfenced) {
-        if value.is_object() {
-            out.push(value);
-        }
-    }
-
-    // Every balanced `{ ... }` span, so multiple concatenated objects each become a
-    // candidate. When the whole-reply parse above already succeeded it will usually
-    // be the same single span; we de-dupe exact repeats to avoid a phantom double.
-    let mut cursor = 0usize;
-    while cursor < trimmed.len() {
-        let Some(rel) = trimmed[cursor..].find('{') else {
-            break;
-        };
-        let start = cursor + rel;
-        match first_balanced_object(&trimmed[start..]) {
-            Some(slice) => {
-                if let Ok(value) = serde_json::from_str::<serde_json::Value>(slice) {
-                    if value.is_object() && !out.contains(&value) {
-                        out.push(value);
-                    }
-                }
-                cursor = start + slice.len();
-            }
-            None => break,
-        }
-    }
-    out
-}
-
-/// Count the top-level string-typed fields of `obj` that are EMPTY after trim
-/// (#192). This is the semantic-emptiness signal: `{"winner":"","reject":""}` has
-/// two empty fields. Non-string fields (numbers, bools, arrays, objects, null) are
-/// not counted. Recorded on EVERY schema'd step so permissive mode makes emptiness
-/// visible without failing. A non-object value has no countable fields.
-fn empty_string_field_count(obj: &serde_json::Value) -> u64 {
-    let Some(map) = obj.as_object() else {
-        return 0;
-    };
-    map.values()
-        .filter(|v| v.as_str().is_some_and(|s| s.trim().is_empty()))
-        .count() as u64
-}
-
-/// The set of top-level property names the JSON-Schema `schema` marks as string-
-/// typed AND required BUT that do NOT already declare their own `minLength`/`enum`
-/// (#192, D3). Strict mode adds the non-empty rule only to THESE — fields that
-/// already constrain their own content are left to the native validator, so we
-/// never double-constrain. Returns an empty set for the flat `{key:"hint"}` form
-/// (which has no `properties`), where the caller applies the all-strings rule
-/// instead. `schema` here is the NORMALIZED JSON Schema (post `schema_to_json_schema`).
-fn strict_required_string_props(schema: &serde_json::Value) -> Vec<String> {
-    let Some(obj) = schema.as_object() else {
-        return Vec::new();
-    };
-    let Some(props) = obj.get("properties").and_then(|p| p.as_object()) else {
-        return Vec::new();
-    };
-    let required: std::collections::HashSet<&str> = obj
-        .get("required")
-        .and_then(|r| r.as_array())
-        .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect())
-        .unwrap_or_default();
-    props
-        .iter()
-        .filter(|(name, def)| {
-            if !required.contains(name.as_str()) {
-                return false;
-            }
-            let Some(def) = def.as_object() else {
-                return false;
-            };
-            let is_string = def.get("type").and_then(|t| t.as_str()) == Some("string");
-            let self_constrained = def.contains_key("minLength") || def.contains_key("enum");
-            is_string && !self_constrained
-        })
-        .map(|(name, _)| name.clone())
-        .collect()
-}
-
-/// Whether STRICT mode REJECTS `candidate` as semantically empty (#192, D2/D3).
-/// * Flat `{key:"hint"}` form (normalized schema has no `properties`): EVERY
-///   top-level string-typed field must be non-empty after trim.
-/// * Full JSON-Schema form: the required string props that lack their own
-///   `minLength`/`enum` ([`strict_required_string_props`]) must be non-empty after
-///   trim; a required string prop that is absent or non-string also fails (the
-///   native validator would already reject those, but we stay defensive).
-///
-/// A candidate with no string fields at all (e.g. all-numeric) is NOT rejected —
-/// there is nothing empty to reject, and requiredness is a separate check.
-fn strict_rejects_candidate(
-    candidate: &serde_json::Value,
-    normalized_schema: &serde_json::Value,
-) -> bool {
-    let Some(map) = candidate.as_object() else {
-        return true;
-    };
-    let props = strict_required_string_props(normalized_schema);
-    if props.is_empty() {
-        // Flat form (or a schema declaring no plain required string props): every
-        // top-level string field present on the candidate must be non-empty.
-        map.values()
-            .any(|v| v.as_str().is_some_and(|s| s.trim().is_empty()))
-    } else {
-        // Full-schema form: only the plain required string props are checked.
-        props.iter().any(|name| match map.get(name) {
-            Some(v) => v.as_str().map(|s| s.trim().is_empty()).unwrap_or(true),
-            None => true,
-        })
-    }
-}
-
-/// The outcome of selecting a structured candidate from a worker reply (#192).
-struct StructuredSelection {
-    /// The selected structured object, or `None` when no candidate survived.
-    selected: Option<serde_json::Value>,
-    /// The 0-based index (in text order) of the selected candidate among ALL
-    /// parsed candidates, or `None` when none survived / the provider-validated
-    /// path supplied the object (index 0 is stamped for that path when accepted).
-    selected_index: Option<u64>,
-    /// Empty top-level string fields in the SELECTED candidate (0 when none).
-    empty_field_count: u64,
-    /// How many JSON object candidates were parsed from the reply text.
-    candidate_count: u64,
-}
-
-/// Select the structured object for a schema'd step from one spawn (#192).
-/// Prefers the provider-validated `structured` (native `--json-schema` /
-/// `--output-schema`) when present; otherwise enumerates the reply's JSON object
-/// candidates in text order and picks the FIRST that (a) carries every required
-/// key and (b) — under `strict` — is not semantically empty. Records which
-/// candidate was selected and its empty-field count so the caller can journal the
-/// #192 metadata and `get-output` can show it. `normalized_schema` is the
-/// post-[`schema_to_json_schema`] schema used by the strict predicate.
-fn select_structured(
-    provider_structured: Option<&serde_json::Value>,
-    reply: Option<&str>,
-    required_keys: &[String],
-    normalized_schema: &serde_json::Value,
-    strict: bool,
-) -> StructuredSelection {
-    // Provider-validated path: the native flag already enforced the schema shape.
-    // Accept it unless strict rejects it as semantically empty; index 0 marks that
-    // it came from the validated slot rather than a text candidate.
-    if let Some(validated) = provider_structured {
-        if !(strict && strict_rejects_candidate(validated, normalized_schema)) {
-            return StructuredSelection {
-                empty_field_count: empty_string_field_count(validated),
-                selected: Some(validated.clone()),
-                selected_index: Some(0),
-                candidate_count: 1,
-            };
-        }
-        // Strict rejected the validated object; fall through to reply candidates
-        // (there usually are none, so the step becomes a schema failure).
-    }
-
-    let candidates = reply.map(all_json_object_candidates).unwrap_or_default();
-    let candidate_count = candidates.len() as u64;
-    for (index, candidate) in candidates.iter().enumerate() {
-        if !object_has_required_keys(candidate, required_keys) {
-            continue;
-        }
-        if strict && strict_rejects_candidate(candidate, normalized_schema) {
-            continue;
-        }
-        return StructuredSelection {
-            empty_field_count: empty_string_field_count(candidate),
-            selected: Some(candidate.clone()),
-            selected_index: Some(index as u64),
-            candidate_count,
-        };
-    }
-    StructuredSelection {
-        selected: None,
-        selected_index: None,
-        empty_field_count: 0,
-        candidate_count,
-    }
-}
-
 /// Maximum worktree-diff text we store on a step result. Diffs above this are
 /// truncated to the cap and flagged with `worktree_diff_truncated: true` so the
 /// dashboard can render a "diff truncated" hint without choking on a huge blob.
@@ -9460,8 +7060,7 @@ fn build_step_details(
             "worktree_diff_truncated".into(),
             serde_json::Value::Bool(truncated),
         );
-        // The FULL, uncapped diff for durable landing (goal-phase-landing): when a
-        // phase passes, `orchestrate_goal_phases` applies this onto the branch.
+        // The full, uncapped diff for the retained Workflow patch pipeline.
         // `worktree_diff` above is CAPPED for dashboard display, so a truncated diff
         // would fail to apply (and falsely fail a passing phase); landing reads this
         // uncapped copy and falls back to `worktree_diff` only when absent (e.g. an
@@ -10775,30 +8374,6 @@ fn prune_live_only_trace(store: &HarnessStore, session_id: &str) {
 /// it back, in `step_ids` order, falling back to the capped `output_summary` when
 /// the full artifact is absent (e.g. a `--trace live` run whose dir was pruned).
 /// `source` tells the caller which they got: `"reply"` (full) or `"summary"`.
-/// Extract the #192 schema-extraction metadata + selected candidate from a step's
-/// `result` JSON for `workflow get-output` (D5). Returns `None` for text-mode
-/// steps (no `schema_attempt_count` recorded). Reads with serde defaults so steps
-/// journaled before #192 that happen to carry a `structured` object still surface
-/// a minimal block. The `structured` field IS the selected candidate — printing it
-/// here makes it unambiguous which JSON object was chosen when `output` concatenates
-/// several.
-fn workflow_step_schema_selection(result: &serde_json::Value) -> Option<serde_json::Value> {
-    let map = result.as_object()?;
-    // Only schema'd steps record `schema_attempt_count`; its presence gates this
-    // block so text steps stay unaffected.
-    map.get("schema_attempt_count")?;
-    Some(serde_json::json!({
-        "schema_strict": map.get("schema_strict").cloned().unwrap_or(serde_json::Value::Bool(false)),
-        "schema_attempt_count": map.get("schema_attempt_count").cloned().unwrap_or(serde_json::Value::Null),
-        "selected_json_index": map.get("selected_json_index").cloned().unwrap_or(serde_json::Value::Null),
-        "schema_candidate_count": map.get("schema_candidate_count").cloned().unwrap_or(serde_json::Value::Null),
-        "empty_field_count": map.get("empty_field_count").cloned().unwrap_or(serde_json::json!(0)),
-        // The selected candidate itself, so the operator reads the chosen object
-        // directly rather than picking it out of the concatenated output.
-        "selected": map.get("structured").cloned().unwrap_or(serde_json::Value::Null),
-    }))
-}
-
 fn workflow_get_output_value(
     store: &HarnessStore,
     args: &[String],
@@ -10862,25 +8437,12 @@ fn workflow_get_output_value(
             .as_deref()
             .map(|sid| workflow_provider_session_summary(store, sid))
             .transpose()?;
-        // #192 (D5): surface the schema-extraction metadata + the SELECTED
-        // structured candidate as a dedicated block for schema'd steps, so the
-        // operator sees which JSON object was chosen and its empty-field count
-        // without hand-parsing the concatenated `output`. `None` for text steps.
-        let schema_meta = step
-            .result
-            .as_ref()
-            .and_then(workflow_step_schema_selection);
         out_steps.push(serde_json::json!({
             "label": step.label,
             "status": serde_json::to_value(step.status)?,
-            // Machine-readable cancellation/terminal class + partial-output marking
-            // (issue #193 G1/G4) surfaced alongside the deliverable.
-            "terminal_reason": step.terminal_reason.map(|r| r.as_str()),
-            "partial": step.partial,
             "provider_session_id": step.provider_session_id,
             "source": source,
             "result": step.result,
-            "schema_selection": schema_meta,
             "session_summary": session_summary,
             "output": output,
         }));
@@ -10897,158 +8459,7 @@ fn workflow_get_output_value(
     Ok(serde_json::json!({
         "run_id": run_id,
         "workflow_name": run.workflow_name,
-        // Run-level terminal state so a caller can tell whether the deliverables are
-        // complete, partial (crash/cancel), or a clean failure (issue #193 G1/G4).
-        "status": serde_json::to_value(run.status)?,
-        "terminal_reason": run.terminal_reason.map(|r| r.as_str()),
-        "partial_output_available": run.partial_output_available,
         "steps": out_steps,
-    }))
-}
-
-/// `workflow status <run_id>` — a NON-DESTRUCTIVE health report for one run (issue
-/// #193 G5). Reports the run's status + terminal_reason, each step's
-/// status/terminal_reason/partial, each leaf's ProviderSession status, the driver's
-/// and each registered worker's pid LIVENESS, and STALE-session detection — WITHOUT
-/// terminating, reaping, or reconciling anything. It reads the store and probes pid
-/// liveness only; unlike `reap`/`reap-workers` it appends no rows and kills nothing,
-/// so an operator can inspect run health (and answer "was the worker canceled, still
-/// running, stale, or reconciled?") without perturbing state.
-fn workflow_status_value(store: &HarnessStore, args: &[String]) -> CliResult<serde_json::Value> {
-    let run_id = args
-        .iter()
-        .find(|a| !a.starts_with("--"))
-        .cloned()
-        .ok_or_else(|| CliError::Usage("workflow status requires a <run_id>".into()))?;
-
-    let run = latest_workflow_runs_in_append_order(store)?
-        .into_iter()
-        .find(|r| r.id == run_id)
-        .ok_or_else(|| CliError::Usage(format!("workflow run not found: {run_id}")))?;
-
-    let run_terminal = matches!(
-        run.status,
-        WorkflowRunStatus::Completed | WorkflowRunStatus::Failed
-    );
-    let host_pid_alive = run.host_pid.map(pid_exists_libc);
-    // The run is considered abandoned-but-not-yet-reaped when it still reads
-    // `Running` in the store but its driver pid is dead on this host.
-    let driver_abandoned = !run_terminal && host_pid_alive == Some(false);
-
-    // Latest-wins projection of this run's provider sessions, keyed by id, so a
-    // step can report its session's CURRENT status.
-    let sessions: BTreeMap<String, ProviderSession> =
-        latest_provider_sessions_in_append_order(store)?
-            .into_iter()
-            .map(|s| (s.id.clone(), s))
-            .collect();
-
-    // Latest-wins projection of this run's steps in journal order.
-    let mut by_id: BTreeMap<String, WorkflowStep> = BTreeMap::new();
-    let mut journal_order: Vec<String> = Vec::new();
-    for step in latest_workflow_steps_in_append_order(store)? {
-        if step.run_id == run_id {
-            if !by_id.contains_key(&step.id) {
-                journal_order.push(step.id.clone());
-            }
-            by_id.insert(step.id.clone(), step);
-        }
-    }
-    let order: Vec<String> = if run.step_ids.is_empty() {
-        journal_order
-    } else {
-        run.step_ids.clone()
-    };
-
-    let mut any_stale_session = false;
-    let mut out_steps = Vec::new();
-    for id in &order {
-        let Some(step) = by_id.get(id) else { continue };
-        let session = step
-            .provider_session_id
-            .as_deref()
-            .and_then(|sid| sessions.get(sid));
-        let session_status = session
-            .map(|s| serde_json::to_value(&s.status))
-            .transpose()?;
-        let session_open = session.is_some_and(|s| {
-            matches!(
-                s.status,
-                ProviderSessionStatus::Queued | ProviderSessionStatus::Running
-            )
-        });
-        // A leaf's session is STALE when it still reads open (queued/running) but the
-        // step itself is already terminal, OR the run is terminal, OR the driver is
-        // dead — i.e. the session row disagrees with reality and would be reconciled
-        // on the next reaper pass (but this command does NOT reconcile it).
-        let step_terminal = matches!(
-            step.status,
-            WorkflowStepStatus::Completed | WorkflowStepStatus::Failed | WorkflowStepStatus::Cached
-        );
-        let session_stale = session_open && (step_terminal || run_terminal || driver_abandoned);
-        if session_stale {
-            any_stale_session = true;
-        }
-        out_steps.push(serde_json::json!({
-            "label": step.label,
-            "status": serde_json::to_value(step.status)?,
-            "terminal_reason": step.terminal_reason.map(|r| r.as_str()),
-            "partial": step.partial,
-            "provider_session_id": step.provider_session_id,
-            "session_status": session_status,
-            "session_stale": session_stale,
-        }));
-    }
-
-    // Registered ephemeral workers for this run (orphan pidfiles), with LIVE pid
-    // status — so the operator sees whether a provider worker process is still
-    // alive after the driver died. Read-only: no pidfile is removed here.
-    let mut workers = Vec::new();
-    let pid_dir = worker_pid_dir(store);
-    if let Ok(read_dir) = fs::read_dir(&pid_dir) {
-        for entry in read_dir.flatten() {
-            let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) != Some("json") {
-                continue;
-            }
-            let Some(pidfile) = fs::read_to_string(&path)
-                .ok()
-                .and_then(|c| serde_json::from_str::<OrphanPidfile>(&c).ok())
-            else {
-                continue;
-            };
-            if pidfile.run_id != run_id {
-                continue;
-            }
-            workers.push(serde_json::json!({
-                "pid": pidfile.pid,
-                "pgid": pidfile.pgid,
-                "cmd_marker": pidfile.cmd_marker,
-                "alive": pid_exists_libc(pidfile.pid),
-            }));
-        }
-    }
-    let any_worker_alive = workers
-        .iter()
-        .any(|w| w.get("alive").and_then(|v| v.as_bool()).unwrap_or(false));
-
-    Ok(serde_json::json!({
-        "run_id": run_id,
-        "workflow_name": run.workflow_name,
-        "status": serde_json::to_value(run.status)?,
-        "terminal_reason": run.terminal_reason.map(|r| r.as_str()),
-        "partial_output_available": run.partial_output_available,
-        "host_pid": run.host_pid,
-        "host_pid_alive": host_pid_alive,
-        // True when the run still reads Running but its driver pid is dead — the
-        // reaper would flip it on its next pass; reported here without mutating.
-        "driver_abandoned": driver_abandoned,
-        "steps": out_steps,
-        "workers": workers,
-        "worker_alive": any_worker_alive,
-        // Any leaf whose provider session disagrees with terminal reality — the
-        // operator can tell a run is unhealthy without killing anything.
-        "stale_sessions": any_stale_session,
     }))
 }
 
@@ -11255,7 +8666,7 @@ fn workflow_gc_trace(
 fn workflow_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     require_subcommand(
         args,
-        "workflow run|run-script|get-output|status|patch|list|reap|reap-workers|gc-worktrees|gc-trace",
+        "workflow run|run-script|get-output|patch|list|reap|reap-workers|gc-worktrees|gc-trace",
     )?;
     match args[0].as_str() {
         "patch" => {
@@ -11264,10 +8675,6 @@ fn workflow_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
         }
         "gc-worktrees" => {
             let result = workflow_gc_worktrees(store)?;
-            print_json(&result)?;
-        }
-        "status" => {
-            let result = workflow_status_value(store, &args[1..])?;
             print_json(&result)?;
         }
         "reap-workers" => {
@@ -11546,8 +8953,7 @@ fn discarded_worktree_diff_warning(run_id: &str, step: &workflow::StepResult) ->
     Some(format!(
         "warning: workflow run {run_id} step '{}' produced {changed_files} changed file(s) \
          in a discarded throwaway worktree; retrieve with `harness workflow get-output \
-         {run_id} --step {}` or persist by using the goal layer / `goal run-phases` \
-         which lands writable work.",
+         {run_id} --step {}` or persist it with `harness workflow patch apply`.",
         step.label, step.label
     ))
 }
@@ -11612,8 +9018,7 @@ fn step_is_writable(details: Option<&serde_json::Value>) -> bool {
 }
 
 /// Whether a captured leaf diff should become a durable pending WorkflowPatch
-/// (STANDALONE, non-orchestrated runs only — orchestrated runs let phase landing
-/// own the diffs, see D1a). D3a: persist ONLY when the step SUCCEEDED and was
+/// Persist only when the step succeeded and was
 /// DECLARED writable, and the author did not opt out via `persist_changes:
 /// "discard"`. A failed step or a read-only isolated leaf strands nothing.
 fn should_persist_workflow_patch(
@@ -12148,33 +9553,12 @@ fn append_artifact_manifest(
     Ok(manifest)
 }
 
-/// Whether a WorkflowRun was created by the `goal run-phases` orchestrator (its
-/// compiled/loaded script spec is stamped `"orchestrated": true`). Orchestrated
-/// runs let PHASE LANDING own leaf diffs end-to-end (D1); standalone `run-script`
-/// runs keep the pending-patch pipeline. `default()`-spec (standalone) is false.
-fn is_orchestrated_run(run: &WorkflowRun) -> bool {
-    run.spec
-        .as_ref()
-        .and_then(|s| s.get("orchestrated"))
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false)
-}
-
 fn persist_workflow_patches(
     store: &HarnessStore,
     run: &WorkflowRun,
     outcome: &workflow::WorkflowOutcome,
     steps_json: &[serde_json::Value],
 ) -> CliResult<Vec<WorkflowPatch>> {
-    // D1a: an orchestrated run's writable leaf diffs are landed by
-    // `land_phase_diffs` (the #150 single landing authority). Creating pending
-    // WorkflowPatch rows here too would double-own the diff — the patch pipeline
-    // and landing would fight (a mid-run apply_patch dirties the tree and landing's
-    // clean-tree guard then demotes the pass). So persist NOTHING for orchestrated
-    // runs; landing is the one authority.
-    if is_orchestrated_run(run) {
-        return Ok(Vec::new());
-    }
     let project = workflow_project_context(store);
     let repo_root = workflow_repo_root(&project);
     let base_sha = git_in(&repo_root, &["rev-parse", "HEAD"])
@@ -12368,7 +9752,6 @@ fn process_workflow_patch_actions(
     run: &WorkflowRun,
     initial_patches: &[WorkflowPatch],
 ) -> CliResult<Vec<WorkflowPatch>> {
-    let orchestrated = is_orchestrated_run(run);
     let mut latest: BTreeMap<String, WorkflowPatch> = initial_patches
         .iter()
         .cloned()
@@ -12387,26 +9770,6 @@ fn process_workflow_patch_actions(
             continue;
         };
         explicit_labels.insert(label.to_string());
-        // D1b: an orchestrated run performs NO tree mutation here — phase landing
-        // is the landing authority. Record the intent clearly and move on (there
-        // are no pending patch rows to mutate anyway, D1a). `reject_patch()` intent
-        // is honored by landing, which reads it from `final_output.patch_actions`.
-        if orchestrated {
-            match action.get("action").and_then(|v| v.as_str()) {
-                Some("apply") => eprintln!(
-                    "orchestrated run {}: apply_patch intent recorded for step '{}'; \
-                     phase landing is the landing authority (no patch applied here)",
-                    run.id, label
-                ),
-                Some("reject") => eprintln!(
-                    "orchestrated run {}: reject_patch intent recorded for step '{}'; \
-                     phase landing will skip this step's diff",
-                    run.id, label
-                ),
-                _ => {}
-            }
-            continue;
-        }
         let Some(patch) = latest.get(label).cloned() else {
             // D3b: a standalone apply/reject targeting a step that produced no
             // pending patch — it failed, was not writable, or discarded its diff.
@@ -12456,8 +9819,7 @@ fn process_workflow_patch_actions(
         latest.insert(label.to_string(), updated);
     }
 
-    // D1a/D1b: orchestrated runs never persist patches and never auto-apply here.
-    if !orchestrated && run_verdict_ok(run) {
+    if run_verdict_ok(run) {
         for patch in initial_patches {
             if explicit_labels.contains(&patch.label) {
                 continue;
@@ -12506,215 +9868,6 @@ fn outcome_step_auto_apply(run: &WorkflowRun, label: &str) -> bool {
             })
         })
         .unwrap_or(false)
-}
-
-/// Cancel a still-`Running` workflow run as an OPERATOR interruption (issue #193
-/// G2): kill any registered worker process groups, journal the run + its open steps
-/// with `terminal_reason = canceled_by_operator`, and reconcile their
-/// ProviderSessions to `Canceled`. Marks `partial_output_available` / per-step
-/// `partial` exactly like the reaper. Best-effort and IDEMPOTENT — a run already
-/// terminal is left untouched, so it is safe to call more than once. Returns `true`
-/// iff the run was moved from Running to canceled.
-///
-/// This is pure store + pid work (no signal-handler context), so both the SIGINT
-/// watcher thread and a unit test can drive it.
-fn cancel_active_run(store: &HarnessStore, run_id: &str) -> CliResult<bool> {
-    let Some(mut run) = latest_workflow_runs_in_append_order(store)?
-        .into_iter()
-        .find(|r| r.id == run_id)
-    else {
-        return Ok(false);
-    };
-    if run.status != WorkflowRunStatus::Running {
-        return Ok(false);
-    }
-
-    // Kill any live worker process groups this run registered (its ephemeral
-    // leaves), so a canceled driver does not leak provider workers.
-    if let Ok(read_dir) = fs::read_dir(worker_pid_dir(store)) {
-        for entry in read_dir.flatten() {
-            let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) != Some("json") {
-                continue;
-            }
-            let Some(pidfile) = fs::read_to_string(&path)
-                .ok()
-                .and_then(|c| serde_json::from_str::<OrphanPidfile>(&c).ok())
-            else {
-                continue;
-            };
-            if pidfile.run_id != run_id {
-                continue;
-            }
-            let _ = kill_orphan_worker_group(pidfile.pid, pidfile.pgid);
-            let _ = fs::remove_file(&path);
-        }
-    }
-
-    // Close open steps + reconcile every leaf's provider session to Canceled.
-    let mut had_completed_step = false;
-    for step in latest_workflow_steps_in_append_order(store)? {
-        if step.run_id != run_id {
-            continue;
-        }
-        if matches!(step.status, WorkflowStepStatus::Completed) {
-            had_completed_step = true;
-        }
-        if let Some(sid) = step.provider_session_id.as_deref() {
-            let _ =
-                reconcile_workflow_session_terminal(store, sid, ProviderSessionStatus::Canceled)?;
-        }
-        if !matches!(
-            step.status,
-            WorkflowStepStatus::Running | WorkflowStepStatus::Queued
-        ) {
-            continue;
-        }
-        let produced_output = step
-            .output_summary
-            .as_deref()
-            .is_some_and(|s| !s.is_empty());
-        let mut closed = step.clone();
-        closed.status = WorkflowStepStatus::Failed;
-        closed.ended_at = Some(now_string());
-        closed.terminal_reason = Some(WorkflowTerminalReason::CanceledByOperator);
-        closed.partial = produced_output;
-        closed.output_summary = Some(match closed.output_summary.as_deref() {
-            Some(s) if !s.is_empty() => format!("{s} [canceled by operator]"),
-            _ => "canceled by operator".to_string(),
-        });
-        store.append_workflow_step(&closed)?;
-    }
-
-    run.status = WorkflowRunStatus::Failed;
-    run.ended_at = Some(now_string());
-    run.terminal_reason = Some(WorkflowTerminalReason::CanceledByOperator);
-    run.partial_output_available = had_completed_step;
-    run.summary = Some(match run.summary.take() {
-        Some(s) if !s.is_empty() => format!("{s} [canceled by operator]"),
-        _ => "canceled by operator (SIGINT/SIGTERM to the driver)".to_string(),
-    });
-    store.append_workflow_run(&run)?;
-    fire_workflow_completion_hook(&run);
-    Ok(true)
-}
-
-/// Operator-cancel (SIGINT/SIGTERM) handling for a synchronous `workflow run-script`
-/// driver (issue #193 G2). Unix only — matches the repo's existing `cfg(unix)`
-/// signal pattern (see `resident_daemon`). The `run-script` body blocks the main
-/// thread inside the Starlark runtime, so a signal handler cannot itself journal the
-/// store (not async-signal-safe). Instead the handler does the async-signal-safe
-/// minimum — set a flag + write one byte to a self-pipe — and a dedicated WATCHER
-/// thread blocked on that pipe wakes to do the heavy work: cancel the run
-/// (`cancel_active_run`) and exit nonzero. A [`CancelGuard`] deregisters the watcher
-/// on normal completion so a clean run never trips the cancel path.
-#[cfg(unix)]
-mod run_cancel {
-    use super::{cancel_active_run, HarnessStore};
-    use std::os::unix::io::RawFd;
-    use std::path::PathBuf;
-    use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
-
-    const SIGINT: i32 = 2;
-    const SIGTERM: i32 = 15;
-
-    // Write end of the self-pipe the signal handler pokes. -1 when no run-script
-    // cancel handler is armed (so a stray signal is a no-op). A process runs one
-    // `run-script` at a time, so a single global slot suffices.
-    static PIPE_WRITE_FD: AtomicI32 = AtomicI32::new(-1);
-    // Set by the handler so the watcher (and any observer) can see a cancel was
-    // requested even if the pipe write raced.
-    static CANCEL_REQUESTED: AtomicBool = AtomicBool::new(false);
-
-    extern "C" fn handle(_sig: i32) {
-        CANCEL_REQUESTED.store(true, Ordering::SeqCst);
-        let fd = PIPE_WRITE_FD.load(Ordering::SeqCst);
-        if fd >= 0 {
-            // `write(2)` is async-signal-safe; a single byte wakes the watcher.
-            let byte: u8 = 1;
-            unsafe {
-                libc::write(fd, &byte as *const u8 as *const libc::c_void, 1);
-            }
-        }
-    }
-
-    type SigHandler = extern "C" fn(i32);
-    extern "C" {
-        fn signal(signum: i32, handler: SigHandler) -> usize;
-    }
-
-    /// Armed cancel handling for the duration of one run. Dropping it deregisters
-    /// the watcher (clears the pipe fd) so a normally-finished run is never canceled.
-    pub struct CancelGuard {
-        read_fd: RawFd,
-        write_fd: RawFd,
-        watcher: Option<std::thread::JoinHandle<()>>,
-    }
-
-    impl CancelGuard {
-        /// Best-effort: on any setup failure returns `None` and the run proceeds
-        /// WITHOUT cancel handling (never worse than before this feature existed).
-        pub fn install(store_root: PathBuf, run_id: String) -> Option<CancelGuard> {
-            let mut fds = [0 as RawFd; 2];
-            // SAFETY: standard self-pipe; `pipe(2)` fills two fds we own.
-            if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
-                return None;
-            }
-            let (read_fd, write_fd) = (fds[0], fds[1]);
-            PIPE_WRITE_FD.store(write_fd, Ordering::SeqCst);
-            CANCEL_REQUESTED.store(false, Ordering::SeqCst);
-
-            let watcher = std::thread::Builder::new()
-                .name("run-cancel-watcher".into())
-                .spawn(move || {
-                    // Block until the handler pokes the pipe (or it closes on drop).
-                    let mut buf = [0u8; 1];
-                    let n =
-                        unsafe { libc::read(read_fd, buf.as_mut_ptr() as *mut libc::c_void, 1) };
-                    // A clean drop closes the write end → read returns 0 (EOF): the run
-                    // finished normally, so do nothing. A signal wrote 1 byte → n == 1.
-                    if n <= 0 || !CANCEL_REQUESTED.load(Ordering::SeqCst) {
-                        return;
-                    }
-                    let store = HarnessStore::new(&store_root);
-                    let _ = cancel_active_run(&store, &run_id);
-                    // Exit nonzero + cleanly: the driver was interrupted. 130 == the
-                    // conventional 128+SIGINT code.
-                    std::process::exit(130);
-                })
-                .ok()?;
-
-            // SAFETY: `handle` only touches an AtomicBool + async-signal-safe
-            // `write(2)`; `signal(2)` is a stable C ABI symbol on every unix target.
-            unsafe {
-                signal(SIGINT, handle);
-                signal(SIGTERM, handle);
-            }
-            Some(CancelGuard {
-                read_fd,
-                write_fd,
-                watcher: Some(watcher),
-            })
-        }
-    }
-
-    impl Drop for CancelGuard {
-        fn drop(&mut self) {
-            // Deregister first so a signal arriving during teardown is a no-op, then
-            // close the write end → the watcher's blocking read returns EOF and the
-            // thread exits without canceling.
-            PIPE_WRITE_FD.store(-1, Ordering::SeqCst);
-            unsafe {
-                libc::close(self.write_fd);
-            }
-            if let Some(watcher) = self.watcher.take() {
-                let _ = watcher.join();
-            }
-            unsafe {
-                libc::close(self.read_fd);
-            }
-        }
-    }
 }
 
 fn workflow_run_script_value(
@@ -12866,24 +10019,10 @@ fn workflow_run_script_value(
         // Mark dry-run validation runs so they are never mistaken for real runs in
         // the jsonl / dashboard (issue #89 item 2).
         dry_run: options.dry_run,
-        // Standalone `run-script` is not goal-orchestrated — no goal↔run link.
-        goal_id: None,
-        phase_id: None,
-        // Classification/partial marking is stamped at the terminal journal, the
-        // reaper, or the operator-cancel path (issue #193).
         terminal_reason: None,
         partial_output_available: false,
     };
     store.append_workflow_run(&run)?;
-
-    // Arm operator-cancel handling (issue #193 G2): a SIGINT/SIGTERM to this
-    // synchronous driver now cancels active leaves, journals the run + open steps as
-    // `canceled_by_operator`, reconciles their sessions, and exits nonzero — instead
-    // of leaving the run to be reaped ambiguously as "driver gone". Best-effort +
-    // Unix only; the guard deregisters on normal completion (drop at end of fn).
-    #[cfg(unix)]
-    let _cancel_guard =
-        run_cancel::CancelGuard::install(store.root().to_path_buf(), run_id.clone());
 
     // Optional per-run spend ceiling: once cumulative step cost reaches it, the
     // runtime short-circuits further agent()/parallel() calls into failed `budget`
@@ -12950,10 +10089,6 @@ fn run_workflow_with_driver(
         // abandoned run (see the run-script path and `reap_abandoned_runs`).
         host_pid: Some(std::process::id()),
         dry_run,
-        // Registry runs are not goal-orchestrated — no goal↔run link.
-        goal_id: None,
-        phase_id: None,
-        // Stamped at the terminal journal / reaper / cancel path (issue #193).
         terminal_reason: None,
         partial_output_available: false,
     };
@@ -13007,17 +10142,11 @@ fn journal_workflow_outcome(
     run.summary = Some(outcome.summary.clone());
     run.agents_spawned = outcome.agents_spawned;
     run.final_output = outcome.final_output.clone();
-    // Machine-readable terminal class + partial-output marking (issue #193 G1/G4).
-    // A cleanly-finalized run is `Completed`; a `Failed` finalize is disambiguated
-    // from its steps (a provider failure vs an authored verdict false).
-    run.terminal_reason = Some(classify_run_terminal_reason(outcome));
-    // A run that did NOT complete but whose steps include ≥1 clean success carries
-    // partial deliverables retrievable via `workflow get-output`.
-    run.partial_output_available = outcome.status != WorkflowRunStatus::Completed
-        && outcome
-            .steps
-            .iter()
-            .any(|s| s.ok && s.provider_session_id.is_some());
+    run.terminal_reason = Some(if outcome.status == WorkflowRunStatus::Completed {
+        WorkflowTerminalReason::Completed
+    } else {
+        WorkflowTerminalReason::ProviderFailed
+    });
     store.append_workflow_run(&run)?;
     let mut patches = persist_workflow_patches(store, &run, outcome, &steps_json)?;
     let mut artifact_manifests =
@@ -14528,1195 +11657,33 @@ fn summarize_json_value(value: &serde_json::Value) -> String {
     }
 }
 
-fn proposal_from_diff(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    let task_id = required(args, "--task")?;
-    let agent_id = required(args, "--agent")?;
-    let worktree = required(args, "--worktree")?;
-    let base = value(args, "--base").unwrap_or_else(|| "HEAD".into());
-    let mut task = latest_task(store, &task_id)?;
-    let changed_paths = git_changed_paths(&worktree, &base)?;
-    if changed_paths.is_empty() && !has_flag(args, "--allow-empty") {
-        return Err(CliError::Usage("git diff produced no changed paths".into()));
-    }
-    let violations = owned_path_violations(&changed_paths, &task.owned_paths);
-    if !violations.is_empty() && !has_flag(args, "--allow-owned-path-violation") {
-        return Err(CliError::Usage(format!(
-            "changed paths outside owned_paths: {}",
-            violations.join(",")
-        )));
-    }
-
-    let proposal_id = value(args, "--id").unwrap_or_else(|| generated_id("proposal"));
-    let proposal_dir = store.root().join("proposals").join(&proposal_id);
-    fs::create_dir_all(&proposal_dir)?;
-    let diff_ref = proposal_dir.join("diff.patch");
-    fs::write(&diff_ref, git_diff_patch(&worktree, &base)?)?;
-    let evidence = Evidence {
-        id: generated_id("evidence"),
-        task_id: Some(task_id.clone()),
-        source_type: "git_diff".into(),
-        source_ref: diff_ref.display().to_string(),
-        summary: format!("Git diff from {base} in {worktree}"),
-        created_at: now_string(),
-        evidence_kind: None,
-        goal_id: None,
-    };
-    store.append_evidence(&evidence)?;
-    let mut evidence_ids = vec![evidence.id.clone()];
-    for command in many(args, "--check-cmd") {
-        let check_evidence = run_check_command(store, &task_id, &worktree, &command)?;
-        evidence_ids.push(check_evidence.id.clone());
-    }
-    let status = if has_flag(args, "--submit") {
-        ProposalStatus::Submitted
-    } else {
-        ProposalStatus::Draft
-    };
-    let proposal = Proposal {
-        id: proposal_id,
-        task_id: task_id.clone(),
-        agent_member_id: agent_id.clone(),
-        title: required(args, "--title")?,
-        summary: required(args, "--summary")?,
-        status,
-        changed_paths,
-        evidence_ids,
-        created_at: now_string(),
-        updated_at: now_string(),
-    };
-    store.append_proposal(&proposal)?;
-    task.status = TaskStatus::Review;
-    task.updated_at = now_string();
-    store.append_task(&task)?;
-    append_agent_event(
-        store,
-        &agent_id,
-        None,
-        Some(&task_id),
-        "proposal_from_diff",
-        "Created proposal from git diff",
-        Some(evidence.source_ref.as_str()),
-    )?;
-    print_json(&serde_json::json!({ "proposal": proposal, "evidence": evidence }))?;
-    Ok(())
-}
-
-#[derive(Debug)]
-struct GoalLearningStatus {
-    goal_id: String,
-    task_ids: Vec<String>,
-    // Legacy representation: learning artifacts carried as Evidence rows
-    // (source_type=goal_design|goal_evaluation|goal_case). Kept for back-compat.
-    goal_design: Vec<Evidence>,
-    goal_evaluation: Vec<Evidence>,
-    goal_cases: Vec<Evidence>,
-    // Graduated representation: first-class learning objects, scoped by goal_id.
-    // Dual-read: a goal satisfies the design/evaluation gates via EITHER source.
-    goal_design_objects: Vec<GoalDesign>,
-    goal_evaluation_objects: Vec<GoalEvaluation>,
-    goal_case_objects: Vec<GoalCase>,
-    follow_up_tasks: Vec<Task>,
-    assignment_messages: Vec<Message>,
-    member_reports: Vec<Message>,
-    critic_outputs: Vec<Evidence>,
-    reviews: Vec<Review>,
-    decisions: Vec<Decision>,
-    waivers: Vec<Decision>,
-    // Closeout-gate inputs (§3.7): a closeout Decision is one scoped to this goal
-    // (goal_id == G OR task in the goal's graph) with decision_kind=closeout and at
-    // least one backing evidence_id. A closeout waiver is an explicit is_waiver
-    // Decision (also goal-scoped) that names a follow_up_task_id and carries
-    // evidence — it lets the goal close without the evaluation chain.
-    closeout_decisions: Vec<Decision>,
-    closeout_waivers: Vec<Decision>,
-    event_order: GoalLearningEventOrder,
-}
-
-#[derive(Debug)]
-struct GoalLearningEventOrder {
-    design_before_assignment: Option<bool>,
-    assignment_before_report: Option<bool>,
-    report_before_decision: Option<bool>,
-    decision_before_evaluation: Option<bool>,
-}
-
-impl GoalLearningStatus {
-    fn to_json(&self) -> serde_json::Value {
-        let warnings = self.warnings(true);
-        serde_json::json!({
-            "goal_id": &self.goal_id,
-            "task_ids": &self.task_ids,
-            "goal_design": &self.goal_design,
-            "goal_evaluation": &self.goal_evaluation,
-            "goal_cases": &self.goal_cases,
-            "goal_design_objects": &self.goal_design_objects,
-            "goal_evaluation_objects": &self.goal_evaluation_objects,
-            "goal_case_objects": &self.goal_case_objects,
-            "follow_up_tasks": &self.follow_up_tasks,
-            "assignment_messages": &self.assignment_messages,
-            "member_reports": &self.member_reports,
-            "critic_outputs": &self.critic_outputs,
-            "reviews": &self.reviews,
-            "decisions": &self.decisions,
-            "waivers": &self.waivers,
-            "closeout_decisions": &self.closeout_decisions,
-            "closeout_waivers": &self.closeout_waivers,
-            // Closeout-gate readiness (§3.7, §3.4 of WP-F): the frontend reads these
-            // to render the closeout-gate ProofRow and the goal_close_without_evaluation
-            // / waiver_without_follow_up warnings.
-            "has_closeout_decision": self.has_closeout_decision(),
-            "has_evaluation": self.has_goal_evaluation(),
-            "has_closeout_waiver": self.has_valid_closeout_waiver(),
-            "may_close": self.may_close(),
-            "closeout_blockers": self.closeout_blockers(),
-            "event_order": {
-                "design_before_assignment": self.event_order.design_before_assignment,
-                "assignment_before_report": self.event_order.assignment_before_report,
-                "report_before_decision": self.event_order.report_before_decision,
-                "decision_before_evaluation": self.event_order.decision_before_evaluation,
-            },
-            "warnings": warnings,
-            "ok": warnings.is_empty()
-        })
-    }
-
-    fn has_goal_design(&self) -> bool {
-        !self.goal_design.is_empty() || !self.goal_design_objects.is_empty()
-    }
-
-    fn has_goal_evaluation(&self) -> bool {
-        !self.goal_evaluation.is_empty() || !self.goal_evaluation_objects.is_empty()
-    }
-
-    /// A closeout Decision (decision_kind=closeout, >=1 evidence_id) exists for the
-    /// goal. The evidence requirement is already enforced when the field is built.
-    fn has_closeout_decision(&self) -> bool {
-        !self.closeout_decisions.is_empty()
-    }
-
-    /// At least one valid closeout waiver: is_waiver=true, names a follow_up_task_id
-    /// and carries >=1 evidence_id. These are the structural fields the CLI enforces
-    /// at write time; the gate re-checks them here so a hand-edited JSONL row cannot
-    /// slip an invalid waiver past the closeout gate.
-    fn valid_closeout_waivers(&self) -> impl Iterator<Item = &Decision> {
-        self.closeout_waivers.iter().filter(|decision| {
-            decision.follow_up_task_id.is_some() && !decision.evidence_ids.is_empty()
-        })
-    }
-
-    fn has_valid_closeout_waiver(&self) -> bool {
-        self.valid_closeout_waivers().next().is_some()
-    }
-
-    /// The §3.7 closeout gate: a goal may become complete only with BOTH a closeout
-    /// Decision and a GoalEvaluation, OR an explicit valid waiver.
-    fn may_close(&self) -> bool {
-        (self.has_closeout_decision() && self.has_goal_evaluation())
-            || self.has_valid_closeout_waiver()
-    }
-
-    /// Human-readable reasons the closeout gate is not yet satisfied. Empty when
-    /// [`may_close`](Self::may_close) is true.
-    fn closeout_blockers(&self) -> Vec<String> {
-        if self.may_close() {
-            return Vec::new();
-        }
-        let mut blockers = Vec::new();
-        if !self.has_closeout_decision() {
-            blockers.push(
-                "missing closeout decision (decision_kind=closeout with >=1 evidence_id)".into(),
-            );
-        }
-        if !self.has_goal_evaluation() {
-            blockers.push("missing goal_evaluation".into());
-        }
-        // Surface why an attempted waiver did not count, when one is present.
-        if !self.closeout_waivers.is_empty() && !self.has_valid_closeout_waiver() {
-            blockers
-                .push("waiver decision missing follow_up_task_id and/or >=1 evidence_id".into());
-        }
-        blockers
-    }
-
-    /// Enforce the closeout gate (used by `goal close`). Returns a descriptive error
-    /// listing every unmet requirement when the goal may not yet close.
-    fn require_closeout(&self) -> CliResult<()> {
-        if self.may_close() {
-            return Ok(());
-        }
-        Err(CliError::Usage(format!(
-            "goal {} cannot be closed: {}. Record a closeout decision (decision_kind=closeout) with evidence plus a GoalEvaluation, or an explicit waiver (--waiver) naming a --follow-up-task and >=1 --evidence.",
-            self.goal_id,
-            self.closeout_blockers().join("; ")
-        )))
-    }
-
-    fn warnings(&self, require_evaluation: bool) -> Vec<String> {
-        let mut warnings = Vec::new();
-        // Dual-read: either a legacy Evidence row OR a graduated GoalDesign object
-        // satisfies the gate (union by goal_id, no backfill).
-        if !self.has_goal_design() {
-            warnings.push("missing goal_design evidence".into());
-        }
-        if require_evaluation && !self.has_goal_evaluation() {
-            warnings.push("missing goal_evaluation evidence".into());
-        }
-        if self.assignment_messages.is_empty() {
-            warnings.push("missing assignment task message".into());
-        }
-        if self.member_reports.is_empty() {
-            warnings.push("missing member report message".into());
-        }
-        if self.critic_outputs.is_empty() {
-            warnings.push("missing critic/evaluator evidence".into());
-        }
-        if self.decisions.is_empty() {
-            warnings.push("missing decision".into());
-        }
-        if self.event_order.design_before_assignment == Some(false) {
-            warnings.push("goal_design evidence is post-hoc after assignment".into());
-        }
-        if self.event_order.assignment_before_report == Some(false) {
-            warnings.push("member report appears before assignment message".into());
-        }
-        if self.event_order.report_before_decision == Some(false) {
-            warnings.push("decision appears before member report".into());
-        }
-        if self.event_order.decision_before_evaluation == Some(false) {
-            warnings.push("goal_evaluation appears before decision".into());
-        }
-        warnings
-    }
-
-    fn require_for_gate(
-        &self,
-        store: &HarnessStore,
-        require_evaluation: bool,
-        allow_waiver: bool,
-        waiver_decision_id: Option<&str>,
-    ) -> CliResult<()> {
-        let warnings = self.warnings(require_evaluation);
-        if warnings.is_empty() {
-            return Ok(());
-        }
-        if allow_waiver {
-            self.require_valid_waiver(store, waiver_decision_id)
-                .map_err(|error| {
-                    CliError::Usage(format!(
-                        "goal {} failed learning gate: {}; waiver invalid: {}",
-                        self.goal_id,
-                        warnings.join("; "),
-                        error
-                    ))
-                })?;
-            return Ok(());
-        }
-        Err(CliError::Usage(format!(
-            "goal {} failed learning gate: {}",
-            self.goal_id,
-            warnings.join("; ")
-        )))
-    }
-
-    fn require_valid_waiver(
-        &self,
-        store: &HarnessStore,
-        waiver_decision_id: Option<&str>,
-    ) -> CliResult<()> {
-        let waiver_decision_id = waiver_decision_id.ok_or_else(|| {
-            CliError::Usage(
-                "--waiver-decision <id> is required when using a goal-learning waiver".into(),
-            )
-        })?;
-        let decision = self
-            .waivers
-            .iter()
-            .find(|decision| decision.id == waiver_decision_id)
-            .ok_or_else(|| {
-                CliError::Usage(format!(
-                    "waiver decision {waiver_decision_id} was not found for goal {}",
-                    self.goal_id
-                ))
-            })?;
-        let evidence_by_id = latest_evidence(store)?;
-        let task_by_id = latest_tasks(store)?;
-        validate_goal_learning_waiver_decision(self, decision, &evidence_by_id, &task_by_id)
-    }
-}
-
-fn validate_goal_learning_waiver_decision(
-    status: &GoalLearningStatus,
-    decision: &Decision,
-    evidence_by_id: &BTreeMap<String, Evidence>,
-    task_by_id: &BTreeMap<String, Task>,
-) -> CliResult<()> {
-    if decision.evidence_ids.is_empty() {
-        return Err(CliError::Usage(format!(
-            "waiver decision {} must reference evidence",
-            decision.id
-        )));
-    }
-    for evidence_id in &decision.evidence_ids {
-        if !evidence_by_id.contains_key(evidence_id) {
-            return Err(CliError::Usage(format!(
-                "waiver decision {} references missing evidence {evidence_id}",
-                decision.id
-            )));
-        }
-    }
-
-    let decision_task = task_by_id.get(&decision.task_id).ok_or_else(|| {
-        CliError::Usage(format!(
-            "waiver decision {} references missing task {}",
-            decision.id, decision.task_id
-        ))
-    })?;
-    if decision_task.goal_id.as_deref() != Some(status.goal_id.as_str()) {
-        return Err(CliError::Usage(format!(
-            "waiver decision {} is not attached to goal {}",
-            decision.id, status.goal_id
-        )));
-    }
-    if decision_task.owner_agent_id.trim().is_empty() {
-        return Err(CliError::Usage(format!(
-            "waiver decision {} must be attached to a task with an owner",
-            decision.id
-        )));
-    }
-
-    let text = format!("{} {}", decision.decision, decision.rationale).to_lowercase();
-    let has_follow_up_word =
-        text.contains("follow-up") || text.contains("follow up") || text.contains("后续");
-    let has_follow_up_task = task_by_id.values().any(|task| {
-        task.goal_id.as_deref() == Some(status.goal_id.as_str())
-            && task.id != decision.task_id
-            && text.contains(&task.id.to_lowercase())
-    });
-    if !has_follow_up_word || !has_follow_up_task {
-        return Err(CliError::Usage(format!(
-            "waiver decision {} must name a real follow-up task in goal {}",
-            decision.id, status.goal_id
-        )));
-    }
-
-    Ok(())
-}
-
-fn goal_learning_status(store: &HarnessStore, goal_id: &str) -> CliResult<GoalLearningStatus> {
-    if !latest_goals(store)?.contains_key(goal_id) {
-        return Err(CliError::Usage(format!("goal not found: {goal_id}")));
-    }
-    let all_tasks = latest_tasks(store)?;
-    let tasks: Vec<_> = all_tasks
-        .values()
-        .filter(|task| task.goal_id.as_deref() == Some(goal_id))
-        .cloned()
-        .collect();
-    let task_ids: BTreeSet<_> = tasks.iter().map(|task| task.id.clone()).collect();
-    let mut task_id_vec: Vec<_> = task_ids.iter().cloned().collect();
-    task_id_vec.sort();
-
-    let evidence: Vec<_> = latest_evidence(store)?
-        .into_values()
-        .filter(|item| {
-            item.task_id
-                .as_ref()
-                .is_some_and(|task_id| task_ids.contains(task_id))
-                || item.goal_id.as_deref() == Some(goal_id)
-        })
-        .collect();
-    let goal_design = evidence_by_type(&evidence, "goal_design");
-    let goal_evaluation = evidence_by_type(&evidence, "goal_evaluation");
-    let goal_cases = evidence_by_type(&evidence, "goal_case");
-
-    // Dual-read: graduated learning objects scoped by goal_id (no backfill; both
-    // representations coexist and union for the gate/event-order checks).
-    let goal_design_objects: Vec<_> = latest_goal_designs_in_append_order(store)?
-        .into_iter()
-        .filter(|design| design.goal_id == goal_id)
-        .collect();
-    let goal_evaluation_objects: Vec<_> = latest_goal_evaluations_in_append_order(store)?
-        .into_iter()
-        .filter(|evaluation| evaluation.goal_id == goal_id)
-        .collect();
-    let goal_case_objects: Vec<_> = latest_goal_cases_in_append_order(store)?
-        .into_iter()
-        .filter(|case| case.source_goal_id == goal_id)
-        .collect();
-    let follow_up_tasks: Vec<_> = all_tasks
-        .values()
-        .filter(|task| {
-            task.parent_task_id
-                .as_ref()
-                .is_some_and(|parent_id| task_ids.contains(parent_id))
-                && is_follow_up_task(task)
-        })
-        .cloned()
-        .collect();
-    let critic_outputs: Vec<_> = evidence
-        .iter()
-        .filter(|item| {
-            matches!(
-                item.source_type.as_str(),
-                "critic_findings" | "goal_evaluation"
-            )
-        })
-        .cloned()
-        .collect();
-
-    let messages: Vec<_> = store
-        .messages()?
-        .into_iter()
-        .filter(|message| {
-            message
-                .task_id
-                .as_ref()
-                .is_some_and(|task_id| task_ids.contains(task_id))
-        })
-        .collect();
-    let assignment_messages: Vec<_> = messages
-        .iter()
-        .filter(|message| message.kind == MessageKind::Task)
-        .cloned()
-        .collect();
-    let member_reports: Vec<_> = messages
-        .iter()
-        .filter(|message| message.kind == MessageKind::Report)
-        .cloned()
-        .collect();
-
-    let all_decisions = store.decisions()?;
-    // A decision is "in scope" for this goal when it is explicitly goal-scoped
-    // (goal_id == G) OR it hangs off a task in the goal's graph. Closeout decisions
-    // are typically goal-scoped (no task), so we must not restrict by task_id alone.
-    let decision_in_goal_scope = |decision: &Decision| {
-        decision.goal_id.as_deref() == Some(goal_id) || task_ids.contains(&decision.task_id)
-    };
-    let decisions: Vec<_> = all_decisions
-        .iter()
-        .filter(|decision| task_ids.contains(&decision.task_id))
-        .cloned()
-        .collect();
-    let waivers: Vec<_> = decisions
-        .iter()
-        .filter(|decision| is_goal_learning_waiver_decision(decision))
-        .cloned()
-        .collect();
-    // Closeout gate (§3.7): closeout decisions carry decision_kind=closeout and at
-    // least one evidence_id; closeout waivers set is_waiver and name a follow-up.
-    let closeout_decisions: Vec<_> = all_decisions
-        .iter()
-        .filter(|decision| {
-            decision_in_goal_scope(decision)
-                && decision.decision_kind.as_deref() == Some("closeout")
-                && !decision.evidence_ids.is_empty()
-        })
-        .cloned()
-        .collect();
-    let closeout_waivers: Vec<_> = all_decisions
-        .iter()
-        .filter(|decision| decision_in_goal_scope(decision) && decision.is_waiver)
-        .cloned()
-        .collect();
-    let reviews: Vec<_> = latest_reviews_in_append_order(store)?
-        .into_iter()
-        .filter(|review| {
-            review.goal_id.as_deref() == Some(goal_id)
-                || review
-                    .task_id
-                    .as_ref()
-                    .is_some_and(|task_id| task_ids.contains(task_id))
-        })
-        .collect();
-
-    // Union the legacy-evidence times with graduated-object times so event-order
-    // holds regardless of which representation a goal uses.
-    let design_times = union_times(
-        evidence_times(&goal_design),
-        created_at_times(goal_design_objects.iter().map(|design| &design.created_at)),
-    );
-    let evaluation_times = union_times(
-        evidence_times(&goal_evaluation),
-        created_at_times(
-            goal_evaluation_objects
-                .iter()
-                .map(|evaluation| &evaluation.created_at),
-        ),
-    );
-    let event_order = GoalLearningEventOrder {
-        design_before_assignment: compare_first(
-            design_times,
-            message_times(&assignment_messages),
-            |left, right| left <= right,
-        ),
-        assignment_before_report: compare_first(
-            message_times(&assignment_messages),
-            message_times(&member_reports),
-            |left, right| left <= right,
-        ),
-        report_before_decision: compare_first(
-            message_times(&member_reports),
-            decision_times(&decisions),
-            |left, right| left <= right,
-        ),
-        decision_before_evaluation: compare_first(
-            decision_times(&decisions),
-            evaluation_times,
-            |left, right| left <= right,
-        ),
-    };
-
-    Ok(GoalLearningStatus {
-        goal_id: goal_id.into(),
-        task_ids: task_id_vec,
-        goal_design,
-        goal_evaluation,
-        goal_cases,
-        goal_design_objects,
-        goal_evaluation_objects,
-        goal_case_objects,
-        follow_up_tasks,
-        assignment_messages,
-        member_reports,
-        critic_outputs,
-        reviews,
-        decisions,
-        waivers,
-        closeout_decisions,
-        closeout_waivers,
-        event_order,
-    })
-}
-
-fn evidence_by_type(evidence: &[Evidence], source_type: &str) -> Vec<Evidence> {
-    evidence
-        .iter()
-        .filter(|item| item.source_type == source_type)
-        .cloned()
-        .collect()
-}
-
-fn is_goal_learning_waiver_decision(decision: &Decision) -> bool {
-    let decision_text = decision.decision.to_lowercase();
-    let rationale = decision.rationale.to_lowercase();
-    decision_text.contains("waiver")
-        || decision_text.contains("豁免")
-        || rationale.contains("waiver decision")
-        || rationale.contains("stage waiver")
-        || rationale.contains("阶段豁免")
-}
-
-fn is_follow_up_task(task: &Task) -> bool {
-    let title = task.title.to_lowercase();
-    title.starts_with("follow-up:")
-        || title.starts_with("follow up:")
-        || title.starts_with("followup:")
-        || title.starts_with("后续:")
-}
-
-fn evidence_times(evidence: &[Evidence]) -> Vec<u128> {
-    evidence
-        .iter()
-        .filter_map(|item| parse_unix_ms(&item.created_at))
-        .collect()
-}
-
-/// Parse a sequence of `created_at` strings into unix-ms times. Used to fold the
-/// graduated learning objects into the same event-order check as legacy evidence.
-fn created_at_times<'a>(created_at: impl Iterator<Item = &'a String>) -> Vec<u128> {
-    created_at
-        .filter_map(|value| parse_unix_ms(value))
-        .collect()
-}
-
-/// Union two time sets so the dual-read gate treats legacy evidence and graduated
-/// objects equivalently.
-fn union_times(mut left: Vec<u128>, mut right: Vec<u128>) -> Vec<u128> {
-    left.append(&mut right);
-    left
-}
-
-fn message_times(messages: &[Message]) -> Vec<u128> {
-    messages
-        .iter()
-        .filter_map(|item| parse_unix_ms(&item.created_at))
-        .collect()
-}
-
-fn decision_times(decisions: &[Decision]) -> Vec<u128> {
-    decisions
-        .iter()
-        .filter_map(|item| parse_unix_ms(&item.created_at))
-        .collect()
-}
-
-fn compare_first(
-    mut left: Vec<u128>,
-    mut right: Vec<u128>,
-    predicate: impl FnOnce(u128, u128) -> bool,
-) -> Option<bool> {
-    left.sort();
-    right.sort();
-    Some(predicate(*left.first()?, *right.first()?))
-}
-
-fn parse_unix_ms(value: &str) -> Option<u128> {
-    value.strip_prefix("unix-ms:")?.parse().ok()
-}
-
-fn review_gate(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    let task_id = required(args, "--task")?;
-    let reviewer = required(args, "--reviewer")?;
-    let verdict = required(args, "--decision")?;
-    let rationale = required(args, "--rationale")?;
-    let allow_no_check = has_flag(args, "--allow-no-check");
-    let allow_no_critic = has_flag(args, "--allow-no-critic");
-    let allow_no_provider_output = has_flag(args, "--allow-no-provider-output");
-    let allow_no_proposal_evidence = has_flag(args, "--allow-no-proposal-evidence");
-    let allow_global_evidence = has_flag(args, "--allow-global-evidence");
-    let require_goal_design = has_flag(args, "--require-goal-design");
-    let require_goal_evaluation = has_flag(args, "--require-goal-evaluation");
-    let allow_goal_learning_waiver = has_flag(args, "--allow-goal-learning-waiver");
-    let waiver_decision_id = value(args, "--waiver-decision");
-    let mut task = latest_task(store, &task_id)?;
-    let mut proposals: Vec<_> = latest_proposals(store)?
-        .into_values()
-        .filter(|proposal| proposal.task_id == task_id)
-        .collect();
-    proposals.sort_by(|left, right| left.updated_at.cmp(&right.updated_at));
-    let mut proposal = proposals
-        .pop()
-        .ok_or_else(|| CliError::Usage(format!("task {task_id} has no proposal to review")))?;
-    let mut evidence_ids = many(args, "--evidence");
-    evidence_ids.extend(proposal.evidence_ids.clone());
-    evidence_ids.sort();
-    evidence_ids.dedup();
-    if evidence_ids.is_empty() {
-        return Err(CliError::Usage(format!(
-            "task {task_id} cannot pass review without evidence"
-        )));
-    }
-    let evidence_by_id = latest_evidence(store)?;
-    let selected_evidence = resolve_review_evidence(
-        &task_id,
-        &evidence_ids,
-        &evidence_by_id,
-        allow_global_evidence,
-    )?;
-    validate_review_evidence_sources(&selected_evidence)?;
-    let violations = owned_path_violations(&proposal.changed_paths, &task.owned_paths);
-    if verdict == "accept"
-        && !violations.is_empty()
-        && !has_flag(args, "--allow-owned-path-violation")
-    {
-        return Err(CliError::Usage(format!(
-            "proposal changes outside owned_paths: {}",
-            violations.join(",")
-        )));
-    }
-    if verdict == "accept" {
-        if proposal.evidence_ids.is_empty() && !allow_no_proposal_evidence {
-            return Err(CliError::Usage(format!(
-                "task {task_id} cannot be accepted without proposal evidence"
-            )));
-        }
-        validate_acceptance_evidence(
-            store,
-            &selected_evidence,
-            allow_no_check,
-            allow_no_critic,
-            allow_no_provider_output,
-        )?;
-        if let Some(goal_id) = value(args, "--goal").or_else(|| task.goal_id.clone()) {
-            let status = goal_learning_status(store, &goal_id)?;
-            if !status.has_goal_design() {
-                if has_flag(args, "--allow-missing-goal-design") || allow_goal_learning_waiver {
-                    status.require_valid_waiver(store, waiver_decision_id.as_deref())?;
-                } else {
-                    return Err(CliError::Usage(format!(
-                        "goal {goal_id} cannot pass review without goal_design evidence"
-                    )));
-                }
-            }
-        } else if require_goal_design || require_goal_evaluation {
-            return Err(CliError::Usage(
-                "--goal or task.goal_id is required for goal learning review gate".into(),
-            ));
-        }
-        if require_goal_design || require_goal_evaluation {
-            let goal_id = value(args, "--goal")
-                .or_else(|| task.goal_id.clone())
-                .ok_or_else(|| {
-                    CliError::Usage(
-                        "--goal or task.goal_id is required for goal learning review gate".into(),
-                    )
-                })?;
-            let status = goal_learning_status(store, &goal_id)?;
-            if require_goal_design && !status.has_goal_design() {
-                if allow_goal_learning_waiver {
-                    status.require_valid_waiver(store, waiver_decision_id.as_deref())?;
-                } else {
-                    return Err(CliError::Usage(format!(
-                        "goal {goal_id} cannot pass review without goal_design evidence"
-                    )));
-                }
-            }
-            status.require_for_gate(
-                store,
-                require_goal_evaluation,
-                allow_goal_learning_waiver,
-                waiver_decision_id.as_deref(),
-            )?;
-        }
-    }
-
-    let decision_text = match verdict.as_str() {
-        "accept" => {
-            proposal.status = ProposalStatus::Accepted;
-            task.status = TaskStatus::Done;
-            "accepted"
-        }
-        "reject" => {
-            proposal.status = ProposalStatus::Rejected;
-            task.status = TaskStatus::Blocked;
-            "rejected"
-        }
-        other => return Err(CliError::Usage(format!("unknown review decision: {other}"))),
-    };
-    proposal.updated_at = now_string();
-    task.updated_at = now_string();
-    store.append_proposal(&proposal)?;
-    store.append_task(&task)?;
-    // goal-auto-finalize: an accepted review flips the task to Done — a completion
-    // seam. When the task belongs to a goal, re-derive the goal's stage so accepting
-    // the LAST task's proposal auto-finalizes the goal (forward-only; no-op otherwise).
-    if let Some(goal_id) = task.goal_id.as_deref() {
-        if let Ok(mut goal) = goal_load(store, goal_id) {
-            reconcile_goal_stage(store, &mut goal)?;
-        }
-    }
-    let decision = Decision {
-        id: value(args, "--id").unwrap_or_else(|| generated_id("decision")),
-        task_id: task_id.clone(),
-        decision: format!("{decision_text} by {reviewer}"),
-        rationale,
-        evidence_ids,
-        created_at: now_string(),
-        decision_kind: Some("verdict".to_string()),
-        goal_id: None,
-        is_waiver: false,
-        follow_up_task_id: None,
-    };
-    store.append_decision(&decision)?;
-    print_json(&serde_json::json!({
-        "task": task,
-        "proposal": proposal,
-        "decision": decision
-    }))?;
-    Ok(())
-}
-
-fn resolve_review_evidence(
-    task_id: &str,
-    evidence_ids: &[String],
-    evidence_by_id: &BTreeMap<String, Evidence>,
-    allow_global_evidence: bool,
-) -> CliResult<Vec<Evidence>> {
-    let mut selected = Vec::new();
-    for evidence_id in evidence_ids {
-        let evidence = evidence_by_id.get(evidence_id).ok_or_else(|| {
-            CliError::Usage(format!("review evidence id not found: {evidence_id}"))
-        })?;
-        match evidence.task_id.as_deref() {
-            Some(evidence_task_id) if evidence_task_id != task_id => {
-                return Err(CliError::Usage(format!(
-                    "evidence {evidence_id} belongs to task {evidence_task_id}, not {task_id}"
-                )));
-            }
-            None if !allow_global_evidence => {
-                return Err(CliError::Usage(format!(
-                    "evidence {evidence_id} is not attached to task {task_id}"
-                )));
-            }
-            _ => selected.push(evidence.clone()),
-        }
-    }
-    Ok(selected)
-}
-
-fn validate_review_evidence_sources(evidence: &[Evidence]) -> CliResult<()> {
-    for item in evidence {
-        if item.source_ref.trim().is_empty() {
-            return Err(CliError::Usage(format!(
-                "evidence {} has empty source_ref",
-                item.id
-            )));
-        }
-        if source_type_requires_existing_ref(&item.source_type)
-            && !source_ref_exists(&item.source_ref)
-        {
-            return Err(CliError::Usage(format!(
-                "evidence {} source_ref does not exist: {}",
-                item.id, item.source_ref
-            )));
-        }
-    }
-    Ok(())
-}
-
-fn validate_acceptance_evidence(
-    store: &HarnessStore,
-    evidence: &[Evidence],
-    allow_no_check: bool,
-    allow_no_critic: bool,
-    allow_no_provider_output: bool,
-) -> CliResult<()> {
-    if evidence
-        .iter()
-        .any(|item| item.source_type == "check_failed")
-    {
-        return Err(CliError::Usage(
-            "acceptance cannot use failed check evidence".into(),
-        ));
-    }
-    if !allow_no_check
-        && !evidence
-            .iter()
-            .any(|item| item.source_type == "check_passed")
-    {
-        return Err(CliError::Usage(
-            "acceptance requires check_passed evidence; use --allow-no-check only for explicit exceptions"
-                .into(),
-        ));
-    }
-    if !allow_no_critic
-        && !evidence
-            .iter()
-            .any(|item| item.source_type == "critic_findings")
-    {
-        return Err(CliError::Usage(
-            "acceptance requires critic_findings evidence; use --allow-no-critic only for explicit exceptions"
-                .into(),
-        ));
-    }
-    if !allow_no_provider_output
-        && !evidence
-            .iter()
-            .any(|item| provider_output_source_type(&item.source_type))
-    {
-        return Err(CliError::Usage(
-            "acceptance requires provider or worker output evidence; use --allow-no-provider-output only for explicit exceptions"
-                .into(),
-        ));
-    }
-    validate_provider_session_evidence(store, evidence)?;
-    Ok(())
-}
-
-fn validate_provider_session_evidence(
-    store: &HarnessStore,
-    evidence: &[Evidence],
-) -> CliResult<()> {
-    let mut sessions = BTreeMap::new();
-    for session in store.provider_sessions()? {
-        sessions.insert(session.id.clone(), session);
-    }
-    for item in evidence
-        .iter()
-        .filter(|item| codex_session_source_type(&item.source_type))
-    {
-        let session = sessions
-            .values()
-            .find(|session| session.evidence_ids.iter().any(|id| id == &item.id))
-            .ok_or_else(|| {
-                CliError::Usage(format!(
-                    "evidence {} has source_type {} but no provider session references it",
-                    item.id, item.source_type
-                ))
-            })?;
-        if session.status != ProviderSessionStatus::Succeeded {
-            return Err(CliError::Usage(format!(
-                "provider session {} for evidence {} is {:?}, not succeeded",
-                session.id, item.id, session.status
-            )));
-        }
-    }
-    Ok(())
-}
-
-fn source_type_requires_existing_ref(source_type: &str) -> bool {
-    matches!(
-        source_type,
-        "git_diff"
-            | "check_passed"
-            | "check_failed"
-            | "codex_delivery_session"
-            | "codex_provider_session"
-            | "codex_review_session"
-            | "critic_findings"
-            | "worker_report"
-            | "provider_output"
-            | "dashboard_snapshot"
-            | "goal_design"
-            | "goal_evaluation"
-            | "goal_proposal"
-            | "graph_change_proposal"
-            | "blocker"
-            | "follow_up"
-            | "next_round_plan"
-            | "protocol_fixture"
-    )
-}
-
-fn source_ref_exists(source_ref: &str) -> bool {
-    source_ref.starts_with("http://")
-        || source_ref.starts_with("https://")
-        || PathBuf::from(source_ref).exists()
-}
-
-fn provider_output_source_type(source_type: &str) -> bool {
-    codex_session_source_type(source_type)
-        || matches!(source_type, "worker_report" | "provider_output")
-}
-
-fn codex_session_source_type(source_type: &str) -> bool {
-    matches!(
-        source_type,
-        "codex_delivery_session" | "codex_provider_session" | "codex_review_session"
-    )
-}
-
-fn git_changed_paths(worktree: &str, base: &str) -> CliResult<Vec<String>> {
-    let mut paths = BTreeSet::new();
-    for args in [
-        vec!["diff", "--name-only", &format!("{base}...HEAD")],
-        vec!["diff", "--name-only", "HEAD"],
-        vec!["diff", "--cached", "--name-only"],
-    ] {
-        let output = Command::new("git")
-            .arg("-C")
-            .arg(worktree)
-            .args(args)
-            .output()?;
-        if output.status.success() {
-            for line in String::from_utf8_lossy(&output.stdout).lines() {
-                let path = line.trim();
-                if !path.is_empty() {
-                    paths.insert(path.to_string());
-                }
-            }
-        }
-    }
-    for path in git_untracked_paths(worktree)? {
-        paths.insert(path);
-    }
-    Ok(paths.into_iter().collect())
-}
-
-fn git_status_snapshot(
-    worktree: &str,
-    base: &str,
-    owned_paths: &[String],
-) -> CliResult<serde_json::Value> {
-    let changed_paths = git_changed_paths(worktree, base)?;
-    let branch = command_stdout("git", &["-C", worktree, "branch", "--show-current"])
-        .unwrap_or_else(|_| "-".into());
-    let status_short =
-        command_stdout("git", &["-C", worktree, "status", "--short"]).unwrap_or_default();
-    let violations = owned_path_violations(&changed_paths, owned_paths);
-    Ok(serde_json::json!({
-        "worktree": worktree,
-        "base": base,
-        "branch": branch.trim(),
-        "dirty": !status_short.trim().is_empty(),
-        "status_short": status_short.lines().collect::<Vec<_>>(),
-        "changed_paths": changed_paths,
-        "owned_paths": owned_paths,
-        "owned_path_violations": violations
-    }))
-}
-
-fn run_check_command(
-    store: &HarnessStore,
-    task_id: &str,
-    worktree: &str,
-    command: &str,
-) -> CliResult<Evidence> {
-    let check_id = generated_id("check");
-    let check_dir = store.root().join("checks").join(&check_id);
-    fs::create_dir_all(&check_dir)?;
-    let stdout_ref = check_dir.join("stdout.log");
-    let stderr_ref = check_dir.join("stderr.log");
-    let output = Command::new("sh")
-        .arg("-lc")
-        .arg(command)
-        .current_dir(worktree)
-        .output()?;
-    fs::write(&stdout_ref, &output.stdout)?;
-    fs::write(&stderr_ref, &output.stderr)?;
-    let evidence = Evidence {
-        id: generated_id("evidence"),
-        task_id: Some(task_id.into()),
-        source_type: if output.status.success() {
-            "check_passed".into()
-        } else {
-            "check_failed".into()
-        },
-        source_ref: check_dir.display().to_string(),
-        summary: format!("check `{command}` exited with {:?}", output.status.code()),
-        created_at: now_string(),
-        evidence_kind: None,
-        goal_id: None,
-    };
-    store.append_evidence(&evidence)?;
-    if !output.status.success() {
-        return Err(CliError::Usage(format!(
-            "check command failed for task {task_id}: {command}"
-        )));
-    }
-    Ok(evidence)
-}
-
-fn command_stdout(command: &str, args: &[&str]) -> CliResult<String> {
-    let output = Command::new(command).args(args).output()?;
-    if output.status.success() {
-        Ok(String::from_utf8_lossy(&output.stdout).to_string())
-    } else {
-        Err(CliError::Usage(format!("command failed: {command}")))
-    }
-}
-
-fn git_diff_patch(worktree: &str, base: &str) -> CliResult<Vec<u8>> {
-    for args in [
-        vec!["diff", &format!("{base}...HEAD")],
-        vec!["diff", "HEAD"],
-        vec!["diff", "--cached"],
-    ] {
-        let output = Command::new("git")
-            .arg("-C")
-            .arg(worktree)
-            .args(args)
-            .output()?;
-        if output.status.success() && !output.stdout.is_empty() {
-            return Ok(output.stdout);
-        }
-    }
-    let untracked = git_untracked_paths(worktree)?;
-    if !untracked.is_empty() {
-        let mut patch = Vec::new();
-        for path in untracked {
-            let file_path = PathBuf::from(worktree).join(&path);
-            writeln!(patch, "diff --git a/{path} b/{path}")?;
-            writeln!(patch, "new file mode 100644")?;
-            writeln!(patch, "--- /dev/null")?;
-            writeln!(patch, "+++ b/{path}")?;
-            writeln!(patch, "@@")?;
-            let content = fs::read_to_string(file_path).unwrap_or_default();
-            for line in content.lines() {
-                writeln!(patch, "+{line}")?;
-            }
-        }
-        return Ok(patch);
-    }
-    Ok(Vec::new())
-}
-
-fn git_untracked_paths(worktree: &str) -> CliResult<Vec<String>> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(worktree)
-        .args(["ls-files", "--others", "--exclude-standard"])
-        .output()?;
-    if !output.status.success() {
-        return Ok(Vec::new());
-    }
-    Ok(String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .map(str::to_string)
-        .collect())
-}
-
-fn owned_path_violations(changed_paths: &[String], owned_paths: &[String]) -> Vec<String> {
-    if owned_paths.is_empty() {
-        return Vec::new();
-    }
-    changed_paths
-        .iter()
-        .filter(|path| {
-            !owned_paths.iter().any(|owned| {
-                let owned = owned.trim_end_matches('/');
-                path.as_str() == owned || path.starts_with(&format!("{owned}/"))
-            })
-        })
-        .cloned()
-        .collect()
-}
-
 fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::Value> {
-    let goals = latest_goals(store)?;
-    let tasks = latest_tasks(store)?;
+    let company_os = company_os_api::snapshot(store)?;
     let members = latest_members(store)?;
     let teams = latest_teams(store)?;
     let runtimes = latest_runtimes(store)?;
-    let proposals = latest_proposals(store)?;
     let messages = latest_messages_in_append_order(store)?;
     let events = store.events()?;
     let evidence = store.evidence()?;
-    let decisions = store.decisions()?;
-    let reviews = latest_reviews_in_append_order(store)?;
-    let gaps = latest_gaps_in_append_order(store)?;
-    let goal_designs = latest_goal_designs_in_append_order(store)?;
-    let goal_evaluations = latest_goal_evaluations_in_append_order(store)?;
-    let goal_cases = latest_goal_cases_in_append_order(store)?;
-    let visions = latest_visions_in_append_order(store)?;
     let sessions = latest_provider_sessions_in_append_order(store)?;
     let provider_child_threads = store.provider_child_threads()?;
     let workflow_runs = latest_workflow_runs_in_append_order(store)?;
     let workflow_steps = latest_workflow_steps_in_append_order(store)?;
     let workflow_patches = latest_workflow_patches_in_append_order(store)?;
     let workflow_artifact_manifests = latest_workflow_artifact_manifests_in_append_order(store)?;
-    // The goal↔run orchestration checkpoints (Stage 0): each `goal run-phases`
-    // execution, its per-phase `workflow_run_id` links, and status. Surfacing them
-    // makes a real run-phases visible on the dashboard (the back link to the
-    // forward goal_id/phase_id now stamped on each WorkflowRun). Latest-row-wins by
-    // id (the checkpoint is re-appended as it progresses), newest-first — the same
-    // projection every other object gets.
-    let goal_orchestration_runs: Vec<_> = {
-        let mut seen = std::collections::HashSet::new();
-        store
-            .goal_orchestration_runs()?
-            .into_iter()
-            .rev()
-            .filter(|o| seen.insert(o.id.clone()))
-            .collect()
-    };
-    let autonomous_proposals =
-        autonomous_proposals_snapshot(&tasks, &messages, &evidence, &decisions);
-    let goal_learning_status: Vec<_> = goals
-        .keys()
-        .filter_map(|goal_id| goal_learning_status(store, goal_id).ok())
-        .map(|status| status.to_json())
-        .collect();
-    let mut kanban = BTreeMap::new();
-    for status in [
-        TaskStatus::Planned,
-        TaskStatus::Assigned,
-        TaskStatus::Running,
-        TaskStatus::Blocked,
-        TaskStatus::Review,
-        TaskStatus::Done,
-        TaskStatus::Archived,
-    ] {
-        let label = status_label(&status).to_string();
-        let task_ids: Vec<_> = tasks
-            .values()
-            .filter(|task| task.status == status)
-            .map(|task| task.id.clone())
-            .collect();
-        kanban.insert(label, task_ids);
-    }
+    let missions = store.latest_missions()?;
+    let waves = store.latest_waves()?;
+    // Agent Team v0 ledger projections (append-only, latest-wins). The folded
+    // event log is capped per run so a chatty run cannot bloat the snapshot.
+    let team_runs = latest_team_runs_in_append_order(store)?;
+    let member_runs = latest_member_runs_in_append_order(store)?;
+    let team_messages = latest_team_messages_in_append_order(store)?;
+    // Old ledgers can contain v0 `thinking` rows. Keep the JSONL history
+    // intact for migration/audit, but never project those rows into a new
+    // snapshot: thinking is not product state or evidence.
+    let member_actions = visible_member_actions_in_append_order(store)?;
+    let delegation_runs = latest_delegation_runs_in_append_order(store)?;
+    let team_run_events = recent_team_run_events_in_append_order(store, 500)?;
     let member_cards: Vec<_> = members
         .values()
         .map(|member| {
@@ -15775,114 +11742,27 @@ fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::Value> {
         .collect();
     Ok(serde_json::json!({
         "generated_at": now_string(),
-        "goals": goals.into_values().collect::<Vec<_>>(),
-        "goal_learning_status": goal_learning_status,
         "teams": teams.into_values().filter(|team| team.status == AgentTeamStatus::Active).collect::<Vec<_>>(),
         "members": member_cards,
-        "kanban": kanban,
-        "tasks": tasks.into_values().collect::<Vec<_>>(),
         "messages": messages,
         "events": events,
-        "proposals": proposals.into_values().collect::<Vec<_>>(),
-        "autonomous_proposals": autonomous_proposals,
         "evidence": evidence,
-        "decisions": decisions,
-        "reviews": reviews,
-        "gaps": gaps,
-        "goal_designs": goal_designs,
-        "goal_evaluations": goal_evaluations,
-        "goal_cases": goal_cases,
-        "visions": visions,
         "provider_sessions": sessions,
         "provider_child_threads": provider_child_threads,
         "workflow_runs": workflow_runs,
         "workflow_steps": workflow_steps,
         "workflow_patches": workflow_patches,
         "workflow_artifact_manifests": workflow_artifact_manifests,
-        "goal_orchestration_runs": goal_orchestration_runs
+        "missions": missions,
+        "waves": waves,
+        "team_runs": team_runs,
+        "member_runs": member_runs,
+        "team_messages": team_messages,
+        "member_actions": member_actions,
+        "delegation_runs": delegation_runs,
+        "team_run_events": team_run_events,
+        "company_os": company_os
     }))
-}
-
-fn autonomous_proposals_snapshot(
-    tasks: &BTreeMap<String, Task>,
-    messages: &[Message],
-    evidence: &[Evidence],
-    decisions: &[Decision],
-) -> Vec<serde_json::Value> {
-    evidence
-        .iter()
-        .filter(|item| autonomy_proposal_source_type(&item.source_type))
-        .map(|proposal| {
-            let task = proposal
-                .task_id
-                .as_ref()
-                .and_then(|task_id| tasks.get(task_id));
-            let message = messages
-                .iter()
-                .rev()
-                .find(|message| message.evidence_ids.iter().any(|id| id == &proposal.id));
-            let decision = decisions
-                .iter()
-                .rev()
-                .find(|decision| decision.evidence_ids.iter().any(|id| id == &proposal.id));
-            let follow_up_tasks: Vec<_> = tasks
-                .values()
-                .filter(|candidate| candidate.parent_task_id == proposal.task_id)
-                .map(|task| task.id.clone())
-                .collect();
-            let follow_up_goals: Vec<_> = tasks
-                .values()
-                .filter(|candidate| candidate.parent_task_id == proposal.task_id)
-                .filter_map(|task| task.goal_id.clone())
-                .collect::<BTreeSet<_>>()
-                .into_iter()
-                .collect();
-            serde_json::json!({
-                "id": proposal.id,
-                "kind": proposal.source_type,
-                "source_type": proposal.source_type,
-                "source_ref": proposal.source_ref,
-                "summary": proposal.summary,
-                "task_id": proposal.task_id,
-                "goal_id": task.and_then(|task| task.goal_id.clone()),
-                "created_at": proposal.created_at,
-                "message_id": message.map(|message| message.id.clone()),
-                "from_agent_id": message.map(|message| message.from_agent_id.clone()),
-                "to_agent_id": message.and_then(|message| message.to_agent_id.clone()),
-                "linked_evidence_ids": message
-                    .map(|message| message.evidence_ids.clone())
-                    .unwrap_or_else(|| vec![proposal.id.clone()]),
-                "disposition": decision
-                    .map(|decision| autonomy_decision_disposition(&decision.decision))
-                    .unwrap_or("pending"),
-                "decision_id": decision.map(|decision| decision.id.clone()),
-                "decision_rationale": decision.map(|decision| decision.rationale.clone()),
-                "follow_up_task_ids": follow_up_tasks,
-                "follow_up_goal_ids": follow_up_goals
-            })
-        })
-        .collect()
-}
-
-fn autonomy_decision_disposition(decision: &str) -> &'static str {
-    let text = decision.to_lowercase();
-    if text.contains("request_evidence") || text.contains("request evidence") {
-        "request_evidence"
-    } else if text.contains("accept") {
-        "accepted"
-    } else if text.contains("reject") {
-        "rejected"
-    } else if text.contains("defer") {
-        "deferred"
-    } else {
-        "decided"
-    }
-}
-
-fn latest_task(store: &HarnessStore, task_id: &str) -> CliResult<Task> {
-    latest_tasks(store)?
-        .remove(task_id)
-        .ok_or_else(|| CliError::Usage(format!("task not found: {task_id}")))
 }
 
 fn latest_member(store: &HarnessStore, member_id: &str) -> CliResult<AgentMember> {
@@ -15905,14 +11785,6 @@ fn latest_messages(store: &HarnessStore) -> CliResult<BTreeMap<String, Message>>
     Ok(messages)
 }
 
-fn latest_goals(store: &HarnessStore) -> CliResult<BTreeMap<String, Goal>> {
-    let mut goals = BTreeMap::new();
-    for goal in store.goals()? {
-        goals.insert(goal.id.clone(), goal);
-    }
-    Ok(goals)
-}
-
 fn latest_runtime(store: &HarnessStore, runtime_id: &str) -> CliResult<Option<AgentRuntime>> {
     let mut runtimes = BTreeMap::new();
     for runtime in store.runtimes()? {
@@ -15930,72 +11802,6 @@ fn latest_provider_session(
         sessions.insert(session.id.clone(), session);
     }
     Ok(sessions.remove(session_id))
-}
-
-/// Reconcile a workflow leaf's [`ProviderSession`] to a TERMINAL status when its
-/// owning step was reaped / canceled / timed out (issue #193 G3). Unlike the
-/// operator-facing `reconcile_provider_session_value`, this is the AUTOMATED reaper
-/// path: it does not require an agent-id match, records no operator evidence, and
-/// does not reset a member — it just trues the session row up so a run, its steps,
-/// and its sessions AGREE on terminal state.
-///
-/// IDEMPOTENT and NON-FLAPPING: a session already in ANY terminal status
-/// (`Succeeded` / `Failed` / `Canceled` / `Stale`) is left untouched, so re-running
-/// the reaper (e.g. `workflow reap-workers` twice) never rewrites a terminal row or
-/// oscillates its status. Only a still-open (`Queued` / `Running`) session is moved.
-/// Returns `true` iff the session existed and was moved (a fresh terminal write).
-/// `terminal_source` defaults to [`MessageTerminalSource::Failed`] to match how a
-/// killed worker is otherwise recorded.
-fn reconcile_workflow_session_terminal(
-    store: &HarnessStore,
-    session_id: &str,
-    status: ProviderSessionStatus,
-) -> CliResult<bool> {
-    debug_assert!(
-        !matches!(
-            status,
-            ProviderSessionStatus::Queued | ProviderSessionStatus::Running
-        ),
-        "reconcile target must be terminal"
-    );
-    let Some(mut session) = latest_provider_session(store, session_id)? else {
-        return Ok(false);
-    };
-    if !matches!(
-        session.status,
-        ProviderSessionStatus::Queued | ProviderSessionStatus::Running
-    ) {
-        // Already terminal — do not flap it.
-        return Ok(false);
-    }
-    session.status = status;
-    session.terminal_source = Some(MessageTerminalSource::Failed);
-    session.ended_at = Some(now_string());
-    store.append_provider_session(&session)?;
-    Ok(true)
-}
-
-/// Reconcile every still-open [`ProviderSession`] belonging to a run's steps to a
-/// terminal status (issue #193 G3), used by the orphan-worker reaper when it kills
-/// a worker whose owning run is already gone/terminal. Idempotent (delegates to
-/// [`reconcile_workflow_session_terminal`]). Returns the count of sessions moved.
-fn reconcile_run_sessions_terminal(
-    store: &HarnessStore,
-    run_id: &str,
-    status: ProviderSessionStatus,
-) -> CliResult<usize> {
-    let mut moved = 0;
-    for step in latest_workflow_steps_in_append_order(store)? {
-        if step.run_id != run_id {
-            continue;
-        }
-        if let Some(sid) = step.provider_session_id.as_deref() {
-            if reconcile_workflow_session_terminal(store, sid, status.clone())? {
-                moved += 1;
-            }
-        }
-    }
-    Ok(moved)
 }
 
 /// Read the RAW provider turn for one session, 1:1: each line of the persisted
@@ -16270,6 +12076,114 @@ fn latest_workflow_runs_in_append_order(store: &HarnessStore) -> CliResult<Vec<W
     Ok(ids.into_iter().filter_map(|id| by_id.remove(&id)).collect())
 }
 
+fn latest_team_runs_in_append_order(store: &HarnessStore) -> CliResult<Vec<AgentTeamRun>> {
+    let mut ids = Vec::new();
+    let mut by_id = BTreeMap::new();
+    for run in store.team_runs()? {
+        ids.retain(|id| id != &run.id);
+        ids.push(run.id.clone());
+        by_id.insert(run.id.clone(), run);
+    }
+    Ok(ids.into_iter().filter_map(|id| by_id.remove(&id)).collect())
+}
+
+fn latest_member_runs_in_append_order(store: &HarnessStore) -> CliResult<Vec<MemberRun>> {
+    let mut ids = Vec::new();
+    let mut by_id = BTreeMap::new();
+    for run in store.member_runs()? {
+        ids.retain(|id| id != &run.id);
+        ids.push(run.id.clone());
+        by_id.insert(run.id.clone(), run);
+    }
+    Ok(ids.into_iter().filter_map(|id| by_id.remove(&id)).collect())
+}
+
+fn latest_team_messages_in_append_order(store: &HarnessStore) -> CliResult<Vec<TeamMessage>> {
+    let mut ids = Vec::new();
+    let mut by_id = BTreeMap::new();
+    for message in store.team_messages()? {
+        ids.retain(|id| id != &message.id);
+        ids.push(message.id.clone());
+        by_id.insert(message.id.clone(), message);
+    }
+    Ok(ids.into_iter().filter_map(|id| by_id.remove(&id)).collect())
+}
+
+fn latest_member_actions_in_append_order(store: &HarnessStore) -> CliResult<Vec<MemberAction>> {
+    let mut ids = Vec::new();
+    let mut by_id = BTreeMap::new();
+    for action in store.member_actions()? {
+        ids.retain(|id| id != &action.id);
+        ids.push(action.id.clone());
+        by_id.insert(action.id.clone(), action);
+    }
+    Ok(ids.into_iter().filter_map(|id| by_id.remove(&id)).collect())
+}
+
+/// Project the product-visible MemberAction view. Legacy v0 reasoning rows
+/// remain in the append-only ledger but are never surfaced to a new operator
+/// or MCP consumer as durable state.
+fn visible_member_actions_in_append_order(store: &HarnessStore) -> CliResult<Vec<MemberAction>> {
+    Ok(latest_member_actions_in_append_order(store)?
+        .into_iter()
+        .filter(|action| action.action_type != "thinking")
+        .collect())
+}
+
+fn latest_delegation_runs_in_append_order(store: &HarnessStore) -> CliResult<Vec<DelegationRun>> {
+    let mut ids = Vec::new();
+    let mut by_id = BTreeMap::new();
+    for run in store.delegation_runs()? {
+        ids.retain(|id| id != &run.id);
+        ids.push(run.id.clone());
+        by_id.insert(run.id.clone(), run);
+    }
+    Ok(ids.into_iter().filter_map(|id| by_id.remove(&id)).collect())
+}
+
+fn latest_team_run_events_in_append_order(store: &HarnessStore) -> CliResult<Vec<TeamRunEvent>> {
+    let mut ids = Vec::new();
+    let mut by_id = BTreeMap::new();
+    for event in store.team_run_events()? {
+        ids.retain(|id| id != &event.id);
+        ids.push(event.id.clone());
+        by_id.insert(event.id.clone(), event);
+    }
+    Ok(ids.into_iter().filter_map(|id| by_id.remove(&id)).collect())
+}
+
+/// Snapshot projection of the folded team-run event log: latest-wins by id,
+/// then capped to the most recent `per_run_cap` events per team run (by seq)
+/// so a chatty run cannot bloat every dashboard snapshot.
+fn recent_team_run_events_in_append_order(
+    store: &HarnessStore,
+    per_run_cap: usize,
+) -> CliResult<Vec<TeamRunEvent>> {
+    let events = latest_team_run_events_in_append_order(store)?;
+    let mut seqs_by_run: BTreeMap<String, Vec<u64>> = BTreeMap::new();
+    for event in &events {
+        seqs_by_run
+            .entry(event.team_run_id.clone())
+            .or_default()
+            .push(event.seq);
+    }
+    // The seq floor per run: the cap-th largest seq (0 when the run has fewer
+    // than `per_run_cap` events, keeping all of them).
+    let mut min_kept_seq = BTreeMap::new();
+    for (run_id, mut seqs) in seqs_by_run {
+        seqs.sort_unstable_by(|a, b| b.cmp(a));
+        let floor = seqs
+            .get(per_run_cap.saturating_sub(1))
+            .copied()
+            .unwrap_or(0);
+        min_kept_seq.insert(run_id, floor);
+    }
+    Ok(events
+        .into_iter()
+        .filter(|event| event.seq >= min_kept_seq.get(&event.team_run_id).copied().unwrap_or(0))
+        .collect())
+}
+
 /// Age after which a `Running` WorkflowRun is assumed orphaned and reaped. The
 /// run-script path is SYNCHRONOUS — a run is only `Running` in the store while its
 /// host process is alive — so a row left `Running` past this age means the process
@@ -16519,19 +12433,10 @@ fn reap_orphaned_workers(store: &HarnessStore, dry_run: bool) -> CliResult<serde
         }
 
         let killed_worker = dry_run || kill_orphan_worker_group(pidfile.pid, pidfile.pgid);
-        let mut sessions_reconciled = 0usize;
         if killed_worker {
             killed += 1;
             if !dry_run {
                 let _ = fs::remove_file(&path);
-                // The killed orphan's owning run is already gone/terminal, so its
-                // leaf sessions must not sit `Running` forever — reconcile them to
-                // `Stale` (issue #193 G3). Idempotent + non-flapping.
-                sessions_reconciled = reconcile_run_sessions_terminal(
-                    store,
-                    &pidfile.run_id,
-                    ProviderSessionStatus::Stale,
-                )?;
             }
         }
         entries.push(serde_json::json!({
@@ -16541,7 +12446,6 @@ fn reap_orphaned_workers(store: &HarnessStore, dry_run: bool) -> CliResult<serde
             "pgid": pidfile.pgid,
             "cmd_marker": pidfile.cmd_marker,
             "command": command,
-            "sessions_reconciled": sessions_reconciled,
             "action": match (dry_run, killed_worker) {
                 (true, _) => "would_kill",
                 (false, true) => "killed",
@@ -16597,67 +12501,35 @@ fn reap_stale_workflow_runs(store: &HarnessStore) -> CliResult<usize> {
         if !pid_dead && !too_old {
             continue;
         }
-        // Terminal CLASS for an abandoned run (issue #193 G1): a dead driver pid is
-        // `driver_exited`; a legacy/age-backstop reap is `orphan_reaped`.
-        let run_reason = if pid_dead {
-            WorkflowTerminalReason::DriverExited
-        } else {
-            WorkflowTerminalReason::OrphanReaped
-        };
-        // Whether ANY step of this run had already completed OK before the driver
-        // died — drives the run-level `partial_output_available` flag (G4).
-        let mut had_completed_step = false;
         // Close any non-terminal steps so the dashboard's per-step status is not
-        // stuck at `running` after the run itself is failed. Every step of a reaped
-        // run also has its ProviderSession reconciled to terminal (G3), so the run,
-        // its steps, and its sessions AGREE on terminal state.
+        // stuck at `running` after the run itself is failed.
         if let Some(steps) = steps_by_run.get(&run.id) {
             for step in steps {
-                let open = matches!(
+                if !matches!(
                     step.status,
                     WorkflowStepStatus::Running | WorkflowStepStatus::Queued
-                );
-                if matches!(step.status, WorkflowStepStatus::Completed) {
-                    had_completed_step = true;
-                }
-                // Reconcile the leaf's provider session to a terminal status
-                // regardless of whether the step row was still open — a killed
-                // worker can leave a `Running` session behind a terminal step.
-                // Idempotent: an already-terminal session is left untouched.
-                if let Some(sid) = step.provider_session_id.as_deref() {
-                    let _ = reconcile_workflow_session_terminal(
-                        store,
-                        sid,
-                        ProviderSessionStatus::Failed,
-                    )?;
-                }
-                if !open {
+                ) {
                     continue;
                 }
-                // A step that had produced output (a summary) but was reaped mid-
-                // flight is PARTIAL, not a clean failure (G4).
-                let produced_output = step
-                    .output_summary
-                    .as_deref()
-                    .is_some_and(|s| !s.is_empty());
                 let mut closed = step.clone();
+                let had_partial = closed.result.is_some()
+                    || closed
+                        .output_summary
+                        .as_deref()
+                        .is_some_and(|summary| !summary.is_empty());
                 closed.status = WorkflowStepStatus::Failed;
                 closed.ended_at = Some(now_string());
-                closed.terminal_reason = Some(run_reason);
-                closed.partial = produced_output;
                 closed.output_summary = Some(match closed.output_summary.as_deref() {
                     Some(s) if !s.is_empty() => format!("{s} [reaped: driver process gone]"),
                     _ => "reaped: driver process gone".to_string(),
                 });
+                closed.terminal_reason = Some(WorkflowTerminalReason::DriverExited);
+                closed.partial = had_partial;
                 store.append_workflow_step(&closed)?;
             }
         }
         run.status = WorkflowRunStatus::Failed;
         run.ended_at = Some(now_string());
-        run.terminal_reason = Some(run_reason);
-        // An abandoned run that had ≥1 completed step carries partial deliverables
-        // retrievable via `workflow get-output` (G4).
-        run.partial_output_available = had_completed_step;
         run.summary = Some(match run.host_pid {
             Some(pid) if pid_dead => format!(
                 "reaped: driver process (pid {pid}) is no longer alive — the run was abandoned before it finalized"
@@ -16666,6 +12538,15 @@ fn reap_stale_workflow_runs(store: &HarnessStore) -> CliResult<usize> {
                 "reaped: orphaned Running for ~{}h — host process exited before the run finalized",
                 age / (60 * 60 * 1000)
             ),
+        });
+        run.terminal_reason = Some(WorkflowTerminalReason::DriverExited);
+        run.partial_output_available = steps_by_run.get(&run.id).is_some_and(|steps| {
+            steps.iter().any(|step| {
+                matches!(
+                    step.status,
+                    WorkflowStepStatus::Completed | WorkflowStepStatus::Cached
+                ) || step.result.is_some()
+            })
         });
         store.append_workflow_run(&run)?;
         // A crashed/abandoned run reaching its terminal Failed status also notifies
@@ -16702,118 +12583,12 @@ fn latest_messages_in_append_order(store: &HarnessStore) -> CliResult<Vec<Messag
         .collect())
 }
 
-fn latest_reviews_in_append_order(store: &HarnessStore) -> CliResult<Vec<Review>> {
-    let mut review_ids = Vec::new();
-    let mut reviews_by_id = BTreeMap::new();
-    for review in store.reviews()? {
-        review_ids.retain(|id| id != &review.id);
-        review_ids.push(review.id.clone());
-        reviews_by_id.insert(review.id.clone(), review);
-    }
-    Ok(review_ids
-        .into_iter()
-        .filter_map(|id| reviews_by_id.remove(&id))
-        .collect())
-}
-
-fn latest_gaps_in_append_order(store: &HarnessStore) -> CliResult<Vec<Gap>> {
-    let mut gap_ids = Vec::new();
-    let mut gaps_by_id = BTreeMap::new();
-    for gap in store.gaps()? {
-        gap_ids.retain(|id| id != &gap.id);
-        gap_ids.push(gap.id.clone());
-        gaps_by_id.insert(gap.id.clone(), gap);
-    }
-    Ok(gap_ids
-        .into_iter()
-        .filter_map(|id| gaps_by_id.remove(&id))
-        .collect())
-}
-
-fn latest_goal_designs_in_append_order(store: &HarnessStore) -> CliResult<Vec<GoalDesign>> {
-    let mut ids = Vec::new();
-    let mut by_id = BTreeMap::new();
-    for design in store.goal_designs()? {
-        ids.retain(|id| id != &design.id);
-        ids.push(design.id.clone());
-        by_id.insert(design.id.clone(), design);
-    }
-    Ok(ids.into_iter().filter_map(|id| by_id.remove(&id)).collect())
-}
-
-fn latest_goal_evaluations_in_append_order(store: &HarnessStore) -> CliResult<Vec<GoalEvaluation>> {
-    let mut ids = Vec::new();
-    let mut by_id = BTreeMap::new();
-    for evaluation in store.goal_evaluations()? {
-        ids.retain(|id| id != &evaluation.id);
-        ids.push(evaluation.id.clone());
-        by_id.insert(evaluation.id.clone(), evaluation);
-    }
-    Ok(ids.into_iter().filter_map(|id| by_id.remove(&id)).collect())
-}
-
-fn latest_goal_cases_in_append_order(store: &HarnessStore) -> CliResult<Vec<GoalCase>> {
-    let mut ids = Vec::new();
-    let mut by_id = BTreeMap::new();
-    for case in store.goal_cases()? {
-        ids.retain(|id| id != &case.case_id);
-        ids.push(case.case_id.clone());
-        by_id.insert(case.case_id.clone(), case);
-    }
-    Ok(ids.into_iter().filter_map(|id| by_id.remove(&id)).collect())
-}
-
-fn latest_visions_in_append_order(store: &HarnessStore) -> CliResult<Vec<Vision>> {
-    let mut ids = Vec::new();
-    let mut by_id = BTreeMap::new();
-    for vision in store.visions()? {
-        ids.retain(|id| id != &vision.id);
-        ids.push(vision.id.clone());
-        by_id.insert(vision.id.clone(), vision);
-    }
-    Ok(ids.into_iter().filter_map(|id| by_id.remove(&id)).collect())
-}
-
 fn latest_runtimes(store: &HarnessStore) -> CliResult<BTreeMap<String, AgentRuntime>> {
     let mut runtimes = BTreeMap::new();
     for runtime in store.runtimes()? {
         runtimes.insert(runtime.id.clone(), runtime);
     }
     Ok(runtimes)
-}
-
-fn latest_proposal(store: &HarnessStore, proposal_id: &str) -> CliResult<Proposal> {
-    let mut proposals = BTreeMap::new();
-    for proposal in store.proposals()? {
-        proposals.insert(proposal.id.clone(), proposal);
-    }
-    proposals
-        .remove(proposal_id)
-        .ok_or_else(|| CliError::Usage(format!("proposal not found: {proposal_id}")))
-}
-
-fn latest_proposals(store: &HarnessStore) -> CliResult<BTreeMap<String, Proposal>> {
-    let mut proposals = BTreeMap::new();
-    for proposal in store.proposals()? {
-        proposals.insert(proposal.id.clone(), proposal);
-    }
-    Ok(proposals)
-}
-
-fn latest_evidence(store: &HarnessStore) -> CliResult<BTreeMap<String, Evidence>> {
-    let mut evidence = BTreeMap::new();
-    for item in store.evidence()? {
-        evidence.insert(item.id.clone(), item);
-    }
-    Ok(evidence)
-}
-
-fn latest_tasks(store: &HarnessStore) -> CliResult<BTreeMap<String, Task>> {
-    let mut tasks = BTreeMap::new();
-    for task in store.tasks()? {
-        tasks.insert(task.id.clone(), task);
-    }
-    Ok(tasks)
 }
 
 fn latest_members(store: &HarnessStore) -> CliResult<BTreeMap<String, AgentMember>> {
@@ -20191,98 +15966,10 @@ fn has_flag(args: &[String], name: &str) -> bool {
     args.iter().any(|arg| arg == name)
 }
 
-/// Parse an `ArtifactKind` from its snake_case wire name (goal-phase-artifacts).
-fn parse_artifact_kind(s: &str) -> CliResult<ArtifactKind> {
-    match s {
-        "design_doc" => Ok(ArtifactKind::DesignDoc),
-        "adr" => Ok(ArtifactKind::Adr),
-        "code" => Ok(ArtifactKind::Code),
-        "test_report" => Ok(ArtifactKind::TestReport),
-        "migration_doc" => Ok(ArtifactKind::MigrationDoc),
-        "registered_doc" => Ok(ArtifactKind::RegisteredDoc),
-        "screenshot" => Ok(ArtifactKind::Screenshot),
-        "other" => Ok(ArtifactKind::Other),
-        other => Err(CliError::Usage(format!(
-            "unknown artifact kind `{other}` (expected one of design_doc/adr/code/\
-             test_report/migration_doc/registered_doc/screenshot/other)"
-        ))),
-    }
-}
-
-/// Parse repeatable `--output`/`--input` flags into [`ArtifactSpec`]s. Each value
-/// is a comma-separated `key=value` list: `id` (required), `path`, `kind` (default
-/// `code`), `purpose`, `required` (`true`/`false`, default true), `acceptance`.
-/// `flag` names the CLI flag for actionable errors. Empty (no such flags) →
-/// `vec![]` (today's default). Commas/equals inside values are not supported
-/// (declare such paths via the planner JSON path instead).
-fn parse_spec_flags(args: &[String], flag: &str) -> CliResult<Vec<ArtifactSpec>> {
-    many(args, flag)
-        .iter()
-        .map(|raw| {
-            let mut spec = ArtifactSpec::default();
-            for field in raw.split(',') {
-                let field = field.trim();
-                if field.is_empty() {
-                    continue;
-                }
-                let (key, val) = field.split_once('=').ok_or_else(|| {
-                    CliError::Usage(format!(
-                        "{flag} field `{field}` must be key=value (in `{raw}`)"
-                    ))
-                })?;
-                let val = val.trim();
-                match key.trim() {
-                    "id" => spec.id = val.to_string(),
-                    "path" => spec.path = Some(val.to_string()),
-                    "kind" => spec.kind = parse_artifact_kind(val)?,
-                    "purpose" => spec.purpose = val.to_string(),
-                    "required" => {
-                        spec.required = match val {
-                            "true" => true,
-                            "false" => false,
-                            other => {
-                                return Err(CliError::Usage(format!(
-                                    "{flag} required must be true|false, got `{other}`"
-                                )))
-                            }
-                        }
-                    }
-                    "acceptance" => spec.acceptance = Some(val.to_string()),
-                    other => {
-                        return Err(CliError::Usage(format!(
-                            "unknown {flag} field `{other}` (expected id/path/kind/\
-                             purpose/required/acceptance)"
-                        )))
-                    }
-                }
-            }
-            if spec.id.trim().is_empty() {
-                return Err(CliError::Usage(format!(
-                    "{flag} `{raw}` needs an `id=...` field"
-                )));
-            }
-            Ok(spec)
-        })
-        .collect()
-}
-
-/// Parse repeatable `--output` flags into [`ArtifactSpec`]s (goal-phase-artifacts):
-/// the artifacts a phase declares it will PRODUCE, which the verdict gate enforces.
-fn parse_output_flags(args: &[String]) -> CliResult<Vec<ArtifactSpec>> {
-    parse_spec_flags(args, "--output")
-}
-
-/// Parse repeatable `--input` flags into [`ArtifactSpec`]s (goal-phase-refinements):
-/// the artifacts a phase REQUIRES a prior phase to have landed, asserted as a
-/// precondition before the phase runs.
-fn parse_input_flags(args: &[String]) -> CliResult<Vec<ArtifactSpec>> {
-    parse_spec_flags(args, "--input")
-}
-
 fn parse_message_kind(value: &str) -> CliResult<MessageKind> {
     match value {
         "message" => Ok(MessageKind::Message),
-        "task" => Ok(MessageKind::Task),
+        "assignment" => Ok(MessageKind::Assignment),
         "report" => Ok(MessageKind::Report),
         other => Err(CliError::Usage(format!("unknown message kind: {other}"))),
     }
@@ -20293,7 +15980,7 @@ fn parse_message_kind(value: &str) -> CliResult<MessageKind> {
 fn message_kind_label(kind: &MessageKind) -> &'static str {
     match kind {
         MessageKind::Message => "message",
-        MessageKind::Task => "task",
+        MessageKind::Assignment => "assignment",
         MessageKind::Report => "report",
     }
 }
@@ -20313,18 +16000,6 @@ fn sender_kind_from_args(args: &[String]) -> CliResult<SenderKind> {
     match value(args, "--sender-kind") {
         Some(raw) => parse_sender_kind(&raw),
         None => Ok(SenderKind::default()),
-    }
-}
-
-fn parse_delivery_status(value: &str) -> CliResult<MessageDeliveryStatus> {
-    match value {
-        "queued" => Ok(MessageDeliveryStatus::Queued),
-        "delivered" => Ok(MessageDeliveryStatus::Delivered),
-        "acknowledged" => Ok(MessageDeliveryStatus::Acknowledged),
-        "failed" => Ok(MessageDeliveryStatus::Failed),
-        other => Err(CliError::Usage(format!(
-            "unknown message delivery status: {other}"
-        ))),
     }
 }
 
@@ -20357,31 +16032,6 @@ fn parse_terminal_source(value: &str) -> CliResult<MessageTerminalSource> {
     }
 }
 
-fn parse_proposal_status(value: &str) -> CliResult<ProposalStatus> {
-    match value {
-        "draft" => Ok(ProposalStatus::Draft),
-        "submitted" => Ok(ProposalStatus::Submitted),
-        "accepted" => Ok(ProposalStatus::Accepted),
-        "rejected" => Ok(ProposalStatus::Rejected),
-        "superseded" => Ok(ProposalStatus::Superseded),
-        other => Err(CliError::Usage(format!("unknown proposal status: {other}"))),
-    }
-}
-
-fn parse_task_status(value: &str) -> CliResult<TaskStatus> {
-    match value {
-        "planned" => Ok(TaskStatus::Planned),
-        "assigned" => Ok(TaskStatus::Assigned),
-        "running" => Ok(TaskStatus::Running),
-        "blocked" => Ok(TaskStatus::Blocked),
-        "review" => Ok(TaskStatus::Review),
-        "done" => Ok(TaskStatus::Done),
-        "superseded" => Ok(TaskStatus::Superseded),
-        "archived" => Ok(TaskStatus::Archived),
-        other => Err(CliError::Usage(format!("unknown task status: {other}"))),
-    }
-}
-
 fn terminal_source_label(source: &MessageTerminalSource) -> String {
     match source {
         MessageTerminalSource::TurnCompleted => "turn_completed",
@@ -20403,19 +16053,6 @@ fn provider_status_label(status: &ProviderSessionStatus) -> &'static str {
         ProviderSessionStatus::Failed => "failed",
         ProviderSessionStatus::Canceled => "canceled",
         ProviderSessionStatus::Stale => "stale",
-    }
-}
-
-fn status_label(status: &TaskStatus) -> &'static str {
-    match status {
-        TaskStatus::Planned => "planned",
-        TaskStatus::Assigned => "assigned",
-        TaskStatus::Running => "running",
-        TaskStatus::Blocked => "blocked",
-        TaskStatus::Review => "review",
-        TaskStatus::Done => "done",
-        TaskStatus::Superseded => "superseded",
-        TaskStatus::Archived => "archived",
     }
 }
 
@@ -20454,98 +16091,29 @@ fn print_json<T: serde::Serialize>(value: &T) -> CliResult<()> {
 
 fn print_help() {
     println!(
-        "harness commands:
+        r#"harness commands:
   init
-  project add [<path>] [--switch]              register a project (default: cwd) in the central registry
-  project list                                 list known projects (registry + on-disk + _global), marking current
-  project current                              show the active project (the serve/CLI convergence point)
-  project switch <id|path>                     flip the active project (updates registry + ACTIVE_PROJECT)
-  project remove <id> [--force]                unregister a project (store kept; --force to drop the current one)
-  project show [<id|path>]                      show one project's context (default: current)
-  project migrate [<local-store>] [--switch]   move a repo-local .harness into ~/.harness/projects/<id>/
-  agent create --name <name> --role <role> [--description <text>] [--provider codex|claude] [--team <team>] [--skill <skill>] [--prompt <text>] [--prompt-ref <path>] [--worktree <path>] [--permission-profile <profile>] [--runtime-workspace-root <path>] [--approval-policy <policy>] [--sandbox-policy <policy>] [--service-tier <tier>] [--collaboration-mode <mode>] [--effort <e>] [--output-schema-file <path>] [--provider-agent-path <path>] [--provider-agent-nickname <name>] [--provider-agent-role <role>] [--start]
-  agent list
-  agent start --id <agent>
-  agent health --id <agent>
-  agent show --id <agent>
-  agent send --from <agent> --to <agent> --content <text> [--task <task>] [--channel <channel>] [--kind message|task|report]
-  agent deliver --agent <agent> [--message <message>] [--dry-run] [--start-runtime] [--timeout-ms <ms>]
-  agent retry-delivery --agent <agent> --message <message> [--session <session>] [--reason <text>] [--force]
-  agent reconcile-session --agent <agent> --session <session> --status <succeeded|failed|canceled|stale> [--terminal-source <source>] [--reason <text>]
-  agent gateway [--once] [--dry-run] [--start-runtime] [--interval-ms <ms>] [--timeout-ms <ms>] [--claim-ttl-ms <ms>]
-  agent ingest --agent <agent> --source <provider-output> [--runtime <runtime>] [--task <task>]
-  agent close --id <agent>
-  team create --name <name> --description <text> --owner <agent> [--member <agent>]
-  team list [--all]
-  team show --id <team>
-  team close --id <team>
-  member register --name <name> --role <role> [--provider codex|claude] [--capability <cap>] [--worktree <path>] [--permission-profile <profile>] [--runtime-workspace-root <path>]
-  member list
-  goal create --title <title> --objective <text> --owner <agent> [--success <text>]
-  goal phase-add --id <goal> --phase-id <id> --name <name> --intent <text> [--execution-mode task_graph|workflow --workflow-ref repo:path/to/workflow.star]
-  goal plan <goal> [--dry-run] [--trace durable|live] [--timeout-ms <ms>] [--model <m>] [--effort <e>]
-  goal reconcile-phase --goal <goal> --phase <id> --to passed|failed [--landed-commit <sha>] [--note-file <md>] [--author <name>]
-  goal learning-status --id <goal> [--strict] [--require-evaluation] [--allow-waiver] [--waiver-decision <decision>]
-  goal list
-  task create --title <title> --objective <text> --owner <agent> [--goal <goal>] [--assignee <agent>] [--reviewer <agent>] [--workspace <path>] [--branch <ref>] [--pr <ref>] [--owned-path <path>] [--acceptance <text>]
-  task assign --id <task> --assignee <agent> [--channel <channel>] [--allow-missing-goal-design --waiver-decision <decision>]
-  task status --id <task> --status <planned|assigned|running|blocked|review|done|archived>
-  task list
-  message send --from <agent> --content <text> [--to <agent>] [--task <task>] [--channel <channel>] [--kind message|task|report]
-  message list [--channel <channel>] [--task <task>]
-  message status --id <message> --status <queued|delivered|acknowledged|failed>
-  event add --agent <agent> --type <event_type> --summary <text> [--runtime <runtime>] [--task <task>] [--provider-thread <id>] [--provider-turn <id>] [--provider-child-thread <id>] [--payload-ref <ref>]
-  event list [--agent <agent>] [--task <task>]
-  proposal create --task <task> --agent <agent> --title <title> --summary <text> [--changed-path <path>] [--evidence <id>]
-  proposal from-diff --task <task> --agent <agent> --worktree <path> --title <title> --summary <text> [--base <ref>] [--submit] [--check-cmd <cmd>]
-  proposal list [--agent <agent>] [--task <task>]
-  proposal status --id <proposal> --status <draft|submitted|accepted|rejected|superseded>
-  git worktree-create --task <task> --repo <path> --path <worktree> --branch <branch> [--base <ref>] [--no-create]
-  git attach --task <task> --workspace <path> --branch <branch> [--pr <ref>] [--owned-path <path>]
-  git status [--task <task>] [--worktree <path>] [--base <ref>]
-  git changed-paths --worktree <path> [--base <ref>]
-  review gate --task <task> --reviewer <agent> --decision <accept|reject> --rationale <text> [--evidence <id>] [--allow-no-check] [--allow-no-critic] [--allow-no-provider-output] [--allow-missing-goal-design --waiver-decision <decision>] [--require-goal-design] [--require-goal-evaluation] [--allow-goal-learning-waiver --waiver-decision <decision>]
-  evidence add --source-type <type> --source-ref <ref> --summary <text> [--task <task>]
-  decision record --task <task> --decision <text> --rationale <text> [--evidence <id>]
-  autonomy observe --goal <goal> --task <task> --observer <agent> --lead <agent> [--kind goal_proposal|graph_change_proposal|blocker|follow_up] [--summary <text>]
-  autonomy plan-next --goal <goal> --task <task> --observer <agent> --lead <agent> [--summary <text>] [--proposal-summary <text>]
-  autonomy decide --task <task> --lead <agent> --proposal <evidence> --decision <accept|reject|defer|request_evidence> --rationale <text> [--create-goal <goal> --goal-title <title> --goal-objective <text>] [--create-task <task> --task-title <title> --task-objective <text> --assignee <agent> --reviewer <agent>]
-  autonomy tick --observer <agent> --lead <agent> --vision-ref <path>|--vision-summary <text> [--goal <goal>] [--auto-accept --assignee <agent> --reviewer <agent>] [--dry-run] [--max-new-goals <n>]
-  autonomy loop --observer <agent> --lead <agent> --vision-ref <path>|--vision-summary <text> [--iterations <n>|--forever] [--interval-ms <ms>] [--auto-accept --assignee <agent> --reviewer <agent>] [--dry-run]
+  project add | project list | project current | project switch
+  project remove | project show | project migrate
+  legacy-goal-task export --project <id|path> --output <dir>
+  legacy-goal-task verify --archive <dir>
+  mission create|list|show
+  wave create|list|show|gate
+  team-run create|list|status|start|send|events|complete|cancel
+  team create|list|show|close
+  member register|list|providers
+  agent create|list|show|start|health|send|deliver|retry-delivery|reconcile-session|gateway|ingest|close
+  workflow list|run|run-script|get-output|patch|gc-worktrees|reap-workers|gc-trace
   dashboard snapshot
-  board
-  hook record --agent <agent> [--runtime <runtime>] [--task <task>]
-  codex run --task <task> --agent <agent> --worktree <path> --prompt <text>
-  codex review --task <task> --agent <agent> --worktree <path> [--base <branch>] [--uncommitted] [--prompt <text>]
-  workflow list
-  workflow run --name <name> [--prompt <text>] [--start-runtime] [--dry-run] [--timeout-ms <ms>] [--model <m>] [--effort <e>]
-  workflow run-script <prog.star> [--name <n>] [--args <json>] [--trace durable|live] [--dry-run] [--resume <prior_run_id>] [--timeout-ms <ms>] [--model <m>] [--effort <e>]
-  workflow get-output <run_id> [--step <label>] [--text]
-  workflow status <run_id>   (read-only run health: terminal_reason, pid liveness, stale sessions)
-  workflow patch list [--run <run_id>]
-  workflow patch show <patch_id|run_id> [--step <label|step_id>]
-  workflow patch apply <patch_id|run_id> [--step <label|step_id>] [--allow-dirty] [--reason <text>] [--actor <id>]
-  workflow patch reject <patch_id|run_id> [--step <label|step_id>] [--reason <text>] [--actor <id>]
-  workflow gc-worktrees
-  workflow reap-workers [--dry-run]
-  workflow gc-trace [--keep-runs <n>] [--keep-days <d>] [--dry-run]
+  hook record --agent <agent> [--runtime <runtime>]
   serve [--addr 127.0.0.1:8787] [--once]
-  daemon start [--socket <path>] [--idle-secs <n>]   (unix: resident warm-child host)
-  daemon status
-  daemon stop
+  mcp
+  daemon start|status|stop
 
-global:
-  --project <id|path>  select a project; its store is ~/.harness/projects/<id>/.
-                   (else $HARNESS_PROJECT, else the registry's current project,
-                   else the legacy ancestor-.harness walk-up, else _global).
-  --store <path>   DEPRECATED override: raw store root for any command (else
-                   $HARNESS_ROOT). Prefer `harness init` / a project selector.
-  --store-source   debug: print which store was chosen and why, then continue.
-  --timeout-ms <ms> workflow worker idle timeout (default 900000 = 15 min);
-                   a worker is killed only after this long with NO output."
+Retired coordination commands fail explicitly. Historical rows are available only
+through legacy-goal-task export|verify."#
     );
 }
-
 #[cfg(test)]
 mod workflow_runtime_tests {
     use super::*;
@@ -20556,6 +16124,12 @@ mod workflow_runtime_tests {
         let store = HarnessStore::new(&root);
         store.init().expect("init store");
         store
+    }
+
+    fn new_file_diff_str(path: &str, content: &str) -> String {
+        format!(
+            "diff --git a/{path} b/{path}\nnew file mode 100644\nindex 0000000..1111111\n--- /dev/null\n+++ b/{path}\n@@ -0,0 +1 @@\n+{content}\n"
+        )
     }
 
     fn init_gc_git_project(tag: &str, store: &HarnessStore) -> PathBuf {
@@ -20613,8 +16187,6 @@ mod workflow_runtime_tests {
                 trace_retention: "durable".into(),
                 host_pid: None,
                 dry_run: false,
-                goal_id: None,
-                phase_id: None,
                 terminal_reason: None,
                 partial_output_available: false,
             })
@@ -20833,55 +16405,6 @@ mod workflow_runtime_tests {
             kind: ProjectKind::Repo,
             is_git_repo,
         }
-    }
-
-    /// Stage 0 (close the chain): the REAL run path — `run_phase_compiled_script`,
-    /// not a stubbed closure — must stamp the goal↔run link FORWARD onto the
-    /// journaled `WorkflowRun` (both the running and the terminal row). Driven in
-    /// `--dry-run` so no provider is spawned; the point is the stamping, not the work.
-    #[test]
-    fn real_run_phase_stamps_goal_and_phase_on_the_workflow_run() {
-        let root = std::env::temp_dir().join(format!("harness-stage0-{}", generated_id("link")));
-        let store = HarnessStore::new(&root);
-        store.init().expect("init");
-        let options = WorkflowDeliveryOptions {
-            dry_run: true,
-            start_runtime: false,
-            timeout_ms: 5_000,
-            default_model: None,
-            default_effort: None,
-            max_budget_usd: None,
-            trace_retention: "durable".into(),
-            progress: false,
-            project: temp_project_context("stage0-link", false),
-        };
-        let script = "workflow(\"phase-p1\", \"stage0 forward goal-run link proof\")\n\
-                      _r = agent(\"noop\", label=\"t1\")\nverdict(True)\noutput(_r)\n";
-        let (run_id, _outcome) = run_phase_compiled_script(
-            &store,
-            script,
-            "phase-p1",
-            &options,
-            &RunGoalLink {
-                goal_id: Some("g-stage0".into()),
-                phase_id: Some("p1".into()),
-            },
-            None,
-        )
-        .expect("real run");
-
-        let run = latest_workflow_runs_in_append_order(&store)
-            .expect("runs")
-            .into_iter()
-            .find(|r| r.id == run_id)
-            .expect("journaled WorkflowRun");
-        assert_eq!(
-            run.goal_id.as_deref(),
-            Some("g-stage0"),
-            "the real run path stamps goal_id onto the WorkflowRun"
-        );
-        assert_eq!(run.phase_id.as_deref(), Some("p1"), "and phase_id");
-        assert!(run.dry_run, "dry-run marker is set");
     }
 
     fn launch_spec_with_model_effort(model: Option<&str>, effort: Option<&str>) -> LaunchSpec {
@@ -21388,186 +16911,6 @@ mod workflow_runtime_tests {
         );
     }
 
-    // --- #192: strict schema selection over the reply candidates ---
-
-    #[test]
-    fn all_json_object_candidates_enumerates_concatenated_objects() {
-        // The exact evidence shape from #192: an all-empty object emitted before a
-        // meaningful one, concatenated in a single reply. Both must be enumerated
-        // in text order.
-        let reply =
-            "{\"winner\":\"\",\"reject\":\"\"}\n{\"winner\":\"codex\",\"reject\":\"claude\"}";
-        let cands = all_json_object_candidates(reply);
-        assert_eq!(cands.len(), 2);
-        assert_eq!(cands[0]["winner"], serde_json::json!(""));
-        assert_eq!(cands[1]["winner"], serde_json::json!("codex"));
-    }
-
-    #[test]
-    fn empty_string_field_count_counts_only_empty_top_level_strings() {
-        let obj = serde_json::json!({
-            "winner": "", "reject": "  ", "score": 0, "keep": "yes", "flag": true
-        });
-        // "winner" and "reject" (whitespace-only) count; score/keep/flag do not.
-        assert_eq!(empty_string_field_count(&obj), 2);
-        assert_eq!(empty_string_field_count(&serde_json::json!({})), 0);
-        assert_eq!(empty_string_field_count(&serde_json::json!("x")), 0);
-    }
-
-    // Test 1 (regression): all-empty object BEFORE a meaningful one → strict
-    // selects the meaningful candidate; index + empty-field-count reported.
-    #[test]
-    fn select_structured_strict_skips_all_empty_then_selects_meaningful() {
-        let schema = serde_json::json!({ "winner": "", "reject": "" });
-        let normalized = schema_to_json_schema(&schema);
-        let required = schema_required_keys(&schema);
-        let reply =
-            "{\"winner\":\"\",\"reject\":\"\"}\nthen: {\"winner\":\"codex\",\"reject\":\"claude\"}";
-
-        let strict = select_structured(None, Some(reply), &required, &normalized, true);
-        assert_eq!(
-            strict.selected,
-            Some(serde_json::json!({ "winner": "codex", "reject": "claude" }))
-        );
-        // The meaningful object is the SECOND candidate (index 1) and has no empties.
-        assert_eq!(strict.selected_index, Some(1));
-        assert_eq!(strict.empty_field_count, 0);
-        assert_eq!(strict.candidate_count, 2);
-
-        // Permissive mode selects the FIRST candidate (all-empty), but the empty
-        // count makes the emptiness visible without failing (D4).
-        let permissive = select_structured(None, Some(reply), &required, &normalized, false);
-        assert_eq!(
-            permissive.selected,
-            Some(serde_json::json!({ "winner": "", "reject": "" }))
-        );
-        assert_eq!(permissive.selected_index, Some(0));
-        assert_eq!(permissive.empty_field_count, 2);
-    }
-
-    // Test 2: ONLY all-empty objects → strict fails (no candidate survives);
-    // permissive returns the dict with empty_field_count > 0.
-    #[test]
-    fn select_structured_strict_fails_when_every_candidate_is_empty() {
-        let schema = serde_json::json!({ "winner": "", "reject": "" });
-        let normalized = schema_to_json_schema(&schema);
-        let required = schema_required_keys(&schema);
-        let reply = "{\"winner\":\"\",\"reject\":\"\"}\n{\"winner\":\"  \",\"reject\":\"\"}";
-
-        let strict = select_structured(None, Some(reply), &required, &normalized, true);
-        assert!(
-            strict.selected.is_none(),
-            "strict rejects every all-empty candidate → schema failure path"
-        );
-        assert_eq!(strict.selected_index, None);
-        assert_eq!(strict.candidate_count, 2);
-
-        // Permissive keeps the first and journals its empty count (visible-not-fatal).
-        let permissive = select_structured(None, Some(reply), &required, &normalized, false);
-        assert_eq!(
-            permissive.selected,
-            Some(serde_json::json!({ "winner": "", "reject": "" }))
-        );
-        assert_eq!(permissive.empty_field_count, 2);
-    }
-
-    #[test]
-    fn select_structured_strict_rejects_empty_provider_validated_object() {
-        // The native --json-schema path can hand back a type-valid but empty object;
-        // strict must reject it too, then fall through to reply candidates (none here).
-        let schema = serde_json::json!({ "winner": "", "reject": "" });
-        let normalized = schema_to_json_schema(&schema);
-        let required = schema_required_keys(&schema);
-        let validated = serde_json::json!({ "winner": "", "reject": "" });
-
-        let strict = select_structured(Some(&validated), None, &required, &normalized, true);
-        assert!(strict.selected.is_none());
-
-        // Permissive accepts the validated object (index 0) with the empty count.
-        let permissive = select_structured(Some(&validated), None, &required, &normalized, false);
-        assert_eq!(permissive.selected, Some(validated.clone()));
-        assert_eq!(permissive.selected_index, Some(0));
-        assert_eq!(permissive.empty_field_count, 2);
-    }
-
-    #[test]
-    fn strict_full_schema_only_constrains_plain_required_string_props() {
-        // A real JSON Schema: `winner` is a plain required string (strict enforces
-        // non-empty); `tag` declares its own minLength (native validator owns it —
-        // strict must NOT double-constrain); `score` is a non-string (ignored).
-        let schema = serde_json::json!({
-            "type": "object",
-            "properties": {
-                "winner": { "type": "string" },
-                "tag": { "type": "string", "minLength": 1 },
-                "score": { "type": "integer" }
-            },
-            "required": ["winner", "tag", "score"]
-        });
-        let props = strict_required_string_props(&schema);
-        assert_eq!(props, vec!["winner".to_string()]);
-
-        // Empty `winner` → rejected; empty `tag` alone would NOT be our concern.
-        assert!(strict_rejects_candidate(
-            &serde_json::json!({ "winner": "", "tag": "x", "score": 1 }),
-            &schema
-        ));
-        assert!(!strict_rejects_candidate(
-            &serde_json::json!({ "winner": "codex", "tag": "x", "score": 1 }),
-            &schema
-        ));
-    }
-
-    // Test 4: dry-run mock + schema_strict passes end-to-end and journals the
-    // #192 metadata onto the step result.
-    #[test]
-    fn dry_run_schema_strict_passes_and_journals_metadata() {
-        let store = temp_store("strict-dryrun");
-        let script = r#"
-workflow("pick", "select one candidate strictly so an all-empty object cannot pass")
-_r = agent(
-    "choose",
-    label = "chooser",
-    schema = {"winner": "who", "reject": "who"},
-    schema_strict = True,
-)
-verdict(bool(_r), "chose a candidate")
-output(_r)
-"#;
-        let dir = std::env::temp_dir().join(format!("harness-strict-{}", generated_id("src")));
-        fs::create_dir_all(&dir).expect("mkdir");
-        let path = dir.join("pick.star");
-        fs::write(&path, script).expect("write script");
-
-        let args = vec![path.display().to_string(), "--dry-run".to_string()];
-        let result = workflow_run_script_value(&store, &args).expect("run script");
-        let run = result.get("run").expect("run key");
-        assert_eq!(
-            run.get("status").and_then(|s| s.as_str()),
-            Some("completed"),
-            "strict mode passes under dry-run (mock fills non-empty fields)"
-        );
-
-        // The journaled step's result carries the #192 metadata.
-        let out = workflow_get_output_value(
-            &store,
-            &[
-                run.get("id").and_then(|v| v.as_str()).unwrap().to_string(),
-                "--step".to_string(),
-                "chooser".to_string(),
-            ],
-        )
-        .expect("get-output");
-        let step = &out["steps"][0];
-        let sel = &step["schema_selection"];
-        assert_eq!(sel["schema_strict"], serde_json::json!(true));
-        assert_eq!(sel["schema_attempt_count"], serde_json::json!(1));
-        assert_eq!(sel["selected_json_index"], serde_json::json!(0));
-        assert_eq!(sel["empty_field_count"], serde_json::json!(0));
-        // The selected candidate is surfaced directly (D5), not just concatenated.
-        assert_eq!(sel["selected"]["winner"], serde_json::json!("mock winner"));
-    }
-
     #[test]
     fn parse_claude_result_extras_reads_structured_and_cost() {
         let events = vec![
@@ -22014,7 +17357,7 @@ new file mode 100644
         assert!(warning.contains("step 'writer'"));
         assert!(warning.contains("1 changed file(s)"));
         assert!(warning.contains("harness workflow get-output wfrun-test --step writer"));
-        assert!(warning.contains("goal run-phases"));
+        assert!(warning.contains("harness workflow patch apply"));
     }
 
     #[test]
@@ -23263,16 +18606,12 @@ new file mode 100644
                 trace_retention: "durable".into(),
                 host_pid: None,
                 dry_run: false,
-                goal_id: None,
-                phase_id: None,
                 terminal_reason: None,
                 partial_output_available: false,
             })
             .expect("append run");
         store
             .append_workflow_step(&WorkflowStep {
-                task_id: None,
-                verdict_outcome: None,
                 id: format!("{id}-s"),
                 run_id: id.into(),
                 phase: "work".into(),
@@ -23311,8 +18650,6 @@ new file mode 100644
             trace_retention: "durable".into(),
             host_pid: None,
             dry_run: false,
-            goal_id: None,
-            phase_id: None,
             terminal_reason: None,
             partial_output_available: false,
         };
@@ -23370,8 +18707,6 @@ new file mode 100644
                 trace_retention: "durable".into(),
                 host_pid: Some(dead_pid),
                 dry_run: false,
-                goal_id: None,
-                phase_id: None,
                 terminal_reason: None,
                 partial_output_available: false,
             })
@@ -23379,8 +18714,6 @@ new file mode 100644
         // A still-open step under it must be closed to Failed by the reaper too.
         store
             .append_workflow_step(&WorkflowStep {
-                task_id: None,
-                verdict_outcome: None,
                 id: "wfstep-dead".into(),
                 run_id: "wfrun-dead".into(),
                 phase: "scan".into(),
@@ -23414,8 +18747,6 @@ new file mode 100644
                 trace_retention: "durable".into(),
                 host_pid: Some(std::process::id()),
                 dry_run: false,
-                goal_id: None,
-                phase_id: None,
                 terminal_reason: None,
                 partial_output_available: false,
             })
@@ -23449,713 +18780,6 @@ new file mode 100644
             "the reaped run's open step is closed to Failed"
         );
         assert!(step.ended_at.is_some());
-    }
-
-    // ---- issue #193: cancellation cascade + terminal-reason classification ----
-
-    /// Build a workflow provider session with an explicit id + status (issue #193
-    /// test helper). Distinct from `provider_session_with_ref` (which is always
-    /// Succeeded) so a test can seed a still-`Running` leaf session.
-    fn mk_session(id: &str, status: ProviderSessionStatus) -> ProviderSession {
-        ProviderSession {
-            id: id.into(),
-            provider: "codex".into(),
-            agent_member_id: "member-x".into(),
-            task_id: None,
-            workspace_ref: None,
-            provider_thread_id: None,
-            provider_turn_id: None,
-            terminal_source: None,
-            status,
-            command: "codex".into(),
-            args: Vec::new(),
-            prompt_ref: None,
-            prompt_summary: None,
-            provider_session_ref: None,
-            stdout_ref: None,
-            jsonl_ref: None,
-            transcript_ref: None,
-            last_message_ref: None,
-            exit_code: None,
-            started_at: "unix-ms:1".into(),
-            ended_at: None,
-            evidence_ids: Vec::new(),
-        }
-    }
-
-    fn mk_step_row(
-        id: &str,
-        run_id: &str,
-        session_id: Option<&str>,
-        status: WorkflowStepStatus,
-        output_summary: Option<&str>,
-    ) -> WorkflowStep {
-        WorkflowStep {
-            task_id: None,
-            verdict_outcome: None,
-            id: id.into(),
-            run_id: run_id.into(),
-            phase: "work".into(),
-            label: id.into(),
-            provider_session_id: session_id.map(|s| s.to_string()),
-            status,
-            output_summary: output_summary.map(|s| s.to_string()),
-            result: None,
-            started_at: now_string(),
-            ended_at: if matches!(status, WorkflowStepStatus::Running) {
-                None
-            } else {
-                Some(now_string())
-            },
-            terminal_reason: None,
-            partial: false,
-        }
-    }
-
-    fn find_run(store: &HarnessStore, id: &str) -> WorkflowRun {
-        latest_workflow_runs_in_append_order(store)
-            .expect("read runs")
-            .into_iter()
-            .find(|r| r.id == id)
-            .expect("run present")
-    }
-
-    fn find_step(store: &HarnessStore, id: &str) -> WorkflowStep {
-        latest_workflow_steps_in_append_order(store)
-            .expect("read steps")
-            .into_iter()
-            .find(|s| s.id == id)
-            .expect("step present")
-    }
-
-    fn find_session(store: &HarnessStore, id: &str) -> ProviderSession {
-        latest_provider_session(store, id)
-            .expect("read session")
-            .expect("session present")
-    }
-
-    /// A dead pid guaranteed absent on this host (spawn + immediately reap `true`).
-    fn dead_pid() -> u32 {
-        let mut child = std::process::Command::new("true")
-            .spawn()
-            .expect("spawn true");
-        let pid = child.id();
-        child.wait().expect("wait true");
-        pid
-    }
-
-    #[test]
-    fn reaper_stamps_driver_exited_reason_and_reconciles_sessions() {
-        // TEST 1: simulated driver death → run+steps get driver_exited, sessions
-        // reconciled terminal, partial_output_available correct (one step done).
-        let store = temp_store("i193-driver-exited");
-        let now = current_unix_ms();
-        let dead = dead_pid();
-
-        store
-            .append_workflow_run(&WorkflowRun {
-                id: "wfrun-x".into(),
-                workflow_name: "demo".into(),
-                status: WorkflowRunStatus::Running,
-                step_ids: vec!["s-done".into(), "s-open".into()],
-                created_at: format!("unix-ms:{now}"),
-                ended_at: None,
-                summary: None,
-                args: None,
-                agents_spawned: 2,
-                final_output: None,
-                initiated_by: Some("op".into()),
-                design_intent: None,
-                spec: None,
-                trace_retention: "durable".into(),
-                host_pid: Some(dead),
-                dry_run: false,
-                goal_id: None,
-                phase_id: None,
-                terminal_reason: None,
-                partial_output_available: false,
-            })
-            .expect("append run");
-        // One step already completed (with a succeeded session) — partial output.
-        store
-            .append_provider_session(&mk_session("sess-done", ProviderSessionStatus::Succeeded))
-            .expect("append done session");
-        store
-            .append_workflow_step(&mk_step_row(
-                "s-done",
-                "wfrun-x",
-                Some("sess-done"),
-                WorkflowStepStatus::Completed,
-                Some("wrote report.md"),
-            ))
-            .expect("append done step");
-        // One step still running with a running session — must be reconciled.
-        store
-            .append_provider_session(&mk_session("sess-open", ProviderSessionStatus::Running))
-            .expect("append open session");
-        store
-            .append_workflow_step(&mk_step_row(
-                "s-open",
-                "wfrun-x",
-                Some("sess-open"),
-                WorkflowStepStatus::Running,
-                Some("partial draft so far"),
-            ))
-            .expect("append open step");
-
-        let reaped = reap_stale_workflow_runs(&store).expect("reap");
-        assert_eq!(reaped, 1);
-
-        let run = find_run(&store, "wfrun-x");
-        assert_eq!(run.status, WorkflowRunStatus::Failed);
-        assert_eq!(
-            run.terminal_reason,
-            Some(WorkflowTerminalReason::DriverExited)
-        );
-        assert!(
-            run.partial_output_available,
-            "one step had completed → partial output available"
-        );
-
-        // The open step is closed, classified, and marked partial (it had output).
-        let open = find_step(&store, "s-open");
-        assert_eq!(open.status, WorkflowStepStatus::Failed);
-        assert_eq!(
-            open.terminal_reason,
-            Some(WorkflowTerminalReason::DriverExited)
-        );
-        assert!(
-            open.partial,
-            "a reaped step that produced output is partial"
-        );
-
-        // Both sessions agree on a terminal state; the running one → Failed, the
-        // already-terminal one is untouched.
-        assert_eq!(
-            find_session(&store, "sess-open").status,
-            ProviderSessionStatus::Failed
-        );
-        assert_eq!(
-            find_session(&store, "sess-done").status,
-            ProviderSessionStatus::Succeeded
-        );
-    }
-
-    #[test]
-    fn reconciliation_is_idempotent_across_repeated_reaps() {
-        // TEST 2: run the reap/reconcile path twice → identical final state, no flap.
-        let store = temp_store("i193-idempotent");
-        let now = current_unix_ms();
-        let dead = dead_pid();
-        store
-            .append_workflow_run(&WorkflowRun {
-                id: "wfrun-i".into(),
-                workflow_name: "demo".into(),
-                status: WorkflowRunStatus::Running,
-                step_ids: vec!["s1".into()],
-                created_at: format!("unix-ms:{now}"),
-                ended_at: None,
-                summary: None,
-                args: None,
-                agents_spawned: 1,
-                final_output: None,
-                initiated_by: Some("op".into()),
-                design_intent: None,
-                spec: None,
-                trace_retention: "durable".into(),
-                host_pid: Some(dead),
-                dry_run: false,
-                goal_id: None,
-                phase_id: None,
-                terminal_reason: None,
-                partial_output_available: false,
-            })
-            .expect("append run");
-        store
-            .append_provider_session(&mk_session("sess-1", ProviderSessionStatus::Running))
-            .expect("append session");
-        store
-            .append_workflow_step(&mk_step_row(
-                "s1",
-                "wfrun-i",
-                Some("sess-1"),
-                WorkflowStepStatus::Running,
-                None,
-            ))
-            .expect("append step");
-
-        assert_eq!(reap_stale_workflow_runs(&store).expect("reap 1"), 1);
-        let run_after_1 = find_run(&store, "wfrun-i");
-        let step_after_1 = find_step(&store, "s1");
-        let sess_after_1 = find_session(&store, "sess-1");
-        let ended_1 = sess_after_1.ended_at.clone();
-
-        // Second pass: the run is already terminal, so nothing is reaped and the
-        // session (already terminal) is NOT rewritten — no state flap.
-        assert_eq!(
-            reap_stale_workflow_runs(&store).expect("reap 2"),
-            0,
-            "an already-terminal run is not reaped again"
-        );
-        let run_after_2 = find_run(&store, "wfrun-i");
-        let step_after_2 = find_step(&store, "s1");
-        let sess_after_2 = find_session(&store, "sess-1");
-
-        assert_eq!(run_after_1.status, run_after_2.status);
-        assert_eq!(run_after_1.terminal_reason, run_after_2.terminal_reason);
-        assert_eq!(step_after_1.status, step_after_2.status);
-        assert_eq!(step_after_1.terminal_reason, step_after_2.terminal_reason);
-        assert_eq!(sess_after_2.status, ProviderSessionStatus::Failed);
-        assert_eq!(
-            sess_after_2.ended_at, ended_1,
-            "an already-terminal session is not rewritten on a second pass"
-        );
-    }
-
-    #[test]
-    fn reconcile_workflow_session_terminal_leaves_terminal_sessions_untouched() {
-        // TEST 2b: the reconcile primitive itself is idempotent + non-flapping.
-        let store = temp_store("i193-reconcile-primitive");
-        store
-            .append_provider_session(&mk_session("sess-run", ProviderSessionStatus::Running))
-            .expect("append running");
-        store
-            .append_provider_session(&mk_session("sess-term", ProviderSessionStatus::Canceled))
-            .expect("append terminal");
-
-        // A running session is moved once (returns true), then is a no-op (false).
-        assert!(reconcile_workflow_session_terminal(
-            &store,
-            "sess-run",
-            ProviderSessionStatus::Failed
-        )
-        .expect("reconcile 1"));
-        assert!(
-            !reconcile_workflow_session_terminal(&store, "sess-run", ProviderSessionStatus::Failed)
-                .expect("reconcile 2"),
-            "already-terminal → no move"
-        );
-        // An already-terminal session is never re-terminalized to a different status.
-        assert!(
-            !reconcile_workflow_session_terminal(
-                &store,
-                "sess-term",
-                ProviderSessionStatus::Failed
-            )
-            .expect("reconcile terminal"),
-            "a Canceled session is not flapped to Failed"
-        );
-        assert_eq!(
-            find_session(&store, "sess-term").status,
-            ProviderSessionStatus::Canceled
-        );
-        // A missing session is a safe no-op (false).
-        assert!(!reconcile_workflow_session_terminal(
-            &store,
-            "nope",
-            ProviderSessionStatus::Failed
-        )
-        .expect("reconcile missing"));
-    }
-
-    #[test]
-    fn workflow_status_reports_liveness_without_mutating() {
-        // TEST 3: `workflow status` on a finished run and on a fabricated half-dead
-        // run (rows say running, pid dead) → correct report, nothing mutated.
-        let store = temp_store("i193-status");
-        let now = current_unix_ms();
-        let dead = dead_pid();
-
-        // (a) A finished run — all terminal, no live pids.
-        store
-            .append_workflow_run(&WorkflowRun {
-                id: "wfrun-fin".into(),
-                workflow_name: "demo".into(),
-                status: WorkflowRunStatus::Completed,
-                step_ids: vec!["fs".into()],
-                created_at: format!("unix-ms:{now}"),
-                ended_at: Some(now_string()),
-                summary: Some("done".into()),
-                args: None,
-                agents_spawned: 1,
-                final_output: None,
-                initiated_by: Some("op".into()),
-                design_intent: None,
-                spec: None,
-                trace_retention: "durable".into(),
-                host_pid: Some(dead),
-                dry_run: false,
-                goal_id: None,
-                phase_id: None,
-                terminal_reason: Some(WorkflowTerminalReason::Completed),
-                partial_output_available: false,
-            })
-            .expect("append finished run");
-        store
-            .append_provider_session(&mk_session("fs-sess", ProviderSessionStatus::Succeeded))
-            .expect("append fs session");
-        store
-            .append_workflow_step(&mk_step_row(
-                "fs",
-                "wfrun-fin",
-                Some("fs-sess"),
-                WorkflowStepStatus::Completed,
-                Some("ok"),
-            ))
-            .expect("append fs step");
-
-        let fin = workflow_status_value(&store, &["wfrun-fin".to_string()]).expect("status fin");
-        assert_eq!(fin["status"], serde_json::json!("completed"));
-        assert_eq!(fin["terminal_reason"], serde_json::json!("completed"));
-        assert_eq!(fin["driver_abandoned"], serde_json::json!(false));
-        assert_eq!(fin["stale_sessions"], serde_json::json!(false));
-
-        // (b) A fabricated half-dead run: rows say Running, host pid is dead, and a
-        // leaf session is still Running → the report flags abandonment + staleness.
-        store
-            .append_workflow_run(&WorkflowRun {
-                id: "wfrun-half".into(),
-                workflow_name: "demo".into(),
-                status: WorkflowRunStatus::Running,
-                step_ids: vec!["hs".into()],
-                created_at: format!("unix-ms:{now}"),
-                ended_at: None,
-                summary: None,
-                args: None,
-                agents_spawned: 1,
-                final_output: None,
-                initiated_by: Some("op".into()),
-                design_intent: None,
-                spec: None,
-                trace_retention: "durable".into(),
-                host_pid: Some(dead),
-                dry_run: false,
-                goal_id: None,
-                phase_id: None,
-                terminal_reason: None,
-                partial_output_available: false,
-            })
-            .expect("append half run");
-        store
-            .append_provider_session(&mk_session("hs-sess", ProviderSessionStatus::Running))
-            .expect("append hs session");
-        store
-            .append_workflow_step(&mk_step_row(
-                "hs",
-                "wfrun-half",
-                Some("hs-sess"),
-                WorkflowStepStatus::Running,
-                None,
-            ))
-            .expect("append hs step");
-
-        let half = workflow_status_value(&store, &["wfrun-half".to_string()]).expect("status half");
-        assert_eq!(half["status"], serde_json::json!("running"));
-        assert_eq!(half["host_pid_alive"], serde_json::json!(false));
-        assert_eq!(
-            half["driver_abandoned"],
-            serde_json::json!(true),
-            "running row + dead driver pid = abandoned"
-        );
-        assert_eq!(
-            half["stale_sessions"],
-            serde_json::json!(true),
-            "a running session behind a dead driver is stale"
-        );
-
-        // status is READ-ONLY: nothing was mutated by either call.
-        assert_eq!(
-            find_run(&store, "wfrun-half").status,
-            WorkflowRunStatus::Running
-        );
-        assert_eq!(
-            find_session(&store, "hs-sess").status,
-            ProviderSessionStatus::Running
-        );
-        assert_eq!(find_step(&store, "hs").status, WorkflowStepStatus::Running);
-    }
-
-    #[test]
-    fn workflow_run_and_step_load_without_new_i193_fields() {
-        // TEST 4: serde back-compat — legacy rows lacking terminal_reason / partial
-        // / partial_output_available still deserialize (default None / false).
-        let legacy_run = serde_json::json!({
-            "id": "wfrun-legacy",
-            "workflow_name": "demo",
-            "status": "failed",
-            "created_at": "unix-ms:1",
-        });
-        let run: WorkflowRun = serde_json::from_value(legacy_run).expect("legacy run decodes");
-        assert_eq!(run.terminal_reason, None);
-        assert!(!run.partial_output_available);
-
-        let legacy_step = serde_json::json!({
-            "id": "wfstep-legacy",
-            "run_id": "wfrun-legacy",
-            "phase": "work",
-            "label": "node",
-            "status": "failed",
-            "started_at": "unix-ms:1",
-        });
-        let step: WorkflowStep = serde_json::from_value(legacy_step).expect("legacy step decodes");
-        assert_eq!(step.terminal_reason, None);
-        assert!(!step.partial);
-    }
-
-    #[test]
-    fn cancel_active_run_journals_canceled_and_reconciles() {
-        // TEST 5 (unit, no real SIGINT): the operator-cancel core cascades to
-        // steps + sessions and is idempotent. A real SIGINT integration test needs
-        // a live provider, so the lead live-verifies by interrupting a real codex
-        // run (see report); this drives the same `cancel_active_run` the SIGINT
-        // watcher thread invokes.
-        let store = temp_store("i193-cancel");
-        let now = current_unix_ms();
-        store
-            .append_workflow_run(&WorkflowRun {
-                id: "wfrun-c".into(),
-                workflow_name: "demo".into(),
-                status: WorkflowRunStatus::Running,
-                step_ids: vec!["c-done".into(), "c-open".into()],
-                created_at: format!("unix-ms:{now}"),
-                ended_at: None,
-                summary: Some("in progress".into()),
-                args: None,
-                agents_spawned: 2,
-                final_output: None,
-                initiated_by: Some("operator".into()),
-                design_intent: None,
-                spec: None,
-                trace_retention: "durable".into(),
-                host_pid: Some(std::process::id()),
-                dry_run: false,
-                goal_id: None,
-                phase_id: None,
-                terminal_reason: None,
-                partial_output_available: false,
-            })
-            .expect("append run");
-        store
-            .append_provider_session(&mk_session("c-done-sess", ProviderSessionStatus::Succeeded))
-            .expect("done session");
-        store
-            .append_workflow_step(&mk_step_row(
-                "c-done",
-                "wfrun-c",
-                Some("c-done-sess"),
-                WorkflowStepStatus::Completed,
-                Some("finished audit"),
-            ))
-            .expect("done step");
-        store
-            .append_provider_session(&mk_session("c-open-sess", ProviderSessionStatus::Running))
-            .expect("open session");
-        store
-            .append_workflow_step(&mk_step_row(
-                "c-open",
-                "wfrun-c",
-                Some("c-open-sess"),
-                WorkflowStepStatus::Running,
-                None,
-            ))
-            .expect("open step");
-
-        assert!(cancel_active_run(&store, "wfrun-c").expect("cancel"));
-
-        let run = find_run(&store, "wfrun-c");
-        assert_eq!(run.status, WorkflowRunStatus::Failed);
-        assert_eq!(
-            run.terminal_reason,
-            Some(WorkflowTerminalReason::CanceledByOperator)
-        );
-        assert!(
-            run.partial_output_available,
-            "a completed step under a canceled run = partial output"
-        );
-        assert!(run.summary.as_deref().unwrap_or("").contains("canceled"));
-
-        let open = find_step(&store, "c-open");
-        assert_eq!(open.status, WorkflowStepStatus::Failed);
-        assert_eq!(
-            open.terminal_reason,
-            Some(WorkflowTerminalReason::CanceledByOperator)
-        );
-        // The open leaf's session is reconciled to Canceled; the finished one stays.
-        assert_eq!(
-            find_session(&store, "c-open-sess").status,
-            ProviderSessionStatus::Canceled
-        );
-        assert_eq!(
-            find_session(&store, "c-done-sess").status,
-            ProviderSessionStatus::Succeeded
-        );
-
-        // Idempotent: cancelling an already-terminal run is a no-op.
-        assert!(!cancel_active_run(&store, "wfrun-c").expect("cancel 2"));
-    }
-
-    #[test]
-    fn orphan_reaper_reconciles_killed_run_sessions_to_stale() {
-        // TEST (G3): reaping an orphan worker whose run is gone reconciles the run's
-        // still-open leaf sessions to Stale (idempotent).
-        let store = temp_store("i193-orphan-stale");
-        let mut child = spawn_sleep_process_group();
-        let pid = child.id();
-        // The owning run is terminal (Failed) — so the live worker is an orphan.
-        append_test_workflow_run(&store, "wfrun-orphan", WorkflowRunStatus::Failed, None);
-        store
-            .append_provider_session(&mk_session("orphan-sess", ProviderSessionStatus::Running))
-            .expect("append session");
-        store
-            .append_workflow_step(&mk_step_row(
-                "orphan-step",
-                "wfrun-orphan",
-                Some("orphan-sess"),
-                WorkflowStepStatus::Running,
-                None,
-            ))
-            .expect("append step");
-        write_test_worker_pidfile(&store, "wfrun-orphan", pid, "sleep");
-
-        let _ = reap_orphaned_workers(&store, false).expect("reap workers");
-        wait_for_child_exit(&mut child);
-        kill_test_process_group(&mut child);
-
-        assert_eq!(
-            find_session(&store, "orphan-sess").status,
-            ProviderSessionStatus::Stale,
-            "a killed orphan's leaf session is reconciled to Stale"
-        );
-
-        // Idempotent: a second reap pass does not flap the (now Stale) session.
-        let _ = reap_orphaned_workers(&store, false).expect("reap workers 2");
-        assert_eq!(
-            find_session(&store, "orphan-sess").status,
-            ProviderSessionStatus::Stale
-        );
-    }
-
-    #[test]
-    fn get_output_surfaces_partial_and_terminal_reason() {
-        // TEST (G4): `workflow get-output` surfaces run-level partial_output_available
-        // + terminal_reason and per-step partial/terminal_reason.
-        let store = temp_store("i193-get-output");
-        let now = current_unix_ms();
-        let dead = dead_pid();
-        store
-            .append_workflow_run(&WorkflowRun {
-                id: "wfrun-go".into(),
-                workflow_name: "demo".into(),
-                status: WorkflowRunStatus::Running,
-                step_ids: vec!["go-done".into(), "go-open".into()],
-                created_at: format!("unix-ms:{now}"),
-                ended_at: None,
-                summary: None,
-                args: None,
-                agents_spawned: 2,
-                final_output: None,
-                initiated_by: Some("op".into()),
-                design_intent: None,
-                spec: None,
-                trace_retention: "durable".into(),
-                host_pid: Some(dead),
-                dry_run: false,
-                goal_id: None,
-                phase_id: None,
-                terminal_reason: None,
-                partial_output_available: false,
-            })
-            .expect("append run");
-        store
-            .append_provider_session(&mk_session(
-                "go-done-sess",
-                ProviderSessionStatus::Succeeded,
-            ))
-            .expect("done session");
-        store
-            .append_workflow_step(&mk_step_row(
-                "go-done",
-                "wfrun-go",
-                Some("go-done-sess"),
-                WorkflowStepStatus::Completed,
-                Some("report body"),
-            ))
-            .expect("done step");
-        store
-            .append_provider_session(&mk_session("go-open-sess", ProviderSessionStatus::Running))
-            .expect("open session");
-        store
-            .append_workflow_step(&mk_step_row(
-                "go-open",
-                "wfrun-go",
-                Some("go-open-sess"),
-                WorkflowStepStatus::Running,
-                Some("half a draft"),
-            ))
-            .expect("open step");
-
-        reap_stale_workflow_runs(&store).expect("reap");
-
-        let out = workflow_get_output_value(&store, &["wfrun-go".to_string()]).expect("get-output");
-        assert_eq!(out["status"], serde_json::json!("failed"));
-        assert_eq!(out["terminal_reason"], serde_json::json!("driver_exited"));
-        assert_eq!(out["partial_output_available"], serde_json::json!(true));
-        let steps = out["steps"].as_array().expect("steps array");
-        let open = steps
-            .iter()
-            .find(|s| s["label"] == serde_json::json!("go-open"))
-            .expect("open step in output");
-        assert_eq!(open["partial"], serde_json::json!(true));
-        assert_eq!(open["terminal_reason"], serde_json::json!("driver_exited"));
-    }
-
-    #[test]
-    fn classify_step_terminal_reason_distinguishes_timeouts_from_failures() {
-        // TEST (G1): the step classifier maps wall/idle timeouts + provider failures
-        // to distinct reasons.
-        let mk = |ok: bool, details: Option<serde_json::Value>| workflow::StepResult {
-            phase: "p".into(),
-            label: "l".into(),
-            provider: "codex".into(),
-            isolation: None,
-            ok,
-            provider_session_id: None,
-            output_summary: String::new(),
-            step_id: None,
-            started_at: None,
-            details,
-            structured: None,
-            ordinal: None,
-        };
-        assert_eq!(
-            classify_step_terminal_reason(&mk(true, None)),
-            WorkflowTerminalReason::Completed
-        );
-        assert_eq!(
-            classify_step_terminal_reason(&mk(
-                false,
-                Some(serde_json::json!({ "wall_timed_out": true }))
-            )),
-            WorkflowTerminalReason::LeafTimeout
-        );
-        assert_eq!(
-            classify_step_terminal_reason(&mk(
-                false,
-                Some(serde_json::json!({ "failure": { "reason": "timeout" } }))
-            )),
-            WorkflowTerminalReason::IdleTimeout
-        );
-        assert_eq!(
-            classify_step_terminal_reason(&mk(
-                false,
-                Some(serde_json::json!({ "failure": { "reason": "exit" } }))
-            )),
-            WorkflowTerminalReason::ProviderFailed
-        );
-        assert_eq!(
-            classify_step_terminal_reason(&mk(false, None)),
-            WorkflowTerminalReason::ProviderFailed
-        );
     }
 
     fn spawn_sleep_process_group() -> std::process::Child {
@@ -24246,8 +18870,6 @@ new file mode 100644
                 trace_retention: "durable".into(),
                 host_pid,
                 dry_run: false,
-                goal_id: None,
-                phase_id: None,
                 terminal_reason: None,
                 partial_output_available: false,
             })
@@ -24578,8 +19200,6 @@ new file mode 100644
     fn workflow_get_output_returns_full_reply_and_falls_back_to_summary() {
         let store = temp_store("get-output");
         let mk_step = |id: &str, label: &str, sid: &str, summary: &str| WorkflowStep {
-            task_id: None,
-            verdict_outcome: None,
             id: id.into(),
             run_id: "wfrun-go".into(),
             phase: "p".into(),
@@ -24593,7 +19213,7 @@ new file mode 100644
             })),
             started_at: "unix-ms:1".into(),
             ended_at: Some("unix-ms:2".into()),
-            terminal_reason: None,
+            terminal_reason: Some(WorkflowTerminalReason::Completed),
             partial: false,
         };
         store
@@ -24614,8 +19234,6 @@ new file mode 100644
                 trace_retention: "durable".into(),
                 host_pid: None,
                 dry_run: false,
-                goal_id: None,
-                phase_id: None,
                 terminal_reason: None,
                 partial_output_available: false,
             })
@@ -24958,8 +19576,6 @@ new file mode 100644
             trace_retention: "durable".into(),
             host_pid: None,
             dry_run: false,
-            goal_id: None,
-            phase_id: None,
             terminal_reason: None,
             partial_output_available: false,
         };
@@ -25055,8 +19671,6 @@ new file mode 100644
             trace_retention: "durable".into(),
             host_pid: None,
             dry_run: false,
-            goal_id: None,
-            phase_id: None,
             terminal_reason: None,
             partial_output_available: false,
         };
@@ -25341,8 +19955,6 @@ new file mode 100644
             trace_retention: "durable".into(),
             host_pid: None,
             dry_run: false,
-            goal_id: None,
-            phase_id: None,
             terminal_reason: None,
             partial_output_available: false,
         };
@@ -25385,189 +19997,6 @@ new file mode 100644
         let _ = std::fs::remove_dir_all(store.root());
     }
 
-    /// Build a new-file diff string for a path (test helper mirroring the ones in
-    /// the patch tests, shared across the D1/D3 additions).
-    fn new_file_diff_str(path: &str, content: &str) -> String {
-        format!(
-            "diff --git a/{path} b/{path}\nnew file mode 100644\nindex 0000000..1111111\n--- /dev/null\n+++ b/{path}\n@@ -0,0 +1 @@\n+{content}\n"
-        )
-    }
-
-    /// A WorkflowRun stamped `spec.orchestrated = true` (the run-phases path).
-    fn orchestrated_run(name: &str) -> WorkflowRun {
-        WorkflowRun {
-            id: generated_id("wfrun"),
-            workflow_name: name.into(),
-            status: WorkflowRunStatus::Running,
-            step_ids: Vec::new(),
-            created_at: now_string(),
-            ended_at: None,
-            summary: None,
-            args: None,
-            agents_spawned: 0,
-            final_output: None,
-            initiated_by: Some("test".into()),
-            design_intent: Some("orchestrated run patch/landing authority test".into()),
-            spec: Some(serde_json::json!({
-                "lang": "starlark", "script": "x", "orchestrated": true,
-            })),
-            trace_retention: "durable".into(),
-            host_pid: None,
-            dry_run: false,
-            goal_id: Some("g-orch".into()),
-            phase_id: Some("p1".into()),
-            terminal_reason: None,
-            partial_output_available: false,
-        }
-    }
-
-    // D1: the live-reproduced flagship failure. An ORCHESTRATED run whose writable
-    // leaf carries a diff AND an in-script apply_patch() intent must persist NO
-    // pending WorkflowPatch rows (D1a) and mutate NOTHING mid-run (D1b) — landing is
-    // the single authority. `land_phase_diffs` then lands the diff cleanly and the
-    // tree ends clean (no double-apply, no clean-tree-guard demotion).
-    #[test]
-    fn orchestrated_writable_apply_leaves_landing_the_sole_authority() {
-        let store = temp_store("orch-flagship");
-        let project_root = init_gc_git_project("orch-flagship", &store);
-        let run = orchestrated_run("flagship");
-        let step = workflow::StepResult {
-            phase: "p1".into(),
-            label: "writer".into(),
-            provider: "codex".into(),
-            isolation: Some("worktree".into()),
-            ok: true,
-            provider_session_id: Some("session-writer".into()),
-            output_summary: "writer wrote src/new.txt".into(),
-            step_id: Some("wfstep-writer".into()),
-            started_at: None,
-            details: Some(serde_json::json!({
-                "worktree_diff": new_file_diff_str("src/new.txt", "landed"),
-                "worktree_changed_paths": ["src/new.txt"],
-                "persist_changes": "patch",
-                "owned_paths": ["src"],
-                "writable": true,
-            })),
-            structured: None,
-            ordinal: Some(0),
-        };
-        let outcome = workflow::WorkflowOutcome {
-            steps: vec![step],
-            status: WorkflowRunStatus::Completed,
-            summary: "flagship completed".into(),
-            agents_spawned: 1,
-            final_output: Some(serde_json::json!({
-                "result": null,
-                "steps": [{ "label": "writer", "ok": true, "writable": true }],
-                "logs": [],
-                // The in-script apply_patch("writer") intent that used to dirty the
-                // tree mid-run and get the pass demoted.
-                "patch_actions": [{ "action": "apply", "label": "writer" }],
-                "artifact_manifests": [],
-                "verdict": { "ok": true, "reason": "test" },
-            })),
-        };
-
-        let value = journal_workflow_outcome(&store, run, &outcome).expect("journal");
-        // D1a/D1b: no pending patch rows; the tree is untouched by journaling.
-        assert!(
-            value["patches"].as_array().expect("patches").is_empty(),
-            "orchestrated runs persist NO WorkflowPatch rows (landing owns diffs)"
-        );
-        assert!(latest_workflow_patches_in_append_order(&store)
-            .expect("patches")
-            .is_empty());
-        assert!(
-            !project_root.join("src/new.txt").exists(),
-            "journaling an orchestrated apply_patch must NOT mutate the tree"
-        );
-        let status = git_in(&project_root, &["status", "--porcelain"]).expect("status");
-        assert!(
-            status.trim().is_empty(),
-            "tree stays clean after journaling an orchestrated run: {status}"
-        );
-
-        // Landing (the sole authority) now lands the writable diff → one commit,
-        // file present, tree clean.
-        let sha = land_phase_diffs("p1", &outcome, &project_root).expect("land");
-        assert!(sha.is_some(), "landing commits the writable diff");
-        assert_eq!(
-            std::fs::read_to_string(project_root.join("src/new.txt")).expect("landed file"),
-            "landed\n"
-        );
-        let after = git_in(&project_root, &["status", "--porcelain"]).expect("status2");
-        assert!(after.trim().is_empty(), "tree clean after landing: {after}");
-
-        let _ = std::fs::remove_dir_all(&project_root);
-        let _ = std::fs::remove_dir_all(store.root());
-    }
-
-    // D1c: a step the workflow `reject_patch()`ed under orchestration has its diff
-    // SKIPPED by landing (the reject intent rides on final_output.patch_actions).
-    // A sibling apply/default step still lands.
-    #[test]
-    fn landing_skips_rejected_and_discarded_steps_under_orchestration() {
-        let store = temp_store("orch-reject");
-        let project_root = init_gc_git_project("orch-reject", &store);
-
-        let mk = |label: &str, path: &str, persist: &str| workflow::StepResult {
-            phase: "p1".into(),
-            label: label.into(),
-            provider: "codex".into(),
-            isolation: Some("worktree".into()),
-            ok: true,
-            provider_session_id: None,
-            output_summary: "ok".into(),
-            step_id: Some(format!("wfstep-{label}")),
-            started_at: None,
-            details: Some(serde_json::json!({
-                "worktree_diff": new_file_diff_str(path, label),
-                "worktree_changed_paths": [path],
-                "persist_changes": persist,
-                "writable": true,
-            })),
-            structured: None,
-            ordinal: Some(0),
-        };
-        let outcome = workflow::WorkflowOutcome {
-            steps: vec![
-                mk("keep", "src/keep.txt", "patch"),
-                mk("nope", "src/nope.txt", "patch"),
-                mk("dropped", "src/dropped.txt", "discard"),
-            ],
-            status: WorkflowRunStatus::Completed,
-            summary: "reject mock".into(),
-            agents_spawned: 3,
-            final_output: Some(serde_json::json!({
-                "patch_actions": [{ "action": "reject", "label": "nope", "reason": "review said no" }],
-            })),
-        };
-
-        let sha = land_phase_diffs("p1", &outcome, &project_root).expect("land");
-        assert!(sha.is_some());
-        assert!(
-            project_root.join("src/keep.txt").is_file(),
-            "the un-rejected step lands"
-        );
-        assert!(
-            !project_root.join("src/nope.txt").exists(),
-            "a reject_patch()ed step's diff is NOT landed (D1c)"
-        );
-        assert!(
-            !project_root.join("src/dropped.txt").exists(),
-            "a persist_changes=discard step's diff is NOT landed (D1c)"
-        );
-
-        let _ = std::fs::remove_dir_all(&project_root);
-        let _ = std::fs::remove_dir_all(store.root());
-    }
-
-    // D3a (standalone): a FAILED writable step and a READ-ONLY step that produced a
-    // stray diff BOTH strand nothing — no pending WorkflowPatch is persisted. Post
-    // #190 a read-only kimi leaf runs on the project root (no worktree from a
-    // capability gap), but the `should_persist_workflow_patch` writable gate is the
-    // real guarantee: `writable=false` diffs are discarded whether or not the leaf
-    // isolated, so a read-only leaf can never persist a patch.
     #[test]
     fn standalone_run_does_not_persist_failed_or_readonly_isolated_diffs() {
         let store = temp_store("standalone-d3a");
@@ -25589,8 +20018,6 @@ new file mode 100644
             trace_retention: "durable".into(),
             host_pid: None,
             dry_run: false,
-            goal_id: None,
-            phase_id: None,
             terminal_reason: None,
             partial_output_available: false,
         };
@@ -25684,8 +20111,6 @@ new file mode 100644
             trace_retention: "durable".into(),
             host_pid: None,
             dry_run: false,
-            goal_id: None,
-            phase_id: None,
             terminal_reason: None,
             partial_output_available: false,
         };
@@ -26788,11 +21213,6 @@ agent("a NEW second leaf that changes the ordinal alignment")
         let snapshot = dashboard_snapshot(&store).expect("snapshot");
         assert!(snapshot.get("workflow_runs").is_some());
         assert!(snapshot.get("workflow_steps").is_some());
-        // Stage 0: the goal↔run orchestration checkpoints are projected too.
-        assert!(
-            snapshot.get("goal_orchestration_runs").is_some(),
-            "snapshot must surface goal_orchestration_runs for the dashboard"
-        );
 
         // After a run, the keys surface the journaled rows.
         let registry = workflow::WorkflowRegistry::builtin();
@@ -26818,182 +21238,33 @@ agent("a NEW second leaf that changes the ordinal alignment")
         assert_eq!(steps.len(), 3);
     }
 
-    /// The dashboard snapshot serializes a phase-driven goal's `phases[]` and
-    /// `knowledge[]` (so the S7 phases-timeline and knowledge-timeline can render),
-    /// and a task's planning fields (`phase_id`, `design_md`,
-    /// `superseded_by_knowledge_id`, `workflow_step_ids`) so the per-phase task DAG
-    /// and superseded rendering have their data. The Goal/Task structs serialize
-    /// via serde, so this guards against an accidental projection that drops them.
     #[test]
-    fn dashboard_snapshot_exposes_phases_knowledge_and_task_planning_fields() {
-        let store = temp_store("planning");
-        let goal = Goal {
-            id: "goal-plan".into(),
-            title: "Planned goal".into(),
-            owner_agent_id: "leader".into(),
-            status: GoalStatus::Active,
-            priority: "p0".into(),
-            created_at: "unix-ms:1".into(),
-            updated_at: "unix-ms:1".into(),
-            vision_id: None,
-            goal_design_id: None,
-            closed_by_decision_id: None,
-            git_metadata: None,
-            stage: GoalStage::default(),
-            description_md: None,
-            design_md: None,
-            acceptance_md: None,
-            explorations: Vec::new(),
-            skill_refs: Vec::new(),
-            stage_changed_at: None,
-            phases: vec![harness_core::GoalPhase {
-                id: "phase-1".into(),
-                name: "Build".into(),
-                intent: "wire it up".into(),
-                status: harness_core::GoalPhaseStatus::InProgress,
-                acceptance: Some("smoke test passes".into()),
-                verdict_decision_id: None,
-                created_at: "unix-ms:1".into(),
-                started_at: Some("unix-ms:2".into()),
-                ended_at: None,
-                outputs: Vec::new(),
-                inputs: Vec::new(),
-                retry: None,
-                landed_commit: None,
-                kind: harness_core::PhaseKind::Execution,
-                builtin: None,
-                execution_mode: harness_core::PhaseExecutionMode::TaskGraph,
-                workflow_ref: None,
-            }],
-            knowledge: vec![Knowledge {
-                id: "knowledge-1".into(),
-                goal_id: "goal-plan".into(),
-                phase_id: Some("phase-1".into()),
-                task_id: Some("t-a".into()),
-                author: "worker".into(),
-                timestamp: "unix-ms:3".into(),
-                notes_md: "the orderbook lags".into(),
-                tags: vec!["finding".into()],
-                source: KnowledgeSource::Task,
-                superseded_by_knowledge_id: None,
-                created_at: "unix-ms:3".into(),
-            }],
-            design_synthesis_at: None,
-        };
-        store.append_goal(&goal).expect("append goal");
-
-        let task = Task {
-            id: "t-a".into(),
-            goal_id: Some("goal-plan".into()),
-            parent_task_id: None,
-            title: "Task A".into(),
-            objective: "do A".into(),
-            owner_agent_id: "leader".into(),
-            assignee_agent_id: Some("worker".into()),
-            reviewer_agent_id: None,
-            status: TaskStatus::Assigned,
-            depends_on_task_ids: Vec::new(),
-            workspace_ref: None,
-            branch_ref: None,
-            pr_ref: None,
-            owned_paths: Vec::new(),
-            acceptance_criteria: Vec::new(),
-            created_at: "unix-ms:10".into(),
-            updated_at: "unix-ms:10".into(),
-            scope_refs: Vec::new(),
-            requires_human_approval: false,
-            verdict_decision_id: None,
-            description: None,
-            git_metadata: None,
-            design_md: Some("slice of the design for t-a".into()),
-            phase_id: Some("phase-1".into()),
-            superseded_by_knowledge_id: None,
-            workflow_step_ids: vec!["wfstep-1".into()],
-            outputs: Vec::new(),
-            executor: None,
-        };
-        store.append_task(&task).expect("append task");
-
-        let superseded = Task {
-            id: "t-b".into(),
-            status: TaskStatus::Superseded,
-            phase_id: Some("phase-1".into()),
-            superseded_by_knowledge_id: Some("knowledge-1".into()),
-            ..task.clone()
+    fn dashboard_snapshot_hides_legacy_durable_thinking_rows() {
+        let store = temp_store("snapshot-no-thinking");
+        let legacy = MemberAction {
+            id: generated_id("mact"),
+            seq: 1,
+            team_run_id: "team-run-legacy".to_string(),
+            member_run_id: "member-run-legacy".to_string(),
+            task_id: None,
+            action_type: "thinking".to_string(),
+            status: MemberActionStatus::Succeeded,
+            title: "old reasoning".to_string(),
+            summary: "must remain only in the legacy ledger".to_string(),
+            evidence_refs: Vec::new(),
+            started_at: now_string(),
+            completed_at: Some(now_string()),
         };
         store
-            .append_task(&superseded)
-            .expect("append superseded task");
+            .append_member_action(&legacy)
+            .expect("append legacy row");
 
+        assert_eq!(store.member_actions().expect("raw ledger").len(), 1);
         let snapshot = dashboard_snapshot(&store).expect("snapshot");
-
-        let goals = snapshot
-            .get("goals")
-            .and_then(|v| v.as_array())
-            .expect("goals array");
-        let snap_goal = goals
-            .iter()
-            .find(|g| g.get("id").and_then(|v| v.as_str()) == Some("goal-plan"))
-            .expect("goal-plan present");
-        let phases = snap_goal
-            .get("phases")
-            .and_then(|v| v.as_array())
-            .expect("phases array");
-        assert_eq!(phases.len(), 1);
         assert_eq!(
-            phases[0].get("status").and_then(|v| v.as_str()),
-            Some("in_progress")
-        );
-        let knowledge = snap_goal
-            .get("knowledge")
-            .and_then(|v| v.as_array())
-            .expect("knowledge array");
-        assert_eq!(knowledge.len(), 1);
-        assert_eq!(
-            knowledge[0].get("source").and_then(|v| v.as_str()),
-            Some("task")
-        );
-        assert_eq!(
-            knowledge[0].get("phase_id").and_then(|v| v.as_str()),
-            Some("phase-1")
-        );
-
-        let tasks = snapshot
-            .get("tasks")
-            .and_then(|v| v.as_array())
-            .expect("tasks array");
-        let snap_task = tasks
-            .iter()
-            .find(|t| t.get("id").and_then(|v| v.as_str()) == Some("t-a"))
-            .expect("t-a present");
-        assert_eq!(
-            snap_task.get("phase_id").and_then(|v| v.as_str()),
-            Some("phase-1")
-        );
-        assert!(snap_task
-            .get("design_md")
-            .and_then(|v| v.as_str())
-            .is_some());
-        assert_eq!(
-            snap_task
-                .get("workflow_step_ids")
-                .and_then(|v| v.as_array())
-                .map(|a| a.len()),
-            Some(1)
-        );
-        let snap_superseded = tasks
-            .iter()
-            .find(|t| t.get("id").and_then(|v| v.as_str()) == Some("t-b"))
-            .expect("t-b present");
-        assert_eq!(
-            snap_superseded.get("status").and_then(|v| v.as_str()),
-            Some("superseded")
-        );
-        assert_eq!(
-            snap_superseded
-                .get("superseded_by_knowledge_id")
-                .and_then(|v| v.as_str()),
-            Some("knowledge-1")
+            snapshot["member_actions"].as_array().map(Vec::len),
+            Some(0),
+            "legacy thinking must not be projected as product state"
         );
     }
 
@@ -27017,8 +21288,6 @@ agent("a NEW second leaf that changes the ordinal alignment")
             let step_id = generated_id("wfstep");
             let started_at = format!("unix-ms:{}", 1_000 + spec.label.len());
             let running = WorkflowStep {
-                task_id: None,
-                verdict_outcome: None,
                 id: step_id.clone(),
                 run_id: run_id.clone(),
                 phase: spec.phase.clone(),
@@ -27110,6 +21379,38 @@ agent("a NEW second leaf that changes the ordinal alignment")
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn make_member(id: &str) -> AgentMember {
+        AgentMember {
+            id: id.into(),
+            name: "Member".into(),
+            description: "Test member".into(),
+            role: "worker".into(),
+            provider: "codex".into(),
+            model: None,
+            profile: None,
+            provider_config: AgentProviderConfig::default(),
+            capabilities: Vec::new(),
+            team_ids: Vec::new(),
+            prompt_ref: None,
+            skill_refs: Vec::new(),
+            workspace_policy: None,
+            worktree_ref: None,
+            permission_profile: None,
+            runtime_workspace_roots: Vec::new(),
+            status: AgentMemberStatus::Idle,
+            current_task_id: None,
+            current_proposal_id: None,
+            provider_runtime_id: None,
+            provider_thread_id: None,
+            provider_agent_path: None,
+            provider_agent_nickname: None,
+            provider_agent_role: None,
+            control_endpoint: None,
+            created_at: "unix-ms:1".into(),
+            last_seen_at: None,
+        }
+    }
 
     #[test]
     fn read_allowed_doc_rejects_traversal_and_non_docs_paths() {
@@ -27493,7 +21794,7 @@ mod tests {
                 from_agent_id: "lead-1".into(),
                 to_agent_id: Some("agent-1".into()),
                 channel: Some("assignment".into()),
-                kind: MessageKind::Task,
+                kind: MessageKind::Assignment,
                 delivery_status: MessageDeliveryStatus::Acknowledged,
                 content: "Do the task".into(),
                 evidence_ids: Vec::new(),
@@ -27576,8 +21877,6 @@ mod tests {
         );
         assert_eq!(latest.exit_code, Some(0));
         assert!(latest.ended_at.is_some());
-        validate_provider_session_evidence(&store, &[evidence])
-            .expect("gate should use latest reconciled session row");
         let latest_member = latest_member(&store, "agent-1").expect("latest member");
         assert_eq!(latest_member.status, AgentMemberStatus::Idle);
         assert_eq!(latest_member.current_task_id, None);
@@ -27817,7 +22116,7 @@ mod tests {
                 from_agent_id: "lead-1".into(),
                 to_agent_id: Some("agent-1".into()),
                 channel: Some("assignment".into()),
-                kind: MessageKind::Task,
+                kind: MessageKind::Assignment,
                 delivery_status: MessageDeliveryStatus::Acknowledged,
                 content: "Do the task".into(),
                 evidence_ids: Vec::new(),
@@ -28127,7 +22426,7 @@ mod tests {
             from_agent_id: "leader".into(),
             to_agent_id: Some("agent-1".into()),
             channel: Some("assignment".into()),
-            kind: MessageKind::Task,
+            kind: MessageKind::Assignment,
             delivery_status: MessageDeliveryStatus::Queued,
             content: "Assign task".into(),
             evidence_ids: Vec::new(),
@@ -28172,7 +22471,7 @@ mod tests {
             from_agent_id: "leader".into(),
             to_agent_id: Some("agent-1".into()),
             channel: Some("assignment".into()),
-            kind: MessageKind::Task,
+            kind: MessageKind::Assignment,
             delivery_status: MessageDeliveryStatus::Queued,
             content: "Assign task".into(),
             evidence_ids: Vec::new(),
@@ -28216,7 +22515,7 @@ mod tests {
                 from_agent_id: "leader".into(),
                 to_agent_id: Some("agent-1".into()),
                 channel: Some("assignment".into()),
-                kind: MessageKind::Task,
+                kind: MessageKind::Assignment,
                 delivery_status: MessageDeliveryStatus::Queued,
                 content: "Assign task".into(),
                 evidence_ids: Vec::new(),
@@ -28274,7 +22573,7 @@ mod tests {
             from_agent_id: "leader".into(),
             to_agent_id: Some("agent-1".into()),
             channel: Some("assignment".into()),
-            kind: MessageKind::Task,
+            kind: MessageKind::Assignment,
             delivery_status: MessageDeliveryStatus::Queued,
             content: "Assign task".into(),
             evidence_ids: Vec::new(),
@@ -28328,7 +22627,7 @@ mod tests {
             from_agent_id: "leader".into(),
             to_agent_id: Some("agent-1".into()),
             channel: Some("assignment".into()),
-            kind: MessageKind::Task,
+            kind: MessageKind::Assignment,
             delivery_status: MessageDeliveryStatus::Queued,
             content: "Assign task".into(),
             evidence_ids: Vec::new(),
@@ -28392,7 +22691,7 @@ mod tests {
                     from_agent_id: "leader".into(),
                     to_agent_id: Some(agent_id.into()),
                     channel: Some("assignment".into()),
-                    kind: MessageKind::Task,
+                    kind: MessageKind::Assignment,
                     delivery_status: MessageDeliveryStatus::Queued,
                     content: "Assign task".into(),
                     evidence_ids: Vec::new(),
@@ -28429,87 +22728,6 @@ mod tests {
     }
 
     #[test]
-    fn http_action_dispatches_control_plane_safe_actions() {
-        let root =
-            std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("http-action")));
-        let store = HarnessStore::new(&root);
-        store
-            .append_goal(&make_goal("goal-1"))
-            .expect("append goal");
-        store
-            .append_member(&make_member("worker"))
-            .expect("append worker");
-        store
-            .append_member(&make_member("critic"))
-            .expect("append critic");
-        store
-            .append_task(&make_task("task-1", "goal-1"))
-            .expect("append task");
-
-        let message = handle_http_action(
-            &store,
-            "/v1/messages",
-            &serde_json::json!({
-                "from_agent_id": "leader",
-                "to_agent_id": "worker",
-                "task_id": "task-1",
-                "kind": "message",
-                "content": "please inspect"
-            }),
-        )
-        .expect("message action");
-        let message_id = message
-            .get("id")
-            .and_then(|value| value.as_str())
-            .expect("message id");
-        let latest = latest_message(&store, message_id).expect("latest message");
-        assert_eq!(latest.to_agent_id.as_deref(), Some("worker"));
-        assert_eq!(latest.delivery_status, MessageDeliveryStatus::Queued);
-
-        let review = handle_http_action(
-            &store,
-            "/v1/tasks/task-1/request-review",
-            &serde_json::json!({
-                "from_agent_id": "leader",
-                "content": "please review"
-            }),
-        )
-        .expect("request review action");
-        assert_eq!(
-            latest_task(&store, "task-1").expect("latest task").status,
-            TaskStatus::Review
-        );
-        assert_eq!(
-            review
-                .get("message")
-                .and_then(|value| value.get("to_agent_id"))
-                .and_then(|value| value.as_str()),
-            Some("critic")
-        );
-
-        handle_http_action(&store, "/v1/agents/worker/close", &serde_json::json!({}))
-            .expect("close worker");
-        assert_eq!(
-            latest_member(&store, "worker")
-                .expect("latest worker")
-                .status,
-            AgentMemberStatus::Closed
-        );
-        let closed_send = handle_http_action(
-            &store,
-            "/v1/messages",
-            &serde_json::json!({
-                "from_agent_id": "leader",
-                "to_agent_id": "worker",
-                "content": "should fail"
-            }),
-        );
-        assert!(closed_send.is_err());
-
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
     fn closed_member_rejects_delivery_without_claiming_message() {
         let root =
             std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("closed")));
@@ -28524,7 +22742,7 @@ mod tests {
                 from_agent_id: "leader".into(),
                 to_agent_id: Some("agent-1".into()),
                 channel: Some("assignment".into()),
-                kind: MessageKind::Task,
+                kind: MessageKind::Assignment,
                 delivery_status: MessageDeliveryStatus::Queued,
                 content: "Assign task".into(),
                 evidence_ids: Vec::new(),
@@ -28556,7 +22774,7 @@ mod tests {
             from_agent_id: "leader".into(),
             to_agent_id: Some("agent-1".into()),
             channel: Some("assignment".into()),
-            kind: MessageKind::Task,
+            kind: MessageKind::Assignment,
             delivery_status: MessageDeliveryStatus::Acknowledged,
             content: "Do the task".into(),
             evidence_ids: Vec::new(),
@@ -28569,4454 +22787,14 @@ mod tests {
         let text = input[0]["text"].as_str().expect("turn text");
 
         assert!(text.contains("message_id: message-1"));
-        assert!(text.contains("kind: task"));
+        assert!(text.contains("kind: assignment"));
         assert!(text.contains("task_id: task-1"));
         assert!(text.contains("from_agent_id: leader"));
         assert!(text.contains("to_agent_id: agent-1"));
         assert!(text.contains("channel: assignment"));
         assert!(text.contains("delivery_attempt: delivery-1"));
         assert!(text.contains("content:\nDo the task"));
-        assert!(!text.contains("kind: Task"));
-    }
-
-    #[test]
-    fn acceptance_evidence_rejects_failed_checks() {
-        let root = std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("store")));
-        let store = HarnessStore::new(&root);
-        let items = vec![
-            make_evidence("check_failed", Some("task-1")),
-            make_evidence("critic_findings", Some("task-1")),
-            make_evidence("worker_report", Some("task-1")),
-        ];
-
-        let error = validate_acceptance_evidence(&store, &items, false, false, false)
-            .expect_err("failed checks must block acceptance");
-        assert!(error.to_string().contains("failed check"));
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn acceptance_evidence_requires_check_critic_and_provider_output() {
-        let root = std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("store")));
-        let store = HarnessStore::new(&root);
-        let items = vec![make_evidence("check_passed", Some("task-1"))];
-
-        let error = validate_acceptance_evidence(&store, &items, false, false, false)
-            .expect_err("critic findings are required");
-        assert!(error.to_string().contains("critic_findings"));
-
-        let items = vec![
-            make_evidence("check_passed", Some("task-1")),
-            make_evidence("critic_findings", Some("task-1")),
-            make_evidence("worker_report", Some("task-1")),
-        ];
-        validate_acceptance_evidence(&store, &items, false, false, false)
-            .expect("complete evidence bundle should pass");
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn source_refs_for_required_types_must_exist() {
-        let mut item = make_evidence("critic_findings", Some("task-1"));
-        item.source_ref = "/definitely/missing/harness/source/ref".into();
-        let error = validate_review_evidence_sources(&[item])
-            .expect_err("missing source ref must be rejected");
-        assert!(error.to_string().contains("source_ref does not exist"));
-    }
-
-    #[test]
-    fn goal_learning_status_reports_complete_chain() {
-        let root = std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("store")));
-        let store = HarnessStore::new(&root);
-        let goal = make_goal("goal-1");
-        let task = make_task("task-1", "goal-1");
-        store.append_goal(&goal).expect("append goal");
-        store.append_task(&task).expect("append task");
-        let mut follow_up = make_task("follow-up-task", "goal-2");
-        follow_up.parent_task_id = Some("task-1".into());
-        follow_up.title = "Follow-up: add goal commands".into();
-        store
-            .append_task(&follow_up)
-            .expect("append follow-up task");
-        store
-            .append_evidence(&make_timed_evidence(
-                "design",
-                "goal_design",
-                Some("task-1"),
-                "unix-ms:100",
-            ))
-            .expect("append design");
-        store
-            .append_message(&make_timed_message(
-                "assign",
-                MessageKind::Task,
-                "leader",
-                Some("worker"),
-                "task-1",
-                "unix-ms:110",
-            ))
-            .expect("append assignment");
-        store
-            .append_message(&make_timed_message(
-                "report",
-                MessageKind::Report,
-                "worker",
-                Some("leader"),
-                "task-1",
-                "unix-ms:120",
-            ))
-            .expect("append report");
-        store
-            .append_decision(&make_timed_decision("decision", "task-1", "unix-ms:130"))
-            .expect("append decision");
-        store
-            .append_evidence(&make_timed_evidence(
-                "evaluation",
-                "goal_evaluation",
-                Some("task-1"),
-                "unix-ms:140",
-            ))
-            .expect("append evaluation");
-        store
-            .append_evidence(&make_timed_evidence(
-                "case",
-                "goal_case",
-                Some("task-1"),
-                "unix-ms:150",
-            ))
-            .expect("append case");
-
-        let status = goal_learning_status(&store, "goal-1").expect("status");
-        assert!(status.warnings(true).is_empty());
-        assert_eq!(status.goal_cases.len(), 1);
-        assert_eq!(status.follow_up_tasks.len(), 1);
-        status
-            .require_for_gate(&store, true, false, None)
-            .expect("complete chain should pass");
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn goal_learning_status_dual_reads_graduated_objects() {
-        // The design/evaluation gates must pass when the artifacts are graduated
-        // first-class objects (GoalDesign/GoalEvaluation) instead of legacy
-        // Evidence rows — proving the union-by-goal_id dual-read with no backfill.
-        let root = std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("store")));
-        let store = HarnessStore::new(&root);
-        let goal = make_goal("goal-1");
-        let task = make_task("task-1", "goal-1");
-        store.append_goal(&goal).expect("append goal");
-        store.append_task(&task).expect("append task");
-        store
-            .append_goal_design(&GoalDesign {
-                id: "design-1".into(),
-                goal_id: "goal-1".into(),
-                scenario_summary: "Render learning layer.".into(),
-                non_goals: vec![],
-                risk_and_permission_boundaries: "Read-only.".into(),
-                required_infra: vec![],
-                agent_team: None,
-                task_graph: vec!["task-1".into()],
-                evidence_plan: vec![],
-                acceptance_gates: vec!["cargo test".into()],
-                created_at: "unix-ms:100".into(),
-            })
-            .expect("append goal design object");
-        store
-            .append_message(&make_timed_message(
-                "assign",
-                MessageKind::Task,
-                "leader",
-                Some("worker"),
-                "task-1",
-                "unix-ms:110",
-            ))
-            .expect("append assignment");
-        store
-            .append_message(&make_timed_message(
-                "report",
-                MessageKind::Report,
-                "worker",
-                Some("leader"),
-                "task-1",
-                "unix-ms:120",
-            ))
-            .expect("append report");
-        store
-            .append_decision(&make_timed_decision("decision", "task-1", "unix-ms:130"))
-            .expect("append decision");
-        // The critic/evaluator-evidence warning still needs a critic row; supply it.
-        store
-            .append_evidence(&make_timed_evidence(
-                "critic",
-                "critic_findings",
-                Some("task-1"),
-                "unix-ms:135",
-            ))
-            .expect("append critic evidence");
-        store
-            .append_goal_evaluation(&GoalEvaluation {
-                id: "eval-1".into(),
-                goal_id: "goal-1".into(),
-                evaluator_agent_id: "evaluator".into(),
-                outcome: EvaluationOutcome::Success,
-                what_worked: "Dual-read.".into(),
-                what_failed: "None.".into(),
-                missing_infra: vec![],
-                missing_evidence: vec![],
-                team_design_feedback: "ok".into(),
-                task_graph_feedback: "ok".into(),
-                dashboard_feedback: "ok".into(),
-                reusable_patterns: vec![],
-                anti_patterns: vec![],
-                follow_up_task_ids: vec![],
-                proposed_goal_ids: vec![],
-                created_at: "unix-ms:140".into(),
-            })
-            .expect("append goal evaluation object");
-
-        let status = goal_learning_status(&store, "goal-1").expect("status");
-        // No legacy evidence rows for design/evaluation.
-        assert!(status.goal_design.is_empty());
-        assert!(status.goal_evaluation.is_empty());
-        // Graduated objects are surfaced and satisfy the gate.
-        assert_eq!(status.goal_design_objects.len(), 1);
-        assert_eq!(status.goal_evaluation_objects.len(), 1);
-        assert!(status.has_goal_design());
-        assert!(status.has_goal_evaluation());
-        assert!(
-            status.warnings(true).is_empty(),
-            "graduated objects must satisfy the gate, got: {:?}",
-            status.warnings(true)
-        );
-        status
-            .require_for_gate(&store, true, false, None)
-            .expect("dual-read chain should pass the strict gate");
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn goal_learning_status_rejects_missing_evaluation_when_required() {
-        let root = std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("store")));
-        let store = HarnessStore::new(&root);
-        let goal = make_goal("goal-1");
-        let task = make_task("task-1", "goal-1");
-        store.append_goal(&goal).expect("append goal");
-        store.append_task(&task).expect("append task");
-        store
-            .append_evidence(&make_timed_evidence(
-                "design",
-                "goal_design",
-                Some("task-1"),
-                "unix-ms:100",
-            ))
-            .expect("append design");
-        store
-            .append_message(&make_timed_message(
-                "assign",
-                MessageKind::Task,
-                "leader",
-                Some("worker"),
-                "task-1",
-                "unix-ms:110",
-            ))
-            .expect("append assignment");
-        store
-            .append_message(&make_timed_message(
-                "report",
-                MessageKind::Report,
-                "worker",
-                Some("leader"),
-                "task-1",
-                "unix-ms:120",
-            ))
-            .expect("append report");
-        store
-            .append_decision(&make_timed_decision("decision", "task-1", "unix-ms:130"))
-            .expect("append decision");
-
-        let status = goal_learning_status(&store, "goal-1").expect("status");
-        let error = status
-            .require_for_gate(&store, true, false, None)
-            .expect_err("missing evaluation must fail strict gate");
-        assert!(error.to_string().contains("goal_evaluation"));
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn goal_learning_waiver_requires_evidence_owner_and_follow_up_task() {
-        let root = std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("store")));
-        let store = HarnessStore::new(&root);
-        let goal = make_goal("goal-1");
-        let task = make_task("task-1", "goal-1");
-        let follow_up = make_task("follow-up-task", "goal-1");
-        store.append_goal(&goal).expect("append goal");
-        store.append_task(&task).expect("append task");
-        store
-            .append_task(&follow_up)
-            .expect("append follow-up task");
-        store
-            .append_evidence(&Evidence {
-                id: "waiver-evidence".into(),
-                task_id: Some("task-1".into()),
-                source_type: "worker_report".into(),
-                source_ref: std::env::temp_dir().display().to_string(),
-                summary: "waiver evidence".into(),
-                created_at: "unix-ms:100".into(),
-                evidence_kind: None,
-                goal_id: None,
-            })
-            .expect("append evidence");
-        store
-            .append_decision(&Decision {
-                id: "bad-waiver".into(),
-                task_id: "task-1".into(),
-                decision: "waiver".into(),
-                rationale: "skip design for now".into(),
-                evidence_ids: vec!["waiver-evidence".into()],
-                created_at: "unix-ms:110".into(),
-                decision_kind: Some("waiver".into()),
-                goal_id: None,
-                is_waiver: true,
-                follow_up_task_id: None,
-            })
-            .expect("append bad waiver");
-
-        let status = goal_learning_status(&store, "goal-1").expect("status");
-        let error = status
-            .require_for_gate(&store, true, true, Some("bad-waiver"))
-            .expect_err("waiver without follow-up task must fail");
-        assert!(error.to_string().contains("follow-up task"));
-
-        store
-            .append_decision(&Decision {
-                id: "good-waiver".into(),
-                task_id: "task-1".into(),
-                decision: "waiver".into(),
-                rationale: "temporary waiver; follow-up task follow-up-task will produce GoalDesign/GoalEvaluation evidence".into(),
-                evidence_ids: vec!["waiver-evidence".into()],
-                created_at: "unix-ms:120".into(),
-                decision_kind: Some("waiver".into()),
-                goal_id: None,
-                is_waiver: true,
-                follow_up_task_id: Some("follow-up-task".into()),
-            })
-            .expect("append good waiver");
-        let status = goal_learning_status(&store, "goal-1").expect("status");
-        status
-            .require_for_gate(&store, true, true, Some("good-waiver"))
-            .expect("valid waiver should pass when explicitly selected");
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    fn make_goal_evaluation(id: &str, goal_id: &str, created_at: &str) -> GoalEvaluation {
-        GoalEvaluation {
-            id: id.into(),
-            goal_id: goal_id.into(),
-            evaluator_agent_id: "evaluator".into(),
-            outcome: EvaluationOutcome::Success,
-            what_worked: "ok".into(),
-            what_failed: "none".into(),
-            missing_infra: vec![],
-            missing_evidence: vec![],
-            team_design_feedback: "ok".into(),
-            task_graph_feedback: "ok".into(),
-            dashboard_feedback: "ok".into(),
-            reusable_patterns: vec![],
-            anti_patterns: vec![],
-            follow_up_task_ids: vec![],
-            proposed_goal_ids: vec![],
-            created_at: created_at.into(),
-        }
-    }
-
-    fn make_closeout_decision(id: &str, goal_id: &str) -> Decision {
-        Decision {
-            id: id.into(),
-            task_id: "task-1".into(),
-            decision: "accept".into(),
-            rationale: "closeout".into(),
-            evidence_ids: vec!["closeout-evidence".into()],
-            created_at: "unix-ms:200".into(),
-            decision_kind: Some("closeout".into()),
-            goal_id: Some(goal_id.into()),
-            is_waiver: false,
-            follow_up_task_id: None,
-        }
-    }
-
-    #[test]
-    fn closeout_gate_allows_close_with_decision_and_evaluation() {
-        let root = std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("store")));
-        let store = HarnessStore::new(&root);
-        store
-            .append_goal(&make_goal("goal-1"))
-            .expect("append goal");
-        store
-            .append_task(&make_task("task-1", "goal-1"))
-            .expect("append task");
-        store
-            .append_goal_evaluation(&make_goal_evaluation("eval-1", "goal-1", "unix-ms:140"))
-            .expect("append evaluation");
-        store
-            .append_decision(&make_closeout_decision("closeout-1", "goal-1"))
-            .expect("append closeout decision");
-
-        let status = goal_learning_status(&store, "goal-1").expect("status");
-        assert!(status.has_closeout_decision());
-        assert!(status.has_goal_evaluation());
-        assert!(status.may_close(), "both present should allow close");
-        status
-            .require_closeout()
-            .expect("closeout gate should pass with decision + evaluation");
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn closeout_gate_blocks_close_when_evaluation_missing() {
-        let root = std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("store")));
-        let store = HarnessStore::new(&root);
-        store
-            .append_goal(&make_goal("goal-1"))
-            .expect("append goal");
-        store
-            .append_task(&make_task("task-1", "goal-1"))
-            .expect("append task");
-        // A closeout decision but no GoalEvaluation: the gate must block.
-        store
-            .append_decision(&make_closeout_decision("closeout-1", "goal-1"))
-            .expect("append closeout decision");
-
-        let status = goal_learning_status(&store, "goal-1").expect("status");
-        assert!(status.has_closeout_decision());
-        assert!(!status.has_goal_evaluation());
-        assert!(!status.may_close());
-        let error = status
-            .require_closeout()
-            .expect_err("missing evaluation must block close");
-        assert!(error.to_string().contains("goal_evaluation"));
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn closeout_gate_blocks_close_when_closeout_decision_missing() {
-        let root = std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("store")));
-        let store = HarnessStore::new(&root);
-        store
-            .append_goal(&make_goal("goal-1"))
-            .expect("append goal");
-        store
-            .append_task(&make_task("task-1", "goal-1"))
-            .expect("append task");
-        store
-            .append_goal_evaluation(&make_goal_evaluation("eval-1", "goal-1", "unix-ms:140"))
-            .expect("append evaluation");
-        // A plain (non-closeout) decision must NOT satisfy the closeout gate.
-        store
-            .append_decision(&make_timed_decision("decision", "task-1", "unix-ms:130"))
-            .expect("append decision");
-
-        let status = goal_learning_status(&store, "goal-1").expect("status");
-        assert!(!status.has_closeout_decision());
-        assert!(!status.may_close());
-        let error = status
-            .require_closeout()
-            .expect_err("missing closeout decision must block close");
-        assert!(error.to_string().contains("closeout decision"));
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn closeout_gate_rejects_closeout_decision_without_evidence() {
-        let root = std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("store")));
-        let store = HarnessStore::new(&root);
-        store
-            .append_goal(&make_goal("goal-1"))
-            .expect("append goal");
-        store
-            .append_task(&make_task("task-1", "goal-1"))
-            .expect("append task");
-        store
-            .append_goal_evaluation(&make_goal_evaluation("eval-1", "goal-1", "unix-ms:140"))
-            .expect("append evaluation");
-        // decision_kind=closeout but with NO evidence_ids: must not count.
-        let mut decision = make_closeout_decision("closeout-1", "goal-1");
-        decision.evidence_ids = vec![];
-        store
-            .append_decision(&decision)
-            .expect("append closeout decision");
-
-        let status = goal_learning_status(&store, "goal-1").expect("status");
-        assert!(
-            !status.has_closeout_decision(),
-            "closeout decision without evidence must not satisfy the gate"
-        );
-        assert!(!status.may_close());
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn closeout_gate_allows_close_via_waiver() {
-        let root = std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("store")));
-        let store = HarnessStore::new(&root);
-        store
-            .append_goal(&make_goal("goal-1"))
-            .expect("append goal");
-        store
-            .append_task(&make_task("task-1", "goal-1"))
-            .expect("append task");
-        store
-            .append_task(&make_task("follow-up-task", "goal-1"))
-            .expect("append follow-up task");
-        // No GoalEvaluation and no closeout decision, but an explicit valid waiver.
-        store
-            .append_decision(&Decision {
-                id: "waiver-1".into(),
-                task_id: "task-1".into(),
-                decision: "waive".into(),
-                rationale: "closeout waiver".into(),
-                evidence_ids: vec!["waiver-evidence".into()],
-                created_at: "unix-ms:210".into(),
-                decision_kind: Some("waiver".into()),
-                goal_id: Some("goal-1".into()),
-                is_waiver: true,
-                follow_up_task_id: Some("follow-up-task".into()),
-            })
-            .expect("append waiver");
-
-        let status = goal_learning_status(&store, "goal-1").expect("status");
-        assert!(!status.has_closeout_decision());
-        assert!(!status.has_goal_evaluation());
-        assert!(status.has_valid_closeout_waiver());
-        assert!(status.may_close(), "valid waiver should allow close");
-        status
-            .require_closeout()
-            .expect("waiver should satisfy the closeout gate");
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn closeout_gate_rejects_waiver_without_follow_up() {
-        let root = std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("store")));
-        let store = HarnessStore::new(&root);
-        store
-            .append_goal(&make_goal("goal-1"))
-            .expect("append goal");
-        store
-            .append_task(&make_task("task-1", "goal-1"))
-            .expect("append task");
-        // is_waiver=true but missing follow_up_task_id: must not count as a closeout waiver.
-        store
-            .append_decision(&Decision {
-                id: "waiver-1".into(),
-                task_id: "task-1".into(),
-                decision: "waive".into(),
-                rationale: "incomplete waiver".into(),
-                evidence_ids: vec!["waiver-evidence".into()],
-                created_at: "unix-ms:210".into(),
-                decision_kind: Some("waiver".into()),
-                goal_id: Some("goal-1".into()),
-                is_waiver: true,
-                follow_up_task_id: None,
-            })
-            .expect("append waiver");
-
-        let status = goal_learning_status(&store, "goal-1").expect("status");
-        assert!(!status.has_valid_closeout_waiver());
-        assert!(!status.may_close());
-        let error = status
-            .require_closeout()
-            .expect_err("waiver without follow-up must block close");
-        assert!(error.to_string().contains("follow_up_task_id"));
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    // --- WP-7: typed GoalEvaluation/GoalDesign producers + dual-read candidate wiring ---
-
-    /// Build the full happy-path learning chain for a goal whose single task is Done,
-    /// using the TYPED GoalDesign + TYPED GoalEvaluation producers (no legacy Evidence
-    /// notes for design/evaluation). Returns the store so candidate/closeout queries
-    /// can be exercised against a goal that satisfies `warnings(true).is_empty()`.
-    fn seed_typed_learning_chain(label: &str) -> (HarnessStore, PathBuf) {
-        let (store, root) = temp_store(label);
-        store.append_goal(&make_goal("goal-1")).expect("goal");
-        let mut task = make_task("task-1", "goal-1");
-        task.status = TaskStatus::Done;
-        store.append_task(&task).expect("task");
-
-        // Typed GoalDesign (graduated object), created before assignment.
-        store
-            .append_goal_design(&GoalDesign {
-                id: "design-1".into(),
-                goal_id: "goal-1".into(),
-                scenario_summary: "design".into(),
-                non_goals: vec![],
-                risk_and_permission_boundaries: "bounded".into(),
-                required_infra: vec![],
-                agent_team: None,
-                task_graph: vec!["task-1".into()],
-                evidence_plan: vec![],
-                acceptance_gates: vec![],
-                created_at: "unix-ms:20".into(),
-            })
-            .expect("design");
-        store
-            .append_message(&make_timed_message(
-                "msg-assign",
-                MessageKind::Task,
-                "leader",
-                Some("worker"),
-                "task-1",
-                "unix-ms:30",
-            ))
-            .expect("assignment");
-        store
-            .append_message(&make_timed_message(
-                "msg-report",
-                MessageKind::Report,
-                "worker",
-                Some("leader"),
-                "task-1",
-                "unix-ms:40",
-            ))
-            .expect("report");
-        // Critic/evaluator evidence (a learning-status warning input distinct from the
-        // typed GoalEvaluation object).
-        store
-            .append_evidence(&make_timed_evidence(
-                "critic-1",
-                "critic_findings",
-                Some("task-1"),
-                "unix-ms:50",
-            ))
-            .expect("critic");
-        store
-            .append_decision(&make_timed_decision("decision-1", "task-1", "unix-ms:60"))
-            .expect("decision");
-        (store, root)
-    }
-
-    #[test]
-    fn goal_evaluate_persists_typed_object_and_flips_has_evaluation() {
-        let (store, root) = temp_store("wp7-goal-evaluate");
-        store.append_goal(&make_goal("goal-1")).expect("goal");
-        store
-            .append_task(&make_task("task-1", "goal-1"))
-            .expect("task");
-        // Evidence attached to the goal's task -> the typed evaluation references it.
-        store
-            .append_evidence(&make_timed_evidence(
-                "evi-1",
-                "check_result",
-                Some("task-1"),
-                "unix-ms:50",
-            ))
-            .expect("task evidence");
-
-        // Before evaluating, the typed dual-read seam reports no evaluation.
-        let before = goal_learning_status(&store, "goal-1").expect("status");
-        assert!(!before.has_goal_evaluation());
-        assert!(before.goal_evaluation_objects.is_empty());
-
-        let args: Vec<String> = vec![
-            "--goal".into(),
-            "goal-1".into(),
-            "--id-out".into(),
-            "eval-typed-1".into(),
-            "--evaluator".into(),
-            "critic".into(),
-            "--outcome".into(),
-            "success".into(),
-            "--what-worked".into(),
-            "the loop closed".into(),
-            "--what-failed".into(),
-            "nothing".into(),
-            "--pattern".into(),
-            "typed-producer".into(),
-        ];
-        goal_evaluate(&store, &args).expect("goal evaluate succeeds");
-
-        // Round-trips as a TYPED GoalEvaluation (not an Evidence note).
-        let stored = store.goal_evaluations().expect("read evaluations");
-        assert_eq!(stored.len(), 1);
-        let evaluation = &stored[0];
-        assert_eq!(evaluation.id, "eval-typed-1");
-        assert_eq!(evaluation.goal_id, "goal-1");
-        assert_eq!(evaluation.outcome, EvaluationOutcome::Success);
-        assert_eq!(evaluation.reusable_patterns, vec!["typed-producer"]);
-        // No legacy Evidence(source_type=goal_evaluation) row was written.
-        assert!(
-            store
-                .evidence()
-                .expect("evidence")
-                .iter()
-                .all(|item| item.source_type != "goal_evaluation"),
-            "goal evaluate must not write an untyped goal_evaluation Evidence note"
-        );
-
-        // The typed dual-read seam now reports the evaluation.
-        let after = goal_learning_status(&store, "goal-1").expect("status");
-        assert!(after.has_goal_evaluation());
-        assert_eq!(after.goal_evaluation_objects.len(), 1);
-        assert!(
-            after.goal_evaluation.is_empty(),
-            "no legacy evaluation note"
-        );
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn closeout_gate_allows_close_with_typed_decision_and_typed_evaluation() {
-        let (store, root) = temp_store("wp7-closeout-typed");
-        store.append_goal(&make_goal("goal-1")).expect("goal");
-        store
-            .append_task(&make_task("task-1", "goal-1"))
-            .expect("task");
-        // Typed GoalEvaluation (via the producer) + typed closeout decision.
-        let args: Vec<String> = vec![
-            "--goal".into(),
-            "goal-1".into(),
-            "--evaluator".into(),
-            "critic".into(),
-            "--outcome".into(),
-            "success".into(),
-            "--what-worked".into(),
-            "ok".into(),
-            "--what-failed".into(),
-            "none".into(),
-        ];
-        goal_evaluate(&store, &args).expect("goal evaluate succeeds");
-        store
-            .append_decision(&make_closeout_decision("closeout-1", "goal-1"))
-            .expect("closeout decision");
-
-        let status = goal_learning_status(&store, "goal-1").expect("status");
-        assert!(status.has_closeout_decision());
-        assert!(status.has_goal_evaluation());
-        assert!(
-            status.may_close(),
-            "typed decision + typed evaluation allow close"
-        );
-        status
-            .require_closeout()
-            .expect("closeout gate passes with typed decision + typed evaluation");
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn closeout_gate_blocks_close_when_typed_evaluation_missing() {
-        let (store, root) = temp_store("wp7-closeout-missing");
-        store.append_goal(&make_goal("goal-1")).expect("goal");
-        store
-            .append_task(&make_task("task-1", "goal-1"))
-            .expect("task");
-        // Closeout decision present, but NO GoalEvaluation (typed or legacy).
-        store
-            .append_decision(&make_closeout_decision("closeout-1", "goal-1"))
-            .expect("closeout decision");
-
-        let status = goal_learning_status(&store, "goal-1").expect("status");
-        assert!(status.has_closeout_decision());
-        assert!(!status.has_goal_evaluation());
-        assert!(!status.may_close());
-        let error = status
-            .require_closeout()
-            .expect_err("missing evaluation must block close");
-        assert!(error.to_string().contains("goal_evaluation"));
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn next_round_candidate_found_for_closed_typed_evaluated_goal() {
-        let (store, root) = seed_typed_learning_chain("wp7-candidate");
-        // The goal has a complete task graph + full learning chain, but NO evaluation
-        // yet: the runner must NOT see a candidate (item 3 regression: typed-only seam).
-        let options = make_tick_options();
-        let before = autonomy_next_round_candidates(&store, &options).expect("candidate query");
-        assert!(
-            before.is_empty(),
-            "no candidate before a typed evaluation exists"
-        );
-
-        // Produce a TYPED GoalEvaluation through the producer; this is the only new
-        // input, and it must flip the goal into a candidate.
-        goal_evaluate(
-            &store,
-            &[
-                "--goal".into(),
-                "goal-1".into(),
-                "--id-out".into(),
-                "eval-typed-1".into(),
-                "--evaluator".into(),
-                "critic".into(),
-                "--outcome".into(),
-                "success".into(),
-                "--what-worked".into(),
-                "ok".into(),
-                "--what-failed".into(),
-                "none".into(),
-            ],
-        )
-        .expect("goal evaluate");
-
-        let after = autonomy_next_round_candidates(&store, &options).expect("candidate query");
-        assert_eq!(
-            after.len(),
-            1,
-            "typed evaluation makes the goal a candidate"
-        );
-        let candidate = &after[0];
-        assert_eq!(candidate.goal_id, "goal-1");
-        assert_eq!(candidate.source_task_id, "task-1");
-        assert_eq!(candidate.evaluation_evidence_id, "eval-typed-1");
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    /// Minimal AutonomyTickOptions for candidate-query tests: only the fields the
-    /// query reads (goal_filter/force) matter; the rest carry inert defaults.
-    fn make_tick_options() -> AutonomyTickOptions {
-        AutonomyTickOptions {
-            observer: "observer".into(),
-            lead: "leader".into(),
-            assignee: None,
-            reviewer: None,
-            goal_filter: None,
-            vision_ref: None,
-            vision_summary: None,
-            auto_accept: false,
-            force: false,
-            max_new_goals: 1,
-            dry_run: true,
-            start_runtime: false,
-            timeout_ms: 3_000,
-            claim_ttl_ms: 300_000,
-            goal_prefix: "goal-autonomous-round".into(),
-            task_prefix: "task-autonomous-round".into(),
-            workspace: None,
-            branch: None,
-            owned_paths: Vec::new(),
-            acceptance: Vec::new(),
-            goal_success: Vec::new(),
-        }
-    }
-
-    #[test]
-    fn validate_decision_enforces_waiver_requirements() {
-        // Waiver without follow-up task is rejected.
-        let mut decision = make_timed_decision("d1", "task-1", "unix-ms:1");
-        decision.is_waiver = true;
-        decision.evidence_ids = vec!["e1".into()];
-        let error = validate_decision(&decision).expect_err("waiver without follow-up rejected");
-        assert!(error.to_string().contains("follow-up-task"));
-
-        // Waiver without evidence is rejected.
-        decision.follow_up_task_id = Some("follow-up-task".into());
-        decision.evidence_ids = vec![];
-        let error = validate_decision(&decision).expect_err("waiver without evidence rejected");
-        assert!(error.to_string().contains("evidence"));
-
-        // A complete waiver passes.
-        decision.evidence_ids = vec!["e1".into()];
-        validate_decision(&decision).expect("complete waiver should validate");
-    }
-
-    #[test]
-    fn validate_decision_enforces_stop_gate_values() {
-        let mut decision = make_timed_decision("d1", "task-1", "unix-ms:1");
-        decision.decision_kind = Some("stop_gate".into());
-
-        // An arbitrary decision value is rejected for a stop_gate.
-        decision.decision = "maybe".into();
-        let error = validate_decision(&decision).expect_err("invalid stop_gate decision rejected");
-        assert!(error.to_string().contains("stop_gate"));
-
-        // Both canonical values pass.
-        decision.decision = "stop_approved".into();
-        validate_decision(&decision).expect("stop_approved should validate");
-        decision.decision = "continue_required".into();
-        validate_decision(&decision).expect("continue_required should validate");
-    }
-
-    #[test]
-    fn review_gate_rejects_missing_goal_evaluation_when_required() {
-        let root = std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("store")));
-        let store = HarnessStore::new(&root);
-        let goal = make_goal("goal-1");
-        let task = make_task("task-1", "goal-1");
-        store.append_goal(&goal).expect("append goal");
-        store.append_task(&task).expect("append task");
-        store
-            .append_evidence(&make_timed_evidence(
-                "design",
-                "goal_design",
-                Some("task-1"),
-                "unix-ms:100",
-            ))
-            .expect("append design");
-        store
-            .append_message(&make_timed_message(
-                "assign",
-                MessageKind::Task,
-                "leader",
-                Some("worker"),
-                "task-1",
-                "unix-ms:110",
-            ))
-            .expect("append assignment");
-        store
-            .append_message(&make_timed_message(
-                "report",
-                MessageKind::Report,
-                "worker",
-                Some("leader"),
-                "task-1",
-                "unix-ms:120",
-            ))
-            .expect("append report");
-        for evidence in [
-            make_timed_evidence("check", "check_passed", Some("task-1"), "unix-ms:121"),
-            make_timed_evidence("critic", "critic_findings", Some("task-1"), "unix-ms:122"),
-            make_timed_evidence("worker", "worker_report", Some("task-1"), "unix-ms:123"),
-        ] {
-            store.append_evidence(&evidence).expect("append evidence");
-        }
-        store
-            .append_proposal(&make_proposal("proposal-1", "task-1"))
-            .expect("append proposal");
-
-        let args = strings(&[
-            "gate",
-            "--task",
-            "task-1",
-            "--reviewer",
-            "critic",
-            "--decision",
-            "accept",
-            "--rationale",
-            "test",
-            "--evidence",
-            "check",
-            "--evidence",
-            "critic",
-            "--evidence",
-            "worker",
-            "--require-goal-design",
-            "--require-goal-evaluation",
-        ]);
-        let error = review_gate(&store, &args).expect_err("missing evaluation must block");
-        assert!(error.to_string().contains("goal_evaluation"));
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn review_gate_accepts_typed_goal_design() {
-        let root = std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("store")));
-        let store = HarnessStore::new(&root);
-        let goal = make_goal("goal-1");
-        let task = make_task("task-1", "goal-1");
-        store.append_goal(&goal).expect("append goal");
-        store.append_task(&task).expect("append task");
-        store
-            .append_goal_design(&GoalDesign {
-                id: "design-1".into(),
-                goal_id: "goal-1".into(),
-                scenario_summary: "Typed design gates review.".into(),
-                non_goals: vec![],
-                risk_and_permission_boundaries: "Test only.".into(),
-                required_infra: vec![],
-                agent_team: Some("Lead + Critic".into()),
-                task_graph: vec!["task-1".into()],
-                evidence_plan: vec!["review gate".into()],
-                acceptance_gates: vec!["accept".into()],
-                created_at: "unix-ms:100".into(),
-            })
-            .expect("append typed design");
-        store
-            .append_message(&make_timed_message(
-                "assign",
-                MessageKind::Task,
-                "leader",
-                Some("worker"),
-                "task-1",
-                "unix-ms:110",
-            ))
-            .expect("append assignment");
-        store
-            .append_message(&make_timed_message(
-                "report",
-                MessageKind::Report,
-                "worker",
-                Some("leader"),
-                "task-1",
-                "unix-ms:120",
-            ))
-            .expect("append report");
-        for evidence in [
-            make_timed_evidence("check", "check_passed", Some("task-1"), "unix-ms:121"),
-            make_timed_evidence("critic", "critic_findings", Some("task-1"), "unix-ms:122"),
-            make_timed_evidence("worker", "worker_report", Some("task-1"), "unix-ms:123"),
-        ] {
-            store.append_evidence(&evidence).expect("append evidence");
-        }
-        store
-            .append_proposal(&make_proposal("proposal-1", "task-1"))
-            .expect("append proposal");
-
-        let args = strings(&[
-            "gate",
-            "--task",
-            "task-1",
-            "--reviewer",
-            "critic",
-            "--decision",
-            "accept",
-            "--rationale",
-            "test",
-            "--evidence",
-            "check",
-            "--evidence",
-            "critic",
-            "--evidence",
-            "worker",
-        ]);
-        review_gate(&store, &args).expect("typed GoalDesign must satisfy review gate");
-        let latest = latest_task(&store, "task-1").expect("latest task");
-        assert_eq!(latest.status, TaskStatus::Done);
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn review_create_persists_structured_verdict() {
-        let root = std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("store")));
-        let store = HarnessStore::new(&root);
-
-        let args = strings(&[
-            "create",
-            "--id",
-            "review-1",
-            "--task",
-            "task-1",
-            "--goal",
-            "goal-1",
-            "--reviewer",
-            "critic",
-            "--kind",
-            "acceptance",
-            "--verdict",
-            "pass",
-            "--summary",
-            "Acceptance gates met.",
-            "--blocker",
-            "none",
-            "--missing-validation",
-            "load test deferred",
-            "--evidence",
-            "ev-1",
-        ]);
-        review_command(&store, &args).expect("create review");
-
-        let reviews = store.reviews().expect("read reviews");
-        assert_eq!(reviews.len(), 1);
-        let review = &reviews[0];
-        assert_eq!(review.id, "review-1");
-        assert_eq!(review.verdict, ReviewVerdict::Pass);
-        assert_eq!(review.task_id.as_deref(), Some("task-1"));
-        assert_eq!(review.goal_id.as_deref(), Some("goal-1"));
-        assert_eq!(review.evidence_ids, vec!["ev-1".to_string()]);
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn review_create_requires_task_or_goal() {
-        let root = std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("store")));
-        let store = HarnessStore::new(&root);
-
-        let args = strings(&[
-            "create",
-            "--reviewer",
-            "critic",
-            "--kind",
-            "acceptance",
-            "--verdict",
-            "pass",
-            "--summary",
-            "Detached review.",
-        ]);
-        let error = review_command(&store, &args).expect_err("review without scope must fail");
-        assert!(error.to_string().contains("--task or --goal"));
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn task_assign_rejects_missing_goal_design_by_default() {
-        let root = std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("store")));
-        let store = HarnessStore::new(&root);
-        let goal = make_goal("goal-1");
-        let task = make_task("task-1", "goal-1");
-        store.append_goal(&goal).expect("append goal");
-        store.append_task(&task).expect("append task");
-
-        let args = strings(&["assign", "--id", "task-1", "--assignee", "worker"]);
-        let error = task_command(&store, &args).expect_err("missing design must block assignment");
-        assert!(error.to_string().contains("goal_design"));
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn task_assign_requires_explicit_waiver_decision_for_missing_goal_design() {
-        let root = std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("store")));
-        let store = HarnessStore::new(&root);
-        let goal = make_goal("goal-1");
-        let task = make_task("task-1", "goal-1");
-        store.append_goal(&goal).expect("append goal");
-        store.append_task(&task).expect("append task");
-
-        let args = strings(&[
-            "assign",
-            "--id",
-            "task-1",
-            "--assignee",
-            "worker",
-            "--allow-missing-goal-design",
-        ]);
-        let error = task_command(&store, &args).expect_err("bare waiver flag must fail");
-        assert!(error.to_string().contains("--waiver-decision"));
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn task_assign_accepts_typed_goal_design() {
-        let root = std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("store")));
-        let store = HarnessStore::new(&root);
-        let goal = make_goal("goal-1");
-        let task = make_task("task-1", "goal-1");
-        store.append_goal(&goal).expect("append goal");
-        store.append_task(&task).expect("append task");
-        store
-            .append_goal_design(&GoalDesign {
-                id: "design-1".into(),
-                goal_id: "goal-1".into(),
-                scenario_summary: "Urgent local work is still designed.".into(),
-                non_goals: vec!["No broad refactor.".into()],
-                risk_and_permission_boundaries: "Lead-local change with review gate.".into(),
-                required_infra: vec![],
-                agent_team: Some("Lead + Critic".into()),
-                task_graph: vec!["task-1".into()],
-                evidence_plan: vec!["focused regression".into()],
-                acceptance_gates: vec!["task assign succeeds".into()],
-                created_at: "unix-ms:5".into(),
-            })
-            .expect("append typed design");
-
-        let args = strings(&["assign", "--id", "task-1", "--assignee", "worker"]);
-        task_command(&store, &args).expect("typed goal design must satisfy assignment gate");
-
-        let latest = latest_task(&store, "task-1").expect("latest task");
-        assert_eq!(latest.status, TaskStatus::Assigned);
-        assert_eq!(latest.assignee_agent_id.as_deref(), Some("worker"));
-        let assignment_messages: Vec<_> = store
-            .messages()
-            .expect("messages")
-            .into_iter()
-            .filter(|message| {
-                message.task_id.as_deref() == Some("task-1") && message.kind == MessageKind::Task
-            })
-            .collect();
-        assert_eq!(assignment_messages.len(), 1);
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn task_assign_accepts_goal_scoped_goal_design_evidence() {
-        let root = std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("store")));
-        let store = HarnessStore::new(&root);
-        let goal = make_goal("goal-1");
-        let task = make_task("task-1", "goal-1");
-        store.append_goal(&goal).expect("append goal");
-        store.append_task(&task).expect("append task");
-        let mut design = make_timed_evidence("design", "goal_design", None, "unix-ms:5");
-        design.goal_id = Some("goal-1".into());
-        store
-            .append_evidence(&design)
-            .expect("append goal-scoped design");
-
-        let args = strings(&["assign", "--id", "task-1", "--assignee", "worker"]);
-        task_command(&store, &args).expect("goal-scoped goal_design must satisfy assignment gate");
-
-        let latest = latest_task(&store, "task-1").expect("latest task");
-        assert_eq!(latest.status, TaskStatus::Assigned);
-        assert_eq!(latest.assignee_agent_id.as_deref(), Some("worker"));
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn task_assign_accepts_valid_design_stage_waiver() {
-        let root = std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("store")));
-        let store = HarnessStore::new(&root);
-        let goal = make_goal("goal-1");
-        let task = make_task("task-1", "goal-1");
-        let follow_up = make_task("follow-up-task", "goal-1");
-        store.append_goal(&goal).expect("append goal");
-        store.append_task(&task).expect("append task");
-        store
-            .append_task(&follow_up)
-            .expect("append follow-up task");
-        store
-            .append_evidence(&Evidence {
-                id: "waiver-evidence".into(),
-                task_id: Some("task-1".into()),
-                source_type: "worker_report".into(),
-                source_ref: std::env::temp_dir().display().to_string(),
-                summary: "urgent local waiver evidence".into(),
-                created_at: "unix-ms:100".into(),
-                evidence_kind: None,
-                goal_id: None,
-            })
-            .expect("append evidence");
-        store
-            .append_decision(&Decision {
-                id: "design-waiver".into(),
-                task_id: "task-1".into(),
-                decision: "waiver".into(),
-                rationale:
-                    "stage waiver for urgent work; follow-up task follow-up-task will add GoalDesign evidence"
-                        .into(),
-                evidence_ids: vec!["waiver-evidence".into()],
-                created_at: "unix-ms:110".into(),
-                decision_kind: Some("waiver".into()),
-                goal_id: None,
-                is_waiver: true,
-                follow_up_task_id: Some("follow-up-task".into()),
-            })
-            .expect("append waiver decision");
-
-        let args = strings(&[
-            "assign",
-            "--id",
-            "task-1",
-            "--assignee",
-            "worker",
-            "--allow-missing-goal-design",
-            "--waiver-decision",
-            "design-waiver",
-        ]);
-        task_command(&store, &args).expect("valid waiver must satisfy assignment gate");
-
-        let latest = latest_task(&store, "task-1").expect("latest task");
-        assert_eq!(latest.status, TaskStatus::Assigned);
-        assert_eq!(latest.assignee_agent_id.as_deref(), Some("worker"));
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    fn make_evidence(source_type: &str, task_id: Option<&str>) -> Evidence {
-        Evidence {
-            id: generated_id("evidence"),
-            task_id: task_id.map(str::to_string),
-            source_type: source_type.into(),
-            source_ref: std::env::temp_dir().display().to_string(),
-            summary: "test evidence".into(),
-            created_at: now_string(),
-            evidence_kind: None,
-            goal_id: None,
-        }
-    }
-
-    fn make_timed_evidence(
-        id: &str,
-        source_type: &str,
-        task_id: Option<&str>,
-        created_at: &str,
-    ) -> Evidence {
-        Evidence {
-            id: id.into(),
-            task_id: task_id.map(str::to_string),
-            source_type: source_type.into(),
-            source_ref: std::env::temp_dir().display().to_string(),
-            summary: format!("{source_type} evidence"),
-            created_at: created_at.into(),
-            evidence_kind: None,
-            goal_id: None,
-        }
-    }
-
-    fn make_goal(id: &str) -> Goal {
-        Goal {
-            phases: Vec::new(),
-            knowledge: Vec::new(),
-            design_synthesis_at: None,
-            id: id.into(),
-            title: "Goal".into(),
-            owner_agent_id: "leader".into(),
-            status: GoalStatus::Active,
-            priority: "p0".into(),
-            created_at: "unix-ms:1".into(),
-            updated_at: "unix-ms:1".into(),
-            vision_id: None,
-            goal_design_id: None,
-            closed_by_decision_id: None,
-            git_metadata: None,
-            stage: GoalStage::default(),
-            description_md: None,
-            design_md: None,
-            acceptance_md: None,
-            explorations: Vec::new(),
-            skill_refs: Vec::new(),
-            stage_changed_at: None,
-        }
-    }
-
-    #[test]
-    fn building_phase_compiles_to_its_builtin_body_with_no_tasks() {
-        // built-in-phases S2a: a Building phase compiles to its SHIPPED Starlark
-        // body (NOT a task DAG) — referencing the doc-governance skill + a verdict,
-        // and needing zero tasks.
-        let goal = make_goal("g-bi");
-        let phase = harness_core::GoalPhase {
-            id: "doc-sync".into(),
-            name: "Doc sync".into(),
-            intent: "i".into(),
-            status: harness_core::GoalPhaseStatus::NotStarted,
-            acceptance: None,
-            verdict_decision_id: None,
-            created_at: "unix-ms:1".into(),
-            started_at: None,
-            ended_at: None,
-            outputs: Vec::new(),
-            inputs: Vec::new(),
-            retry: None,
-            landed_commit: None,
-            kind: harness_core::PhaseKind::Building,
-            builtin: Some("doc-sync".into()),
-            execution_mode: harness_core::PhaseExecutionMode::TaskGraph,
-            workflow_ref: None,
-        };
-        let script = compile_phase_script(&goal, &phase, &[], Path::new("."))
-            .expect("building phase compiles with no tasks");
-        assert!(
-            script.contains("bootstrap-project-workflow"),
-            "doc-sync body references the doc-governance skill: {script}"
-        );
-        assert!(
-            script.contains("verdict("),
-            "building body emits a verdict: {script}"
-        );
-        assert!(
-            script.contains("workflow("),
-            "building body has a workflow header: {script}"
-        );
-
-        // An unknown builtin id is a clear error.
-        let bad = harness_core::GoalPhase {
-            builtin: Some("nope".into()),
-            ..phase.clone()
-        };
-        assert!(
-            compile_phase_script(&goal, &bad, &[], Path::new(".")).is_err(),
-            "unknown builtin id must error"
-        );
-
-        // An execution phase with no tasks still errors (today's behavior unchanged).
-        let exec = harness_core::GoalPhase {
-            kind: harness_core::PhaseKind::Execution,
-            builtin: None,
-            execution_mode: harness_core::PhaseExecutionMode::TaskGraph,
-            workflow_ref: None,
-            ..phase.clone()
-        };
-        assert!(
-            compile_phase_script(&goal, &exec, &[], Path::new(".")).is_err(),
-            "execution phase with no tasks errors as before"
-        );
-    }
-
-    #[test]
-    fn workflow_mode_phase_compiles_repo_ref_with_no_tasks() {
-        let repo_root =
-            std::env::temp_dir().join(format!("harness-wf-ref-{}", generated_id("repo")));
-        fs::create_dir_all(repo_root.join("workflows")).expect("mkdir workflows");
-        let workflow_path = repo_root.join("workflows/custom-phase.star");
-        let fixture = r#"workflow(
-    "custom-phase",
-    "Direct workflow-mode GoalPhase fixture for regression acceptance.",
-)
-verdict(True, "ok")
-"#;
-        fs::write(&workflow_path, fixture).expect("write workflow fixture");
-
-        let goal = make_goal("g-wf");
-        let phase = harness_core::GoalPhase {
-            id: "custom".into(),
-            name: "Custom".into(),
-            intent: "run the authored workflow".into(),
-            status: harness_core::GoalPhaseStatus::NotStarted,
-            acceptance: None,
-            verdict_decision_id: None,
-            created_at: "unix-ms:1".into(),
-            started_at: None,
-            ended_at: None,
-            outputs: Vec::new(),
-            inputs: Vec::new(),
-            retry: None,
-            landed_commit: None,
-            kind: harness_core::PhaseKind::Execution,
-            builtin: None,
-            execution_mode: harness_core::PhaseExecutionMode::Workflow,
-            workflow_ref: Some("repo:workflows/custom-phase.star".into()),
-        };
-
-        let script = compile_phase_script(&goal, &phase, &[], &repo_root)
-            .expect("workflow-mode phase loads repo workflow");
-        assert_eq!(script, fixture);
-        assert!(
-            !script.contains("Auto-generated by `harness phase compile`"),
-            "workflow-mode phases must not be rewritten as task graph scripts"
-        );
-
-        let unsafe_ref = harness_core::GoalPhase {
-            workflow_ref: Some("repo:../outside.star".into()),
-            ..phase.clone()
-        };
-        assert!(
-            compile_phase_script(&goal, &unsafe_ref, &[], &repo_root).is_err(),
-            "repo workflow refs must stay inside the project"
-        );
-        let _ = fs::remove_dir_all(repo_root);
-    }
-
-    fn make_task(id: &str, goal_id: &str) -> Task {
-        Task {
-            design_md: None,
-            phase_id: None,
-            superseded_by_knowledge_id: None,
-            workflow_step_ids: Vec::new(),
-            id: id.into(),
-            goal_id: Some(goal_id.into()),
-            parent_task_id: None,
-            title: "Task".into(),
-            objective: "Test task".into(),
-            owner_agent_id: "leader".into(),
-            assignee_agent_id: Some("worker".into()),
-            reviewer_agent_id: Some("critic".into()),
-            status: TaskStatus::Assigned,
-            depends_on_task_ids: Vec::new(),
-            workspace_ref: None,
-            branch_ref: None,
-            pr_ref: None,
-            owned_paths: Vec::new(),
-            acceptance_criteria: Vec::new(),
-            created_at: "unix-ms:10".into(),
-            updated_at: "unix-ms:10".into(),
-            scope_refs: Vec::new(),
-            requires_human_approval: false,
-            verdict_decision_id: None,
-            description: None,
-            git_metadata: None,
-            outputs: Vec::new(),
-            executor: None,
-        }
-    }
-
-    #[test]
-    fn compiled_phase_script_runs_under_the_real_starlark_engine() {
-        use std::sync::Mutex;
-        let mut goal = make_goal("goal-compile");
-        goal.phases = vec![harness_core::GoalPhase {
-            id: "phase-1".into(),
-            name: "Build".into(),
-            intent: "wire it up end to end".into(),
-            status: harness_core::GoalPhaseStatus::InProgress,
-            acceptance: Some("It compiles and the smoke test passes.".into()),
-            verdict_decision_id: None,
-            created_at: "unix-ms:1".into(),
-            started_at: None,
-            ended_at: None,
-            outputs: Vec::new(),
-            inputs: Vec::new(),
-            retry: None,
-            landed_commit: None,
-            kind: harness_core::PhaseKind::Execution,
-            builtin: None,
-            execution_mode: harness_core::PhaseExecutionMode::TaskGraph,
-            workflow_ref: None,
-        }];
-        let mut a = make_task("t-a", "goal-compile");
-        a.phase_id = Some("phase-1".into());
-        a.owned_paths = vec!["crates/a".into()];
-        let mut b = make_task("t-b", "goal-compile");
-        b.phase_id = Some("phase-1".into());
-        b.owned_paths = vec!["crates/b".into()];
-        let mut c = make_task("t-c", "goal-compile");
-        c.phase_id = Some("phase-1".into());
-        c.owned_paths = vec!["crates/c".into()];
-        c.depends_on_task_ids = vec!["t-a".into(), "t-b".into()];
-        let tasks = vec![a, b, c];
-
-        let script =
-            compile_phase_to_starlark(&goal, &goal.phases[0], &tasks).expect("compile phase");
-
-        // Run the GENERATED script through the real Starlark engine with a mock
-        // driver — proves it parses, dispatches every task, and the verdict gate
-        // evaluates (no real workers spawned).
-        let seen = Mutex::new(Vec::<String>::new());
-        let driver = |spec: &workflow::AgentStepSpec| -> workflow::StepResult {
-            seen.lock().unwrap().push(spec.label.clone());
-            let structured = if spec.label.starts_with("verdict-") {
-                Some(serde_json::json!({ "pass": true, "reason": "ok" }))
-            } else {
-                None
-            };
-            workflow::StepResult {
-                phase: spec.phase.clone(),
-                label: spec.label.clone(),
-                provider: spec.provider.clone(),
-                isolation: spec.isolation.clone(),
-                ok: true,
-                provider_session_id: None,
-                output_summary: "ok".into(),
-                step_id: None,
-                started_at: None,
-                details: None,
-                structured,
-                ordinal: None,
-            }
-        };
-        let outcome =
-            harness_workflow::starlark_front::run_starlark(&script, "phase-1", None, &driver)
-                .expect("generated script must parse and run")
-                .outcome;
-        assert_eq!(outcome.status, WorkflowRunStatus::Completed);
-        let labels = seen.into_inner().unwrap();
-        for want in ["t-a", "t-b", "t-c"] {
-            assert!(
-                labels.contains(&want.to_string()),
-                "missing {want} in {labels:?}"
-            );
-        }
-        assert!(labels.iter().any(|l| l.starts_with("verdict-")));
-    }
-
-    #[test]
-    fn compiled_reviser_script_runs_under_the_real_starlark_engine() {
-        // The reviser script the CLI generates on a phase failure must be valid
-        // Starlark: it parses, runs ONE schema-mode worker, and surfaces the
-        // worker's structured reply under `final_output`. A mock driver synthesizes
-        // the structured object the way the dry-run path does.
-        let mut goal = make_goal("goal-revise");
-        let phase = harness_core::GoalPhase {
-            id: "p1".into(),
-            name: "Build".into(),
-            intent: "wire it up".into(),
-            status: harness_core::GoalPhaseStatus::Failed,
-            acceptance: Some("It compiles and tests pass.".into()),
-            verdict_decision_id: None,
-            created_at: "unix-ms:1".into(),
-            started_at: None,
-            ended_at: None,
-            outputs: Vec::new(),
-            inputs: Vec::new(),
-            retry: None,
-            landed_commit: None,
-            kind: harness_core::PhaseKind::Execution,
-            builtin: None,
-            execution_mode: harness_core::PhaseExecutionMode::TaskGraph,
-            workflow_ref: None,
-        };
-        goal.phases = vec![phase.clone()];
-        let mut t = make_task("t-bad", "goal-revise");
-        t.phase_id = Some("p1".into());
-        t.owned_paths = vec!["crates/a".into()];
-        let live_refs: Vec<&Task> = vec![&t];
-        let script = harness_core::compile_reviser_script(
-            &goal,
-            &phase,
-            &live_refs,
-            "phase p1 failed: t-bad blocked",
-        );
-
-        let driver = |spec: &workflow::AgentStepSpec| -> workflow::StepResult {
-            let structured = spec.schema.as_ref().map(|_| {
-                serde_json::json!({
-                    "revision": { "supersede": ["t-bad"], "new_tasks": [] }
-                })
-            });
-            workflow::StepResult {
-                phase: spec.phase.clone(),
-                label: spec.label.clone(),
-                provider: spec.provider.clone(),
-                isolation: spec.isolation.clone(),
-                ok: true,
-                provider_session_id: None,
-                output_summary: "ok".into(),
-                step_id: None,
-                started_at: None,
-                details: None,
-                structured,
-                ordinal: None,
-            }
-        };
-        let outcome =
-            harness_workflow::starlark_front::run_starlark(&script, "revise-p1", None, &driver)
-                .expect("generated reviser script must parse and run")
-                .outcome;
-        assert_eq!(outcome.status, WorkflowRunStatus::Completed);
-        let result = outcome
-            .final_output
-            .as_ref()
-            .and_then(|fo| fo.get("result"))
-            .and_then(|r| r.get("revision"))
-            .expect("the reviser run must surface the structured revision");
-        assert_eq!(result["supersede"][0], "t-bad");
-    }
-
-    fn orch_phase(id: &str) -> harness_core::GoalPhase {
-        harness_core::GoalPhase {
-            id: id.into(),
-            name: id.into(),
-            intent: format!("do {id}"),
-            status: GoalPhaseStatus::NotStarted,
-            acceptance: None,
-            verdict_decision_id: None,
-            created_at: "unix-ms:1".into(),
-            started_at: None,
-            ended_at: None,
-            outputs: Vec::new(),
-            inputs: Vec::new(),
-            retry: None,
-            landed_commit: None,
-            kind: harness_core::PhaseKind::Execution,
-            builtin: None,
-            execution_mode: harness_core::PhaseExecutionMode::TaskGraph,
-            workflow_ref: None,
-        }
-    }
-
-    /// Init a real git repo at `dir` with one seed commit so `git apply` + commit
-    /// (the durable-landing path) and `git worktree add HEAD` both work in tests.
-    fn init_git_repo(dir: &Path) {
-        std::fs::create_dir_all(dir).expect("mk git repo dir");
-        let git = |args: &[&str]| {
-            Command::new("git")
-                .arg("-C")
-                .arg(dir)
-                .args(args)
-                .output()
-                .expect("git")
-        };
-        assert!(git(&["init"]).status.success(), "git init");
-        let _ = git(&["config", "user.email", "t@t"]);
-        let _ = git(&["config", "user.name", "t"]);
-        std::fs::write(dir.join("README"), "seed").expect("seed file");
-        let _ = git(&["add", "-A"]);
-        assert!(
-            git(&["commit", "-m", "seed"]).status.success(),
-            "git commit"
-        );
-    }
-
-    /// `git -C <dir> <args...>` stdout, trimmed (test helper).
-    fn git_out(dir: &Path, args: &[&str]) -> String {
-        let out = Command::new("git")
-            .arg("-C")
-            .arg(dir)
-            .args(args)
-            .output()
-            .expect("git");
-        String::from_utf8_lossy(&out.stdout).trim().to_string()
-    }
-
-    fn mock_outcome(
-        store: &HarnessStore,
-        name: &str,
-        status: WorkflowRunStatus,
-    ) -> (String, workflow::WorkflowOutcome) {
-        let phase_id = name.strip_prefix("phase-").unwrap_or(name).to_string();
-        let ok = status == WorkflowRunStatus::Completed;
-        let steps: Vec<workflow::StepResult> = store
-            .tasks()
-            .unwrap()
-            .into_iter()
-            .filter(|t| t.phase_id.as_deref() == Some(phase_id.as_str()))
-            .map(|t| workflow::StepResult {
-                phase: phase_id.clone(),
-                label: t.id.clone(),
-                provider: "codex".into(),
-                isolation: None,
-                ok,
-                provider_session_id: None,
-                output_summary: "ok".into(),
-                step_id: Some(format!("wfstep-{}", t.id)),
-                started_at: None,
-                details: None,
-                structured: None,
-                ordinal: None,
-            })
-            .collect();
-        (
-            "wfrun-mock".into(),
-            workflow::WorkflowOutcome {
-                steps,
-                status,
-                summary: "mock".into(),
-                agents_spawned: 0,
-                final_output: None,
-            },
-        )
-    }
-
-    /// A reviser that never proposes anything (empty revision) — the loop treats
-    /// it as "no actionable replan" and stops. Used by tests that assert the
-    /// pre-replan fail-fast behavior is preserved (paired with `max_phase_retries`
-    /// = 0, which never invokes the reviser at all).
-    fn noop_reviser(
-        _goal: &Goal,
-        _phase: &harness_core::GoalPhase,
-        _live_tasks: &[&Task],
-        _knowledge: &Knowledge,
-    ) -> CliResult<serde_json::Value> {
-        Ok(serde_json::json!({ "revision": { "supersede": [], "new_tasks": [] } }))
-    }
-
-    fn orch_workflow_phase(id: &str, workflow_ref: &str) -> harness_core::GoalPhase {
-        let mut phase = orch_phase(id);
-        phase.execution_mode = harness_core::PhaseExecutionMode::Workflow;
-        phase.workflow_ref = Some(workflow_ref.into());
-        phase
-    }
-
-    fn write_test_workflow(repo_root: &Path, rel: &str) {
-        let path = repo_root.join(rel);
-        std::fs::create_dir_all(path.parent().unwrap()).expect("workflow parent dir");
-        std::fs::write(
-            path,
-            r#"workflow(
-    "custom-phase",
-    "Direct workflow-mode GoalPhase fixture for orchestration acceptance.",
-)
-log("custom workflow-mode GoalPhase fixture started")
-output({"accepted": True, "surface": "goal-phase-workflow"})
-verdict(True, "custom workflow-mode phase direct run accepted")
-"#,
-        )
-        .expect("write workflow");
-    }
-
-    #[test]
-    fn orchestrate_runs_phases_sequentially_gates_and_advances() {
-        let root = std::env::temp_dir().join(format!("harness-orch-{}", generated_id("ok")));
-        let store = HarnessStore::new(&root);
-        store.init().expect("init");
-        let mut goal = make_goal("g-orch");
-        goal.phases = vec![orch_phase("p1"), orch_phase("p2")];
-        persist_new_goal(&store, &goal).unwrap();
-        for (id, phase, deps, paths) in [
-            ("t1", "p1", vec![], vec!["a"]),
-            ("t2", "p1", vec![], vec!["b"]),
-            ("t3", "p2", vec!["t1", "t2"], vec!["c"]),
-        ] {
-            let mut t = make_task(id, "g-orch");
-            t.phase_id = Some(phase.into());
-            t.depends_on_task_ids = deps.into_iter().map(String::from).collect();
-            t.owned_paths = paths.into_iter().map(String::from).collect();
-            persist_new_task(&store, &t).unwrap();
-        }
-
-        let run_phase = |_script: &str,
-                         name: &str,
-                         _phase_id: Option<&str>,
-                         _resume_from: Option<&str>|
-         -> CliResult<(String, workflow::WorkflowOutcome)> {
-            Ok(mock_outcome(&store, name, WorkflowRunStatus::Completed))
-        };
-        let report =
-            orchestrate_goal_phases(&store, "g-orch", &run_phase, &noop_reviser, 0, &root, false)
-                .expect("orchestrate");
-        assert_eq!(report["status"], "completed");
-        assert_eq!(report["stage"], "verified");
-
-        let goal2 = goal_load(&store, "g-orch").unwrap();
-        assert!(goal2
-            .phases
-            .iter()
-            .all(|p| p.status == GoalPhaseStatus::Passed));
-        let tasks = latest_tasks(&store).unwrap();
-        for id in ["t1", "t2", "t3"] {
-            assert_eq!(tasks[id].status, TaskStatus::Done, "{id} should be Done");
-        }
-        let orch = store.goal_orchestration_runs().unwrap();
-        let last = orch.last().unwrap();
-        assert_eq!(last.status, OrchestrationStatus::Completed);
-        assert_eq!(last.phase_runs.len(), 2);
-        // Stage 0: each phase run records its workflow_run_id — the BACK link to
-        // the WorkflowRun, whose forward goal_id/phase_id the real run path stamps
-        // (see real_run_phase_stamps_goal_and_phase_on_the_workflow_run).
-        assert!(
-            last.phase_runs
-                .iter()
-                .all(|pr| pr.workflow_run_id.is_some()),
-            "every orchestrated phase run links to its WorkflowRun"
-        );
-        // Acceptance #4: each phase gate records a phase_verdict Decision and the
-        // phase points at it.
-        let goal_final = goal_load(&store, "g-orch").unwrap();
-        assert!(goal_final
-            .phases
-            .iter()
-            .all(|p| p.verdict_decision_id.is_some()));
-        let decisions = store.decisions().unwrap();
-        let verdicts: Vec<_> = decisions
-            .iter()
-            .filter(|d| d.decision_kind.as_deref() == Some("phase_verdict"))
-            .collect();
-        assert_eq!(verdicts.len(), 2, "one phase_verdict decision per phase");
-        std::fs::remove_dir_all(&root).ok();
-    }
-
-    #[test]
-    fn orchestrate_runs_custom_workflow_mode_phase_without_tasks() {
-        let root = std::env::temp_dir().join(format!("harness-orch-wf-{}", generated_id("ok")));
-        let store = HarnessStore::new(&root);
-        store.init().expect("init");
-        write_test_workflow(&root, "workflows/custom-phase.star");
-
-        let mut goal = make_goal("g-wf");
-        goal.phases = vec![orch_workflow_phase(
-            "custom",
-            "repo:workflows/custom-phase.star",
-        )];
-        persist_new_goal(&store, &goal).unwrap();
-
-        let run_phase = |script: &str,
-                         name: &str,
-                         phase_id: Option<&str>,
-                         _resume_from: Option<&str>|
-         -> CliResult<(String, workflow::WorkflowOutcome)> {
-            assert_eq!(name, "phase-custom");
-            assert_eq!(phase_id, Some("custom"));
-            assert!(
-                script.contains("custom workflow-mode GoalPhase fixture started"),
-                "orchestrator should pass the authored workflow body, got: {script}"
-            );
-            Ok(mock_outcome(&store, name, WorkflowRunStatus::Completed))
-        };
-        let report =
-            orchestrate_goal_phases(&store, "g-wf", &run_phase, &noop_reviser, 2, &root, false)
-                .expect("orchestrate workflow phase");
-        assert_eq!(report["status"], "completed");
-        assert_eq!(report["stage"], "verified");
-
-        let goal2 = goal_load(&store, "g-wf").unwrap();
-        assert_eq!(goal2.phases[0].status, GoalPhaseStatus::Passed);
-        assert!(
-            latest_tasks(&store).unwrap().is_empty(),
-            "workflow-mode phases do not require task rows"
-        );
-        let orch = store.goal_orchestration_runs().unwrap();
-        let last = orch.last().unwrap();
-        assert_eq!(last.status, OrchestrationStatus::Completed);
-        assert_eq!(last.phase_runs.len(), 1);
-        assert!(last.phase_runs[0].compiled_path.is_some());
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn workflow_mode_failure_does_not_invoke_task_graph_reviser() {
-        use std::cell::Cell;
-
-        let root = std::env::temp_dir().join(format!("harness-orch-wf-{}", generated_id("fail")));
-        let store = HarnessStore::new(&root);
-        store.init().expect("init");
-        write_test_workflow(&root, "workflows/custom-phase.star");
-
-        let mut goal = make_goal("g-wf-fail");
-        goal.phases = vec![orch_workflow_phase(
-            "custom",
-            "repo:workflows/custom-phase.star",
-        )];
-        persist_new_goal(&store, &goal).unwrap();
-
-        let attempts = Cell::new(0);
-        let revised = Cell::new(0);
-        let run_phase = |_script: &str,
-                         name: &str,
-                         _phase_id: Option<&str>,
-                         _resume_from: Option<&str>|
-         -> CliResult<(String, workflow::WorkflowOutcome)> {
-            attempts.set(attempts.get() + 1);
-            Ok(mock_outcome(&store, name, WorkflowRunStatus::Failed))
-        };
-        let reviser = |_goal: &Goal,
-                       _phase: &harness_core::GoalPhase,
-                       _live_tasks: &[&Task],
-                       _knowledge: &Knowledge|
-         -> CliResult<serde_json::Value> {
-            revised.set(revised.get() + 1);
-            noop_reviser(_goal, _phase, _live_tasks, _knowledge)
-        };
-
-        let report =
-            orchestrate_goal_phases(&store, "g-wf-fail", &run_phase, &reviser, 2, &root, false)
-                .expect("orchestrate workflow failure");
-        assert_eq!(report["status"], "failed");
-        assert_eq!(report["failed_phase"], "custom");
-        assert_eq!(
-            attempts.get(),
-            1,
-            "workflow phases should not retry through task-graph repair"
-        );
-        assert_eq!(
-            revised.get(),
-            0,
-            "workflow phases should not invoke the task graph reviser"
-        );
-        let goal2 = goal_load(&store, "g-wf-fail").unwrap();
-        assert_eq!(goal2.phases[0].status, GoalPhaseStatus::Failed);
-        let _ = fs::remove_dir_all(root);
-    }
-
-    /// A single-step outcome that COMPLETED overall but whose one leaf reports
-    /// `ok=false` (an authored workflow that tolerated a failure and still
-    /// verdict(True)ed). No worktree diff, so landing is a no-op.
-    fn completed_outcome_with_failed_step(phase_id: &str) -> workflow::WorkflowOutcome {
-        workflow::WorkflowOutcome {
-            steps: vec![workflow::StepResult {
-                phase: phase_id.into(),
-                label: "tolerated".into(),
-                provider: "codex".into(),
-                isolation: None,
-                ok: false,
-                provider_session_id: None,
-                output_summary: "leaf failed but the workflow recovered".into(),
-                step_id: Some("wfstep-tolerated".into()),
-                started_at: None,
-                details: None,
-                structured: None,
-                ordinal: Some(0),
-            }],
-            status: WorkflowRunStatus::Completed,
-            summary: "completed despite a failed leaf".into(),
-            agents_spawned: 1,
-            final_output: Some(serde_json::json!({ "verdict": { "ok": true } })),
-        }
-    }
-
-    // D2: a WORKFLOW-mode phase whose run Completed with verdict(True) PASSES even
-    // though one journaled leaf has ok=false — authored workflows may tolerate a
-    // failed leaf (return_status + retry). The gate must not require all-steps-ok.
-    #[test]
-    fn workflow_mode_phase_passes_with_a_tolerated_failed_step() {
-        let root = std::env::temp_dir().join(format!("harness-d2-wf-{}", generated_id("d2")));
-        let store = HarnessStore::new(&root);
-        store.init().expect("init");
-        write_test_workflow(&root, "workflows/custom-phase.star");
-        let mut goal = make_goal("g-d2-wf");
-        goal.phases = vec![orch_workflow_phase(
-            "custom",
-            "repo:workflows/custom-phase.star",
-        )];
-        persist_new_goal(&store, &goal).unwrap();
-
-        let run_phase = |_script: &str,
-                         name: &str,
-                         _phase_id: Option<&str>,
-                         _resume_from: Option<&str>|
-         -> CliResult<(String, workflow::WorkflowOutcome)> {
-            let phase_id = name.strip_prefix("phase-").unwrap_or(name);
-            Ok((
-                "wfrun-mock".into(),
-                completed_outcome_with_failed_step(phase_id),
-            ))
-        };
-        let report = orchestrate_goal_phases(
-            &store,
-            "g-d2-wf",
-            &run_phase,
-            &noop_reviser,
-            2,
-            &root,
-            false,
-        )
-        .expect("orchestrate");
-        assert_eq!(
-            report["status"], "completed",
-            "workflow-mode phase passes despite a failed leaf (D2)"
-        );
-        assert_eq!(
-            goal_load(&store, "g-d2-wf").unwrap().phases[0].status,
-            GoalPhaseStatus::Passed
-        );
-        let _ = fs::remove_dir_all(root);
-    }
-
-    // D2 regression guard: a TASK-GRAPH phase with a failed step still FAILS — the
-    // all-steps-ok clause is unchanged for task-graph mode (a bare parallel() block
-    // has no verdict, so a failed task must fail the phase).
-    #[test]
-    fn task_graph_phase_still_fails_on_a_failed_step() {
-        let root = std::env::temp_dir().join(format!("harness-d2-tg-{}", generated_id("d2")));
-        let store = HarnessStore::new(&root);
-        store.init().expect("init");
-        let mut goal = make_goal("g-d2-tg");
-        goal.phases = vec![orch_phase("p1")];
-        persist_new_goal(&store, &goal).unwrap();
-        let mut t = make_task("t1", "g-d2-tg");
-        t.phase_id = Some("p1".into());
-        t.owned_paths = vec!["a".into()];
-        persist_new_task(&store, &t).unwrap();
-
-        // The step Completed overall but its one leaf reports ok=false.
-        let run_phase = |_script: &str,
-                         name: &str,
-                         _phase_id: Option<&str>,
-                         _resume_from: Option<&str>|
-         -> CliResult<(String, workflow::WorkflowOutcome)> {
-            let phase_id = name.strip_prefix("phase-").unwrap_or(name).to_string();
-            let steps = store
-                .tasks()
-                .unwrap()
-                .into_iter()
-                .filter(|task| task.phase_id.as_deref() == Some(phase_id.as_str()))
-                .map(|task| workflow::StepResult {
-                    phase: phase_id.clone(),
-                    label: task.id.clone(),
-                    provider: "codex".into(),
-                    isolation: None,
-                    ok: false,
-                    provider_session_id: None,
-                    output_summary: "task failed".into(),
-                    step_id: Some(format!("wfstep-{}", task.id)),
-                    started_at: None,
-                    details: None,
-                    structured: None,
-                    ordinal: None,
-                })
-                .collect();
-            Ok((
-                "wfrun-mock".into(),
-                workflow::WorkflowOutcome {
-                    steps,
-                    status: WorkflowRunStatus::Completed,
-                    summary: "task-graph with a failed task".into(),
-                    agents_spawned: 1,
-                    final_output: None,
-                },
-            ))
-        };
-        let report = orchestrate_goal_phases(
-            &store,
-            "g-d2-tg",
-            &run_phase,
-            &noop_reviser,
-            0,
-            &root,
-            false,
-        )
-        .expect("orchestrate");
-        assert_eq!(
-            report["status"], "failed",
-            "task-graph phase still fails on a failed step (D2 regression guard)"
-        );
-        assert_eq!(
-            goal_load(&store, "g-d2-tg").unwrap().phases[0].status,
-            GoalPhaseStatus::Failed
-        );
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn builtin_phases_auto_append_run_and_are_idempotent() {
-        // built-in-phases S2b: a goal whose execution phases pass auto-appends and
-        // runs the 3 built-in building phases (doc-sync/skill-extract/self-improve),
-        // each journaled like any phase, and a second run-phases adds NO duplicates.
-        let root = std::env::temp_dir().join(format!("harness-bi-{}", generated_id("bi")));
-        let store = HarnessStore::new(&root);
-        store.init().expect("init");
-        let mut goal = make_goal("g-bi");
-        goal.phases = vec![orch_phase("p1")];
-        persist_new_goal(&store, &goal).unwrap();
-        let mut t = make_task("t1", "g-bi");
-        t.phase_id = Some("p1".into());
-        t.owned_paths = vec!["a".into()];
-        persist_new_task(&store, &t).unwrap();
-
-        let run_phase = |_s: &str,
-                         name: &str,
-                         _phase_id: Option<&str>,
-                         _r: Option<&str>|
-         -> CliResult<(String, workflow::WorkflowOutcome)> {
-            Ok(mock_outcome(&store, name, WorkflowRunStatus::Completed))
-        };
-        let report =
-            orchestrate_goal_phases(&store, "g-bi", &run_phase, &noop_reviser, 0, &root, true)
-                .expect("orchestrate");
-        assert_eq!(report["status"], "completed");
-        assert_eq!(report["stage"], "verified");
-
-        let g = goal_load(&store, "g-bi").unwrap();
-        assert_eq!(
-            g.phases.len(),
-            4,
-            "execution phase + 3 built-in building phases"
-        );
-        let building: Vec<&str> = g
-            .phases
-            .iter()
-            .filter(|p| p.kind == harness_core::PhaseKind::Building)
-            .filter_map(|p| p.builtin.as_deref())
-            .collect();
-        assert_eq!(building, vec!["doc-sync", "skill-extract", "self-improve"]);
-        assert!(g.phases.iter().all(|p| p.status == GoalPhaseStatus::Passed));
-
-        // Audit chain: every phase (incl. building) journaled an OrchestrationPhaseRun.
-        let orch = store.goal_orchestration_runs().unwrap();
-        assert_eq!(orch.last().unwrap().phase_runs.len(), 4);
-
-        // Idempotent: a second run-phases appends NO duplicate building phases.
-        let report2 =
-            orchestrate_goal_phases(&store, "g-bi", &run_phase, &noop_reviser, 0, &root, true)
-                .expect("re-orchestrate");
-        assert_eq!(report2["status"], "completed");
-        assert_eq!(
-            goal_load(&store, "g-bi").unwrap().phases.len(),
-            4,
-            "no duplicate built-in phases on re-run"
-        );
-        std::fs::remove_dir_all(&root).ok();
-    }
-
-    #[test]
-    fn blocking_doc_sync_failure_fails_the_goal() {
-        // built-in-phases S2b: a failed BLOCKING built-in phase (doc-sync) fails the
-        // orchestration — the goal does NOT verify (docs may not silently drift).
-        let root = std::env::temp_dir().join(format!("harness-bk-{}", generated_id("bk")));
-        let store = HarnessStore::new(&root);
-        store.init().expect("init");
-        let mut goal = make_goal("g-bk");
-        goal.phases = vec![orch_phase("p1")];
-        persist_new_goal(&store, &goal).unwrap();
-        let mut t = make_task("t1", "g-bk");
-        t.phase_id = Some("p1".into());
-        t.owned_paths = vec!["a".into()];
-        persist_new_task(&store, &t).unwrap();
-
-        let run_phase = |_s: &str,
-                         name: &str,
-                         _phase_id: Option<&str>,
-                         _r: Option<&str>|
-         -> CliResult<(String, workflow::WorkflowOutcome)> {
-            let status = if name == "phase-builtin-doc-sync" {
-                WorkflowRunStatus::Failed
-            } else {
-                WorkflowRunStatus::Completed
-            };
-            Ok(mock_outcome(&store, name, status))
-        };
-        let report =
-            orchestrate_goal_phases(&store, "g-bk", &run_phase, &noop_reviser, 0, &root, true)
-                .expect("orchestrate");
-        assert_eq!(report["status"], "failed");
-        assert_eq!(report["failed_phase"], "builtin-doc-sync");
-        assert_ne!(
-            goal_load(&store, "g-bk").unwrap().effective_stage(),
-            GoalStage::Verified,
-            "a blocking doc-sync failure must block verification"
-        );
-        std::fs::remove_dir_all(&root).ok();
-    }
-
-    #[test]
-    fn soft_building_failure_does_not_block_the_goal() {
-        // built-in-phases S2b: a failed SOFT built-in phase (skill-extract) is
-        // recorded (clean_fail verdict Decision) but marked settled, so the goal
-        // still verifies — soft phases are best-effort.
-        let root = std::env::temp_dir().join(format!("harness-sf-{}", generated_id("sf")));
-        let store = HarnessStore::new(&root);
-        store.init().expect("init");
-        let mut goal = make_goal("g-sf");
-        goal.phases = vec![orch_phase("p1")];
-        persist_new_goal(&store, &goal).unwrap();
-        let mut t = make_task("t1", "g-sf");
-        t.phase_id = Some("p1".into());
-        t.owned_paths = vec!["a".into()];
-        persist_new_task(&store, &t).unwrap();
-
-        let run_phase = |_s: &str,
-                         name: &str,
-                         _phase_id: Option<&str>,
-                         _r: Option<&str>|
-         -> CliResult<(String, workflow::WorkflowOutcome)> {
-            let status = if name == "phase-builtin-skill-extract" {
-                WorkflowRunStatus::Failed
-            } else {
-                WorkflowRunStatus::Completed
-            };
-            Ok(mock_outcome(&store, name, status))
-        };
-        let report =
-            orchestrate_goal_phases(&store, "g-sf", &run_phase, &noop_reviser, 0, &root, true)
-                .expect("orchestrate");
-        assert_eq!(report["status"], "completed");
-        assert_eq!(report["stage"], "verified");
-
-        let g = goal_load(&store, "g-sf").unwrap();
-        let se = g
-            .phases
-            .iter()
-            .find(|p| p.builtin.as_deref() == Some("skill-extract"))
-            .unwrap();
-        assert_eq!(
-            se.status,
-            GoalPhaseStatus::Passed,
-            "soft phase is marked settled despite its failing run"
-        );
-        // ...but the failure is honestly recorded as a clean_fail verdict Decision.
-        let decisions = store.decisions().unwrap();
-        assert!(
-            decisions.iter().any(|d| {
-                d.decision.contains("builtin-skill-extract") && d.decision.contains("clean_fail")
-            }),
-            "the soft phase's failure is recorded as a clean_fail verdict"
-        );
-        std::fs::remove_dir_all(&root).ok();
-    }
-
-    // goal-phase-landing L1: reconciling a phase to reality (out-of-band work)
-    // sets its status + landed_commit, appends a `decision` Knowledge entry with
-    // provenance, and advances the goal's derived/effective stage.
-    #[test]
-    fn reconcile_phase_sets_status_landed_commit_knowledge_and_syncs_stage() {
-        let root = std::env::temp_dir().join(format!("harness-reconcile-{}", generated_id("rec")));
-        let store = HarnessStore::new(&root);
-        store.init().expect("init");
-        let mut goal = make_goal("g-rec");
-        goal.phases = vec![orch_phase("p1"), orch_phase("p2")];
-        persist_new_goal(&store, &goal).unwrap();
-        // A phase-driven goal with all-NotStarted phases derives `Draft`.
-        assert_eq!(
-            goal_load(&store, "g-rec").unwrap().effective_stage(),
-            GoalStage::Draft
-        );
-
-        // Reconcile p1 to passed with a landed commit + a note.
-        let mut goal = goal_load(&store, "g-rec").unwrap();
-        let kid = reconcile_phase(
-            &store,
-            &mut goal,
-            "p1",
-            GoalPhaseStatus::Passed,
-            Some("8b81471".into()),
-            "operator",
-            Some("shipped via PR #147"),
-        )
-        .expect("reconcile p1");
-
-        // One reconciled phase started/passed → effective stage is `Working`.
-        let after_p1 = goal_load(&store, "g-rec").unwrap();
-        let p1 = after_p1.phases.iter().find(|p| p.id == "p1").unwrap();
-        assert_eq!(p1.status, GoalPhaseStatus::Passed);
-        assert_eq!(p1.landed_commit.as_deref(), Some("8b81471"));
-        assert!(p1.ended_at.is_some(), "reconcile stamps ended_at");
-        assert_eq!(after_p1.effective_stage(), GoalStage::Working);
-        assert_eq!(after_p1.stage, GoalStage::Working, "sync persists stage");
-        // The reconcile appended a `decision`-sourced Knowledge entry w/ provenance.
-        let k = after_p1.knowledge.iter().find(|k| k.id == kid).unwrap();
-        assert_eq!(k.source, KnowledgeSource::Decision);
-        assert_eq!(k.phase_id.as_deref(), Some("p1"));
-        assert_eq!(k.author, "operator");
-        assert!(k.notes_md.contains("8b81471"));
-        assert!(k.notes_md.contains("shipped via PR #147"));
-
-        // Reconcile p2 to passed too → all phases passed → derived `Verified`.
-        let mut goal = goal_load(&store, "g-rec").unwrap();
-        reconcile_phase(
-            &store,
-            &mut goal,
-            "p2",
-            GoalPhaseStatus::Passed,
-            Some("8b81471".into()),
-            "operator",
-            None,
-        )
-        .expect("reconcile p2");
-        let final_goal = goal_load(&store, "g-rec").unwrap();
-        assert_eq!(final_goal.effective_stage(), GoalStage::Verified);
-        assert_eq!(final_goal.stage, GoalStage::Verified);
-        assert_eq!(final_goal.status, GoalStatus::Done);
-
-        // An unknown phase id is a clear error (no partial mutation needed).
-        let mut goal = goal_load(&store, "g-rec").unwrap();
-        assert!(reconcile_phase(
-            &store,
-            &mut goal,
-            "nope",
-            GoalPhaseStatus::Passed,
-            None,
-            "operator",
-            None,
-        )
-        .is_err());
-
-        std::fs::remove_dir_all(&root).ok();
-    }
-
-    // -----------------------------------------------------------------------
-    // goal-auto-finalize: derive goal stage from phases/tasks + auto-sync.
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn auto_finalize_task_all_done_advances_goal_to_verified() {
-        let root = std::env::temp_dir().join(format!("harness-af-alldone-{}", generated_id("af")));
-        let store = HarnessStore::new(&root);
-        store.init().expect("init");
-        // A task-driven goal (NO phases) already at `working` with two live tasks.
-        let mut goal = make_goal("g-af1");
-        goal.stage = GoalStage::Working;
-        goal.status = GoalStatus::Active;
-        persist_new_goal(&store, &goal).unwrap();
-        let mut t1 = make_task("t1", "g-af1");
-        t1.status = TaskStatus::Running;
-        store.append_task(&t1).unwrap();
-        let mut t2 = make_task("t2", "g-af1");
-        t2.status = TaskStatus::Done;
-        store.append_task(&t2).unwrap();
-
-        // Last task still running → derives `working`, no advance from `working`.
-        let mut goal = goal_load(&store, "g-af1").unwrap();
-        assert!(!reconcile_goal_stage(&store, &mut goal).unwrap());
-        assert_eq!(
-            goal_load(&store, "g-af1").unwrap().stage,
-            GoalStage::Working
-        );
-
-        // Flip the LAST task to done (via task status path) → ALL done → verified.
-        t1.status = TaskStatus::Done;
-        t1.updated_at = now_string();
-        store.append_task(&t1).unwrap();
-        let mut goal = goal_load(&store, "g-af1").unwrap();
-        assert!(reconcile_goal_stage(&store, &mut goal).unwrap());
-        let after = goal_load(&store, "g-af1").unwrap();
-        assert_eq!(after.stage, GoalStage::Verified);
-        assert_eq!(after.status, GoalStatus::Done);
-        // An `auto-finalize` provenance Knowledge entry was appended (decision source).
-        let k = after
-            .knowledge
-            .iter()
-            .find(|k| k.author == "auto-finalize")
-            .expect("auto-finalize knowledge appended");
-        assert_eq!(k.source, KnowledgeSource::Decision);
-        assert!(k.tags.iter().any(|t| t == "auto-finalize"));
-        assert!(k.phase_id.is_none() && k.task_id.is_none());
-
-        std::fs::remove_dir_all(&root).ok();
-    }
-
-    #[test]
-    fn auto_finalize_task_partial_stays_working() {
-        let root = std::env::temp_dir().join(format!("harness-af-partial-{}", generated_id("af")));
-        let store = HarnessStore::new(&root);
-        store.init().expect("init");
-        // Task-driven goal at `working` with one done + one still open.
-        let mut goal = make_goal("g-af2");
-        goal.stage = GoalStage::Working;
-        goal.status = GoalStatus::Active;
-        persist_new_goal(&store, &goal).unwrap();
-        let mut t1 = make_task("t1", "g-af2");
-        t1.status = TaskStatus::Done;
-        store.append_task(&t1).unwrap();
-        let mut t2 = make_task("t2", "g-af2");
-        t2.status = TaskStatus::Review;
-        store.append_task(&t2).unwrap();
-
-        // derive: some open → working; no forward advance from `working`.
-        let tasks: Vec<Task> = latest_tasks(&store).unwrap().into_values().collect();
-        let goal_now = goal_load(&store, "g-af2").unwrap();
-        assert_eq!(derive_goal_stage(&goal_now, &tasks), GoalStage::Working);
-        let mut goal = goal_load(&store, "g-af2").unwrap();
-        assert!(!reconcile_goal_stage(&store, &mut goal).unwrap());
-        let after = goal_load(&store, "g-af2").unwrap();
-        assert_eq!(after.stage, GoalStage::Working);
-        assert_eq!(after.status, GoalStatus::Active);
-        // No auto-finalize Knowledge churned on a no-op.
-        assert!(!after.knowledge.iter().any(|k| k.author == "auto-finalize"));
-
-        // A superseded task does NOT count: supersede the open one → all live done → verified.
-        t2.status = TaskStatus::Superseded;
-        t2.updated_at = now_string();
-        store.append_task(&t2).unwrap();
-        let mut goal = goal_load(&store, "g-af2").unwrap();
-        assert!(reconcile_goal_stage(&store, &mut goal).unwrap());
-        assert_eq!(
-            goal_load(&store, "g-af2").unwrap().stage,
-            GoalStage::Verified
-        );
-
-        std::fs::remove_dir_all(&root).ok();
-    }
-
-    #[test]
-    fn auto_finalize_phase_driven_still_finalizes() {
-        // Regression: a phase-driven goal whose phases all reach `passed` advances
-        // to verified through `reconcile_goal_stage` (the path run-phases /
-        // reconcile-phase now use), exactly as the phase derivation always did.
-        let root = std::env::temp_dir().join(format!("harness-af-phase-{}", generated_id("af")));
-        let store = HarnessStore::new(&root);
-        store.init().expect("init");
-        let mut goal = make_goal("g-af3");
-        goal.phases = vec![orch_phase("p1"), orch_phase("p2")];
-        persist_new_goal(&store, &goal).unwrap();
-
-        // First phase passed, second not → derives `working`.
-        let mut goal = goal_load(&store, "g-af3").unwrap();
-        goal.phases[0].status = GoalPhaseStatus::Passed;
-        store.append_goal(&goal).unwrap();
-        let mut goal = goal_load(&store, "g-af3").unwrap();
-        assert!(reconcile_goal_stage(&store, &mut goal).unwrap());
-        assert_eq!(
-            goal_load(&store, "g-af3").unwrap().stage,
-            GoalStage::Working
-        );
-
-        // Last phase passed → ALL passed → verified (auto-finalize).
-        let mut goal = goal_load(&store, "g-af3").unwrap();
-        goal.phases[1].status = GoalPhaseStatus::Passed;
-        store.append_goal(&goal).unwrap();
-        let mut goal = goal_load(&store, "g-af3").unwrap();
-        assert!(reconcile_goal_stage(&store, &mut goal).unwrap());
-        let after = goal_load(&store, "g-af3").unwrap();
-        assert_eq!(after.stage, GoalStage::Verified);
-        assert_eq!(after.status, GoalStatus::Done);
-
-        // Forward-only: a second reconcile is a no-op (no regression, no churn).
-        let mut goal = goal_load(&store, "g-af3").unwrap();
-        assert!(!reconcile_goal_stage(&store, &mut goal).unwrap());
-
-        std::fs::remove_dir_all(&root).ok();
-    }
-
-    #[test]
-    fn finalize_refuses_incomplete_and_force_finalizes_out_of_band() {
-        let root = std::env::temp_dir().join(format!("harness-af-final-{}", generated_id("af")));
-        let store = HarnessStore::new(&root);
-        store.init().expect("init");
-
-        // (a) An INCOMPLETE task-driven goal: `reconcile_goal_stage` does not reach
-        // verified, so `goal finalize` (no --force) must REFUSE.
-        let mut goal = make_goal("g-af4");
-        goal.stage = GoalStage::Working;
-        goal.status = GoalStatus::Active;
-        persist_new_goal(&store, &goal).unwrap();
-        let mut t1 = make_task("t1", "g-af4");
-        t1.status = TaskStatus::Running;
-        store.append_task(&t1).unwrap();
-        let err = goal_command(&store, &["finalize".into(), "g-af4".into()])
-            .expect_err("finalize must refuse an incomplete goal");
-        let msg = format!("{err}");
-        assert!(
-            msg.contains("not structurally complete") && msg.contains("--force"),
-            "actionable refusal message: {msg}"
-        );
-        // Refusal mutated nothing.
-        assert_eq!(
-            goal_load(&store, "g-af4").unwrap().stage,
-            GoalStage::Working
-        );
-
-        // (b) An OUT-OF-BAND goal (no phases, no tasks): finalize without --force
-        // refuses (nothing derivable), but --force --landed-commit finalizes it.
-        let mut oob = make_goal("g-oob");
-        oob.stage = GoalStage::Working;
-        oob.status = GoalStatus::Active;
-        persist_new_goal(&store, &oob).unwrap();
-        assert!(
-            goal_command(&store, &["finalize".into(), "g-oob".into()]).is_err(),
-            "out-of-band goal is not structurally complete without --force"
-        );
-        let mut oob = goal_load(&store, "g-oob").unwrap();
-        let kid = force_finalize_goal(
-            &store,
-            &mut oob,
-            Some("cafef00d".into()),
-            Some("merged PR #9"),
-        )
-        .expect("force finalize");
-        let after = goal_load(&store, "g-oob").unwrap();
-        assert_eq!(after.stage, GoalStage::Verified);
-        assert_eq!(after.status, GoalStatus::Done);
-        // Landed commit recorded on git_metadata + a forced auto-finalize Knowledge.
-        assert_eq!(
-            after.git_metadata.and_then(|m| m.commit).as_deref(),
-            Some("cafef00d")
-        );
-        let k = after
-            .knowledge
-            .iter()
-            .find(|k| k.id == kid)
-            .expect("forced knowledge appended");
-        assert_eq!(k.author, "auto-finalize");
-        assert_eq!(k.source, KnowledgeSource::Decision);
-        assert!(k.tags.iter().any(|t| t == "force"));
-        assert!(k.notes_md.contains("cafef00d") && k.notes_md.contains("merged PR #9"));
-
-        std::fs::remove_dir_all(&root).ok();
-    }
-
-    // goal-phase-artifacts s3-gate: unit-level checks of the diff scanner.
-    #[test]
-    fn diff_scanner_detects_nonempty_created_or_modified_files() {
-        // A created file with content → satisfied.
-        let created = "diff --git a/docs/report.md b/docs/report.md\n\
-             new file mode 100644\n\
-             index 0000000..e69de29\n\
-             --- /dev/null\n\
-             +++ b/docs/report.md\n\
-             @@ -0,0 +1,2 @@\n\
-             +# Report\n\
-             +body line\n";
-        assert!(diff_has_nonempty_file(created, "docs/report.md"));
-        // A different file is NOT matched.
-        assert!(!diff_has_nonempty_file(created, "docs/other.md"));
-        // A touched-but-EMPTY new file (header, no `+` content) → NOT satisfied.
-        let empty = "diff --git a/empty.txt b/empty.txt\n\
-             new file mode 100644\n\
-             index 0000000..e69de29\n\
-             --- /dev/null\n\
-             +++ b/empty.txt\n";
-        assert!(!diff_has_nonempty_file(empty, "empty.txt"));
-        // A modified file with an added line → satisfied.
-        let modified = "diff --git a/src/lib.rs b/src/lib.rs\n\
-             index 1111111..2222222 100644\n\
-             --- a/src/lib.rs\n\
-             +++ b/src/lib.rs\n\
-             @@ -1,1 +1,2 @@\n\
-              existing\n\
-             +added\n";
-        assert!(diff_has_nonempty_file(modified, "src/lib.rs"));
-    }
-
-    #[test]
-    fn parse_output_flags_authors_artifact_specs() {
-        // No flags → empty (today's default).
-        assert!(parse_output_flags(&[]).unwrap().is_empty());
-        // A full spec + a minimal one (defaults: kind=code, required=true).
-        let args: Vec<String> = [
-            "--output",
-            "id=report,kind=test_report,path=docs/r.md,purpose=the report,required=true,acceptance=covers gate",
-            "--output",
-            "id=code",
-        ]
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
-        let specs = parse_output_flags(&args).unwrap();
-        assert_eq!(specs.len(), 2);
-        assert_eq!(specs[0].id, "report");
-        assert_eq!(specs[0].kind, ArtifactKind::TestReport);
-        assert_eq!(specs[0].path.as_deref(), Some("docs/r.md"));
-        assert!(specs[0].required);
-        assert_eq!(specs[0].acceptance.as_deref(), Some("covers gate"));
-        assert_eq!(specs[1].id, "code");
-        assert_eq!(specs[1].kind, ArtifactKind::Code);
-        assert!(specs[1].required);
-        assert!(specs[1].path.is_none());
-        // required=false is honored.
-        let opt = parse_output_flags(&[
-            "--output".into(),
-            "id=shot,path=docs/s.png,required=false".into(),
-        ])
-        .unwrap();
-        assert!(!opt[0].required);
-        // Missing id is an error.
-        assert!(parse_output_flags(&["--output".into(), "path=x".into()]).is_err());
-        // Unknown kind is an error.
-        assert!(parse_output_flags(&["--output".into(), "id=a,kind=bogus".into()]).is_err());
-    }
-
-    #[test]
-    fn parse_input_flags_and_retry_author_phase_preconditions() {
-        // goal-phase-refinements: `--input` reuses the spec flag parser, and the
-        // planner JSON `retry` key parses into a per-phase budget override.
-        assert!(parse_input_flags(&[]).unwrap().is_empty());
-        let inputs = parse_input_flags(&[
-            "--input".into(),
-            "id=prior,path=docs/p.md,purpose=from a prior phase".into(),
-        ])
-        .unwrap();
-        assert_eq!(inputs.len(), 1);
-        assert_eq!(inputs[0].id, "prior");
-        assert_eq!(inputs[0].path.as_deref(), Some("docs/p.md"));
-        assert!(inputs[0].required, "inputs default to required");
-        // A missing id is still an error (shared with --output), naming --input.
-        let err = parse_input_flags(&["--input".into(), "path=x".into()]).unwrap_err();
-        assert!(err.to_string().contains("--input"), "{err}");
-
-        // retry: numeric and stringified forms parse; absent/garbage → None.
-        assert_eq!(parse_retry(&serde_json::json!({ "retry": 2 })), Some(2));
-        assert_eq!(parse_retry(&serde_json::json!({ "retry": "3" })), Some(3));
-        assert_eq!(parse_retry(&serde_json::json!({})), None);
-        assert_eq!(parse_retry(&serde_json::json!({ "retry": "x" })), None);
-    }
-
-    /// Like `mock_outcome` but attaches a `worktree_diff` carrying ONE created
-    /// non-empty file at `produced_path` to each task step's `details` — so the
-    /// gate sees evidence the artifact was produced.
-    fn mock_outcome_with_diff(
-        store: &HarnessStore,
-        name: &str,
-        produced_path: &str,
-    ) -> (String, workflow::WorkflowOutcome) {
-        let phase_id = name.strip_prefix("phase-").unwrap_or(name).to_string();
-        let diff = format!(
-            "diff --git a/{p} b/{p}\n\
-             new file mode 100644\n\
-             index 0000000..abc1234\n\
-             --- /dev/null\n\
-             +++ b/{p}\n\
-             @@ -0,0 +1,1 @@\n\
-             +produced content\n",
-            p = produced_path
-        );
-        let steps: Vec<workflow::StepResult> = store
-            .tasks()
-            .unwrap()
-            .into_iter()
-            .filter(|t| t.phase_id.as_deref() == Some(phase_id.as_str()))
-            .map(|t| workflow::StepResult {
-                phase: phase_id.clone(),
-                label: t.id.clone(),
-                provider: "codex".into(),
-                isolation: Some("worktree".into()),
-                ok: true,
-                provider_session_id: None,
-                output_summary: "ok".into(),
-                step_id: Some(format!("wfstep-{}", t.id)),
-                started_at: None,
-                details: Some(serde_json::json!({ "worktree_diff": diff })),
-                structured: None,
-                ordinal: None,
-            })
-            .collect();
-        (
-            "wfrun-mock".into(),
-            workflow::WorkflowOutcome {
-                steps,
-                status: WorkflowRunStatus::Completed,
-                summary: "mock".into(),
-                agents_spawned: 0,
-                final_output: None,
-            },
-        )
-    }
-
-    #[test]
-    fn orchestrate_gate_fails_phase_when_required_artifact_is_absent() {
-        let root = std::env::temp_dir().join(format!("harness-art-{}", generated_id("absent")));
-        let store = HarnessStore::new(&root);
-        store.init().expect("init");
-        let mut goal = make_goal("g-art-absent");
-        goal.phases = vec![orch_phase("p1")];
-        persist_new_goal(&store, &goal).unwrap();
-        // The task declares a REQUIRED output the worker never produces.
-        let mut t = make_task("t1", "g-art-absent");
-        t.phase_id = Some("p1".into());
-        t.outputs = vec![ArtifactSpec {
-            id: "report".into(),
-            kind: ArtifactKind::TestReport,
-            path: Some("docs/never-made.md".into()),
-            purpose: "the promised report".into(),
-            required: true,
-            acceptance: None,
-        }];
-        persist_new_task(&store, &t).unwrap();
-
-        // The worker "succeeds" (Completed, all steps ok) but produces a DIFFERENT
-        // file — today this would pass; the artifact gate must FAIL it.
-        let run_phase = |_script: &str,
-                         name: &str,
-                         _phase_id: Option<&str>,
-                         _resume_from: Option<&str>|
-         -> CliResult<(String, workflow::WorkflowOutcome)> {
-            Ok(mock_outcome_with_diff(
-                &store,
-                name,
-                "docs/something-else.md",
-            ))
-        };
-        // The store root is an empty dir → no working-tree fallback hit either.
-        let report = orchestrate_goal_phases(
-            &store,
-            "g-art-absent",
-            &run_phase,
-            &noop_reviser,
-            0,
-            &root,
-            false,
-        )
-        .expect("orchestrate");
-        assert_eq!(report["status"], "failed");
-        assert_eq!(report["failed_phase"], "p1");
-        let goal2 = goal_load(&store, "g-art-absent").unwrap();
-        assert_eq!(goal2.phases[0].status, GoalPhaseStatus::Failed);
-        // The verdict rationale names the missing artifact.
-        let decisions = store.decisions().unwrap();
-        let verdict = decisions
-            .iter()
-            .rev()
-            .find(|d| d.decision_kind.as_deref() == Some("phase_verdict"))
-            .expect("a phase_verdict decision");
-        assert!(
-            verdict.rationale.contains("docs/never-made.md"),
-            "rationale should name the missing artifact: {}",
-            verdict.rationale
-        );
-        std::fs::remove_dir_all(&root).ok();
-    }
-
-    #[test]
-    fn orchestrate_gate_passes_phase_when_required_artifact_is_present() {
-        let root = std::env::temp_dir().join(format!("harness-art-{}", generated_id("present")));
-        let store = HarnessStore::new(&root);
-        store.init().expect("init");
-        let mut goal = make_goal("g-art-present");
-        goal.phases = vec![orch_phase("p1")];
-        persist_new_goal(&store, &goal).unwrap();
-        // Same phase, same required output — but now the worker produces it.
-        let mut t = make_task("t1", "g-art-present");
-        t.phase_id = Some("p1".into());
-        t.outputs = vec![ArtifactSpec {
-            id: "report".into(),
-            kind: ArtifactKind::TestReport,
-            path: Some("docs/report.md".into()),
-            purpose: "the promised report".into(),
-            required: true,
-            acceptance: None,
-        }];
-        persist_new_task(&store, &t).unwrap();
-
-        // The orchestrator branch is a real git repo so the passing phase can LAND
-        // its writable diff (goal-phase-landing) — this also exercises the artifact
-        // gate's in-diff evidence path.
-        let repo_root =
-            std::env::temp_dir().join(format!("harness-repo-{}", generated_id("present")));
-        init_git_repo(&repo_root);
-
-        let run_phase = |_script: &str,
-                         name: &str,
-                         _phase_id: Option<&str>,
-                         _resume_from: Option<&str>|
-         -> CliResult<(String, workflow::WorkflowOutcome)> {
-            Ok(mock_outcome_with_diff(&store, name, "docs/report.md"))
-        };
-        let report = orchestrate_goal_phases(
-            &store,
-            "g-art-present",
-            &run_phase,
-            &noop_reviser,
-            0,
-            &repo_root,
-            false,
-        )
-        .expect("orchestrate");
-        assert_eq!(report["status"], "completed");
-        let goal2 = goal_load(&store, "g-art-present").unwrap();
-        assert_eq!(goal2.phases[0].status, GoalPhaseStatus::Passed);
-        // The diff landed: the file is committed on the branch and the phase records
-        // its landed_commit.
-        assert!(
-            repo_root.join("docs/report.md").is_file(),
-            "landed file must be present in the working tree"
-        );
-        assert!(
-            goal2.phases[0].landed_commit.is_some(),
-            "a passing phase that produced a diff must record a landed_commit"
-        );
-        std::fs::remove_dir_all(&root).ok();
-        std::fs::remove_dir_all(&repo_root).ok();
-    }
-
-    #[test]
-    fn orchestrate_gate_passes_when_required_artifact_present_in_working_tree() {
-        // The shared-cwd path: the worker writes into the repo working tree (no
-        // worktree diff). The gate's working-tree fallback must still see it.
-        let root = std::env::temp_dir().join(format!("harness-art-{}", generated_id("wt")));
-        let store = HarnessStore::new(&root);
-        store.init().expect("init");
-        let repo_root = std::env::temp_dir().join(format!("harness-repo-{}", generated_id("wt")));
-        std::fs::create_dir_all(repo_root.join("docs")).unwrap();
-        std::fs::write(repo_root.join("docs/report.md"), "real content").unwrap();
-
-        let mut goal = make_goal("g-art-wt");
-        goal.phases = vec![orch_phase("p1")];
-        persist_new_goal(&store, &goal).unwrap();
-        let mut t = make_task("t1", "g-art-wt");
-        t.phase_id = Some("p1".into());
-        t.outputs = vec![ArtifactSpec {
-            id: "report".into(),
-            kind: ArtifactKind::TestReport,
-            path: Some("docs/report.md".into()),
-            purpose: "the promised report".into(),
-            required: true,
-            acceptance: None,
-        }];
-        persist_new_task(&store, &t).unwrap();
-
-        // The worker emits NO diff (details None), so only the working-tree
-        // fallback (rooted at `repo_root`) can satisfy the requirement.
-        let run_phase = |_script: &str,
-                         name: &str,
-                         _phase_id: Option<&str>,
-                         _resume_from: Option<&str>|
-         -> CliResult<(String, workflow::WorkflowOutcome)> {
-            Ok(mock_outcome(&store, name, WorkflowRunStatus::Completed))
-        };
-        let report = orchestrate_goal_phases(
-            &store,
-            "g-art-wt",
-            &run_phase,
-            &noop_reviser,
-            0,
-            &repo_root,
-            false,
-        )
-        .expect("orchestrate");
-        assert_eq!(report["status"], "completed");
-        std::fs::remove_dir_all(&root).ok();
-        std::fs::remove_dir_all(&repo_root).ok();
-    }
-
-    // ---- goal-phase-refinements: registered_doc gate, per-phase retry,
-    // ---- cross-phase inputs ----------------------------------------------------
-
-    /// Write a `docs/registry.json` under `repo_root` registering the given paths
-    /// (the `agent_harness.docs_registry.v1` schema the gate reads).
-    fn write_docs_registry(repo_root: &Path, paths: &[&str]) {
-        let docs: Vec<serde_json::Value> = paths
-            .iter()
-            .map(|p| serde_json::json!({ "path": p }))
-            .collect();
-        let registry = serde_json::json!({
-            "schema": "agent_harness.docs_registry.v1",
-            "documents": docs,
-        });
-        std::fs::create_dir_all(repo_root.join("docs")).unwrap();
-        std::fs::write(
-            repo_root.join("docs/registry.json"),
-            serde_json::to_string_pretty(&registry).unwrap(),
-        )
-        .unwrap();
-    }
-
-    #[test]
-    fn orchestrate_gate_fails_phase_when_registered_doc_absent_from_registry() {
-        // The worker PRODUCES the doc (path satisfied) but it is NOT in
-        // docs/registry.json — the registered_doc gate must FAIL the phase
-        // (the docs/multi-project.md gap this closes).
-        let root = std::env::temp_dir().join(format!("harness-rdoc-{}", generated_id("absent")));
-        let store = HarnessStore::new(&root);
-        store.init().expect("init");
-        // repo_root carries a registry that does NOT list the produced doc.
-        let repo_root =
-            std::env::temp_dir().join(format!("harness-rdocrepo-{}", generated_id("absent")));
-        write_docs_registry(&repo_root, &["docs/already-here.md"]);
-
-        let mut goal = make_goal("g-rdoc-absent");
-        goal.phases = vec![orch_phase("p1")];
-        persist_new_goal(&store, &goal).unwrap();
-        let mut t = make_task("t1", "g-rdoc-absent");
-        t.phase_id = Some("p1".into());
-        t.outputs = vec![ArtifactSpec {
-            id: "doc".into(),
-            kind: ArtifactKind::RegisteredDoc,
-            path: Some("docs/new-doc.md".into()),
-            purpose: "a doc that must be registered".into(),
-            required: true,
-            acceptance: None,
-        }];
-        persist_new_task(&store, &t).unwrap();
-
-        // The worker produces docs/new-doc.md (path gate satisfied) — but the
-        // registry does not list it, so the registered_doc gate fails the phase.
-        let run_phase = |_script: &str,
-                         name: &str,
-                         _phase_id: Option<&str>,
-                         _resume_from: Option<&str>|
-         -> CliResult<(String, workflow::WorkflowOutcome)> {
-            Ok(mock_outcome_with_diff(&store, name, "docs/new-doc.md"))
-        };
-        let report = orchestrate_goal_phases(
-            &store,
-            "g-rdoc-absent",
-            &run_phase,
-            &noop_reviser,
-            0,
-            &repo_root,
-            false,
-        )
-        .expect("orchestrate");
-        assert_eq!(report["status"], "failed");
-        assert_eq!(report["failed_phase"], "p1");
-        let goal2 = goal_load(&store, "g-rdoc-absent").unwrap();
-        assert_eq!(goal2.phases[0].status, GoalPhaseStatus::Failed);
-        // The verdict rationale points at the registry.
-        let decisions = store.decisions().unwrap();
-        let verdict = decisions
-            .iter()
-            .rev()
-            .find(|d| d.decision_kind.as_deref() == Some("phase_verdict"))
-            .expect("a phase_verdict decision");
-        assert!(
-            verdict.rationale.contains("docs/registry.json")
-                && verdict.rationale.contains("docs/new-doc.md"),
-            "rationale should name the unregistered doc + registry: {}",
-            verdict.rationale
-        );
-        std::fs::remove_dir_all(&root).ok();
-        std::fs::remove_dir_all(&repo_root).ok();
-    }
-
-    #[test]
-    fn orchestrate_gate_passes_phase_when_registered_doc_present_in_registry() {
-        // Same phase + doc, but now the path IS registered in docs/registry.json
-        // — the registered_doc gate passes and the phase advances.
-        let root = std::env::temp_dir().join(format!("harness-rdoc-{}", generated_id("present")));
-        let store = HarnessStore::new(&root);
-        store.init().expect("init");
-        let repo_root =
-            std::env::temp_dir().join(format!("harness-rdocrepo-{}", generated_id("present")));
-        init_git_repo(&repo_root);
-        // Register the doc the worker will produce.
-        write_docs_registry(&repo_root, &["docs/new-doc.md"]);
-        let _ = Command::new("git")
-            .arg("-C")
-            .arg(&repo_root)
-            .args(["add", "-A"])
-            .output();
-        let _ = Command::new("git")
-            .arg("-C")
-            .arg(&repo_root)
-            .args(["commit", "-m", "register doc"])
-            .output();
-
-        let mut goal = make_goal("g-rdoc-present");
-        goal.phases = vec![orch_phase("p1")];
-        persist_new_goal(&store, &goal).unwrap();
-        let mut t = make_task("t1", "g-rdoc-present");
-        t.phase_id = Some("p1".into());
-        t.outputs = vec![ArtifactSpec {
-            id: "doc".into(),
-            kind: ArtifactKind::RegisteredDoc,
-            path: Some("docs/new-doc.md".into()),
-            purpose: "a doc that must be registered".into(),
-            required: true,
-            acceptance: None,
-        }];
-        persist_new_task(&store, &t).unwrap();
-
-        let run_phase = |_script: &str,
-                         name: &str,
-                         _phase_id: Option<&str>,
-                         _resume_from: Option<&str>|
-         -> CliResult<(String, workflow::WorkflowOutcome)> {
-            Ok(mock_outcome_with_diff(&store, name, "docs/new-doc.md"))
-        };
-        let report = orchestrate_goal_phases(
-            &store,
-            "g-rdoc-present",
-            &run_phase,
-            &noop_reviser,
-            0,
-            &repo_root,
-            false,
-        )
-        .expect("orchestrate");
-        assert_eq!(report["status"], "completed");
-        let goal2 = goal_load(&store, "g-rdoc-present").unwrap();
-        assert_eq!(goal2.phases[0].status, GoalPhaseStatus::Passed);
-        std::fs::remove_dir_all(&root).ok();
-        std::fs::remove_dir_all(&repo_root).ok();
-    }
-
-    #[test]
-    fn orchestrate_per_phase_retry_overrides_the_global_cap() {
-        use std::cell::RefCell;
-        // The phase carries retry=2 while the global cap is 0. The phase ALWAYS
-        // fails and the reviser always proposes an actionable revision → the phase
-        // must run 3 times (initial + 2 retries) on the strength of its OWN budget,
-        // even though the global cap would have allowed only one run.
-        let root = std::env::temp_dir().join(format!("harness-retry-{}", generated_id("over")));
-        let store = HarnessStore::new(&root);
-        store.init().expect("init");
-        let mut goal = make_goal("g-retry");
-        let mut phase = orch_phase("p1");
-        phase.retry = Some(2);
-        goal.phases = vec![phase];
-        persist_new_goal(&store, &goal).unwrap();
-        let mut t = make_task("t1", "g-retry");
-        t.phase_id = Some("p1".into());
-        t.owned_paths = vec!["x".into()];
-        persist_new_task(&store, &t).unwrap();
-
-        let attempts: RefCell<u32> = RefCell::new(0);
-        let run_phase = |_script: &str,
-                         name: &str,
-                         _phase_id: Option<&str>,
-                         _resume_from: Option<&str>|
-         -> CliResult<(String, workflow::WorkflowOutcome)> {
-            *attempts.borrow_mut() += 1;
-            Ok(mock_outcome(&store, name, WorkflowRunStatus::Failed))
-        };
-        let revised: RefCell<u32> = RefCell::new(0);
-        let revise_phase = |_goal: &Goal,
-                            _phase: &harness_core::GoalPhase,
-                            _live_tasks: &[&Task],
-                            _knowledge: &Knowledge|
-         -> CliResult<serde_json::Value> {
-            let mut n = revised.borrow_mut();
-            *n += 1;
-            let new_id = format!("t-r{n}");
-            Ok(serde_json::json!({
-                "revision": {
-                    "supersede": [],
-                    "new_tasks": [{ "id": new_id, "title": "retry task", "owned_paths": ["y"] }]
-                }
-            }))
-        };
-
-        // Global cap is 0 — but the phase's retry=2 wins.
-        let report = orchestrate_goal_phases(
-            &store,
-            "g-retry",
-            &run_phase,
-            &revise_phase,
-            0,
-            &root,
-            false,
-        )
-        .expect("orchestrate");
-        assert_eq!(report["status"], "failed");
-        assert_eq!(
-            *attempts.borrow(),
-            3,
-            "phase.retry=2 grants initial run + 2 retries despite --max-phase-retries=0"
-        );
-        std::fs::remove_dir_all(&root).ok();
-    }
-
-    #[test]
-    fn orchestrate_fails_fast_when_required_input_is_absent() {
-        // A phase declares a REQUIRED input whose path is absent from the working
-        // tree → the orchestrator fails FAST at phase start with an actionable
-        // message, BEFORE spending the worker.
-        use std::cell::RefCell;
-        let root = std::env::temp_dir().join(format!("harness-input-{}", generated_id("absent")));
-        let store = HarnessStore::new(&root);
-        store.init().expect("init");
-        // repo_root is an empty dir → the required input is not present.
-        let repo_root =
-            std::env::temp_dir().join(format!("harness-inputrepo-{}", generated_id("absent")));
-        std::fs::create_dir_all(&repo_root).unwrap();
-
-        let mut goal = make_goal("g-input-absent");
-        let mut phase = orch_phase("p1");
-        phase.inputs = vec![ArtifactSpec {
-            id: "prior".into(),
-            kind: ArtifactKind::Code,
-            path: Some("docs/from-prior-phase.md".into()),
-            purpose: "must be landed by a prior phase".into(),
-            required: true,
-            acceptance: None,
-        }];
-        goal.phases = vec![phase];
-        persist_new_goal(&store, &goal).unwrap();
-        let mut t = make_task("t1", "g-input-absent");
-        t.phase_id = Some("p1".into());
-        persist_new_task(&store, &t).unwrap();
-
-        let ran_worker: RefCell<bool> = RefCell::new(false);
-        let run_phase = |_script: &str,
-                         name: &str,
-                         _phase_id: Option<&str>,
-                         _resume_from: Option<&str>|
-         -> CliResult<(String, workflow::WorkflowOutcome)> {
-            *ran_worker.borrow_mut() = true;
-            Ok(mock_outcome(&store, name, WorkflowRunStatus::Completed))
-        };
-        let report = orchestrate_goal_phases(
-            &store,
-            "g-input-absent",
-            &run_phase,
-            &noop_reviser,
-            0,
-            &repo_root,
-            false,
-        )
-        .expect("orchestrate");
-        assert_eq!(report["status"], "failed");
-        assert_eq!(report["failed_phase"], "p1");
-        assert!(
-            !*ran_worker.borrow(),
-            "the worker must NOT run when a required input is absent (fail fast at start)"
-        );
-        let goal2 = goal_load(&store, "g-input-absent").unwrap();
-        assert_eq!(goal2.phases[0].status, GoalPhaseStatus::Failed);
-        let decisions = store.decisions().unwrap();
-        let verdict = decisions
-            .iter()
-            .rev()
-            .find(|d| d.decision_kind.as_deref() == Some("phase_verdict"))
-            .expect("a phase_verdict decision");
-        assert!(
-            verdict
-                .rationale
-                .contains("required input docs/from-prior-phase.md not present"),
-            "rationale should name the missing input: {}",
-            verdict.rationale
-        );
-        std::fs::remove_dir_all(&root).ok();
-        std::fs::remove_dir_all(&repo_root).ok();
-    }
-
-    #[test]
-    fn orchestrate_proceeds_when_required_input_is_present() {
-        // Same phase, but the required input now EXISTS in the working tree (a prior
-        // phase landed it) → the precondition passes and the phase runs + completes.
-        let root = std::env::temp_dir().join(format!("harness-input-{}", generated_id("present")));
-        let store = HarnessStore::new(&root);
-        store.init().expect("init");
-        let repo_root =
-            std::env::temp_dir().join(format!("harness-inputrepo-{}", generated_id("present")));
-        std::fs::create_dir_all(repo_root.join("docs")).unwrap();
-        // The prior phase's landed artifact is present.
-        std::fs::write(
-            repo_root.join("docs/from-prior-phase.md"),
-            "landed by a prior phase",
-        )
-        .unwrap();
-
-        let mut goal = make_goal("g-input-present");
-        let mut phase = orch_phase("p1");
-        phase.inputs = vec![ArtifactSpec {
-            id: "prior".into(),
-            kind: ArtifactKind::Code,
-            path: Some("docs/from-prior-phase.md".into()),
-            purpose: "must be landed by a prior phase".into(),
-            required: true,
-            acceptance: None,
-        }];
-        goal.phases = vec![phase];
-        persist_new_goal(&store, &goal).unwrap();
-        let mut t = make_task("t1", "g-input-present");
-        t.phase_id = Some("p1".into());
-        persist_new_task(&store, &t).unwrap();
-
-        let run_phase = |_script: &str,
-                         name: &str,
-                         _phase_id: Option<&str>,
-                         _resume_from: Option<&str>|
-         -> CliResult<(String, workflow::WorkflowOutcome)> {
-            Ok(mock_outcome(&store, name, WorkflowRunStatus::Completed))
-        };
-        let report = orchestrate_goal_phases(
-            &store,
-            "g-input-present",
-            &run_phase,
-            &noop_reviser,
-            0,
-            &repo_root,
-            false,
-        )
-        .expect("orchestrate");
-        assert_eq!(report["status"], "completed");
-        let goal2 = goal_load(&store, "g-input-present").unwrap();
-        assert_eq!(goal2.phases[0].status, GoalPhaseStatus::Passed);
-        std::fs::remove_dir_all(&root).ok();
-        std::fs::remove_dir_all(&repo_root).ok();
-    }
-
-    // ---- goal-phase-landing (L2): durable landing in run-phases ---------------
-
-    #[test]
-    fn orchestrate_lands_writable_phase_diff_and_records_landed_commit() {
-        // A passing phase whose writable task carries a worktree_diff that CREATES a
-        // file → after the phase passes, the file is committed on the branch and the
-        // phase + the orchestration-phase-run both record the landing commit sha.
-        let root = std::env::temp_dir().join(format!("harness-land-{}", generated_id("ok")));
-        let store = HarnessStore::new(&root);
-        store.init().expect("init");
-        let repo_root =
-            std::env::temp_dir().join(format!("harness-landrepo-{}", generated_id("ok")));
-        init_git_repo(&repo_root);
-        let head_before = git_out(&repo_root, &["rev-parse", "HEAD"]);
-
-        let mut goal = make_goal("g-land");
-        goal.phases = vec![orch_phase("p1")];
-        persist_new_goal(&store, &goal).unwrap();
-        let mut t = make_task("t1", "g-land");
-        t.phase_id = Some("p1".into());
-        persist_new_task(&store, &t).unwrap();
-
-        // The mock step's details carry a worktree_diff creating src/new.rs.
-        let run_phase = |_script: &str,
-                         name: &str,
-                         _phase_id: Option<&str>,
-                         _resume_from: Option<&str>|
-         -> CliResult<(String, workflow::WorkflowOutcome)> {
-            Ok(mock_outcome_with_diff(&store, name, "src/new.rs"))
-        };
-        let report = orchestrate_goal_phases(
-            &store,
-            "g-land",
-            &run_phase,
-            &noop_reviser,
-            0,
-            &repo_root,
-            false,
-        )
-        .expect("orchestrate");
-        assert_eq!(report["status"], "completed");
-
-        // The file is committed AND present in the working tree.
-        let landed = repo_root.join("src/new.rs");
-        assert!(landed.is_file(), "landed file must exist on disk");
-        assert_eq!(
-            std::fs::read_to_string(&landed).unwrap().trim(),
-            "produced content"
-        );
-        // Exactly ONE new commit, with the canonical landing message.
-        let head_after = git_out(&repo_root, &["rev-parse", "HEAD"]);
-        assert_ne!(
-            head_after, head_before,
-            "a landing commit must have been made"
-        );
-        let subject = git_out(&repo_root, &["log", "-1", "--pretty=%s"]);
-        assert_eq!(subject, "phase p1 landed (run-phases)");
-        let count_before = git_out(&repo_root, &["rev-list", "--count", &head_before]);
-        let count_after = git_out(&repo_root, &["rev-list", "--count", "HEAD"]);
-        assert_eq!(
-            count_after.parse::<u64>().unwrap(),
-            count_before.parse::<u64>().unwrap() + 1,
-            "landing must add exactly one commit"
-        );
-
-        // landed_commit recorded on the phase AND the orchestration-phase-run.
-        let goal2 = goal_load(&store, "g-land").unwrap();
-        assert_eq!(
-            goal2.phases[0].landed_commit.as_deref(),
-            Some(head_after.as_str())
-        );
-        let orch = store
-            .goal_orchestration_runs()
-            .unwrap()
-            .into_iter()
-            .rev()
-            .find(|o| o.goal_id == "g-land")
-            .unwrap();
-        let pr = orch
-            .phase_runs
-            .iter()
-            .rev()
-            .find(|r| r.phase_id == "p1")
-            .unwrap();
-        assert_eq!(pr.landed_commit.as_deref(), Some(head_after.as_str()));
-
-        std::fs::remove_dir_all(&root).ok();
-        std::fs::remove_dir_all(&repo_root).ok();
-    }
-
-    #[test]
-    fn orchestrate_readonly_phase_lands_nothing() {
-        // A phase whose steps carry NO worktree diff (read-only) lands + commits
-        // nothing and records no landed_commit — even with a real git branch.
-        let root = std::env::temp_dir().join(format!("harness-land-{}", generated_id("ro")));
-        let store = HarnessStore::new(&root);
-        store.init().expect("init");
-        let repo_root =
-            std::env::temp_dir().join(format!("harness-landrepo-{}", generated_id("ro")));
-        init_git_repo(&repo_root);
-        let head_before = git_out(&repo_root, &["rev-parse", "HEAD"]);
-
-        let mut goal = make_goal("g-ro");
-        goal.phases = vec![orch_phase("p1")];
-        persist_new_goal(&store, &goal).unwrap();
-        let mut t = make_task("t1", "g-ro");
-        t.phase_id = Some("p1".into());
-        persist_new_task(&store, &t).unwrap();
-
-        let run_phase = |_script: &str,
-                         name: &str,
-                         _phase_id: Option<&str>,
-                         _resume_from: Option<&str>|
-         -> CliResult<(String, workflow::WorkflowOutcome)> {
-            Ok(mock_outcome(&store, name, WorkflowRunStatus::Completed))
-        };
-        let report = orchestrate_goal_phases(
-            &store,
-            "g-ro",
-            &run_phase,
-            &noop_reviser,
-            0,
-            &repo_root,
-            false,
-        )
-        .expect("orchestrate");
-        assert_eq!(report["status"], "completed");
-
-        // No new commit; no landed_commit recorded.
-        assert_eq!(git_out(&repo_root, &["rev-parse", "HEAD"]), head_before);
-        let goal2 = goal_load(&store, "g-ro").unwrap();
-        assert_eq!(goal2.phases[0].status, GoalPhaseStatus::Passed);
-        assert_eq!(goal2.phases[0].landed_commit, None);
-
-        std::fs::remove_dir_all(&root).ok();
-        std::fs::remove_dir_all(&repo_root).ok();
-    }
-
-    #[test]
-    fn orchestrate_fails_phase_when_diff_cannot_be_applied() {
-        // A diff that cannot apply cleanly (it claims to ADD a file that already
-        // exists with different content) FAILS the phase with an actionable message
-        // — no force, no auto-merge.
-        let root = std::env::temp_dir().join(format!("harness-land-{}", generated_id("conflict")));
-        let store = HarnessStore::new(&root);
-        store.init().expect("init");
-        let repo_root =
-            std::env::temp_dir().join(format!("harness-landrepo-{}", generated_id("conflict")));
-        init_git_repo(&repo_root);
-        // Commit a file the incoming "new file" diff will collide with.
-        std::fs::create_dir_all(repo_root.join("src")).unwrap();
-        std::fs::write(repo_root.join("src/new.rs"), "pre-existing\n").unwrap();
-        let _ = Command::new("git")
-            .arg("-C")
-            .arg(&repo_root)
-            .args(["add", "-A"])
-            .output();
-        let _ = Command::new("git")
-            .arg("-C")
-            .arg(&repo_root)
-            .args(["commit", "-m", "collide"])
-            .output();
-        let head_before = git_out(&repo_root, &["rev-parse", "HEAD"]);
-
-        let mut goal = make_goal("g-conflict");
-        goal.phases = vec![orch_phase("p1")];
-        persist_new_goal(&store, &goal).unwrap();
-        let mut t = make_task("t1", "g-conflict");
-        t.phase_id = Some("p1".into());
-        persist_new_task(&store, &t).unwrap();
-
-        // mock_outcome_with_diff emits a "new file" diff for src/new.rs — but the
-        // file already exists, so `git apply` refuses.
-        let run_phase = |_script: &str,
-                         name: &str,
-                         _phase_id: Option<&str>,
-                         _resume_from: Option<&str>|
-         -> CliResult<(String, workflow::WorkflowOutcome)> {
-            Ok(mock_outcome_with_diff(&store, name, "src/new.rs"))
-        };
-        let report = orchestrate_goal_phases(
-            &store,
-            "g-conflict",
-            &run_phase,
-            &noop_reviser,
-            0,
-            &repo_root,
-            false,
-        )
-        .expect("orchestrate");
-        assert_eq!(report["status"], "failed");
-        assert_eq!(report["failed_phase"], "p1");
-        // No commit was made and the phase is Failed.
-        assert_eq!(git_out(&repo_root, &["rev-parse", "HEAD"]), head_before);
-        let goal2 = goal_load(&store, "g-conflict").unwrap();
-        assert_eq!(goal2.phases[0].status, GoalPhaseStatus::Failed);
-        assert_eq!(goal2.phases[0].landed_commit, None);
-        // The verdict rationale explains the landing failure actionably.
-        let verdict = store
-            .decisions()
-            .unwrap()
-            .into_iter()
-            .rev()
-            .find(|d| d.decision_kind.as_deref() == Some("phase_verdict"))
-            .expect("a phase_verdict decision");
-        assert!(
-            verdict.rationale.contains("Landing failed"),
-            "rationale must explain the landing failure: {}",
-            verdict.rationale
-        );
-
-        std::fs::remove_dir_all(&root).ok();
-        std::fs::remove_dir_all(&repo_root).ok();
-    }
-
-    /// Build a phase outcome carrying explicit per-step new-file diffs (one diff per
-    /// `(label, path)`), so landing tests can exercise multi-diff sequences with
-    /// distinct paths (unlike `mock_outcome_with_diff`, which emits one path).
-    fn outcome_with_diffs(phase_id: &str, steps: &[(&str, &str)]) -> workflow::WorkflowOutcome {
-        let new_file_diff = |p: &str| {
-            format!(
-                "diff --git a/{p} b/{p}\n\
-                 new file mode 100644\n\
-                 index 0000000..abc1234\n\
-                 --- /dev/null\n\
-                 +++ b/{p}\n\
-                 @@ -0,0 +1,1 @@\n\
-                 +produced content\n",
-            )
-        };
-        let results = steps
-            .iter()
-            .map(|(label, path)| workflow::StepResult {
-                phase: phase_id.to_string(),
-                label: (*label).to_string(),
-                provider: "codex".into(),
-                isolation: Some("worktree".into()),
-                ok: true,
-                provider_session_id: None,
-                output_summary: "ok".into(),
-                step_id: Some(format!("wfstep-{label}")),
-                started_at: None,
-                details: Some(serde_json::json!({ "worktree_diff": new_file_diff(path) })),
-                structured: None,
-                ordinal: None,
-            })
-            .collect();
-        workflow::WorkflowOutcome {
-            steps: results,
-            status: WorkflowRunStatus::Completed,
-            summary: "mock".into(),
-            agents_spawned: 0,
-            final_output: None,
-        }
-    }
-
-    // l2-landing review fix #1a: landing REFUSES to start when the repo has
-    // uncommitted/pre-staged work, so the pathspec-less commit can't sweep a
-    // developer's unrelated changes into the "phase landed" commit.
-    #[test]
-    fn land_phase_diffs_refuses_when_repo_tree_is_dirty() {
-        let repo_root =
-            std::env::temp_dir().join(format!("harness-landdirty-{}", generated_id("dirty")));
-        init_git_repo(&repo_root);
-        let head_before = git_out(&repo_root, &["rev-parse", "HEAD"]);
-
-        // A developer's unrelated work, already `git add`-ed (pre-staged).
-        std::fs::write(repo_root.join("unrelated.txt"), "my own work\n").unwrap();
-        let _ = Command::new("git")
-            .arg("-C")
-            .arg(&repo_root)
-            .args(["add", "unrelated.txt"])
-            .output();
-
-        let outcome = outcome_with_diffs("p1", &[("t1", "src/new.rs")]);
-        let res = land_phase_diffs("p1", &outcome, &repo_root);
-
-        // Landing is refused with an actionable message; nothing is committed and
-        // the developer's pre-staged file is left untouched (still staged, uncommitted).
-        let err = res.expect_err("dirty tree must refuse landing");
-        let msg = err.to_string();
-        assert!(
-            msg.contains("uncommitted changes") && msg.contains("unrelated.txt"),
-            "error must name the dirty state actionably: {msg}"
-        );
-        assert_eq!(
-            git_out(&repo_root, &["rev-parse", "HEAD"]),
-            head_before,
-            "no landing commit may be made over a dirty tree"
-        );
-        // The phase's own file was never created/landed.
-        assert!(
-            !repo_root.join("src/new.rs").exists(),
-            "phase work must not be applied when landing is refused"
-        );
-        // The developer's pre-staged work is intact.
-        assert_eq!(
-            std::fs::read_to_string(repo_root.join("unrelated.txt")).unwrap(),
-            "my own work\n"
-        );
-
-        std::fs::remove_dir_all(&repo_root).ok();
-    }
-
-    // l2-landing review fix #1b: a mid-sequence apply failure rolls back the diffs
-    // already applied this run, so a failed landing leaves the tree EXACTLY as it
-    // found it — no orphaned staged files for a LATER successful landing to absorb.
-    #[test]
-    fn land_phase_diffs_rolls_back_partial_apply_leaving_no_orphan() {
-        let repo_root =
-            std::env::temp_dir().join(format!("harness-landroll-{}", generated_id("roll")));
-        init_git_repo(&repo_root);
-        let head_before = git_out(&repo_root, &["rev-parse", "HEAD"]);
-
-        // Two writable steps: the FIRST diff (a.txt) applies; the SECOND (collide.txt)
-        // is a "new file" diff for a path that already exists committed → apply fails.
-        std::fs::write(repo_root.join("collide.txt"), "already here\n").unwrap();
-        let _ = Command::new("git")
-            .arg("-C")
-            .arg(&repo_root)
-            .args(["add", "collide.txt"])
-            .output();
-        let _ = Command::new("git")
-            .arg("-C")
-            .arg(&repo_root)
-            .args(["commit", "-m", "pre-existing collide.txt"])
-            .output();
-        let head_after_seed = git_out(&repo_root, &["rev-parse", "HEAD"]);
-
-        let outcome = outcome_with_diffs("p1", &[("t1", "a.txt"), ("t2", "collide.txt")]);
-        let res = land_phase_diffs("p1", &outcome, &repo_root);
-        assert!(res.is_err(), "second diff must fail to apply");
-        assert!(
-            res.unwrap_err().to_string().contains("could not LAND"),
-            "actionable landing-failure message expected"
-        );
-
-        // Rollback restored the tree to the seed HEAD: no commit, clean status, and
-        // CRUCIALLY a.txt (the successfully-applied first diff) is NOT left orphaned
-        // in the index/worktree.
-        assert_eq!(git_out(&repo_root, &["rev-parse", "HEAD"]), head_after_seed);
-        assert!(
-            git_out(&repo_root, &["status", "--porcelain"]).is_empty(),
-            "tree must be clean after rollback (status: {})",
-            git_out(&repo_root, &["status", "--porcelain"])
-        );
-        assert!(
-            !repo_root.join("a.txt").exists(),
-            "the partially-applied first diff must be rolled back"
-        );
-        assert_ne!(head_after_seed, head_before, "sanity: seed added a commit");
-
-        // A SUBSEQUENT successful landing of a different phase must NOT absorb any
-        // orphan from the failed run — it commits ONLY its own file.
-        let next = outcome_with_diffs("p2", &[("t3", "b.txt")]);
-        let sha = land_phase_diffs("p2", &next, &repo_root)
-            .expect("clean follow-up landing")
-            .expect("a writable phase lands a commit");
-        let files = git_out(
-            &repo_root,
-            &["show", "--name-only", "--pretty=format:", &sha],
-        );
-        let landed: Vec<&str> = files.lines().filter(|l| !l.is_empty()).collect();
-        assert_eq!(
-            landed,
-            vec!["b.txt"],
-            "the follow-up commit must contain ONLY its own file, no orphan"
-        );
-
-        std::fs::remove_dir_all(&repo_root).ok();
-    }
-
-    #[test]
-    fn orchestrate_gate_ignores_optional_and_pathless_artifacts() {
-        // An OPTIONAL artifact and a REQUIRED-but-pathless artifact are never
-        // enforced — the gate stays vacuously true (back-compat for declared-but-
-        // unenforceable manifests).
-        let root = std::env::temp_dir().join(format!("harness-art-{}", generated_id("opt")));
-        let store = HarnessStore::new(&root);
-        store.init().expect("init");
-        let mut goal = make_goal("g-art-opt");
-        goal.phases = vec![orch_phase("p1")];
-        persist_new_goal(&store, &goal).unwrap();
-        let mut t = make_task("t1", "g-art-opt");
-        t.phase_id = Some("p1".into());
-        t.outputs = vec![
-            ArtifactSpec {
-                id: "optional-screenshot".into(),
-                kind: ArtifactKind::Screenshot,
-                path: Some("docs/never.png".into()),
-                purpose: "nice to have".into(),
-                required: false,
-                acceptance: None,
-            },
-            ArtifactSpec {
-                id: "pathless".into(),
-                kind: ArtifactKind::Code,
-                path: None,
-                purpose: "the diff itself".into(),
-                required: true,
-                acceptance: None,
-            },
-        ];
-        persist_new_task(&store, &t).unwrap();
-
-        let run_phase = |_script: &str,
-                         name: &str,
-                         _phase_id: Option<&str>,
-                         _resume_from: Option<&str>|
-         -> CliResult<(String, workflow::WorkflowOutcome)> {
-            Ok(mock_outcome(&store, name, WorkflowRunStatus::Completed))
-        };
-        let report = orchestrate_goal_phases(
-            &store,
-            "g-art-opt",
-            &run_phase,
-            &noop_reviser,
-            0,
-            &root,
-            false,
-        )
-        .expect("orchestrate");
-        assert_eq!(report["status"], "completed");
-        std::fs::remove_dir_all(&root).ok();
-    }
-
-    #[test]
-    fn link_workflow_steps_to_tasks_sets_task_id_and_verdict_outcome() {
-        let root = std::env::temp_dir().join(format!("harness-link-{}", generated_id("l")));
-        let store = HarnessStore::new(&root);
-        store.init().expect("init");
-        // Journal a task step (label == task id) + the verdict judge step.
-        for (id, label) in [("s-t1", "t1"), ("s-v", "verdict-p1")] {
-            store
-                .append_workflow_step(&WorkflowStep {
-                    task_id: None,
-                    verdict_outcome: None,
-                    id: id.into(),
-                    run_id: "wfrun-x".into(),
-                    phase: "p1".into(),
-                    label: label.into(),
-                    provider_session_id: None,
-                    status: WorkflowStepStatus::Completed,
-                    output_summary: Some("ok".into()),
-                    result: None,
-                    started_at: "unix-ms:1".into(),
-                    ended_at: Some("unix-ms:2".into()),
-                    terminal_reason: None,
-                    partial: false,
-                })
-                .unwrap();
-        }
-        let task_ids: std::collections::HashSet<String> = ["t1".to_string()].into_iter().collect();
-        link_workflow_steps_to_tasks(&store, "wfrun-x", "p1", &task_ids, true).unwrap();
-        let steps = store.workflow_steps().unwrap();
-        let latest = |id: &str| steps.iter().rev().find(|s| s.id == id).unwrap().clone();
-        assert_eq!(latest("s-t1").task_id.as_deref(), Some("t1"));
-        assert_eq!(latest("s-v").verdict_outcome, Some(VerdictOutcome::Pass));
-        std::fs::remove_dir_all(&root).ok();
-    }
-
-    #[test]
-    fn orchestrate_stops_at_failing_phase_and_does_not_run_later_phases() {
-        let root = std::env::temp_dir().join(format!("harness-orch-{}", generated_id("fail")));
-        let store = HarnessStore::new(&root);
-        store.init().expect("init");
-        let mut goal = make_goal("g-fail");
-        goal.phases = vec![orch_phase("p1"), orch_phase("p2")];
-        persist_new_goal(&store, &goal).unwrap();
-        for (id, phase) in [("t1", "p1"), ("t2", "p2")] {
-            let mut t = make_task(id, "g-fail");
-            t.phase_id = Some(phase.into());
-            t.owned_paths = vec![id.into()];
-            persist_new_task(&store, &t).unwrap();
-        }
-        let run_phase = |_script: &str,
-                         name: &str,
-                         _phase_id: Option<&str>,
-                         _resume_from: Option<&str>|
-         -> CliResult<(String, workflow::WorkflowOutcome)> {
-            // Phase p1 fails its verdict; p2 must never run.
-            let status = if name.contains("p1") {
-                WorkflowRunStatus::Failed
-            } else {
-                WorkflowRunStatus::Completed
-            };
-            Ok(mock_outcome(&store, name, status))
-        };
-        let report =
-            orchestrate_goal_phases(&store, "g-fail", &run_phase, &noop_reviser, 0, &root, false)
-                .expect("orchestrate");
-        assert_eq!(report["status"], "failed");
-        assert_eq!(report["failed_phase"], "p1");
-
-        let goal2 = goal_load(&store, "g-fail").unwrap();
-        assert_eq!(goal2.phases[0].status, GoalPhaseStatus::Failed);
-        // p2 was never started.
-        assert_eq!(goal2.phases[1].status, GoalPhaseStatus::NotStarted);
-        let orch = store.goal_orchestration_runs().unwrap();
-        assert_eq!(orch.last().unwrap().status, OrchestrationStatus::Failed);
-        std::fs::remove_dir_all(&root).ok();
-    }
-
-    #[test]
-    fn orchestrate_resume_skips_passed_and_resumes_failed_phase() {
-        use std::cell::RefCell;
-        let root = std::env::temp_dir().join(format!("harness-orch-{}", generated_id("resume")));
-        let store = HarnessStore::new(&root);
-        store.init().expect("init");
-        let mut goal = make_goal("g-resume");
-        goal.phases = vec![orch_phase("p1"), orch_phase("p2")];
-        persist_new_goal(&store, &goal).unwrap();
-        for (id, phase) in [("t1", "p1"), ("t2", "p2")] {
-            let mut t = make_task(id, "g-resume");
-            t.phase_id = Some(phase.into());
-            t.owned_paths = vec![id.into()];
-            persist_new_task(&store, &t).unwrap();
-        }
-
-        // First run: p1 passes its verdict, p2 fails — orchestration stops at p2.
-        let first = |_script: &str,
-                     name: &str,
-                     _phase_id: Option<&str>,
-                     _resume_from: Option<&str>|
-         -> CliResult<(String, workflow::WorkflowOutcome)> {
-            let status = if name.contains("p2") {
-                WorkflowRunStatus::Failed
-            } else {
-                WorkflowRunStatus::Completed
-            };
-            Ok(mock_outcome(&store, name, status))
-        };
-        let report =
-            orchestrate_goal_phases(&store, "g-resume", &first, &noop_reviser, 0, &root, false)
-                .expect("first orchestrate");
-        assert_eq!(report["status"], "failed");
-        assert_eq!(report["failed_phase"], "p2");
-        let goal_after_first = goal_load(&store, "g-resume").unwrap();
-        assert_eq!(goal_after_first.phases[0].status, GoalPhaseStatus::Passed);
-        assert_eq!(goal_after_first.phases[1].status, GoalPhaseStatus::Failed);
-
-        // Second run: record what each phase invocation received as `resume_from`.
-        // A `Passed` phase must be skipped (never invoked); the `Failed` phase must
-        // be retried with `resume_from = Some(prior workflow_run_id)`.
-        let seen: RefCell<Vec<(String, Option<String>)>> = RefCell::new(Vec::new());
-        let second = |_script: &str,
-                      name: &str,
-                      _phase_id: Option<&str>,
-                      resume_from: Option<&str>|
-         -> CliResult<(String, workflow::WorkflowOutcome)> {
-            seen.borrow_mut()
-                .push((name.to_string(), resume_from.map(str::to_string)));
-            Ok(mock_outcome(&store, name, WorkflowRunStatus::Completed))
-        };
-        let report =
-            orchestrate_goal_phases(&store, "g-resume", &second, &noop_reviser, 0, &root, false)
-                .expect("second orchestrate");
-        assert_eq!(report["status"], "completed");
-
-        let invocations = seen.into_inner();
-        // The passed phase p1 was skipped entirely — only p2 was (re-)invoked.
-        assert_eq!(
-            invocations.len(),
-            1,
-            "only the failed phase should re-run, got {invocations:?}"
-        );
-        let (name, resume_from) = &invocations[0];
-        assert!(
-            name.contains("p2"),
-            "the re-run phase must be p2, got {name}"
-        );
-        assert_eq!(
-            resume_from.as_deref(),
-            Some("wfrun-mock"),
-            "the re-entered failed phase must resume from its prior workflow run"
-        );
-
-        // p1 stayed Passed and was reported as skipped; both phases now Passed.
-        let skipped: Vec<String> = report["skipped"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|v| v.as_str().unwrap().to_string())
-            .collect();
-        assert_eq!(skipped, vec!["p1".to_string()]);
-        let goal_final = goal_load(&store, "g-resume").unwrap();
-        assert!(goal_final
-            .phases
-            .iter()
-            .all(|p| p.status == GoalPhaseStatus::Passed));
-        std::fs::remove_dir_all(&root).ok();
-    }
-
-    #[test]
-    fn orchestrate_replans_a_failing_phase_then_passes_within_the_cap() {
-        use std::cell::RefCell;
-        let root = std::env::temp_dir().join(format!("harness-orch-{}", generated_id("replan")));
-        let store = HarnessStore::new(&root);
-        store.init().expect("init");
-        let mut goal = make_goal("g-replan");
-        goal.phases = vec![orch_phase("p1")];
-        persist_new_goal(&store, &goal).unwrap();
-        let mut t = make_task("t-bad", "g-replan");
-        t.phase_id = Some("p1".into());
-        t.owned_paths = vec!["x".into()];
-        persist_new_task(&store, &t).unwrap();
-
-        // The phase fails on attempt 1, then passes on attempt 2 (after the
-        // reviser swaps the task graph). The counter drives that transition.
-        let attempts: RefCell<u32> = RefCell::new(0);
-        let run_phase = |_script: &str,
-                         name: &str,
-                         _phase_id: Option<&str>,
-                         _resume_from: Option<&str>|
-         -> CliResult<(String, workflow::WorkflowOutcome)> {
-            let mut n = attempts.borrow_mut();
-            *n += 1;
-            let status = if *n == 1 {
-                WorkflowRunStatus::Failed
-            } else {
-                WorkflowRunStatus::Completed
-            };
-            Ok(mock_outcome(&store, name, status))
-        };
-        // The reviser supersedes the failing task and appends a replacement.
-        let revised: RefCell<u32> = RefCell::new(0);
-        let revise_phase = |_goal: &Goal,
-                            _phase: &harness_core::GoalPhase,
-                            live_tasks: &[&Task],
-                            _knowledge: &Knowledge|
-         -> CliResult<serde_json::Value> {
-            *revised.borrow_mut() += 1;
-            // It is handed the LIVE (non-superseded) tasks of the failed phase.
-            assert!(
-                live_tasks.iter().any(|t| t.id == "t-bad"),
-                "reviser must see the live failing task, got {:?}",
-                live_tasks.iter().map(|t| &t.id).collect::<Vec<_>>()
-            );
-            Ok(serde_json::json!({
-                "revision": {
-                    "supersede": ["t-bad"],
-                    "new_tasks": [{
-                        "id": "t-fixed",
-                        "title": "Fixed approach",
-                        "owned_paths": ["x"],
-                        "acceptance": ["the fix lands"]
-                    }]
-                }
-            }))
-        };
-
-        let report = orchestrate_goal_phases(
-            &store,
-            "g-replan",
-            &run_phase,
-            &revise_phase,
-            1,
-            &root,
-            false,
-        )
-        .expect("orchestrate");
-        assert_eq!(
-            report["status"], "completed",
-            "phase should pass within the cap"
-        );
-        assert_eq!(*attempts.borrow(), 2, "the phase should run exactly twice");
-        assert_eq!(*revised.borrow(), 1, "the reviser should run exactly once");
-
-        // The failing task is now Superseded, linked to the failure knowledge.
-        let tasks = latest_tasks(&store).unwrap();
-        let bad = &tasks["t-bad"];
-        assert_eq!(bad.status, TaskStatus::Superseded);
-        let knowledge_id = bad
-            .superseded_by_knowledge_id
-            .clone()
-            .expect("superseded task must point at the failure knowledge");
-
-        // The replacement task exists, scoped to the phase, and (because the
-        // re-run passed) was executed → Done. It was appended as Planned by the
-        // revision and then ran on attempt 2.
-        let fixed = &tasks["t-fixed"];
-        assert_eq!(fixed.phase_id.as_deref(), Some("p1"));
-        assert_eq!(fixed.status, TaskStatus::Done);
-
-        // A Knowledge entry was appended by the orchestrator, source=Task, with the
-        // phase id set and the failing task named — and it is the one the
-        // superseded task points at.
-        let g = goal_load(&store, "g-replan").unwrap();
-        let k = g
-            .knowledge
-            .iter()
-            .find(|k| k.id == knowledge_id)
-            .expect("the failure knowledge must be on the goal");
-        assert_eq!(k.source, KnowledgeSource::Task);
-        assert_eq!(k.phase_id.as_deref(), Some("p1"));
-        assert_eq!(k.author, "orchestrator");
-        assert!(
-            k.notes_md.contains("t-bad"),
-            "the knowledge should name the failing task: {}",
-            k.notes_md
-        );
-
-        // The phase ended Passed; the orchestration completed.
-        assert_eq!(g.phases[0].status, GoalPhaseStatus::Passed);
-        let orch = store.goal_orchestration_runs().unwrap();
-        assert_eq!(orch.last().unwrap().status, OrchestrationStatus::Completed);
-        std::fs::remove_dir_all(&root).ok();
-    }
-
-    #[test]
-    fn orchestrate_replan_stops_when_the_cap_is_exhausted() {
-        use std::cell::RefCell;
-        let root = std::env::temp_dir().join(format!("harness-orch-{}", generated_id("cap")));
-        let store = HarnessStore::new(&root);
-        store.init().expect("init");
-        let mut goal = make_goal("g-cap");
-        goal.phases = vec![orch_phase("p1")];
-        persist_new_goal(&store, &goal).unwrap();
-        let mut t = make_task("t1", "g-cap");
-        t.phase_id = Some("p1".into());
-        t.owned_paths = vec!["x".into()];
-        persist_new_task(&store, &t).unwrap();
-
-        // The phase ALWAYS fails; the reviser always produces an actionable revision
-        // (a fresh task each time). With a cap of 2, the phase should run 3 times
-        // (initial + 2 retries), revise twice, then stop Failed.
-        let attempts: RefCell<u32> = RefCell::new(0);
-        let run_phase = |_script: &str,
-                         name: &str,
-                         _phase_id: Option<&str>,
-                         _resume_from: Option<&str>|
-         -> CliResult<(String, workflow::WorkflowOutcome)> {
-            *attempts.borrow_mut() += 1;
-            Ok(mock_outcome(&store, name, WorkflowRunStatus::Failed))
-        };
-        let revised: RefCell<u32> = RefCell::new(0);
-        let revise_phase = |_goal: &Goal,
-                            _phase: &harness_core::GoalPhase,
-                            _live_tasks: &[&Task],
-                            _knowledge: &Knowledge|
-         -> CliResult<serde_json::Value> {
-            let mut n = revised.borrow_mut();
-            *n += 1;
-            let new_id = format!("t-r{n}");
-            Ok(serde_json::json!({
-                "revision": {
-                    "supersede": [],
-                    "new_tasks": [{ "id": new_id, "title": "retry task", "owned_paths": ["y"] }]
-                }
-            }))
-        };
-
-        let report =
-            orchestrate_goal_phases(&store, "g-cap", &run_phase, &revise_phase, 2, &root, false)
-                .expect("orchestrate");
-        assert_eq!(report["status"], "failed");
-        assert_eq!(report["failed_phase"], "p1");
-        assert_eq!(*attempts.borrow(), 3, "initial run + 2 retries");
-        assert_eq!(
-            *revised.borrow(),
-            2,
-            "reviser runs once per retry within the cap"
-        );
-
-        let g = goal_load(&store, "g-cap").unwrap();
-        assert_eq!(g.phases[0].status, GoalPhaseStatus::Failed);
-        // One failure-knowledge entry was appended per failed attempt.
-        assert_eq!(
-            g.knowledge.len(),
-            3,
-            "a failure knowledge entry per attempt"
-        );
-        let orch = store.goal_orchestration_runs().unwrap();
-        assert_eq!(orch.last().unwrap().status, OrchestrationStatus::Failed);
-        std::fs::remove_dir_all(&root).ok();
-    }
-
-    #[test]
-    fn orchestrate_replan_stops_on_no_actionable_revision() {
-        let root = std::env::temp_dir().join(format!("harness-orch-{}", generated_id("noop")));
-        let store = HarnessStore::new(&root);
-        store.init().expect("init");
-        let mut goal = make_goal("g-noop");
-        goal.phases = vec![orch_phase("p1")];
-        persist_new_goal(&store, &goal).unwrap();
-        let mut t = make_task("t1", "g-noop");
-        t.phase_id = Some("p1".into());
-        t.owned_paths = vec!["x".into()];
-        persist_new_task(&store, &t).unwrap();
-
-        // The phase always fails; a generous cap is offered, but the reviser returns
-        // an EMPTY revision — the loop must NOT spin forever: it counts the empty
-        // revision against the cap and stops after exactly ONE run.
-        let attempts = std::cell::RefCell::new(0u32);
-        let run_phase = |_script: &str,
-                         name: &str,
-                         _phase_id: Option<&str>,
-                         _resume_from: Option<&str>|
-         -> CliResult<(String, workflow::WorkflowOutcome)> {
-            *attempts.borrow_mut() += 1;
-            Ok(mock_outcome(&store, name, WorkflowRunStatus::Failed))
-        };
-        let report =
-            orchestrate_goal_phases(&store, "g-noop", &run_phase, &noop_reviser, 5, &root, false)
-                .expect("orchestrate");
-        assert_eq!(report["status"], "failed");
-        assert_eq!(
-            *attempts.borrow(),
-            1,
-            "an empty revision must stop the loop after one run, not churn the cap"
-        );
-        let g = goal_load(&store, "g-noop").unwrap();
-        assert_eq!(g.phases[0].status, GoalPhaseStatus::Failed);
-        // The failure was still captured as knowledge even when no replan happened.
-        assert_eq!(g.knowledge.len(), 1);
-        std::fs::remove_dir_all(&root).ok();
-    }
-
-    #[test]
-    fn plan_into_goal_creates_phases_and_task_dag() {
-        let root = std::env::temp_dir().join(format!("harness-plan-{}", generated_id("ok")));
-        let store = HarnessStore::new(&root);
-        store.init().expect("init");
-        let mut goal = make_goal("g-plan");
-        persist_new_goal(&store, &goal).unwrap();
-
-        // A hand-built planner object: ONE setup phase, then a build phase with two
-        // parallel tasks (disjoint owned_paths, no deps) and a third that depends on
-        // both. Mirrors the shape `compile_planner_script` asks the worker for.
-        let structured = serde_json::json!({
-            "phases": [
-                {
-                    "id": "explore",
-                    "name": "Explore",
-                    "intent": "ground the design",
-                    "acceptance": "the unknowns are resolved",
-                    "tasks": [
-                        {
-                            "id": "read-core",
-                            "title": "Read the core module",
-                            "design_md": "study lib.rs",
-                            "acceptance": ["notes written"],
-                            "owned_paths": ["crates/core"],
-                            "depends_on": []
-                        }
-                    ]
-                },
-                {
-                    "id": "build",
-                    "name": "Build",
-                    "intent": "wire it up",
-                    "acceptance": "it compiles and tests pass",
-                    "tasks": [
-                        {
-                            "id": "impl-a",
-                            "title": "Implement A",
-                            "owned_paths": ["crates/a"],
-                            "acceptance": ["A done"]
-                        },
-                        {
-                            "id": "impl-b",
-                            "title": "Implement B",
-                            "owned_paths": ["crates/b"]
-                        },
-                        {
-                            "id": "integrate",
-                            "title": "Integrate A + B",
-                            "owned_paths": ["crates/app"],
-                            "depends_on": ["impl-a", "impl-b"]
-                        }
-                    ]
-                }
-            ]
-        });
-
-        let result = plan_into_goal(&store, &mut goal, &structured, "leader").expect("plan");
-        assert_eq!(result.phases_added, vec!["explore", "build"]);
-        assert!(result.phases_skipped.is_empty());
-        assert_eq!(
-            result.tasks_created,
-            vec!["read-core", "impl-a", "impl-b", "integrate"]
-        );
-
-        // Phases landed on the goal in order, status NotStarted, acceptance carried.
-        let g = goal_load(&store, "g-plan").unwrap();
-        let phase_ids: Vec<&str> = g.phases.iter().map(|p| p.id.as_str()).collect();
-        assert_eq!(phase_ids, vec!["explore", "build"]);
-        assert!(g
-            .phases
-            .iter()
-            .all(|p| p.status == GoalPhaseStatus::NotStarted));
-        assert_eq!(
-            g.phases[1].acceptance.as_deref(),
-            Some("it compiles and tests pass")
-        );
-
-        // Tasks landed with correct goal_id / phase_id / Planned / owned_paths / deps.
-        let tasks = latest_tasks(&store).unwrap();
-        let integrate = &tasks["integrate"];
-        assert_eq!(integrate.goal_id.as_deref(), Some("g-plan"));
-        assert_eq!(integrate.phase_id.as_deref(), Some("build"));
-        assert_eq!(integrate.status, TaskStatus::Planned);
-        assert_eq!(integrate.owned_paths, vec!["crates/app".to_string()]);
-        assert_eq!(
-            integrate.depends_on_task_ids,
-            vec!["impl-a".to_string(), "impl-b".to_string()]
-        );
-        assert_eq!(
-            tasks["impl-a"].acceptance_criteria,
-            vec!["A done".to_string()]
-        );
-        assert_eq!(
-            tasks["read-core"].design_md.as_deref(),
-            Some("study lib.rs")
-        );
-        // A task with no objective falls back to its title.
-        assert_eq!(tasks["impl-b"].objective, "Implement B");
-
-        // The two disjoint-path, dep-free build tasks compile into a parallel group:
-        // proves the planned DAG feeds the existing compiler as intended.
-        let build_phase = g.phases.iter().find(|p| p.id == "build").unwrap();
-        let goal_tasks: Vec<Task> = store
-            .tasks()
-            .unwrap()
-            .into_iter()
-            .filter(|t| t.goal_id.as_deref() == Some("g-plan"))
-            .collect();
-        let script = compile_phase_to_starlark(&g, build_phase, &goal_tasks).expect("compile");
-        assert!(
-            script.contains("parallel("),
-            "disjoint-path build tasks should compile to a parallel group:\n{script}"
-        );
-
-        std::fs::remove_dir_all(&root).ok();
-    }
-
-    #[test]
-    fn plan_into_goal_creates_workflow_mode_phase_without_tasks() {
-        let root = std::env::temp_dir().join(format!("harness-plan-{}", generated_id("wf")));
-        let store = HarnessStore::new(&root);
-        store.init().expect("init");
-        let mut goal = make_goal("g-plan-wf");
-        persist_new_goal(&store, &goal).unwrap();
-
-        let structured = serde_json::json!({
-            "phases": [
-                {
-                    "id": "direct-workflow",
-                    "name": "Direct Workflow",
-                    "intent": "run the authored Starlark workflow for this phase",
-                    "acceptance": "the workflow verdict passes",
-                    "execution_mode": "workflow",
-                    "workflow_ref": "repo:workflows/direct-workflow.star",
-                    "tasks": []
-                }
-            ]
-        });
-        let result = plan_into_goal(&store, &mut goal, &structured, "leader").expect("plan");
-        assert_eq!(result.phases_added, vec!["direct-workflow"]);
-        assert!(result.tasks_created.is_empty());
-
-        let g = goal_load(&store, "g-plan-wf").unwrap();
-        assert_eq!(g.phases.len(), 1);
-        let phase = &g.phases[0];
-        assert_eq!(
-            phase.execution_mode,
-            harness_core::PhaseExecutionMode::Workflow
-        );
-        assert_eq!(
-            phase.workflow_ref.as_deref(),
-            Some("repo:workflows/direct-workflow.star")
-        );
-        assert!(
-            latest_tasks(&store).unwrap().is_empty(),
-            "workflow-mode planner phases should not create task rows"
-        );
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn plan_into_goal_maps_phase_and_task_outputs() {
-        // goal-phase-artifacts S2: a planner object that declares `outputs` on a
-        // phase AND a task must persist them as ArtifactSpec (the kind parsed
-        // snake_case, required defaulting to true, paths/purpose/acceptance carried).
-        let root = std::env::temp_dir().join(format!("harness-plan-{}", generated_id("out")));
-        let store = HarnessStore::new(&root);
-        store.init().expect("init");
-        let mut goal = make_goal("g-out");
-        persist_new_goal(&store, &goal).unwrap();
-
-        let structured = serde_json::json!({
-            "phases": [
-                {
-                    "id": "ship",
-                    "name": "Ship",
-                    "intent": "land it",
-                    "acceptance": "the report exists",
-                    "outputs": [
-                        {
-                            "id": "phase-report",
-                            "kind": "test_report",
-                            "path": "docs/e2e.md",
-                            "purpose": "the live e2e report",
-                            "acceptance": "covers the gate"
-                        }
-                    ],
-                    "tasks": [
-                        {
-                            "id": "write-report",
-                            "title": "Write the report",
-                            "owned_paths": ["docs"],
-                            "outputs": [
-                                {
-                                    "id": "report",
-                                    "kind": "test_report",
-                                    "path": "docs/e2e.md",
-                                    "purpose": "the report file",
-                                    "required": true
-                                },
-                                {
-                                    "id": "shot",
-                                    "kind": "screenshot",
-                                    "path": "docs/shot.png",
-                                    "purpose": "a screenshot",
-                                    "required": false
-                                }
-                            ]
-                        }
-                    ]
-                }
-            ]
-        });
-
-        plan_into_goal(&store, &mut goal, &structured, "leader").expect("plan");
-
-        // Phase outputs landed.
-        let g = goal_load(&store, "g-out").unwrap();
-        let phase = g.phases.iter().find(|p| p.id == "ship").unwrap();
-        assert_eq!(phase.outputs.len(), 1);
-        let po = &phase.outputs[0];
-        assert_eq!(po.id, "phase-report");
-        assert_eq!(po.kind, ArtifactKind::TestReport);
-        assert_eq!(po.path.as_deref(), Some("docs/e2e.md"));
-        assert!(po.required, "required must default to true when absent");
-        assert_eq!(po.acceptance.as_deref(), Some("covers the gate"));
-
-        // Task outputs landed (required true + explicit false both preserved).
-        let tasks = latest_tasks(&store).unwrap();
-        let t = &tasks["write-report"];
-        assert_eq!(t.outputs.len(), 2);
-        let report = t.outputs.iter().find(|o| o.id == "report").unwrap();
-        assert_eq!(report.kind, ArtifactKind::TestReport);
-        assert_eq!(report.path.as_deref(), Some("docs/e2e.md"));
-        assert!(report.required);
-        let shot = t.outputs.iter().find(|o| o.id == "shot").unwrap();
-        assert_eq!(shot.kind, ArtifactKind::Screenshot);
-        assert!(!shot.required, "an explicit required:false must be honored");
-
-        std::fs::remove_dir_all(&root).ok();
-    }
-
-    #[test]
-    fn plan_into_goal_tolerates_stringified_phases_and_list_acceptance() {
-        // Regression: codex (flat-schema hint) returns `phases` as a JSON-ENCODED
-        // STRING, and a phase's `acceptance` as a LIST. Found by dogfooding the
-        // planner on goal-multi-project, which planned nothing until this fix.
-        let root = std::env::temp_dir().join(format!("harness-plan-{}", generated_id("str")));
-        let store = HarnessStore::new(&root);
-        store.init().expect("init");
-        let mut goal = make_goal("g-str");
-        persist_new_goal(&store, &goal).unwrap();
-
-        let phases_str = serde_json::json!([
-            {
-                "id": "p1",
-                "name": "Build",
-                "intent": "wire it",
-                "acceptance": ["compiles", "tests pass"],   // a LIST, not a string
-                "tasks": [
-                    { "id": "t1", "title": "A", "owned_paths": ["crates/a"] }
-                ]
-            }
-        ])
-        .to_string();
-        // `phases` is the stringified array (exactly what codex returned live).
-        let structured = serde_json::json!({ "phases": phases_str });
-
-        let result = plan_into_goal(&store, &mut goal, &structured, "leader").expect("plan");
-        assert_eq!(result.phases_added, vec!["p1"]);
-        assert_eq!(result.tasks_created, vec!["t1"]);
-        let g = goal_load(&store, "g-str").unwrap();
-        // The list acceptance was joined into the phase's acceptance text.
-        let acc = g.phases[0].acceptance.as_deref().unwrap_or("");
-        assert!(
-            acc.contains("compiles") && acc.contains("tests pass"),
-            "acc: {acc}"
-        );
-        std::fs::remove_dir_all(&root).ok();
-    }
-
-    #[test]
-    fn plan_into_goal_is_idempotent_on_existing_ids() {
-        let root = std::env::temp_dir().join(format!("harness-plan-{}", generated_id("idem")));
-        let store = HarnessStore::new(&root);
-        store.init().expect("init");
-        let mut goal = make_goal("g-idem");
-        persist_new_goal(&store, &goal).unwrap();
-        let structured = serde_json::json!({
-            "phases": [{
-                "id": "p1", "name": "P1", "intent": "do p1",
-                "tasks": [{ "id": "t1", "title": "T1", "owned_paths": ["x"] }]
-            }]
-        });
-        let first = plan_into_goal(&store, &mut goal, &structured, "leader").expect("first");
-        assert_eq!(first.phases_added, vec!["p1"]);
-        assert_eq!(first.tasks_created, vec!["t1"]);
-
-        // Re-planning with the same object must NOT duplicate: existing ids skipped.
-        let second = plan_into_goal(&store, &mut goal, &structured, "leader").expect("second");
-        assert!(second.phases_added.is_empty());
-        assert!(second.tasks_created.is_empty());
-        assert_eq!(second.phases_skipped, vec!["p1"]);
-        assert_eq!(second.tasks_skipped, vec!["t1"]);
-
-        let g = goal_load(&store, "g-idem").unwrap();
-        assert_eq!(g.phases.len(), 1, "phase must not be duplicated");
-        let t1_rows = store
-            .tasks()
-            .unwrap()
-            .into_iter()
-            .filter(|t| t.id == "t1")
-            .count();
-        // One create only: re-run appended no new task row.
-        assert_eq!(t1_rows, 1, "task must not be duplicated");
-        std::fs::remove_dir_all(&root).ok();
-    }
-
-    #[test]
-    fn plan_into_goal_degrades_on_mock_or_empty_structured() {
-        let root = std::env::temp_dir().join(format!("harness-plan-{}", generated_id("mock")));
-        let store = HarnessStore::new(&root);
-        store.init().expect("init");
-        let mut goal = make_goal("g-mock");
-        persist_new_goal(&store, &goal).unwrap();
-
-        // The dry-run mock object: `phases` is a STRING, not an array.
-        let mock = serde_json::json!({ "phases": "mock phases" });
-        let r = plan_into_goal(&store, &mut goal, &mock, "leader").expect("mock");
-        assert_eq!(
-            r,
-            PlanResult::default(),
-            "mock structured must plan nothing"
-        );
-
-        // An empty array and an entirely missing key also plan nothing (no panic).
-        for empty in [serde_json::json!({ "phases": [] }), serde_json::json!({})] {
-            let r = plan_into_goal(&store, &mut goal, &empty, "leader").expect("empty");
-            assert!(r.phases_added.is_empty() && r.tasks_created.is_empty());
-        }
-        assert!(goal_load(&store, "g-mock").unwrap().phases.is_empty());
-        std::fs::remove_dir_all(&root).ok();
-    }
-
-    #[test]
-    fn goal_plan_dry_run_runs_planner_and_creates_nothing() {
-        // End-to-end through `goal plan --dry-run`: the planner script runs under the
-        // real driver's dry-run mock (no provider), the run journals, and because the
-        // mock structured output is degenerate the command plans nothing — degrading
-        // gracefully rather than panicking.
-        let root = std::env::temp_dir().join(format!("harness-plan-{}", generated_id("dry")));
-        let store = HarnessStore::new(&root);
-        store.init().expect("init");
-        let mut goal = make_goal("g-dry");
-        goal.design_md = Some("Key problem: X. Approach: do Y.".into());
-        goal.acceptance_md = Some("Accepted when Y works end to end.".into());
-        persist_new_goal(&store, &goal).unwrap();
-
-        let args: Vec<String> = ["plan", "g-dry", "--dry-run"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
-        goal_command(&store, &args).expect("goal plan --dry-run");
-
-        // No phases/tasks created (dry-run mock is degenerate); a planner run journaled.
-        let g = goal_load(&store, "g-dry").unwrap();
-        assert!(g.phases.is_empty(), "dry-run must plan nothing");
-        assert!(
-            latest_tasks(&store).unwrap().is_empty(),
-            "dry-run must create no tasks"
-        );
-        let runs = store.workflow_runs().unwrap();
-        assert!(
-            runs.iter().any(|r| r.workflow_name.contains("plan-g-dry")),
-            "a planner workflow run should be journaled"
-        );
-        std::fs::remove_dir_all(&root).ok();
-    }
-
-    fn make_member(id: &str) -> AgentMember {
-        AgentMember {
-            id: id.into(),
-            name: "Member".into(),
-            description: "Test member".into(),
-            role: "worker".into(),
-            provider: "codex".into(),
-            model: None,
-            profile: None,
-            provider_config: AgentProviderConfig::default(),
-            capabilities: Vec::new(),
-            team_ids: Vec::new(),
-            prompt_ref: None,
-            skill_refs: Vec::new(),
-            workspace_policy: None,
-            worktree_ref: None,
-            permission_profile: None,
-            runtime_workspace_roots: Vec::new(),
-            status: AgentMemberStatus::Idle,
-            current_task_id: None,
-            current_proposal_id: None,
-            provider_runtime_id: None,
-            provider_thread_id: None,
-            provider_agent_path: None,
-            provider_agent_nickname: None,
-            provider_agent_role: None,
-            control_endpoint: None,
-            created_at: "unix-ms:1".into(),
-            last_seen_at: None,
-        }
-    }
-
-    fn make_timed_message(
-        id: &str,
-        kind: MessageKind,
-        from: &str,
-        to: Option<&str>,
-        task_id: &str,
-        created_at: &str,
-    ) -> Message {
-        Message {
-            id: id.into(),
-            task_id: Some(task_id.into()),
-            from_agent_id: from.into(),
-            to_agent_id: to.map(str::to_string),
-            channel: Some("test".into()),
-            kind,
-            delivery_status: MessageDeliveryStatus::Delivered,
-            content: "test message".into(),
-            evidence_ids: Vec::new(),
-            created_at: created_at.into(),
-            delivery: None,
-            sender_kind: SenderKind::Agent,
-        }
-    }
-
-    fn make_timed_decision(id: &str, task_id: &str, created_at: &str) -> Decision {
-        Decision {
-            id: id.into(),
-            task_id: task_id.into(),
-            decision: "accepted".into(),
-            rationale: "test".into(),
-            evidence_ids: Vec::new(),
-            created_at: created_at.into(),
-            decision_kind: None,
-            goal_id: None,
-            is_waiver: false,
-            follow_up_task_id: None,
-        }
-    }
-
-    fn make_proposal(id: &str, task_id: &str) -> Proposal {
-        Proposal {
-            id: id.into(),
-            task_id: task_id.into(),
-            agent_member_id: "worker".into(),
-            title: "Proposal".into(),
-            summary: "Test proposal".into(),
-            status: ProposalStatus::Submitted,
-            changed_paths: Vec::new(),
-            evidence_ids: vec!["check".into()],
-            created_at: "unix-ms:124".into(),
-            updated_at: "unix-ms:124".into(),
-        }
-    }
-
-    fn strings(values: &[&str]) -> Vec<String> {
-        values.iter().map(|value| (*value).to_string()).collect()
+        assert!(!text.contains("kind: Assignment"));
     }
 
     fn temp_store(label: &str) -> (HarnessStore, PathBuf) {
@@ -33158,255 +22936,6 @@ verdict(True, "custom workflow-mode phase direct run accepted")
         assert!(
             matches!(error, CliError::Usage(_)),
             "malformed body must be a Usage error, got: {error:?}"
-        );
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn agents_can_be_created_and_used_without_team_required() {
-        // Stage 1: Create store with NO teams created.
-        let (store, root) = temp_store("agents-decenter-test");
-
-        // Stage 2: Create 2 agents with no team_ids.
-        let agent1_body = serde_json::json!({
-            "name": "Agent Codex",
-            "role": "worker",
-            "provider": "codex"
-        });
-        let agent1_created =
-            create_agent_value(&store, &agent1_body).expect("agent1 creates without team");
-        let agent1_id = agent1_created["id"]
-            .as_str()
-            .expect("agent1 has id")
-            .to_string();
-
-        let agent2_body = serde_json::json!({
-            "name": "Agent Claude",
-            "role": "reviewer",
-            "provider": "claude"
-        });
-        let agent2_created =
-            create_agent_value(&store, &agent2_body).expect("agent2 creates without team");
-        let agent2_id = agent2_created["id"]
-            .as_str()
-            .expect("agent2 has id")
-            .to_string();
-
-        // Assertion 1: Both agents have empty team_ids.
-        assert_eq!(
-            agent1_created["team_ids"].as_array().map(|a| a.is_empty()),
-            Some(true),
-            "agent1 team_ids must be empty"
-        );
-        assert_eq!(
-            agent2_created["team_ids"].as_array().map(|a| a.is_empty()),
-            Some(true),
-            "agent2 team_ids must be empty"
-        );
-
-        // Stage 3: Both agents appear in snapshot.members (top-level, not team-filtered).
-        let snapshot = dashboard_snapshot(&store).expect("snapshot builds");
-        let members = snapshot["members"]
-            .as_array()
-            .expect("members array in snapshot");
-
-        let member_ids: Vec<&str> = members.iter().filter_map(|m| m["id"].as_str()).collect();
-
-        assert!(
-            member_ids.contains(&agent1_id.as_str()),
-            "agent1 must appear in snapshot.members"
-        );
-        assert!(
-            member_ids.contains(&agent2_id.as_str()),
-            "agent2 must appear in snapshot.members"
-        );
-
-        // Stage 4: Create a task owned by agent1, then assign to agent2.
-        let task_body = serde_json::json!({
-            "title": "Test Task",
-            "objective": "Verify task assignment works for teamless agents",
-            "owner": agent1_id
-        });
-        let task_created = create_task_value(&store, &task_body).expect("task creates");
-        let task_id = task_created["id"]
-            .as_str()
-            .expect("task has id")
-            .to_string();
-
-        // Assertion 2: Task is initially unassigned.
-        assert!(
-            task_created["assignee_agent_id"].is_null(),
-            "task must start unassigned"
-        );
-
-        // Stage 5: Assign the task to agent2 (no team required).
-        let assign_body = serde_json::json!({
-            "assignee": agent2_id
-        });
-        let assigned = assign_task_value(&store, &task_id, &assign_body)
-            .expect("task assignment succeeds for teamless agent");
-
-        // Assertion 3: Task is now assigned to agent2.
-        assert_eq!(
-            assigned["assignee_agent_id"].as_str(),
-            Some(agent2_id.as_str()),
-            "task assignee_agent_id must be set"
-        );
-        assert_eq!(
-            assigned["status"].as_str(),
-            Some("assigned"),
-            "task status must be 'assigned'"
-        );
-
-        // Stage 6: Verify latest_member works for teamless agents.
-        let agent1_loaded = latest_member(&store, &agent1_id).expect("agent1 loads from store");
-        let agent2_loaded = latest_member(&store, &agent2_id).expect("agent2 loads from store");
-
-        // Assertion 4: Loaded members have empty team_ids.
-        assert!(agent1_loaded.team_ids.is_empty(), "agent1 team_ids empty");
-        assert!(agent2_loaded.team_ids.is_empty(), "agent2 team_ids empty");
-
-        // Assertion 5: No team exists in store.
-        let teams = latest_teams(&store).expect("teams readable");
-        assert!(teams.is_empty(), "no team should exist in store");
-
-        // Assertion 6: snapshot.teams is empty or filtered out.
-        let teams_in_snapshot = snapshot["teams"]
-            .as_array()
-            .expect("teams array in snapshot");
-        assert!(
-            teams_in_snapshot.is_empty(),
-            "snapshot.teams should be empty when no active teams exist"
-        );
-
-        // Stage 7: the @reviewer gesture (POST /v1/tasks/{id}/reviewer) records
-        // the reviewer on the existing field WITHOUT handing off (status stays
-        // `assigned`, no review-request message).
-        let messages_before = latest_messages(&store).expect("messages readable").len();
-        let reviewer_body = serde_json::json!({ "reviewer": agent1_id });
-        let reviewed = set_task_reviewer_value(&store, &task_id, &reviewer_body)
-            .expect("setting reviewer succeeds for teamless agent");
-        assert_eq!(
-            reviewed["reviewer_agent_id"].as_str(),
-            Some(agent1_id.as_str()),
-            "task reviewer_agent_id must be set by the @reviewer gesture"
-        );
-        assert_eq!(
-            reviewed["status"].as_str(),
-            Some("assigned"),
-            "naming a reviewer must NOT change task status (no hand-off)"
-        );
-        assert_eq!(
-            latest_messages(&store).expect("messages readable").len(),
-            messages_before,
-            "naming a reviewer must NOT queue a message (hand-off is separate)"
-        );
-        // A non-existent reviewer is rejected (fail-fast, mirrors assign).
-        assert!(
-            set_task_reviewer_value(
-                &store,
-                &task_id,
-                &serde_json::json!({ "reviewer": "agent-does-not-exist" }),
-            )
-            .is_err(),
-            "naming an unknown reviewer must error"
-        );
-
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    /// Build a phase-driven goal with a single phase `p1` and persist it.
-    fn seed_phase_goal(store: &HarnessStore, goal_id: &str, phase_id: &str) {
-        let mut goal = make_goal(goal_id);
-        goal.phases = vec![harness_core::GoalPhase {
-            id: phase_id.into(),
-            name: "Phase 1".into(),
-            intent: "do the work".into(),
-            status: harness_core::GoalPhaseStatus::InProgress,
-            acceptance: None,
-            verdict_decision_id: None,
-            created_at: "unix-ms:1".into(),
-            started_at: None,
-            ended_at: None,
-            outputs: Vec::new(),
-            inputs: Vec::new(),
-            retry: None,
-            landed_commit: None,
-            kind: harness_core::PhaseKind::Execution,
-            builtin: None,
-            execution_mode: harness_core::PhaseExecutionMode::TaskGraph,
-            workflow_ref: None,
-        }];
-        store.append_goal(&goal).expect("append goal");
-    }
-
-    #[test]
-    fn create_task_value_round_trips_phase_id_from_body() {
-        // goal-task-board-model S2: POST /v1/tasks must persist the typed phase_id
-        // from the body (it used to hardcode None and read the dead free-text `phase`).
-        let (store, root) = temp_store("tb-create-phase");
-        seed_phase_goal(&store, "goal-1", "p1");
-        let body = serde_json::json!({
-            "title": "Phased task",
-            "objective": "Belongs to p1",
-            "owner": "lead",
-            "goal": "goal-1",
-            "phase_id": "p1"
-        });
-        let created = create_task_value(&store, &body).expect("phased task creates");
-        assert_eq!(
-            created["phase_id"].as_str(),
-            Some("p1"),
-            "the response must echo the placed phase_id"
-        );
-        let task_id = created["id"].as_str().expect("task id").to_string();
-        let stored = latest_task(&store, &task_id).expect("task reloads from store");
-        assert_eq!(
-            stored.phase_id.as_deref(),
-            Some("p1"),
-            "the persisted task must carry phase_id (round-trip through the store)"
-        );
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn create_task_value_rejects_phase_id_not_in_goal() {
-        // A task whose phase_id is not a phase of its goal is rejected fail-fast
-        // (validate_task_placement), not silently orphaned.
-        let (store, root) = temp_store("tb-create-bad-phase");
-        seed_phase_goal(&store, "goal-1", "p1");
-        let body = serde_json::json!({
-            "title": "Misplaced task",
-            "objective": "Names a phase that does not exist",
-            "owner": "lead",
-            "goal": "goal-1",
-            "phase_id": "ghost-phase"
-        });
-        let err = create_task_value(&store, &body)
-            .expect_err("a phase_id not in the goal's phases must be rejected");
-        assert!(
-            matches!(err, CliError::Usage(_)),
-            "bad placement must be a Usage error, got: {err:?}"
-        );
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn create_task_value_accepts_goal_scoped_phaseless_task() {
-        // Back-compat: a task with a goal but no phase_id (goal-scoped) is still
-        // accepted — it renders in the goal's "(no phase)" lane, never dropped.
-        let (store, root) = temp_store("tb-create-phaseless");
-        seed_phase_goal(&store, "goal-1", "p1");
-        let body = serde_json::json!({
-            "title": "Goal-scoped task",
-            "objective": "No phase",
-            "owner": "lead",
-            "goal": "goal-1"
-        });
-        let created = create_task_value(&store, &body).expect("phaseless task creates");
-        assert!(
-            created["phase_id"].is_null(),
-            "a goal-scoped task carries no phase_id"
         );
         let _ = std::fs::remove_dir_all(root);
     }

@@ -26,9 +26,6 @@ import { Avatar } from "@/components/workbench/Avatar";
 import { Markdown } from "@/components/workbench/Markdown";
 import {
   WorkflowDefinitionPreview,
-  WorkflowFailureDiagnosisStrip,
-  WorkflowPartialOutputSection,
-  WorkflowSchemaQualityBadges,
   workflowStepDomId,
 } from "@/components/workbench/WorkflowPanels";
 import { workflowRunTone, workflowStepTone } from "@/components/workbench/tones";
@@ -36,9 +33,8 @@ import { workflowRunTone, workflowStepTone } from "@/components/workbench/tones"
 import { formatDuration, parseTs, type WorkbenchModel } from "../model/readModel";
 import {
   compactWorkflowScript,
-  schemaSelectionInfo,
+  splitPartialOutputSteps,
   terminalReasonInfo,
-  workflowRunVerdictInfo,
   workflowScriptFromRun,
 } from "../model/workflowSelectors";
 import {
@@ -205,6 +201,7 @@ function RunsTable({
           const running = tone === "running";
           const steps = stepsByRun.get(run.id) ?? [];
           const duration = formatDuration(run.created_at, run.ended_at);
+          const terminal = terminalReasonInfo(run.terminal_reason);
           return (
             <button
               key={run.id}
@@ -229,17 +226,10 @@ function RunsTable({
               <span className="min-w-0">
                 <CompactTimestamp value={run.created_at} />
               </span>
-              <span className="min-w-0 space-y-1">
-                <span className="flex flex-wrap items-center gap-1">
-                  <Badge tone={tone}>{run.status}</Badge>
-                  {run.dry_run && <Badge tone="warn">dry-run</Badge>}
-                  {run.goal_id && (
-                    <Badge tone="idle">
-                      {run.phase_id ? `${run.goal_id} · ${run.phase_id}` : run.goal_id}
-                    </Badge>
-                  )}
-                </span>
-                <RunCardTerminalReasonChip run={run} />
+              <span className="min-w-0">
+                <Badge tone={tone}>{run.status}</Badge>
+                {run.dry_run && <Badge tone="warn">dry-run</Badge>}
+                {terminal && terminal.reason !== "completed" && <Badge tone={terminal.tone}>{terminal.label}</Badge>}
               </span>
               <span className="min-w-0">
                 <ShapeGlyph steps={steps} />
@@ -255,28 +245,6 @@ function RunsTable({
         })}
       </div>
     </div>
-  );
-}
-
-/**
- * Run-card failure diagnosis (issue #194): a compact `terminal_reason` chip +
- * the verdict's failure reason, shown ONLY on a run that needs it (failed,
- * abandoned, or a recorded verdict rejection) so a passing run's row stays
- * uncluttered. Reuses the same classification `WorkflowFailureDiagnosisStrip`
- * uses so the card and the detail page never disagree.
- */
-function RunCardTerminalReasonChip({ run }: { run: WorkflowRun }) {
-  const info = terminalReasonInfo(run.terminal_reason);
-  const verdict = workflowRunVerdictInfo(run);
-  const hasVerdictFailure = verdict.ok === false;
-  if (!info && !hasVerdictFailure) return null;
-  if (run.status !== "failed" && !info?.abandoned && !hasVerdictFailure) return null;
-  const reason = verdict.reason ?? info?.gloss;
-  return (
-    <span className="flex min-w-0 flex-wrap items-center gap-1 text-[10px] text-muted-foreground">
-      {info && <Badge tone={info.tone}>{info.label}</Badge>}
-      {reason && <span className="min-w-0 truncate">{reason}</span>}
-    </span>
   );
 }
 
@@ -332,6 +300,8 @@ export function WorkflowRunDetail({ model, onSelectionChange, apiUrl }: Workflow
   const duration = formatDuration(run.created_at, run.ended_at);
   const specScript = workflowScriptFromRun(run);
   const parsedVerdict = parseVerdictSummary(readableWorkflowOutput(run.summary) ?? run.summary ?? "");
+  const terminal = terminalReasonInfo(run.terminal_reason);
+  const partial = splitPartialOutputSteps(steps);
 
   // Prev/next stepper over the (ordered) runs list, so cross-run scanning
   // survives without a standing rail.
@@ -381,18 +351,21 @@ export function WorkflowRunDetail({ model, onSelectionChange, apiUrl }: Workflow
               <div className="mt-1 flex flex-wrap items-center gap-1.5">
                 <Badge tone={headerTone}>{headerStatus}</Badge>
                 {run.dry_run && <Badge tone="warn">dry-run</Badge>}
-                {run.goal_id && (
-                  <Badge tone="idle">
-                    {run.phase_id ? `${run.goal_id} · ${run.phase_id}` : run.goal_id}
-                  </Badge>
+                {terminal && terminal.reason !== "completed" && (
+                  <Badge tone={terminal.tone} title={terminal.gloss}>{terminal.label}</Badge>
                 )}
               </div>
             </div>
           </div>
         </div>
 
-        <WorkflowFailureDiagnosisStrip run={run} />
       </header>
+
+      {run.partial_output_available && (
+        <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-muted-foreground">
+          This run ended before full acceptance. {partial.usable.length} completed or cached step{partial.usable.length === 1 ? "" : "s"} remain usable; {partial.invalid.length} step{partial.invalid.length === 1 ? "" : "s"} require review.
+        </div>
+      )}
 
       <div className="grid gap-3 xl:grid-cols-[minmax(0,1.35fr)_minmax(18rem,0.65fr)]">
         {run.spec != null && (
@@ -446,12 +419,6 @@ export function WorkflowRunDetail({ model, onSelectionChange, apiUrl }: Workflow
           </div>
         </details>
       )}
-
-      <WorkflowPartialOutputSection
-        run={run}
-        steps={steps}
-        stepHref={(step) => `#${workflowStepDomId(step.label)}`}
-      />
 
       <DocSection label="Detailed workflow timeline">
         {phases.length ? (
@@ -526,12 +493,10 @@ function WorkflowRunContextStrip({
   const finished = steps.filter((step) => isTerminal(step.status)).length;
   const evidenceOutputs = steps.filter((step) => step.output_summary?.trim()).length;
   const failed = steps.filter((step) => step.status === "failed").length;
-  const context = run.phase_id
-    ? `${run.goal_id ?? "goal"} / ${run.phase_id}`
-    : run.goal_id ?? "standalone run";
+  const context = "standalone workflow";
   return (
     <section className="grid gap-2 rounded-lg border border-border bg-card/70 p-3 text-[12px] sm:grid-cols-2 xl:grid-cols-[0.8fr_0.7fr_0.7fr_minmax(0,1.8fr)]">
-      <WorkflowContextItem label="Goal / phase" value={context} />
+      <WorkflowContextItem label="Execution context" value={context} />
       <WorkflowContextItem
         label="Run stages"
         value={steps.length ? `${finished}/${steps.length} passed` : "not started"}
@@ -562,9 +527,7 @@ function WorkflowPlanOverview({
   parsed: { result: string; criterion?: string; detail?: string };
   phases: WorkflowPhase[];
 }) {
-  const context = run.phase_id
-    ? `${run.goal_id ?? "goal"} / ${run.phase_id}`
-    : run.goal_id ?? "standalone run";
+  const context = "standalone workflow";
   const purpose = run.design_intent ?? parsed.criterion ?? "Workflow run";
   const shape = phases.length ? readableWorkflowShape(phases, steps.length) : `${steps.length} stage${steps.length === 1 ? "" : "s"}`;
   const evidenceOutputs = steps.filter((step) => step.output_summary?.trim()).length;
@@ -848,11 +811,6 @@ function WorkflowFailureSummary({
       <p className="mt-1 line-clamp-2 text-[12px] leading-relaxed text-foreground/80">
         {detail}
       </p>
-      {run.phase_id && (
-        <p className="mt-1 text-[11px] text-muted-foreground">
-          Next operator action: review the verdict evidence for phase {run.phase_id}.
-        </p>
-      )}
     </section>
   );
 }
@@ -1156,7 +1114,6 @@ function workflowStepEventDetail(output: string): string {
     || lower.includes("next_action")
     || lower.includes("findings")
     || lower.includes("run plan")
-    || lower.includes("task graph")
     || lower.includes("debug language")
   ) {
     return "Findings and next actions captured for review.";
@@ -1517,12 +1474,6 @@ function StepCard({
     ? model.snapshot.live_normalized_events?.[session.id]
     : undefined;
   const readableOutput = readableWorkflowOutput(step.output_summary);
-  // #194: the step's terminal class + schema-selection quality, visible on the
-  // COLLAPSED card (not just the drawer) so a canceled/timed-out/empty-schema
-  // step reads at a glance in the timeline.
-  const reasonInfo = terminalReasonInfo(step.terminal_reason);
-  const showReasonChip = reasonInfo && reasonInfo.reason !== "completed";
-  const schemaInfo = schemaSelectionInfo(step);
 
   return (
     <>
@@ -1556,15 +1507,8 @@ function StepCard({
                 )}
               </span>
             </span>
-            <span className="flex shrink-0 flex-wrap items-center justify-end gap-1.5">
+            <span className="flex shrink-0 items-center gap-1.5">
               <Badge tone={tone}>{shortStepStatusLabel(step.status)}</Badge>
-              {showReasonChip && <Badge tone={reasonInfo.tone}>{reasonInfo.label}</Badge>}
-              {step.partial && <Badge tone="warn">partial output</Badge>}
-              {schemaInfo?.hasEmptyFields && (
-                <Badge tone="bad">
-                  {schemaInfo.emptyFieldCount} empty field{schemaInfo.emptyFieldCount === 1 ? "" : "s"}
-                </Badge>
-              )}
               {isRequired && <Badge tone="info">required</Badge>}
               {isToleratedFail && <Badge tone="warn">tolerated</Badge>}
             </span>
@@ -1583,23 +1527,6 @@ function StepCard({
             )}
             <span className="tabular-nums">{stepTiming(step)}</span>
           </div>
-
-          {/* Line 2b — schema-selection quality for schema'd steps (#194):
-              which candidate was selected, in how many attempts, and whether
-              the selected object was semantically empty. */}
-          {schemaInfo && (
-            <div className="mt-1 flex flex-wrap items-center gap-1 text-[11px] text-muted-foreground">
-              <span className="font-medium">Schema:</span>
-              <span className="tabular-nums">
-                {schemaInfo.attemptCount ?? "?"} attempt{(schemaInfo.attemptCount ?? 0) === 1 ? "" : "s"}
-                {schemaInfo.selectedIndex != null
-                  ? ` · candidate ${schemaInfo.selectedIndex}${schemaInfo.candidateCount ? ` of ${schemaInfo.candidateCount}` : ""}`
-                  : " · no candidate selected"}
-                {` · ${schemaInfo.emptyFieldCount} empty field${schemaInfo.emptyFieldCount === 1 ? "" : "s"}`}
-                {schemaInfo.strict ? " · strict" : ""}
-              </span>
-            </div>
-          )}
 
           {/* Line 3 — latest readable result */}
           <div className="mt-2 rounded-md bg-muted/20 px-2 py-1.5 text-[12px] text-foreground">
@@ -1782,11 +1709,9 @@ function StepDrawer({
  */
 function StepObservability({ step }: { step: WorkflowStep }) {
   const result = step.result;
-  const reasonInfo = terminalReasonInfo(step.terminal_reason);
-  const schemaInfo = schemaSelectionInfo(step);
-  if (!result && !reasonInfo && !step.partial) return null;
+  if (!result) return null;
 
-  const { model, exit_code, duration_ms, tokens, cost_usd, failure } = result ?? {};
+  const { model, exit_code, duration_ms, tokens, cost_usd, failure } = result;
   const meta: { label: string; value: ReactNode }[] = [];
   if (model) meta.push({ label: "Model", value: <MonoId>{model}</MonoId> });
   if (duration_ms != null) {
@@ -1826,30 +1751,12 @@ function StepObservability({ step }: { step: WorkflowStep }) {
       ),
     });
   }
-  if (step.provider_session_id) {
-    meta.push({ label: "Provider session", value: <MonoId>{step.provider_session_id}</MonoId> });
-  }
 
-  const hasDiff = Boolean(result?.worktree_diff);
-  if (meta.length === 0 && !failure && !hasDiff && !reasonInfo && !step.partial && !schemaInfo) return null;
+  const hasDiff = Boolean(result.worktree_diff);
+  if (meta.length === 0 && !failure && !hasDiff) return null;
 
   return (
     <DocSection label="Observability">
-      {(reasonInfo || step.partial) && (
-        <div className="flex flex-wrap items-center gap-1.5">
-          {reasonInfo && <Badge tone={reasonInfo.tone}>{reasonInfo.label}</Badge>}
-          {step.partial && <Badge tone="warn">partial output</Badge>}
-        </div>
-      )}
-      {reasonInfo && <p className="text-[11px] leading-snug text-muted-foreground">{reasonInfo.gloss}</p>}
-      {schemaInfo && (
-        <div className="space-y-1">
-          <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-            Schema selection
-          </div>
-          <WorkflowSchemaQualityBadges step={step} />
-        </div>
-      )}
       {meta.length > 0 && <DocProperties items={meta} />}
       {failure?.failed && (
         <div className="space-y-1.5 rounded-md border border-status-bad/30 bg-status-bad/10 p-2.5">
@@ -1868,8 +1775,8 @@ function StepObservability({ step }: { step: WorkflowStep }) {
       )}
       {hasDiff && (
         <WorktreeDiff
-          diff={result?.worktree_diff ?? ""}
-          truncated={Boolean(result?.worktree_diff_truncated)}
+          diff={result.worktree_diff ?? ""}
+          truncated={Boolean(result.worktree_diff_truncated)}
         />
       )}
     </DocSection>

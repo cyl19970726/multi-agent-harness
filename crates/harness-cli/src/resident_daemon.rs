@@ -281,6 +281,10 @@ pub fn serve_loop(listener: &UnixListener, pool: &Arc<Mutex<ResidentPool>>, shut
 /// extend the lock hold time. Any failure becomes a `success=false` response so
 /// the client never hangs.
 pub fn handle_conn(stream: UnixStream, pool: Arc<Mutex<ResidentPool>>) -> io::Result<()> {
+    // The listener is non-blocking so the accept loop can observe shutdown.
+    // Accepted sockets may inherit that flag on BSD/macOS, but each connection
+    // is handled on its own thread and uses a blocking one-request protocol.
+    stream.set_nonblocking(false)?;
     let mut writer = stream.try_clone()?;
     let mut reader = BufReader::new(stream);
 

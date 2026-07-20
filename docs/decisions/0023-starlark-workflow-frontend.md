@@ -7,7 +7,7 @@ added a **third** authoring front-end to the workflow runtime shipped in
 [0022 (Dynamic Workflow Runtime — JSON-IR)](0022-dynamic-workflow-runtime-json-ir.md),
 and inherits its provider-neutral boundary from
 [0011 (Provider-neutral runtime)](0011-provider-neutral-runtime.md) and its
-additive-only object contract from [0017 (Generic object model)](0017-generic-object-model.md).
+additive-only object contract from current schema governance.
 
 (0022 is the latest prior ADR; 0023 is the next free number.)
 
