@@ -235,7 +235,7 @@ export async function seedCompanyOsTrademark({ apiBaseUrl, token, fixture }) {
       parent_unit_id: entry.parent_id ?? null,
       status: "active",
       human_lead_actor_ref: entry.id === "org-brand-ip" ? actorRef("human", ADMIN_ID) : null,
-      agent_lead_actor_ref: null,
+      agent_lead_actor_ref: entry.id === "org-brand-ip" ? actorRef("agent", "actor-agent-ip-lead") : null,
       policy_refs: ["company.records.write"],
       document_space_ref: entry.name,
       created_at: entry.created_at,
@@ -249,7 +249,7 @@ export async function seedCompanyOsTrademark({ apiBaseUrl, token, fixture }) {
       organization_id: "company",
       org_unit_id: entry.org_unit_id,
       actor_ref: actorRef(type, entry.actor_id),
-      membership_role: type === "external" ? "external_partner" : entry.actor_id === ADMIN_ID ? "lead" : "member",
+      membership_role: type === "external" ? "external_partner" : [ADMIN_ID, "actor-agent-ip-lead"].includes(entry.actor_id) ? "lead" : "member",
       title_or_function: entry.role_label,
       status: "active",
       starts_at: entry.created_at,
@@ -515,7 +515,10 @@ async function main() {
 
   const harnessBinary = resolve(argument("--harness-binary", join(repoRoot, "target/debug/harness")));
   const runId = argument("--run-id", defaultRunId);
-  const evidenceRoot = resolve(argument("--output", join(repoRoot, ".visual-evidence/company-os-v1", runId)));
+  const captureContract = argument("--capture-contract", "v1");
+  if (!new Set(["v1", "v2.2"]).has(captureContract)) throw new Error("--capture-contract must be v1 or v2.2");
+  const evidenceWorkstream = captureContract === "v2.2" ? "company-os-v2" : "company-os-v1";
+  const evidenceRoot = resolve(argument("--output", join(repoRoot, `.visual-evidence/${evidenceWorkstream}`, runId)));
   const token = `company-os-live-seed-${process.pid}`;
   const temporaryRoot = await mkdtemp(join(tmpdir(), "company-os-v1-live-"));
   const home = join(temporaryRoot, "home");
@@ -559,6 +562,7 @@ async function main() {
       project_id: project.id,
       source: snapshot.source,
       fixture: "docs/design/company-os-v1/fixtures/company-os-trademark-v1.json",
+      capture_contract: captureContract,
       transport: "HARNESS_COMPANY_OS_TOKEN + administrative envelope",
       archived_store: "archived-harness-home",
       counts: projectionCounts(snapshot),
@@ -576,17 +580,21 @@ async function main() {
 
     if (flag("--capture")) {
       await rm(join(evidenceRoot, "implemented"), { recursive: true, force: true });
+      await rm(join(evidenceRoot, "store-live-actual"), { recursive: true, force: true });
       await rm(join(evidenceRoot, "capture-run.json"), { force: true });
-      const capture = spawnSync(process.execPath, [
-        join(repoRoot, "scripts/capture-company-os-v1.mjs"),
+      const captureScript = captureContract === "v2.2"
+        ? "scripts/capture-company-os-v2.mjs"
+        : "scripts/capture-company-os-v1.mjs";
+      const captureArgs = [
+        join(repoRoot, captureScript),
         "--data-mode", "live",
-        "--stage", "implemented",
         "--api-base-url", apiBaseUrl,
         "--project-id", project.id,
-        "--timeout-ms", "10000",
         "--run-id", runId,
         "--output", evidenceRoot,
-      ], { cwd: repoRoot, env: process.env, stdio: "inherit" });
+      ];
+      if (captureContract === "v1") captureArgs.splice(3, 0, "--stage", "implemented");
+      const capture = spawnSync(process.execPath, captureArgs, { cwd: repoRoot, env: process.env, stdio: "inherit" });
       if (capture.status !== 0) throw new Error(`live Company OS capture failed with status ${capture.status}`);
     }
 

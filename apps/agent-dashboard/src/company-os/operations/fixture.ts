@@ -206,7 +206,7 @@ export const prototypeTrademarkOperationsProjection: TrademarkOperationsProjecti
     brandUnit: { id: "org-brand-ip", label: "Brand & IP" },
     units: [
       { id: "org-company", label: "Company", actorIds: [] },
-      { id: "org-brand-ip", label: "Brand & IP", parentId: "org-company", actorIds: ["actor-human-brand-owner", "actor-agent-ip-lead", "actor-agent-trademark", "actor-external-lawyer"] },
+      { id: "org-brand-ip", label: "Brand & IP", parentId: "org-company", humanLeadActorId: "actor-human-brand-owner", agentLeadActorId: "actor-agent-ip-lead", actorIds: ["actor-human-brand-owner", "actor-agent-ip-lead", "actor-agent-trademark", "actor-external-lawyer"] },
       { id: "org-content-operations", label: "Content Operations", parentId: "org-company", actorIds: ["actor-agent-content-strategy", "actor-agent-analytics"] },
       { id: "org-finance", label: "Finance", parentId: "org-company", actorIds: ["actor-agent-finance"] },
       { id: "org-governance", label: "Governance", parentId: "org-company", actorIds: ["actor-agent-document-architecture", "actor-agent-organization-governance"] },
@@ -342,15 +342,27 @@ export function adaptTrademarkOperationsProjection(projection: unknown): Tradema
     expiresAt: text(approvalRecord.expires_at) || undefined,
   };
 
-  const organizationUnits = units.map((unit) => ({
-    id: text(unit.id),
-    label: text(field(unit, "name"), "Unresolved unit"),
-    parentId: text(field(unit, "parent_id")) || undefined,
-    actorIds: memberships
-      .filter((membership) => text(field(membership, "org_unit_id")) === text(unit.id))
+  const organizationUnits = units.map((unit) => {
+    const unitMemberships = memberships.filter((membership) => text(field(membership, "org_unit_id")) === text(unit.id));
+    const actorIds = unitMemberships
       .map((membership) => text(field(membership, "actor_id")) || refId(field(membership, "actor_ref")))
-      .filter(Boolean),
-  }));
+      .filter(Boolean);
+    const membershipAgentLead = unitMemberships
+      .map((membership) => ({
+        actorId: text(field(membership, "actor_id")) || refId(field(membership, "actor_ref")),
+        role: text(field(membership, "membership_role")),
+      }))
+      .find((membership) => membership.role === "lead" && actorById[membership.actorId]?.kind === "standing_agent")?.actorId;
+    const legacyRoleAgentLead = actorIds.find((actorId) => actorById[actorId]?.kind === "standing_agent" && /\blead\b/i.test(actorById[actorId]?.role ?? ""));
+    return {
+      id: text(unit.id),
+      label: text(field(unit, "name"), "Unresolved unit"),
+      parentId: text(field(unit, "parent_unit_id"), text(field(unit, "parent_id"))) || undefined,
+      humanLeadActorId: refId(field(unit, "human_lead_actor_ref")) || undefined,
+      agentLeadActorId: refId(field(unit, "agent_lead_actor_ref")) || membershipAgentLead || legacyRoleAgentLead,
+      actorIds,
+    };
+  });
   const companyUnit = pick(units, "org-company");
   const brandUnit = pick(units, "org-brand-ip");
 

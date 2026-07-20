@@ -7,7 +7,8 @@ Expected images were not promoted into V2 and did not constrain V2 composition.
 ```text
 V1 Actual = current browser baseline
 V2.2 Expected = generated product and visual intent, approved for implementation
-V2.2 Actual = browser implementation with deterministic fixture, pending Human review
+V2.2 Fixture Actual = deterministic browser implementation evidence
+V2.2 Store-live Actual = browser evidence from an authority-labelled Harness Store projection
 ```
 
 The redesign starts with six P0 mother pages:
@@ -45,8 +46,20 @@ Review artifacts:
   art-directed workbench review;
 - [`expected-vs-actual-v2.2.html`](expected-vs-actual-v2.2.html) — V1 browser
   baseline → V2.2 generated direction → V2.2 browser implementation;
+- [`expected-vs-store-live-v2.2.html`](expected-vs-store-live-v2.2.html) — the
+  four-way truth review: V1 Before → V2.2 Expected → fixture Actual →
+  Store-live Actual;
 - [`comparison-manifest-v2.2.json`](comparison-manifest-v2.2.json) — hashes,
   routes, fixture mode, and truth classification for all six pages;
+- [`store-live-comparison-manifest-v2.2.json`](store-live-comparison-manifest-v2.2.json)
+  — authoritative source metadata, hashes, routes, and assertions for the six
+  Store-live pages;
 - `prompts/`
 - `expected/`
-- `actual/` — deterministic-fixture browser evidence, not Store-live evidence.
+- `actual/` — deterministic-fixture browser evidence;
+- `store-live-actual/` — browser renders backed by an archived Harness Store.
+
+Reproduce the Store-live evidence with
+`pnpm visual:capture:company-os-v2:live`, then update the checked-in comparison
+with `pnpm visual:compare:company-os-v2:live`. The seed stops at requested Human
+approval and a pending ¥3,000 Commitment; it must not create a Payment.

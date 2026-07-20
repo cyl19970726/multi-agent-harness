@@ -15,6 +15,8 @@
     "visual:capture:workbench": "node scripts/capture-workbench-layout-v2.mjs",
     "visual:capture:company-os-v2": "node scripts/capture-company-os-v2.mjs",
     "visual:compare:company-os-v2": "node scripts/materialize-company-os-v2-comparison.mjs",
+    "visual:capture:company-os-v2:live": "node scripts/seed-company-os-trademark-v1.mjs --capture --capture-contract v2.2 --run-id company-os-v2-2-live-acceptance",
+    "visual:compare:company-os-v2:live": "node scripts/materialize-company-os-v2-live-comparison.mjs --capture-manifest .visual-evidence/company-os-v2/company-os-v2-2-live-acceptance/capture-run.json",
     "dashboard:dev": "vite --config apps/agent-dashboard/vite.config.ts --host 127.0.0.1",
     "dashboard:build": "vite build --config apps/agent-dashboard/vite.config.ts",
     "acceptance:workflow-starlark": "node scripts/acceptance-workflow-starlark.mjs",

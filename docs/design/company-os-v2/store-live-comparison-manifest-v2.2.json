@@ -1,24 +1,36 @@
 {
-  "contract": "company-os-v2-2-visual-comparison-v1",
-  "source_capture": ".visual-evidence/company-os-v2/v2-2-implementation-final/capture-run.json",
-  "data_mode": "deterministic-fixture",
-  "fixture": "docs/design/company-os-v1/fixtures/company-os-trademark-v1.json",
-  "status": "implementation_review_pending",
+  "contract": "company-os-v2-2-store-live-comparison-v1",
+  "status": "human_review_pending",
+  "source_capture": ".visual-evidence/company-os-v2/company-os-v2-2-live-acceptance/capture-run.json",
+  "source_store_archive": ".visual-evidence/company-os-v2/company-os-v2-2-live-acceptance/archived-harness-home",
+  "source_snapshot": ".visual-evidence/company-os-v2/company-os-v2-2-live-acceptance/live-company-os-snapshot.json",
+  "project_id": "proj-36fb21564ebf16b5",
+  "store_source": {
+    "authoritative": true,
+    "kind": "harness_store",
+    "project_id": "proj-36fb21564ebf16b5",
+    "projection": "latest_row_wins",
+    "revision": "fnv1a64:8d042bc6e5785769",
+    "schema": "company-os/v1",
+    "store_root": "/var/folders/97/6ydtlhlx7750tcl9pk4kfx100000gn/T/company-os-v1-live-tV0vb0/home/.harness/projects/proj-36fb21564ebf16b5"
+  },
   "counts": {
     "current_before": 6,
     "expected": 6,
-    "actual": 6
+    "fixture_actual": 6,
+    "store_live_actual": 6
   },
   "truth": {
-    "current_before": "V1 browser implementation baseline",
-    "expected": "V2.2 generated visual target; visual direction only",
-    "actual": "real browser render of this branch using deterministic Company OS fixture; not Store-live evidence"
+    "current_before": "V1 browser baseline",
+    "expected": "V2.2 generated visual direction",
+    "fixture_actual": "V2.2 deterministic-fixture browser render",
+    "store_live_actual": "V2.2 browser render from archived authority-labelled Store projection"
   },
   "comparisons": [
     {
       "case_id": "home--morning-operating-review--desktop",
       "route": "/?surface=home",
-      "baseline": {
+      "current_before": {
         "file": "../company-os-v1/actual/home--morning-review--desktop-1440x1000.png",
         "sha256": "sha256:03da205cb930af061438385f9dd17939b1588cfb42312765f33e74b19242e4fd",
         "truth": "V1 browser actual"
@@ -28,16 +40,21 @@
         "sha256": "sha256:c0aa1de9d568dda13bb12e7a25b69f10c0782167f20a92fd333d68d9121d9dec",
         "truth": "V2.2 generated design direction"
       },
-      "actual": {
+      "fixture_actual": {
         "file": "actual/home--morning-operating-review--desktop.png",
         "sha256": "sha256:3d150971e69350da5b88cad1298cb8606b356eeae05bd8c330ae5035266b6f4e",
         "truth": "V2.2 browser implementation with deterministic fixture"
+      },
+      "store_live_actual": {
+        "file": "store-live-actual/home--morning-operating-review--desktop.png",
+        "sha256": "sha256:95465c702ce92a538f670cd69f088759b4743d0f53671768fbefa73f5ebd77bb",
+        "truth": "V2.2 browser implementation from authority-labelled Harness Store projection"
       }
     },
     {
       "case_id": "docs--company-knowledge-workspace--desktop",
       "route": "/?surface=docs",
-      "baseline": {
+      "current_before": {
         "file": "../company-os-v1/actual/docs-workspace--company-knowledge-home--desktop-1440x1000.png",
         "sha256": "sha256:316e87dfefa7dd734a7aca5822f9167e2084075cb5e9d7aa160748310eaa6fa5",
         "truth": "V1 browser actual"
@@ -47,16 +64,21 @@
         "sha256": "sha256:2cf0f6829dae308603d6bfce25f579df35178732a2d02d361a21fe8ec52f9c1b",
         "truth": "V2.2 generated design direction"
       },
-      "actual": {
+      "fixture_actual": {
         "file": "actual/docs--company-knowledge-workspace--desktop.png",
         "sha256": "sha256:a02e94f88e67589fbc9bf9b303432c010ef7edf66feaac4404aa402440f7e2ea",
         "truth": "V2.2 browser implementation with deterministic fixture"
+      },
+      "store_live_actual": {
+        "file": "store-live-actual/docs--company-knowledge-workspace--desktop.png",
+        "sha256": "sha256:400cb646ea11f569b65dedaa1b18f96e0a84017764c1df880bfea4b9d2b6cb6f",
+        "truth": "V2.2 browser implementation from authority-labelled Harness Store projection"
       }
     },
     {
       "case_id": "organization--lead-first-company--desktop",
       "route": "/?surface=organization",
-      "baseline": {
+      "current_before": {
         "file": "../company-os-v1/actual/agents-organization--mixed-company-org--desktop-1440x1000.png",
         "sha256": "sha256:257f50d850d9ada7aa5d23d0b2e72dec051e8f029decc8b4448ffbf4ca60f7a3",
         "truth": "V1 browser actual"
@@ -66,16 +88,21 @@
         "sha256": "sha256:284d3bb0187f6ece56f2cf16d0254449efeaaff02f56626e8a9ff313ca60c0ba",
         "truth": "V2.2 generated design direction"
       },
-      "actual": {
+      "fixture_actual": {
         "file": "actual/organization--lead-first-company--desktop.png",
         "sha256": "sha256:b2d801c4430377c6319c82dd0872968b8fa3b55ea64f3c9a80d8149a318c5ebd",
         "truth": "V2.2 browser implementation with deterministic fixture"
+      },
+      "store_live_actual": {
+        "file": "store-live-actual/organization--lead-first-company--desktop.png",
+        "sha256": "sha256:74172a37a3b2197d4c85491f3cf9257cc243c06bf29250c123ad96900a1ae6bd",
+        "truth": "V2.2 browser implementation from authority-labelled Harness Store projection"
       }
     },
     {
       "case_id": "lead-agent--coordinating-direct-reports--desktop",
       "route": "/?surface=organization&agent=actor-agent-ip-lead",
-      "baseline": {
+      "current_before": {
         "file": "../company-os-v1/actual/standing-agent-focus--document-architect-available--desktop-1440x1000.png",
         "sha256": "sha256:cd2bd83ff4f638525aa10b1faf23e13dad772b72fc86b373094746718c0162ba",
         "truth": "V1 browser actual"
@@ -85,16 +112,21 @@
         "sha256": "sha256:506c9a5b9467809638fb409395b238bf8826708be20cbc04ed900f4cd3d27a1b",
         "truth": "V2.2 generated design direction"
       },
-      "actual": {
+      "fixture_actual": {
         "file": "actual/lead-agent--coordinating-direct-reports--desktop.png",
         "sha256": "sha256:413bf2a8fbf9a0116bd13b3296e429b4c457bd20ba5197d9fefe2f2ffaea7c1c",
         "truth": "V2.2 browser implementation with deterministic fixture"
+      },
+      "store_live_actual": {
+        "file": "store-live-actual/lead-agent--coordinating-direct-reports--desktop.png",
+        "sha256": "sha256:174d3c6eff9e85abb5caf35e83e32cc08b46e901f69ac914b1a689727a54d71f",
+        "truth": "V2.2 browser implementation from authority-labelled Harness Store projection"
       }
     },
     {
       "case_id": "business-module--trademark-operations--desktop",
       "route": "/?surface=docs&module=module-trademark-management",
-      "baseline": {
+      "current_before": {
         "file": "../company-os-v1/actual/business-module-focus--trademark-management--desktop-1440x1000.png",
         "sha256": "sha256:5afe92b4f9154d23da7082d585d0ecbe78676113a55742a21bf83b0668c86a7d",
         "truth": "V1 browser actual"
@@ -104,16 +136,21 @@
         "sha256": "sha256:981a6fab2c86c25ecbf0dc9b9fc2cf792c3962593ada94484652334f684286cf",
         "truth": "V2.2 generated design direction"
       },
-      "actual": {
+      "fixture_actual": {
         "file": "actual/business-module--trademark-operations--desktop.png",
         "sha256": "sha256:2c547bdb8a87f10fde8ad13de3e1670c1724ec32bf76870909713bdedb827bc9",
         "truth": "V2.2 browser implementation with deterministic fixture"
+      },
+      "store_live_actual": {
+        "file": "store-live-actual/business-module--trademark-operations--desktop.png",
+        "sha256": "sha256:76e7133d2f6e46190da5405ee7fde6241f33c4a155b7201023a33d9c3c8d43b2",
+        "truth": "V2.2 browser implementation from authority-labelled Harness Store projection"
       }
     },
     {
       "case_id": "work--milestones-and-workitems--desktop",
       "route": "/?surface=work",
-      "baseline": {
+      "current_before": {
         "file": "../company-os-v1/actual/workboard--company-workboard--desktop-1440x1000.png",
         "sha256": "sha256:e949181f9dbec1a487ded42f198721432ee3ce31b9b111658c897a2264a1a5d6",
         "truth": "V1 browser actual"
@@ -123,10 +160,15 @@
         "sha256": "sha256:75abcf2d52a09571f1cb4d84bcfa87a14d32f406efce5c13294cc2c8d58a4ac0",
         "truth": "V2.2 generated design direction"
       },
-      "actual": {
+      "fixture_actual": {
         "file": "actual/work--milestones-and-workitems--desktop.png",
         "sha256": "sha256:316bf118384896cf6a75821c7f1efbad465e6218f1426d61a3c63649a00a66a8",
         "truth": "V2.2 browser implementation with deterministic fixture"
+      },
+      "store_live_actual": {
+        "file": "store-live-actual/work--milestones-and-workitems--desktop.png",
+        "sha256": "sha256:7b16be8aec46c44597b1356610493abc43a8f2d686c8844f8eef50f752dfa956",
+        "truth": "V2.2 browser implementation from authority-labelled Harness Store projection"
       }
     }
   ]

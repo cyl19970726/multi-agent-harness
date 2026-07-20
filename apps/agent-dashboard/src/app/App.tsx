@@ -213,16 +213,15 @@ export function App() {
     return () => window.removeEventListener("popstate", onPopState);
   }, []);
 
-  // Auto-connect to the default harness on first load so the dashboard shows
-  // real data immediately — no manual "Load live" click. This is a silent
-  // attempt: on failure we stay in the empty "not connected" state WITHOUT
-  // raising the error banner (that is reserved for an explicit Load live / write
-  // the user triggered). Runs once on mount against the default API URL.
+  // Auto-connect to the URL-selected harness on first load so deep links and
+  // capture proxies do not also issue a stray request to the default port. The
+  // state already falls back to apiDefault when no `?api=` value is supplied.
+  // This remains a silent attempt: explicit user actions own visible errors.
   useEffect(() => {
     let cancelled = false;
     void (async () => {
       try {
-        const result = await fetchReadSnapshot(apiDefault, selectedProjectId);
+        const result = await fetchReadSnapshot(apiUrl, selectedProjectId);
         if (!result) return;
         if (cancelled) {
           discardSnapshotRequest(result.request);
@@ -232,7 +231,7 @@ export function App() {
           setSource(liveSource);
         }
         try {
-          const defs = await fetchWorkflowDefs(apiDefault);
+          const defs = await fetchWorkflowDefs(apiUrl);
           if (!cancelled) setWorkflowDefs(defs);
         } catch {
           // Catalog is best-effort; the surface shows an "unavailable" state.
@@ -244,7 +243,7 @@ export function App() {
     return () => {
       cancelled = true;
     };
-  }, [adoptSnapshotResponse, discardSnapshotRequest, fetchReadSnapshot]);
+  }, [adoptSnapshotResponse, apiUrl, discardSnapshotRequest, fetchReadSnapshot, selectedProjectId]);
 
   // Auto-retry while offline: if the initial connect failed or the backend went
   // away, silently re-attempt the default URL every few seconds so the dashboard

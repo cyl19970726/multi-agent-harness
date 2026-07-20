@@ -1,17 +1,19 @@
 {
   "workstream": "company-os-v2",
-  "status": "implementation_review_pending",
+  "status": "store_live_review_pending",
   "artifact_policy": {
     "baseline": "../company-os-v1/actual",
     "expected": "expected",
     "implemented": "actual",
-    "comparison": "expected-vs-actual-v2.2.html"
+    "comparison": "expected-vs-actual-v2.2.html",
+    "store_live_implemented": "store-live-actual",
+    "store_live_comparison": "expected-vs-store-live-v2.2.html"
   },
   "fixture": "company-os-v2-lead-first-trademark-direction",
   "design_revisions": [
     {
       "version": "2.2",
-      "status": "implementation_review_pending",
+      "status": "store_live_review_pending",
       "decision_ref": "v2.2-revision.md",
       "implementation": {
         "capture_manifest": ".visual-evidence/company-os-v2/v2-2-implementation-final/capture-run.json",
@@ -19,6 +21,13 @@
         "gallery": "expected-vs-actual-v2.2.html",
         "data_mode": "deterministic-fixture",
         "truth": "Browser-rendered implementation evidence; not Store-live product evidence."
+      },
+      "store_live_implementation": {
+        "capture_manifest": ".visual-evidence/company-os-v2/company-os-v2-2-live-acceptance/capture-run.json",
+        "comparison_manifest": "store-live-comparison-manifest-v2.2.json",
+        "gallery": "expected-vs-store-live-v2.2.html",
+        "data_mode": "store-live",
+        "truth": "Browser-rendered V2.2 evidence from an authority-labelled Harness Store projection; action transport remains out of scope."
       },
       "cases": [
         {
