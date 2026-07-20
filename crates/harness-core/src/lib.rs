@@ -1081,6 +1081,10 @@ pub struct Mission {
     pub wave_ids: Vec<String>,
     #[serde(default)]
     pub outcome_summary: Option<String>,
+    /// Actor that explicitly performed Mission closeout. Wave acceptance does
+    /// not infer this responsibility.
+    #[serde(default)]
+    pub completed_by: Option<String>,
     pub created_at: String,
     pub updated_at: String,
     #[serde(default)]

@@ -72,9 +72,8 @@ pub(crate) struct KimiAcpClient {
     /// Rolling tail of the child's stderr, for error messages.
     stderr_tail: Arc<Mutex<String>>,
     session_id: Option<String>,
-    /// Requested model. v0 RECORDS it only — kimi acp model selection lands in
-    /// a later iteration (session/set_config_option or spawn env).
-    #[allow(dead_code)]
+    /// Requested model alias, applied through ACP
+    /// `session/set_config_option(configId=model)` after session creation.
     model: Option<String>,
 }
 
@@ -218,7 +217,7 @@ impl KimiAcpClient {
         match session_id {
             Some(session_id) => {
                 self.session_id = Some(session_id);
-                Ok(())
+                self.apply_requested_model()
             }
             None => {
                 self.kill_quiet();
@@ -227,6 +226,36 @@ impl KimiAcpClient {
                 )))
             }
         }
+    }
+
+    /// Apply the requested Kimi model to the newly-created ACP session. A
+    /// named model is a real execution constraint, not display metadata: an
+    /// unknown/unavailable alias fails before the first prompt.
+    fn apply_requested_model(&mut self) -> CliResult<()> {
+        let Some(model) = self.model.clone() else {
+            return Ok(());
+        };
+        let session_id = self
+            .session_id
+            .clone()
+            .ok_or_else(|| CliError::Usage("kimi acp session not established".to_string()))?;
+        let response = self.request(
+            "session/set_config_option",
+            serde_json::json!({
+                "sessionId": session_id,
+                "configId": "model",
+                "value": model,
+            }),
+        )?;
+        let frame = await_response(response, HANDSHAKE_TIMEOUT, "session/set_config_option")
+            .inspect_err(|_| self.kill_quiet())?;
+        if let Some(error) = frame.get("error") {
+            self.kill_quiet();
+            return Err(CliError::Usage(format!(
+                "kimi acp rejected requested model {model}: {error}"
+            )));
+        }
+        Ok(())
     }
 
     /// Write one JSON-RPC request frame and return the receiver its response

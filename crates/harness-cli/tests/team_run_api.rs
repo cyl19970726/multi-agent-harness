@@ -1054,6 +1054,62 @@ fn post_team_run_message_and_start_async() {
         "body: {body}"
     );
     assert_eq!(body["result"]["status"].as_str(), Some("running"));
+
+    let mut host_handoff_id = None;
+    for _ in 0..100 {
+        let (_, snapshot) = serve.get_json("/v1/snapshot");
+        host_handoff_id = snapshot["team_messages"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|message| {
+                message["team_run_id"].as_str() == Some(run_id.as_str())
+                    && message["kind"].as_str() == Some("handoff")
+                    && message["deliveries"].as_array().is_some_and(|deliveries| {
+                        deliveries.iter().any(|delivery| {
+                            delivery["member_id"].as_str() == Some("host")
+                                && delivery["status"].as_str() == Some("delivered")
+                        })
+                    })
+            })
+            .and_then(|message| message["id"].as_str().map(str::to_string));
+        if host_handoff_id.is_some() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let host_handoff_id = host_handoff_id.expect("provider handoff to host");
+
+    // Dashboard ACK can only acknowledge an actually delivered recipient row
+    // and the URL TeamRun must own the message.
+    let (status, body) = serve.post_json(
+        &format!("/v1/team-runs/wrong-run/messages/{host_handoff_id}/ack"),
+        &serde_json::json!({"member_id": "host"}),
+    );
+    assert_eq!(status, 400, "body: {body}");
+    let (status, body) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/messages/{host_handoff_id}/ack"),
+        &serde_json::json!({"member_id": "host"}),
+    );
+    assert_eq!(status, 200, "body: {body}");
+    assert_eq!(
+        body["result"]["deliveries"][0]["status"].as_str(),
+        Some("acknowledged")
+    );
+    let event_count = body["snapshot"]["team_run_events"]
+        .as_array()
+        .map(Vec::len)
+        .expect("event count");
+    let (status, body) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/messages/{host_handoff_id}/ack"),
+        &serde_json::json!({"member_id": "host"}),
+    );
+    assert_eq!(status, 200, "body: {body}");
+    assert_eq!(
+        body["snapshot"]["team_run_events"].as_array().map(Vec::len),
+        Some(event_count),
+        "idempotent ACK must not add another event"
+    );
 }
 
 #[test]

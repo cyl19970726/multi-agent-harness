@@ -66,6 +66,7 @@ fn force_team_run_reviewing(
 fn host_wave_accepts_direct_outcome_without_fake_run() {
     let home = TempHome::new("host-wave-gate");
     let project_id = init_project(&home, "host-wave");
+    let serve = ServeHandle::spawn(&home, home.base(), &[]);
     run_json(
         &home,
         &project_id,
@@ -81,6 +82,11 @@ fn host_wave_accepts_direct_outcome_without_fake_run() {
             "--json",
         ],
     );
+    let (status, body) = serve.post_json(
+        "/v1/missions/mission-host/close",
+        &serde_json::json!({"outcome": "too early"}),
+    );
+    assert_eq!(status, 400, "body: {body}");
     run_json(
         &home,
         &project_id,
@@ -100,6 +106,11 @@ fn host_wave_accepts_direct_outcome_without_fake_run() {
             "--json",
         ],
     );
+    let (status, body) = serve.post_json(
+        "/v1/missions/mission-host/close",
+        &serde_json::json!({"outcome": "still too early"}),
+    );
+    assert_eq!(status, 400, "body: {body}");
     let accepted = run_json(
         &home,
         &project_id,
@@ -141,6 +152,76 @@ fn host_wave_accepts_direct_outcome_without_fake_run() {
     );
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("already accepted"));
+
+    let (status, body) = serve.post_json(
+        "/v1/missions/mission-host/close",
+        &serde_json::json!({
+            "outcome": "Mission intent satisfied",
+            "completed_by": "dashboard-host"
+        }),
+    );
+    assert_eq!(status, 200, "body: {body}");
+    assert_eq!(body["result"]["status"].as_str(), Some("completed"));
+    assert_eq!(
+        body["result"]["completed_by"].as_str(),
+        Some("dashboard-host")
+    );
+    assert!(body["result"]["completed_at"].is_string());
+
+    // Identical closeout is idempotent; a conflicting actor/outcome and any
+    // new Wave after completion are rejected.
+    let repeated = run_json(
+        &home,
+        &project_id,
+        &[
+            "mission",
+            "close",
+            "--id",
+            "mission-host",
+            "--outcome",
+            "Mission intent satisfied",
+            "--completed-by",
+            "dashboard-host",
+            "--json",
+        ],
+    );
+    assert_eq!(repeated["status"].as_str(), Some("completed"));
+    let conflict = run_harness(
+        &home,
+        home.base(),
+        &[
+            "--project",
+            &project_id,
+            "mission",
+            "close",
+            "--id",
+            "mission-host",
+            "--outcome",
+            "different",
+            "--completed-by",
+            "another-host",
+        ],
+    );
+    assert!(!conflict.status.success());
+    let late_wave = run_harness(
+        &home,
+        home.base(),
+        &[
+            "--project",
+            &project_id,
+            "wave",
+            "create",
+            "--mission-id",
+            "mission-host",
+            "--title",
+            "Too late",
+            "--objective",
+            "Must be rejected",
+            "--executor-kind",
+            "host",
+        ],
+    );
+    assert!(!late_wave.status.success());
 }
 
 #[test]

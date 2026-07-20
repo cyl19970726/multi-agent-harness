@@ -176,6 +176,20 @@ status reads. The Console now receives a sanitized `member_activity` preview
 only through project-scoped SSE: it carries an expiry, is never tailed from a
 ledger, never appears in a snapshot, and is not replayed after reconnect.
 
+The Codex Team Member adapter follows the same boundary through a dedicated
+`codex exec --json` path. It consumes provider events in memory, forwards only
+a sanitized reasoning preview to the volatile SSE sink, and persists the final
+agent message as the member handoff. It does not reuse the persistent delivery
+path that stores raw provider event streams. Codex Team Member turns are
+read-only in this first slice; writable isolation and diff acceptance remain a
+separate capability.
+
+Provider model names are execution constraints, not cosmetic metadata. Codex
+maps a requested member model to `codex exec -m`; Kimi maps it after
+`session/new` through ACP `session/set_config_option(configId=model)`. An
+unavailable Kimi alias must fail before prompting rather than silently falling
+back to the user's default model.
+
 ## Consequences
 
 - ADR 0025 remains the canonical v0 substrate for the `agent_team` executor.
