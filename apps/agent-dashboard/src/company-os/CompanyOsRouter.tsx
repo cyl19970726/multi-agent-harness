@@ -188,8 +188,9 @@ function PlatformPlaceholder({ surface }: { surface: "providers" | "plugins" | "
 
 /**
  * Routes Company OS product pages independently from execution surfaces. The
- * adapter is intentionally read-only; until the Company OS API is available,
- * every page is visibly labelled as a fixture-backed prototype.
+ * shared adapters accept either an authority-verified Store projection or an
+ * explicitly labelled prototype fixture. Presentation remains read-only until
+ * a governed browser Action transport is connected separately.
  */
 export function CompanyOsRouter({ model, selection }: { model: WorkbenchModel; selection: SelectionState }) {
   if (selection.surface === "providers" || selection.surface === "plugins" || selection.surface === "settings") {
