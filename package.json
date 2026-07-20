@@ -13,6 +13,8 @@
     "check:company-os": "node apps/agent-dashboard/tests/company-os-docs-check.mjs && node apps/agent-dashboard/tests/company-os-operations-check.mjs && node apps/agent-dashboard/tests/company-os-runtime-check.mjs && node apps/agent-dashboard/tests/company-os-navigation-check.mjs && node apps/agent-dashboard/tests/company-os-trademark-acceptance.mjs",
     "visual:fixture": "node scripts/materialize-workbench-layout-fixture.mjs",
     "visual:capture:workbench": "node scripts/capture-workbench-layout-v2.mjs",
+    "visual:capture:company-os-v2": "node scripts/capture-company-os-v2.mjs",
+    "visual:compare:company-os-v2": "node scripts/materialize-company-os-v2-comparison.mjs",
     "dashboard:dev": "vite --config apps/agent-dashboard/vite.config.ts --host 127.0.0.1",
     "dashboard:build": "vite build --config apps/agent-dashboard/vite.config.ts",
     "acceptance:workflow-starlark": "node scripts/acceptance-workflow-starlark.mjs",

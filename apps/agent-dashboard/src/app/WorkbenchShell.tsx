@@ -339,7 +339,7 @@ function TopBar({
                 : "Auto-refresh every ~5s"}
           </TooltipContent>
         </Tooltip>}
-        <Tooltip>
+        {!prototypeMode && <Tooltip>
           <TooltipTrigger asChild>
             <button
               type="button"
@@ -357,12 +357,12 @@ function TopBar({
           <TooltipContent side="bottom">
             {debugActive ? "Close raw snapshot" : "Open raw snapshot"}
           </TooltipContent>
-        </Tooltip>
+        </Tooltip>}
         {/* The dashboard auto-connects to the default harness on load and
             auto-retries while offline, so there is no "Load live" button. The
             URL field + a manual Reconnect appear only when not connected (e.g.
             to point at a non-default backend or recover from an outage). */}
-        {!transportOnline && (
+        {!prototypeMode && !transportOnline && (
           <>
             <input
               aria-label="Harness API URL"

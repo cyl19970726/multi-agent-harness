@@ -1,5 +1,42 @@
 @import "tailwindcss";
 
+@layer components {
+  .company-editorial-title {
+    font-family: Georgia, "Times New Roman", serif;
+    font-weight: 500;
+  }
+
+  .company-workbench {
+    position: relative;
+    background:
+      radial-gradient(circle at 76% 8%, color-mix(in srgb, var(--primary) 8%, transparent), transparent 28rem),
+      linear-gradient(135deg, color-mix(in srgb, var(--background) 96%, #fff7e8), var(--background));
+  }
+
+  .company-workbench::before {
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    content: "";
+    opacity: 0.17;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 180 180' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.16'/%3E%3C/svg%3E");
+    mix-blend-mode: multiply;
+  }
+
+  .company-art-field > span {
+    position: absolute;
+    border: 1px solid color-mix(in srgb, var(--primary) 28%, transparent);
+    border-radius: 999px;
+  }
+
+  .company-art-field > span:nth-child(1) { width: 16rem; height: 16rem; right: -4rem; top: -8rem; }
+  .company-art-field > span:nth-child(2) { width: 10rem; height: 10rem; right: 1rem; top: -5rem; }
+  .company-art-field > span:nth-child(3) { width: 4px; height: 4px; right: 7.25rem; top: 3.2rem; background: var(--primary); border: 0; box-shadow: -5rem 4rem 0 color-mix(in srgb, var(--primary) 55%, transparent), 4rem 2rem 0 color-mix(in srgb, var(--primary) 55%, transparent); }
+
+  .company-emblem { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--background) 60%, transparent), 0 8px 30px color-mix(in srgb, var(--primary) 8%, transparent); }
+  .company-avatar img { filter: saturate(.88) contrast(.98); }
+}
+
 @custom-variant dark (&:is(.dark *));
 
 /*

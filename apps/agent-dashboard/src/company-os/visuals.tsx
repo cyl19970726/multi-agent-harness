@@ -1,0 +1,70 @@
+import { Bot, Landmark, LibraryBig, Scale, Sparkles } from "lucide-react";
+import type { ReactNode } from "react";
+
+import companyLead from "@/assets/company-os/avatars/company-lead.png";
+import contentStrategy from "@/assets/company-os/avatars/content-strategy-agent.png";
+import documentArchitecture from "@/assets/company-os/avatars/document-architecture-agent.png";
+import financeAgent from "@/assets/company-os/avatars/finance-agent.png";
+import trademarkAgent from "@/assets/company-os/avatars/trademark-agent.png";
+import { cn } from "@/lib/utils";
+
+const portraits: Array<{ match: RegExp; src: string }> = [
+  { match: /document|architecture|governance/i, src: documentArchitecture },
+  { match: /ip lead|company lead|brand owner|human/i, src: companyLead },
+  { match: /trademark/i, src: trademarkAgent },
+  { match: /finance/i, src: financeAgent },
+  { match: /content|strategy|analytics/i, src: contentStrategy },
+  { match: /lead/i, src: companyLead },
+];
+
+export function portraitFor(identity: string): string | undefined {
+  return portraits.find(({ match }) => match.test(identity))?.src;
+}
+
+export function ActorAvatar({
+  identity,
+  name,
+  size = "md",
+  ring = "neutral",
+  className,
+}: {
+  identity: string;
+  name: string;
+  size?: "sm" | "md" | "lg" | "hero";
+  ring?: "neutral" | "good" | "warm" | "external";
+  className?: string;
+}) {
+  const src = portraitFor(`${identity} ${name}`);
+  return (
+    <span
+      className={cn(
+        "company-avatar relative grid shrink-0 place-items-center overflow-hidden rounded-full border bg-card text-xs font-semibold",
+        size === "sm" && "size-8",
+        size === "md" && "size-11",
+        size === "lg" && "size-16",
+        size === "hero" && "size-28 lg:size-36",
+        ring === "good" && "border-status-good/55 ring-4 ring-status-good/10",
+        ring === "warm" && "border-primary/55 ring-4 ring-primary/10",
+        ring === "external" && "border-sky-500/45 ring-4 ring-sky-500/10",
+        ring === "neutral" && "border-border ring-4 ring-background/70",
+        className,
+      )}
+      aria-label={name}
+    >
+      {src ? <img src={src} alt="" className="size-full object-cover" /> : name.slice(0, 2).toUpperCase()}
+    </span>
+  );
+}
+
+export function ObjectEmblem({ kind, className }: { kind: "docs" | "module" | "work" | "approval" | "agent"; className?: string }) {
+  const Icon = kind === "docs" ? LibraryBig : kind === "module" ? Scale : kind === "work" ? Landmark : kind === "agent" ? Bot : Sparkles;
+  return <span className={cn("company-emblem grid size-10 place-items-center rounded-xl border border-primary/25 bg-primary/[0.07] text-primary", className)}><Icon className="size-5" /></span>;
+}
+
+export function EditorialTitle({ children, className }: { children: ReactNode; className?: string }) {
+  return <h1 className={cn("company-editorial-title text-4xl leading-[0.98] tracking-[-0.035em] text-foreground sm:text-5xl", className)}>{children}</h1>;
+}
+
+export function ArtField({ className }: { className?: string }) {
+  return <div aria-hidden className={cn("company-art-field pointer-events-none absolute inset-0 overflow-hidden", className)}><span /><span /><span /></div>;
+}

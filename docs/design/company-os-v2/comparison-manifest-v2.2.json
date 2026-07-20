@@ -1,0 +1,133 @@
+{
+  "contract": "company-os-v2-2-visual-comparison-v1",
+  "source_capture": ".visual-evidence/company-os-v2/v2-2-implementation-final/capture-run.json",
+  "data_mode": "deterministic-fixture",
+  "fixture": "docs/design/company-os-v1/fixtures/company-os-trademark-v1.json",
+  "status": "implementation_review_pending",
+  "counts": {
+    "current_before": 6,
+    "expected": 6,
+    "actual": 6
+  },
+  "truth": {
+    "current_before": "V1 browser implementation baseline",
+    "expected": "V2.2 generated visual target; visual direction only",
+    "actual": "real browser render of this branch using deterministic Company OS fixture; not Store-live evidence"
+  },
+  "comparisons": [
+    {
+      "case_id": "home--morning-operating-review--desktop",
+      "route": "/?surface=home",
+      "baseline": {
+        "file": "../company-os-v1/actual/home--morning-review--desktop-1440x1000.png",
+        "sha256": "sha256:03da205cb930af061438385f9dd17939b1588cfb42312765f33e74b19242e4fd",
+        "truth": "V1 browser actual"
+      },
+      "expected": {
+        "file": "expected/home--morning-operating-review-v2-2--desktop-1536x1024.png",
+        "sha256": "sha256:c0aa1de9d568dda13bb12e7a25b69f10c0782167f20a92fd333d68d9121d9dec",
+        "truth": "V2.2 generated design direction"
+      },
+      "actual": {
+        "file": "actual/home--morning-operating-review--desktop.png",
+        "sha256": "sha256:3d150971e69350da5b88cad1298cb8606b356eeae05bd8c330ae5035266b6f4e",
+        "truth": "V2.2 browser implementation with deterministic fixture"
+      }
+    },
+    {
+      "case_id": "docs--company-knowledge-workspace--desktop",
+      "route": "/?surface=docs",
+      "baseline": {
+        "file": "../company-os-v1/actual/docs-workspace--company-knowledge-home--desktop-1440x1000.png",
+        "sha256": "sha256:316e87dfefa7dd734a7aca5822f9167e2084075cb5e9d7aa160748310eaa6fa5",
+        "truth": "V1 browser actual"
+      },
+      "expected": {
+        "file": "expected/docs--company-knowledge-workspace-v2-2--desktop-1536x1024.png",
+        "sha256": "sha256:2cf0f6829dae308603d6bfce25f579df35178732a2d02d361a21fe8ec52f9c1b",
+        "truth": "V2.2 generated design direction"
+      },
+      "actual": {
+        "file": "actual/docs--company-knowledge-workspace--desktop.png",
+        "sha256": "sha256:a02e94f88e67589fbc9bf9b303432c010ef7edf66feaac4404aa402440f7e2ea",
+        "truth": "V2.2 browser implementation with deterministic fixture"
+      }
+    },
+    {
+      "case_id": "organization--lead-first-company--desktop",
+      "route": "/?surface=organization",
+      "baseline": {
+        "file": "../company-os-v1/actual/agents-organization--mixed-company-org--desktop-1440x1000.png",
+        "sha256": "sha256:257f50d850d9ada7aa5d23d0b2e72dec051e8f029decc8b4448ffbf4ca60f7a3",
+        "truth": "V1 browser actual"
+      },
+      "expected": {
+        "file": "expected/organization--lead-first-company-v2-2--desktop-1536x1024.png",
+        "sha256": "sha256:284d3bb0187f6ece56f2cf16d0254449efeaaff02f56626e8a9ff313ca60c0ba",
+        "truth": "V2.2 generated design direction"
+      },
+      "actual": {
+        "file": "actual/organization--lead-first-company--desktop.png",
+        "sha256": "sha256:a55deedcf5d71823c5e99efbc570bf812e500f8ad28eda1115fc589b25b6005b",
+        "truth": "V2.2 browser implementation with deterministic fixture"
+      }
+    },
+    {
+      "case_id": "lead-agent--coordinating-direct-reports--desktop",
+      "route": "/?surface=organization&agent=actor-agent-ip-lead",
+      "baseline": {
+        "file": "../company-os-v1/actual/standing-agent-focus--document-architect-available--desktop-1440x1000.png",
+        "sha256": "sha256:cd2bd83ff4f638525aa10b1faf23e13dad772b72fc86b373094746718c0162ba",
+        "truth": "V1 browser actual"
+      },
+      "expected": {
+        "file": "expected/lead-agent--coordinating-direct-reports-v2-2--desktop-1536x1024.png",
+        "sha256": "sha256:506c9a5b9467809638fb409395b238bf8826708be20cbc04ed900f4cd3d27a1b",
+        "truth": "V2.2 generated design direction"
+      },
+      "actual": {
+        "file": "actual/lead-agent--coordinating-direct-reports--desktop.png",
+        "sha256": "sha256:ae6b86c63f7b5ea280ff4c9a2028d22f4200917b0006b255c48c34acec61b711",
+        "truth": "V2.2 browser implementation with deterministic fixture"
+      }
+    },
+    {
+      "case_id": "business-module--trademark-operations--desktop",
+      "route": "/?surface=docs&module=module-trademark-management",
+      "baseline": {
+        "file": "../company-os-v1/actual/business-module-focus--trademark-management--desktop-1440x1000.png",
+        "sha256": "sha256:5afe92b4f9154d23da7082d585d0ecbe78676113a55742a21bf83b0668c86a7d",
+        "truth": "V1 browser actual"
+      },
+      "expected": {
+        "file": "expected/business-module--trademark-operations-v2-2--desktop-1536x1024.png",
+        "sha256": "sha256:981a6fab2c86c25ecbf0dc9b9fc2cf792c3962593ada94484652334f684286cf",
+        "truth": "V2.2 generated design direction"
+      },
+      "actual": {
+        "file": "actual/business-module--trademark-operations--desktop.png",
+        "sha256": "sha256:2c547bdb8a87f10fde8ad13de3e1670c1724ec32bf76870909713bdedb827bc9",
+        "truth": "V2.2 browser implementation with deterministic fixture"
+      }
+    },
+    {
+      "case_id": "work--milestones-and-workitems--desktop",
+      "route": "/?surface=work",
+      "baseline": {
+        "file": "../company-os-v1/actual/workboard--company-workboard--desktop-1440x1000.png",
+        "sha256": "sha256:e949181f9dbec1a487ded42f198721432ee3ce31b9b111658c897a2264a1a5d6",
+        "truth": "V1 browser actual"
+      },
+      "expected": {
+        "file": "expected/work--milestones-and-workitems-v2-2--desktop-1536x1024.png",
+        "sha256": "sha256:75abcf2d52a09571f1cb4d84bcfa87a14d32f406efce5c13294cc2c8d58a4ac0",
+        "truth": "V2.2 generated design direction"
+      },
+      "actual": {
+        "file": "actual/work--milestones-and-workitems--desktop.png",
+        "sha256": "sha256:316bf118384896cf6a75821c7f1efbad465e6218f1426d61a3c63649a00a66a8",
+        "truth": "V2.2 browser implementation with deterministic fixture"
+      }
+    }
+  ]
+}
