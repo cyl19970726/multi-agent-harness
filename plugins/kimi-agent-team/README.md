@@ -1,11 +1,11 @@
 # Agent Team — Kimi Code Plugin
 
 Kimi Code 插件包：给 host 会话接入 Multi-Agent Harness 的 **Agent Team** 能力
-(ADR 0025 / Issue #206) — 创建 AgentTeamRun、配置并拉起跨 provider 的
-Codex/Claude/Kimi MemberRun、收发 ACK 消息、实时观察成员状态。
+(ADR 0025 / Issue #206) — 创建 Mission/Wave/AgentTeamRun、拉起当前已实现的
+Kimi ACP MemberRun、显式 ACK 消息并观察成员状态。
 
-English summary: this plugin turns a Kimi Code session into the host (Lead) of a
-cross-provider agent team. A sub-agent is one function call; a team member is a
+English summary: this plugin turns a Kimi Code session into the host (Lead) of an
+agent team. A sub-agent is one function call; a team member is a
 living collaborator with its own state, mailbox, and responsibility domain. The
 plugin ships the method (skills), the call surface (MCP), the plumbing (CLI
 commands), and the nerves (hooks) — it contains no runtime logic of its own.
@@ -41,19 +41,20 @@ manifest 为 `kimi.plugin.json`（优先于 `.kimi-plugin/plugin.json`）。
 | 部件 | 内容 |
 | --- | --- |
 | Skills | `agent-team-orchestrator`（编排方法，会话开始自动加载）、`agent-team-member`（被拉起 member 的交付契约与 handoff 格式） |
-| MCP server | `harness`（stdio，`harness mcp`）：Mission create/list、Wave create/list/gate，以及 TeamRun create/list/status/send/events |
+| MCP server | `harness`（stdio，`harness mcp`）：Mission create/list、Wave create/list/gate，以及 TeamRun create/start/cancel/list/status/send/ACK/events |
 | Commands | `/agent-team:new-run` 创建 run、`/agent-team:status` 紧凑状态表、`/agent-team:dashboard` 打开 Team Console |
 | Hooks | `hooks/team-events.sh`：SessionStart 与 Stop 时注入一行 active run 摘要（run id / status / 未 ACK 数 / console URL），10s 超时，失败静默放行 (fail-open) |
 
 ## 使用 / Usage
 
-1. `/agent-team:new-run` — 描述目标，确认 member 配置
-   （`name:role:provider[:model][@ownedPaths]`，ownedPaths 两两不相交），
-   插件组装并执行 `harness team-run create`，返回 run id 与 console URL，
-   确认后 `harness team-run start`。
-2. `/agent-team:status [run-id]` — 成员 / 状态 / 当前动作 / 心跳 / 未 ACK
+1. 优先让 Host 使用 MCP 的 `mission_create`、`wave_create`、
+   `team_run_create` 与 `team_run_start`。`start` 会立即返回带 Workspace 的
+   run 深链，执行在后台继续。
+2. `/agent-team:new-run` 是便捷入口；CLI 命令只作为人工调试和 MCP
+   不可用时的兜底。
+3. `/agent-team:status [run-id]` — 成员 / 状态 / 当前动作 / 心跳 / 未 ACK
    的紧凑状态表，附 Team Console URL。
-3. `/agent-team:dashboard` — 打印并尝试打开
+4. `/agent-team:dashboard` — 打印并尝试打开
    <http://127.0.0.1:8787/team-console>（macOS `open`，Linux `xdg-open`）。
 
 CLI 兜底（不经过插件也可用）：
@@ -80,6 +81,9 @@ harness wave gate --id <wave-id> --status accepted --run-id <run-id> \
 - **授权闸**：部署、删除远端资源、支付选型等外部变更必须上报用户拍板，
   member 与 host 都不得自行决定。
 - **ACK 纪律**：handoff 与关键任务消息必须 ACK；超阈未 ACK 会重发并升级告警。
+- **当前 Provider 边界**：可执行的 Team Member adapter 只有 Kimi ACP。
+  Codex/Claude 可以作为 Host，但不能把声明的 Codex/Claude MemberRun
+  当成已经可启动；运行时会明确失败，直到对应 adapter 落地。
 - **归属**：`TeamMessage(kind=assignment)` 的 message id 与 `correlation_id`
   是 lane 的目标主身份。自动 handoff 会复用它；手工 blocker / progress /
   review 消息应传入同一 assignment correlation，或通过同一 run 的

@@ -14,17 +14,22 @@
 //! - `tools/call` → `{content:[{type:"text",text:<result JSON>}], isError}`.
 //! - unknown method → JSON-RPC -32601. stdin EOF exits.
 
-use std::io::{BufRead, Write};
+use std::{
+    io::{BufRead, Write},
+    time::Duration,
+};
 
-use harness_core::{TeamDeliveryStatus, TeamRunEvent};
+use harness_core::{TeamDeliveryStatus, TeamRunEvent, TeamRunStatus};
 use harness_store::HarnessStore;
 use serde_json::{json, Value};
 
 use crate::{
-    create_mission, create_team_run, create_wave, gate_wave, latest_member_runs_in_append_order,
+    acknowledge_team_message, create_mission, create_team_run, create_wave,
+    drive_prepared_team_run, gate_wave, latest_member_runs_in_append_order,
     latest_team_messages_in_append_order, latest_team_run, latest_team_runs_in_append_order,
-    parse_team_message_kind, parse_wave_executor_kind, send_team_message, team_run_wave_index,
-    visible_member_actions_in_append_order, TeamMemberSpec,
+    parse_team_message_kind, parse_wave_executor_kind, prepare_team_run_start, send_team_message,
+    team_run_wave_index, transition_team_run, visible_member_actions_in_append_order,
+    ResolvedStore, TeamMemberSpec,
 };
 
 /// MCP protocol revision this server speaks, echoed verbatim in `initialize`
@@ -33,10 +38,20 @@ const PROTOCOL_VERSION: &str = "2024-11-05";
 
 /// Where the default `harness serve` surface renders the Agent Team console;
 /// the tools return it so the host can point a human at the live view.
-const DASHBOARD_URL: &str = "http://127.0.0.1:8787/team-console";
+const DASHBOARD_URL: &str = "http://127.0.0.1:8787";
+
+fn team_dashboard_url(resolved: &ResolvedStore, team_run_id: &str) -> String {
+    match resolved.context.as_ref() {
+        Some(context) => format!(
+            "{DASHBOARD_URL}/?surface=team&team={team_run_id}&project={}",
+            context.id
+        ),
+        None => format!("{DASHBOARD_URL}/?surface=team&team={team_run_id}"),
+    }
+}
 
 /// Serve the stdio MCP loop until stdin closes.
-pub fn run(store: &HarnessStore) -> crate::CliResult<()> {
+pub fn run(store: &HarnessStore, resolved: &ResolvedStore) -> crate::CliResult<()> {
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
@@ -46,7 +61,7 @@ pub fn run(store: &HarnessStore) -> crate::CliResult<()> {
         if trimmed.is_empty() {
             continue;
         }
-        if let Some(response) = handle_line(store, trimmed) {
+        if let Some(response) = handle_line(store, resolved, trimmed) {
             writeln!(out, "{response}")?;
             out.flush()?;
         }
@@ -56,7 +71,7 @@ pub fn run(store: &HarnessStore) -> crate::CliResult<()> {
 
 /// Handle one JSON-RPC line. Returns `None` for notifications (including
 /// `notifications/initialized`): they are accepted and otherwise ignored.
-fn handle_line(store: &HarnessStore, line: &str) -> Option<Value> {
+fn handle_line(store: &HarnessStore, resolved: &ResolvedStore, line: &str) -> Option<Value> {
     let request: Value = match serde_json::from_str(line) {
         Ok(value) => value,
         Err(error) => {
@@ -80,7 +95,7 @@ fn handle_line(store: &HarnessStore, line: &str) -> Option<Value> {
         })),
         "ping" => Ok(json!({})),
         "tools/list" => Ok(json!({"tools": tool_definitions()})),
-        "tools/call" => call_tool(store, &params),
+        "tools/call" => call_tool(store, resolved, &params),
         _ => Err((-32601, format!("method not found: {method}"))),
     };
     Some(match result {
@@ -94,7 +109,11 @@ fn handle_line(store: &HarnessStore, line: &str) -> Option<Value> {
 /// Dispatch one `tools/call`. Unknown tool names and malformed call params
 /// are JSON-RPC errors; a tool that runs and fails answers 200-style with
 /// `isError: true` so the host model sees the failure text as tool output.
-fn call_tool(store: &HarnessStore, params: &Value) -> Result<Value, (i64, String)> {
+fn call_tool(
+    store: &HarnessStore,
+    resolved: &ResolvedStore,
+    params: &Value,
+) -> Result<Value, (i64, String)> {
     let name = params.get("name").and_then(Value::as_str).ok_or_else(|| {
         (
             -32602,
@@ -111,9 +130,12 @@ fn call_tool(store: &HarnessStore, params: &Value) -> Result<Value, (i64, String
         "wave_create" => tool_wave_create(store, &arguments),
         "wave_list" => tool_wave_list(store, &arguments),
         "wave_gate" => tool_wave_gate(store, &arguments),
-        "team_run_create" => tool_team_run_create(store, &arguments),
+        "team_run_create" => tool_team_run_create(store, resolved, &arguments),
+        "team_run_start" => tool_team_run_start(store, resolved, &arguments),
+        "team_run_cancel" => tool_team_run_cancel(store, resolved, &arguments),
+        "team_message_acknowledge" => tool_team_message_acknowledge(store, resolved, &arguments),
         "team_run_list" => tool_team_run_list(store),
-        "team_run_status" => tool_team_run_status(store, &arguments),
+        "team_run_status" => tool_team_run_status(store, resolved, &arguments),
         "team_run_send_message" => tool_team_run_send_message(store, &arguments),
         "team_run_events" => tool_team_run_events(store, &arguments),
         _ => return Err((-32602, format!("unknown tool: {name}"))),
@@ -125,6 +147,67 @@ fn call_tool(store: &HarnessStore, params: &Value) -> Result<Value, (i64, String
     Ok(json!({
         "content": [{"type": "text", "text": text}],
         "isError": is_error,
+    }))
+}
+
+fn tool_team_run_start(
+    store: &HarnessStore,
+    resolved: &ResolvedStore,
+    arguments: &Value,
+) -> Result<Value, String> {
+    let id = required_str(arguments, "team_run_id")?;
+    let max_concurrency = arguments
+        .get("max_concurrency")
+        .and_then(Value::as_u64)
+        .unwrap_or(4) as usize;
+    let idle_timeout_s = arguments
+        .get("idle_timeout_s")
+        .and_then(Value::as_u64)
+        .unwrap_or(120);
+    if max_concurrency == 0 || idle_timeout_s == 0 {
+        return Err("max_concurrency and idle_timeout_s must be positive".into());
+    }
+    let prepared =
+        prepare_team_run_start(store, id, max_concurrency).map_err(|error| error.to_string())?;
+    let project_context = resolved.context.clone();
+    std::thread::spawn(move || {
+        if let Err(error) = drive_prepared_team_run(
+            prepared,
+            project_context,
+            max_concurrency,
+            Duration::from_secs(idle_timeout_s),
+            None,
+        ) {
+            eprintln!("team-run MCP start failed: {error}");
+        }
+    });
+    let run = latest_team_run(store, id).map_err(|error| error.to_string())?;
+    Ok(json!({"team_run": run, "dashboard_url": team_dashboard_url(resolved, id)}))
+}
+
+fn tool_team_run_cancel(
+    store: &HarnessStore,
+    resolved: &ResolvedStore,
+    arguments: &Value,
+) -> Result<Value, String> {
+    let id = required_str(arguments, "team_run_id")?;
+    let run = transition_team_run(store, id, TeamRunStatus::Cancelled)
+        .map_err(|error| error.to_string())?;
+    Ok(json!({"team_run": run, "dashboard_url": team_dashboard_url(resolved, id)}))
+}
+
+fn tool_team_message_acknowledge(
+    store: &HarnessStore,
+    resolved: &ResolvedStore,
+    arguments: &Value,
+) -> Result<Value, String> {
+    let message_id = required_str(arguments, "message_id")?;
+    let member_id = required_str(arguments, "member_id")?;
+    let message = acknowledge_team_message(store, message_id, member_id)
+        .map_err(|error| error.to_string())?;
+    Ok(json!({
+        "message": message,
+        "dashboard_url": team_dashboard_url(resolved, &message.team_run_id)
     }))
 }
 
@@ -236,7 +319,11 @@ fn tool_wave_gate(store: &HarnessStore, arguments: &Value) -> Result<Value, Stri
 }
 
 /// `team_run_create` — journal a new run + member runs + assignment messages.
-fn tool_team_run_create(store: &HarnessStore, arguments: &Value) -> Result<Value, String> {
+fn tool_team_run_create(
+    store: &HarnessStore,
+    resolved: &ResolvedStore,
+    arguments: &Value,
+) -> Result<Value, String> {
     if arguments.get("wave_index").is_some() {
         return Err(
             "wave_index was retired; supply wave_id and derive order from the native Wave"
@@ -305,7 +392,7 @@ fn tool_team_run_create(store: &HarnessStore, arguments: &Value) -> Result<Value
         "mission_id": created.team_run.mission_id,
         "wave_id": created.team_run.wave_id,
         "assignment_messages": created.assignment_messages,
-        "dashboard_url": DASHBOARD_URL,
+        "dashboard_url": team_dashboard_url(resolved, &created.team_run.id),
     }))
 }
 
@@ -333,7 +420,11 @@ fn tool_team_run_list(store: &HarnessStore) -> Result<Value, String> {
 /// `team_run_status` — one run with its members (each carrying the latest
 /// MemberAction, if any), the count of not-yet-acknowledged messages, and the
 /// dashboard URL. Mirrors the `team-run status --json` projection.
-fn tool_team_run_status(store: &HarnessStore, arguments: &Value) -> Result<Value, String> {
+fn tool_team_run_status(
+    store: &HarnessStore,
+    resolved: &ResolvedStore,
+    arguments: &Value,
+) -> Result<Value, String> {
     let id = required_str(arguments, "team_run_id")?;
     let run = latest_team_run(store, id).map_err(|error| error.to_string())?;
     let wave_index = team_run_wave_index(store, &run).map_err(|error| error.to_string())?;
@@ -374,7 +465,7 @@ fn tool_team_run_status(store: &HarnessStore, arguments: &Value) -> Result<Value
         "wave_index": wave_index,
         "members": members,
         "unacked_messages": unacked_messages,
-        "dashboard_url": DASHBOARD_URL,
+        "dashboard_url": team_dashboard_url(resolved, id),
     }))
 }
 
@@ -505,7 +596,7 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "team_run_create",
-            "description": "Create an Agent Team run with at least one member: journals the planning run, member rows, canonical queued Assignment messages, and events. Returns run/member ids and the Assignment messages with their correlation ids. Drive it with `harness team-run start`.",
+            "description": "Create an Agent Team run with at least one member: journals the planning run, member rows, canonical queued Assignment messages, and events. Returns run/member ids, assignment correlations, and a run-specific Dashboard URL. Call team_run_start to execute it.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -532,6 +623,40 @@ fn tool_definitions() -> Value {
                     }
                 },
                 "required": ["objective", "members"]
+            }
+        },
+        {
+            "name": "team_run_start",
+            "description": "Reserve and start a planning AgentTeamRun asynchronously, returning its running projection and exact Workspace-scoped Dashboard URL immediately. The current executable member adapter is Kimi ACP; unsupported providers fail honestly.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "team_run_id": {"type": "string"},
+                    "max_concurrency": {"type": "integer", "minimum": 1, "default": 4},
+                    "idle_timeout_s": {"type": "integer", "minimum": 1, "default": 120}
+                },
+                "required": ["team_run_id"]
+            }
+        },
+        {
+            "name": "team_run_cancel",
+            "description": "Cancel a planning, waiting, or reviewing TeamRun. Running cancellation is rejected until cooperative provider interruption exists.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {"team_run_id": {"type": "string"}},
+                "required": ["team_run_id"]
+            }
+        },
+        {
+            "name": "team_message_acknowledge",
+            "description": "Acknowledge one delivery of a TeamMessage for an explicit member or the reserved host recipient.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "message_id": {"type": "string"},
+                    "member_id": {"type": "string", "description": "Recipient member-run id or `host`."}
+                },
+                "required": ["message_id", "member_id"]
             }
         },
         {

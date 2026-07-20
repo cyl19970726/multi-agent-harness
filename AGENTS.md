@@ -159,14 +159,13 @@ target/debug/harness wave gate --id <wave> --status accepted \
   --run-id <completed-run> --accepted-by <actor> --outcome <summary>
 target/debug/harness dashboard snapshot
 target/debug/harness serve --addr 127.0.0.1:8787
-npx pnpm@9.15.4 acceptance:mvp
-npx pnpm@9.15.4 acceptance:mvp:live
+npx pnpm@9.15.4 acceptance:mission-wave
 ```
 
-`acceptance:mvp` proves deterministic object protocol, review gate, dashboard
-read model, hook bridge, and adapter surface. `acceptance:mvp:live` is required
-before claiming real live Codex AgentMember usage; it must include both the
-single-member smoke and the Worker/Critic live dogfood gate.
+`acceptance:mission-wave` proves the deterministic Mission/Wave, Agent Team,
+MCP, Kimi ACP adapter, and Dashboard contracts. A real-provider claim still
+requires a separately recorded native live run; the deterministic gate is not
+live-provider evidence.
 
 ## Self-Hosting Rules
 

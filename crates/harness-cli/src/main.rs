@@ -94,10 +94,10 @@ enum StoreSource {
 /// The resolved store root plus a record of *how* it was chosen and whether a
 /// `ProjectContext` backs it (None for the raw `--store`/`HARNESS_ROOT`/walk-up
 /// overrides, which point at an arbitrary path with no project identity).
-struct ResolvedStore {
+pub(crate) struct ResolvedStore {
     root: PathBuf,
     source: StoreSource,
-    context: Option<harness_core::ProjectContext>,
+    pub(crate) context: Option<harness_core::ProjectContext>,
 }
 
 /// Resolve the harness store root, preserving today's behavior while routing
@@ -858,7 +858,7 @@ fn run() -> CliResult<()> {
         "workflow" => workflow_command(&store, &args[1..])?,
         "hook" => hook_command(&store, &args[1..])?,
         "serve" => serve_command(&store, &resolved, &args[1..])?,
-        "mcp" => mcp::run(&store)?,
+        "mcp" => mcp::run(&store, &resolved)?,
         #[cfg(unix)]
         "daemon" => daemon_command(&store, &args[1..])?,
         command if retired_command(command) => return Err(retired_surface_error(command)),
@@ -2323,7 +2323,7 @@ fn parse_team_run_status(s: &str) -> CliResult<TeamRunStatus> {
 /// Appends the new AgentTeamRun row (latest-wins) and folds a TeamRunEvent so
 /// the dashboard timeline narrates the gate decision. Shared by
 /// POST /v1/team-runs/{id}/transition and the `team-run complete|cancel` arms.
-fn transition_team_run(
+pub(crate) fn transition_team_run(
     store: &HarnessStore,
     team_run_id: &str,
     target: TeamRunStatus,
@@ -2898,7 +2898,7 @@ impl MemberOutcome {
     }
 }
 
-struct PreparedTeamRunStart {
+pub(crate) struct PreparedTeamRunStart {
     run_id: String,
     objective: String,
     running: AgentTeamRun,
@@ -2909,7 +2909,7 @@ struct PreparedTeamRunStart {
 /// Reserve a planning attempt synchronously before any provider thread starts.
 /// Both CLI and HTTP use this CAS, so two start requests cannot both be
 /// accepted while orchestration boots in the background.
-fn prepare_team_run_start(
+pub(crate) fn prepare_team_run_start(
     store: &HarnessStore,
     run_id: &str,
     max_concurrency: usize,
@@ -2957,7 +2957,7 @@ fn prepare_team_run_start(
 
 /// `harness team-run start`: reserve the run, drive every member to a terminal
 /// state, then fold the run's own terminal status + a human summary.
-fn team_run_start(
+pub(crate) fn team_run_start(
     store: &HarnessStore,
     resolved: &ResolvedStore,
     run_id: &str,
@@ -2974,7 +2974,7 @@ fn team_run_start(
     )
 }
 
-fn drive_prepared_team_run(
+pub(crate) fn drive_prepared_team_run(
     prepared: PreparedTeamRunStart,
     project_context: Option<ProjectContext>,
     max_concurrency: usize,
@@ -3379,6 +3379,59 @@ fn mark_message_delivered(
         ),
     )?;
     Ok(())
+}
+
+/// Acknowledge one delivery and fold the state change into the TeamRun event
+/// stream. This is shared by Host-facing transports so ACK is durable,
+/// idempotent, and visible in the same audit trail as the message itself.
+pub(crate) fn acknowledge_team_message(
+    store: &HarnessStore,
+    message_id: &str,
+    member_id: &str,
+) -> CliResult<TeamMessage> {
+    let mut message = latest_team_messages_in_append_order(store)?
+        .into_iter()
+        .find(|message| message.id == message_id)
+        .ok_or_else(|| CliError::Usage(format!("team message not found: {message_id}")))?;
+    let delivery = message
+        .deliveries
+        .iter_mut()
+        .find(|delivery| delivery.member_id == member_id)
+        .ok_or_else(|| {
+            CliError::Usage(format!(
+                "message {message_id} has no delivery for {member_id}"
+            ))
+        })?;
+    match delivery.status {
+        TeamDeliveryStatus::Queued => {
+            return Err(CliError::Usage(format!(
+                "message {message_id} has not been delivered to {member_id}"
+            )));
+        }
+        TeamDeliveryStatus::Failed | TeamDeliveryStatus::Expired => {
+            return Err(CliError::Usage(format!(
+                "message {message_id} delivery to {member_id} is {} and cannot be acknowledged",
+                serde_snake_label(&delivery.status)
+            )));
+        }
+        TeamDeliveryStatus::Acknowledged => return Ok(message),
+        TeamDeliveryStatus::Delivered => {}
+    }
+    delivery.status = TeamDeliveryStatus::Acknowledged;
+    delivery.updated_at = now_string();
+    store.append_team_message(&message)?;
+    append_team_run_event(
+        store,
+        &message.team_run_id,
+        0,
+        TeamRunEventSourceKind::Host,
+        (member_id != "host").then(|| member_id.to_string()),
+        "message",
+        message_id,
+        "updated",
+        &format!("message acknowledged by {member_id}"),
+    )?;
+    Ok(message)
 }
 
 /// Where a member's ACP session runs: its pinned worktree when set, else the

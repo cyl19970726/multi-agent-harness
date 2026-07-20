@@ -1,12 +1,16 @@
 //! Integration coverage for `harness mcp`: the binary is spawned as a stdio
 //! MCP server against an isolated HOME and driven with line-delimited
 //! JSON-RPC 2.0 — initialize handshake, tools/list, the five Agent Team v0
-//! tools end to end (create → status → send → events), and the -32601
+//! tools end to end (create → start/status → send/ACK → events), and the -32601
 //! unknown-method error.
 
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
+use harness_core::TeamDeliveryStatus;
+use harness_store::HarnessStore;
+
+mod fake_provider;
 mod harness_env;
 use harness_env::{current_project_id, run_harness, TempHome};
 
@@ -28,7 +32,7 @@ struct McpClient {
 }
 
 impl McpClient {
-    fn spawn(home: &TempHome, project_id: &str) -> Self {
+    fn spawn(home: &TempHome, project_id: &str, extra_env: &[(&str, &str)]) -> Self {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_harness"));
         cmd.arg("--project")
             .arg(project_id)
@@ -40,6 +44,9 @@ impl McpClient {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
+        for (key, value) in extra_env {
+            cmd.env(key, value);
+        }
         let mut child = cmd.spawn().expect("spawn harness mcp");
         let stdin = child.stdin.take().expect("child stdin");
         let stdout = BufReader::new(child.stdout.take().expect("child stdout"));
@@ -113,7 +120,16 @@ fn call_payload(response: &serde_json::Value) -> serde_json::Value {
 fn mcp_stdio_agent_team_tools() {
     let home = TempHome::new("mcp-stdio");
     let project_id = init_project(&home, "mcp-proj");
-    let mut mcp = McpClient::spawn(&home, &project_id);
+    let fake_bin = fake_provider::install_kimi_acp_shim(home.base());
+    let fake_kimi = fake_bin.join("kimi").display().to_string();
+    let mut mcp = McpClient::spawn(
+        &home,
+        &project_id,
+        &[
+            ("KIMI_CODE_BIN", fake_kimi.as_str()),
+            ("FAKE_KIMI_RESULT", "done"),
+        ],
+    );
 
     // 1. initialize → protocol/server handshake, then the initialized
     //    notification (accepted silently).
@@ -155,6 +171,9 @@ fn mcp_stdio_agent_team_tools() {
             "wave_list",
             "wave_gate",
             "team_run_create",
+            "team_run_start",
+            "team_run_cancel",
+            "team_message_acknowledge",
             "team_run_list",
             "team_run_status",
             "team_run_send_message",
@@ -233,6 +252,8 @@ fn mcp_stdio_agent_team_tools() {
         .as_str()
         .expect("team_run_id")
         .to_string();
+    let expected_dashboard =
+        format!("http://127.0.0.1:8787/?surface=team&team={team_run_id}&project={project_id}");
     assert!(team_run_id.starts_with("team-run-"), "id: {team_run_id}");
     assert_eq!(payload["mission_id"].as_str(), Some("mission-mcp"));
     assert_eq!(payload["wave_id"].as_str(), Some("wave-mcp"));
@@ -254,7 +275,7 @@ fn mcp_stdio_agent_team_tools() {
         .to_string();
     assert_eq!(
         payload["dashboard_url"].as_str(),
-        Some("http://127.0.0.1:8787/team-console")
+        Some(expected_dashboard.as_str())
     );
 
     // 5. team_run_status → both members + dashboard URL (+ the two queued
@@ -283,7 +304,7 @@ fn mcp_stdio_agent_team_tools() {
     assert_eq!(payload["unacked_messages"].as_u64(), Some(2));
     assert_eq!(
         payload["dashboard_url"].as_str(),
-        Some("http://127.0.0.1:8787/team-console")
+        Some(expected_dashboard.as_str())
     );
 
     // 6. team_run_send_message can immediately reuse the automatic Assignment
@@ -356,7 +377,157 @@ fn mcp_stdio_agent_team_tools() {
     let payload = call_payload(&response);
     assert_eq!(payload.as_array().expect("events array").len(), 0);
 
-    // 7. Unknown method → JSON-RPC -32601; unknown tool → -32602; a failing
+    // 8. ACK refuses a message that has not actually been delivered.
+    let response = mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "team_message_acknowledge",
+            "arguments": {"message_id": assignment_id, "member_id": member_ids[0]}
+        }),
+    );
+    assert_eq!(response["result"]["isError"].as_bool(), Some(true));
+    assert!(response["result"]["content"][0]["text"]
+        .as_str()
+        .expect("ack error")
+        .contains("has not been delivered"));
+
+    // Simulate the provider delivery boundary, then prove ACK persists and
+    // appears in the run event stream. The provider-specific start tests own
+    // actual delivery; this test owns the Host-facing MCP contract.
+    let store = HarnessStore::new(home.projects_dir().join(&project_id));
+    let mut delivered_assignment = store
+        .team_messages()
+        .expect("team messages")
+        .into_iter()
+        .rev()
+        .find(|message| message.id == assignment_id)
+        .expect("assignment row");
+    delivered_assignment.deliveries[0].status = TeamDeliveryStatus::Delivered;
+    store
+        .append_team_message(&delivered_assignment)
+        .expect("mark assignment delivered");
+    let response = mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "team_message_acknowledge",
+            "arguments": {"message_id": assignment_id, "member_id": member_ids[0]}
+        }),
+    );
+    let payload = call_payload(&response);
+    assert_eq!(
+        payload["message"]["deliveries"][0]["status"].as_str(),
+        Some("acknowledged")
+    );
+    assert_eq!(
+        payload["dashboard_url"].as_str(),
+        Some(expected_dashboard.as_str())
+    );
+    let response = mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "team_run_events",
+            "arguments": {"team_run_id": team_run_id, "after_seq": last_seq}
+        }),
+    );
+    let payload = call_payload(&response);
+    assert!(payload
+        .as_array()
+        .expect("events array")
+        .iter()
+        .any(|event| {
+            event["entity_id"].as_str() == Some(assignment_id.as_str())
+                && event["operation"].as_str() == Some("updated")
+                && event["summary"]
+                    .as_str()
+                    .is_some_and(|summary| summary.contains("acknowledged"))
+        }));
+
+    // 9. A planning run can be cancelled through MCP using the same guarded
+    // transition helper as CLI and HTTP.
+    let response = mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "team_run_cancel",
+            "arguments": {"team_run_id": team_run_id}
+        }),
+    );
+    let payload = call_payload(&response);
+    assert_eq!(payload["team_run"]["status"].as_str(), Some("cancelled"));
+    assert_eq!(
+        payload["dashboard_url"].as_str(),
+        Some(expected_dashboard.as_str())
+    );
+
+    // 10. MCP start is asynchronous: it immediately returns the reserved
+    // running projection and exact URL, then the provider completes in the
+    // background while the same Host session remains responsive.
+    let response = mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "wave_create",
+            "arguments": {
+                "id": "wave-mcp-start",
+                "mission_id": "mission-mcp",
+                "index": 3,
+                "title": "Async start",
+                "objective": "Prove non-blocking MCP start",
+                "executor_kind": "agent_team"
+            }
+        }),
+    );
+    call_payload(&response);
+    let response = mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "team_run_create",
+            "arguments": {
+                "objective": "Finish through fake Kimi ACP",
+                "mission_id": "mission-mcp",
+                "wave_id": "wave-mcp-start",
+                "members": [{"name": "async-worker", "role": "implementer", "provider": "kimi"}]
+            }
+        }),
+    );
+    let startable = call_payload(&response);
+    let startable_id = startable["team_run_id"]
+        .as_str()
+        .expect("startable team run id")
+        .to_string();
+    let response = mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "team_run_start",
+            "arguments": {"team_run_id": startable_id, "idle_timeout_s": 5}
+        }),
+    );
+    let started = call_payload(&response);
+    assert_eq!(started["team_run"]["status"].as_str(), Some("running"));
+    assert_eq!(
+        started["dashboard_url"].as_str(),
+        Some(
+            format!("http://127.0.0.1:8787/?surface=team&team={startable_id}&project={project_id}")
+                .as_str()
+        )
+    );
+    let mut terminal = None;
+    for _ in 0..100 {
+        let response = mcp.request(
+            "tools/call",
+            serde_json::json!({
+                "name": "team_run_status",
+                "arguments": {"team_run_id": startable_id}
+            }),
+        );
+        let status = call_payload(&response);
+        if status["team_run"]["status"].as_str() == Some("completed") {
+            terminal = Some(status);
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(terminal.is_some(), "MCP-started TeamRun did not complete");
+
+    // 11. Unknown method → JSON-RPC -32601; unknown tool → -32602; a failing
     //    tool call → isError:true with the reason as text.
     let response = mcp.request("harness/no_such_method", serde_json::json!({}));
     assert_eq!(response["error"]["code"].as_i64(), Some(-32601));

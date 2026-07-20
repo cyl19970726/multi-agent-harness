@@ -38,6 +38,7 @@
 | Git, PR, worktree, review, and decision workflow | [workflow-git-pr.md](workflow-git-pr.md) |
 | External-system architecture research | [research/README.md](research/README.md) |
 | Provider integration rules | [integration/README.md](integration/README.md) |
+| Host Agent MCP control contract | [integration/host-agent-mcp.md](integration/host-agent-mcp.md) |
 | Codex provider integration | [integration/codex.md](integration/codex.md) |
 | Codex message delivery | [integration/codex-message-delivery.md](integration/codex-message-delivery.md) |
 | Claude Code provider integration | [integration/claude.md](integration/claude.md) |

@@ -41,8 +41,9 @@ Form a team when several of these hold:
   context (handoff docs, test logs, screenshots, deploy state, blockers);
 - lanes need a **durable owner** who stays accountable until acceptance, not
   a summary that disappears;
-- the work crosses provider strengths (Codex for X, Claude for Y, Kimi for Z)
-  or crosses trust boundaries (one lane may touch infra, another only docs);
+- the work crosses responsibility or trust boundaries (one lane may touch
+  infra, another only docs); the current executable member adapter is Kimi ACP,
+  while Codex/Claude member adapters remain future work;
 - there are external-change authorizations or physically exclusive resources
   (one device, one shared path) that need an enforcement carrier.
 
@@ -70,7 +71,8 @@ The numeric `--wave N` remains a compatibility index for unlinked runs only.
 
 ## Creating a run: the member configuration contract
 
-Use `/agent-team:new-run` or the MCP Mission/Wave and `team_run_create` tools.
+Prefer the MCP Mission/Wave and `team_run_*` tools. Use
+`/agent-team:new-run` or the CLI only as a convenience/fallback.
 The CLI shape:
 
 ```bash
@@ -89,8 +91,8 @@ harness team-run create \
   --objective "Land the payment reconciliation slice behind PR #81" \
   --budget-usd 25 \
   --member lead:integrator:kimi \
-  --member api:backend:codex:@crates/harness-store,crates/harness-core \
-  --member ui:frontend:claude:claude-sonnet-4@apps/web
+  --member api:backend:kimi@crates/harness-store,crates/harness-core \
+  --member ui:reviewer:kimi@apps/web
 ```
 
 Member spec grammar: `name:role:provider[:model][@path1,path2]`.
@@ -103,9 +105,9 @@ Rules that keep a run sane:
 - **Every member gets role + completion standard + evidence requirements +
   permission ceiling** in its prompt (see [[agent-team-member]]).
 - **Budget is set at run level** (`--budget-usd`); the harness enforces it.
-- A member may freely use its **own provider-native sub-agents** (a Kimi
-  member uses `Agent`/`AgentSwarm`, a Claude member uses Task, a Codex member
-  uses Codex subagents). The harness *captures attribution* of those
+- A member may freely use its **own provider-native sub-agents**. The harness
+  may capture honest attribution through optional hooks, but it never claims
+  lifecycle control over those
   delegations — it never schedules them. Do not try to micromanage a member's
   fan-out; that is the member's own context discipline.
 
@@ -122,9 +124,11 @@ parallel planning identifier, proves ownership.
 
 - Kinds: `assignment | question | answer | progress | blocker | handoff |
   review_request | review_result | control | broadcast`.
-- **Assignments, handoffs, and key messages must be ACKed.** Un-ACKed deliveries past
-  threshold are re-sent and escalated — treat an un-ACKed handoff as a
-  first-class alert, not a log line.
+- **Assignments, handoffs, and key messages must be ACKed.** Use
+  `team_message_acknowledge` after a delivery reaches `delivered`; queued,
+  failed, or expired deliveries cannot be acknowledged. Treat an un-ACKed
+  handoff as a first-class alert, not a log line. Automated resend/escalation
+  policy is not implemented yet.
 - One message, one delivery record per recipient: semantics and delivery are
   separate facts. Check delivery state before assuming you were heard.
 - Answer `blocker` messages promptly; a blocked member is burning budget and
@@ -163,9 +167,8 @@ Your main thread holds **decisions, not bulk**:
   `harness team-run status` + `harness team-run events`.
 - The CLI text view is a **compact projection of the same truth** the Browser
   Team Console renders — one shared read model, not a second dataset.
-- **The dashboard URL appears in every status output you produce:**
-  `http://127.0.0.1:8787/team-console` (requires `harness serve
-  --addr 127.0.0.1:8787`). Point the user to it whenever a run is active;
-  `/agent-team:dashboard` opens it.
+- **Every status output includes the exact `dashboard_url` returned by MCP.**
+  It carries `surface=team`, the TeamRun id, and the Workspace `project` id;
+  this prevents the Console from opening another project's store.
 - `harness team-run events --id <run> --after-seq <N>` follows the ordered
   event log; `seq` is monotonic, so resume by remembering the last `seq`.
