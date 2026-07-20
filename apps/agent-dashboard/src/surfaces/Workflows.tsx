@@ -31,7 +31,12 @@ import {
 import { workflowRunTone, workflowStepTone } from "@/components/workbench/tones";
 
 import { formatDuration, parseTs, type WorkbenchModel } from "../model/readModel";
-import { compactWorkflowScript, workflowScriptFromRun } from "../model/workflowSelectors";
+import {
+  compactWorkflowScript,
+  splitPartialOutputSteps,
+  terminalReasonInfo,
+  workflowScriptFromRun,
+} from "../model/workflowSelectors";
 import {
   describeShape,
   inferWorkflowShape,
@@ -196,6 +201,7 @@ function RunsTable({
           const running = tone === "running";
           const steps = stepsByRun.get(run.id) ?? [];
           const duration = formatDuration(run.created_at, run.ended_at);
+          const terminal = terminalReasonInfo(run.terminal_reason);
           return (
             <button
               key={run.id}
@@ -223,6 +229,7 @@ function RunsTable({
               <span className="min-w-0">
                 <Badge tone={tone}>{run.status}</Badge>
                 {run.dry_run && <Badge tone="warn">dry-run</Badge>}
+                {terminal && terminal.reason !== "completed" && <Badge tone={terminal.tone}>{terminal.label}</Badge>}
               </span>
               <span className="min-w-0">
                 <ShapeGlyph steps={steps} />
@@ -293,6 +300,8 @@ export function WorkflowRunDetail({ model, onSelectionChange, apiUrl }: Workflow
   const duration = formatDuration(run.created_at, run.ended_at);
   const specScript = workflowScriptFromRun(run);
   const parsedVerdict = parseVerdictSummary(readableWorkflowOutput(run.summary) ?? run.summary ?? "");
+  const terminal = terminalReasonInfo(run.terminal_reason);
+  const partial = splitPartialOutputSteps(steps);
 
   // Prev/next stepper over the (ordered) runs list, so cross-run scanning
   // survives without a standing rail.
@@ -342,12 +351,21 @@ export function WorkflowRunDetail({ model, onSelectionChange, apiUrl }: Workflow
               <div className="mt-1 flex flex-wrap items-center gap-1.5">
                 <Badge tone={headerTone}>{headerStatus}</Badge>
                 {run.dry_run && <Badge tone="warn">dry-run</Badge>}
+                {terminal && terminal.reason !== "completed" && (
+                  <Badge tone={terminal.tone} title={terminal.gloss}>{terminal.label}</Badge>
+                )}
               </div>
             </div>
           </div>
         </div>
 
       </header>
+
+      {run.partial_output_available && (
+        <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-muted-foreground">
+          This run ended before full acceptance. {partial.usable.length} completed or cached step{partial.usable.length === 1 ? "" : "s"} remain usable; {partial.invalid.length} step{partial.invalid.length === 1 ? "" : "s"} require review.
+        </div>
+      )}
 
       <div className="grid gap-3 xl:grid-cols-[minmax(0,1.35fr)_minmax(18rem,0.65fr)]">
         {run.spec != null && (

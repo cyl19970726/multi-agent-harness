@@ -1,4 +1,4 @@
-import type { WorkflowRun, WorkflowStep } from "../types";
+import type { WorkflowRun, WorkflowStep, WorkflowTerminalReason } from "../types";
 
 export interface WorkflowStepStatusCounts {
   queued: number;
@@ -17,6 +17,82 @@ export function countWorkflowStepStatuses(steps: WorkflowStep[]): WorkflowStepSt
 
 export function workflowRunIsLive(run?: WorkflowRun, steps: WorkflowStep[] = []): boolean {
   return run?.status === "running" || steps.some((step) => step.status === "queued" || step.status === "running");
+}
+
+export interface TerminalReasonInfo {
+  reason: WorkflowTerminalReason;
+  label: string;
+  gloss: string;
+  abandoned: boolean;
+  tone: "bad" | "warn" | "good" | "idle";
+}
+
+const TERMINAL_REASON_INFO: Record<WorkflowTerminalReason, Omit<TerminalReasonInfo, "reason">> = {
+  canceled_by_operator: { label: "canceled by operator", gloss: "An operator interrupted the workflow driver.", abandoned: true, tone: "warn" },
+  driver_exited: { label: "driver exited — abandoned", gloss: "The driver exited before the run finalized.", abandoned: true, tone: "bad" },
+  orphan_reaped: { label: "orphan reaped", gloss: "A worker outlived its owning run and was reaped.", abandoned: true, tone: "warn" },
+  leaf_timeout: { label: "leaf timeout", gloss: "A leaf exceeded its wall-clock timeout.", abandoned: false, tone: "bad" },
+  idle_timeout: { label: "idle timeout", gloss: "A leaf produced no output within its idle window.", abandoned: false, tone: "bad" },
+  provider_failed: { label: "provider failed", gloss: "The provider worker failed before producing an accepted result.", abandoned: false, tone: "bad" },
+  verdict_failed: { label: "verdict failed", gloss: "Execution finished, but the workflow verdict rejected the result.", abandoned: false, tone: "warn" },
+  completed: { label: "completed", gloss: "The workflow reached a normal terminal state.", abandoned: false, tone: "good" },
+};
+
+export function terminalReasonInfo(reason?: string | null): TerminalReasonInfo | undefined {
+  if (!reason) return undefined;
+  const known = TERMINAL_REASON_INFO[reason as WorkflowTerminalReason];
+  return known ? { reason: reason as WorkflowTerminalReason, ...known } : undefined;
+}
+
+export interface WorkflowRunVerdictInfo {
+  ok?: boolean;
+  reason?: string;
+  successCriterion?: string;
+}
+
+export function workflowRunVerdictInfo(run?: WorkflowRun): WorkflowRunVerdictInfo {
+  if (!run?.final_output || typeof run.final_output !== "object") return {};
+  const output = run.final_output as Record<string, unknown>;
+  const verdict = output.verdict && typeof output.verdict === "object"
+    ? output.verdict as Record<string, unknown>
+    : undefined;
+  return {
+    ok: typeof verdict?.ok === "boolean" ? verdict.ok : undefined,
+    reason: typeof verdict?.reason === "string" ? verdict.reason : undefined,
+    successCriterion: typeof output.success_criterion === "string" ? output.success_criterion : undefined,
+  };
+}
+
+export function splitPartialOutputSteps(steps: WorkflowStep[]): { usable: WorkflowStep[]; invalid: WorkflowStep[] } {
+  const usable: WorkflowStep[] = [];
+  const invalid: WorkflowStep[] = [];
+  for (const step of steps) {
+    (step.status === "completed" || step.status === "cached" ? usable : invalid).push(step);
+  }
+  return { usable, invalid };
+}
+
+export interface SchemaSelectionInfo {
+  attemptCount?: number;
+  selectedIndex?: number | null;
+  candidateCount?: number;
+  emptyFieldCount: number;
+  strict: boolean;
+  hasEmptyFields: boolean;
+}
+
+export function schemaSelectionInfo(step: WorkflowStep): SchemaSelectionInfo | undefined {
+  const result = step.result;
+  if (!result || result.schema_attempt_count == null) return undefined;
+  const emptyFieldCount = result.empty_field_count ?? 0;
+  return {
+    attemptCount: result.schema_attempt_count,
+    selectedIndex: result.selected_json_index,
+    candidateCount: result.schema_candidate_count,
+    emptyFieldCount,
+    strict: Boolean(result.schema_strict),
+    hasEmptyFields: emptyFieldCount > 0,
+  };
 }
 
 export function workflowRunProgress(steps: WorkflowStep[]): { terminalSteps: number; totalSteps: number; percent: number } {

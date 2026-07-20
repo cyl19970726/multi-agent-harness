@@ -589,6 +589,16 @@ export type WorkflowStepStatus =
   | "failed"
   | "cached";
 
+export type WorkflowTerminalReason =
+  | "canceled_by_operator"
+  | "driver_exited"
+  | "orphan_reaped"
+  | "leaf_timeout"
+  | "idle_timeout"
+  | "provider_failed"
+  | "verdict_failed"
+  | "completed";
+
 /**
  * One run of a built-in (registered) workflow. Mirrors harness-core
  * `WorkflowRun` (lib.rs:1261-1273) verbatim, snake_case. `step_ids` orders the
@@ -640,6 +650,8 @@ export interface WorkflowRun {
    * never mistaken for a real one. `undefined`/false for live and legacy rows.
    */
   dry_run?: boolean;
+  terminal_reason?: WorkflowTerminalReason | string | null;
+  partial_output_available?: boolean;
 }
 
 /**
@@ -703,6 +715,12 @@ export interface WorkflowStepResult {
   worktree_diff?: string;
   /** True when {@link worktree_diff} was truncated at the cap. */
   worktree_diff_truncated?: boolean;
+  structured?: unknown;
+  schema_attempt_count?: number;
+  selected_json_index?: number | null;
+  schema_candidate_count?: number;
+  empty_field_count?: number;
+  schema_strict?: boolean;
 }
 
 /**
@@ -723,6 +741,8 @@ export interface WorkflowStep {
   result?: WorkflowStepResult | null;
   started_at: string;
   ended_at?: string | null;
+  terminal_reason?: WorkflowTerminalReason | string | null;
+  partial?: boolean;
 }
 
 export type DashboardAction = (path: string, body?: unknown) => Promise<void>;

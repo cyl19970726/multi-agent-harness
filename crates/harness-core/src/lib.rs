@@ -1359,6 +1359,35 @@ pub enum WorkflowStepStatus {
     Cached,
 }
 
+/// Machine-readable class describing how a workflow run or step terminated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowTerminalReason {
+    CanceledByOperator,
+    DriverExited,
+    OrphanReaped,
+    LeafTimeout,
+    IdleTimeout,
+    ProviderFailed,
+    VerdictFailed,
+    Completed,
+}
+
+impl WorkflowTerminalReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::CanceledByOperator => "canceled_by_operator",
+            Self::DriverExited => "driver_exited",
+            Self::OrphanReaped => "orphan_reaped",
+            Self::LeafTimeout => "leaf_timeout",
+            Self::IdleTimeout => "idle_timeout",
+            Self::ProviderFailed => "provider_failed",
+            Self::VerdictFailed => "verdict_failed",
+            Self::Completed => "completed",
+        }
+    }
+}
+
 /// Durable lifecycle for a patch captured from a writable workflow leaf.
 ///
 /// A patch starts as `pending_apply` when the worker's throwaway worktree
@@ -1451,6 +1480,10 @@ pub struct WorkflowRun {
     /// `false` (they predate the flag; dry-run journaling is newer).
     #[serde(default)]
     pub dry_run: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal_reason: Option<WorkflowTerminalReason>,
+    #[serde(default)]
+    pub partial_output_available: bool,
 }
 
 /// Default retention policy for a [`WorkflowRun`]'s turn-event trace. Legacy rows
@@ -1481,6 +1514,10 @@ pub struct WorkflowStep {
     pub started_at: String,
     #[serde(default)]
     pub ended_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal_reason: Option<WorkflowTerminalReason>,
+    #[serde(default)]
+    pub partial: bool,
 }
 
 /// A durable patch captured from a writable workflow step.

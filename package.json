@@ -9,7 +9,7 @@
     "validate:json": "node scripts/validate-json.mjs",
     "check:schema-fixtures": "node scripts/check-schema-fixtures.mjs",
     "check:tool-descriptors": "node scripts/check-tool-descriptors.mjs",
-    "check:dashboard": "tsc -p apps/agent-dashboard/tsconfig.json --noEmit && node apps/agent-dashboard/tests/mission-wave-live-merge-check.mjs && node apps/agent-dashboard/tests/team-selectors-check.mjs && node apps/agent-dashboard/tests/workbench-visual-fixture-check.mjs && vite build --config apps/agent-dashboard/vite.config.ts",
+    "check:dashboard": "tsc -p apps/agent-dashboard/tsconfig.json --noEmit && node apps/agent-dashboard/tests/mission-wave-live-merge-check.mjs && node apps/agent-dashboard/tests/team-selectors-check.mjs && node apps/agent-dashboard/tests/workflow-diagnosis-check.mjs && node apps/agent-dashboard/tests/workbench-visual-fixture-check.mjs && vite build --config apps/agent-dashboard/vite.config.ts",
     "check:company-os": "node apps/agent-dashboard/tests/company-os-docs-check.mjs && node apps/agent-dashboard/tests/company-os-operations-check.mjs && node apps/agent-dashboard/tests/company-os-runtime-check.mjs && node apps/agent-dashboard/tests/company-os-navigation-check.mjs && node apps/agent-dashboard/tests/company-os-trademark-acceptance.mjs",
     "visual:fixture": "node scripts/materialize-workbench-layout-fixture.mjs",
     "visual:capture:workbench": "node scripts/capture-workbench-layout-v2.mjs",

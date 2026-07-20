@@ -647,6 +647,8 @@ mod tests {
             trace_retention: "durable".into(),
             host_pid: None,
             dry_run: false,
+            terminal_reason: None,
+            partial_output_available: false,
         }
     }
 
@@ -662,6 +664,8 @@ mod tests {
             result: None,
             started_at: "unix-ms:1".into(),
             ended_at: None,
+            terminal_reason: None,
+            partial: false,
         }
     }
 

@@ -108,6 +108,17 @@ pub struct AgentStepSpec {
     /// a JSON object whose top-level keys are the REQUIRED keys the reply must
     /// carry. `None` = text mode (the reply is returned verbatim as today).
     pub schema: Option<serde_json::Value>,
+    /// Whether structured extraction enforces the non-empty-string rule (#192).
+    /// `false` (default) keeps the permissive behavior: any JSON object carrying
+    /// the required keys is accepted, even if its string fields are all empty.
+    /// `true` REJECTS a candidate object whose top-level string-typed fields are
+    /// empty (after trim) — the candidate is treated as if it did not parse, so
+    /// the existing candidate-selection / retry-once machinery skips it and picks
+    /// a later meaningful object (or fails the step if none survives). Only
+    /// meaningful in schema mode; ignored for text-mode steps. `#[serde(default)]`
+    /// so specs journaled before #192 (which lack the field) still resume.
+    #[serde(default)]
+    pub schema_strict: bool,
     /// Whether this step may EDIT files / run shell. `false` (default) runs the
     /// worker read-only (codex `--sandbox read-only`; claude read-only tools).
     /// `true` escalates to an editable sandbox AND auto-isolates the step into a
@@ -559,6 +570,7 @@ pub fn investigate(driver: &AgentStepFn<'_>, topic: &str) -> WorkflowOutcome {
             isolation: None,
             prompt: format!("Scope the investigation of: {topic}. List the modules to audit."),
             schema: None,
+            schema_strict: false,
             writable: false,
             ordinal: None,
         },
@@ -589,6 +601,7 @@ pub fn investigate(driver: &AgentStepFn<'_>, topic: &str) -> WorkflowOutcome {
             isolation: None,
             prompt: format!("Audit the code paths involved in: {topic}."),
             schema: None,
+            schema_strict: false,
             writable: false,
             ordinal: None,
         },
@@ -613,6 +626,7 @@ pub fn investigate(driver: &AgentStepFn<'_>, topic: &str) -> WorkflowOutcome {
             isolation: None,
             prompt: format!("Audit the recent diffs related to: {topic}."),
             schema: None,
+            schema_strict: false,
             writable: false,
             ordinal: None,
         },
@@ -823,11 +837,13 @@ mod tests {
             isolation: Some(ISOLATION_WORKTREE.into()),
             prompt: "write it".into(),
             schema: None,
+            schema_strict: true,
             writable: true,
             ordinal: Some(7),
         };
         let encoded = serde_json::to_string(&spec).expect("serialize");
         let decoded: AgentStepSpec = serde_json::from_str(&encoded).expect("deserialize");
+        assert!(decoded.schema_strict, "schema_strict round-trips");
         assert_eq!(decoded.expected_artifacts, vec!["out/image.png"]);
         assert_eq!(decoded.persist_changes.as_deref(), Some("patch"));
         assert_eq!(decoded.write_mode.as_deref(), Some(WRITE_MODE_DIRECT));
@@ -864,6 +880,10 @@ mod tests {
         assert!(!decoded.auto_apply_on_verdict);
         assert_eq!(decoded.service_tier, None);
         assert_eq!(decoded.timeout_s, None);
+        // #192: a spec journaled before schema_strict existed (the `legacy` object
+        // above omits the field) decodes with schema_strict defaulted to false, so
+        // an old `--resume` store still loads (serde default).
+        assert!(!decoded.schema_strict);
     }
 
     #[test]
@@ -924,6 +944,7 @@ mod tests {
                 isolation: None,
                 prompt: format!("prompt {i}"),
                 schema: None,
+                schema_strict: false,
                 writable: false,
                 ordinal: None,
             })
@@ -996,6 +1017,7 @@ mod tests {
                 isolation: None,
                 prompt: "x".to_string(),
                 schema: None,
+                schema_strict: false,
                 writable: false,
                 ordinal: None,
             })
@@ -1080,6 +1102,7 @@ mod tests {
                 isolation: None,
                 prompt: format!("prompt {i}"),
                 schema: None,
+                schema_strict: false,
                 writable: false,
                 ordinal: None,
             })
@@ -1137,6 +1160,7 @@ mod tests {
             isolation: None,
             prompt: "x".to_string(),
             schema: None,
+            schema_strict: false,
             writable: false,
             ordinal: None,
         }

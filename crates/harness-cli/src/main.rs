@@ -22,7 +22,7 @@ use harness_core::{
     TeamMessageKind, TeamRunEvent, TeamRunEventSourceKind, TeamRunStatus, Wave, WaveExecutorKind,
     WaveGateStatus, WaveStatus, WorkflowArtifactFile, WorkflowArtifactManifest,
     WorkflowArtifactManifestStatus, WorkflowPatch, WorkflowPatchStatus, WorkflowRun,
-    WorkflowRunStatus, WorkflowStep, WorkflowStepStatus,
+    WorkflowRunStatus, WorkflowStep, WorkflowStepStatus, WorkflowTerminalReason,
 };
 use harness_store::{HarnessStore, MessageDeliveryClaimResult, StoreError};
 use thiserror::Error;
@@ -5848,6 +5848,12 @@ fn build_terminal_step(
         result: Some(workflow::step_result_json(result)),
         started_at,
         ended_at: Some(ended_at),
+        terminal_reason: Some(if result.ok {
+            WorkflowTerminalReason::Completed
+        } else {
+            WorkflowTerminalReason::ProviderFailed
+        }),
+        partial: false,
     }
 }
 
@@ -5879,6 +5885,8 @@ fn workflow_real_agent_step(
         result: None,
         started_at: started_at.clone(),
         ended_at: None,
+        terminal_reason: None,
+        partial: false,
     };
     // A failure to journal the start row must not abort the step; the terminal
     // row still records the outcome. Best-effort, like the rest of this seam.
@@ -10011,6 +10019,8 @@ fn workflow_run_script_value(
         // Mark dry-run validation runs so they are never mistaken for real runs in
         // the jsonl / dashboard (issue #89 item 2).
         dry_run: options.dry_run,
+        terminal_reason: None,
+        partial_output_available: false,
     };
     store.append_workflow_run(&run)?;
 
@@ -10079,6 +10089,8 @@ fn run_workflow_with_driver(
         // abandoned run (see the run-script path and `reap_abandoned_runs`).
         host_pid: Some(std::process::id()),
         dry_run,
+        terminal_reason: None,
+        partial_output_available: false,
     };
     store.append_workflow_run(&run)?;
 
@@ -10130,6 +10142,11 @@ fn journal_workflow_outcome(
     run.summary = Some(outcome.summary.clone());
     run.agents_spawned = outcome.agents_spawned;
     run.final_output = outcome.final_output.clone();
+    run.terminal_reason = Some(if outcome.status == WorkflowRunStatus::Completed {
+        WorkflowTerminalReason::Completed
+    } else {
+        WorkflowTerminalReason::ProviderFailed
+    });
     store.append_workflow_run(&run)?;
     let mut patches = persist_workflow_patches(store, &run, outcome, &steps_json)?;
     let mut artifact_manifests =
@@ -12495,12 +12512,19 @@ fn reap_stale_workflow_runs(store: &HarnessStore) -> CliResult<usize> {
                     continue;
                 }
                 let mut closed = step.clone();
+                let had_partial = closed.result.is_some()
+                    || closed
+                        .output_summary
+                        .as_deref()
+                        .is_some_and(|summary| !summary.is_empty());
                 closed.status = WorkflowStepStatus::Failed;
                 closed.ended_at = Some(now_string());
                 closed.output_summary = Some(match closed.output_summary.as_deref() {
                     Some(s) if !s.is_empty() => format!("{s} [reaped: driver process gone]"),
                     _ => "reaped: driver process gone".to_string(),
                 });
+                closed.terminal_reason = Some(WorkflowTerminalReason::DriverExited);
+                closed.partial = had_partial;
                 store.append_workflow_step(&closed)?;
             }
         }
@@ -12514,6 +12538,15 @@ fn reap_stale_workflow_runs(store: &HarnessStore) -> CliResult<usize> {
                 "reaped: orphaned Running for ~{}h — host process exited before the run finalized",
                 age / (60 * 60 * 1000)
             ),
+        });
+        run.terminal_reason = Some(WorkflowTerminalReason::DriverExited);
+        run.partial_output_available = steps_by_run.get(&run.id).is_some_and(|steps| {
+            steps.iter().any(|step| {
+                matches!(
+                    step.status,
+                    WorkflowStepStatus::Completed | WorkflowStepStatus::Cached
+                ) || step.result.is_some()
+            })
         });
         store.append_workflow_run(&run)?;
         // A crashed/abandoned run reaching its terminal Failed status also notifies
@@ -16154,6 +16187,8 @@ mod workflow_runtime_tests {
                 trace_retention: "durable".into(),
                 host_pid: None,
                 dry_run: false,
+                terminal_reason: None,
+                partial_output_available: false,
             })
             .expect("append gc run");
     }
@@ -17129,6 +17164,7 @@ mod workflow_runtime_tests {
             isolation: None,
             prompt: "hi".into(),
             schema: None,
+            schema_strict: false,
             writable: false,
             ordinal: None,
         };
@@ -17183,6 +17219,7 @@ mod workflow_runtime_tests {
             isolation: None,
             prompt: "hi".into(),
             schema: None,
+            schema_strict: false,
             writable: false,
             ordinal: None,
         };
@@ -17234,6 +17271,7 @@ mod workflow_runtime_tests {
             isolation: Some("worktree".into()),
             prompt: "hi".into(),
             schema: None,
+            schema_strict: false,
             writable: false,
             ordinal: None,
         };
@@ -17375,6 +17413,7 @@ new file mode 100644
             isolation: None,
             prompt: "hi".into(),
             schema: None,
+            schema_strict: false,
             writable: false,
             ordinal: None,
         };
@@ -18567,6 +18606,8 @@ new file mode 100644
                 trace_retention: "durable".into(),
                 host_pid: None,
                 dry_run: false,
+                terminal_reason: None,
+                partial_output_available: false,
             })
             .expect("append run");
         store
@@ -18581,6 +18622,8 @@ new file mode 100644
                 result: None,
                 started_at: format!("unix-ms:{created}"),
                 ended_at: Some(format!("unix-ms:{}", created + 1)),
+                terminal_reason: None,
+                partial: false,
             })
             .expect("append step");
         ndjson
@@ -18607,6 +18650,8 @@ new file mode 100644
             trace_retention: "durable".into(),
             host_pid: None,
             dry_run: false,
+            terminal_reason: None,
+            partial_output_available: false,
         };
         // One Running run 5h old -> reaped to Failed; one started "now" -> stays.
         store
@@ -18662,6 +18707,8 @@ new file mode 100644
                 trace_retention: "durable".into(),
                 host_pid: Some(dead_pid),
                 dry_run: false,
+                terminal_reason: None,
+                partial_output_available: false,
             })
             .expect("append run");
         // A still-open step under it must be closed to Failed by the reaper too.
@@ -18677,6 +18724,8 @@ new file mode 100644
                 result: None,
                 started_at: format!("unix-ms:{now}"),
                 ended_at: None,
+                terminal_reason: None,
+                partial: false,
             })
             .expect("append step");
         // A run with a LIVE pid (this test process) must be left alone.
@@ -18698,6 +18747,8 @@ new file mode 100644
                 trace_retention: "durable".into(),
                 host_pid: Some(std::process::id()),
                 dry_run: false,
+                terminal_reason: None,
+                partial_output_available: false,
             })
             .expect("append live run");
 
@@ -18819,6 +18870,8 @@ new file mode 100644
                 trace_retention: "durable".into(),
                 host_pid,
                 dry_run: false,
+                terminal_reason: None,
+                partial_output_available: false,
             })
             .expect("append run");
     }
@@ -18960,6 +19013,7 @@ new file mode 100644
             isolation: None,
             prompt: "do the thing".into(),
             schema: None,
+            schema_strict: false,
             writable: false,
             ordinal: Some(0),
         };
@@ -19030,6 +19084,7 @@ new file mode 100644
             isolation: None,
             prompt: "p".into(),
             schema: None,
+            schema_strict: false,
             writable: false,
             ordinal: Some(0),
         };
@@ -19158,6 +19213,8 @@ new file mode 100644
             })),
             started_at: "unix-ms:1".into(),
             ended_at: Some("unix-ms:2".into()),
+            terminal_reason: Some(WorkflowTerminalReason::Completed),
+            partial: false,
         };
         store
             .append_workflow_run(&WorkflowRun {
@@ -19177,6 +19234,8 @@ new file mode 100644
                 trace_retention: "durable".into(),
                 host_pid: None,
                 dry_run: false,
+                terminal_reason: None,
+                partial_output_available: false,
             })
             .expect("append run");
         store
@@ -19332,6 +19391,7 @@ new file mode 100644
             isolation: isolation.map(str::to_string),
             prompt: "noop".into(),
             schema: None,
+            schema_strict: false,
             writable,
             ordinal: Some(0),
         }
@@ -19516,6 +19576,8 @@ new file mode 100644
             trace_retention: "durable".into(),
             host_pid: None,
             dry_run: false,
+            terminal_reason: None,
+            partial_output_available: false,
         };
         let outcome = workflow::WorkflowOutcome {
             steps: vec![
@@ -19609,6 +19671,8 @@ new file mode 100644
             trace_retention: "durable".into(),
             host_pid: None,
             dry_run: false,
+            terminal_reason: None,
+            partial_output_available: false,
         };
         let outcome = workflow::WorkflowOutcome {
             steps: vec![workflow::StepResult {
@@ -19891,6 +19955,8 @@ new file mode 100644
             trace_retention: "durable".into(),
             host_pid: None,
             dry_run: false,
+            terminal_reason: None,
+            partial_output_available: false,
         };
         let outcome = workflow::WorkflowOutcome {
             steps: vec![
@@ -19952,6 +20018,8 @@ new file mode 100644
             trace_retention: "durable".into(),
             host_pid: None,
             dry_run: false,
+            terminal_reason: None,
+            partial_output_available: false,
         };
         let failed_writable = workflow::StepResult {
             phase: "p".into(),
@@ -20043,6 +20111,8 @@ new file mode 100644
             trace_retention: "durable".into(),
             host_pid: None,
             dry_run: false,
+            terminal_reason: None,
+            partial_output_available: false,
         };
         let outcome = workflow::WorkflowOutcome {
             steps: vec![workflow::StepResult {
@@ -21228,6 +21298,8 @@ agent("a NEW second leaf that changes the ordinal alignment")
                 result: None,
                 started_at: started_at.clone(),
                 ended_at: None,
+                terminal_reason: None,
+                partial: false,
             };
             store
                 .append_workflow_step(&running)
