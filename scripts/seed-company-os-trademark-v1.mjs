@@ -567,6 +567,7 @@ async function main() {
       archived_store: "archived-harness-home",
       counts: projectionCounts(snapshot),
       gate: {
+        phase: "before_optional_browser_action",
         approval_id: "approval-trademark-filing-fee-cn-2026-018",
         approval_status: "requested",
         commitment_id: "financial-commitment-trademark-filing-fee-cn-2026-018",
@@ -594,6 +595,10 @@ async function main() {
         "--output", evidenceRoot,
       ];
       if (captureContract === "v1") captureArgs.splice(3, 0, "--stage", "implemented");
+      if (captureContract === "v2.2" && flag("--capture-approval-action")) {
+        captureArgs.push("--approval-action-token", token);
+        captureArgs.push("--approval-action-decision", argument("--approval-action-decision", "approved"));
+      }
       const capture = spawnSync(process.execPath, captureArgs, { cwd: repoRoot, env: process.env, stdio: "inherit" });
       if (capture.status !== 0) throw new Error(`live Company OS capture failed with status ${capture.status}`);
     }

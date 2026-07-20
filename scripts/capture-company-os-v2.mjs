@@ -29,6 +29,10 @@ function hash(buffer) {
   return `sha256:${createHash("sha256").update(buffer).digest("hex")}`;
 }
 
+function latestRecords(value) {
+  return Array.isArray(value) ? value.map((item) => item?.record && typeof item.record === "object" ? { ...item.record, ...item } : item) : [];
+}
+
 function normalizedHttpBase(value, label) {
   const parsed = new URL(value);
   if (!new Set(["http:", "https:"]).has(parsed.protocol)) throw new Error(`${label} must use HTTP(S)`);
@@ -145,6 +149,10 @@ async function main() {
   if (!new Set(["fixture", "live"]).has(dataMode)) throw new Error("--data-mode must be fixture or live");
   const apiBaseUrl = dataMode === "live" ? normalizedHttpBase(argument("--api-base-url"), "--api-base-url") : "";
   if (dataMode === "live" && !apiBaseUrl) throw new Error("live capture requires --api-base-url");
+  const approvalActionToken = argument("--approval-action-token");
+  if (approvalActionToken && dataMode !== "live") throw new Error("--approval-action-token requires --data-mode live");
+  const approvalActionDecision = argument("--approval-action-decision", "approved");
+  if (!new Set(["approved", "rejected"]).has(approvalActionDecision)) throw new Error("--approval-action-decision must be approved or rejected");
   const outputRoot = resolve(argument("--output", join(repoRoot, ".visual-evidence/company-os-v2", runId)));
   const actualRoot = join(outputRoot, dataMode === "live" ? "store-live-actual" : "actual");
   await mkdir(actualRoot, { recursive: true });
@@ -193,6 +201,86 @@ async function main() {
       const bytes = await readFile(path);
       results.push({ ...item, viewport: "desktop-1536x1024", final_url: page.url(), file: relative(repoRoot, path), sha256: hash(bytes), status: "captured" });
     }
+    let approvalAction;
+    if (approvalActionToken) {
+      const actionRoot = join(outputRoot, "approval-action");
+      await mkdir(actionRoot, { recursive: true });
+      const approvalId = "approval-trademark-filing-fee-cn-2026-018";
+      const decisionButton = approvalActionDecision === "approved" ? "Approve" : "Reject";
+      let dispatchedBody;
+      page.on("request", (request) => {
+        if (new URL(request.url()).pathname === "/v1/company-os/actions/dispatch" && request.method() === "POST") {
+          dispatchedBody = request.postDataJSON();
+        }
+      });
+      const url = new URL(`/?surface=approvals&approval=${approvalId}`, base);
+      url.searchParams.set("api", base);
+      url.searchParams.set("project", liveSource.project_id);
+      await page.goto(url.toString(), { waitUntil: "domcontentloaded", timeout: 15_000 });
+      const root = page.locator('[data-company-os-page="approval-focus"][data-company-os-ready="true"][data-company-os-data-mode="store-live"]').first();
+      await root.waitFor({ state: "visible", timeout: 15_000 });
+      await root.locator('[data-company-os-action-state="available"]').waitFor({ state: "visible", timeout: 15_000 });
+      const beforePath = join(actionRoot, "approval-requested--before.png");
+      await page.screenshot({ path: beforePath, fullPage: false });
+      await root.locator("[data-company-os-decision-note]").fill(`${approvalActionDecision === "approved" ? "Approved" : "Rejected"} in Store-live browser acceptance; no Payment is authorized.`);
+      await root.locator("[data-company-os-action-token]").fill("invalid-browser-capability");
+      await root.getByRole("button", { name: decisionButton, exact: true }).click();
+      await page.getByText("missing or invalid Company OS transport capability", { exact: false }).waitFor({ state: "visible", timeout: 15_000 });
+      const deniedSnapshot = await readJson(liveSource.snapshot_endpoint, "post-denial snapshot");
+      const deniedApproval = latestRecords(deniedSnapshot.company_os.approvals).find((record) => record.id === approvalId);
+      if (deniedApproval?.status !== "requested") throw new Error("invalid browser capability mutated the Approval");
+      const denialPath = join(actionRoot, "approval-denied-invalid-capability.png");
+      await page.screenshot({ path: denialPath, fullPage: false });
+      await root.locator("[data-company-os-action-token]").fill(approvalActionToken);
+      await root.getByRole("button", { name: decisionButton, exact: true }).click();
+      await root.getByText(`Decision recorded: ${approvalActionDecision}.`, { exact: false }).waitFor({ state: "visible", timeout: 15_000 }).catch(async (error) => {
+        const failurePath = join(actionRoot, "approval-action-failure.png");
+        await page.screenshot({ path: failurePath, fullPage: false });
+        const visible = (await page.locator("body").innerText()).replace(/\s+/g, " ").slice(0, 2_000);
+        throw new Error(`${error.message}\nVisible browser state: ${visible}\nFailure screenshot: ${failurePath}`);
+      });
+      const afterPath = join(actionRoot, `approval-${approvalActionDecision}--after.png`);
+      await page.screenshot({ path: afterPath, fullPage: false });
+      const snapshot = await readJson(liveSource.snapshot_endpoint, "post-decision snapshot");
+      const companyOs = snapshot.company_os;
+      const approval = latestRecords(companyOs.approvals).find((record) => record.id === approvalId);
+      const commands = latestRecords(companyOs.action_commands).filter((record) => record.command_name === "approval.decide");
+      const command = commands.at(-1);
+      const audits = latestRecords(companyOs.audit_events).filter((record) => record.action_command_id === command?.id);
+      const commitment = latestRecords(companyOs.financial_records).find((record) => record.type === "commitment");
+      const payments = latestRecords(companyOs.financial_records).filter((record) => record.type === "payment");
+      if (approval?.status !== approvalActionDecision || approval?.decided_by?.[0]?.actor_type !== "human") throw new Error("browser decision did not persist the named Human decision");
+      if (command?.status !== "executed" || command?.requested_by?.actor_type !== "human") throw new Error("browser decision lacks an executed Human ActionCommand");
+      if (audits.length < 2) throw new Error("browser decision lacks authorization and execution audit events");
+      if (commitment?.status !== "pending_approval") throw new Error("approval.decide incorrectly changed the Commitment");
+      if (payments.length !== 0) throw new Error("approval.decide created a Payment");
+      if (!dispatchedBody) throw new Error("browser decision request body was not observed");
+      const replayResponse = await fetch(`${apiBaseUrl}/v1/company-os/actions/dispatch?project=${encodeURIComponent(liveSource.project_id)}`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-harness-company-os-token": approvalActionToken },
+        body: JSON.stringify(dispatchedBody),
+      });
+      const replayBody = await replayResponse.json();
+      if (!replayResponse.ok || replayBody?.result?.idempotent_replay !== true) throw new Error(`approval decision replay was not idempotent: ${JSON.stringify(replayBody)}`);
+      await writeFile(join(actionRoot, "post-decision-snapshot.json"), `${JSON.stringify(snapshot, null, 2)}\n`);
+      approvalAction = {
+        status: "passed",
+        approval_id: approvalId,
+        approval_status: approval.status,
+        decided_by: approval.decided_by,
+        action_command_id: command.id,
+        action_command_status: command.status,
+        audit_event_refs: audits.map((event) => event.id),
+        commitment_status: commitment.status,
+        payment_count: payments.length,
+        idempotent_replay: true,
+        capability_storage: "browser-session-memory-only; omitted from evidence",
+        denied_invalid_capability: { approval_status: deniedApproval.status, file: relative(repoRoot, denialPath), sha256: hash(await readFile(denialPath)) },
+        before: { file: relative(repoRoot, beforePath), sha256: hash(await readFile(beforePath)) },
+        after: { file: relative(repoRoot, afterPath), sha256: hash(await readFile(afterPath)) },
+        snapshot: relative(repoRoot, join(actionRoot, "post-decision-snapshot.json")),
+      };
+    }
     await context.close();
     const manifest = {
       contract: "company-os-v2-implementation-capture-v2",
@@ -210,6 +298,7 @@ async function main() {
       git_dirty: Boolean(execFileSync("git", ["status", "--porcelain"], { cwd: repoRoot, encoding: "utf8" }).trim()),
       assertions: ["explicit data truth mode", "canonical record refs", "no Payment before settlement", "no persisted thinking", "no horizontal overflow", dataMode === "live" ? "no console errors" : "fixture API errors are non-evidence"],
       results,
+      ...(approvalAction ? { approval_action: approvalAction } : {}),
     };
     await writeFile(join(outputRoot, "capture-run.json"), `${JSON.stringify(manifest, null, 2)}\n`);
     console.log(JSON.stringify(manifest, null, 2));

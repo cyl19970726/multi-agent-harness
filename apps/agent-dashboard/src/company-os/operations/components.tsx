@@ -130,6 +130,7 @@ export function CompleteMark({ label }: { label: string }) {
 }
 
 /** Honest action affordance for read-only projections with no command transport. */
-export function GovernedActionButton({ label, reason }: { label: string; reason: string }) {
-  return <button type="button" disabled title={reason} aria-label={`${label}. Unavailable: ${reason}`} className="inline-flex min-h-10 cursor-not-allowed items-center justify-center rounded-md border border-border bg-muted px-3 py-2 text-sm font-medium text-muted-foreground">{label}</button>;
+export function GovernedActionButton({ label, reason, onClick, disabled = !onClick }: { label: string; reason?: string; onClick?: () => void; disabled?: boolean }) {
+  const unavailable = disabled ? reason ?? "This governed action is unavailable" : undefined;
+  return <button type="button" disabled={disabled} title={unavailable} aria-label={unavailable ? `${label}. Unavailable: ${unavailable}` : label} onClick={onClick} className={`inline-flex min-h-10 items-center justify-center rounded-md border px-3 py-2 text-sm font-medium ${disabled ? "cursor-not-allowed border-border bg-muted text-muted-foreground" : "border-primary/30 bg-primary text-primary-foreground shadow-sm hover:bg-primary/90"}`}>{label}</button>;
 }

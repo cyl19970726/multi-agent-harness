@@ -53,8 +53,12 @@ function installLocation(search) {
 }
 
 async function main() {
-  const shell = await readFile(join(dashboardRoot, "src/app/WorkbenchShell.tsx"), "utf8");
-  const router = await readFile(join(dashboardRoot, "src/company-os/CompanyOsRouter.tsx"), "utf8");
+  const [shell, router, api, app] = await Promise.all([
+    readFile(join(dashboardRoot, "src/app/WorkbenchShell.tsx"), "utf8"),
+    readFile(join(dashboardRoot, "src/company-os/CompanyOsRouter.tsx"), "utf8"),
+    readFile(join(dashboardRoot, "src/api.ts"), "utf8"),
+    readFile(join(dashboardRoot, "src/app/App.tsx"), "utf8"),
+  ]);
   const navStart = shell.indexOf("const navigationGroups");
   const navEnd = shell.indexOf("const navItems", navStart);
   const navigation = shell.slice(navStart, navEnd);
@@ -70,6 +74,8 @@ async function main() {
   check(router.includes('data-company-os-prototype={isLive ? "false" : "true"}') && router.includes("fixed fixture fallback") && router.includes("not claiming live Company OS persistence"), "fixture fallback is visibly and structurally labelled as prototype data");
   check(router.includes("Live · Store-backed Company OS") && router.includes('data-company-os-data-mode="store-live"'), "authoritative store projections have a distinct live truth label");
   check(router.includes("adaptCompanyOsDocsProjection(resolved.value,") && router.includes("adaptTrademarkOperationsProjection(resolved.value)"), "fixture and store-live routes pass the resolved projection directly into both presentation adapters");
+  check(router.includes('actionsEnabled && resolved.mode === "store-live"') && router.includes('"X-Harness-Company-OS-Token"'), "Approval Action transport is enabled only for Store-live truth and sends the session capability in the dedicated header");
+  check(api.includes("...options.headers") && api.includes("payload.detail || payload.error") && app.includes("postAction(apiUrl, path, body, selectedProjectId, options)"), "browser Action requests carry scoped headers, preserve server denial detail, and refresh through the existing mutation path");
 
   const { module: sourceTruth, directory: sourceTruthDirectory } = await loadSourceTruth();
   try {

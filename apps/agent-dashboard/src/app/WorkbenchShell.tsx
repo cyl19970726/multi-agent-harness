@@ -71,7 +71,7 @@ interface WorkbenchShellProps {
   /** True only when the snapshot is the live source; gates write actions. */
   actionsEnabled: boolean;
   /** POST a harness action then refresh the snapshot. */
-  onAction: (path: string, body?: unknown) => void;
+  onAction: (path: string, body?: unknown, options?: { headers?: Readonly<Record<string, string>> }) => Promise<boolean>;
   /** Whether opt-in interval polling of /v1/snapshot is currently on. */
   pollEnabled: boolean;
   /** Whether polling is meaningful right now (only against a live source). */
@@ -745,12 +745,12 @@ function SurfaceSwitch({
   onSelectionChange: (selection: Partial<SelectionState>) => void;
   sourceLabel: string;
   actionsEnabled: boolean;
-  onAction: (path: string, body?: unknown) => void;
+  onAction: (path: string, body?: unknown, options?: { headers?: Readonly<Record<string, string>> }) => Promise<boolean>;
   apiUrl: string;
 }) {
   const shared = { model, onSelectionChange, actionsEnabled, onAction, apiUrl };
   if (isCompanyOsSurface(selection.surface)) {
-    return <CompanyOsRouter model={model} selection={selection} />;
+    return <CompanyOsRouter model={model} selection={selection} actionsEnabled={actionsEnabled} onAction={onAction} />;
   }
   switch (selection.surface) {
     case "missions":

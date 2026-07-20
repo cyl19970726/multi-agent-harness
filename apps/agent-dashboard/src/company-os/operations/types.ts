@@ -71,6 +71,54 @@ export interface ApprovalView {
   financeReviewer?: ActorSummary;
   legalReviewer?: ActorSummary;
   expiresAt?: string;
+  /** Present only when the Store projection supplies a complete governed action contract. */
+  decisionContext?: ApprovalDecisionContext;
+}
+
+export interface CanonicalActorRef {
+  actor_type: "human" | "agent" | "external" | "service";
+  actor_id: string;
+}
+
+export interface CanonicalEntityRef {
+  kind: string;
+  id: string;
+}
+
+export interface ApprovalDecisionContext {
+  definitionId: string;
+  actionPolicyRef: string;
+  recordSubjectRef: CanonicalEntityRef;
+  requestedBy: CanonicalActorRef;
+  requiredApproverRefs: CanonicalActorRef[];
+  requiredActorType?: string;
+  recordPolicyRef: string;
+  rawActionSummary: string;
+  evidenceRefs: string[];
+  requestedAt: string;
+  expiresAt?: string;
+}
+
+export type ApprovalDecision = "approved" | "rejected";
+
+export interface ApprovalDecisionCommand {
+  id: string;
+  command_name: "approval.decide";
+  subject_ref: CanonicalEntityRef;
+  requested_by: CanonicalActorRef;
+  payload: {
+    definition_id: string;
+    record: Record<string, unknown>;
+  };
+  required_permission: "company.approve";
+  policy_ref: string;
+  risk_tier: "r2";
+  requires_human_approval: false;
+  approval_refs: [];
+  status: "requested";
+  audit_event_refs: string[];
+  requested_at: string;
+  completed_at: null;
 }
 
 /**

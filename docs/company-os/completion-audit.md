@@ -26,7 +26,7 @@ automated check is cited only for the requirement it actually covers.
 | Basic Docs and standard views | achieved | `apps/agent-dashboard/src/company-os/docs/`, projection-safe adapter tests, table/board/timeline/detail fallback checks |
 | Human / Standing Agent / External organization | achieved | separate actor types and lifecycle validation in Core/Store; Organization, Human focus, and Standing Agent focus pages; no execution telemetry on Human pages |
 | WorkItem / Approval / Finance linkage | achieved | governed API and transition tests; Trademark live seed has one requested Human Approval and one CNY 3,000 pending Commitment, with zero Payment records |
-| Governed agent-programmable page runtime | achieved for isolated runtime and backend contracts | `apps/agent-dashboard/src/company-os/runtime/`; scoped query/action, Human gate, package, rollback, fallback, and backend Action API checks. The current V2.2 product pages do not yet mount this runtime or dispatch browser actions. |
+| Governed agent-programmable page runtime | achieved for isolated runtime and backend contracts | `apps/agent-dashboard/src/company-os/runtime/`; scoped query/action, Human gate, package, rollback, fallback, and backend Action API checks. Interactive Approval was added later and is tracked separately in `browser-action-transport.md`; it is not retroactive V1 evidence. |
 | Module designer and page builder capabilities | achieved | `skills/company-module-designer/` and `skills/company-page-builder/`; validators, examples, metadata, and blind forward tests |
 | Trademark Management end-to-end acceptance | achieved | `.visual-evidence/company-os-v1/company-os-v1-live-acceptance/seed-manifest.json` and `capture-run.json`; independent Wave 7 Gate PASS |
 | Current-before → Expected → Actual visual contract | achieved | Browser capture is complete (`current-before-missing-routes.json`, `expected/`, 26 `actual/` PNGs, `comparison-manifest.json`, and `expected-vs-actual.html`). The final independent visual re-review passed all 12 core pages after remediation, with zero remaining P0/P1/P2 findings. `visual-contract.json` hashes match the latest comparison manifest. |
@@ -52,8 +52,9 @@ horizontal overflow. Independent re-review confirmed that the final three P1
 findings—Home requester identity, Document Focus mobile clipping, and Approval
 controls outside the first viewport—are resolved.
 
-This evidence does not prove interactive V2.2 Approval, organization mutation,
-or Standing Agent messaging. Those controls are currently disabled and remain
-open in the V2.2 gap audit. V1 generated Expected references also retain their
-own historical approval state; the later Human-approved merge of V2.2 does not
+This historical evidence does not prove interactive V2.2 Approval,
+organization mutation, or Standing Agent messaging. Approval gained a later
+browser Action slice documented in `browser-action-transport.md`; the other
+controls remain open in the V2.2 gap audit. V1 generated Expected references
+also retain their own historical approval state; later V2.2 work does not
 retroactively rewrite it.

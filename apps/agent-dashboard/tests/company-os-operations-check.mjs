@@ -21,18 +21,24 @@ async function main() {
     readFile(resolve(operations, "pages.tsx"), "utf8"),
     readFile(fixturePath, "utf8").then(JSON.parse),
   ]);
-  const [components, fixtureAdapter] = await Promise.all([
+  const [components, fixtureAdapter, approvalAction] = await Promise.all([
     readFile(resolve(operations, "components.tsx"), "utf8"),
     readFile(resolve(operations, "fixture.ts"), "utf8"),
+    readFile(resolve(operations, "approvalAction.ts"), "utf8"),
   ]);
   const types = await readFile(resolve(operations, "types.ts"), "utf8");
   const ts = (await import("typescript")).default;
   const adapterDirectory = await mkdtemp(resolve(tmpdir(), "company-os-operations-"));
   const adapterTarget = resolve(adapterDirectory, "fixture.mjs");
+  const approvalActionTarget = resolve(adapterDirectory, "approvalAction.mjs");
   await writeFile(adapterTarget, ts.transpileModule(fixtureAdapter, {
     compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2020 },
   }).outputText, "utf8");
+  await writeFile(approvalActionTarget, ts.transpileModule(approvalAction, {
+    compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2020 },
+  }).outputText, "utf8");
   const adapterModule = await import(pathToFileURL(adapterTarget).href);
+  const approvalActionModule = await import(pathToFileURL(approvalActionTarget).href);
   const required = ["OrganizationPage", "HumanMemberFocus", "StandingAgentFocus", "WorkboardPage", "WorkItemFocus", "ApprovalFocus", "FinancePage", "GovernanceProposalFocus", "BusinessModuleFocus"];
   check(required.every((name) => pages.includes(`function ${name}`)), "exports all nine Company OS operations pages");
   check(types.includes('"human" | "standing_agent"') && types.includes("interface ActorSummary"), "keeps Human and Standing Agent as distinct actor kinds");
@@ -89,7 +95,7 @@ async function main() {
   check(pages.includes("textarea") && pages.includes("standing-agent-message-reason") && pages.includes("Send message. Unavailable"), "Standing Agent composer is visibly disabled with a governed transport reason");
   check(pages.includes("displayTimestamp(workItem.updatedAt)") && pages.includes("function displayTimestamp"), "WorkItem focus renders raw update timestamps in a human-readable form");
   check(pages.includes('Panel title="Impact surfaces"') && pages.includes('Panel title="Governed actions"') && pages.includes("Approve proposal") && pages.includes("Request changes"), "governance proposal shows impacts, proposed structure, and honestly disabled governed actions");
-  check(pages.includes('GovernedActionButton label="Approve"') && pages.includes('GovernedActionButton label="Request changes"') && pages.includes('GovernedActionButton label="Reject"'), "approval focus has explicit governed decision controls when transport is unavailable");
+  check(pages.includes('decide("approved")') && pages.includes('GovernedActionButton label="Request changes"') && pages.includes('decide("rejected")'), "approval focus has explicit governed approve/reject controls and an honest request-changes boundary");
   check(pages.includes("action={decisionControls}") && pages.includes('aria-label="Approval decision controls"'), "approval decision controls stay in the first-viewport page header");
   check(pages.includes("data-actor-kind={kind}") && pages.includes("data-actor-type={kind}") && pages.includes("BoardFact label=\"Finance reviewer\""), "workboard actor facts preserve canonical actor references and kinds for capture evidence");
   check(pages.includes("data-financial-record-type={record.type}") && pages.includes("data-financial-status={record.status}") && pages.includes("FinanceRecordTable"), "finance audit table preserves commitment reference, type, and state evidence");
@@ -98,6 +104,36 @@ async function main() {
   check(fixtureAdapter.includes("humanizeEvidenceLabel") && fixtureAdapter.includes('return "Lawyer review"'), "raw evidence references receive readable evidence labels");
   check(!canonicalProjection.approval.title.includes("commitment.append") && !canonicalProjection.approval.actionSummary.includes("commitment.append"), "canonical approval copy never exposes the internal commitment command");
   check(canonicalProjection.evidence.every((item) => !item.label.startsWith("evidence-")), "canonical evidence copy never exposes raw evidence ids as labels");
+  const governedProjection = structuredClone(fixture);
+  governedProjection.approvals[0] = {
+    id: "approval-browser-test",
+    subject_ref: { kind: "financial_record", id: fixture.financial_records[0].id },
+    action_summary: "Authorize commitment.append for browser test",
+    requested_by: { actor_type: "agent", actor_id: "actor-agent-trademark" },
+    required_approver_refs: [{ actor_type: "human", actor_id: "actor-human-brand-owner" }],
+    required_actor_type: "human",
+    policy_ref: "page-trademark:commitment.append",
+    status: "requested",
+    decided_by: [],
+    decision_note: null,
+    evidence_refs: ["evidence-trademark-filing-package-cn-2026-018"],
+    requested_at: "2026-07-20T09:00:00+08:00",
+    decided_at: null,
+    expires_at: "2026-07-31T18:00:00+08:00",
+  };
+  governedProjection.work_items[0].approval_refs = ["approval-browser-test"];
+  governedProjection.custom_page_definitions = [{
+    id: "page-trademark",
+    action_command_refs: ["approval.decide"],
+    policy_refs: ["page-trademark:approval.decide"],
+  }];
+  const governed = adapterModule.adaptTrademarkOperationsProjection(governedProjection);
+  const command = approvalActionModule.buildApprovalDecisionCommand({ approval: governed.approval, decision: "approved", note: "Approved in browser acceptance", commandId: "action-browser-test", decidedAt: "2026-07-20T10:00:00+08:00" });
+  check(command.command_name === "approval.decide" && command.requested_by.actor_type === "human" && command.requested_by.actor_id === "actor-human-brand-owner", "browser decision command uses the named Human approver and canonical server command");
+  check(command.policy_ref === "page-trademark:approval.decide" && command.payload.record.policy_ref === "page-trademark:commitment.append" && command.payload.record.status === "approved", "decision command keeps Action policy separate from the Approval's governed subject policy");
+  check(command.subject_ref.kind === "approval" && command.payload.record.subject_ref.kind === "financial_record", "Action subject is the Approval while the Approval record preserves its governed financial subject");
+  check(command.requires_human_approval === false && command.risk_tier === "r2" && command.approval_refs.length === 0, "approval.decide does not recursively require a second Approval");
+  check(pages.includes("data-company-os-action-token") && approvalAction.includes("A durable decision note is required") && pages.includes("Request changes needs a separate native Approval status"), "Approval Focus exposes a session-only capability, durable note, and honest request-changes boundary");
   await rm(adapterDirectory, { recursive: true, force: true });
   console.log(`\nCompany OS operations checks: ${pass} pass, ${fail} fail`);
   process.exit(fail === 0 ? 0 : 1);
