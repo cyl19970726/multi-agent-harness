@@ -28,6 +28,8 @@ export interface RelatedLink {
 
 export interface OrganizationUnitView extends RelatedLink {
   parentId?: string;
+  humanLeadActorId?: string;
+  agentLeadActorId?: string;
   actorIds: string[];
 }
 

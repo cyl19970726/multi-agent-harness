@@ -15,9 +15,10 @@ read/write HTTP API, authority-labelled Dashboard projection, governed action
 engine, and the trademark Store-live seed already exist and have V1 acceptance
 evidence.
 
-The remaining work is narrower and more concrete:
+The remaining work is narrower and more concrete. The first proof item below
+was completed on 2026-07-20; the other items remain:
 
-1. prove the merged V2.2 visual implementation against a real Store projection;
+1. **completed:** prove the merged V2.2 visual implementation against a real Store projection;
 2. connect the visible Company OS controls to the governed Action transport;
 3. add the product contracts that are still represented only in documentation
    or as generic `TypedRecord`s; and
@@ -42,7 +43,7 @@ The remaining work is narrower and more concrete:
 | Approval / Commitment / Payment governance | `implemented` | Native records, monotonic transition checks, Human authority enforcement, idempotent `ActionCommand`, and atomic audit writes in Store/API tests | Product controls do not dispatch these commands yet. Existing V2.2 approval buttons are deliberately disabled. |
 | Company OS HTTP reads and writes | `implemented` | [`crates/harness-cli/src/company_os_api.rs`](../../crates/harness-cli/src/company_os_api.rs) exposes Store snapshot, typed resources, administrative import, and declared actions protected by `HARNESS_COMPANY_OS_TOKEN` | Browser-side Company OS action transport and credential boundary are not integrated into the Workbench. |
 | Authoritative Dashboard projection | `implemented` | Snapshot uses `snapshot_contract=company-os-v1`, `projection_kind=live_company_os`, Store source metadata, and a revision hash; [`sourceTruth.ts`](../../apps/agent-dashboard/src/company-os/sourceTruth.ts) recognizes it fail-closed | None for read authority. Page-level completeness still depends on the adapter and supplied records. |
-| V2.2 six-page Store-live read rendering | `partial` | The merged router sends both fixture and Store projections through the same Docs/operations adapters; navigation tests verify Store authority recognition | The six V2.2 Actual images were captured with the deterministic fixture. No V2.2 Store-live capture manifest proves these exact layouts against a real Store. |
+| V2.2 six-page Store-live read rendering | `implemented` | [`expected-vs-store-live-v2.2.html`](../design/company-os-v2/expected-vs-store-live-v2.2.html) and its manifest prove six routed browser renders from an authority-labelled isolated Harness Store, alongside Expected and fixture Actual | Read proof is complete. Browser governed-action transport remains a separate gap. |
 | V1 Store-live product evidence | `implemented` | [`implementation-acceptance.md`](../design/company-os-v1/implementation-acceptance.md), `scripts/seed-company-os-trademark-v1.mjs`, and 26 Store-backed captures | This proves the V1 implementation and backend chain, not the merged V2.2 visual revision. |
 | Governed programmable-page backend | `implemented` | Server-owned action policy shapes, declaration scope checks, Human gates, idempotency, effect validation, and audit reservations | The frontend demonstration runtime is not the browser-to-server transport used by Company OS pages. |
 | Frontend programmable-page action contract | `partial` | [`apps/agent-dashboard/src/company-os/runtime/`](../../apps/agent-dashboard/src/company-os/runtime/) denies undeclared actions, enforces policy and Human proof, and rejects undeclared effects in focused tests | Its example commands (`finance.commitment.request`, `finance.commitment.authorize`, and others) do not match the backend command vocabulary (`commitment.append`, `approval.decide`, and others). The runtime is not mounted into `CompanyOsRouter`. |
@@ -52,7 +53,7 @@ The remaining work is narrower and more concrete:
 | MetricDefinition / MetricObservation | `partial` | BusinessModule can reference metric-definition IDs; Blocks and views can render metric-shaped content; the trademark seed stores a metric as a `TypedRecord` | Native MetricDefinition/MetricObservation types, ledgers, API resources, and authority rules are absent. |
 | Governance Proposal | `partial` | The trademark seed stores the proposal as a `TypedRecord`; adapters can read typed governance proposal records | There is no native GovernanceProposal type or ledger and the top-level live snapshot currently emits `governance_proposals: []`. Decide whether it remains a typed business record or becomes a native governed object, then make docs and UI consistent. |
 | Standing Agent subject-linked collaboration | `missing` | Standing Agent focus separates organization identity from execution identity and never persists thinking | Composer is disabled; no durable subject-linked conversation/action API is connected. Direct-report activity and delegation still need a product contract. |
-| Lead direct reports | `partial` | Organization page derives its tree from OrgUnits and memberships | Lead focus currently selects other Standing Agents from the actor list rather than proving each direct report through membership/lead relations. |
+| Lead direct reports | `implemented` | Store seed writes `agent_lead_actor_ref` plus Agent Lead membership; the projection adapter retains those facts; Lead focus derives Standing Agent reports only from the governed unit membership | Cross-unit actors remain a capability roster, explicitly not a reporting relation. Subject-linked delegation activity is still missing. |
 | Git Issue / PR linkage | `design-only` | Product docs describe development WorkItem integration as an adapter concern | No native adapter currently proves WorkItem start, PR review, merge evidence, and acceptance linkage. Keep it outside the generic core until the Work contract is stable. |
 | Host Wave acceptance | `missing` | Wave gate correctly refuses to invent an accepted run | Host executor has no eligible attempt creation path, so completed Host Waves cannot name an accepted attempt. This is an execution-foundation defect, separate from Company OS. |
 
@@ -85,6 +86,11 @@ approved product decision.
 ## Ordered implementation after this audit
 
 ### Next Wave A — V2.2 Store-live proof
+
+**Completed 2026-07-20.** The strict dual-mode capture, isolated Store seed,
+six Store-live images, archived evidence, and four-way comparison are now
+reproducible through `pnpm visual:capture:company-os-v2:live` and
+`pnpm visual:compare:company-os-v2:live`.
 
 - extend the V2 capture runner with a strict `live` mode;
 - reuse the real isolated trademark Store seed and Harness server;
@@ -125,8 +131,8 @@ the already-implemented backend before adding new mutations.
 
 ## Wave 1 exit decision
 
-The Store-live substrate and trademark backend loop are already implemented.
-The next executable slice is therefore **V2.2 Store-live proof**, followed by
-one real Human approval action. Rebuilding Documents, actors, WorkItems,
-Approvals, or finance ledgers would duplicate working product infrastructure
-and is explicitly out of scope.
+The Store-live substrate, trademark backend loop, and V2.2 Store-live read proof
+are implemented. The next executable slice is therefore **one real Human
+approval browser action**. Rebuilding Documents, actors, WorkItems, Approvals,
+or finance ledgers would duplicate working product infrastructure and is
+explicitly out of scope.
