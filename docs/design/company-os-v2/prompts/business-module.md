@@ -33,4 +33,3 @@ restrained coral, sage/amber, hairlines, purposeful density and whitespace.
 Constraints: no Project layer, no copied finance facts, no generic KPI cards,
 no raw execution logs, no automatic active status for proposed Agent, no purple,
 no watermark, no browser chrome.
-

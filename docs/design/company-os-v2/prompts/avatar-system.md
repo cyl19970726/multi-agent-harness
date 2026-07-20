@@ -25,4 +25,3 @@ Per-Agent additions:
   accents, subtle flowing page/speech motif, curious confident expression.
 - Trademark Agent: vigilant legal/IP specialist, burnt orange and graphite
   accents, subtle shield and registration motif, focused expression.
-

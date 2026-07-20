@@ -9,4 +9,3 @@ canonical global navigation, a compact nested page tree, readable document
 canvas, inline live Milestone and decision views, subtle margin discussion, and
 a light context rail. Use supplied avatars faithfully. No dashboard grid,
 detached database app, Project, duplicated finance data, or runtime logs.
-

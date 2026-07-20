@@ -39,4 +39,3 @@ and professional rather than toy-like.
 The avatar is presentation metadata. ActorRef remains the canonical identity,
 and permissions, availability, responsibility, and runtime are never inferred
 from appearance.
-

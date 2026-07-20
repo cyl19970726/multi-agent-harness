@@ -32,4 +32,3 @@ restrained coral, sage/amber semantics, hairline borders, minimal controlled
 shadows, crisp typography. Constraints: no AgentTeamRun members, no provider or
 model labels, no runtime cards, no deep department hierarchy, no Project, no
 purple gradient, no watermark, no browser chrome.
-

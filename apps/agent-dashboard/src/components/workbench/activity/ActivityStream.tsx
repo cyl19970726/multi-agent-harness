@@ -139,4 +139,3 @@ function activityTone(kind: WorkbenchActivityKind): StatusTone {
     default: return "info";
   }
 }
-

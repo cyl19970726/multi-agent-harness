@@ -9,4 +9,3 @@ Create an editorial July 2026 morning brief with one coral Human decision focal
 surface, a recognisable Company Lead-authored brief, and a calm Milestone
 sequence. Use supplied avatars faithfully at UI scale. No generic KPI strip,
 card grid, Project, Task Graph, runtime telemetry, or copied Payment state.
-

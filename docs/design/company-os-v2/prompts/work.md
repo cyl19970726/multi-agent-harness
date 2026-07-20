@@ -35,4 +35,3 @@ text, restrained coral focus, sage/amber/blue semantics, hairline borders,
 compact row density, premium typography, subtle depth. Constraints: no Project,
 no dependency graph, no Kanban-only layout, no Wave presented as Milestone, no
 generic analytics cards, no purple gradient, no watermark, no browser chrome.
-

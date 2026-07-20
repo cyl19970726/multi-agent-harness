@@ -44,4 +44,3 @@ reviewed_at: 2026-07-20
 3. Is the humanoid editorial avatar family appropriate for durable Agents, or
    should it become more abstract/robotic?
 4. Should the Business Module mother page be Active or Proposed/read-only?
-

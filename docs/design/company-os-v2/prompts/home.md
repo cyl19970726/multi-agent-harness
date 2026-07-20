@@ -31,4 +31,3 @@ timeline linking Docs, Work, Finance. Use real short readable English labels.
 Constraints: no Project object, no Task Graph, no raw runtime logs, no provider
 telemetry, no persisted thinking, no invented payment, no floating modal, no
 watermark, no browser chrome.
-

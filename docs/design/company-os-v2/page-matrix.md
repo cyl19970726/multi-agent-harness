@@ -39,4 +39,3 @@ The first design series uses one company context:
 - decision pressure: Brand Owner must approve the commitment before filing;
 - one-time execution: similarity research may start a Mission with Waves and a
   temporary Agent Team, but those objects remain drill-ins.
-

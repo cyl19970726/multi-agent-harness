@@ -31,4 +31,3 @@ relations to 3 modules, 3 milestones, 1 pending approval, and recent activity.
 Constraints: no Project object, no detached database application, no tile grid,
 no copied finance values, no raw execution transcript, no purple gradient, no
 watermark, no browser chrome.
-

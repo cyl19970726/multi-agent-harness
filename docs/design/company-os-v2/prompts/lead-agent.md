@@ -36,4 +36,3 @@ sage/amber semantic detail, dense but breathable, refined dividers, no stock
 cards. Constraints: no raw chain-of-thought, no persisted thinking, no provider
 session, no TeamRun lifecycle as durable identity, no Project, no purple, no
 watermark, no browser chrome.
-

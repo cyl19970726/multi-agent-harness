@@ -117,4 +117,3 @@ and Context Rail modules. They do not reuse the same complete page template:
   organizational relationships, WorkItems, Docs, and BusinessModules;
 - Mission, Wave, TeamRun, and MemberRun pages emphasize one-time execution,
   attempts, member state, delivery, evidence, and gates.
-

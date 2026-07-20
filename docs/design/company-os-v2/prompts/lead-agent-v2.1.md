@@ -10,4 +10,3 @@ prose with embedded Milestone, WorkItem, evidence, folded Mission, and Agent
 proposal objects. Pending Human approval is the only strong pressure surface.
 Transient presence is a tiny non-durable line. No provider session, raw
 thinking, Project, TeamRun identity conflation, or generic chat bubbles.
-
