@@ -1110,11 +1110,7 @@ impl HarnessStore {
                         .iter()
                         .filter(|item| item.status == WorkItemStatus::WaitingForApproval)
                         .count() as u64,
-                    progress_percent: if total == 0 {
-                        0
-                    } else {
-                        ((completed * 100) / total) as u8
-                    },
+                    progress_percent: (completed * 100).checked_div(total).unwrap_or(0) as u8,
                 }
             })
             .collect();
