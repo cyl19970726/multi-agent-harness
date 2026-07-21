@@ -30,12 +30,13 @@ async function rows(name) {
 async function main() {
   const manifest = JSON.parse(await readFile(join(fixtureRoot, "fixture-manifest.json"), "utf8"));
   const repoRoot = resolve(dashboardRoot, "../..");
-  const [agentTeamsHomeSource, actionsSource, typesSource, missionSource, warRoomSource, avatarSource, captureSource, executionSource, activitySource, contextSource, cssSource] = await Promise.all([
+  const [agentTeamsHomeSource, actionsSource, typesSource, missionSource, warRoomSource, memberRunSource, avatarSource, captureSource, executionSource, activitySource, contextSource, cssSource] = await Promise.all([
     readFile(join(dashboardRoot, "src/surfaces/AgentTeamsHome.tsx"), "utf8"),
     readFile(join(dashboardRoot, "src/api/actions.ts"), "utf8"),
     readFile(join(dashboardRoot, "src/types.ts"), "utf8"),
     readFile(join(dashboardRoot, "src/surfaces/Missions.tsx"), "utf8"),
     readFile(join(dashboardRoot, "src/surfaces/TeamWarRoom.tsx"), "utf8"),
+    readFile(join(dashboardRoot, "src/surfaces/MemberRuns.tsx"), "utf8"),
     readFile(join(dashboardRoot, "src/components/workbench/Avatar.tsx"), "utf8"),
     readFile(join(repoRoot, "scripts/capture-workbench-layout-v2.mjs"), "utf8"),
     readFile(join(dashboardRoot, "src/components/workbench/execution/ExecutionPrimitives.tsx"), "utf8"),
@@ -128,6 +129,15 @@ async function main() {
     contextSource.includes("contextIconSurface")
       && contextSource.includes("rounded-full border"),
     "Context modules render semantic icon surfaces instead of uniform low-contrast glyphs",
+  );
+  check(
+    memberRunSource.includes('variant="timeline"')
+      && memberRunSource.includes('<ContextRail quiet label="Member context">')
+      && memberRunSource.includes('glyph: assignment ? "assignment"')
+      && memberRunSource.includes('? "artifact" : "runtime"')
+      && memberRunSource.includes('tone: "decision"')
+      && memberRunSource.includes("transient: true"),
+    "MemberRun Focus uses the V3 semantic timeline, quiet context rail, and transient-only activity path",
   );
 
   console.log(`\n   workbench visual fixture checks: ${pass} pass, ${fail} fail`);

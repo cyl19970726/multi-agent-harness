@@ -1,12 +1,15 @@
 # Execution Workbench V3
 
-This visual-direction package refines the Mission and Agent Team plugin experience around one operator question: **what is happening now, what needs me, and what happens next?**
+This visual-direction package refines the Mission, Agent Team, and MemberRun
+plugin experience around one operator question: **what is happening now, what
+needs me, and what happens next?**
 
 V3 replaces the card-heavy dashboard treatment with three surface levels:
 
 1. a continuous execution rail for Mission/Wave progress;
 2. a calm, border-light work surface for the currently selected Wave or TeamRun;
 3. bounded floating controls only for decisions, intervention, and transient context.
+4. a Codex-like continuous member workspace for one run-scoped collaborator.
 
 The expected images are design intent, not browser evidence. They must remain immutable after approval. Implementation acceptance will use the same deterministic fixture and desktop/tablet/mobile capture path as Workbench V2.
 
@@ -24,5 +27,13 @@ The expected images are design intent, not browser evidence. They must remain im
 
 - `expected/mission-wave-canvas/running-gate-pending--desktop-fidelity-v2-1440x1000.png`
 - `expected/team-war-room/running-needs-you--desktop-fidelity-v2-1440x1000.png`
+- `expected/member-run-focus/running-needs-you--desktop-1440x1000.png`
+- `expected/member-run-focus/running-needs-you--tablet-context-open-900x1180.png`
+- `expected/member-run-focus/running-needs-you--mobile-context-open-390x844.png`
 
-The normalized Fidelity V2 direction was approved by the user on 2026-07-21 and is now the only V3 expected design contract. Superseded `1536×1024` concepts and unreferenced intermediate comparisons were deleted so they cannot be mistaken for an active UI version.
+The normalized Fidelity V2 Mission and Team direction was approved by the user
+on 2026-07-21. The MemberRun images are the next V3 candidate set and remain
+approval-pending. Its implementation, exact-viewport browser captures,
+side-by-side comparisons, and overlays are complete, so approval can evaluate
+design intent against actual output rather than a concept alone. Raw generated
+concepts remain beside normalized derivatives for provenance.

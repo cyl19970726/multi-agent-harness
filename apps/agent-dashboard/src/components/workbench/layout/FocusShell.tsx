@@ -19,6 +19,7 @@ export function FocusShell({
   mainClassName,
   headerClassName,
   composerClassName,
+  responsiveContextVariant = "inline",
 }: {
   header?: ReactNode;
   children: ReactNode;
@@ -28,6 +29,7 @@ export function FocusShell({
   mainClassName?: string;
   headerClassName?: string;
   composerClassName?: string;
+  responsiveContextVariant?: "inline" | "sheet";
 }) {
   return (
     <div
@@ -40,7 +42,10 @@ export function FocusShell({
         {header && <div className={cn("border-b border-border bg-card px-4 py-3 sm:px-5", headerClassName)}>{header}</div>}
         <main className={cn("min-h-0 flex-1 overflow-y-auto", mainClassName)}>{children}</main>
         {context && (
-          <details className="group shrink-0 border-t border-border bg-card xl:hidden">
+          <details className={cn(
+            "group shrink-0 border-t border-border bg-card xl:hidden",
+            responsiveContextVariant === "sheet" && "responsive-context-sheet",
+          )}>
             <summary className="flex cursor-pointer list-none items-center gap-2 px-4 py-2.5 text-[12px] font-semibold text-foreground marker:content-none sm:px-5">
               <PanelsTopLeft className="size-3.5 text-primary" />
               Context & controls
