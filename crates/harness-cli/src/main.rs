@@ -3732,11 +3732,10 @@ fn run_member_orchestration(
     let result = if member.provider.eq_ignore_ascii_case("kimi") {
         run_kimi_member(ledger, objective, &member, cwd, idle_timeout, live_sink)
     } else if member.provider.eq_ignore_ascii_case("codex")
-        && matches!(execution_mode, Some("codex_exec") | None)
-    {
-        run_codex_member(ledger, objective, &member, cwd, idle_timeout, live_sink)
-    } else if member.provider.eq_ignore_ascii_case("codex")
-        && execution_mode == Some("codex_app_server")
+        && matches!(
+            execution_mode,
+            Some("codex_exec") | Some("codex_app_server") | None
+        )
     {
         run_codex_member(ledger, objective, &member, cwd, idle_timeout, live_sink)
     } else if member.provider.eq_ignore_ascii_case("claude")
