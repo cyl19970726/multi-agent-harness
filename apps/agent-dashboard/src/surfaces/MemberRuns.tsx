@@ -114,9 +114,6 @@ export function MemberRunFocus({
     ? activityItems
     : projectKeyActivity(activityItems);
   const evidence = collectEvidence(context, model);
-  const session = (model.snapshot.provider_sessions ?? []).find(
-    (candidate) => candidate.id === context.member.provider_session_id,
-  );
 
   const goBackToTeam = () =>
     onSelectionChange({
@@ -199,7 +196,7 @@ export function MemberRunFocus({
         <MemberContextRail
           context={context}
           evidence={evidence}
-          sessionStatus={context.member.native_session?.availability ?? session?.status}
+          sessionStatus={context.member.native_session?.availability}
           onSelectionChange={onSelectionChange}
         />
       }

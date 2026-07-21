@@ -255,6 +255,40 @@ exit 0
     bin_dir.to_path_buf()
 }
 
+/// Deterministic Claude Code stream-json shim for provider-native Agent Team
+/// coverage. It emits a real session id, hidden thinking, one tool call, and a
+/// terminal report; only the session binding and report may become durable.
+pub fn install_claude_team_shim(bin_dir: &Path) -> PathBuf {
+    fs::create_dir_all(bin_dir).expect("mk fake claude team bin dir");
+    let shim_path = bin_dir.join("claude");
+    let script = r###"#!/bin/sh
+if [ "$1" = "--version" ]; then
+  printf '%s\n' '2.1.181 (Claude Code)'
+  exit 0
+fi
+session_id="session_fake_claude_native"
+resume=""
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "--resume" ]; then shift; resume="$1"; session_id="$1"; fi
+  shift
+done
+printf '%s\n' "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"$session_id\",\"model\":\"fake-claude\"}"
+printf '%s\n' '{"type":"assistant","message":{"role":"assistant","content":[{"type":"thinking","thinking":"hidden claude reasoning"},{"type":"tool_use","id":"tool-claude-1","name":"Read","input":{"file_path":"README.md"}}]}}'
+printf '%s\n' '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-claude-1","content":"provider-owned output"}]}}'
+printf '%s\n' "{\"type\":\"result\",\"subtype\":\"success\",\"session_id\":\"$session_id\",\"result\":\"## RESULT\\ndone\\n## SUMMARY\\nfake claude member finished round\"}"
+exit 0
+"###;
+    fs::write(&shim_path, script).expect("write fake claude team shim");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&shim_path).expect("stat shim").permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&shim_path, perms).expect("chmod shim");
+    }
+    bin_dir.to_path_buf()
+}
+
 /// One spawned `harness` invocation's result.
 pub struct CliOutput {
     pub stdout: String,

@@ -667,25 +667,28 @@ impl HarnessStore {
         agent_member_id: &str,
         message_id: &str,
         delivery: MessageDelivery,
-        mut provider_session: ProviderSession,
     ) -> StoreResult<MessageDeliveryClaimResult> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
-
-        let latest_sessions = latest_by_id(
-            self.read_jsonl::<ProviderSession>("provider_sessions.jsonl")?,
-            |session| session.id.clone(),
-        );
-        if let Some(session) = latest_sessions.into_values().find(|session| {
-            session.agent_member_id == agent_member_id && session_blocks_delivery(session)
-        }) {
-            return Ok(MessageDeliveryClaimResult::BlockedBySession(session.id));
-        }
 
         let latest_messages =
             latest_by_id(self.read_jsonl::<Message>("messages.jsonl")?, |message| {
                 message.id.clone()
             });
+        if let Some(active) = latest_messages.values().find(|message| {
+            message.to_agent_id.as_deref() == Some(agent_member_id)
+                && message
+                    .delivery
+                    .as_ref()
+                    .is_some_and(delivery_blocks_another_claim)
+        }) {
+            let delivery_id = active
+                .delivery
+                .as_ref()
+                .and_then(|delivery| delivery.delivery_id.clone())
+                .unwrap_or_else(|| active.id.clone());
+            return Ok(MessageDeliveryClaimResult::BlockedBySession(delivery_id));
+        }
         let Some(mut message) = latest_messages.get(message_id).cloned() else {
             return Ok(MessageDeliveryClaimResult::NotQueued);
         };
@@ -694,11 +697,6 @@ impl HarnessStore {
         {
             return Ok(MessageDeliveryClaimResult::NotQueued);
         }
-
-        provider_session.agent_member_id = agent_member_id.to_string();
-        provider_session.task_id = message.task_id.clone();
-        provider_session.status = ProviderSessionStatus::Running;
-        self.append_jsonl_unlocked("provider_sessions.jsonl", &provider_session)?;
 
         message.delivery_status = MessageDeliveryStatus::Acknowledged;
         message.delivery = Some(delivery);
@@ -917,11 +915,12 @@ fn latest_by_id<T>(
     latest
 }
 
-fn session_blocks_delivery(session: &ProviderSession) -> bool {
-    session.status == ProviderSessionStatus::Queued
-        || session.status == ProviderSessionStatus::Running
-        || (session.status == ProviderSessionStatus::Stale
-            && session.terminal_source != Some(MessageTerminalSource::Failed))
+fn delivery_blocks_another_claim(delivery: &MessageDelivery) -> bool {
+    matches!(
+        delivery.execution_status,
+        Some(ProviderSessionStatus::Queued | ProviderSessionStatus::Running)
+    ) || (delivery.execution_status == Some(ProviderSessionStatus::Stale)
+        && delivery.terminal_source != Some(MessageTerminalSource::Failed))
 }
 
 fn lock_file_exclusive(file: &File) -> std::io::Result<()> {
@@ -1331,12 +1330,7 @@ mod tests {
             .expect("append message 2");
 
         let claim = store
-            .claim_queued_message_delivery(
-                "agent-1",
-                "message-1",
-                test_delivery("delivery-1"),
-                test_provider_session("delivery-1", "agent-1"),
-            )
+            .claim_queued_message_delivery("agent-1", "message-1", test_delivery("delivery-1"))
             .expect("claim message");
         assert!(matches!(claim, MessageDeliveryClaimResult::Claimed(_)));
 
@@ -1354,17 +1348,12 @@ mod tests {
         assert_eq!(
             latest_message
                 .delivery
-                .and_then(|delivery| delivery.provider_session_id),
+                .and_then(|delivery| delivery.delivery_id),
             Some("delivery-1".into())
         );
 
         let second_claim = store
-            .claim_queued_message_delivery(
-                "agent-1",
-                "message-2",
-                test_delivery("delivery-2"),
-                test_provider_session("delivery-2", "agent-1"),
-            )
+            .claim_queued_message_delivery("agent-1", "message-2", test_delivery("delivery-2"))
             .expect("second claim");
         assert_eq!(
             second_claim,
@@ -1374,8 +1363,8 @@ mod tests {
         std::fs::remove_dir_all(root).expect("remove temp store");
     }
 
-    /// Durability: a claim writes the Acknowledged message row and the Running
-    /// provider-session row, fsyncs them, and a *separate* store handle opened
+    /// Durability: a claim writes and fsyncs the Acknowledged message row with
+    /// its Running delivery attempt, and a *separate* store handle opened
     /// against the same root (no shared in-memory state, mirroring a process
     /// restart after a crash) reads them back. This guards the double-delivery
     /// regression: if the Acknowledged row were lost, latest-wins would revert
@@ -1395,12 +1384,7 @@ mod tests {
             .expect("append message");
 
         let claim = store
-            .claim_queued_message_delivery(
-                "agent-d",
-                "message-d",
-                test_delivery("delivery-d"),
-                test_provider_session("delivery-d", "agent-d"),
-            )
+            .claim_queued_message_delivery("agent-d", "message-d", test_delivery("delivery-d"))
             .expect("claim message");
         assert!(matches!(claim, MessageDeliveryClaimResult::Claimed(_)));
 
@@ -1420,27 +1404,20 @@ mod tests {
             "acknowledged status must survive a restart so the message is not re-delivered"
         );
 
-        let session = reopened
-            .provider_sessions()
-            .expect("read provider sessions")
-            .into_iter()
-            .rev()
-            .find(|session| session.id == "delivery-d")
-            .expect("running provider-session row survives reopen");
-        assert_eq!(session.status, ProviderSessionStatus::Running);
+        let delivery = message.delivery.expect("delivery attempt survives reopen");
+        assert_eq!(delivery.delivery_id.as_deref(), Some("delivery-d"));
+        assert_eq!(
+            delivery.execution_status,
+            Some(ProviderSessionStatus::Running)
+        );
 
         // The reopened store must refuse to re-claim: because both the
-        // Acknowledged message row and the Running provider-session row survived
-        // the fsync, the re-claim is rejected (the Running session for this
-        // agent blocks delivery; were both rows lost it would return Claimed and
+        // Acknowledged message row and its Running delivery attempt survived
+        // the fsync, the re-claim is rejected (the active attempt for this
+        // agent blocks delivery; were the row lost it would return Claimed and
         // double-deliver). Either rejection variant proves no double-delivery.
         let reclaim = reopened
-            .claim_queued_message_delivery(
-                "agent-d",
-                "message-d",
-                test_delivery("delivery-d2"),
-                test_provider_session("delivery-d2", "agent-d"),
-            )
+            .claim_queued_message_delivery("agent-d", "message-d", test_delivery("delivery-d2"))
             .expect("reclaim attempt");
         assert!(
             !matches!(reclaim, MessageDeliveryClaimResult::Claimed(_)),
@@ -1530,8 +1507,6 @@ mod tests {
             provider_profile: None,
             status: MemberRunStatus::Running,
             native_session: None,
-            provider_session_id: Some("ps-1".into()),
-            acp_session_id: Some("acp-1".into()),
             worktree_ref: Some("wt-1".into()),
             owned_paths: vec!["src/".into()],
             started_at: "unix-ms:1".into(),
@@ -1556,8 +1531,6 @@ mod tests {
         assert_eq!(sparse.status, MemberRunStatus::Idle);
         assert!(sparse.slot_id.is_none());
         assert!(sparse.model.is_none());
-        assert!(sparse.provider_session_id.is_none());
-        assert!(sparse.acp_session_id.is_none());
         assert!(sparse.worktree_ref.is_none());
         assert!(sparse.owned_paths.is_empty());
         assert!(sparse.last_event_at.is_none());
@@ -1759,6 +1732,10 @@ mod tests {
 
     fn test_delivery(provider_session_id: &str) -> MessageDelivery {
         MessageDelivery {
+            delivery_id: Some(provider_session_id.into()),
+            execution_status: Some(ProviderSessionStatus::Running),
+            native_session: None,
+            started_at: Some("unix-ms:1".into()),
             provider_session_id: Some(provider_session_id.into()),
             provider_request_id: None,
             provider_thread_id: None,
@@ -1766,33 +1743,6 @@ mod tests {
             terminal_source: None,
             delivered_at: None,
             last_error: None,
-        }
-    }
-
-    fn test_provider_session(id: &str, agent_id: &str) -> ProviderSession {
-        ProviderSession {
-            id: id.into(),
-            provider: "codex".into(),
-            agent_member_id: agent_id.into(),
-            task_id: Some("task-1".into()),
-            workspace_ref: None,
-            provider_thread_id: None,
-            provider_turn_id: None,
-            terminal_source: None,
-            status: ProviderSessionStatus::Running,
-            command: "harness".into(),
-            args: Vec::new(),
-            prompt_ref: None,
-            prompt_summary: None,
-            provider_session_ref: None,
-            stdout_ref: None,
-            jsonl_ref: None,
-            transcript_ref: None,
-            last_message_ref: None,
-            exit_code: None,
-            started_at: "unix-ms:1".into(),
-            ended_at: None,
-            evidence_ids: Vec::new(),
         }
     }
 }

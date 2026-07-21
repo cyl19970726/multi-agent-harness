@@ -77,6 +77,9 @@ pub struct AgentMember {
     pub current_task_id: Option<String>,
     pub current_proposal_id: Option<String>,
     pub provider_runtime_id: Option<String>,
+    #[serde(default)]
+    pub native_session: Option<NativeSessionRef>,
+    /// Transitional legacy resume handle. New paths use `native_session`.
     pub provider_thread_id: Option<String>,
     #[serde(default)]
     pub provider_agent_path: Option<String>,
@@ -349,7 +352,11 @@ pub fn build_launch_spec(member: &AgentMember, message: &Message) -> LaunchSpec 
         // resume of the same session (Codex `exec resume <id>`, Claude
         // `--resume <id>`) instead of a fresh session. `None` (no prior id) = a
         // fresh session.
-        resume: member.provider_thread_id.clone(),
+        resume: member
+            .native_session
+            .as_ref()
+            .map(|session| session.native_session_id.clone())
+            .or_else(|| member.provider_thread_id.clone()),
         output: None,
     }
 }
@@ -504,6 +511,18 @@ pub enum MessageTerminalSource {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MessageDelivery {
+    /// Harness-owned id of this delivery attempt. It coordinates claim/control
+    /// lifecycle and is not a provider session id.
+    #[serde(default)]
+    pub delivery_id: Option<String>,
+    #[serde(default)]
+    pub execution_status: Option<ProviderSessionStatus>,
+    #[serde(default)]
+    pub native_session: Option<NativeSessionRef>,
+    /// Harness-owned start time for this delivery attempt. Provider-native
+    /// session timestamps remain in the provider's own store.
+    #[serde(default)]
+    pub started_at: Option<String>,
     #[serde(default)]
     pub provider_session_id: Option<String>,
     #[serde(default)]
@@ -1498,7 +1517,8 @@ fn default_trace_retention() -> String {
 
 /// One agent step inside a [`WorkflowRun`]. `phase` is the declarative grouping
 /// marker (e.g. "audit", "synthesize"); `label` names the step within the phase.
-/// `provider_session_id` links to the [`ProviderSession`] the delivery produced.
+/// `native_session` links to the provider-owned execution record. Harness keeps
+/// the Workflow outcome and evidence here, but never mirrors the provider turn.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkflowStep {
     pub id: String,
@@ -1506,7 +1526,7 @@ pub struct WorkflowStep {
     pub phase: String,
     pub label: String,
     #[serde(default)]
-    pub provider_session_id: Option<String>,
+    pub native_session: Option<NativeSessionRef>,
     pub status: WorkflowStepStatus,
     #[serde(default)]
     pub output_summary: Option<String>,
@@ -1781,14 +1801,6 @@ pub struct MemberRun {
     pub status: MemberRunStatus,
     #[serde(default)]
     pub native_session: Option<NativeSessionRef>,
-    /// Transitional legacy link. New Agent Team execution must use
-    /// `native_session` and must not create a mirrored ProviderSession row.
-    #[serde(default)]
-    pub provider_session_id: Option<String>,
-    /// Transitional legacy provider handle. Removed after all provider modes
-    /// write `native_session` directly.
-    #[serde(default)]
-    pub acp_session_id: Option<String>,
     #[serde(default)]
     pub worktree_ref: Option<String>,
     #[serde(default)]
@@ -2545,6 +2557,7 @@ mod tests {
             current_task_id: None,
             current_proposal_id: None,
             provider_runtime_id: None,
+            native_session: None,
             provider_thread_id: None,
             provider_agent_path: None,
             provider_agent_nickname: None,
@@ -2633,6 +2646,7 @@ mod tests {
             current_task_id: None,
             current_proposal_id: None,
             provider_runtime_id: None,
+            native_session: None,
             provider_thread_id: None,
             provider_agent_path: None,
             provider_agent_nickname: None,

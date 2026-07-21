@@ -713,7 +713,6 @@ pub fn step_result_json(result: &StepResult) -> serde_json::Value {
         "provider": result.provider,
         "isolation": result.isolation,
         "ok": result.ok,
-        "provider_session_id": result.provider_session_id,
         "output_summary": result.output_summary,
         // The parsed structured output (schema mode), or null. Lets the dashboard
         // and `final_output` carry the validated object alongside the summary.

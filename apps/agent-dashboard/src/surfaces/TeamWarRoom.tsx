@@ -597,14 +597,14 @@ function SelectedMemberModule({ member, assignment, currentAction, onMessage, on
   return (
     <ContextModule title={member.name ?? member.id} kicker="Selected member" tone={memberTone(member.status)}>
       <div className="flex items-center gap-2"><Avatar name={member.name ?? member.id} tone={memberTone(member.status)} /><p className="min-w-0 truncate text-[11px] text-muted-foreground">{member.role ?? "member"} · {member.provider ?? "provider"}</p></div>
-      <div className="mt-2 space-y-1.5 text-[11px]"><Fact label="Assignment" value={assignment ?? "No assignment recorded"} /><Fact label="Now" value={currentAction ?? "No durable action"} /><Fact label="Session" value={member.provider_session_id ?? member.acp_session_id ?? "Not recorded"} mono /></div>
+      <div className="mt-2 space-y-1.5 text-[11px]"><Fact label="Assignment" value={assignment ?? "No assignment recorded"} /><Fact label="Now" value={currentAction ?? "No durable action"} /><Fact label="Native session" value={member.native_session?.native_session_id ?? "Not recorded"} mono /></div>
       <div className="mt-3 flex gap-2"><Button size="sm" variant="secondary" onClick={onMessage}><MessageSquare className="size-3.5" /> Message</Button><Button size="sm" variant="secondary" onClick={onOpen}><ExternalLink className="size-3.5" /> Open member</Button></div>
     </ContextModule>
   );
 }
 
 function ResourcesModule({ members, delegationCount, liveCount }: { members: MemberRun[]; delegationCount: number; liveCount: number }) {
-  const sessions = members.filter((member) => member.provider_session_id || member.acp_session_id).length;
+  const sessions = members.filter((member) => member.native_session).length;
   const worktrees = members.filter((member) => member.worktree_ref).length;
   return <ContextModule title="Resources" kicker="Observed runtime"><div className="space-y-1.5 text-[11px]"><Fact label="Sessions" value={`${sessions} / ${members.length}`} /><Fact label="Worktrees" value={String(worktrees)} /><Fact label="Delegations" value={String(delegationCount)} /><Fact label="Live previews" value={String(liveCount)} /></div><p className="mt-2 text-[10px] text-muted-foreground">Observed resources only; no termination control is implied.</p></ContextModule>;
 }

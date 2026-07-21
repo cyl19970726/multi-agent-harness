@@ -90,6 +90,18 @@ export async function fetchNativeMemberActivity(
   return (await response.json()) as NativeActivityProjection;
 }
 
+export async function fetchNativeWorkflowStepActivity(
+  baseUrl: string,
+  workflowStepId: string,
+  project?: string | null,
+): Promise<NativeActivityProjection> {
+  const normalized = normalizeBaseUrl(baseUrl);
+  if (!normalized) throw new Error("Harness API URL is required");
+  const response = await fetch(`${normalized}${withProject(`/v1/workflow-steps/${encodeURIComponent(workflowStepId)}/native-activity`, project)}`);
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return (await response.json()) as NativeActivityProjection;
+}
+
 /**
  * Enumerate known projects via `GET /v1/projects` (registry + on-disk stores +
  * reserved `_global`). The response also names the currently-active project so

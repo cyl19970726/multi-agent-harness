@@ -1179,7 +1179,8 @@ fn codex_app_server_member_can_be_steered_in_place() {
             .any(|member| {
                 member["id"].as_str() == Some(member_id.as_str())
                     && member["status"].as_str() == Some("running")
-                    && member["acp_session_id"].as_str() == Some("thread_fake_codex_app_server")
+                    && member["native_session"]["native_session_id"].as_str()
+                        == Some("thread_fake_codex_app_server")
             });
         if live {
             break;

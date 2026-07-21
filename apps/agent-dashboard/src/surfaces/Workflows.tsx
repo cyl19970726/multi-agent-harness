@@ -44,15 +44,15 @@ import {
   stepGanttGeometry,
   type WorkflowPhase,
 } from "../model/workflowShape";
-import { normalizeBaseUrl } from "../api";
+import { fetchNativeWorkflowStepActivity, normalizeBaseUrl } from "../api";
 import type {
-  HarnessTurnEvent,
+  NativeActivityProjection,
+  NativeSessionRef,
   ProviderSession,
   WorkflowRun,
   WorkflowStep,
 } from "../types";
 import type { SelectionState } from "../app/selection";
-import { TurnDrillIn } from "./Surfaces";
 
 interface WorkflowSurfaceProps {
   model: WorkbenchModel;
@@ -1431,7 +1431,7 @@ function normalizeWorkflowUiLanguage(value: string): string {
     .replace(/\bFirst workflow step\b/gi, "First run stage");
 }
 
-/** One step card: status + "ran by" (via session) + output + turn drill-in. */
+/** One step card: status + provider-native binding + explicit Workflow outcome. */
 function StepCard({
   step,
   phase,
@@ -1452,14 +1452,18 @@ function StepCard({
   const [drawerOpen, setDrawerOpen] = useState(false);
   const tone = workflowStepTone(step.status);
   const running = tone === "running";
-  const session = step.provider_session_id
-    ? sessions.find((s) => s.id === step.provider_session_id)
-    : undefined;
-  // Once the run is terminal, drill-ins backfill from the durable per-session
-  // NDJSON (GET /v1/sessions/{id}/events). A `--trace live` run reports
-  // retained:false there, so TurnDrillIn renders "trace not retained" instead of
-  // an endless "loading…". In-flight runs keep the live tee + SSE path.
-  const historical = isTerminal(run.status);
+  const session = step.native_session ?? step.result?.native_session ?? undefined;
+  const [nativeActivity, setNativeActivity] = useState<NativeActivityProjection>();
+  useEffect(() => {
+    setNativeActivity(undefined);
+    if (!apiUrl || !session) return;
+    const project = new URLSearchParams(window.location.search).get("project");
+    let cancelled = false;
+    fetchNativeWorkflowStepActivity(apiUrl, step.id, project)
+      .then((projection) => { if (!cancelled) setNativeActivity(projection); })
+      .catch(() => { /* missing provider history remains an honest empty state */ });
+    return () => { cancelled = true; };
+  }, [apiUrl, step.id, session?.native_session_id]);
   // The step actor is a PROVIDER that ran in a one-shot ephemeral worker
   // (codex/claude), carried on the structured result — not a pre-existing
   // member. `isolation` is set when the node opted into a throwaway worktree.
@@ -1468,11 +1472,6 @@ function StepCard({
   const roleHint = roleHintFromLabel(step.label);
   const isRequired = phase.kind === "serial" && phase.steps[0]?.id === step.id;
   const isToleratedFail = phase.kind === "parallel" && tone === "bad";
-  // The SSE-pushed NORMALIZED live buffer for this node's session, keyed by
-  // session id — threaded into TurnDrillIn so the node detail streams sub-second.
-  const liveNormalizedEvents = session
-    ? model.snapshot.live_normalized_events?.[session.id]
-    : undefined;
   const readableOutput = readableWorkflowOutput(step.output_summary);
 
   return (
@@ -1547,13 +1546,16 @@ function StepCard({
           </div>
         </button>
 
-        {/* Line 4 — drill-in (verbatim TurnDrillIn) or disabled stub. Live events
-            threaded so it streams sub-second; a "drill in" affordance opens the
-            full drawer. */}
+        {/* Line 4 — provider-native activity; never a Harness transcript copy. */}
         <div className="flex items-center justify-between gap-2 px-3 pb-3">
           {session ? (
             <>
-              <TurnDrillIn session={session} apiUrl={apiUrl} liveNormalizedEvents={liveNormalizedEvents} historical={historical} />
+              <span className="inline-flex items-center gap-1 text-[10px] text-muted-foreground">
+                <Activity className="size-3" />
+                {nativeActivity
+                  ? `${nativeActivity.items.length} native activit${nativeActivity.items.length === 1 ? "y" : "ies"}`
+                  : "provider-native session"}
+              </span>
               <button
                 type="button"
                 onClick={() => setDrawerOpen(true)}
@@ -1579,9 +1581,8 @@ function StepCard({
           tone={tone}
           provider={provider}
           isolation={isolation}
-          liveNormalizedEvents={liveNormalizedEvents}
+          nativeActivity={nativeActivity}
           apiUrl={apiUrl}
-          historical={historical}
           onClose={() => setDrawerOpen(false)}
         />
       )}
@@ -1591,10 +1592,8 @@ function StepCard({
 
 /**
  * Per-node drill-in drawer: a right-side slide-over (mirrors the TaskSheet
- * idiom) that wraps the verbatim `TurnDrillIn` for this step's
- * `provider_session_id`, opened auto-expanded and fed the SSE live buffer so the
- * node's streamed tool_use/tool_result render sub-second. Esc and backdrop
- * close it.
+ * idiom) that joins the durable Workflow outcome with a read-only projection
+ * from the provider-owned native session. Esc and backdrop close it.
  */
 function StepDrawer({
   step,
@@ -1602,19 +1601,17 @@ function StepDrawer({
   tone,
   provider,
   isolation,
-  liveNormalizedEvents,
+  nativeActivity,
   apiUrl,
-  historical,
   onClose,
 }: {
   step: WorkflowStep;
-  session: ProviderSession;
+  session: NativeSessionRef;
   tone: StatusTone;
   provider?: string;
   isolation?: string | null;
-  liveNormalizedEvents?: HarnessTurnEvent[];
+  nativeActivity?: NativeActivityProjection;
   apiUrl?: string;
-  historical?: boolean;
   onClose: () => void;
 }) {
   useEffect(() => {
@@ -1664,7 +1661,7 @@ function StepDrawer({
               <StatusDot tone={tone} pulse={running} />
               <Badge tone={tone}>{step.status}</Badge>
               {isolation === "worktree" && <Badge tone="info">worktree</Badge>}
-              <MonoId>{session.id}</MonoId>
+              <MonoId>{session.native_session_id}</MonoId>
             </div>
             <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
               <span>ran by</span>
@@ -1684,14 +1681,24 @@ function StepDrawer({
               </div>
             )}
             <StepObservability step={step} />
-            <DocSection label="Turn">
-              <TurnDrillIn
-                session={session}
-                apiUrl={apiUrl}
-                defaultOpen
-                liveNormalizedEvents={liveNormalizedEvents}
-                historical={historical}
-              />
+            <DocSection label="Provider-native activity">
+              <div className="space-y-2">
+                {(nativeActivity?.items ?? []).map((item, index) => (
+                  <div key={`${item.occurred_at ?? "native"}-${index}`} className="rounded-md border border-border bg-muted/20 p-2">
+                    <div className="flex items-center gap-2 text-[11px]">
+                      <Badge tone={item.status === "failed" ? "bad" : item.status === "started" ? "running" : "good"}>{item.kind}</Badge>
+                      <span className="font-medium text-foreground">{item.title}</span>
+                      {item.occurred_at && <span className="ml-auto tabular-nums text-muted-foreground">{item.occurred_at}</span>}
+                    </div>
+                    {item.summary && <div className="mt-1 text-[11px] text-muted-foreground">{item.summary}</div>}
+                  </div>
+                ))}
+                {!nativeActivity?.items.length && (
+                  <div className="rounded-md border border-dashed border-border p-3 text-[11px] text-muted-foreground">
+                    Native activity is unavailable or the provider has not written readable events yet.
+                  </div>
+                )}
+              </div>
             </DocSection>
           </div>
         </div>

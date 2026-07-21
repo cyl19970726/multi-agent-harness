@@ -45,6 +45,7 @@ export interface AgentMember {
   runtime_alive?: boolean;
   runtime_health?: RuntimeHealth | null;
   control_endpoint?: string | null;
+  native_session?: NativeSessionRef | null;
   provider_thread_id?: string | null;
   provider_agent_path?: string | null;
   provider_agent_nickname?: string | null;
@@ -127,6 +128,10 @@ export interface Message {
 }
 
 export interface MessageDelivery {
+  delivery_id?: string | null;
+  execution_status?: ProviderSessionStatus | string | null;
+  native_session?: NativeSessionRef | null;
+  started_at?: string | null;
   provider_session_id?: string | null;
   provider_request_id?: string | null;
   provider_thread_id?: string | null;
@@ -410,8 +415,6 @@ export interface MemberRun {
   provider_profile?: ProviderIntegrationProfile | null;
   status?: MemberRunStatus | string;
   native_session?: NativeSessionRef | null;
-  provider_session_id?: string | null;
-  acp_session_id?: string | null;
   worktree_ref?: string | null;
   owned_paths?: string[];
   started_at?: string;
@@ -776,7 +779,7 @@ export interface WorkflowStepResult {
   /** Per-node isolation mode this step ran under, if any ("worktree"). */
   isolation?: string | null;
   ok?: boolean;
-  provider_session_id?: string | null;
+  native_session?: NativeSessionRef | null;
   output_summary?: string;
   /** The model the worker actually ran (the requested override), if any. */
   model?: string | null;
@@ -810,14 +813,14 @@ export interface WorkflowStepResult {
  * One agent step inside a {@link WorkflowRun}. Mirrors harness-core
  * `WorkflowStep` (lib.rs:1279-1292) verbatim, snake_case. There is NO
  * `member_id`; the step actor is a PROVIDER carried in `result.provider`, and
- * the live turn drill-in resolves via `provider_session_id`.
+ * provider-native activity resolves via `native_session`.
  */
 export interface WorkflowStep {
   id: string;
   run_id: string;
   phase: string;
   label: string;
-  provider_session_id?: string | null;
+  native_session?: NativeSessionRef | null;
   status: WorkflowStepStatus | string;
   output_summary?: string | null;
   /** Structured result for this step, beyond the human-facing summary. */

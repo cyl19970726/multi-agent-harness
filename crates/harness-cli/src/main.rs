@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::env;
 use std::fs;
-use std::io::{BufRead, BufReader, BufWriter, Read, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -1913,6 +1913,27 @@ fn team_member_provider_profile_for_mode(
             observes_background_tasks: false,
             thinking_transient_only: true,
         },
+        "claude" => ProviderIntegrationProfile {
+            provider: provider.to_string(),
+            execution_mode: "claude_cli".to_string(),
+            provider_version: None,
+            adapter_contract_version: Some("claude-cli-native-v1".to_string()),
+            reviewed_provider_versions: vec!["2.1.181".to_string()],
+            compatibility_status: ProviderCompatibilityStatus::Unknown,
+            adapter_reviewed_at: Some("2026-07-22".to_string()),
+            compatibility_note: Some(
+                "Native stream-json identity, local project session storage, and --resume reviewed."
+                    .to_string(),
+            ),
+            interaction_mode: ProviderInteractionMode::EndRoundAndFollowUp,
+            tool_event_fidelity: ProviderEventFidelity::Structured,
+            artifact_event_fidelity: ProviderEventFidelity::Structured,
+            supports_cancel: false,
+            supports_resume: true,
+            observes_native_subagents: false,
+            observes_background_tasks: false,
+            thinking_transient_only: true,
+        },
         _ => ProviderIntegrationProfile {
             provider: provider.to_string(),
             execution_mode: "unsupported_team_member".to_string(),
@@ -1990,6 +2011,33 @@ fn native_session_ref(
     }
 }
 
+fn provider_native_session_ref(
+    provider: &str,
+    native_session_id: impl Into<String>,
+) -> NativeSessionRef {
+    let profile = team_member_provider_profile(provider);
+    let native_locator_kind = match provider {
+        "codex" => "codex_rollout",
+        "kimi" => "kimi_code_session",
+        "claude" => "claude_project_session",
+        _ => "provider_native_session",
+    };
+    NativeSessionRef {
+        provider: provider.to_string(),
+        execution_mode: profile.execution_mode,
+        native_session_id: native_session_id.into(),
+        native_locator_kind: native_locator_kind.to_string(),
+        provider_version: profile.provider_version,
+        adapter_contract_version: profile
+            .adapter_contract_version
+            .unwrap_or_else(|| "unknown".to_string()),
+        availability: NativeSessionAvailability::Available,
+        supports_resume: profile.supports_resume,
+        last_verified_at: Some(now_string()),
+        parent_native_session_id: None,
+    }
+}
+
 fn provider_version_output(provider: &str) -> Result<String, String> {
     let binary = match provider {
         "kimi" => resolve_kimi_bin(),
@@ -2046,6 +2094,7 @@ fn parse_team_member_spec(raw: &str) -> CliResult<TeamMemberSpec> {
                 "app-server" | "app_server" => "codex_app_server".to_string(),
                 "exec" => "codex_exec".to_string(),
                 "acp" => "kimi_acp".to_string(),
+                "cli" if provider == "claude" => "claude_cli".to_string(),
                 other => other.to_string(),
             }),
         ),
@@ -2159,7 +2208,10 @@ fn create_team_run(
         if let Some(mode) = member.execution_mode.as_deref() {
             let allowed = matches!(
                 (member.provider.as_str(), mode),
-                ("codex", "codex_exec") | ("codex", "codex_app_server") | ("kimi", "kimi_acp")
+                ("codex", "codex_exec")
+                    | ("codex", "codex_app_server")
+                    | ("kimi", "kimi_acp")
+                    | ("claude", "claude_cli")
             );
             if !allowed {
                 return Err(CliError::Usage(format!(
@@ -2229,8 +2281,6 @@ fn create_team_run(
             provider_profile: Some(profile),
             status: MemberRunStatus::Idle,
             native_session,
-            provider_session_id: None,
-            acp_session_id: None,
             worktree_ref: None,
             owned_paths: member.owned_paths.clone(),
             started_at: now_string(),
@@ -3704,6 +3754,10 @@ fn run_member_orchestration(
         && execution_mode == Some("codex_app_server")
     {
         run_codex_member(ledger, objective, &member, cwd, idle_timeout, live_sink)
+    } else if member.provider.eq_ignore_ascii_case("claude")
+        && matches!(execution_mode, Some("claude_cli") | None)
+    {
+        run_claude_team_member(ledger, objective, &member, cwd, idle_timeout, live_sink)
     } else {
         Err(CliError::Usage(format!(
             "team member adapter not implemented for provider {}",
@@ -3773,7 +3827,6 @@ fn run_codex_member(
     let mut live_control = None;
     let mut live_control_registration = None;
     if let Some(client) = app_server.as_ref() {
-        member_row.acp_session_id = Some(client.thread_id().to_string());
         member_row.native_session = Some(native_session_ref(
             &member_row,
             client.thread_id(),
@@ -3823,9 +3876,6 @@ fn run_codex_member(
                 ledger,
             )?
         };
-        if member_row.acp_session_id.is_none() {
-            member_row.acp_session_id = turn.thread_id.clone();
-        }
         let verified_thread_id = turn.thread_id.clone().or_else(|| {
             member_row
                 .native_session
@@ -4358,6 +4408,323 @@ fn run_codex_app_server_turn(
     }
 }
 
+/// Drive one Claude Code Team Member without mirroring its stream-json output.
+/// The provider-owned `~/.claude/projects/**/<session>.jsonl` remains the
+/// execution history; Harness stores only the session locator, assignment,
+/// handoff, and explicit round outcome.
+fn run_claude_team_member(
+    ledger: &TeamRunLedger,
+    objective: &str,
+    member: &MemberRun,
+    cwd: &Path,
+    idle_timeout: Duration,
+    live_sink: Option<LiveMemberActivitySink>,
+) -> CliResult<MemberOutcome> {
+    let mut member_row = member.clone();
+    member_row.status = MemberRunStatus::Starting;
+    if let Some(profile) = member_row.provider_profile.as_mut() {
+        apply_provider_version(profile, provider_version_output("claude").ok());
+    }
+    member_row.last_event_at = Some(now_string());
+    ledger.save_member_run(&member_row)?;
+    ledger.fold_event(
+        TeamRunEventSourceKind::Member,
+        Some(member.id.clone()),
+        "member_run",
+        &member.id,
+        "updated",
+        &format!(
+            "member {} starting (claude cli, cwd {})",
+            member.name,
+            cwd.display()
+        ),
+    )?;
+    member_row.status = MemberRunStatus::Running;
+    ledger.save_member_run(&member_row)?;
+
+    let assignment = latest_queued_assignment(ledger, &member.id)?;
+    let assignment_body = assignment
+        .as_ref()
+        .map(|message| message.body.clone())
+        .unwrap_or_else(|| objective.to_string());
+    if let Some(assignment) = &assignment {
+        mark_message_delivered(ledger, assignment, &member.id, &member.name)?;
+    }
+
+    let mut round = 0u32;
+    let mut next_prompt = Some(contract_prompt(objective, &member_row, &assignment_body));
+    let mut final_status = MemberRunStatus::Failed;
+    let mut final_summary = String::new();
+    while let Some(prompt) = next_prompt.take() {
+        round += 1;
+        let turn = run_claude_team_turn(
+            &prompt,
+            cwd,
+            &member_row,
+            idle_timeout,
+            live_sink.clone(),
+            ledger,
+        )?;
+        member_row.native_session = Some(native_session_ref(
+            &member_row,
+            &turn.session_id,
+            "claude_project_session",
+        ));
+        ledger.save_member_run(&member_row)?;
+
+        let handoff = TeamMessage {
+            id: generated_id("tmsg"),
+            team_run_id: ledger.run_id.clone(),
+            from_member_id: member.id.clone(),
+            to_member_ids: vec!["host".to_string()],
+            kind: TeamMessageKind::Handoff,
+            body: turn.final_text.clone(),
+            correlation_id: assignment
+                .as_ref()
+                .map(|message| message.correlation_id.clone())
+                .unwrap_or_else(|| generated_id("corr")),
+            causation_id: assignment.as_ref().map(|message| message.id.clone()),
+            evidence_refs: Vec::new(),
+            deliveries: vec![TeamMessageDelivery {
+                member_id: "host".to_string(),
+                policy: TeamDeliveryPolicy::ManualAck,
+                status: TeamDeliveryStatus::Delivered,
+                attempt: 1,
+                updated_at: now_string(),
+            }],
+            created_at: now_string(),
+        };
+        ledger.save_message(&handoff)?;
+        ledger.fold_event(
+            TeamRunEventSourceKind::Member,
+            Some(member.id.clone()),
+            "message",
+            &handoff.id,
+            "created",
+            &format!("handoff from {} to host (round {round})", member.name),
+        )?;
+
+        let result = parse_round_result(&turn.final_text);
+        let (action_type, action_status, member_status) = match result {
+            MemberRoundResult::Done => (
+                "completed",
+                MemberActionStatus::Succeeded,
+                MemberRunStatus::Completed,
+            ),
+            MemberRoundResult::Blocked => (
+                "blocked",
+                MemberActionStatus::Failed,
+                MemberRunStatus::Blocked,
+            ),
+            MemberRoundResult::Failed => {
+                ("error", MemberActionStatus::Failed, MemberRunStatus::Failed)
+            }
+        };
+        let result_section = extract_report_section(&turn.final_text, "RESULT")
+            .unwrap_or_else(|| "done".to_string());
+        let action = ledger.append_action(
+            &member.id,
+            action_type,
+            action_status,
+            &format!("round {round} {action_type}"),
+            &result_section,
+        )?;
+        ledger.fold_event(
+            TeamRunEventSourceKind::Member,
+            Some(member.id.clone()),
+            "action",
+            &action.id,
+            "created",
+            &format!("{} round {round}: {action_type}", member.name),
+        )?;
+        member_row.status = member_status;
+        member_row.finished_at = Some(now_string());
+        member_row.last_event_at = Some(now_string());
+        ledger.save_member_run(&member_row)?;
+        final_status = member_status;
+        final_summary = extract_report_section(&turn.final_text, "SUMMARY").unwrap_or_else(|| {
+            turn.final_text
+                .lines()
+                .take(3)
+                .collect::<Vec<_>>()
+                .join("\n")
+        });
+
+        if round >= TEAM_RUN_START_MAX_ROUNDS {
+            break;
+        }
+        let queued = ledger.queued_messages_for(&member.id)?;
+        if queued.is_empty() {
+            break;
+        }
+        let mut follow_up = String::from("FOLLOW-UP MESSAGES arrived while you worked. Address them and report again with ## RESULT and ## SUMMARY.\n\n");
+        for message in &queued {
+            follow_up.push_str(&format!(
+                "--- {} ({}) ---\n{}\n\n",
+                message.from_member_id,
+                team_message_kind_label(&message.kind),
+                message.body
+            ));
+            mark_message_delivered(ledger, message, &member.id, &member.name)?;
+        }
+        member_row.status = MemberRunStatus::Running;
+        member_row.finished_at = None;
+        ledger.save_member_run(&member_row)?;
+        next_prompt = Some(follow_up);
+    }
+    Ok(MemberOutcome::new(member, final_status, final_summary))
+}
+
+struct ClaudeTeamTurn {
+    session_id: String,
+    final_text: String,
+}
+
+fn run_claude_team_turn(
+    prompt: &str,
+    cwd: &Path,
+    member: &MemberRun,
+    idle_timeout: Duration,
+    live_sink: Option<LiveMemberActivitySink>,
+    ledger: &TeamRunLedger,
+) -> CliResult<ClaudeTeamTurn> {
+    let mut cmd = Command::new("claude");
+    cmd.arg("-p")
+        .arg(prompt)
+        .arg("--output-format")
+        .arg("stream-json")
+        .arg("--verbose")
+        .arg("--permission-mode")
+        .arg(if member.owned_paths.is_empty() {
+            "plan"
+        } else {
+            "acceptEdits"
+        });
+    if let Some(model) = member.model.as_deref() {
+        cmd.arg("--model").arg(model);
+    }
+    if let Some(session) = member.native_session.as_ref() {
+        cmd.arg("--resume").arg(&session.native_session_id);
+    }
+    cmd.current_dir(cwd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = cmd.spawn().map_err(|error| {
+        CliError::Usage(format!(
+            "failed to spawn Claude Team Member {}: {error}",
+            member.name
+        ))
+    })?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| CliError::Usage("claude stdout unavailable".into()))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| CliError::Usage("claude stderr unavailable".into()))?;
+    let (line_tx, line_rx) = std::sync::mpsc::channel::<String>();
+    let stdout_reader = std::thread::spawn(move || {
+        for line in BufReader::new(stdout).lines() {
+            let Ok(line) = line else { break };
+            if line_tx.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    let stderr_reader = std::thread::spawn(move || {
+        let mut text = String::new();
+        let _ = BufReader::new(stderr).read_to_string(&mut text);
+        text
+    });
+    let mut events = Vec::new();
+    let mut last_activity = Instant::now();
+    let status = loop {
+        match line_rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(line) => {
+                last_activity = Instant::now();
+                if let Some(event) = ClaudeStreamEvent::parse_line(&line) {
+                    project_claude_team_event_live(
+                        ledger,
+                        member,
+                        &event.payload,
+                        live_sink.as_ref(),
+                    );
+                    events.push(event);
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break child.wait()?,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                if child.try_wait()?.is_some() {
+                    continue;
+                }
+                if last_activity.elapsed() >= idle_timeout {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(CliError::Usage(format!(
+                        "Claude Team Member {} exceeded idle timeout",
+                        member.name
+                    )));
+                }
+            }
+        }
+    };
+    let _ = stdout_reader.join();
+    let stderr = stderr_reader.join().unwrap_or_default();
+    if infer_claude_session_status(&events, status.success()) != ProviderSessionStatus::Succeeded {
+        return Err(CliError::Usage(format!(
+            "Claude Team Member {} failed: {}",
+            member.name,
+            stderr.trim()
+        )));
+    }
+    let session_id = extract_session_id_from_claude_events(&events)
+        .or_else(|| {
+            member
+                .native_session
+                .as_ref()
+                .map(|session| session.native_session_id.clone())
+        })
+        .ok_or_else(|| CliError::Usage("Claude completed without a native session id".into()))?;
+    let final_text = extract_claude_reply_text(&events)
+        .ok_or_else(|| CliError::Usage("Claude completed without an assistant result".into()))?;
+    Ok(ClaudeTeamTurn {
+        session_id,
+        final_text,
+    })
+}
+
+fn project_claude_team_event_live(
+    ledger: &TeamRunLedger,
+    member: &MemberRun,
+    raw: &serde_json::Value,
+    live_sink: Option<&LiveMemberActivitySink>,
+) {
+    let Some(sink) = live_sink else { return };
+    let Some(content) = raw
+        .pointer("/message/content")
+        .and_then(|value| value.as_array())
+    else {
+        return;
+    };
+    for block in content {
+        if block.get("type").and_then(|value| value.as_str()) != Some("tool_use") {
+            continue;
+        }
+        let title = block
+            .get("name")
+            .and_then(|value| value.as_str())
+            .unwrap_or("tool");
+        sink(LiveMemberActivityPreview {
+            team_run_id: ledger.run_id.clone(),
+            member_run_id: member.id.clone(),
+            provider: member.provider.clone(),
+            preview: format!("tool started · {title}"),
+        });
+    }
+}
+
 /// Drive one kimi member: spawn its ACP session, deliver the assignment as a
 /// contract prompt, journal streamed updates, then loop follow-up rounds for
 /// messages queued while it worked (capped at [`TEAM_RUN_START_MAX_ROUNDS`]).
@@ -4395,13 +4762,11 @@ fn run_kimi_member(
             .map(|session| session.native_session_id.as_str()),
     )?;
     member_row.status = MemberRunStatus::Running;
-    member_row.acp_session_id = client.session_id().map(str::to_string);
     if let Some(profile) = member_row.provider_profile.as_mut() {
         apply_provider_version(profile, client.provider_version().map(str::to_string));
     }
-    member_row.native_session = member_row
-        .acp_session_id
-        .as_deref()
+    member_row.native_session = client
+        .session_id()
         .map(|session_id| native_session_ref(&member_row, session_id, "kimi_code_session"));
     // Publish the live control handle before the durable Running projection so
     // an operator cannot observe Running and race into a false "no session".
@@ -4417,7 +4782,11 @@ fn run_kimi_member(
         &format!(
             "member {} running (acp session {})",
             member.name,
-            member_row.acp_session_id.as_deref().unwrap_or("?")
+            member_row
+                .native_session
+                .as_ref()
+                .map(|session| session.native_session_id.as_str())
+                .unwrap_or("?")
         ),
     )?;
     // The assignment is the newest Assignment-kind message with a still-queued
@@ -6200,6 +6569,43 @@ fn handle_http_connection(
                     )?,
                 }
             }
+            step_path
+                if step_path.starts_with("/v1/workflow-steps/")
+                    && step_path.ends_with("/native-activity") =>
+            {
+                let step_id = step_path
+                    .strip_prefix("/v1/workflow-steps/")
+                    .and_then(|rest| rest.strip_suffix("/native-activity"))
+                    .unwrap_or_default();
+                let step = latest_workflow_steps_in_append_order(store)?
+                    .into_iter()
+                    .find(|step| step.id == step_id);
+                match step {
+                    Some(step) => match step.native_session.as_ref() {
+                        Some(session) => write_http_json(
+                            &mut stream,
+                            "200 OK",
+                            &native_session::read_activity(session)?,
+                        )?,
+                        None => write_http_json(
+                            &mut stream,
+                            "409 Conflict",
+                            &serde_json::json!({
+                                "error": "native_session_unbound",
+                                "workflow_step_id": step_id,
+                            }),
+                        )?,
+                    },
+                    None => write_http_json(
+                        &mut stream,
+                        "404 Not Found",
+                        &serde_json::json!({
+                            "error": "workflow_step_not_found",
+                            "workflow_step_id": step_id,
+                        }),
+                    )?,
+                }
+            }
             // GET /v1/provider-sessions/{id}/normalized-events — normalized
             // HarnessTurnEvent[] computed on read from the retained RAW
             // per-session provider NDJSON. This does not write new storage and
@@ -7351,6 +7757,7 @@ fn build_member_from_json(body: &serde_json::Value) -> CliResult<AgentMember> {
         current_task_id: None,
         current_proposal_id: None,
         provider_runtime_id: None,
+        native_session: None,
         provider_thread_id: None,
         provider_agent_path: json_string(body, "provider_agent_path"),
         provider_agent_nickname: json_string(body, "provider_agent_nickname"),
@@ -7760,7 +8167,6 @@ struct WorkflowDeliveryOptions {
     /// "live" streams the trace over SSE during execution but prunes it after the
     /// run so a PAST run shows "trace not retained". Live streaming itself is
     /// independent and always happens.
-    trace_retention: String,
     /// When true, emit a compact NDJSON progress line to STDERR as each step goes
     /// `running` then terminal — so an agent caller that invoked us via its shell
     /// tool sees the phase-by-phase timeline (which step/phase is live) alongside
@@ -7872,7 +8278,11 @@ fn build_terminal_step(
         run_id: run_id.to_string(),
         phase: result.phase.clone(),
         label: result.label.clone(),
-        provider_session_id: result.provider_session_id.clone(),
+        native_session: result
+            .details
+            .as_ref()
+            .and_then(|details| details.get("native_session"))
+            .and_then(|value| serde_json::from_value(value.clone()).ok()),
         status: result.step_status(),
         output_summary: Some(result.output_summary.clone()),
         result: Some(workflow::step_result_json(result)),
@@ -7909,7 +8319,7 @@ fn workflow_real_agent_step(
         run_id: run_id.to_string(),
         phase: spec.phase.clone(),
         label: spec.label.clone(),
-        provider_session_id: Some(session_id.clone()),
+        native_session: None,
         status: WorkflowStepStatus::Running,
         output_summary: None,
         result: None,
@@ -8488,21 +8898,16 @@ fn spawn_ephemeral_worker(
         .map(|g| g.path.clone())
         .unwrap_or_else(|| repo_root.clone());
 
-    // One ephemeral worker == one ProviderSession. The session id keys the
-    // dashboard per-node drill-in (WorkflowStep.provider_session_id) and the
-    // durable NDJSON / live turn-events. It is minted by the caller and already
-    // stamped on the `running` step row, so the live drill-in links mid-flight;
-    // the worker reuses it verbatim.
+    // This id is a Harness-local execution key, not a provider session id. The
+    // provider-owned id is discovered from the native stream and attached to
+    // the terminal WorkflowStep as a NativeSessionRef.
     let session_id = session_id.to_string();
-    let session_dir = store.root().join("provider-sessions").join(&session_id);
+    let session_dir = store
+        .root()
+        .join("runtimes")
+        .join("workflow-workers")
+        .join(&session_id);
     fs::create_dir_all(&session_dir)?;
-
-    // Publish a RUNNING ProviderSession row NOW, before the blocking spawn — so the
-    // dashboard's per-node drill-in resolves this step's session WHILE it runs and
-    // renders the live turn-event stream, instead of "no turn yet" until the step
-    // finishes. `ingest_ephemeral_events` writes the terminal row afterward (same
-    // id, latest-wins).
-    write_running_ephemeral_session(store, &session_id, &session_dir, spec);
 
     // The structured schema normalized to a real JSON Schema for the providers'
     // native flags (claude `--json-schema`, codex `--output-schema`). `None` for
@@ -8644,23 +9049,6 @@ fn spawn_ephemeral_worker(
     };
     let artifact_outcome = collect_expected_artifacts(&cwd, &repo_root, &spec.expected_artifacts);
 
-    // Two-tier persistence (locked design). The live SSE frames were already
-    // streamed during the spawn loop (per-session NDJSON + shared
-    // provider_turn_events.jsonl), so a LIVE drill-in worked during execution no
-    // matter the retention. Now decide what SURVIVES the run:
-    //  - durable: persist the heavy trace (per-session AgentEvents + retained
-    //    NDJSON) so a completed run can be drilled into historically.
-    //  - live: do NOT retain the heavy trace — skip the durable AgentEvents and
-    //    prune the streamed NDJSON rows — so a past live-only run shows
-    //    "trace not retained". The ProviderSession row is still written either
-    //    way (with jsonl_ref only when durable), keeping the
-    //    WorkflowStep.provider_session_id linkage stable.
-    let retain_trace = options.trace_retention != "live";
-    let _ = ingest_ephemeral_events(store, &session_id, spec, &spawn, retain_trace);
-    if !retain_trace {
-        prune_live_only_trace(store, &session_id);
-    }
-
     let mut output_summary = if let Some(reply) = spawn.reply.clone() {
         // The worker's FINAL answer, FULL and FAITHFUL — NOT truncated. This is the
         // text `agent()` hands the program in text mode: the program splits it
@@ -8668,9 +9056,8 @@ fn spawn_ephemeral_worker(
         // leaf's prompt. Capping it (the old 4000-char clip) silently truncated the
         // node's output, so chaining a long result into a later leaf (e.g. a synthesis
         // over deep-dive sections) lost most of the input — a real design defect. The
-        // full text is the node's data; newlines are preserved; reply.txt keeps a
-        // durable copy too. Bounding runaway output is the budget/idle-timeout's job,
-        // not a silent clip here.
+        // full text is the node's durable Workflow outcome; newlines are
+        // preserved. Bounding runaway output is the budget/idle-timeout's job.
         reply
     } else {
         format!(
@@ -8801,6 +9188,11 @@ fn spawn_ephemeral_worker(
             );
         }
     }
+
+    // output-schema and last-message files are process-local transport aids.
+    // Remove them after reducing the explicit Workflow outcome; provider-native
+    // history remains in the provider store.
+    let _ = fs::remove_dir_all(&session_dir);
 
     // The step is ok iff the worker succeeded AND (text mode OR schema parsed).
     let ok = step_ok_after_gates(spawn.ok, schema_failed, &artifact_outcome);
@@ -9029,6 +9421,7 @@ fn build_step_details(
         .or_else(|| spawn.model.clone());
     let mut details = serde_json::json!({
         "model": model,
+        "native_session": spawn.native_session,
         "exit_code": spawn.exit_code,
         "duration_ms": duration_ms,
         "persist_changes": spec.persist_changes.clone(),
@@ -9133,8 +9526,9 @@ fn build_step_details(
 struct EphemeralSpawn {
     ok: bool,
     reply: Option<String>,
-    /// Raw NDJSON stdout (one JSON event per line) for neutral-event ingest.
-    ndjson: String,
+    /// Reference to the provider-owned session discovered from the native
+    /// stream. The Harness execution key is intentionally not a session id.
+    native_session: Option<NativeSessionRef>,
     stderr: String,
     /// Process exit code; `None` when the worker was killed on timeout / signal.
     exit_code: Option<i32>,
@@ -9500,7 +9894,8 @@ fn spawn_codex_ephemeral(
     Ok(EphemeralSpawn {
         ok,
         reply,
-        ndjson: ndjson_lines(&run.events),
+        native_session: extract_thread_id_from_exec_events(&codex_events)
+            .map(|id| provider_native_session_ref("codex", id)),
         stderr: run.stderr,
         exit_code: run.exit_code,
         timed_out: run.timed_out,
@@ -9634,7 +10029,8 @@ fn spawn_claude_ephemeral(
     Ok(EphemeralSpawn {
         ok,
         reply,
-        ndjson: ndjson_lines(&run.events),
+        native_session: extract_session_id_from_claude_events(&claude_events)
+            .map(|id| provider_native_session_ref("claude", id)),
         stderr: run.stderr,
         exit_code: run.exit_code,
         timed_out: run.timed_out,
@@ -9664,11 +10060,9 @@ struct NdjsonRun {
     warnings: Vec<String>,
 }
 
-/// Spawn a child that emits NDJSON on stdout, non-interactively (stdin closed),
-/// teeing each parsed event to TWO sinks while it streams MID-TURN: (1) the
-/// durable per-session `<file>` the ProviderSession's jsonl_ref points at, and
-/// (2) the shared `<store_root>/provider_turn_events.jsonl` the SSE watcher tails
-/// to push live frames (keyed by session id). Enforces a per-node timeout: on
+/// Spawn a child that emits NDJSON on stdout, non-interactively (stdin closed).
+/// Events are reduced in memory only; the provider-owned native session remains
+/// the sole transcript/tool stream. Enforces a per-node timeout: on
 /// timeout the child is killed and `process_success=false` (the run tolerates
 /// failed nodes). Returns the terminal [`NdjsonRun`].
 /// SIGKILL the worker's whole process GROUP (the child is the group leader, so
@@ -9790,13 +10184,7 @@ fn run_ndjson_child(
         .take()
         .ok_or_else(|| CliError::Usage(format!("{context} stderr not available")))?;
 
-    let _ = fs::create_dir_all(session_dir);
-    let live_path = session_dir.join(live_file_name);
-    let shared_path = session_dir
-        .parent()
-        .and_then(|provider_sessions| provider_sessions.parent())
-        .map(|store_root| store_root.join("provider_turn_events.jsonl"));
-    let session_id_owned = session_id.to_string();
+    let _ = (session_dir, session_id, live_file_name);
 
     // IDLE-timeout clock. A productive worker keeps emitting events, each resetting
     // this to "now"; the main thread kills only a worker that has gone SILENT for
@@ -9816,27 +10204,6 @@ fn run_ndjson_child(
     // which ends this loop.
     let stdout_handle = std::thread::spawn(move || {
         let mut warnings = Vec::new();
-        let mut session_writer = match fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&live_path)
-        {
-            Ok(file) => Some(BufWriter::new(file)),
-            Err(_) => {
-                warnings.push("failed to open live ndjson file".to_string());
-                None
-            }
-        };
-        let mut shared_writer = match shared_path.as_ref() {
-            Some(path) => match fs::OpenOptions::new().create(true).append(true).open(path) {
-                Ok(file) => Some(BufWriter::new(file)),
-                Err(_) => {
-                    warnings.push("failed to open shared ndjson file".to_string());
-                    None
-                }
-            },
-            None => None,
-        };
         let mut events = Vec::new();
         let mut dropped_lines = 0usize;
         for line in BufReader::new(stdout).lines() {
@@ -9854,18 +10221,6 @@ fn run_ndjson_child(
                 dropped_lines += 1;
                 continue;
             };
-            if let Some(writer) = session_writer.as_mut() {
-                let _ = writeln!(writer, "{trimmed}");
-                let _ = writer.flush();
-            }
-            if let Some(writer) = shared_writer.as_mut() {
-                let envelope =
-                    serde_json::json!({ "session_id": session_id_owned, "event": payload });
-                if let Ok(line) = serde_json::to_string(&envelope) {
-                    let _ = writeln!(writer, "{line}");
-                    let _ = writer.flush();
-                }
-            }
             events.push(payload);
         }
         if dropped_lines > 0 {
@@ -9948,18 +10303,6 @@ fn run_ndjson_child(
         stderr: stderr_log,
         warnings,
     })
-}
-
-/// Join parsed event payloads back into NDJSON text (one JSON object per line).
-fn ndjson_lines(events: &[serde_json::Value]) -> String {
-    let mut out = String::new();
-    for event in events {
-        if let Ok(line) = serde_json::to_string(event) {
-            out.push_str(&line);
-            out.push('\n');
-        }
-    }
-    out
 }
 
 /// `git -C <wt> diff --binary` — the node's collected evidence for the isolation
@@ -10192,206 +10535,6 @@ fn count_unique_worktree_diff_files(diff: &str) -> usize {
         .len()
 }
 
-/// Persist the ephemeral worker's NDJSON as neutral AgentEvents + one
-/// ProviderSession row keyed by `session_id`, so the dashboard per-node drill-in
-/// streams its tool calls. Reuses the existing claude stream-json reducer
-/// (`ingest_claude_stream_json`) for claude; emits a neutral event per codex
-/// NDJSON line for codex, mirroring the existing provider-output ingest.
-/// Write a RUNNING [`ProviderSession`] row the instant a workflow worker starts,
-/// BEFORE the blocking spawn. The dashboard's per-node drill-in resolves a step's
-/// turn-event stream via its `provider_session_id`, so without this row a RUNNING
-/// step rendered "no turn yet" — its live `provider_turn_event`s reached the
-/// frontend but had no session row to attach to — until it finished and
-/// [`ingest_ephemeral_events`] wrote the terminal row. This publishes the row up
-/// front (same id; the terminal row supersedes it latest-wins) and pre-creates the
-/// live NDJSON so `GET /v1/provider-sessions/{id}/events` returns a growing list
-/// from t0 rather than a missing-file error. Best-effort: a failure here must not
-/// abort the step — the terminal row still records the outcome.
-fn write_running_ephemeral_session(
-    store: &HarnessStore,
-    session_id: &str,
-    session_dir: &Path,
-    spec: &workflow::AgentStepSpec,
-) {
-    let live_file = provider_adapter(&spec.provider)
-        .map(|adapter| adapter.live_ndjson_file_name())
-        .unwrap_or_else(|| CodexAdapter.live_ndjson_file_name());
-    let live_path = session_dir.join(live_file);
-    // Pre-create the live NDJSON so the events route serves [] (then a growing
-    // list) during the turn instead of erroring on a not-yet-existent file.
-    let _ = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&live_path);
-    let jsonl_ref = Some(live_path.display().to_string());
-    let session = ProviderSession {
-        id: session_id.into(),
-        provider: spec.provider.clone(),
-        agent_member_id: session_id.into(),
-        task_id: None,
-        workspace_ref: None,
-        provider_thread_id: None,
-        provider_turn_id: None,
-        terminal_source: None,
-        status: ProviderSessionStatus::Running,
-        command: spec.provider.clone(),
-        args: Vec::new(),
-        prompt_ref: None,
-        prompt_summary: Some(format!(
-            "ephemeral {} worker: {}",
-            spec.provider, spec.label
-        )),
-        provider_session_ref: None,
-        stdout_ref: jsonl_ref.clone(),
-        jsonl_ref,
-        transcript_ref: None,
-        last_message_ref: None,
-        exit_code: None,
-        started_at: now_string(),
-        ended_at: None,
-        evidence_ids: Vec::new(),
-    };
-    let _ = store.append_provider_session(&session);
-}
-
-fn ingest_ephemeral_events(
-    store: &HarnessStore,
-    session_id: &str,
-    spec: &workflow::AgentStepSpec,
-    spawn: &EphemeralSpawn,
-    retain_trace: bool,
-) -> CliResult<()> {
-    // Persist the worker's FULL reply as a human-browsable artifact, so the
-    // deliverable can be retrieved in full (issue #89 item 4). The step's
-    // `output_summary` is capped at OUTPUT_SUMMARY_CAP chars, so a long synthesis
-    // would otherwise only live (scattered) inside the turn trace. Durable runs
-    // only; a `--trace live` run prunes the session dir afterward, and
-    // `workflow get-output` then falls back to the capped summary.
-    if retain_trace {
-        if let Some(reply) = spawn.reply.as_deref() {
-            let reply_path = store
-                .root()
-                .join("provider-sessions")
-                .join(session_id)
-                .join("reply.txt");
-            if let Some(parent) = reply_path.parent() {
-                let _ = fs::create_dir_all(parent);
-            }
-            let _ = fs::write(&reply_path, reply);
-        }
-    }
-
-    // The DURABLE per-session AgentEvents are the heavy trace gated by retention.
-    // When `retain_trace` is false (a `--trace live` run) we skip them entirely:
-    // the live SSE frames already streamed during the spawn loop, so the only
-    // thing we omit is the historical (post-run) trace.
-    if retain_trace {
-        // claude => claude reducer; codex/unknown => codex AgentEvent loop (unchanged policy).
-        provider_adapter(&spec.provider)
-            .unwrap_or(&CodexAdapter as &dyn ProviderAdapter)
-            .ingest_ephemeral_trace(store, session_id, spawn);
-    }
-
-    // A ProviderSession keyed by OUR session id — the stable drill-in key, always
-    // written so WorkflowStep.provider_session_id resolves either way. The
-    // jsonl_ref/stdout_ref point at the retained per-session NDJSON ONLY when the
-    // trace is durable; a live-only run leaves them None so the drill-in renders
-    // "trace not retained" (the NDJSON is pruned after the run).
-    let live_file = provider_adapter(&spec.provider)
-        .map(|adapter| adapter.live_ndjson_file_name())
-        .unwrap_or_else(|| CodexAdapter.live_ndjson_file_name());
-    let jsonl_ref = if retain_trace {
-        Some(
-            store
-                .root()
-                .join("provider-sessions")
-                .join(session_id)
-                .join(live_file)
-                .display()
-                .to_string(),
-        )
-    } else {
-        None
-    };
-    let status = if spawn.ok {
-        ProviderSessionStatus::Succeeded
-    } else {
-        ProviderSessionStatus::Failed
-    };
-    let session = ProviderSession {
-        id: session_id.into(),
-        provider: spec.provider.clone(),
-        agent_member_id: session_id.into(),
-        task_id: None,
-        workspace_ref: None,
-        provider_thread_id: None,
-        provider_turn_id: None,
-        terminal_source: status_to_terminal_source(&status),
-        status,
-        command: spec.provider.clone(),
-        args: Vec::new(),
-        prompt_ref: None,
-        prompt_summary: Some(format!(
-            "ephemeral {} worker: {}",
-            spec.provider, spec.label
-        )),
-        provider_session_ref: None,
-        stdout_ref: jsonl_ref.clone(),
-        jsonl_ref,
-        transcript_ref: None,
-        last_message_ref: None,
-        exit_code: Some(if spawn.ok { 0 } else { 1 }),
-        started_at: now_string(),
-        ended_at: Some(now_string()),
-        evidence_ids: Vec::new(),
-    };
-    let _ = store.append_provider_session(&session);
-    Ok(())
-}
-
-/// Prune the heavy turn-event trace a `--trace live` run streamed but does NOT
-/// retain (two-tier persistence). The live SSE frames already reached connected
-/// clients during execution; this removes what would otherwise SURVIVE so a past
-/// live-only run shows "trace not retained":
-///  - the per-session NDJSON directory (`provider-sessions/<session_id>/`), and
-///  - this session's rows in the shared `provider_turn_events.jsonl`.
-///
-/// Best-effort: a prune failure must not flip an otherwise-successful step.
-fn prune_live_only_trace(store: &HarnessStore, session_id: &str) {
-    // Drop the per-session NDJSON the spawn loop teed during streaming.
-    let session_dir = store.root().join("provider-sessions").join(session_id);
-    let _ = fs::remove_dir_all(&session_dir);
-
-    // Strip this session's lines from the shared turn-event log, keeping the rows
-    // of OTHER (possibly durable) sessions intact. Each line is a
-    // {"session_id": ..., "event": ...} envelope; we drop only matching ids.
-    let shared_path = store.root().join("provider_turn_events.jsonl");
-    let Ok(contents) = fs::read_to_string(&shared_path) else {
-        return;
-    };
-    let mut kept = String::new();
-    for line in contents.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        let drop_line = serde_json::from_str::<serde_json::Value>(trimmed)
-            .ok()
-            .and_then(|value| {
-                value
-                    .get("session_id")
-                    .and_then(|s| s.as_str())
-                    .map(|s| s == session_id)
-            })
-            .unwrap_or(false);
-        if !drop_line {
-            kept.push_str(line);
-            kept.push('\n');
-        }
-    }
-    let _ = fs::write(&shared_path, kept);
-}
-
 /// Backstop GC (cleanup layer 3): `git worktree prune` + sweep
 /// `.harness/worktrees/` for dirs not tied to an ACTIVE run. Active = a worktree
 /// still registered with git (a leftover from a crash is unregistered after
@@ -10448,32 +10591,19 @@ fn workflow_get_output_value(
                 continue;
             }
         }
-        let (output, source) = match step.provider_session_id.as_deref() {
-            Some(sid) => {
-                let reply_path = store
-                    .root()
-                    .join("provider-sessions")
-                    .join(sid)
-                    .join("reply.txt");
-                match fs::read_to_string(&reply_path) {
-                    Ok(text) => (text, "reply"),
-                    Err(_) => (step.output_summary.clone().unwrap_or_default(), "summary"),
-                }
-            }
-            None => (step.output_summary.clone().unwrap_or_default(), "summary"),
-        };
-        let session_summary = step
-            .provider_session_id
-            .as_deref()
-            .map(|sid| workflow_provider_session_summary(store, sid))
+        let output = step.output_summary.clone().unwrap_or_default();
+        let native_activity = step
+            .native_session
+            .as_ref()
+            .map(native_session::read_activity)
             .transpose()?;
         out_steps.push(serde_json::json!({
             "label": step.label,
             "status": serde_json::to_value(step.status)?,
-            "provider_session_id": step.provider_session_id,
-            "source": source,
+            "native_session": step.native_session,
+            "source": "workflow_step",
             "result": step.result,
-            "session_summary": session_summary,
+            "native_activity": native_activity,
             "output": output,
         }));
     }
@@ -10490,42 +10620,6 @@ fn workflow_get_output_value(
         "run_id": run_id,
         "workflow_name": run.workflow_name,
         "steps": out_steps,
-    }))
-}
-
-fn workflow_provider_session_summary(
-    store: &HarnessStore,
-    session_id: &str,
-) -> CliResult<serde_json::Value> {
-    let (retained, events, truncated) = read_session_turn_events_normalized(store, session_id)?;
-    let mut tool_counts: BTreeMap<String, u64> = BTreeMap::new();
-    let mut final_message: Option<String> = None;
-    for event in events {
-        match event.kind {
-            HarnessTurnEventKind::ToolCall => {
-                let name = event
-                    .tool_call
-                    .map(|tool| tool.name)
-                    .unwrap_or_else(|| "unknown".to_string());
-                *tool_counts.entry(name).or_insert(0) += 1;
-            }
-            HarnessTurnEventKind::Message => {
-                if let Some(text) = event.text.filter(|text| !text.trim().is_empty()) {
-                    final_message = Some(truncate_on_char_boundary(text.trim(), 500).to_string());
-                }
-            }
-            _ => {}
-        }
-    }
-    let tool_calls = tool_counts
-        .into_iter()
-        .map(|(name, count)| serde_json::json!({ "name": name, "count": count }))
-        .collect::<Vec<_>>();
-    Ok(serde_json::json!({
-        "retained": retained,
-        "truncated": truncated,
-        "tool_calls": tool_calls,
-        "final_message": final_message,
     }))
 }
 
@@ -10653,31 +10747,23 @@ fn workflow_gc_trace(
         if !(too_many || too_old) {
             continue;
         }
-        let session_ids: Vec<String> = steps
+        let native_sessions: Vec<NativeSessionRef> = steps
             .iter()
             .filter(|step| step.run_id == run.id)
-            .filter_map(|step| step.provider_session_id.clone())
+            .filter_map(|step| step.native_session.clone())
             .collect();
         pruned.push(serde_json::json!({
             "run_id": run.id,
             "created_at": run.created_at,
-            "sessions": session_ids.len(),
+            "native_sessions": native_sessions.len(),
             "reason": if too_old { "age" } else { "count" },
         }));
         if dry_run {
-            freed_sessions += session_ids.len();
+            freed_sessions += 0;
             continue;
         }
-        for session_id in &session_ids {
-            let dir = store.root().join("provider-sessions").join(session_id);
-            let _ = fs::remove_dir_all(&dir);
-            if let Some(mut session) = latest_provider_session(store, session_id)? {
-                session.jsonl_ref = None;
-                session.stdout_ref = None;
-                store.append_provider_session(&session)?;
-            }
-            freed_sessions += 1;
-        }
+        // Provider-native sessions are provider-owned and are never deleted by
+        // Harness trace GC. Expire only the Harness retention label.
         let mut expired = run.clone();
         expired.trace_retention = "expired".to_string();
         store.append_workflow_run(&expired)?;
@@ -10808,7 +10894,6 @@ fn workflow_run_value(store: &HarnessStore, args: &[String]) -> CliResult<serde_
         default_effort: value(args, "--effort"),
         max_budget_usd: None,
         // Registry runs always retain their trace durably.
-        trace_retention: "durable".to_string(),
         progress: has_flag(args, "--progress"),
         project: workflow_project_context(store),
     };
@@ -10881,7 +10966,7 @@ fn step_result_from_stored(step: &WorkflowStep) -> Option<workflow::StepResult> 
         provider,
         isolation,
         ok: true,
-        provider_session_id: step.provider_session_id.clone(),
+        provider_session_id: None,
         output_summary: step.output_summary.clone().unwrap_or_default(),
         step_id: None,
         started_at: None,
@@ -11993,7 +12078,6 @@ fn workflow_run_script_value(
         default_model: value(args, "--model"),
         default_effort: value(args, "--effort"),
         max_budget_usd: value(args, "--max-budget-usd").and_then(|v| v.parse::<f64>().ok()),
-        trace_retention: trace_retention.clone(),
         progress: has_flag(args, "--progress"),
         project: workflow_project_context(store),
     };
@@ -12322,6 +12406,7 @@ fn deliver_agent_messages_value(
             )?;
             DeliveryOutcome {
                 status: ProviderSessionStatus::Succeeded,
+                native_session: None,
                 provider_thread_id,
                 provider_turn_id,
                 terminal_source: Some(MessageTerminalSource::DryRun),
@@ -12375,6 +12460,7 @@ fn deliver_agent_messages_value(
                 )?;
                 DeliveryOutcome {
                     status: ProviderSessionStatus::Failed,
+                    native_session: None,
                     provider_thread_id: member.provider_thread_id.clone(),
                     provider_turn_id: None,
                     terminal_source: Some(MessageTerminalSource::Failed),
@@ -12407,6 +12493,7 @@ fn deliver_agent_messages_value(
                 )?;
                 DeliveryOutcome {
                     status: ProviderSessionStatus::Failed,
+                    native_session: None,
                     provider_thread_id: member.provider_thread_id.clone(),
                     provider_turn_id: None,
                     terminal_source: Some(MessageTerminalSource::Failed),
@@ -12441,6 +12528,13 @@ fn deliver_agent_messages_value(
         let mut delivered_message = latest_message(store, &claimed_message.id)?;
         delivered_message.delivery_status = message_status_for_delivery(&delivery.status);
         delivered_message.delivery = Some(MessageDelivery {
+            delivery_id: Some(delivery_id.clone()),
+            execution_status: Some(delivery.status.clone()),
+            native_session: delivery.native_session.clone(),
+            started_at: claimed_message
+                .delivery
+                .as_ref()
+                .and_then(|delivery| delivery.started_at.clone()),
             provider_session_id: delivery.provider_session_id.clone(),
             provider_request_id: delivery.provider_request_id.clone(),
             provider_thread_id: delivery.provider_thread_id.clone(),
@@ -12469,6 +12563,9 @@ fn deliver_agent_messages_value(
         }
         if let Some(thread_id) = delivery.provider_thread_id.clone() {
             member.provider_thread_id = Some(thread_id);
+        }
+        if let Some(native_session) = delivery.native_session.clone() {
+            member.native_session = Some(native_session);
         }
         if let Some(mut runtime_value) = runtime.clone() {
             runtime_value.health.delivery_probe = Some(match &delivery.status {
@@ -12650,46 +12747,45 @@ fn expire_safe_delivery_claims_value(
     }
     let now_ms = current_unix_ms();
     let messages = latest_messages(store)?;
-    let sessions = latest_provider_sessions_in_append_order(store)?;
     let mut expired = Vec::new();
-    for session in sessions {
-        if session.status != ProviderSessionStatus::Running {
+    for message in messages.values() {
+        if message.delivery_status != MessageDeliveryStatus::Acknowledged {
             continue;
         }
-        let Some(started_ms) = parse_unix_ms(&session.started_at) else {
+        let Some(delivery) = message.delivery.as_ref() else {
+            continue;
+        };
+        if delivery.execution_status != Some(ProviderSessionStatus::Running)
+            || delivery.provider_request_id.is_some()
+            || delivery.provider_turn_id.is_some()
+        {
+            continue;
+        }
+        let Some(started_ms) = delivery.started_at.as_deref().and_then(parse_unix_ms) else {
             continue;
         };
         if now_ms.saturating_sub(started_ms) < u128::from(claim_ttl_ms) {
             continue;
         }
-        let Some(message) = messages.values().find(|message| {
-            message.delivery_status == MessageDeliveryStatus::Acknowledged
-                && message.delivery.as_ref().is_some_and(|delivery| {
-                    delivery.provider_session_id.as_deref() == Some(session.id.as_str())
-                        && delivery.provider_request_id.is_none()
-                        && delivery.provider_turn_id.is_none()
-                })
-        }) else {
-            continue;
-        };
-        if session.provider_turn_id.is_some() {
-            continue;
-        }
         let Some(agent_id) = message.to_agent_id.as_deref() else {
             continue;
         };
+        let delivery_id = delivery
+            .delivery_id
+            .as_deref()
+            .or(delivery.provider_session_id.as_deref());
         match retry_delivery_value(
             store,
             agent_id,
             &message.id,
-            Some(&session.id),
+            delivery_id,
             "gateway expired unreconciled pre-provider delivery claim",
             false,
         ) {
             Ok(result) => expired.push(serde_json::json!({"ok": true, "result": result})),
             Err(error) => expired.push(serde_json::json!({
                 "ok": false,
-                "provider_session_id": session.id,
+                "delivery_id": delivery_id,
                 "message_id": message.id,
                 "error": error.to_string()
             })),
@@ -12701,6 +12797,7 @@ fn expire_safe_delivery_claims_value(
 #[derive(Debug)]
 struct DeliveryOutcome {
     status: ProviderSessionStatus,
+    native_session: Option<NativeSessionRef>,
     provider_thread_id: Option<String>,
     provider_turn_id: Option<String>,
     terminal_source: Option<MessageTerminalSource>,
@@ -12721,32 +12818,15 @@ struct DeliveryOutcome {
 fn claim_message_for_delivery(
     store: &HarnessStore,
     member: &AgentMember,
-    runtime: Option<&AgentRuntime>,
+    _runtime: Option<&AgentRuntime>,
     message: &Message,
     delivery_id: &str,
 ) -> CliResult<Option<Message>> {
-    let mut provider_session =
-        build_claimed_provider_session(delivery_id, member, runtime, message);
-    // Live agent view: point the RUNNING claim row at the NDJSON file the exec
-    // delivery appends to MID-TURN, and pre-create it so the first poll of
-    // GET /v1/provider-sessions/{id}/events returns [] (not a not-found error)
-    // before the first event lands. Same delivery_id → same session row as the
-    // terminal row, so the poll resolves to the growing file throughout. Both
-    // providers stream; the file name matches what each exec path writes.
-    let live_filename =
-        provider_adapter(member.provider.as_str()).map(|adapter| adapter.live_ndjson_file_name());
-    if let Some(filename) = live_filename {
-        let session_dir = store.root().join("provider-sessions").join(delivery_id);
-        let live_path = session_dir.join(filename);
-        if fs::create_dir_all(&session_dir).is_ok() {
-            let _ = fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&live_path);
-            provider_session.jsonl_ref = Some(live_path.display().to_string());
-        }
-    }
     let delivery = MessageDelivery {
+        delivery_id: Some(delivery_id.to_string()),
+        execution_status: Some(ProviderSessionStatus::Running),
+        native_session: member.native_session.clone(),
+        started_at: Some(now_string()),
         provider_session_id: Some(delivery_id.to_string()),
         provider_request_id: None,
         provider_thread_id: member.provider_thread_id.clone(),
@@ -12755,12 +12835,7 @@ fn claim_message_for_delivery(
         delivered_at: None,
         last_error: None,
     };
-    match store.claim_queued_message_delivery(
-        &member.id,
-        &message.id,
-        delivery,
-        provider_session,
-    )? {
+    match store.claim_queued_message_delivery(&member.id, &message.id, delivery)? {
         MessageDeliveryClaimResult::Claimed(message) => Ok(Some(*message)),
         MessageDeliveryClaimResult::NotQueued => Ok(None),
         MessageDeliveryClaimResult::BlockedBySession(session_id) => Err(CliError::Usage(format!(
@@ -12791,25 +12866,31 @@ fn retry_delivery_value(
             "message {message_id} has no delivery claim to retry"
         ))
     })?;
-    let session_id = session_id
+    let delivery_id = session_id
         .map(str::to_string)
+        .or(delivery.delivery_id.clone())
         .or(delivery.provider_session_id.clone())
         .ok_or_else(|| {
             CliError::Usage(format!(
-                "message {message_id} has no provider session id to retry"
+                "message {message_id} has no delivery attempt id to retry"
             ))
         })?;
-    let mut session = latest_provider_session(store, &session_id)?
-        .ok_or_else(|| CliError::Usage(format!("provider session not found: {session_id}")))?;
-    if session.agent_member_id != agent_id {
+    if delivery
+        .delivery_id
+        .as_deref()
+        .or(delivery.provider_session_id.as_deref())
+        != Some(delivery_id.as_str())
+    {
         return Err(CliError::Usage(format!(
-            "provider session {session_id} does not belong to agent {agent_id}"
+            "delivery attempt {delivery_id} does not belong to message {message_id}"
         )));
     }
     let safe_without_force = delivery.provider_request_id.is_none()
         && delivery.provider_turn_id.is_none()
-        && session.provider_turn_id.is_none()
-        && !matches!(session.status, ProviderSessionStatus::Succeeded);
+        && !matches!(
+            delivery.execution_status,
+            Some(ProviderSessionStatus::Succeeded)
+        );
     if !force && !safe_without_force {
         return Err(CliError::Usage(format!(
             "delivery retry for message {message_id} is not safe without --force; reconcile provider output first or pass --force explicitly"
@@ -12820,17 +12901,9 @@ fn retry_delivery_value(
         store,
         message.task_id.clone(),
         "delivery_retry",
-        &format!("provider-session:{session_id}"),
+        &format!("delivery-attempt:{delivery_id}"),
         reason,
     )?;
-    session.status = ProviderSessionStatus::Canceled;
-    session.terminal_source = Some(MessageTerminalSource::Failed);
-    session.ended_at = Some(now_string());
-    if !session.evidence_ids.contains(&evidence_id) {
-        session.evidence_ids.push(evidence_id.clone());
-    }
-    store.append_provider_session(&session)?;
-
     message.delivery_status = MessageDeliveryStatus::Queued;
     message.delivery = None;
     store.append_message(&message)?;
@@ -12847,9 +12920,9 @@ fn retry_delivery_value(
     Ok(serde_json::json!({
         "agent_member_id": agent_id,
         "message_id": message_id,
-        "provider_session_id": session_id,
+        "delivery_id": delivery_id,
         "delivery_status": message.delivery_status,
-        "session_status": session.status,
+        "execution_status": ProviderSessionStatus::Canceled,
         "evidence_id": evidence_id,
         "forced": force
     }))
@@ -12953,63 +13026,27 @@ fn record_operator_evidence(
     Ok(id)
 }
 
-fn build_claimed_provider_session(
-    delivery_id: &str,
-    member: &AgentMember,
-    runtime: Option<&AgentRuntime>,
-    message: &Message,
-) -> ProviderSession {
-    ProviderSession {
-        id: delivery_id.into(),
-        provider: member.provider.clone(),
-        agent_member_id: member.id.clone(),
-        task_id: message.task_id.clone(),
-        workspace_ref: member.worktree_ref.clone(),
-        provider_thread_id: member.provider_thread_id.clone(),
-        provider_turn_id: None,
-        terminal_source: None,
-        status: ProviderSessionStatus::Running,
-        command: "harness".into(),
-        args: vec![
-            member.provider.clone(),
-            "message-delivery-claim".into(),
-            message.id.clone(),
-        ],
-        prompt_ref: member.prompt_ref.clone(),
-        prompt_summary: Some(format!("claimed delivery for message {}", message.id)),
-        provider_session_ref: runtime.and_then(|runtime| runtime.control_endpoint.clone()),
-        stdout_ref: None,
-        jsonl_ref: None,
-        transcript_ref: None,
-        last_message_ref: None,
-        exit_code: None,
-        started_at: now_string(),
-        ended_at: None,
-        evidence_ids: Vec::new(),
-    }
-}
-
 #[allow(clippy::too_many_arguments)]
 fn record_claimed_delivery_terminal(
     store: &HarnessStore,
     delivery_id: &str,
     message: &Message,
-    status: ProviderSessionStatus,
-    provider_thread_id: Option<String>,
-    provider_turn_id: Option<String>,
-    terminal_source: Option<MessageTerminalSource>,
+    _status: ProviderSessionStatus,
+    _provider_thread_id: Option<String>,
+    _provider_turn_id: Option<String>,
+    _terminal_source: Option<MessageTerminalSource>,
     summary: &str,
     source_ref: Option<&str>,
-    exit_code: Option<i32>,
+    _exit_code: Option<i32>,
 ) -> CliResult<Vec<String>> {
     let evidence_id = generated_id("evidence");
     let evidence = Evidence {
         id: evidence_id.clone(),
         task_id: message.task_id.clone(),
-        source_type: "claude_delivery_session".into(),
+        source_type: "delivery_attempt".into(),
         source_ref: source_ref
             .map(str::to_string)
-            .unwrap_or_else(|| format!("provider-session:{delivery_id}")),
+            .unwrap_or_else(|| format!("delivery-attempt:{delivery_id}")),
         summary: summary.into(),
         created_at: now_string(),
         evidence_kind: None,
@@ -13017,21 +13054,6 @@ fn record_claimed_delivery_terminal(
     };
     store.append_evidence(&evidence)?;
 
-    let mut session = latest_provider_session(store, delivery_id)?.ok_or_else(|| {
-        CliError::Usage(format!(
-            "claimed provider session not found for delivery {delivery_id}"
-        ))
-    })?;
-    session.status = status;
-    session.provider_thread_id = provider_thread_id.or(session.provider_thread_id);
-    session.provider_turn_id = provider_turn_id.or(session.provider_turn_id);
-    session.terminal_source = terminal_source;
-    session.exit_code = exit_code;
-    session.ended_at = Some(now_string());
-    if !session.evidence_ids.contains(&evidence_id) {
-        session.evidence_ids.push(evidence_id.clone());
-    }
-    store.append_provider_session(&session)?;
     Ok(vec![evidence_id])
 }
 
@@ -14688,6 +14710,7 @@ fn build_member_from_args(args: &[String], status: AgentMemberStatus) -> CliResu
         current_task_id: None,
         current_proposal_id: None,
         provider_runtime_id: None,
+        native_session: None,
         provider_thread_id: None,
         provider_agent_path: value(args, "--provider-agent-path"),
         provider_agent_nickname: value(args, "--provider-agent-nickname"),
@@ -14849,16 +14872,6 @@ trait ProviderAdapter: Sync {
     ) -> Vec<HarnessTurnEvent> {
         vec![generic_turn_event(self.name(), session_id, raw)]
     }
-
-    /// Reduce this provider's retained ephemeral NDJSON trace into neutral
-    /// AgentEvents (and, for claude, a coexisting ProviderSession). Called only on
-    /// durable runs. Ingest errors are swallowed — they must never fail the step.
-    fn ingest_ephemeral_trace(
-        &self,
-        store: &HarnessStore,
-        session_id: &str,
-        spawn: &EphemeralSpawn,
-    );
 
     /// Ingest a persistent provider runtime's recorded output file (`source_ref`)
     /// into neutral AgentEvents / child-threads / proposals / reconciliations /
@@ -15218,44 +15231,6 @@ impl ProviderAdapter for CodexAdapter {
         Ok(())
     }
 
-    fn ingest_ephemeral_trace(
-        &self,
-        store: &HarnessStore,
-        session_id: &str,
-        spawn: &EphemeralSpawn,
-    ) {
-        // Codex: one neutral AgentEvent per NDJSON line, mirroring the
-        // provider-output ingest path (event_type from the `type` discriminant).
-        for line in spawn.ndjson.lines() {
-            let Ok(payload) = serde_json::from_str::<serde_json::Value>(line.trim()) else {
-                continue;
-            };
-            let event_type = payload
-                .get("type")
-                .and_then(|t| t.as_str())
-                .unwrap_or("provider_output")
-                .replace(['/', '.'], "_");
-            let event = AgentEvent {
-                id: generated_id("event"),
-                agent_member_id: session_id.into(),
-                provider_runtime_id: None,
-                task_id: None,
-                provider: self.name().into(),
-                provider_thread_id: payload
-                    .get("thread_id")
-                    .and_then(|v| v.as_str())
-                    .map(str::to_string),
-                provider_turn_id: None,
-                provider_child_thread_id: None,
-                event_type,
-                summary: summarize_json_value(&payload),
-                payload_ref: None,
-                created_at: now_string(),
-            };
-            let _ = store.append_event(&event);
-        }
-    }
-
     fn spawn_ephemeral(&self, ctx: &EphemeralSpawnContext<'_>) -> CliResult<EphemeralSpawn> {
         spawn_codex_ephemeral(
             ctx.session_dir,
@@ -15366,6 +15341,10 @@ impl ProviderAdapter for CodexAdapter {
                     evidence_ids: Vec::new(),
                     created_at: now_string(),
                     delivery: Some(MessageDelivery {
+                        delivery_id: None,
+                        execution_status: Some(ProviderSessionStatus::Succeeded),
+                        native_session: None,
+                        started_at: None,
                         provider_session_id: None,
                         provider_request_id: None,
                         provider_thread_id,
@@ -15644,16 +15623,6 @@ impl ProviderAdapter for ClaudeAdapter {
         )
     }
 
-    fn ingest_ephemeral_trace(
-        &self,
-        store: &HarnessStore,
-        session_id: &str,
-        spawn: &EphemeralSpawn,
-    ) {
-        let _ =
-            ingest_claude_stream_json(store, self.name(), session_id, None, None, &spawn.ndjson);
-    }
-
     fn spawn_ephemeral(&self, ctx: &EphemeralSpawnContext<'_>) -> CliResult<EphemeralSpawn> {
         spawn_claude_ephemeral(
             ctx.session_dir,
@@ -15920,7 +15889,8 @@ fn spawn_kimi_ephemeral(
     Ok(EphemeralSpawn {
         ok,
         reply,
-        ndjson: ndjson_lines(&run.events),
+        native_session: extract_kimi_session_id(frames)
+            .map(|id| provider_native_session_ref("kimi", id)),
         stderr: run.stderr,
         exit_code: run.exit_code,
         timed_out: run.timed_out,
@@ -16069,7 +16039,11 @@ fn run_kimi_delivery(
     timeout_ms: u64,
     project: &ProjectContext,
 ) -> CliResult<DeliveryOutcome> {
-    let session_dir = store.root().join("provider-sessions").join(delivery_id);
+    let session_dir = store
+        .root()
+        .join("runtimes")
+        .join("deliveries")
+        .join(delivery_id);
     fs::create_dir_all(&session_dir)?;
     let started_at = now_string();
 
@@ -16081,14 +16055,6 @@ fn run_kimi_delivery(
     let (tokens, cost_usd, model): (Option<TokenUsage>, Option<f64>, Option<String>) =
         (None, None, None);
     let raw_structured: Option<serde_json::Value> = None;
-
-    let ndjson_ref = session_dir.join(KimiAdapter.live_ndjson_file_name());
-    let mut ndjson_content = String::new();
-    for frame in &raw_events {
-        ndjson_content.push_str(&serde_json::to_string(frame).unwrap_or_default());
-        ndjson_content.push('\n');
-    }
-    fs::write(&ndjson_ref, &ndjson_content)?;
 
     let status = infer_kimi_status(&raw_events, process_success);
     let structured = structured_for_status(&status, raw_structured);
@@ -16107,7 +16073,7 @@ fn run_kimi_delivery(
         id: evidence_id.clone(),
         task_id: message.task_id.clone(),
         source_type: "kimi_delivery_session".into(),
-        source_ref: format!("provider-session:{resolved_session_id}"),
+        source_ref: format!("native-session:kimi:{resolved_session_id}"),
         summary: format!(
             "Kimi stream-json delivery {} for message {} ({} frames)",
             resolved_session_id,
@@ -16136,12 +16102,8 @@ fn run_kimi_delivery(
         prompt_summary: Some(format!("deliver message {}", message.id)),
         provider_session_ref: None,
         stdout_ref: None,
-        jsonl_ref: Some(ndjson_ref.display().to_string()),
-        transcript_ref: if stderr_log.is_empty() {
-            None
-        } else {
-            Some(session_dir.join("kimi.stderr").display().to_string())
-        },
+        jsonl_ref: None,
+        transcript_ref: None,
         last_message_ref: None,
         exit_code: if process_success { Some(0) } else { Some(1) },
         started_at,
@@ -16150,20 +16112,18 @@ fn run_kimi_delivery(
     };
     store.append_provider_session(&provider_session)?;
 
+    let _ = fs::remove_dir_all(&session_dir);
     Ok(DeliveryOutcome {
+        native_session: resumable_session_id
+            .as_ref()
+            .map(|id| provider_native_session_ref("kimi", id)),
         provider_thread_id: resumable_session_id,
         provider_turn_id: None,
         terminal_source,
         status,
         stdout_ref: None,
-        stderr_ref: if !stderr_log.is_empty() {
-            let stderr_path = session_dir.join("kimi.stderr");
-            fs::write(&stderr_path, &stderr_log)?;
-            Some(stderr_path.display().to_string())
-        } else {
-            None
-        },
-        request_ref: Some(session_dir.display().to_string()),
+        stderr_ref: None,
+        request_ref: None,
         provider_request_id: None,
         provider_session_id: Some(delivery_id.to_string()),
         evidence_ids: vec![evidence_id],
@@ -16270,17 +16230,6 @@ impl ProviderAdapter for KimiAdapter {
             timeout_ms,
             project,
         )
-    }
-
-    fn ingest_ephemeral_trace(
-        &self,
-        store: &HarnessStore,
-        session_id: &str,
-        spawn: &EphemeralSpawn,
-    ) {
-        // Kimi -p stream-json is not claude-shaped → use the kimi-native reducer,
-        // stamping the durable AgentEvent / ProviderSession rows provider="kimi".
-        let _ = ingest_kimi_stream_json(store, self.name(), session_id, None, None, &spawn.ndjson);
     }
 
     fn spawn_ephemeral(&self, ctx: &EphemeralSpawnContext<'_>) -> CliResult<EphemeralSpawn> {
@@ -17101,11 +17050,8 @@ struct ExecDeliverySessionRecord<'a> {
     delivery_id: &'a str,
     member: &'a AgentMember,
     message: &'a Message,
-    session_dir: &'a Path,
     status: ProviderSessionStatus,
     started_at: String,
-    stdout_ref: Option<String>,
-    stderr_ref: Option<String>,
     exit_code: Option<i32>,
     provider_thread_id: Option<String>,
     provider_turn_id: Option<String>,
@@ -17125,7 +17071,11 @@ fn record_exec_delivery_session(
         id: evidence_id.clone(),
         task_id: record.message.task_id.clone(),
         source_type: "codex_exec_delivery_session".into(),
-        source_ref: record.session_dir.display().to_string(),
+        source_ref: record
+            .provider_thread_id
+            .as_ref()
+            .map(|id| format!("native-session:codex:{id}"))
+            .unwrap_or_else(|| "native-session:codex:unavailable".to_string()),
         summary: format!(
             "Codex exec-stream delivery {} for message {}",
             record.delivery_id, record.message.id
@@ -17155,11 +17105,9 @@ fn record_exec_delivery_session(
         prompt_ref: record.member.prompt_ref.clone(),
         prompt_summary: Some(format!("deliver message {}", record.message.id)),
         provider_session_ref: None,
-        // jsonl_ref must be the events FILE (read by the events route), not the
-        // session dir; for codex that is the same NDJSON as stdout_ref.
-        jsonl_ref: record.stdout_ref.clone(),
-        stdout_ref: record.stdout_ref,
-        transcript_ref: record.stderr_ref,
+        jsonl_ref: None,
+        stdout_ref: None,
+        transcript_ref: None,
         last_message_ref: None,
         exit_code: record.exit_code,
         started_at: record.started_at,
@@ -17181,7 +17129,11 @@ fn run_codex_exec_delivery(
     timeout_ms: u64,
     project: &ProjectContext,
 ) -> CliResult<DeliveryOutcome> {
-    let session_dir = store.root().join("provider-sessions").join(delivery_id);
+    let session_dir = store
+        .root()
+        .join("runtimes")
+        .join("deliveries")
+        .join(delivery_id);
     fs::create_dir_all(&session_dir)?;
     let started_at = now_string();
 
@@ -17199,13 +17151,6 @@ fn run_codex_exec_delivery(
         project,
     )?;
     let (tokens, cost_usd, model) = codex_delivery_telemetry(&raw_events, &spec);
-
-    // The event NDJSON is the live file run_codex_exec_process already wrote
-    // incrementally (mid-turn streaming) — point the session row at it rather
-    // than re-serializing a redundant copy. Just persist stderr.
-    let stdout_ref = session_dir.join("codex.stream-json.ndjson");
-    let stderr_ref = session_dir.join("exec.stderr.log");
-    fs::write(&stderr_ref, &stderr_log)?;
 
     // Infer the delivery status from events and process exit.
     let status = infer_provider_session_status(&events, process_success);
@@ -17231,11 +17176,8 @@ fn run_codex_exec_delivery(
             delivery_id,
             member,
             message,
-            session_dir: &session_dir,
             status: status.clone(),
             started_at,
-            stdout_ref: Some(stdout_ref.display().to_string()),
-            stderr_ref: Some(stderr_ref.display().to_string()),
             exit_code,
             provider_thread_id: provider_thread_id.clone(),
             provider_turn_id: provider_turn_id.clone(),
@@ -17264,14 +17206,19 @@ fn run_codex_exec_delivery(
         _ => "Codex exec --json session ended".into(),
     };
 
+    let _ = fs::remove_dir_all(&session_dir);
+    let native_session = provider_thread_id
+        .as_ref()
+        .map(|id| provider_native_session_ref("codex", id));
     Ok(DeliveryOutcome {
         status: status.clone(),
+        native_session,
         provider_thread_id,
         provider_turn_id,
         terminal_source,
-        stdout_ref: Some(stdout_ref.display().to_string()),
-        stderr_ref: Some(stderr_ref.display().to_string()),
-        request_ref: Some(session_dir.display().to_string()),
+        stdout_ref: None,
+        stderr_ref: None,
+        request_ref: None,
         provider_request_id: None, // exec stream does not use request_id
         provider_session_id: Some(delivery_id.to_string()),
         evidence_ids: vec![evidence_id],
@@ -17425,7 +17372,11 @@ fn run_claude_delivery(
     timeout_ms: u64,
     project: &ProjectContext,
 ) -> CliResult<DeliveryOutcome> {
-    let session_dir = store.root().join("provider-sessions").join(delivery_id);
+    let session_dir = store
+        .root()
+        .join("runtimes")
+        .join("deliveries")
+        .join(delivery_id);
     fs::create_dir_all(&session_dir)?;
     let started_at = now_string();
 
@@ -17445,15 +17396,6 @@ fn run_claude_delivery(
         run_claude_exec_delivery_real(&session_dir, member, message, timeout_ms, project)?
     };
     let (tokens, cost_usd, model, raw_structured) = claude_delivery_telemetry(&raw_events);
-
-    // Save NDJSON events to jsonl_ref for ingest.
-    let ndjson_ref = session_dir.join("claude.stream-json.ndjson");
-    let mut ndjson_content = String::new();
-    for event in &events {
-        ndjson_content.push_str(&serde_json::to_string(&event.payload).unwrap_or_default());
-        ndjson_content.push('\n');
-    }
-    fs::write(&ndjson_ref, &ndjson_content)?;
 
     let status = infer_claude_session_status(&events, process_success);
     let structured = structured_for_status(&status, raw_structured);
@@ -17485,7 +17427,7 @@ fn run_claude_delivery(
         id: evidence_id.clone(),
         task_id: message.task_id.clone(),
         source_type: "claude_delivery_session".into(),
-        source_ref: format!("provider-session:{resolved_session_id}"),
+        source_ref: format!("native-session:claude:{resolved_session_id}"),
         summary: format!(
             "Claude stream-json delivery {} for message {} ({} events)",
             resolved_session_id,
@@ -17521,12 +17463,8 @@ fn run_claude_delivery(
         prompt_summary: Some(format!("deliver message {}", message.id)),
         provider_session_ref: None,
         stdout_ref: None,
-        jsonl_ref: Some(ndjson_ref.display().to_string()),
-        transcript_ref: if stderr_log.is_empty() {
-            None
-        } else {
-            Some(session_dir.join("claude.stderr").display().to_string())
-        },
+        jsonl_ref: None,
+        transcript_ref: None,
         last_message_ref: None,
         exit_code: if process_success { Some(0) } else { Some(1) },
         started_at,
@@ -17535,7 +17473,11 @@ fn run_claude_delivery(
     };
     store.append_provider_session(&provider_session)?;
 
+    let _ = fs::remove_dir_all(&session_dir);
     Ok(DeliveryOutcome {
+        native_session: resumable_session_id
+            .as_ref()
+            .map(|id| provider_native_session_ref("claude", id)),
         // Surface the real claude session id as the member's provider thread so
         // the next delivery resumes this conversation (memory across deliveries).
         provider_thread_id: resumable_session_id,
@@ -17543,14 +17485,8 @@ fn run_claude_delivery(
         terminal_source,
         status,
         stdout_ref: None,
-        stderr_ref: if !stderr_log.is_empty() {
-            let stderr_path = session_dir.join("claude.stderr");
-            fs::write(&stderr_path, &stderr_log)?;
-            Some(stderr_path.display().to_string())
-        } else {
-            None
-        },
-        request_ref: Some(session_dir.display().to_string()),
+        stderr_ref: None,
+        request_ref: None,
         provider_request_id: None,
         // The session ROW id (delivery_id), so a message's delivery.provider_session_id
         // maps 1:1 to its ProviderSession row (resume continuity lives in
@@ -18987,6 +18923,7 @@ mod workflow_runtime_tests {
     ) -> DeliveryOutcome {
         DeliveryOutcome {
             status: ProviderSessionStatus::Succeeded,
+            native_session: None,
             provider_thread_id: None,
             provider_turn_id: None,
             terminal_source: Some(MessageTerminalSource::Unknown),
@@ -19216,7 +19153,7 @@ mod workflow_runtime_tests {
         let spawn = EphemeralSpawn {
             ok: true,
             reply: Some("done".into()),
-            ndjson: String::new(),
+            native_session: None,
             stderr: String::new(),
             exit_code: Some(0),
             timed_out: false,
@@ -19271,7 +19208,7 @@ mod workflow_runtime_tests {
         let spawn = EphemeralSpawn {
             ok: false,
             reply: None,
-            ndjson: String::new(),
+            native_session: None,
             stderr: "boom: provider exploded".into(),
             exit_code: Some(3),
             timed_out: false,
@@ -19323,7 +19260,7 @@ mod workflow_runtime_tests {
         let spawn = EphemeralSpawn {
             ok: true,
             reply: None,
-            ndjson: String::new(),
+            native_session: None,
             stderr: String::new(),
             exit_code: Some(0),
             timed_out: false,
@@ -19433,7 +19370,6 @@ new file mode 100644
             default_model: Some("run-model".into()),
             default_effort: Some("medium".into()),
             max_budget_usd: None,
-            trace_retention: "durable".into(),
             progress: false,
             project: temp_project_context("eff", false),
         };
@@ -19748,13 +19684,14 @@ new file mode 100644
         assert_eq!(runs[1].status, WorkflowRunStatus::Completed);
         assert_eq!(runs[0].id, runs[1].id);
 
-        // Three steps journaled, all completed, with provider_session_id links.
+        // Three dry-run steps journaled. No provider ran, so no native session
+        // may be invented merely to make the dashboard look live.
         let steps = store.workflow_steps().expect("read steps");
         assert_eq!(steps.len(), 3);
         for step in &steps {
             assert_eq!(step.status, WorkflowStepStatus::Completed);
             assert_eq!(step.run_id, runs[0].id);
-            assert!(step.provider_session_id.is_some());
+            assert!(step.native_session.is_none());
             assert!(step.ended_at.is_some());
         }
         // The serial step is first, in the "scope" phase.
@@ -20661,7 +20598,7 @@ new file mode 100644
                 run_id: id.into(),
                 phase: "work".into(),
                 label: "node".into(),
-                provider_session_id: Some(session),
+                native_session: None,
                 status: WorkflowStepStatus::Completed,
                 output_summary: None,
                 result: None,
@@ -20763,7 +20700,7 @@ new file mode 100644
                 run_id: "wfrun-dead".into(),
                 phase: "scan".into(),
                 label: "scan-context".into(),
-                provider_session_id: None,
+                native_session: None,
                 status: WorkflowStepStatus::Running,
                 output_summary: None,
                 result: None,
@@ -21033,7 +20970,6 @@ new file mode 100644
             default_model: None,
             default_effort: None,
             max_budget_usd: None,
-            trace_retention: "durable".into(),
             progress: false,
             project: temp_project_context("live", false),
         };
@@ -21072,17 +21008,8 @@ new file mode 100644
             .iter()
             .find(|s| s.status == WorkflowStepStatus::Running)
             .expect("a running row was journaled at step start");
-        // THE FIX: the running row must already carry a session id (was `None`).
-        let session = running
-            .provider_session_id
-            .as_deref()
-            .expect("running step carries its session id for the live drill-in");
-        assert!(
-            session.starts_with("session-"),
-            "session id is a real minted id, got {session}"
-        );
-        // The terminal row + the returned result must reuse the SAME id, so the
-        // live buffer and the durable trace resolve to one session.
+        // A native session is bound only after the provider reports its own id.
+        assert!(running.native_session.is_none());
         let terminal = rows
             .iter()
             .find(|s| {
@@ -21092,67 +21019,8 @@ new file mode 100644
                 )
             })
             .expect("a terminal row was journaled at step finish");
-        assert_eq!(terminal.provider_session_id.as_deref(), Some(session));
-        assert_eq!(result.provider_session_id.as_deref(), Some(session));
-    }
-
-    #[test]
-    fn running_provider_session_row_is_published_before_the_worker_finishes() {
-        // The per-node drill-in resolves a step's live turn-event stream via its
-        // provider_session_id -> the matching ProviderSession ROW. Without a row
-        // published at step START, a RUNNING step renders "no turn yet" and its
-        // live events (already streaming) have nothing to attach to. This asserts
-        // the row exists, is RUNNING (not terminal), and the live NDJSON is
-        // pre-created so the events route serves a growing list from t0.
-        let store = temp_store("live-session-row");
-        let session_id = "session-test-live";
-        let session_dir = store.root().join("provider-sessions").join(session_id);
-        std::fs::create_dir_all(&session_dir).expect("mk session dir");
-        let spec = workflow::AgentStepSpec {
-            phase: "work".into(),
-            label: "explore".into(),
-            provider: "claude".into(),
-            model: None,
-            effort: None,
-            service_tier: None,
-            fallback_model: None,
-            timeout_s: None,
-            image: Vec::new(),
-            add_dir: Vec::new(),
-            expected_artifacts: Vec::new(),
-            persist_changes: None,
-            write_mode: None,
-            owned_paths: Vec::new(),
-            artifact_root: None,
-            write_roots: Vec::new(),
-            auto_apply_on_verdict: false,
-            isolation: None,
-            prompt: "p".into(),
-            schema: None,
-            schema_strict: false,
-            writable: false,
-            ordinal: Some(0),
-        };
-
-        write_running_ephemeral_session(&store, session_id, &session_dir, &spec);
-
-        let sessions = store.provider_sessions().expect("read sessions");
-        let row = sessions
-            .iter()
-            .find(|s| s.id == session_id)
-            .expect("a RUNNING provider session row is published at step start");
-        assert_eq!(row.status, ProviderSessionStatus::Running);
-        assert!(row.ended_at.is_none(), "running row has no ended_at");
-        assert!(row.exit_code.is_none(), "running row has no exit code");
-        assert!(
-            session_dir.join("claude.stream-json.ndjson").exists(),
-            "live NDJSON pre-created so the events route serves a growing list"
-        );
-        assert!(row
-            .jsonl_ref
-            .as_deref()
-            .expect("jsonl_ref points at the live file")
-            .ends_with("claude.stream-json.ndjson"));
+        assert!(terminal.native_session.is_none());
+        assert!(result.provider_session_id.is_some());
     }
 
     #[test]
@@ -21244,12 +21112,12 @@ new file mode 100644
     #[test]
     fn workflow_get_output_returns_full_reply_and_falls_back_to_summary() {
         let store = temp_store("get-output");
-        let mk_step = |id: &str, label: &str, sid: &str, summary: &str| WorkflowStep {
+        let mk_step = |id: &str, label: &str, _sid: &str, summary: &str| WorkflowStep {
             id: id.into(),
             run_id: "wfrun-go".into(),
             phase: "p".into(),
             label: label.into(),
-            provider_session_id: Some(sid.into()),
+            native_session: None,
             status: WorkflowStepStatus::Completed,
             output_summary: Some(summary.into()),
             result: Some(serde_json::json!({
@@ -21342,21 +21210,14 @@ new file mode 100644
         // Order follows run.step_ids: scan (s1) then synthesis (s2).
         assert_eq!(steps[0]["label"], "scan");
         assert_eq!(steps[1]["label"], "synthesis");
-        // s1 has no reply.txt -> falls back to the capped summary.
-        assert_eq!(steps[0]["source"], "summary");
+        // Workflow output is read from WorkflowStep, never an old Harness
+        // provider-session mirror even if stale legacy files are present.
+        assert_eq!(steps[0]["source"], "workflow_step");
         assert_eq!(steps[0]["output"], "scan summary");
-        // s2 has reply.txt -> full text, source "reply".
-        assert_eq!(steps[1]["source"], "reply");
-        assert_eq!(steps[1]["output"].as_str().unwrap(), full);
+        assert_eq!(steps[1]["source"], "workflow_step");
+        assert_eq!(steps[1]["output"], "synth summary (capped)");
         assert_eq!(steps[1]["result"]["telemetry"], "journaled");
-        assert_eq!(
-            steps[1]["session_summary"]["tool_calls"][0]["name"],
-            "python write.py"
-        );
-        assert_eq!(
-            steps[1]["session_summary"]["final_message"],
-            "final artifact note"
-        );
+        assert!(steps[1]["native_activity"].is_null());
 
         // --step selects one leaf.
         let one = workflow_get_output_value(
@@ -22566,7 +22427,6 @@ new file mode 100644
             default_model: None,
             default_effort: None,
             max_budget_usd: None,
-            trace_retention: "durable".into(),
             progress: false,
             project: ProjectContext {
                 id: harness_core::GLOBAL_PROJECT_ID.into(),
@@ -22610,7 +22470,6 @@ new file mode 100644
             default_model: None,
             default_effort: None,
             max_budget_usd: None,
-            trace_retention: "durable".into(),
             progress: false,
             project: ProjectContext {
                 id: harness_core::GLOBAL_PROJECT_ID.into(),
@@ -22775,17 +22634,11 @@ new file mode 100644
                 .retained
         );
 
-        // Old runs: NDJSON deleted, endpoint reports not-retained, run flips to expired.
-        assert!(!old1.exists() && !old2.exists(), "old NDJSON removed");
+        // Harness no longer owns provider-native retention. Legacy files are
+        // ignored and left untouched; only the Workflow retention label changes.
         assert!(
-            !read_session_turn_events(&store, "sess-wfrun-old1")
-                .unwrap()
-                .retained
-        );
-        assert!(
-            !read_session_turn_events(&store, "sess-wfrun-old2")
-                .unwrap()
-                .retained
+            old1.exists() && old2.exists(),
+            "provider history is not deleted by Harness"
         );
         let latest = latest_workflow_runs_in_append_order(&store).unwrap();
         let retention = |id: &str| {
@@ -23340,7 +23193,7 @@ agent("a NEW second leaf that changes the ordinal alignment")
                 run_id: run_id.clone(),
                 phase: spec.phase.clone(),
                 label: spec.label.clone(),
-                provider_session_id: None,
+                native_session: None,
                 status: WorkflowStepStatus::Running,
                 output_summary: None,
                 result: None,
@@ -23471,6 +23324,7 @@ mod tests {
             current_task_id: None,
             current_proposal_id: None,
             provider_runtime_id: None,
+            native_session: None,
             provider_thread_id: None,
             provider_agent_path: None,
             provider_agent_nickname: None,
@@ -23869,6 +23723,10 @@ mod tests {
                 evidence_ids: Vec::new(),
                 created_at: "unix-ms:1".into(),
                 delivery: Some(MessageDelivery {
+                    delivery_id: Some("delivery-1".into()),
+                    execution_status: Some(ProviderSessionStatus::Succeeded),
+                    native_session: None,
+                    started_at: Some("unix-ms:1".into()),
                     provider_session_id: Some("delivery-1".into()),
                     provider_request_id: None,
                     provider_thread_id: Some("thread-1".into()),
@@ -24007,6 +23865,10 @@ mod tests {
                 evidence_ids: Vec::new(),
                 created_at: "unix-ms:1".into(),
                 delivery: Some(MessageDelivery {
+                    delivery_id: Some("delivery-1".into()),
+                    execution_status: Some(ProviderSessionStatus::Succeeded),
+                    native_session: None,
+                    started_at: Some("unix-ms:1".into()),
                     provider_session_id: Some("delivery-1".into()),
                     provider_request_id: None,
                     provider_thread_id: Some("thread-1".into()),
@@ -24191,6 +24053,10 @@ mod tests {
                 evidence_ids: Vec::new(),
                 created_at: "unix-ms:1".into(),
                 delivery: Some(MessageDelivery {
+                    delivery_id: Some("delivery-1".into()),
+                    execution_status: Some(ProviderSessionStatus::Succeeded),
+                    native_session: None,
+                    started_at: Some("unix-ms:1".into()),
                     provider_session_id: Some("delivery-1".into()),
                     provider_request_id: None,
                     provider_thread_id: Some("thread-1".into()),
@@ -24570,7 +24436,7 @@ mod tests {
     }
 
     #[test]
-    fn dry_run_delivery_claims_and_finishes_provider_session() {
+    fn dry_run_delivery_claims_and_finishes_delivery_attempt() {
         let root =
             std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("dry-claim")));
         let store = HarnessStore::new(&root);
@@ -24603,20 +24469,23 @@ mod tests {
         let latest = latest_message(&store, "message-1").expect("latest message");
         assert_eq!(latest.delivery_status, MessageDeliveryStatus::Delivered);
         let delivery = latest.delivery.expect("delivery");
-        let session_id = delivery
-            .provider_session_id
-            .expect("claimed provider session id");
+        assert!(delivery.delivery_id.is_some());
+        assert_eq!(
+            delivery.execution_status,
+            Some(ProviderSessionStatus::Succeeded)
+        );
         assert_eq!(
             delivery.terminal_source,
             Some(MessageTerminalSource::DryRun)
         );
 
-        let session = latest_provider_session(&store, &session_id)
-            .expect("session lookup")
-            .expect("provider session");
-        assert_eq!(session.status, ProviderSessionStatus::Succeeded);
-        assert_eq!(session.terminal_source, Some(MessageTerminalSource::DryRun));
-        assert!(!session.evidence_ids.is_empty());
+        assert!(
+            store
+                .provider_sessions()
+                .expect("provider sessions")
+                .is_empty(),
+            "delivery coordination must not create a Harness provider-session mirror"
+        );
 
         let reports: Vec<_> = store
             .messages()
@@ -24625,7 +24494,7 @@ mod tests {
             .filter(|message| message.kind == MessageKind::Report)
             .collect();
         assert_eq!(reports.len(), 1);
-        assert_eq!(reports[0].evidence_ids, session.evidence_ids);
+        assert!(!reports[0].evidence_ids.is_empty());
 
         let _ = std::fs::remove_dir_all(root);
     }
@@ -24671,13 +24540,12 @@ mod tests {
             MessageDeliveryStatus::Queued
         );
         assert!(latest_message.delivery.is_none());
-        let latest_session = latest_provider_session(&store, "delivery-1")
-            .expect("session lookup")
-            .expect("session");
-        assert_eq!(latest_session.status, ProviderSessionStatus::Canceled);
-        assert_eq!(
-            latest_session.terminal_source,
-            Some(MessageTerminalSource::Failed)
+        assert!(
+            store
+                .provider_sessions()
+                .expect("provider sessions")
+                .is_empty(),
+            "retrying a delivery attempt must not create a provider-session mirror"
         );
 
         let _ = std::fs::remove_dir_all(root);
@@ -24708,13 +24576,13 @@ mod tests {
         claim_message_for_delivery(&store, &member, None, &message, "delivery-1")
             .expect("claim")
             .expect("claimed message");
-        let mut old_session = latest_provider_session(&store, "delivery-1")
-            .expect("session lookup")
-            .expect("session");
-        old_session.started_at = "unix-ms:1".into();
-        store
-            .append_provider_session(&old_session)
-            .expect("append old session");
+        let mut old_claim = latest_message(&store, "message-1").expect("claimed message");
+        old_claim
+            .delivery
+            .as_mut()
+            .expect("delivery attempt")
+            .started_at = Some("unix-ms:1".into());
+        store.append_message(&old_claim).expect("append old claim");
 
         let result = provider_gateway_tick_value(
             &store,
@@ -24733,10 +24601,10 @@ mod tests {
             latest_message.delivery_status,
             MessageDeliveryStatus::Failed
         );
-        let sessions = latest_provider_sessions_in_append_order(&store).expect("sessions");
-        assert!(sessions.iter().any(|session| {
-            session.id == "delivery-1" && session.status == ProviderSessionStatus::Canceled
-        }));
+        assert!(store
+            .provider_sessions()
+            .expect("provider sessions")
+            .is_empty());
 
         let _ = std::fs::remove_dir_all(root);
     }

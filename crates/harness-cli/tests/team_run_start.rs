@@ -153,9 +153,9 @@ fn team_run_start_completes_kimi_members() {
             Some("completed"),
             "member: {member:?}"
         );
-        let session = member["acp_session_id"]
+        let session = member["native_session"]["native_session_id"]
             .as_str()
-            .unwrap_or_else(|| panic!("acp_session_id written: {member:?}"));
+            .unwrap_or_else(|| panic!("native session written: {member:?}"));
         assert!(
             session.starts_with("session_fake_"),
             "shim session id: {session}"
@@ -311,6 +311,86 @@ fn kimi_member_explicitly_resumes_provider_native_session() {
 }
 
 #[test]
+fn claude_member_uses_native_session_without_provider_activity_mirror() {
+    let home = TempHome::new("team-run-claude-native");
+    let project_id = init_project(&home, "alpha");
+    let fake_bin =
+        fake_provider::install_claude_team_shim(&home.base().join("fakebin-claude-team"));
+    let out = run_with_fake_kimi(
+        &home,
+        &fake_bin,
+        "done",
+        &[
+            "--project",
+            &project_id,
+            "team-run",
+            "create",
+            "--objective",
+            "Review native session contract",
+            "--member",
+            "reviewer:reviewer:claude/cli",
+            "--resume-member",
+            "reviewer:session_prior_claude",
+        ],
+    );
+    assert!(out.status.success(), "create failed: {out:?}");
+    let run_id = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let out = run_with_fake_kimi(
+        &home,
+        &fake_bin,
+        "done",
+        &[
+            "--project",
+            &project_id,
+            "team-run",
+            "start",
+            "--id",
+            &run_id,
+        ],
+    );
+    assert!(out.status.success(), "Claude start failed: {out:?}");
+
+    let members = store_rows(&home, &project_id, "member_runs.jsonl");
+    let member = members
+        .iter()
+        .find(|member| member["team_run_id"] == run_id)
+        .unwrap();
+    assert_eq!(member["status"], "completed");
+    assert_eq!(
+        member["native_session"]["native_session_id"],
+        "session_prior_claude"
+    );
+    assert_eq!(
+        member["native_session"]["parent_native_session_id"],
+        "session_prior_claude"
+    );
+    assert_eq!(
+        member["native_session"]["native_locator_kind"],
+        "claude_project_session"
+    );
+    let actions = store_rows(&home, &project_id, "member_actions.jsonl");
+    let member_actions: Vec<_> = actions
+        .iter()
+        .filter(|action| action["member_run_id"] == member["id"])
+        .collect();
+    assert_eq!(
+        member_actions.len(),
+        1,
+        "only explicit outcome is durable: {member_actions:?}"
+    );
+    assert_eq!(member_actions[0]["action_type"], "completed");
+    let store_root = home.projects_dir().join(&project_id);
+    for entry in std::fs::read_dir(store_root).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().and_then(|value| value.to_str()) == Some("jsonl") {
+            let text = std::fs::read_to_string(&path).unwrap();
+            assert!(!text.contains("hidden claude reasoning"));
+            assert!(!text.contains("provider-owned output"));
+        }
+    }
+}
+
+#[test]
 fn team_run_start_completes_mixed_codex_kimi_without_persisting_reasoning() {
     let home = TempHome::new("team-run-start-mixed-codex-kimi");
     let project_id = init_project(&home, "alpha");
@@ -415,7 +495,7 @@ fn team_run_start_completes_mixed_codex_kimi_without_persisting_reasoning() {
         Some("codex_exec")
     );
     assert_eq!(
-        codex["acp_session_id"].as_str(),
+        codex["native_session"]["native_session_id"].as_str(),
         Some("thread_fake_codex_team")
     );
     let kimi = members

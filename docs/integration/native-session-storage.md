@@ -142,7 +142,7 @@ new binding records the parent native session id.
 | Codex `codex_exec` | real thread id captured | Codex rollout/state DB is native truth | `codex exec resume` wired through explicit member resume binding | live provider activity is transient; native history is read on demand |
 | Codex `codex_app_server` | real thread id captured | app-server thread APIs plus Codex native store | `thread/resume` wired through explicit member resume binding | live provider activity is transient; native history is read on demand |
 | Kimi `kimi_acp` | real ACP session id captured | `~/.kimi-code/sessions/**/session_<id>/agents/main/wire.jsonl` | ACP 0.27.0 advertises `loadSession` and `sessionCapabilities.resume`; `session/load` is wired | live provider activity is transient; native history is read on demand |
-| Claude CLI | real session id captured | Claude-owned session is target truth | `--resume` exists in current delivery path | remove Harness NDJSON/stderr copy; add native reader/availability |
+| Claude `claude_cli` | real `system(init).session_id` captured | `~/.claude/projects/**/<session>.jsonl` | `--resume` wired through explicit member resume binding | Agent Team activity is native-read; legacy Standing Agent delivery mirrors remain queued for retirement |
 
 “Provider supports” never means “adapter supports.” Each row needs deterministic
 and live acceptance against reviewed provider versions.

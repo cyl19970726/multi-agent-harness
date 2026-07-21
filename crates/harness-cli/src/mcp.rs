@@ -682,7 +682,7 @@ fn tool_definitions() -> Value {
                                 "name": {"type": "string", "minLength": 1, "description": "Member display name, unique within the run."},
                                 "role": {"type": "string", "minLength": 1, "description": "e.g. coordinator / implementer / reviewer."},
                                 "provider": {"type": "string", "minLength": 1, "description": "Provider id (kimi is the v0 adapter)."},
-                                "execution_mode": {"type": "string", "enum": ["codex_exec", "codex_app_server", "kimi_acp"], "description": "Optional provider-specific execution mode. Codex defaults to codex_exec for compatibility."},
+                                "execution_mode": {"type": "string", "enum": ["codex_exec", "codex_app_server", "kimi_acp", "claude_cli"], "description": "Optional provider-specific execution mode."},
                                 "model": {"type": "string", "minLength": 1, "description": "Optional provider model override."},
                                 "owned_paths": {"type": "array", "items": {"type": "string", "minLength": 1}, "description": "Paths this member exclusively owns."},
                                 "resume_native_session_id": {"type": "string", "minLength": 1, "description": "Explicit provider-owned session to resume. Never inferred from recent local history."}

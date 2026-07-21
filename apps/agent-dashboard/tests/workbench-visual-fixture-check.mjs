@@ -60,7 +60,12 @@ async function main() {
   check(priorWave?.status === "completed" && priorWave.gate_status === "accepted" && priorWave.accepted_run_id === "teamrun-wave1-accepted", "Wave 1 is completed and accepted against a completed attempt");
   check(currentWave?.status === "running" && currentWave.gate_status === "pending" && currentWave.executor_run_ids.length === 2, "Wave 2 is running on retry Attempt 2 with a separate pending gate");
   check(currentRun?.status === "running" && currentRun.previous_run_id === "teamrun-wave2-attempt1" && currentRun.member_run_ids.length === 4, "Current TeamRun is a four-member retry attempt");
-  check(currentMember?.status === "running" && currentMember.provider_session_id, "Member Focus target is running and linked to observable runtime context");
+  check(
+    currentMember?.status === "running"
+      && currentMember.native_session?.availability === "available"
+      && currentMember.native_session?.native_session_id,
+    "Member Focus target is running and linked to provider-native runtime context",
+  );
   check(members.some((item) => item.status === "blocked") && members.some((item) => item.status === "reviewing"), "Member states include blocked and reviewing pressure");
   check(messages.filter((item) => item.kind === "assignment").every((item) => item.correlation_id), "Every assignment has a stable correlation anchor");
   check(messages.some((item) => item.kind === "blocker") && messages.some((item) => item.kind === "review_request"), "Durable activity contains blocker and review request signals");

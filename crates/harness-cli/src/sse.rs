@@ -676,7 +676,7 @@ mod tests {
             run_id: run_id.into(),
             phase: "test".into(),
             label: "test-step".into(),
-            provider_session_id: None,
+            native_session: None,
             status: WorkflowStepStatus::Running,
             output_summary: None,
             result: None,

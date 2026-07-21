@@ -25,6 +25,14 @@ AgentMember(provider=claude)
   -> optional Claude Code plugin packaging after contracts stabilize
 ```
 
+Agent Team 也使用同一原生真相边界：`provider=claude` 默认
+`execution_mode=claude_cli`。adapter 以内存方式消费
+`claude -p --output-format stream-json --verbose`，从 `system(init)` 绑定真实
+session id；显式重试通过 `resume_native_session_id` 调用 `--resume`。工具、
+命令、文件活动与对话不写入 `MemberAction`，Member 详情页通过
+`GET /v1/member-runs/{id}/native-activity` 读取 Claude 自己的 project JSONL。
+thinking 在 reader 层直接丢弃。
+
 也就是说：
 
 - `claude CLI` 是按需 provider 执行形式（非持久 app-server）；opt-in 的
