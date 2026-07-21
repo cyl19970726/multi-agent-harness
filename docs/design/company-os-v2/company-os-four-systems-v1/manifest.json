@@ -7,6 +7,12 @@
   },
   "assets": [
     {
+      "id": "governance-led-organization",
+      "file": "expected/governance-led-organization--1536x1024.png",
+      "prompt": "prompts/governance-led-organization.md",
+      "sha256": "894f1de6f3c2f7a37c77135c650024040833a4e5582e964436b9a7432562bc49"
+    },
+    {
       "id": "responsibility-map",
       "file": "expected/four-system-responsibility-map--1536x1024.png",
       "prompt": "prompts/system-map.md",
@@ -20,4 +26,3 @@
     }
   ]
 }
-

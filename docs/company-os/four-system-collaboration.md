@@ -10,6 +10,35 @@ The Company OS has four cooperating systems. They do not own four copies of the
 same company state. Each system owns one kind of truth and connects to the
 others through stable relations.
 
+The systems are operated by a governance layer inside Organization. The
+canonical initial reporting structure is:
+
+```text
+Human Owner
+└── Lead Agent
+    ├── Docs Governance Agent
+    ├── Work Governance Agent
+    ├── Finance Governance Agent
+    └── Org / HR Governance Agent
+        ├── Trademark Agent
+        ├── Development Agent
+        ├── Content Agent
+        └── future Business Agents
+```
+
+Lead manages the four Governance Agents. Business Agents do not report directly
+to Lead; they live under Org/HR, which owns their proposal, provisioning,
+permissions, reporting placement, evaluation, and retirement. Docs, Work, and
+Finance Governance Agents collaborate with Business Agents through governed
+records and Actions but are not their organizational manager.
+
+The four Governance Agents are the bootstrap internal-management team. A new
+Business Agent exists only after Org/HR determines that recurring capability is
+needed and an `OrgChangeProposal` passes the applicable Lead or Human gate.
+One-off demand should reuse an existing Actor, temporary Agent Team, Workflow,
+Host execution, or external collaborator instead of automatically expanding
+the standing organization.
+
 ## Responsibility map
 
 | System | Owns | Does not own |
@@ -71,4 +100,3 @@ effect remains typed and attributable.
   application. It creates no Payment before authorization and settlement.
 - After approval and filing, Work records evidence and completion, Finance
   records only the effects that occurred, and Docs receives the filing result.
-
