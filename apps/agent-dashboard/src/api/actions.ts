@@ -290,6 +290,22 @@ export function createMission(params: {
   return { method: "POST", path: "/v1/missions", body };
 }
 
+/** Explicitly complete a Mission after every ordered Wave is accepted. */
+export function closeMission(params: {
+  missionId: string;
+  outcome: string;
+  completedBy?: string;
+}): ActionDescriptor {
+  return {
+    method: "POST",
+    path: `/v1/missions/${encodeId(params.missionId)}/close`,
+    body: {
+      outcome: params.outcome,
+      completed_by: params.completedBy ?? "host",
+    },
+  };
+}
+
 /** Add an ordered native Wave to a Mission (POST /v1/waves). */
 export function createWave(params: {
   missionId: string;
@@ -367,6 +383,19 @@ export function sendTeamMessage(
     method: "POST",
     path: `/v1/team-runs/${encodeId(teamRunId)}/messages`,
     body,
+  };
+}
+
+/** Acknowledge one delivered TeamMessage recipient row. */
+export function acknowledgeTeamMessage(
+  teamRunId: string,
+  messageId: string,
+  memberId: string,
+): ActionDescriptor {
+  return {
+    method: "POST",
+    path: `/v1/team-runs/${encodeId(teamRunId)}/messages/${encodeId(messageId)}/ack`,
+    body: { member_id: memberId },
   };
 }
 

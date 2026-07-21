@@ -166,6 +166,7 @@ fn mcp_stdio_agent_team_tools() {
         names,
         [
             "mission_create",
+            "mission_close",
             "mission_list",
             "wave_create",
             "wave_list",
@@ -527,7 +528,54 @@ fn mcp_stdio_agent_team_tools() {
     }
     assert!(terminal.is_some(), "MCP-started TeamRun did not complete");
 
-    // 11. Unknown method → JSON-RPC -32601; unknown tool → -32602; a failing
+    // Mission closeout is a separate Host decision after all Waves are
+    // accepted; a host Wave needs no invented executor run.
+    let response = mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "mission_create",
+            "arguments": {"id": "mission-close", "title": "Close me", "objective": "Prove MCP closeout"}
+        }),
+    );
+    call_payload(&response);
+    let response = mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "wave_create",
+            "arguments": {
+                "id": "wave-close",
+                "mission_id": "mission-close",
+                "title": "Host closeout slice",
+                "objective": "Produce a direct outcome",
+                "executor_kind": "host"
+            }
+        }),
+    );
+    call_payload(&response);
+    let response = mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "wave_gate",
+            "arguments": {"wave_id": "wave-close", "status": "accepted", "outcome": "host slice done"}
+        }),
+    );
+    call_payload(&response);
+    let response = mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "mission_close",
+            "arguments": {"mission_id": "mission-close", "outcome": "all intent satisfied", "completed_by": "mcp-host"}
+        }),
+    );
+    let closed = call_payload(&response);
+    assert_eq!(closed["status"].as_str(), Some("completed"));
+    assert_eq!(closed["completed_by"].as_str(), Some("mcp-host"));
+    assert_eq!(
+        closed["outcome_summary"].as_str(),
+        Some("all intent satisfied")
+    );
+
+    // 12. Unknown method → JSON-RPC -32601; unknown tool → -32602; a failing
     //    tool call → isError:true with the reason as text.
     let response = mcp.request("harness/no_such_method", serde_json::json!({}));
     assert_eq!(response["error"]["code"].as_i64(), Some(-32601));

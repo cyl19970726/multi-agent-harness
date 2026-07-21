@@ -31,8 +31,9 @@ npx pnpm@9.15.4 acceptance:mission-wave
 ```
 
 It covers native Mission/Wave HTTP and CLI contracts, Agent Team create/start,
-the Host-facing MCP transport, assignment correlations, the Dashboard read
-model, and the deterministic Kimi ACP member adapter.
+Mission closeout, Host-facing MCP transport, assignment correlations, the
+Dashboard read model and operator controls, plus deterministic Kimi ACP and
+Codex exec Team Member adapters (including one mixed-provider TeamRun).
 
 Use focused Rust tests while iterating on one slice:
 
@@ -41,9 +42,15 @@ cargo test -p harness-cli --test mcp_stdio --test team_run_start -- --test-threa
 ```
 
 There is currently no packaged live-provider command. When a claim depends on
-a real provider, record the exact Mission, Wave, TeamRun, member runs,
+a real provider, record the exact Mission, Wave, TeamRun, MemberRuns,
 assignment correlations, handoffs, artifacts, and accepted Wave gate from the
-live run. Do not present the deterministic fake-Kimi adapter test as live proof.
+live run. Do not present deterministic provider-shim tests as live proof.
+
+For Kimi ACP members, `--member name:role:kimi:<model-alias>` is applied with
+ACP `session/set_config_option` before the first prompt. The alias must exist in
+the active Kimi Code configuration; a recorded name alone is never proof of the
+model actually used. Keep scarce-provider review lanes narrow and inspect the
+MemberRun plus provider output before accepting the Wave.
 
 The retired `acceptance:mvp*` and `acceptance:autonomous-team` commands belonged
 to the superseded Goal/GoalPhase planning stack and are intentionally not part

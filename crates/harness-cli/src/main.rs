@@ -1312,7 +1312,7 @@ fn team_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
 // ---------------------------------------------------------------------------
 
 fn mission_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    require_subcommand(args, "mission create|list|show")?;
+    require_subcommand(args, "mission create|list|show|close")?;
     let json = has_flag(args, "--json");
     match args[0].as_str() {
         "create" => {
@@ -1339,9 +1339,68 @@ fn mission_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
                 .ok_or_else(|| CliError::Usage(format!("mission not found: {id}")))?;
             print_json(&mission)?;
         }
+        "close" => {
+            let mission = close_mission(
+                store,
+                &required(args, "--id")?,
+                &required(args, "--outcome")?,
+                &value(args, "--completed-by").unwrap_or_else(|| "host".to_string()),
+            )?;
+            if json {
+                print_json(&mission)?;
+            } else {
+                println!("{}\tcompleted", mission.id);
+            }
+        }
         other => return Err(CliError::Usage(format!("unknown mission command: {other}"))),
     }
     Ok(())
+}
+
+/// Complete durable Mission intent only after every ordered Wave has settled
+/// through an accepted gate. Closeout is idempotent for the same outcome and
+/// immutable for a conflicting second outcome.
+pub(crate) fn close_mission(
+    store: &HarnessStore,
+    mission_id: &str,
+    outcome: &str,
+    completed_by: &str,
+) -> CliResult<Mission> {
+    if outcome.trim().is_empty() || completed_by.trim().is_empty() {
+        return Err(CliError::Usage(
+            "mission close requires a non-empty outcome and completed-by actor".to_string(),
+        ));
+    }
+    let mission = store
+        .latest_missions()?
+        .into_iter()
+        .find(|mission| mission.id == mission_id)
+        .ok_or_else(|| CliError::Usage(format!("mission not found: {mission_id}")))?;
+    if mission.status == MissionStatus::Completed {
+        if mission.outcome_summary.as_deref() == Some(outcome)
+            && mission.completed_by.as_deref() == Some(completed_by)
+        {
+            return Ok(mission);
+        }
+        return Err(CliError::Usage(format!(
+            "mission {mission_id} is already completed with a different outcome"
+        )));
+    }
+    if mission.status == MissionStatus::Cancelled {
+        return Err(CliError::Usage(format!(
+            "mission {mission_id} is cancelled and cannot be completed"
+        )));
+    }
+    let expected = mission.clone();
+    let now = now_string();
+    let mut completed = mission;
+    completed.status = MissionStatus::Completed;
+    completed.outcome_summary = Some(outcome.to_string());
+    completed.completed_by = Some(completed_by.to_string());
+    completed.completed_at = Some(now.clone());
+    completed.updated_at = now;
+    store_conflict_as_usage(store.compare_and_close_mission(&expected, &completed))?;
+    Ok(completed)
 }
 
 fn wave_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
@@ -1448,6 +1507,7 @@ pub(crate) fn create_mission(
         status: MissionStatus::Planned,
         wave_ids: Vec::new(),
         outcome_summary: None,
+        completed_by: None,
         created_at: now_string(),
         updated_at: now_string(),
         completed_at: None,
@@ -1546,13 +1606,16 @@ pub(crate) fn gate_wave(
                 .to_string(),
         ));
     }
-    if wave.accepted_run_id.is_some() {
+    if wave.gate_status == WaveGateStatus::Accepted {
         if gate == "accepted" && run_id.as_deref() == wave.accepted_run_id.as_deref() {
             return Ok(wave);
         }
         return Err(CliError::Usage(format!(
-            "wave {wave_id} already accepted by run {}; create a later Wave for new work",
-            wave.accepted_run_id.as_deref().unwrap_or_default()
+            "wave {wave_id} already accepted{}; create a later Wave for new work",
+            wave.accepted_run_id
+                .as_deref()
+                .map(|run_id| format!(" by run {run_id}"))
+                .unwrap_or_else(|| " as direct Host execution".to_string())
         )));
     }
     let expected = wave.clone();
@@ -1591,16 +1654,27 @@ pub(crate) fn gate_wave(
                     "wave gate accepted requires an explicit outcome".to_string(),
                 ));
             }
-            let run_id = run_id.ok_or_else(|| {
-                CliError::Usage("wave gate accepted requires --run-id".to_string())
-            })?;
-            if !wave.executor_run_ids.contains(&run_id) {
-                return Err(CliError::Usage(format!(
-                    "run {run_id} is not an eligible attempt of wave {wave_id}"
-                )));
-            }
+            let accepted_run_id = if wave.executor_kind == WaveExecutorKind::Host {
+                if run_id.is_some() {
+                    return Err(CliError::Usage(
+                        "a host Wave records its direct outcome without --run-id".to_string(),
+                    ));
+                }
+                None
+            } else {
+                let run_id = run_id.ok_or_else(|| {
+                    CliError::Usage("a non-host Wave gate accepted requires --run-id".to_string())
+                })?;
+                if !wave.executor_run_ids.contains(&run_id) {
+                    return Err(CliError::Usage(format!(
+                        "run {run_id} is not an eligible attempt of wave {wave_id}"
+                    )));
+                }
+                Some(run_id)
+            };
             if wave.executor_kind == WaveExecutorKind::AgentTeam {
-                let run = latest_team_run(store, &run_id)?;
+                let run_id = accepted_run_id.as_deref().expect("validated TeamRun id");
+                let run = latest_team_run(store, run_id)?;
                 if run.mission_id.as_deref() != Some(wave.mission_id.as_str())
                     || run.wave_id.as_deref() != Some(wave.id.as_str())
                 {
@@ -1618,7 +1692,7 @@ pub(crate) fn gate_wave(
             }
             wave.gate_status = WaveGateStatus::Accepted;
             wave.status = WaveStatus::Completed;
-            wave.accepted_run_id = Some(run_id);
+            wave.accepted_run_id = accepted_run_id;
             wave.accepted_by = Some(accepted_by.to_string());
             wave.accepted_at = Some(now_string());
         }
@@ -3098,15 +3172,17 @@ fn run_member_orchestration(
     idle_timeout: Duration,
     live_sink: Option<LiveMemberActivitySink>,
 ) -> MemberOutcome {
-    if !member.provider.eq_ignore_ascii_case("kimi") {
-        let reason = format!(
-            "adapter not implemented in v0 (provider {})",
+    let result = if member.provider.eq_ignore_ascii_case("kimi") {
+        run_kimi_member(ledger, objective, &member, cwd, idle_timeout, live_sink)
+    } else if member.provider.eq_ignore_ascii_case("codex") {
+        run_codex_member(ledger, objective, &member, cwd, idle_timeout, live_sink)
+    } else {
+        Err(CliError::Usage(format!(
+            "team member adapter not implemented for provider {}",
             member.provider
-        );
-        journal_member_failure(ledger, &member, &reason);
-        return MemberOutcome::new(&member, MemberRunStatus::Failed, reason);
-    }
-    match run_kimi_member(ledger, objective, &member, cwd, idle_timeout, live_sink) {
+        )))
+    };
+    match result {
         Ok(outcome) => outcome,
         Err(error) => {
             let reason = error.to_string();
@@ -3114,6 +3190,332 @@ fn run_member_orchestration(
             MemberOutcome::new(&member, MemberRunStatus::Failed, reason)
         }
     }
+}
+
+/// Drive one Codex Team Member using a fresh `codex exec --json` turn per
+/// round. Unlike the persistent-delivery adapter, this path deliberately never
+/// writes the raw provider event stream: reasoning items are eligible only for
+/// the sanitized volatile live sink, while the final agent message becomes the
+/// durable handoff.
+fn run_codex_member(
+    ledger: &TeamRunLedger,
+    objective: &str,
+    member: &MemberRun,
+    cwd: &Path,
+    idle_timeout: Duration,
+    live_sink: Option<LiveMemberActivitySink>,
+) -> CliResult<MemberOutcome> {
+    let mut member_row = member.clone();
+    member_row.status = MemberRunStatus::Starting;
+    member_row.last_event_at = Some(now_string());
+    ledger.save_member_run(&member_row)?;
+    ledger.fold_event(
+        TeamRunEventSourceKind::Member,
+        Some(member.id.clone()),
+        "member_run",
+        &member.id,
+        "updated",
+        &format!(
+            "member {} starting (codex exec, cwd {})",
+            member.name,
+            cwd.display()
+        ),
+    )?;
+
+    member_row.status = MemberRunStatus::Running;
+    member_row.last_event_at = Some(now_string());
+    ledger.save_member_run(&member_row)?;
+
+    let assignment = latest_queued_assignment(ledger, &member.id)?;
+    let assignment_body = assignment
+        .as_ref()
+        .map(|message| message.body.clone())
+        .unwrap_or_else(|| objective.to_string());
+    if let Some(assignment) = &assignment {
+        mark_message_delivered(ledger, assignment, &member.id, &member.name)?;
+    }
+
+    let mut round = 0u32;
+    let mut next_prompt = Some(contract_prompt(objective, &member_row, &assignment_body));
+    let mut final_status = MemberRunStatus::Failed;
+    let mut final_summary = String::new();
+    while let Some(prompt_text) = next_prompt.take() {
+        round += 1;
+        let turn = run_codex_team_turn(
+            &prompt_text,
+            cwd,
+            member,
+            idle_timeout,
+            live_sink.clone(),
+            &ledger.run_id,
+        )?;
+        if member_row.acp_session_id.is_none() {
+            member_row.acp_session_id = turn.thread_id;
+        }
+        let final_text = turn.final_text;
+        if final_text.trim().is_empty() {
+            return Err(CliError::Usage(format!(
+                "codex member {} completed without an agent message",
+                member.name
+            )));
+        }
+        ledger.append_action(
+            &member.id,
+            "progress",
+            MemberActionStatus::Progress,
+            "assistant response received",
+            &format!("{} chars received", final_text.len()),
+        )?;
+
+        let handoff = TeamMessage {
+            id: generated_id("tmsg"),
+            team_run_id: ledger.run_id.clone(),
+            from_member_id: member.id.clone(),
+            to_member_ids: vec!["host".to_string()],
+            kind: TeamMessageKind::Handoff,
+            body: final_text.clone(),
+            correlation_id: assignment
+                .as_ref()
+                .map(|message| message.correlation_id.clone())
+                .unwrap_or_else(|| generated_id("corr")),
+            causation_id: assignment.as_ref().map(|message| message.id.clone()),
+            evidence_refs: Vec::new(),
+            deliveries: vec![TeamMessageDelivery {
+                member_id: "host".to_string(),
+                policy: TeamDeliveryPolicy::ManualAck,
+                status: TeamDeliveryStatus::Delivered,
+                attempt: 1,
+                updated_at: now_string(),
+            }],
+            created_at: now_string(),
+        };
+        ledger.save_message(&handoff)?;
+        ledger.fold_event(
+            TeamRunEventSourceKind::Member,
+            Some(member.id.clone()),
+            "message",
+            &handoff.id,
+            "created",
+            &format!("handoff from {} to host (round {round})", member.name),
+        )?;
+
+        let result = parse_round_result(&final_text);
+        let (action_type, action_status, member_status) = match result {
+            MemberRoundResult::Done => (
+                "completed",
+                MemberActionStatus::Succeeded,
+                MemberRunStatus::Completed,
+            ),
+            MemberRoundResult::Blocked => (
+                "blocked",
+                MemberActionStatus::Failed,
+                MemberRunStatus::Blocked,
+            ),
+            MemberRoundResult::Failed => {
+                ("error", MemberActionStatus::Failed, MemberRunStatus::Failed)
+            }
+        };
+        let result_section =
+            extract_report_section(&final_text, "RESULT").unwrap_or_else(|| "done".to_string());
+        let action = ledger.append_action(
+            &member.id,
+            action_type,
+            action_status,
+            &format!("round {round} {action_type}"),
+            &result_section,
+        )?;
+        ledger.fold_event(
+            TeamRunEventSourceKind::Member,
+            Some(member.id.clone()),
+            "action",
+            &action.id,
+            "created",
+            &format!("{} round {round}: {action_type}", member.name),
+        )?;
+
+        member_row.status = member_status;
+        member_row.finished_at = Some(now_string());
+        member_row.last_event_at = Some(now_string());
+        ledger.save_member_run(&member_row)?;
+        ledger.fold_event(
+            TeamRunEventSourceKind::Member,
+            Some(member.id.clone()),
+            "member_run",
+            &member.id,
+            if member_status == MemberRunStatus::Completed {
+                "completed"
+            } else {
+                "updated"
+            },
+            &format!(
+                "member {} {} (round {round})",
+                member.name,
+                serde_snake_label(&member_status)
+            ),
+        )?;
+        final_status = member_status;
+        final_summary = extract_report_section(&final_text, "SUMMARY")
+            .unwrap_or_else(|| final_text.lines().take(3).collect::<Vec<_>>().join("\n"));
+
+        if round >= TEAM_RUN_START_MAX_ROUNDS {
+            break;
+        }
+        let queued = ledger.queued_messages_for(&member.id)?;
+        if queued.is_empty() {
+            break;
+        }
+        let mut follow_up = format!(
+            "FOLLOW-UP MESSAGES arrived while you worked (round {round}). Address them, then report again in the SAME format (## RESULT / ## SUMMARY / ...).\n\n"
+        );
+        for message in &queued {
+            follow_up.push_str(&format!(
+                "--- {} ({}) ---\n{}\n\n",
+                message.from_member_id,
+                team_message_kind_label(&message.kind),
+                message.body
+            ));
+            mark_message_delivered(ledger, message, &member.id, &member.name)?;
+        }
+        member_row.status = MemberRunStatus::Running;
+        member_row.finished_at = None;
+        member_row.last_event_at = Some(now_string());
+        ledger.save_member_run(&member_row)?;
+        next_prompt = Some(follow_up);
+    }
+    Ok(MemberOutcome::new(member, final_status, final_summary))
+}
+
+struct CodexTeamTurn {
+    thread_id: Option<String>,
+    final_text: String,
+}
+
+/// Run one read-only Codex turn and consume its event stream in memory. Raw
+/// events and reasoning are intentionally not returned to any durable writer.
+fn run_codex_team_turn(
+    prompt: &str,
+    cwd: &Path,
+    member: &MemberRun,
+    idle_timeout: Duration,
+    live_sink: Option<LiveMemberActivitySink>,
+    team_run_id: &str,
+) -> CliResult<CodexTeamTurn> {
+    let mut cmd = Command::new("codex");
+    cmd.arg("exec")
+        .arg("--cd")
+        .arg(cwd)
+        .arg("--sandbox")
+        .arg("read-only")
+        .arg("--skip-git-repo-check")
+        .arg("--json");
+    if let Some(model) = member.model.as_deref() {
+        cmd.arg("-m").arg(model);
+    }
+    cmd.arg(prompt)
+        .current_dir(cwd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    let mut child = cmd.spawn().map_err(|error| {
+        CliError::Usage(format!(
+            "failed to spawn codex team member {}: {error}",
+            member.name
+        ))
+    })?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| CliError::Usage("codex stdout not available".to_string()))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| CliError::Usage("codex stderr not available".to_string()))?;
+    let (line_tx, line_rx) = std::sync::mpsc::channel::<String>();
+    let stdout_reader = std::thread::spawn(move || {
+        for line in BufReader::new(stdout).lines() {
+            let Ok(line) = line else { break };
+            if line_tx.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    let stderr_reader = std::thread::spawn(move || {
+        let mut reader = BufReader::new(stderr);
+        let mut text = String::new();
+        let _ = reader.read_to_string(&mut text);
+        text
+    });
+
+    let mut events = Vec::new();
+    let mut last_activity = Instant::now();
+    let mut last_live_activity = Instant::now() - LIVE_MEMBER_ACTIVITY_THROTTLE;
+    let status = loop {
+        match line_rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(line) => {
+                last_activity = Instant::now();
+                if let Some(event) = CodexExecEvent::parse_line(&line) {
+                    let reasoning = event
+                        .payload
+                        .get("item")
+                        .filter(|item| {
+                            item.get("type").and_then(|value| value.as_str()) == Some("reasoning")
+                        })
+                        .and_then(|item| item.get("text"))
+                        .and_then(|text| text.as_str())
+                        .and_then(sanitize_live_member_preview);
+                    if last_live_activity.elapsed() >= LIVE_MEMBER_ACTIVITY_THROTTLE {
+                        if let (Some(sink), Some(preview)) = (&live_sink, reasoning) {
+                            last_live_activity = Instant::now();
+                            sink(LiveMemberActivityPreview {
+                                team_run_id: team_run_id.to_string(),
+                                member_run_id: member.id.clone(),
+                                provider: member.provider.clone(),
+                                preview,
+                            });
+                        }
+                    }
+                    events.push(event);
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                break child.wait()?;
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                if child.try_wait()?.is_some() {
+                    // The stdout reader may still have the terminal lines in
+                    // flight. Wait for channel disconnect so they are not
+                    // dropped before final-message extraction.
+                    continue;
+                }
+                if last_activity.elapsed() >= idle_timeout {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(CliError::Usage(format!(
+                        "codex team member {} exceeded idle timeout",
+                        member.name
+                    )));
+                }
+            }
+        }
+    };
+    let _ = stdout_reader.join();
+    let stderr_text = stderr_reader.join().unwrap_or_default();
+    let inferred = infer_provider_session_status(&events, status.success());
+    if inferred != ProviderSessionStatus::Succeeded {
+        return Err(CliError::Usage(format!(
+            "codex team member {} failed ({inferred:?}): {}",
+            member.name,
+            stderr_text.trim()
+        )));
+    }
+    let final_text = extract_codex_final_message(&events)
+        .or_else(|| extract_codex_reply_text(&events))
+        .unwrap_or_default();
+    Ok(CodexTeamTurn {
+        thread_id: extract_thread_id_from_exec_events(&events),
+        final_text,
+    })
 }
 
 /// Drive one kimi member: spawn its ACP session, deliver the assignment as a
@@ -4949,6 +5351,12 @@ fn handle_http_action(
     if path == "/v1/missions" {
         return create_mission_value(store, body);
     }
+    if let Some(mission_id) = path
+        .strip_prefix("/v1/missions/")
+        .and_then(|rest| rest.strip_suffix("/close"))
+    {
+        return close_mission_value(store, mission_id, body);
+    }
     if path == "/v1/waves" {
         return create_wave_value(store, body);
     }
@@ -4966,6 +5374,12 @@ fn handle_http_action(
         .and_then(|rest| rest.strip_suffix("/messages"))
     {
         return send_team_message_value(store, team_run_id, body);
+    }
+    if let Some(rest) = path.strip_prefix("/v1/team-runs/") {
+        let parts = rest.split('/').collect::<Vec<_>>();
+        if let [team_run_id, "messages", message_id, "ack"] = parts.as_slice() {
+            return acknowledge_team_message_value(store, team_run_id, message_id, body);
+        }
     }
     if let Some(team_run_id) = path
         .strip_prefix("/v1/team-runs/")
@@ -5070,6 +5484,21 @@ fn create_mission_value(
     )?)?)
 }
 
+/// POST /v1/missions/{id}/close — close durable intent after every Wave has an
+/// accepted completed gate.
+fn close_mission_value(
+    store: &HarnessStore,
+    mission_id: &str,
+    body: &serde_json::Value,
+) -> CliResult<serde_json::Value> {
+    Ok(serde_json::to_value(close_mission(
+        store,
+        mission_id,
+        &required_json_string(body, "outcome")?,
+        &optional_json_string(body, "completed_by")?.unwrap_or_else(|| "host".to_string()),
+    )?)?)
+}
+
 /// POST /v1/waves — add one ordered, executor-specific Wave to a native
 /// Mission. Its membership is recorded on both append-only ledgers.
 fn create_wave_value(
@@ -5116,6 +5545,29 @@ fn gate_wave_value(
         optional_json_string(body, "note")?,
         optional_json_string(body, "outcome")?,
         optional_json_string_array(body, "artifact_refs")?,
+    )?)?)
+}
+
+/// POST /v1/team-runs/{run}/messages/{message}/ack — acknowledge only a
+/// delivered recipient row belonging to the TeamRun named by the URL.
+fn acknowledge_team_message_value(
+    store: &HarnessStore,
+    team_run_id: &str,
+    message_id: &str,
+    body: &serde_json::Value,
+) -> CliResult<serde_json::Value> {
+    let member_id = required_json_string(body, "member_id")?;
+    let message = latest_team_messages_in_append_order(store)?
+        .into_iter()
+        .find(|message| message.id == message_id)
+        .ok_or_else(|| CliError::Usage(format!("team message not found: {message_id}")))?;
+    if message.team_run_id != team_run_id {
+        return Err(CliError::Usage(format!(
+            "message {message_id} does not belong to team run {team_run_id}"
+        )));
+    }
+    Ok(serde_json::to_value(acknowledge_team_message(
+        store, message_id, &member_id,
     )?)?)
 }
 

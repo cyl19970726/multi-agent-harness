@@ -63,6 +63,168 @@ fn force_team_run_reviewing(
 }
 
 #[test]
+fn host_wave_accepts_direct_outcome_without_fake_run() {
+    let home = TempHome::new("host-wave-gate");
+    let project_id = init_project(&home, "host-wave");
+    let serve = ServeHandle::spawn(&home, home.base(), &[]);
+    run_json(
+        &home,
+        &project_id,
+        &[
+            "mission",
+            "create",
+            "--id",
+            "mission-host",
+            "--title",
+            "Direct host work",
+            "--objective",
+            "Record an honest Host outcome",
+            "--json",
+        ],
+    );
+    let (status, body) = serve.post_json(
+        "/v1/missions/mission-host/close",
+        &serde_json::json!({"outcome": "too early"}),
+    );
+    assert_eq!(status, 400, "body: {body}");
+    run_json(
+        &home,
+        &project_id,
+        &[
+            "wave",
+            "create",
+            "--id",
+            "wave-host",
+            "--mission-id",
+            "mission-host",
+            "--title",
+            "Host slice",
+            "--objective",
+            "Finish without a fake executor run",
+            "--executor-kind",
+            "host",
+            "--json",
+        ],
+    );
+    let (status, body) = serve.post_json(
+        "/v1/missions/mission-host/close",
+        &serde_json::json!({"outcome": "still too early"}),
+    );
+    assert_eq!(status, 400, "body: {body}");
+    let accepted = run_json(
+        &home,
+        &project_id,
+        &[
+            "wave",
+            "gate",
+            "--id",
+            "wave-host",
+            "--status",
+            "accepted",
+            "--accepted-by",
+            "host",
+            "--outcome",
+            "Direct work verified",
+            "--artifact",
+            "check:host",
+            "--json",
+        ],
+    );
+    assert_eq!(accepted["gate_status"].as_str(), Some("accepted"));
+    assert_eq!(accepted["status"].as_str(), Some("completed"));
+    assert!(accepted["accepted_run_id"].is_null());
+
+    // Host acceptance remains immutable even though its honest accepted run
+    // id is null.
+    let out = run_harness(
+        &home,
+        home.base(),
+        &[
+            "--project",
+            &project_id,
+            "wave",
+            "gate",
+            "--id",
+            "wave-host",
+            "--status",
+            "blocked",
+        ],
+    );
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("already accepted"));
+
+    let (status, body) = serve.post_json(
+        "/v1/missions/mission-host/close",
+        &serde_json::json!({
+            "outcome": "Mission intent satisfied",
+            "completed_by": "dashboard-host"
+        }),
+    );
+    assert_eq!(status, 200, "body: {body}");
+    assert_eq!(body["result"]["status"].as_str(), Some("completed"));
+    assert_eq!(
+        body["result"]["completed_by"].as_str(),
+        Some("dashboard-host")
+    );
+    assert!(body["result"]["completed_at"].is_string());
+
+    // Identical closeout is idempotent; a conflicting actor/outcome and any
+    // new Wave after completion are rejected.
+    let repeated = run_json(
+        &home,
+        &project_id,
+        &[
+            "mission",
+            "close",
+            "--id",
+            "mission-host",
+            "--outcome",
+            "Mission intent satisfied",
+            "--completed-by",
+            "dashboard-host",
+            "--json",
+        ],
+    );
+    assert_eq!(repeated["status"].as_str(), Some("completed"));
+    let conflict = run_harness(
+        &home,
+        home.base(),
+        &[
+            "--project",
+            &project_id,
+            "mission",
+            "close",
+            "--id",
+            "mission-host",
+            "--outcome",
+            "different",
+            "--completed-by",
+            "another-host",
+        ],
+    );
+    assert!(!conflict.status.success());
+    let late_wave = run_harness(
+        &home,
+        home.base(),
+        &[
+            "--project",
+            &project_id,
+            "wave",
+            "create",
+            "--mission-id",
+            "mission-host",
+            "--title",
+            "Too late",
+            "--objective",
+            "Must be rejected",
+            "--executor-kind",
+            "host",
+        ],
+    );
+    assert!(!late_wave.status.success());
+}
+
+#[test]
 fn mission_wave_attempt_retry_gate_and_snapshot_contract() {
     let home = TempHome::new("mission-wave-api");
     let project_id = init_project(&home, "alpha");

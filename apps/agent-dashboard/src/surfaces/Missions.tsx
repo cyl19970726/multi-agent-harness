@@ -39,6 +39,7 @@ import {
 } from "@/components/workbench/OperatorForms";
 
 import {
+  closeMission,
   createMission,
   createTeamRun,
   createWave,
@@ -266,7 +267,11 @@ function MissionDetail({
   onAction,
 }: MissionsProps & { mission: Mission; selectedWaveId?: string }) {
   const [waveOpen, setWaveOpen] = useState(false);
+  const [closeOpen, setCloseOpen] = useState(false);
   const waves = wavesFor(model, mission.id);
+  const readyToClose =
+    waves.length > 0 &&
+    waves.every((wave) => wave.status === "completed" && wave.gate_status === "accepted");
   // A Mission always has one useful focal point: keep an explicit selection when
   // there is one, otherwise favour the active Wave and then the next planned
   // decision. This is presentation state only; it does not mutate Wave order.
@@ -334,9 +339,24 @@ function MissionDetail({
               >
                 <PanelsTopLeft className="size-3.5" /> Context
               </Button>
-              <ActionButton enabled={actionsEnabled} onClick={() => setWaveOpen(true)}>
+              <ActionButton
+                enabled={actionsEnabled}
+                disabled={mission.status === "completed" || mission.status === "cancelled"}
+                onClick={() => setWaveOpen(true)}
+              >
                 <Plus className="size-3.5" /> Add Wave
               </ActionButton>
+              {mission.status !== "completed" && (
+                <ActionButton
+                  enabled={actionsEnabled}
+                  disabled={!readyToClose}
+                  variant={readyToClose ? "default" : "secondary"}
+                  onClick={() => setCloseOpen(true)}
+                  title={readyToClose ? "Record the Mission outcome" : "Every Wave must be accepted first"}
+                >
+                  <CheckCircle2 className="size-3.5" /> Close Mission
+                </ActionButton>
+              )}
             </div>
           </header>
 
@@ -565,6 +585,13 @@ function MissionDetail({
         onAction={onAction}
         onClose={() => setWaveOpen(false)}
       />
+      <MissionCloseDialog
+        open={closeOpen}
+        mission={mission}
+        actionsEnabled={actionsEnabled}
+        onAction={onAction}
+        onClose={() => setCloseOpen(false)}
+      />
     </DocumentSurface>
   );
 }
@@ -732,17 +759,15 @@ function WaveCanvasCard({
           </p>
           {wave.outcome_summary && <p className="mt-1.5 text-[11px] leading-relaxed text-foreground">{wave.outcome_summary}</p>}
           <div className="mt-2 flex flex-wrap gap-2">
-            {canTeamRun && (
-              <ActionButton
-                enabled={actionsEnabled}
-                disabled={hasActiveAttempt || waveAccepted}
-                size="sm"
-                variant="secondary"
-                onClick={() => setGateOpen(true)}
-              >
-                <ShieldCheck className="size-3.5" /> Gate Wave
-              </ActionButton>
-            )}
+            <ActionButton
+              enabled={actionsEnabled}
+              disabled={hasActiveAttempt || waveAccepted}
+              size="sm"
+              variant="secondary"
+              onClick={() => setGateOpen(true)}
+            >
+              <ShieldCheck className="size-3.5" /> Gate Wave
+            </ActionButton>
           </div>
         </section>
       </div>
@@ -755,16 +780,14 @@ function WaveCanvasCard({
         onAction={onAction}
         onClose={() => setAttemptOpen(false)}
       />
-      {canTeamRun && (
-        <GateDialog
-          open={gateOpen}
-          wave={wave}
-          runs={runs}
-          actionsEnabled={actionsEnabled}
-          onAction={onAction}
-          onClose={() => setGateOpen(false)}
-        />
-      )}
+      <GateDialog
+        open={gateOpen}
+        wave={wave}
+        runs={runs}
+        actionsEnabled={actionsEnabled}
+        onAction={onAction}
+        onClose={() => setGateOpen(false)}
+      />
     </section>
   );
 }
@@ -1092,6 +1115,75 @@ function AttemptDialog({
   );
 }
 
+function MissionCloseDialog({
+  open,
+  mission,
+  actionsEnabled,
+  onAction,
+  onClose,
+}: {
+  open: boolean;
+  mission: Mission;
+  actionsEnabled: boolean;
+  onAction: MissionsProps["onAction"];
+  onClose: () => void;
+}) {
+  const [outcome, setOutcome] = useState("");
+  const [completedBy, setCompletedBy] = useState("host");
+
+  useEffect(() => {
+    if (open) {
+      setOutcome(mission.outcome_summary ?? "");
+      setCompletedBy(mission.completed_by ?? "host");
+    }
+  }, [mission.completed_by, mission.outcome_summary, open]);
+
+  const valid = Boolean(outcome.trim() && completedBy.trim());
+  const submit = () => {
+    if (!valid) return;
+    dispatch(
+      onAction,
+      closeMission({
+        missionId: mission.id,
+        outcome: outcome.trim(),
+        completedBy: completedBy.trim(),
+      }),
+    );
+    onClose();
+  };
+
+  return (
+    <Dialog
+      open={open}
+      title="Close Mission"
+      description="Record the durable Mission outcome after every ordered Wave has been accepted. This closeout is immutable."
+      onClose={onClose}
+    >
+      <form
+        className="space-y-3"
+        onSubmit={(event) => {
+          event.preventDefault();
+          submit();
+        }}
+      >
+        <Field label="Mission outcome" required>
+          {(id) => <TextArea id={id} value={outcome} onChange={(event) => setOutcome(event.target.value)} />}
+        </Field>
+        <Field label="Completed by" required>
+          {(id) => <TextInput id={id} value={completedBy} onChange={(event) => setCompletedBy(event.target.value)} />}
+        </Field>
+        <DialogFooter
+          submitLabel="Complete Mission"
+          actionsEnabled={actionsEnabled}
+          canSubmit={valid}
+          onCancel={onClose}
+          onSubmit={submit}
+        />
+      </form>
+    </Dialog>
+  );
+}
+
 function GateDialog({
   open,
   wave,
@@ -1114,19 +1206,24 @@ function GateDialog({
   const [artifacts, setArtifacts] = useState("");
   const completedRuns = runs.filter((run) => run.status === "completed");
   const latestCompletedRunId = completedRuns[completedRuns.length - 1]?.id ?? "";
+  const requiresRun = wave.executor_kind !== "host";
+  const nonTeamRunIds = wave.executor_kind === "agent_team" ? [] : (wave.executor_run_ids ?? []);
+  const defaultRunId = wave.accepted_run_id
+    ?? (wave.executor_kind === "agent_team" ? latestCompletedRunId : nonTeamRunIds[nonTeamRunIds.length - 1])
+    ?? "";
   const artifactValues = (wave.artifact_refs ?? []).join(", ");
 
   useEffect(() => {
     if (open) {
       setStatus("accepted");
-      setRunId(wave.accepted_run_id ?? latestCompletedRunId);
+      setRunId(defaultRunId);
       setOutcome(wave.outcome_summary ?? "");
       setNote("");
       setArtifacts(artifactValues);
     }
-  }, [artifactValues, latestCompletedRunId, open, wave.accepted_run_id, wave.outcome_summary]);
+  }, [artifactValues, defaultRunId, open, wave.outcome_summary]);
 
-  const valid = status !== "accepted" || Boolean(runId && outcome.trim());
+  const valid = status !== "accepted" || Boolean(outcome.trim() && (!requiresRun || runId));
   const selectableRuns = status === "accepted" ? completedRuns : runs;
   const submit = () => {
     if (!valid) return;
@@ -1172,7 +1269,10 @@ function GateDialog({
             </Select>
           )}
         </Field>
-        <Field label="Attempt" hint="Accepted must name a completed Agent Team attempt.">
+        {requiresRun && <Field
+          label="Attempt"
+          hint={wave.executor_kind === "agent_team" ? "Accepted must name a completed Agent Team attempt." : "Accepted must name an executor run registered to this Wave."}
+        >
           {(id) => (
             <Select id={id} value={runId} onChange={(event) => setRunId(event.target.value)}>
               <option value="">No attempt selected</option>
@@ -1181,9 +1281,17 @@ function GateDialog({
                   {run.id} · {run.status ?? "planning"}
                 </option>
               ))}
+              {nonTeamRunIds.map((id) => (
+                <option key={id} value={id}>{id}</option>
+              ))}
             </Select>
           )}
-        </Field>
+        </Field>}
+        {!requiresRun && (
+          <p className="rounded-md border border-border bg-muted/35 px-3 py-2 text-[11px] text-muted-foreground">
+            Host execution records its direct outcome and artifacts without inventing an executor run.
+          </p>
+        )}
         <Field label="Outcome" required={status === "accepted"}>
           {(id) => <TextArea id={id} value={outcome} onChange={(event) => setOutcome(event.target.value)} />}
         </Field>
