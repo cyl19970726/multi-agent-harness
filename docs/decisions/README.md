@@ -32,6 +32,9 @@ consequences, affected modules, and validation path.
 | [0027](0027-company-os-primary-model.md) | Company OS primary model — Docs + mixed Organization are the product cores; WorkItem/Approval link business intent to the Mission/Wave execution foundation |
 | [0028](0028-retire-goal-phase-task-graph.md) | Retire the superseded Goal/GoalPhase/task-graph coordination stack from active product, docs, and authoring paths |
 | [0029](0029-agent-programmable-document-runtime.md) | Agent-programmable document runtime — basic docs, structured views, and governed custom HTML/React pages over canonical facts |
+| [0030](0030-provider-interaction-contract.md) | Provider interaction contract — execution-mode profiles, durable PendingInteraction routing, and provider-versus-semantic event truth |
+| [0031](0031-interactive-provider-modes-and-version-drift.md) | Interactive provider modes and version drift — chat/steer/interrupt semantics, Codex app-server target, and adapter review gates |
+| [0032](0032-provider-native-session-is-execution-truth.md) | Provider-native session truth — native agent storage owns transcript/tool activity and resume; Harness stores coordination, outcomes, references, and gates |
 
 ## Split Rule
 

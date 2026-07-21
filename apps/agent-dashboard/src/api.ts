@@ -8,6 +8,7 @@ import type {
   MemberRun,
   Message,
   Mission,
+  PendingInteraction,
   Project,
   ProviderSession,
   TeamMessage,
@@ -210,6 +211,7 @@ export type SseFrame =
   | { kind: "member_run"; member: MemberRun }
   | { kind: "team_message"; message: TeamMessage }
   | { kind: "member_action"; action: MemberAction }
+  | { kind: "pending_interaction"; interaction: PendingInteraction }
   | { kind: "member_activity"; activity: LiveMemberActivity };
 
 export interface EventStreamHandlers {
@@ -317,6 +319,10 @@ export function openEventStream(
   source.addEventListener("member_action", (event) => {
     const data = parse<MemberAction>(event as MessageEvent);
     if (data) handlers.onFrame({ kind: "member_action", action: data });
+  });
+  source.addEventListener("pending_interaction", (event) => {
+    const data = parse<PendingInteraction>(event as MessageEvent);
+    if (data) handlers.onFrame({ kind: "pending_interaction", interaction: data });
   });
   source.addEventListener("member_activity", (event) => {
     const data = parse<LiveMemberActivity>(event as MessageEvent);
@@ -446,6 +452,12 @@ export function applyFrame(snapshot: DashboardSnapshot, frame: SseFrame): Dashbo
       return {
         ...snapshot,
         member_actions: upsertById(snapshot.member_actions, frame.action),
+        generated_at: new Date().toISOString(),
+      };
+    case "pending_interaction":
+      return {
+        ...snapshot,
+        pending_interactions: upsertById(snapshot.pending_interactions, frame.interaction),
         generated_at: new Date().toISOString(),
       };
     case "member_activity": {

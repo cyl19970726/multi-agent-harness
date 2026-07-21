@@ -41,8 +41,9 @@ continues to prove lane ownership inside the TeamRun:
 ```text
 TeamMessage(kind=assignment)
   -> correlation_id
-  -> MemberAction / handoff / blocker / review result
-  -> artifacts and outcome
+  -> Harness handoff / blocker / review / PendingInteraction
+  -> explicit outcome and artifact/check references
+  -> provider-native session reference for member execution detail
 ```
 
 Neither object is an OrgUnit, a standing organization member, or a business
@@ -51,6 +52,25 @@ when an explicit stable link exists (for example,
 `MemberRun.agent_member_id`). A temporary MemberRun remains temporary even if
 its displayed name, provider, model, role, or timestamps resemble a standing
 Agent.
+
+A foreground `team-run start` normally owns provider orchestration until every
+member reaches a terminal state. Status-only cancellation deliberately refuses
+`running -> cancelled`, because changing a row cannot stop provider work. If
+the foreground Host disappears *after the operator has independently confirmed
+that every provider process stopped*, the CLI recovery path is explicit and
+audited:
+
+```bash
+harness team-run cancel --id <run> --confirm-provider-stopped \
+  --reason <why-the-host-disappeared> --cancelled-by <actor>
+```
+
+Recovery marks unfinished members `stopped`, records cancelled `interrupted`
+actions, preserves the attempt, and returns its Wave to planning for a retry.
+The flag is an operator attestation, not a claim of cooperative interruption.
+The first real Codex/Kimi evidence for this path and its successful retry is
+recorded in
+[the live Agent Team acceptance](../integration/live-agent-team-acceptance-2026-07-21.md).
 
 ### Dynamic Workflow
 
@@ -72,12 +92,15 @@ must not invent lifecycle control over provider children it does not control.
 
 ### Provider foundation
 
-`AgentMember`, `AgentRuntime`, `ProviderSession`, provider child threads,
-capability snapshots, permission/budget ceilings, hooks/plugins, and durable
-events remain shared infrastructure. Provider transcript detail does not become
-the source of truth for assignment, organization responsibility, approval, or
-business result. Private thinking remains sanitized, transient live state only:
-it is not stored, replayed, forwarded to peers, or used as evidence.
+`AgentMember`, `AgentRuntime`, native provider-session bindings, provider child
+threads, capability snapshots, permission/budget ceilings, hooks, and plugins
+remain shared infrastructure. The provider-native store is the sole truth for
+one agent's transcript, tool/command/file events, turn lifecycle, and resume
+state. Harness references that session and owns assignment, organization
+responsibility, interaction routing, explicit outcomes, artifact/check refs,
+and gates. It does not keep a second provider event history. Private thinking
+remains sanitized, transient live state only: it is not stored, replayed,
+forwarded to peers, or used as evidence.
 
 ## Selection from a WorkItem
 
@@ -135,6 +158,9 @@ Mission, WorkItem, Approval, or organization membership.
    materialized through a truthful observation or promotion contract.
 6. Workflow and Host execution preserve their own semantics; shared sessions,
    artifacts, and events do not collapse them into one universal run object.
-7. Execution outcomes are returned as explicit summaries, artifacts, evidence,
-   metric observations, and result-document/record updates—not raw transcripts
-   or thinking.
+7. Execution outcomes are returned as explicit summaries, artifact/check
+   references, metric observations, and result-document/record updates. Native
+   transcripts remain provider-owned and referenced; thinking is never durable.
+8. Dashboard activity joins durable Harness coordination with an ephemeral,
+   rebuildable provider-native projection. That projection is not a second
+   ledger and cannot accept a Wave.

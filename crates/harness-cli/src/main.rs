@@ -6,6 +6,7 @@ use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::{sync_channel, Receiver as ControlReceiver, SyncSender};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -16,18 +17,22 @@ use harness_core::{
     HarnessToolResult, HarnessTurnEvent, HarnessTurnEventKind, LaunchMcp, LaunchPermission,
     LaunchSpec, MemberAction, MemberActionStatus, MemberRun, MemberRunStatus, Message,
     MessageDelivery, MessageDeliveryStatus, MessageKind, MessageTerminalSource, Mission,
-    MissionStatus, ProjectContext, ProjectKind, Proposal, ProposalStatus, ProviderCapabilities,
-    ProviderChildThread, ProviderChildThreadStatus, ProviderSession, ProviderSessionStatus,
-    SenderKind, TeamDeliveryPolicy, TeamDeliveryStatus, TeamMessage, TeamMessageDelivery,
-    TeamMessageKind, TeamRunEvent, TeamRunEventSourceKind, TeamRunStatus, Wave, WaveExecutorKind,
-    WaveGateStatus, WaveStatus, WorkflowArtifactFile, WorkflowArtifactManifest,
-    WorkflowArtifactManifestStatus, WorkflowPatch, WorkflowPatchStatus, WorkflowRun,
-    WorkflowRunStatus, WorkflowStep, WorkflowStepStatus, WorkflowTerminalReason,
+    MissionStatus, PendingInteraction, PendingInteractionKind, PendingInteractionOption,
+    PendingInteractionRoute, PendingInteractionStatus, ProjectContext, ProjectKind, Proposal,
+    ProposalStatus, ProviderCapabilities, ProviderChildThread, ProviderChildThreadStatus,
+    ProviderCompatibilityStatus, ProviderEventFidelity, ProviderIntegrationProfile,
+    ProviderInteractionMode, ProviderSession, ProviderSessionStatus, SenderKind,
+    TeamDeliveryPolicy, TeamDeliveryStatus, TeamMessage, TeamMessageDelivery, TeamMessageKind,
+    TeamRunEvent, TeamRunEventSourceKind, TeamRunStatus, Wave, WaveExecutorKind, WaveGateStatus,
+    WaveStatus, WorkflowArtifactFile, WorkflowArtifactManifest, WorkflowArtifactManifestStatus,
+    WorkflowPatch, WorkflowPatchStatus, WorkflowRun, WorkflowRunStatus, WorkflowStep,
+    WorkflowStepStatus, WorkflowTerminalReason,
 };
 use harness_store::{HarnessStore, MessageDeliveryClaimResult, StoreError};
 use thiserror::Error;
 
 mod company_os_api;
+mod codex_app_server;
 mod kimi_acp;
 mod legacy_export;
 mod mcp;
@@ -1058,16 +1063,35 @@ fn member_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
         // declares (streaming / resume / schema / cost / …). Derived from the
         // registry — adding a provider surfaces here for free.
         "providers" => {
+            let fail_on_review = args.iter().any(|arg| arg == "--fail-on-review");
+            let mut needs_review = false;
             let providers: Vec<serde_json::Value> = provider_registry()
                 .iter()
                 .map(|adapter| {
+                    let detected = provider_version_output(adapter.name());
+                    let mut profile = team_member_provider_profile(adapter.name());
+                    apply_provider_version(&mut profile, detected.as_ref().ok().cloned());
+                    needs_review |= matches!(
+                        profile.compatibility_status,
+                        ProviderCompatibilityStatus::ReviewRequired
+                            | ProviderCompatibilityStatus::Incompatible
+                            | ProviderCompatibilityStatus::Unavailable
+                    );
                     serde_json::json!({
                         "provider": adapter.name(),
                         "capabilities": adapter.capabilities(),
+                        "team_member_profile": profile,
+                        "version_probe_error": detected.err(),
                     })
                 })
                 .collect();
             print_json(&providers)?;
+            if fail_on_review && needs_review {
+                return Err(CliError::Usage(
+                    "one or more provider adapters require review; inspect the JSON report"
+                        .to_string(),
+                ));
+            }
         }
         other => return Err(CliError::Usage(format!("unknown member command: {other}"))),
     }
@@ -1811,8 +1835,156 @@ struct TeamMemberSpec {
     name: String,
     role: String,
     provider: String,
+    execution_mode: Option<String>,
     model: Option<String>,
     owned_paths: Vec<String>,
+}
+
+fn team_member_provider_profile(provider: &str) -> ProviderIntegrationProfile {
+    team_member_provider_profile_for_mode(provider, None)
+}
+
+fn team_member_provider_profile_for_mode(
+    provider: &str,
+    requested_mode: Option<&str>,
+) -> ProviderIntegrationProfile {
+    if provider == "codex" && requested_mode == Some("codex_app_server") {
+        return ProviderIntegrationProfile {
+            provider: provider.to_string(),
+            execution_mode: "codex_app_server".to_string(),
+            provider_version: None,
+            adapter_contract_version: Some("codex-app-server-v1".to_string()),
+            reviewed_provider_versions: vec!["0.145.0-alpha.18".to_string()],
+            compatibility_status: ProviderCompatibilityStatus::Unknown,
+            adapter_reviewed_at: Some("2026-07-22".to_string()),
+            compatibility_note: Some("Interactive contract reviewed against generated app-server schemas.".to_string()),
+            interaction_mode: ProviderInteractionMode::PauseAndResume,
+            tool_event_fidelity: ProviderEventFidelity::Structured,
+            artifact_event_fidelity: ProviderEventFidelity::Structured,
+            supports_cancel: true,
+            supports_resume: false,
+            observes_native_subagents: false,
+            observes_background_tasks: false,
+            thinking_transient_only: true,
+        };
+    }
+    match provider {
+        "kimi" => ProviderIntegrationProfile {
+            provider: provider.to_string(),
+            execution_mode: "kimi_acp".to_string(),
+            provider_version: None,
+            adapter_contract_version: Some("kimi-acp-v1".to_string()),
+            reviewed_provider_versions: vec!["0.27.0".to_string()],
+            compatibility_status: ProviderCompatibilityStatus::Unknown,
+            adapter_reviewed_at: Some("2026-07-21".to_string()),
+            compatibility_note: Some("Version is checked again after the ACP initialize handshake.".to_string()),
+            interaction_mode: ProviderInteractionMode::PauseAndResume,
+            tool_event_fidelity: ProviderEventFidelity::Structured,
+            artifact_event_fidelity: ProviderEventFidelity::Summary,
+            supports_cancel: true,
+            supports_resume: false,
+            observes_native_subagents: false,
+            observes_background_tasks: false,
+            thinking_transient_only: true,
+        },
+        "codex" => ProviderIntegrationProfile {
+            provider: provider.to_string(),
+            execution_mode: "codex_exec".to_string(),
+            provider_version: None,
+            adapter_contract_version: Some("codex-exec-v1".to_string()),
+            reviewed_provider_versions: vec!["0.145.0-alpha.18".to_string()],
+            compatibility_status: ProviderCompatibilityStatus::Unknown,
+            adapter_reviewed_at: Some("2026-07-21".to_string()),
+            compatibility_note: Some("Exec JSONL is retained for non-interactive turns; app-server is the target interactive mode.".to_string()),
+            // codex exec --json is non-interactive in this adapter. A future
+            // follow-up contract must first turn an end-of-round blocker into
+            // a PendingInteraction; do not claim it before that exists.
+            interaction_mode: ProviderInteractionMode::Unsupported,
+            tool_event_fidelity: ProviderEventFidelity::Structured,
+            artifact_event_fidelity: ProviderEventFidelity::Structured,
+            supports_cancel: false,
+            supports_resume: false,
+            observes_native_subagents: false,
+            observes_background_tasks: false,
+            thinking_transient_only: true,
+        },
+        _ => ProviderIntegrationProfile {
+            provider: provider.to_string(),
+            execution_mode: "unsupported_team_member".to_string(),
+            provider_version: None,
+            adapter_contract_version: None,
+            reviewed_provider_versions: Vec::new(),
+            compatibility_status: ProviderCompatibilityStatus::Unknown,
+            adapter_reviewed_at: None,
+            compatibility_note: Some("No Agent Team Member adapter contract is registered.".to_string()),
+            interaction_mode: ProviderInteractionMode::Unsupported,
+            tool_event_fidelity: ProviderEventFidelity::None,
+            artifact_event_fidelity: ProviderEventFidelity::None,
+            supports_cancel: false,
+            supports_resume: false,
+            observes_native_subagents: false,
+            observes_background_tasks: false,
+            thinking_transient_only: true,
+        },
+    }
+}
+
+fn apply_provider_version(
+    profile: &mut ProviderIntegrationProfile,
+    provider_version: Option<String>,
+) {
+    profile.provider_version = provider_version;
+    profile.compatibility_status = match profile.provider_version.as_deref() {
+        None => ProviderCompatibilityStatus::Unavailable,
+        Some(version)
+            if profile
+                .reviewed_provider_versions
+                .iter()
+                .any(|known| known == version) =>
+        {
+            ProviderCompatibilityStatus::Current
+        }
+        Some(_) if profile.reviewed_provider_versions.is_empty() => {
+            ProviderCompatibilityStatus::Unknown
+        }
+        Some(_) => ProviderCompatibilityStatus::ReviewRequired,
+    };
+    profile.compatibility_note = Some(match profile.compatibility_status {
+        ProviderCompatibilityStatus::Current => "Installed provider version matches an adapter-reviewed version.".to_string(),
+        ProviderCompatibilityStatus::ReviewRequired => "Installed provider version has not been reviewed against this adapter contract; regenerate protocol schemas and run provider acceptance before promotion.".to_string(),
+        ProviderCompatibilityStatus::Unavailable => "Provider version could not be detected.".to_string(),
+        ProviderCompatibilityStatus::Incompatible => "Provider version is known to be incompatible with this adapter contract.".to_string(),
+        ProviderCompatibilityStatus::Unknown => "No reviewed provider version is registered for this execution mode.".to_string(),
+    });
+}
+
+fn provider_version_output(provider: &str) -> Result<String, String> {
+    let binary = match provider {
+        "kimi" => resolve_kimi_bin(),
+        "codex" => "codex".to_string(),
+        "claude" => "claude".to_string(),
+        other => other.to_string(),
+    };
+    let output = Command::new(&binary)
+        .arg("--version")
+        .output()
+        .map_err(|error| format!("failed to run {binary} --version: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "{binary} --version exited {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    let raw = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if raw.is_empty() {
+        return Err(format!("{binary} --version returned no version"));
+    }
+    Ok(match provider {
+        "codex" => raw.strip_prefix("codex-cli ").unwrap_or(&raw).to_string(),
+        "claude" => raw.split_whitespace().next().unwrap_or(&raw).to_string(),
+        _ => raw,
+    })
 }
 
 /// Parse one `--member name:role:provider[:model][@path1,path2]` spec.
@@ -1835,10 +2007,23 @@ fn parse_team_member_spec(raw: &str) -> CliResult<TeamMemberSpec> {
             "invalid --member `{raw}` (expected name:role:provider[:model][@path1,path2])"
         )));
     }
+    let (provider, execution_mode) = match parts[2].split_once('/') {
+        Some((provider, mode)) if !provider.is_empty() && !mode.is_empty() => (
+            provider.to_string(),
+            Some(match mode {
+                "app-server" | "app_server" => "codex_app_server".to_string(),
+                "exec" => "codex_exec".to_string(),
+                "acp" => "kimi_acp".to_string(),
+                other => other.to_string(),
+            }),
+        ),
+        _ => (parts[2].to_string(), None),
+    };
     Ok(TeamMemberSpec {
         name: parts[0].to_string(),
         role: parts[1].to_string(),
-        provider: parts[2].to_string(),
+        provider,
+        execution_mode,
         model: parts
             .get(3)
             .map(|model| model.to_string())
@@ -1938,6 +2123,20 @@ fn create_team_run(
                 member.name
             )));
         }
+        if let Some(mode) = member.execution_mode.as_deref() {
+            let allowed = matches!(
+                (member.provider.as_str(), mode),
+                ("codex", "codex_exec")
+                    | ("codex", "codex_app_server")
+                    | ("kimi", "kimi_acp")
+            );
+            if !allowed {
+                return Err(CliError::Usage(format!(
+                    "execution mode {mode} is not registered for provider {}",
+                    member.provider
+                )));
+            }
+        }
     }
     let (mission_id, wave_id, wave) = resolve_team_run_mission_wave(store, mission_id, wave_id)?;
     // A wave chained onto a previous run must name a run that exists. Linked
@@ -1967,6 +2166,10 @@ fn create_team_run(
             role: member.role.clone(),
             provider: member.provider.clone(),
             model: member.model.clone(),
+            provider_profile: Some(team_member_provider_profile_for_mode(
+                &member.provider,
+                member.execution_mode.as_deref(),
+            )),
             status: MemberRunStatus::Idle,
             provider_session_id: None,
             acp_session_id: None,
@@ -2463,6 +2666,92 @@ pub(crate) fn transition_team_run(
     Ok(next)
 }
 
+/// Recover a running attempt only after the operator has independently stopped
+/// every provider process. This is not cooperative interruption: the explicit
+/// CLI flag is an auditable attestation used when the foreground orchestrator
+/// disappeared before it could journal terminal state.
+fn recover_interrupted_team_run(
+    store: &HarnessStore,
+    team_run_id: &str,
+    reason: &str,
+    cancelled_by: &str,
+) -> CliResult<AgentTeamRun> {
+    if reason.trim().is_empty() || cancelled_by.trim().is_empty() {
+        return Err(CliError::Usage(
+            "interrupted recovery requires non-empty --reason and --cancelled-by".to_string(),
+        ));
+    }
+    let current = latest_team_run(store, team_run_id)?;
+    if current.status != TeamRunStatus::Running {
+        return Err(CliError::Usage(format!(
+            "--confirm-provider-stopped is only valid for a running team run; {} is {}",
+            current.id,
+            serde_snake_label(&current.status)
+        )));
+    }
+
+    let ledger = TeamRunLedger::new(store, team_run_id);
+    let members = latest_member_runs_in_append_order(store)?
+        .into_iter()
+        .filter(|member| member.team_run_id == team_run_id)
+        .collect::<Vec<_>>();
+    for member in members {
+        if matches!(
+            member.status,
+            MemberRunStatus::Completed
+                | MemberRunStatus::Failed
+                | MemberRunStatus::Stopped
+                | MemberRunStatus::Blocked
+        ) {
+            continue;
+        }
+        let mut stopped = member.clone();
+        stopped.status = MemberRunStatus::Stopped;
+        stopped.last_event_at = Some(now_string());
+        stopped.finished_at = Some(now_string());
+        ledger.save_member_run(&stopped)?;
+        ledger.append_action(
+            &member.id,
+            "interrupted",
+            MemberActionStatus::Cancelled,
+            "provider execution stopped",
+            reason,
+        )?;
+        ledger.fold_event(
+            TeamRunEventSourceKind::Host,
+            Some(member.id.clone()),
+            "member_run",
+            &member.id,
+            "updated",
+            &format!(
+                "member {} marked stopped after provider interruption",
+                member.name
+            ),
+        )?;
+    }
+
+    let mut cancelled = current.clone();
+    cancelled.status = TeamRunStatus::Cancelled;
+    cancelled.updated_at = now_string();
+    store_conflict_as_usage(store.compare_and_append_team_run_with_wave_status(
+        &current,
+        &cancelled,
+        WaveStatus::Planned,
+        &now_string(),
+    ))?;
+    ledger.fold_event(
+        TeamRunEventSourceKind::Host,
+        None,
+        "team_run",
+        team_run_id,
+        "updated",
+        &format!(
+            "team run recovered as cancelled after {cancelled_by} confirmed provider processes stopped: {reason}"
+        ),
+    )?;
+    Ok(cancelled)
+}
+
 /// Parse a team message kind from its snake_case wire name.
 fn parse_team_message_kind(s: &str) -> CliResult<TeamMessageKind> {
     serde_json::from_value(serde_json::Value::String(s.to_string())).map_err(|_| {
@@ -2503,7 +2792,7 @@ fn team_run_command(
 ) -> CliResult<()> {
     require_subcommand(
         args,
-        "team-run create|list|status|start|send|events|complete|cancel",
+        "team-run create|list|status|start|send|resolve-interaction|events|complete|cancel",
     )?;
     let json = has_flag(args, "--json");
     match args[0].as_str() {
@@ -2548,11 +2837,40 @@ fn team_run_command(
         }
         "cancel" => {
             let id = required(args, "--id")?;
-            let run = transition_team_run(store, &id, TeamRunStatus::Cancelled)?;
+            let run = if has_flag(args, "--confirm-provider-stopped") {
+                recover_interrupted_team_run(
+                    store,
+                    &id,
+                    &required(args, "--reason")?,
+                    &value(args, "--cancelled-by").unwrap_or_else(|| "host".to_string()),
+                )?
+            } else {
+                transition_team_run(store, &id, TeamRunStatus::Cancelled)?
+            };
             if json {
                 print_json(&serde_json::json!(run))?;
             } else {
                 println!("{}\t{}", run.id, serde_snake_label(&run.status));
+            }
+        }
+        "resolve-interaction" => {
+            let team_run_id = required(args, "--id")?;
+            let interaction_id = required(args, "--interaction-id")?;
+            let mut body = serde_json::json!({
+                "resolved_by": value(args, "--resolved-by").unwrap_or_else(|| "host".to_string())
+            });
+            if let Some(option_id) = value(args, "--option-id") {
+                body["option_id"] = serde_json::Value::String(option_id);
+            }
+            if let Some(response_text) = value(args, "--response-text") {
+                body["response_text"] = serde_json::Value::String(response_text);
+            }
+            let interaction =
+                resolve_pending_interaction_value(store, &team_run_id, &interaction_id, &body)?;
+            if json {
+                print_json(&interaction)?;
+            } else {
+                println!("{}", interaction["id"].as_str().unwrap_or(&interaction_id));
             }
         }
         "list" => {
@@ -2773,6 +3091,123 @@ const LIVE_MEMBER_ACTIVITY_THROTTLE: Duration = Duration::from_secs(1);
 static LIVE_MEMBER_ACTIVITY_REVISION: AtomicU64 = AtomicU64::new(1);
 static LIVE_MEMBER_ACTIVITY_INGRESS: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
 
+/// Process-local control plane for provider sessions started by `serve` or the
+/// MCP server. The durable TeamMessage remains the conversation record; this
+/// registry is only the live transport into the currently running provider
+/// turn and is deliberately not reconstructed after process restart.
+static LIVE_MEMBER_CONTROLS: OnceLock<Mutex<HashMap<String, LiveMemberControl>>> = OnceLock::new();
+
+#[derive(Clone)]
+struct LiveMemberControl {
+    team_run_id: String,
+    execution_mode: String,
+    supports_steer: bool,
+    supports_interrupt: bool,
+    sender: SyncSender<MemberControlCommand>,
+}
+
+enum MemberControlCommand {
+    Steer {
+        content: String,
+        requested_by: String,
+        reply: SyncSender<CliResult<serde_json::Value>>,
+    },
+    Interrupt {
+        reason: String,
+        requested_by: String,
+        reply: SyncSender<CliResult<serde_json::Value>>,
+    },
+}
+
+struct LiveMemberControlRegistration {
+    member_run_id: String,
+}
+
+impl Drop for LiveMemberControlRegistration {
+    fn drop(&mut self) {
+        LIVE_MEMBER_CONTROLS
+            .get_or_init(|| Mutex::new(HashMap::new()))
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .remove(&self.member_run_id);
+    }
+}
+
+fn register_live_member_control(
+    member: &MemberRun,
+    capacity: usize,
+) -> (ControlReceiver<MemberControlCommand>, LiveMemberControlRegistration) {
+    let (sender, receiver) = sync_channel(capacity.max(1));
+    let profile = member.provider_profile.as_ref();
+    LIVE_MEMBER_CONTROLS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .insert(
+            member.id.clone(),
+            LiveMemberControl {
+                team_run_id: member.team_run_id.clone(),
+                execution_mode: profile
+                    .map(|profile| profile.execution_mode.clone())
+                    .unwrap_or_else(|| "unknown".to_string()),
+                supports_steer: profile.is_some_and(|profile| {
+                    profile.execution_mode == "codex_app_server"
+                }),
+                supports_interrupt: profile.is_some_and(|profile| profile.supports_cancel),
+                sender,
+            },
+        );
+    (
+        receiver,
+        LiveMemberControlRegistration {
+            member_run_id: member.id.clone(),
+        },
+    )
+}
+
+fn dispatch_live_member_control(
+    team_run_id: &str,
+    member_run_id: &str,
+    command: impl FnOnce(SyncSender<CliResult<serde_json::Value>>) -> MemberControlCommand,
+    require_steer: bool,
+) -> CliResult<serde_json::Value> {
+    let control = LIVE_MEMBER_CONTROLS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .get(member_run_id)
+        .cloned()
+        .ok_or_else(|| {
+            CliError::Usage(format!(
+                "member {member_run_id} has no live provider session in this server process"
+            ))
+        })?;
+    if control.team_run_id != team_run_id {
+        return Err(CliError::Usage(format!(
+            "member {member_run_id} does not belong to team run {team_run_id}"
+        )));
+    }
+    if require_steer && !control.supports_steer {
+        return Err(CliError::Usage(format!(
+            "{} does not support mid-turn steer; send a queued TeamMessage instead",
+            control.execution_mode
+        )));
+    }
+    if !require_steer && !control.supports_interrupt {
+        return Err(CliError::Usage(format!(
+            "{} does not support live interruption",
+            control.execution_mode
+        )));
+    }
+    let (reply_tx, reply_rx) = sync_channel(1);
+    control.sender.send(command(reply_tx)).map_err(|_| {
+        CliError::Usage(format!("member {member_run_id} provider session already ended"))
+    })?;
+    reply_rx
+        .recv_timeout(Duration::from_secs(15))
+        .map_err(|_| CliError::Usage("provider control acknowledgement timed out".to_string()))?
+}
+
 #[derive(Clone, Debug)]
 struct LiveMemberActivityPreview {
     team_run_id: String,
@@ -2893,19 +3328,75 @@ impl TeamRunLedger {
             .max()
             .unwrap_or(0)
             + 1;
+        let completed_at = (!matches!(
+            status,
+            MemberActionStatus::Started | MemberActionStatus::Progress
+        ))
+        .then(now_string);
         let action = MemberAction {
             id: generated_id("mact"),
             seq,
             team_run_id: self.run_id.clone(),
             member_run_id: member_run_id.to_string(),
             task_id: None,
+            provider_call_id: None,
             action_type: action_type.to_string(),
             status,
+            provider_status: None,
+            semantic_status: None,
             title: title.to_string(),
             summary: summary.to_string(),
             evidence_refs: Vec::new(),
             started_at: now_string(),
-            completed_at: Some(now_string()),
+            completed_at,
+        };
+        self.store.append_member_action(&action)?;
+        Ok(action)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn append_provider_action(
+        &self,
+        member_run_id: &str,
+        provider_call_id: Option<String>,
+        action_type: &str,
+        status: MemberActionStatus,
+        provider_status: Option<String>,
+        semantic_status: Option<String>,
+        title: &str,
+        summary: &str,
+    ) -> CliResult<MemberAction> {
+        let _guard = self.write_lock();
+        let seq = self
+            .store
+            .member_actions()?
+            .into_iter()
+            .filter(|action| action.team_run_id == self.run_id)
+            .map(|action| action.seq)
+            .max()
+            .unwrap_or(0)
+            + 1;
+        let completed_at = (!matches!(
+            status,
+            MemberActionStatus::Started | MemberActionStatus::Progress
+        ))
+        .then(now_string);
+        let action = MemberAction {
+            id: generated_id("mact"),
+            seq,
+            team_run_id: self.run_id.clone(),
+            member_run_id: member_run_id.to_string(),
+            task_id: None,
+            provider_call_id,
+            action_type: action_type.to_string(),
+            status,
+            provider_status,
+            semantic_status,
+            title: title.to_string(),
+            summary: summary.to_string(),
+            evidence_refs: Vec::new(),
+            started_at: now_string(),
+            completed_at,
         };
         self.store.append_member_action(&action)?;
         Ok(action)
@@ -2919,6 +3410,11 @@ impl TeamRunLedger {
     fn save_message(&self, message: &TeamMessage) -> CliResult<()> {
         let _guard = self.write_lock();
         Ok(self.store.append_team_message(message)?)
+    }
+
+    fn save_pending_interaction(&self, interaction: &PendingInteraction) -> CliResult<()> {
+        let _guard = self.write_lock();
+        Ok(self.store.append_pending_interaction(interaction)?)
     }
 
     fn latest_member_run(&self, member_run_id: &str) -> CliResult<Option<MemberRun>> {
@@ -3172,9 +3668,19 @@ fn run_member_orchestration(
     idle_timeout: Duration,
     live_sink: Option<LiveMemberActivitySink>,
 ) -> MemberOutcome {
+    let execution_mode = member
+        .provider_profile
+        .as_ref()
+        .map(|profile| profile.execution_mode.as_str());
     let result = if member.provider.eq_ignore_ascii_case("kimi") {
         run_kimi_member(ledger, objective, &member, cwd, idle_timeout, live_sink)
-    } else if member.provider.eq_ignore_ascii_case("codex") {
+    } else if member.provider.eq_ignore_ascii_case("codex")
+        && matches!(execution_mode, Some("codex_exec") | None)
+    {
+        run_codex_member(ledger, objective, &member, cwd, idle_timeout, live_sink)
+    } else if member.provider.eq_ignore_ascii_case("codex")
+        && execution_mode == Some("codex_app_server")
+    {
         run_codex_member(ledger, objective, &member, cwd, idle_timeout, live_sink)
     } else {
         Err(CliError::Usage(format!(
@@ -3207,6 +3713,9 @@ fn run_codex_member(
 ) -> CliResult<MemberOutcome> {
     let mut member_row = member.clone();
     member_row.status = MemberRunStatus::Starting;
+    if let Some(profile) = member_row.provider_profile.as_mut() {
+        apply_provider_version(profile, provider_version_output("codex").ok());
+    }
     member_row.last_event_at = Some(now_string());
     ledger.save_member_run(&member_row)?;
     ledger.fold_event(
@@ -3221,6 +3730,28 @@ fn run_codex_member(
             cwd.display()
         ),
     )?;
+
+    let app_server_mode = member_row
+        .provider_profile
+        .as_ref()
+        .is_some_and(|profile| profile.execution_mode == "codex_app_server");
+    let mut app_server = if app_server_mode {
+        Some(codex_app_server::CodexAppServerClient::spawn(
+            cwd,
+            member.model.as_deref(),
+            !member.owned_paths.is_empty(),
+        )?)
+    } else {
+        None
+    };
+    let mut live_control = None;
+    let mut live_control_registration = None;
+    if let Some(client) = app_server.as_ref() {
+        member_row.acp_session_id = Some(client.thread_id().to_string());
+        let (receiver, registration) = register_live_member_control(&member_row, 16);
+        live_control = Some(receiver);
+        live_control_registration = Some(registration);
+    }
 
     member_row.status = MemberRunStatus::Running;
     member_row.last_event_at = Some(now_string());
@@ -3241,16 +3772,47 @@ fn run_codex_member(
     let mut final_summary = String::new();
     while let Some(prompt_text) = next_prompt.take() {
         round += 1;
-        let turn = run_codex_team_turn(
-            &prompt_text,
-            cwd,
-            member,
-            idle_timeout,
-            live_sink.clone(),
-            &ledger.run_id,
-        )?;
+        let turn = if let Some(client) = app_server.as_mut() {
+            run_codex_app_server_turn(
+                client,
+                &prompt_text,
+                member,
+                idle_timeout,
+                live_sink.clone(),
+                ledger,
+                live_control.as_ref().expect("live control registered"),
+            )?
+        } else {
+            run_codex_team_turn(
+                &prompt_text,
+                cwd,
+                member,
+                idle_timeout,
+                live_sink.clone(),
+                ledger,
+            )?
+        };
         if member_row.acp_session_id.is_none() {
             member_row.acp_session_id = turn.thread_id;
+        }
+        if turn.interrupted {
+            member_row.status = MemberRunStatus::Stopped;
+            member_row.finished_at = Some(now_string());
+            member_row.last_event_at = Some(now_string());
+            ledger.save_member_run(&member_row)?;
+            ledger.append_action(
+                &member.id,
+                "interrupted",
+                MemberActionStatus::Cancelled,
+                "provider turn interrupted",
+                "The operator or Lead interrupted the active Codex turn.",
+            )?;
+            drop(live_control_registration.take());
+            return Ok(MemberOutcome::new(
+                member,
+                MemberRunStatus::Stopped,
+                "Codex turn interrupted by operator or Lead".to_string(),
+            ));
         }
         let final_text = turn.final_text;
         if final_text.trim().is_empty() {
@@ -3388,6 +3950,96 @@ fn run_codex_member(
 struct CodexTeamTurn {
     thread_id: Option<String>,
     final_text: String,
+    interrupted: bool,
+}
+
+fn journal_codex_team_event(ledger: &TeamRunLedger, member: &MemberRun, raw: &serde_json::Value) {
+    let Some(event_type) = raw.get("type").and_then(|value| value.as_str()) else {
+        return;
+    };
+    if !matches!(event_type, "item.started" | "item.completed") {
+        return;
+    }
+    let Some(item) = raw.get("item") else { return };
+    let item_type = item
+        .get("type")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    if matches!(item_type, "agent_message" | "reasoning" | "plan") || item_type.is_empty() {
+        return;
+    }
+    let provider_call_id = item
+        .get("id")
+        .and_then(|value| value.as_str())
+        .map(str::to_string);
+    let title = match item_type {
+        "command_execution" => "Bash".to_string(),
+        "file_change" => "File change".to_string(),
+        "mcp_tool_call" => item
+            .get("tool")
+            .or_else(|| item.get("name"))
+            .and_then(|value| value.as_str())
+            .map(|name| format!("MCP · {name}"))
+            .unwrap_or_else(|| "MCP tool".to_string()),
+        "web_search" => "Web search".to_string(),
+        other => other.replace('_', " "),
+    };
+    let provider_status = item
+        .get("status")
+        .and_then(|value| value.as_str())
+        .unwrap_or(if event_type == "item.started" {
+            "in_progress"
+        } else {
+            "completed"
+        });
+    let failed = provider_status == "failed"
+        || item
+            .get("exit_code")
+            .and_then(|value| value.as_i64())
+            .is_some_and(|code| code != 0);
+    let summary = match item_type {
+        "command_execution" => item
+            .get("command")
+            .and_then(|value| value.as_str())
+            .map(|command| truncate_on_char_boundary(command, 240).to_string())
+            .unwrap_or_else(|| format!("command {provider_status}")),
+        "file_change" => format!(
+            "{} file change(s)",
+            item.get("changes")
+                .and_then(|value| value.as_array())
+                .map(Vec::len)
+                .unwrap_or(0)
+        ),
+        _ => format!("{title} {provider_status}"),
+    };
+    let _ = ledger.append_provider_action(
+        &member.id,
+        provider_call_id,
+        if event_type == "item.started" {
+            "tool_started"
+        } else if item_type == "file_change" {
+            "file_changed"
+        } else {
+            "tool_completed"
+        },
+        if event_type == "item.started" {
+            MemberActionStatus::Started
+        } else if failed {
+            MemberActionStatus::Failed
+        } else {
+            MemberActionStatus::Succeeded
+        },
+        Some(provider_status.to_string()),
+        Some(if event_type == "item.started" {
+            "in_progress".to_string()
+        } else if failed {
+            "failed".to_string()
+        } else {
+            "succeeded".to_string()
+        }),
+        &title,
+        &summary,
+    );
 }
 
 /// Run one read-only Codex turn and consume its event stream in memory. Raw
@@ -3398,7 +4050,7 @@ fn run_codex_team_turn(
     member: &MemberRun,
     idle_timeout: Duration,
     live_sink: Option<LiveMemberActivitySink>,
-    team_run_id: &str,
+    ledger: &TeamRunLedger,
 ) -> CliResult<CodexTeamTurn> {
     let mut cmd = Command::new("codex");
     cmd.arg("exec")
@@ -3455,6 +4107,7 @@ fn run_codex_team_turn(
             Ok(line) => {
                 last_activity = Instant::now();
                 if let Some(event) = CodexExecEvent::parse_line(&line) {
+                    journal_codex_team_event(ledger, member, &event.payload);
                     let reasoning = event
                         .payload
                         .get("item")
@@ -3468,7 +4121,7 @@ fn run_codex_team_turn(
                         if let (Some(sink), Some(preview)) = (&live_sink, reasoning) {
                             last_live_activity = Instant::now();
                             sink(LiveMemberActivityPreview {
-                                team_run_id: team_run_id.to_string(),
+                                team_run_id: ledger.run_id.clone(),
                                 member_run_id: member.id.clone(),
                                 provider: member.provider.clone(),
                                 preview,
@@ -3515,7 +4168,174 @@ fn run_codex_team_turn(
     Ok(CodexTeamTurn {
         thread_id: extract_thread_id_from_exec_events(&events),
         final_text,
+        interrupted: false,
     })
+}
+
+/// Drive one turn on the persistent Codex app-server session. Unlike
+/// `codex exec`, this transport can inject user input into the active turn and
+/// interrupt it without killing an unrelated host process.
+fn run_codex_app_server_turn(
+    client: &mut codex_app_server::CodexAppServerClient,
+    prompt: &str,
+    member: &MemberRun,
+    idle_timeout: Duration,
+    live_sink: Option<LiveMemberActivitySink>,
+    ledger: &TeamRunLedger,
+    controls: &ControlReceiver<MemberControlCommand>,
+) -> CliResult<CodexTeamTurn> {
+    let mut turn_id = client.start_turn(prompt)?;
+    let mut final_text = String::new();
+    let mut last_activity = Instant::now();
+    let mut last_live_activity = Instant::now() - LIVE_MEMBER_ACTIVITY_THROTTLE;
+    let mut interrupt_requested = false;
+    loop {
+        while let Ok(command) = controls.try_recv() {
+            match command {
+                MemberControlCommand::Steer {
+                    content,
+                    requested_by,
+                    reply,
+                } => {
+                    let result = client.steer(&turn_id, &content).and_then(|active_turn| {
+                        turn_id = active_turn;
+                        ledger.append_action(
+                            &member.id,
+                            "steered",
+                            MemberActionStatus::Succeeded,
+                            "active Codex turn steered",
+                            &format!("{requested_by} injected {} characters", content.len()),
+                        )?;
+                        Ok(serde_json::json!({
+                            "member_run_id": member.id,
+                            "turn_id": turn_id,
+                            "delivery": "steered",
+                        }))
+                    });
+                    let _ = reply.send(result);
+                }
+                MemberControlCommand::Interrupt {
+                    reason,
+                    requested_by,
+                    reply,
+                } => {
+                    let result = client.interrupt(&turn_id).and_then(|()| {
+                        interrupt_requested = true;
+                        ledger.append_action(
+                            &member.id,
+                            "interrupt_requested",
+                            MemberActionStatus::Progress,
+                            "Codex interruption requested",
+                            &format!("{requested_by}: {reason}"),
+                        )?;
+                        Ok(serde_json::json!({
+                            "member_run_id": member.id,
+                            "turn_id": turn_id,
+                            "status": "interrupt_requested",
+                        }))
+                    });
+                    let _ = reply.send(result);
+                }
+            }
+        }
+
+        match client.recv(Duration::from_millis(50)) {
+            Ok(frame) => {
+                last_activity = Instant::now();
+                let method = frame.get("method").and_then(|value| value.as_str());
+                let params = frame.get("params").unwrap_or(&frame);
+                match method {
+                    Some("item/agentMessage/delta") => {
+                        if let Some(delta) = params.get("delta").and_then(|value| value.as_str()) {
+                            final_text.push_str(delta);
+                        }
+                    }
+                    Some("item/reasoning/summaryTextDelta")
+                    | Some("item/reasoning/textDelta") => {
+                        let preview = params
+                            .get("delta")
+                            .and_then(|value| value.as_str())
+                            .and_then(sanitize_live_member_preview);
+                        if last_live_activity.elapsed() >= LIVE_MEMBER_ACTIVITY_THROTTLE {
+                            if let (Some(sink), Some(preview)) = (&live_sink, preview) {
+                                last_live_activity = Instant::now();
+                                sink(LiveMemberActivityPreview {
+                                    team_run_id: ledger.run_id.clone(),
+                                    member_run_id: member.id.clone(),
+                                    provider: member.provider.clone(),
+                                    preview,
+                                });
+                            }
+                        }
+                    }
+                    Some("item/started") | Some("item/completed") => {
+                        let event_type = if method == Some("item/started") {
+                            "item.started"
+                        } else {
+                            "item.completed"
+                        };
+                        journal_codex_team_event(
+                            ledger,
+                            member,
+                            &serde_json::json!({
+                                "type": event_type,
+                                "item": params.get("item").cloned().unwrap_or_default(),
+                            }),
+                        );
+                    }
+                    Some("turn/completed") => {
+                        let status = params
+                            .pointer("/turn/status")
+                            .and_then(|value| value.as_str())
+                            .unwrap_or("completed");
+                        if final_text.trim().is_empty() {
+                            final_text = params
+                                .pointer("/turn/items")
+                                .and_then(|value| value.as_array())
+                                .into_iter()
+                                .flatten()
+                                .filter(|item| {
+                                    item.get("type").and_then(|value| value.as_str())
+                                        == Some("agentMessage")
+                                })
+                                .filter_map(|item| item.get("text").and_then(|value| value.as_str()))
+                                .collect::<Vec<_>>()
+                                .join("\n");
+                        }
+                        let interrupted = interrupt_requested
+                            || matches!(status, "interrupted" | "cancelled" | "canceled");
+                        if !interrupted && status != "completed" {
+                            return Err(CliError::Usage(format!(
+                                "codex app-server turn {turn_id} ended as {status}"
+                            )));
+                        }
+                        return Ok(CodexTeamTurn {
+                            thread_id: Some(client.thread_id().to_string()),
+                            final_text,
+                            interrupted,
+                        });
+                    }
+                    _ if frame.get("id").is_some() && method.is_some() => {
+                        let result = handle_codex_provider_request(ledger, member, &frame)?;
+                        client.respond(frame.get("id").expect("checked"), result)?;
+                    }
+                    _ => {}
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                if last_activity.elapsed() >= idle_timeout {
+                    client.interrupt(&turn_id)?;
+                    interrupt_requested = true;
+                    last_activity = Instant::now();
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                return Err(CliError::Usage(
+                    "codex app-server ended before turn/completed".to_string(),
+                ));
+            }
+        }
+    }
 }
 
 /// Drive one kimi member: spawn its ACP session, deliver the assignment as a
@@ -3549,6 +4369,13 @@ fn run_kimi_member(
     let mut client = kimi_acp::KimiAcpClient::spawn(cwd, member.model.as_deref())?;
     member_row.status = MemberRunStatus::Running;
     member_row.acp_session_id = client.session_id().map(str::to_string);
+    if let Some(profile) = member_row.provider_profile.as_mut() {
+        apply_provider_version(profile, client.provider_version().map(str::to_string));
+    }
+    // Publish the live control handle before the durable Running projection so
+    // an operator cannot observe Running and race into a false "no session".
+    let (live_control, _live_control_registration) =
+        register_live_member_control(&member_row, 8);
     member_row.last_event_at = Some(now_string());
     ledger.save_member_run(&member_row)?;
     ledger.fold_event(
@@ -3563,7 +4390,6 @@ fn run_kimi_member(
             member_row.acp_session_id.as_deref().unwrap_or("?")
         ),
     )?;
-
     // The assignment is the newest Assignment-kind message with a still-queued
     // delivery to this member; absent one, the run objective is the contract.
     let assignment = latest_queued_assignment(ledger, &member.id)?;
@@ -3582,9 +4408,64 @@ fn run_kimi_member(
     while let Some(prompt_text) = next_prompt.take() {
         round += 1;
         let mut mapper = MemberUpdateMapper::new(ledger, member_row.clone(), live_sink.clone());
-        let outcome = client.prompt(&prompt_text, idle_timeout, |update| mapper.handle(update))?;
+        let outcome = client.prompt(
+            &prompt_text,
+            idle_timeout,
+            |update| mapper.handle(update),
+            |request| handle_kimi_provider_request(ledger, &member_row, request),
+            || {
+                let mut cancel = false;
+                while let Ok(command) = live_control.try_recv() {
+                    match command {
+                        MemberControlCommand::Interrupt {
+                            reason,
+                            requested_by,
+                            reply,
+                        } => {
+                            ledger.append_action(
+                                &member.id,
+                                "interrupt_requested",
+                                MemberActionStatus::Progress,
+                                "Kimi cancellation requested",
+                                &format!("{requested_by}: {reason}"),
+                            )?;
+                            cancel = true;
+                            let _ = reply.send(Ok(serde_json::json!({
+                                "member_run_id": member.id,
+                                "status": "cancel_requested",
+                            })));
+                        }
+                        MemberControlCommand::Steer { reply, .. } => {
+                            let _ = reply.send(Err(CliError::Usage(
+                                "kimi_acp does not support mid-turn steer".to_string(),
+                            )));
+                        }
+                    }
+                }
+                Ok(cancel)
+            },
+        )?;
         let final_text = mapper.text().to_string();
         member_row = mapper.into_member();
+        if matches!(outcome.stop_reason.as_str(), "cancelled" | "canceled") {
+            member_row.status = MemberRunStatus::Stopped;
+            member_row.finished_at = Some(now_string());
+            member_row.last_event_at = Some(now_string());
+            ledger.save_member_run(&member_row)?;
+            ledger.append_action(
+                &member.id,
+                "interrupted",
+                MemberActionStatus::Cancelled,
+                "Kimi prompt cancelled",
+                "The active ACP prompt acknowledged session/cancel.",
+            )?;
+            client.shutdown();
+            return Ok(MemberOutcome::new(
+                member,
+                MemberRunStatus::Stopped,
+                "Kimi prompt cancelled by operator or Lead".to_string(),
+            ));
+        }
         let result = parse_round_result(&final_text);
 
         // Handoff to the host: the full final report, manual-ack delivery.
@@ -3868,6 +4749,391 @@ fn sanitize_live_member_preview(value: &str) -> Option<String> {
     (!preview.is_empty()).then_some(preview)
 }
 
+fn kimi_interaction_prompt(frame: &serde_json::Value) -> String {
+    frame
+        .pointer("/params/toolCall/content")
+        .and_then(|content| content.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|block| {
+            block
+                .pointer("/content/text")
+                .or_else(|| block.get("text"))
+                .and_then(|text| text.as_str())
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn handle_codex_provider_request(
+    ledger: &TeamRunLedger,
+    member: &MemberRun,
+    frame: &serde_json::Value,
+) -> CliResult<serde_json::Value> {
+    let method = frame
+        .get("method")
+        .and_then(|value| value.as_str())
+        .unwrap_or("unknown");
+    let params = frame.get("params").unwrap_or(frame);
+    let provider_request_id = frame
+        .get("id")
+        .map(|value| value.as_str().map(str::to_string).unwrap_or_else(|| value.to_string()))
+        .unwrap_or_else(|| generated_id("provider-request"));
+
+    let (kind, route, title, prompt, options) = if method == "item/tool/requestUserInput" {
+        let question = params
+            .get("questions")
+            .and_then(|value| value.as_array())
+            .and_then(|questions| questions.first());
+        let question_id = question
+            .and_then(|question| question.get("id"))
+            .and_then(|value| value.as_str())
+            .unwrap_or("answer");
+        let options = question
+            .and_then(|question| question.get("options"))
+            .and_then(|value| value.as_array())
+            .into_iter()
+            .flatten()
+            .enumerate()
+            .map(|(index, option)| PendingInteractionOption {
+                id: format!("{question_id}::{index}"),
+                label: option
+                    .get("label")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("Option")
+                    .to_string(),
+                intent: Some("answer".to_string()),
+            })
+            .collect::<Vec<_>>();
+        (
+            PendingInteractionKind::Question,
+            PendingInteractionRoute::Lead,
+            question
+                .and_then(|question| question.get("header"))
+                .and_then(|value| value.as_str())
+                .unwrap_or("Codex question")
+                .to_string(),
+            question
+                .and_then(|question| question.get("question"))
+                .and_then(|value| value.as_str())
+                .unwrap_or("Codex requested input")
+                .to_string(),
+            options,
+        )
+    } else if matches!(
+        method,
+        "item/commandExecution/requestApproval"
+            | "item/fileChange/requestApproval"
+            | "item/permissions/requestApproval"
+    ) {
+        (
+            PendingInteractionKind::ToolApproval,
+            PendingInteractionRoute::Policy,
+            "Codex approval".to_string(),
+            params
+                .get("reason")
+                .or_else(|| params.get("command"))
+                .and_then(|value| value.as_str())
+                .unwrap_or("Codex requested permission for an action")
+                .to_string(),
+            vec![
+                PendingInteractionOption {
+                    id: "approve_once".to_string(),
+                    label: "Approve once".to_string(),
+                    intent: Some("allow_once".to_string()),
+                },
+                PendingInteractionOption {
+                    id: "deny".to_string(),
+                    label: "Deny".to_string(),
+                    intent: Some("reject_once".to_string()),
+                },
+            ],
+        )
+    } else {
+        return Err(CliError::Usage(format!(
+            "unsupported Codex app-server request {method}; denied fail-closed"
+        )));
+    };
+
+    let interaction = PendingInteraction {
+        id: generated_id("interaction"),
+        team_run_id: ledger.run_id.clone(),
+        member_run_id: member.id.clone(),
+        provider: member.provider.clone(),
+        provider_request_id,
+        method: method.to_string(),
+        kind,
+        route,
+        status: PendingInteractionStatus::Pending,
+        title,
+        prompt,
+        options,
+        tool_call_id: params
+            .get("itemId")
+            .and_then(|value| value.as_str())
+            .map(str::to_string),
+        response_option_id: None,
+        response_text: None,
+        created_at: now_string(),
+        resolved_at: None,
+        resolved_by: None,
+    };
+    ledger.save_pending_interaction(&interaction)?;
+    ledger.fold_event(
+        TeamRunEventSourceKind::Member,
+        Some(member.id.clone()),
+        "pending_interaction",
+        &interaction.id,
+        "created",
+        &format!("{} waiting for {:?}", interaction.title, interaction.route),
+    )?;
+    ledger.append_action(
+        &member.id,
+        if kind == PendingInteractionKind::Question {
+            "waiting_for_input"
+        } else {
+            "waiting_for_approval"
+        },
+        MemberActionStatus::Started,
+        &interaction.title,
+        &interaction.prompt,
+    )?;
+    let mut waiting = member.clone();
+    waiting.status = MemberRunStatus::Waiting;
+    waiting.last_event_at = Some(now_string());
+    ledger.save_member_run(&waiting)?;
+
+    let resolved = loop {
+        let current = latest_pending_interactions_in_append_order(&ledger.store)?
+            .into_iter()
+            .find(|candidate| candidate.id == interaction.id)
+            .unwrap_or_else(|| interaction.clone());
+        if current.status != PendingInteractionStatus::Pending {
+            break current;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    let mut running = member.clone();
+    running.status = MemberRunStatus::Running;
+    running.last_event_at = Some(now_string());
+    ledger.save_member_run(&running)?;
+    ledger.append_action(
+        &member.id,
+        "interaction_resolved",
+        if matches!(resolved.status, PendingInteractionStatus::Answered | PendingInteractionStatus::Approved) {
+            MemberActionStatus::Succeeded
+        } else {
+            MemberActionStatus::Cancelled
+        },
+        &resolved.title,
+        &format!("resolved as {}", serde_snake_label(&resolved.status)),
+    )?;
+
+    if method == "item/tool/requestUserInput" {
+        let question_id = params
+            .pointer("/questions/0/id")
+            .and_then(|value| value.as_str())
+            .unwrap_or("answer");
+        let answer = resolved
+            .response_text
+            .clone()
+            .or_else(|| {
+                resolved.response_option_id.as_deref().and_then(|selected| {
+                    interaction
+                        .options
+                        .iter()
+                        .find(|option| option.id == selected)
+                        .map(|option| option.label.clone())
+                })
+            })
+            .unwrap_or_default();
+        return Ok(serde_json::json!({
+            "answers": {question_id: {"answers": [answer]}}
+        }));
+    }
+    if method == "item/permissions/requestApproval" {
+        return Ok(serde_json::json!({
+            "permissions": if resolved.status == PendingInteractionStatus::Approved {
+                params.get("permissions").cloned().unwrap_or_else(|| serde_json::json!({}))
+            } else {
+                serde_json::json!({})
+            },
+            "scope": "turn"
+        }));
+    }
+    Ok(serde_json::json!({
+        "decision": if resolved.status == PendingInteractionStatus::Approved {
+            "accept"
+        } else {
+            "decline"
+        }
+    }))
+}
+
+fn handle_kimi_provider_request(
+    ledger: &TeamRunLedger,
+    member: &MemberRun,
+    frame: &serde_json::Value,
+) -> CliResult<serde_json::Value> {
+    let params = frame.get("params").unwrap_or(frame);
+    let options = params
+        .get("options")
+        .and_then(|value| value.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|option| {
+            Some(PendingInteractionOption {
+                id: option.get("optionId")?.as_str()?.to_string(),
+                label: option
+                    .get("name")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("Option")
+                    .to_string(),
+                intent: option
+                    .get("kind")
+                    .and_then(|value| value.as_str())
+                    .map(str::to_string),
+            })
+        })
+        .collect::<Vec<_>>();
+    let title = params
+        .pointer("/toolCall/title")
+        .and_then(|value| value.as_str())
+        .unwrap_or("Provider interaction")
+        .to_string();
+    let question =
+        title == "AskUserQuestion" || options.iter().any(|option| option.id.starts_with("q0_"));
+    let plan_review = options.iter().any(|option| option.id.starts_with("plan_"));
+    let kind = if question {
+        PendingInteractionKind::Question
+    } else if plan_review {
+        PendingInteractionKind::PlanReview
+    } else if !options.is_empty() {
+        PendingInteractionKind::ToolApproval
+    } else {
+        PendingInteractionKind::Unknown
+    };
+    let route = match kind {
+        PendingInteractionKind::Question | PendingInteractionKind::PlanReview => {
+            PendingInteractionRoute::Lead
+        }
+        PendingInteractionKind::ToolApproval => PendingInteractionRoute::Policy,
+        PendingInteractionKind::Unknown => PendingInteractionRoute::Human,
+    };
+    let provider_request_id = frame
+        .get("id")
+        .map(|value| {
+            value
+                .as_str()
+                .map(str::to_string)
+                .unwrap_or_else(|| value.to_string())
+        })
+        .unwrap_or_else(|| generated_id("provider-request"));
+    let prompt = kimi_interaction_prompt(frame);
+    let interaction = PendingInteraction {
+        id: generated_id("interaction"),
+        team_run_id: ledger.run_id.clone(),
+        member_run_id: member.id.clone(),
+        provider: member.provider.clone(),
+        provider_request_id,
+        method: "session/request_permission".to_string(),
+        kind,
+        route,
+        status: PendingInteractionStatus::Pending,
+        title: title.clone(),
+        prompt: if prompt.trim().is_empty() {
+            format!("{title} requires a decision")
+        } else {
+            prompt
+        },
+        options,
+        tool_call_id: params
+            .pointer("/toolCall/toolCallId")
+            .and_then(|value| value.as_str())
+            .map(str::to_string),
+        response_option_id: None,
+        response_text: None,
+        created_at: now_string(),
+        resolved_at: None,
+        resolved_by: None,
+    };
+    ledger.save_pending_interaction(&interaction)?;
+    ledger.fold_event(
+        TeamRunEventSourceKind::Member,
+        Some(member.id.clone()),
+        "pending_interaction",
+        &interaction.id,
+        "created",
+        &format!("{} waiting for {:?}", interaction.title, interaction.route),
+    )?;
+    ledger.append_action(
+        &member.id,
+        if kind == PendingInteractionKind::Question {
+            "waiting_for_input"
+        } else {
+            "waiting_for_approval"
+        },
+        MemberActionStatus::Started,
+        &interaction.title,
+        &interaction.prompt,
+    )?;
+    let mut waiting = member.clone();
+    waiting.status = MemberRunStatus::Waiting;
+    waiting.last_event_at = Some(now_string());
+    ledger.save_member_run(&waiting)?;
+
+    loop {
+        let current = latest_pending_interactions_in_append_order(&ledger.store)?
+            .into_iter()
+            .find(|candidate| candidate.id == interaction.id)
+            .unwrap_or_else(|| interaction.clone());
+        if current.status != PendingInteractionStatus::Pending {
+            let action_status = match current.status {
+                PendingInteractionStatus::Answered | PendingInteractionStatus::Approved => {
+                    MemberActionStatus::Succeeded
+                }
+                PendingInteractionStatus::Denied
+                | PendingInteractionStatus::Dismissed
+                | PendingInteractionStatus::Unsupported
+                | PendingInteractionStatus::Cancelled => MemberActionStatus::Cancelled,
+                PendingInteractionStatus::Pending => MemberActionStatus::Progress,
+            };
+            ledger.append_action(
+                &member.id,
+                "interaction_resolved",
+                action_status,
+                &current.title,
+                &format!(
+                    "interaction {} by {}",
+                    serde_snake_label(&current.status),
+                    current.resolved_by.as_deref().unwrap_or("unknown")
+                ),
+            )?;
+            if latest_team_run(&ledger.store, &ledger.run_id)?.status == TeamRunStatus::Running {
+                let mut resumed = waiting.clone();
+                resumed.status = MemberRunStatus::Running;
+                resumed.last_event_at = Some(now_string());
+                ledger.save_member_run(&resumed)?;
+            }
+            return Ok(match current.response_option_id {
+                Some(option_id) => serde_json::json!({
+                    "outcome": {"outcome": "selected", "optionId": option_id}
+                }),
+                None => serde_json::json!({"outcome": {"outcome": "cancelled"}}),
+            });
+        }
+        if latest_team_run(&ledger.store, &ledger.run_id)?.status == TeamRunStatus::Cancelled {
+            let mut cancelled = current;
+            cancelled.status = PendingInteractionStatus::Cancelled;
+            cancelled.resolved_at = Some(now_string());
+            cancelled.resolved_by = Some("host".to_string());
+            ledger.save_pending_interaction(&cancelled)?;
+            return Ok(serde_json::json!({"outcome": {"outcome": "cancelled"}}));
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
 /// Maps `session/update` frames of one prompt round onto the member ledger.
 /// Reasoning streams (`agent_thought_chunk`) are intentionally ignored here:
 /// no MemberAction or other durable record may contain thinking. A future
@@ -3974,24 +5240,60 @@ impl<'a> MemberUpdateMapper<'a> {
             // completes when its status is terminal (a mid-flight "running"
             // update journals nothing new); any other *tool* frame starts.
             let journaled = if kind == "tool_call" || !kind.contains("update") {
-                self.open_tools.insert(tool_id, title.clone());
-                self.ledger.append_action(
+                self.open_tools.insert(tool_id.clone(), title.clone());
+                self.ledger.append_provider_action(
                     &self.member.id,
+                    (!tool_id.is_empty()).then_some(tool_id),
                     "tool_started",
                     MemberActionStatus::Started,
+                    Some(
+                        if status.is_empty() {
+                            "in_progress"
+                        } else {
+                            status
+                        }
+                        .to_string(),
+                    ),
+                    Some("in_progress".to_string()),
                     &title,
                     &format!("tool started: {title}"),
                 )
             } else if terminal {
                 let title = self.open_tools.remove(&tool_id).unwrap_or(title);
-                self.ledger.append_action(
-                    &self.member.id,
-                    "tool_completed",
+                let interaction_status =
+                    latest_pending_interactions_in_append_order(&self.ledger.store)
+                        .ok()
+                        .and_then(|interactions| {
+                            interactions.into_iter().rev().find(|interaction| {
+                                interaction.member_run_id == self.member.id
+                                    && interaction.tool_call_id.as_deref() == Some(tool_id.as_str())
+                            })
+                        })
+                        .map(|interaction| serde_snake_label(&interaction.status));
+                let semantic_status = interaction_status.unwrap_or_else(|| {
                     if status == "completed" {
-                        MemberActionStatus::Succeeded
+                        "succeeded".to_string()
                     } else {
-                        MemberActionStatus::Failed
-                    },
+                        status.to_string()
+                    }
+                });
+                let action_status = if matches!(
+                    semantic_status.as_str(),
+                    "denied" | "dismissed" | "cancelled"
+                ) {
+                    MemberActionStatus::Cancelled
+                } else if status == "completed" {
+                    MemberActionStatus::Succeeded
+                } else {
+                    MemberActionStatus::Failed
+                };
+                self.ledger.append_provider_action(
+                    &self.member.id,
+                    (!tool_id.is_empty()).then_some(tool_id),
+                    "tool_completed",
+                    action_status,
+                    Some(status.to_string()),
+                    Some(semantic_status),
                     &title,
                     &format!("tool {status}: {title}"),
                 )
@@ -4371,6 +5673,15 @@ fn handle_sse_stream(
                     sse::SseEventFrame::MemberAction(action) => {
                         if let Ok(json) = serde_json::to_value(&action) {
                             if sse::write_sse_frame(&mut stream, "member_action", &json).is_err() {
+                                break;
+                            }
+                        }
+                    }
+                    sse::SseEventFrame::PendingInteraction(interaction) => {
+                        if let Ok(json) = serde_json::to_value(&interaction) {
+                            if sse::write_sse_frame(&mut stream, "pending_interaction", &json)
+                                .is_err()
+                            {
                                 break;
                             }
                         }
@@ -5380,6 +6691,15 @@ fn handle_http_action(
         if let [team_run_id, "messages", message_id, "ack"] = parts.as_slice() {
             return acknowledge_team_message_value(store, team_run_id, message_id, body);
         }
+        if let [team_run_id, "interactions", interaction_id, "resolve"] = parts.as_slice() {
+            return resolve_pending_interaction_value(store, team_run_id, interaction_id, body);
+        }
+        if let [team_run_id, "members", member_run_id, "steer"] = parts.as_slice() {
+            return steer_team_member_value(store, team_run_id, member_run_id, body);
+        }
+        if let [team_run_id, "members", member_run_id, "interrupt"] = parts.as_slice() {
+            return interrupt_team_member_value(store, team_run_id, member_run_id, body);
+        }
     }
     if let Some(team_run_id) = path
         .strip_prefix("/v1/team-runs/")
@@ -5467,6 +6787,199 @@ fn handle_http_action(
         )?)?);
     }
     Err(CliError::Usage(format!("unknown action path: {path}")))
+}
+
+fn steer_team_member_value(
+    store: &HarnessStore,
+    team_run_id: &str,
+    member_run_id: &str,
+    body: &serde_json::Value,
+) -> CliResult<serde_json::Value> {
+    let content = required_json_string(body, "content")?;
+    let requested_by = optional_json_string(body, "requested_by")?
+        .unwrap_or_else(|| "operator".to_string());
+    let result = dispatch_live_member_control(
+        team_run_id,
+        member_run_id,
+        |reply| MemberControlCommand::Steer {
+            content: content.clone(),
+            requested_by: requested_by.clone(),
+            reply,
+        },
+        true,
+    )?;
+    let mut message = send_team_message(
+        store,
+        team_run_id,
+        "host",
+        vec![member_run_id.to_string()],
+        TeamMessageKind::Control,
+        &content,
+        None,
+        None,
+    )?;
+    for delivery in &mut message.deliveries {
+        delivery.policy = TeamDeliveryPolicy::Inject;
+        delivery.status = TeamDeliveryStatus::Delivered;
+        delivery.updated_at = now_string();
+    }
+    store.append_team_message(&message)?;
+    Ok(serde_json::json!({"control": result, "message": message}))
+}
+
+fn interrupt_team_member_value(
+    store: &HarnessStore,
+    team_run_id: &str,
+    member_run_id: &str,
+    body: &serde_json::Value,
+) -> CliResult<serde_json::Value> {
+    let requested_by = optional_json_string(body, "requested_by")?
+        .unwrap_or_else(|| "operator".to_string());
+    let reason = optional_json_string(body, "reason")?
+        .unwrap_or_else(|| "operator requested interruption".to_string());
+    // Unblock any reverse provider request before waiting for the live adapter
+    // acknowledgement. Otherwise the provider thread and HTTP caller would
+    // deadlock: the adapter is paused in PendingInteraction while the caller
+    // waits for it to consume the interrupt command.
+    for interaction in latest_pending_interactions_in_append_order(store)?
+        .into_iter()
+        .filter(|interaction| {
+            interaction.team_run_id == team_run_id
+                && interaction.member_run_id == member_run_id
+                && interaction.status == PendingInteractionStatus::Pending
+        })
+    {
+        let mut cancelled = interaction;
+        cancelled.status = PendingInteractionStatus::Cancelled;
+        cancelled.resolved_at = Some(now_string());
+        cancelled.resolved_by = Some(requested_by.clone());
+        cancelled.response_text = Some(reason.clone());
+        store.append_pending_interaction(&cancelled)?;
+        append_team_run_event(
+            store,
+            team_run_id,
+            0,
+            TeamRunEventSourceKind::Host,
+            Some(member_run_id.to_string()),
+            "pending_interaction",
+            &cancelled.id,
+            "resolved",
+            "pending provider interaction cancelled by member interruption",
+        )?;
+    }
+    dispatch_live_member_control(
+        team_run_id,
+        member_run_id,
+        |reply| MemberControlCommand::Interrupt {
+            reason,
+            requested_by,
+            reply,
+        },
+        false,
+    )
+}
+
+pub(crate) fn resolve_pending_interaction_value(
+    store: &HarnessStore,
+    team_run_id: &str,
+    interaction_id: &str,
+    body: &serde_json::Value,
+) -> CliResult<serde_json::Value> {
+    let current = latest_pending_interactions_in_append_order(store)?
+        .into_iter()
+        .find(|interaction| interaction.id == interaction_id)
+        .ok_or_else(|| CliError::Usage(format!("interaction not found: {interaction_id}")))?;
+    if current.team_run_id != team_run_id {
+        return Err(CliError::Usage(format!(
+            "interaction {interaction_id} does not belong to team run {team_run_id}"
+        )));
+    }
+    if current.status != PendingInteractionStatus::Pending {
+        return Err(CliError::Usage(format!(
+            "interaction {interaction_id} is already {}",
+            serde_snake_label(&current.status)
+        )));
+    }
+    let resolved_by = required_json_string(body, "resolved_by")?;
+    let authorized = match current.route {
+        PendingInteractionRoute::Lead => matches!(resolved_by.as_str(), "host" | "lead"),
+        PendingInteractionRoute::Human => matches!(resolved_by.as_str(), "operator" | "human"),
+        PendingInteractionRoute::Policy => resolved_by == "policy",
+    };
+    if !authorized {
+        return Err(CliError::Usage(format!(
+            "interaction {} requires {} authority; resolved_by={resolved_by} is not allowed",
+            interaction_id,
+            serde_snake_label(&current.route)
+        )));
+    }
+    let option_id = json_string(body, "option_id");
+    let response_text = json_string(body, "response_text");
+    if option_id.is_none() && response_text.is_none() {
+        return Err(CliError::Usage(
+            "interaction resolution requires option_id or response_text".to_string(),
+        ));
+    }
+    let selected = option_id
+        .as_deref()
+        .map(|id| {
+            current
+                .options
+                .iter()
+                .find(|option| option.id == id)
+                .cloned()
+                .ok_or_else(|| CliError::Usage(format!("unknown interaction option: {id}")))
+        })
+        .transpose()?;
+    let status = match current.kind {
+        PendingInteractionKind::Question => {
+            if selected.as_ref().is_some_and(|option| {
+                option.intent.as_deref() == Some("reject_once") || option.id.ends_with("_skip")
+            }) {
+                PendingInteractionStatus::Dismissed
+            } else {
+                PendingInteractionStatus::Answered
+            }
+        }
+        PendingInteractionKind::ToolApproval | PendingInteractionKind::PlanReview => {
+            if selected.as_ref().is_some_and(|option| {
+                option
+                    .intent
+                    .as_deref()
+                    .is_some_and(|intent| intent.starts_with("allow"))
+                    || option.id.contains("approve")
+                    || option.id.starts_with("plan_opt_")
+            }) {
+                PendingInteractionStatus::Approved
+            } else {
+                PendingInteractionStatus::Denied
+            }
+        }
+        PendingInteractionKind::Unknown => PendingInteractionStatus::Answered,
+    };
+    let mut resolved = current;
+    resolved.status = status;
+    resolved.response_option_id = option_id;
+    resolved.response_text = response_text;
+    resolved.resolved_at = Some(now_string());
+    resolved.resolved_by = Some(resolved_by);
+    store.append_pending_interaction(&resolved)?;
+    append_team_run_event(
+        store,
+        team_run_id,
+        0,
+        TeamRunEventSourceKind::Host,
+        Some(resolved.member_run_id.clone()),
+        "pending_interaction",
+        &resolved.id,
+        "resolved",
+        &format!(
+            "{} resolved as {}",
+            resolved.title,
+            serde_snake_label(&resolved.status)
+        ),
+    )?;
+    serde_json::to_value(resolved).map_err(CliError::Json)
 }
 
 /// POST /v1/missions — create native Mission intent. Goal compatibility
@@ -5709,6 +7222,7 @@ fn create_team_run_value(
             name: required_json_string(member, "name")?,
             role: required_json_string(member, "role")?,
             provider: required_json_string(member, "provider")?,
+            execution_mode: optional_json_string(member, "execution_mode")?,
             model: optional_json_string(member, "model")?,
             owned_paths,
         });
@@ -12187,6 +13701,7 @@ fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::Value> {
     // intact for migration/audit, but never project those rows into a new
     // snapshot: thinking is not product state or evidence.
     let member_actions = visible_member_actions_in_append_order(store)?;
+    let pending_interactions = latest_pending_interactions_in_append_order(store)?;
     let delegation_runs = latest_delegation_runs_in_append_order(store)?;
     let team_run_events = recent_team_run_events_in_append_order(store, 500)?;
     let member_cards: Vec<_> = members
@@ -12264,6 +13779,7 @@ fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::Value> {
         "member_runs": member_runs,
         "team_messages": team_messages,
         "member_actions": member_actions,
+        "pending_interactions": pending_interactions,
         "delegation_runs": delegation_runs,
         "team_run_events": team_run_events,
         "company_os": company_os
@@ -12621,6 +14137,19 @@ fn latest_member_actions_in_append_order(store: &HarnessStore) -> CliResult<Vec<
         ids.retain(|id| id != &action.id);
         ids.push(action.id.clone());
         by_id.insert(action.id.clone(), action);
+    }
+    Ok(ids.into_iter().filter_map(|id| by_id.remove(&id)).collect())
+}
+
+pub(crate) fn latest_pending_interactions_in_append_order(
+    store: &HarnessStore,
+) -> CliResult<Vec<PendingInteraction>> {
+    let mut ids = Vec::new();
+    let mut by_id = BTreeMap::new();
+    for interaction in store.pending_interactions()? {
+        ids.retain(|id| id != &interaction.id);
+        ids.push(interaction.id.clone());
+        by_id.insert(interaction.id.clone(), interaction);
     }
     Ok(ids.into_iter().filter_map(|id| by_id.remove(&id)).collect())
 }
@@ -21752,8 +23281,11 @@ agent("a NEW second leaf that changes the ordinal alignment")
             team_run_id: "team-run-legacy".to_string(),
             member_run_id: "member-run-legacy".to_string(),
             task_id: None,
+            provider_call_id: None,
             action_type: "thinking".to_string(),
             status: MemberActionStatus::Succeeded,
+            provider_status: None,
+            semantic_status: None,
             title: "old reasoning".to_string(),
             summary: "must remain only in the legacy ledger".to_string(),
             evidence_refs: Vec::new(),
@@ -21884,6 +23416,27 @@ agent("a NEW second leaf that changes the ordinal alignment")
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn provider_version_drift_requires_adapter_review() {
+        let mut current = team_member_provider_profile("codex");
+        apply_provider_version(&mut current, Some("0.145.0-alpha.18".to_string()));
+        assert_eq!(
+            current.compatibility_status,
+            ProviderCompatibilityStatus::Current
+        );
+
+        let mut drifted = team_member_provider_profile("codex");
+        apply_provider_version(&mut drifted, Some("0.146.0".to_string()));
+        assert_eq!(
+            drifted.compatibility_status,
+            ProviderCompatibilityStatus::ReviewRequired
+        );
+        assert!(drifted
+            .compatibility_note
+            .as_deref()
+            .is_some_and(|note| note.contains("regenerate protocol schemas")));
+    }
 
     fn make_member(id: &str) -> AgentMember {
         AgentMember {

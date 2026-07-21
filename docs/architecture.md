@@ -77,8 +77,9 @@ The canonical execution proof is message-driven:
 ```text
 TeamMessage(kind=assignment)
   -> correlation_id
-  -> MemberAction / blocker / handoff / review_result / delegation
-  -> artifacts, checks, and explicit outcomes
+  -> Harness blocker / handoff / review / PendingInteraction
+  -> explicit outcomes and artifact/check refs
+  -> NativeSessionRef for member execution detail
 ```
 
 Assignment-message correlation replaces legacy dependency graph semantics as the primary
@@ -113,7 +114,7 @@ infrastructure contracts where possible.
 | Capability snapshot and adapter metadata | host plugins, workflow leaves, Agent Team member provisioning |
 | Permission and budget ceiling | all executor kinds |
 | Artifact references and explicit outcome summaries | all executor kinds |
-| Durable event stream and dashboard read model | Agent Team, Workflow runs, Host-observable execution |
+| Harness coordination stream + ephemeral native activity projection | Agent Team and Host-observable execution; Workflow keeps its own run/step truth |
 | Artifact references, outcome summaries, and lightweight Wave gate | all executor kinds |
 
 Shared infrastructure does not collapse distinct product objects into one. A
@@ -135,7 +136,9 @@ The target contract makes thinking transient live-only state.
 - It is never execution evidence.
 - It is never forwarded into another member's context.
 
-Persist explicit actions, artifacts, summaries, blockers, and outcomes instead.
+Persist Harness-owned coordination, artifact/check references, blockers,
+handoffs, control acknowledgements, and explicit outcomes instead. Provider
+chat/tool/command/file/turn history remains in the native session.
 
 New Kimi execution does not persist `thinking` actions, and active stores do
 not retain historical thinking rows. The Console has a

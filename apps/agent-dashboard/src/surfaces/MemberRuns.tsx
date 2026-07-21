@@ -10,6 +10,7 @@ import {
   GitBranch,
   MessageSquare,
   Send,
+  Square,
   ShieldAlert,
   ShieldCheck,
   Sparkles,
@@ -17,7 +18,13 @@ import {
   Wrench,
 } from "lucide-react";
 
-import { sendTeamMessage, type ActionDescriptor } from "@/api/actions";
+import {
+  interruptTeamMember,
+  resolvePendingInteraction,
+  sendTeamMessage,
+  steerTeamMember,
+  type ActionDescriptor,
+} from "@/api/actions";
 import { Avatar } from "@/components/workbench/Avatar";
 import { TextArea } from "@/components/workbench/OperatorForms";
 import { ActivityStream, type WorkbenchActivityItem } from "@/components/workbench/activity/ActivityStream";
@@ -81,6 +88,9 @@ export function MemberRunFocus({
     ? context.liveActivity
     : undefined;
   const assignment = context.assignments[0];
+  const pendingInteraction = context.interactions.find(
+    (interaction) => interaction.member_run_id === context.member.id && interaction.status === "pending",
+  );
   const activityItems = toActivityItems(context, livePreview?.preview);
   const shownActivity = showFullActivity
     ? activityItems
@@ -100,14 +110,18 @@ export function MemberRunFocus({
   const dispatchMessage = () => {
     const body = draft.trim();
     if (!body || !actionsEnabled || finished) return;
-    const descriptor = sendTeamMessage(context.run.id, {
-      fromMemberId: "host",
-      toMemberIds: [context.member.id],
-      kind: messageKind,
-      body,
-      correlationId: assignment?.correlationId,
-      causationId: assignment?.assignment.id,
-    });
+    const liveSteer = context.member.provider_profile?.execution_mode === "codex_app_server"
+      && context.member.status === "running";
+    const descriptor = liveSteer
+      ? steerTeamMember(context.run.id, context.member.id, body)
+      : sendTeamMessage(context.run.id, {
+        fromMemberId: "host",
+        toMemberIds: [context.member.id],
+        kind: messageKind,
+        body,
+        correlationId: assignment?.correlationId,
+        causationId: assignment?.assignment.id,
+      });
     dispatch(onAction, descriptor);
     setDraft("");
   };
@@ -145,9 +159,21 @@ export function MemberRunFocus({
             </>
           }
           actions={
-            <Button size="sm" variant="ghost" onClick={goBackToTeam}>
-              <ArrowLeft className="size-3.5" /> Back to team
-            </Button>
+            <div className="flex items-center gap-1.5">
+              {context.member.status === "running" && context.member.provider_profile?.supports_cancel && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={!actionsEnabled}
+                  onClick={() => dispatch(onAction, interruptTeamMember(context.run.id, context.member.id))}
+                >
+                  <Square className="size-3 fill-current" /> Interrupt
+                </Button>
+              )}
+              <Button size="sm" variant="ghost" onClick={goBackToTeam}>
+                <ArrowLeft className="size-3.5" /> Back to team
+              </Button>
+            </div>
           }
         />
       }
@@ -165,6 +191,9 @@ export function MemberRunFocus({
           kind={messageKind}
           disabled={!actionsEnabled || finished}
           disabledReason={finished ? "This member run is finished; its history is read-only." : ACTIONS_DISABLED_HINT}
+          deliveryHint={context.member.provider_profile?.execution_mode === "codex_app_server" && context.member.status === "running"
+            ? "Steers the active Codex turn."
+            : "Queues the message for the member's next provider round."}
           onChange={setDraft}
           onKindChange={setMessageKind}
           onSend={dispatchMessage}
@@ -172,6 +201,41 @@ export function MemberRunFocus({
       }
     >
       <div className="mx-auto flex w-full max-w-[1040px] flex-col px-4 py-2 sm:px-5">
+        {pendingInteraction && (
+          <section className="mb-2 rounded-xl border border-status-warn/30 bg-status-warn/[0.055] px-3.5 py-3 shadow-[0_12px_30px_-26px_rgba(217,119,6,0.7)]">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center gap-2">
+                  <ShieldAlert className="size-4 text-status-warn" />
+                  <p className="text-[12px] font-semibold text-foreground">{pendingInteraction.title}</p>
+                  <Badge tone="warn">{pendingInteraction.route} decision</Badge>
+                </div>
+                <p className="mt-1.5 text-[12px] leading-relaxed text-muted-foreground">{pendingInteraction.prompt}</p>
+              </div>
+              <div className="flex max-w-sm flex-wrap justify-end gap-1.5">
+                {pendingInteraction.options.map((option) => (
+                  <Button
+                    key={option.id}
+                    size="sm"
+                    variant={option.intent?.startsWith("reject") ? "secondary" : "default"}
+                    disabled={!actionsEnabled || pendingInteraction.route === "policy"}
+                    onClick={() => dispatch(onAction, resolvePendingInteraction(
+                      context.run.id,
+                      pendingInteraction.id,
+                      option.id,
+                      pendingInteraction.route === "human" ? "operator" : "host",
+                    ))}
+                  >
+                    {option.label}
+                  </Button>
+                ))}
+                {pendingInteraction.route === "policy" && (
+                  <span className="self-center text-[10px] text-muted-foreground">Awaiting governed policy decision</span>
+                )}
+              </div>
+            </div>
+          </section>
+        )}
         {assignment && (
           <div className="mb-2 rounded-lg border border-border/80 bg-background px-3 py-2.5 shadow-[0_8px_24px_-24px_rgba(15,23,42,0.55)]">
             <div className="flex min-w-0 items-center gap-2">
@@ -400,6 +464,13 @@ function MemberContextRail({
       <ContextModule title="Runtime" icon={<Wrench className="size-3.5" />} tone={memberStatusTone(context.member.status)} collapsible defaultOpen={false}>
         <div className="space-y-1.5 text-[12px]">
           <RailKeyValue label="Provider" value={context.member.provider ?? "Not recorded"} />
+          <RailKeyValue label="Execution mode" value={context.member.provider_profile?.execution_mode ?? "Not recorded"} />
+          <RailKeyValue label="Provider version" value={context.member.provider_profile?.provider_version ?? "Not reported"} />
+          <RailKeyValue label="Adapter contract" value={context.member.provider_profile?.adapter_contract_version ?? "Not recorded"} />
+          <RailKeyValue label="Compatibility" value={context.member.provider_profile?.compatibility_status ?? "unknown"} />
+          <RailKeyValue label="Adapter reviewed" value={context.member.provider_profile?.adapter_reviewed_at ?? "Not recorded"} />
+          <RailKeyValue label="Interaction" value={context.member.provider_profile?.interaction_mode ?? "Unsupported or unknown"} />
+          <RailKeyValue label="Tool events" value={context.member.provider_profile?.tool_event_fidelity ?? "Not reported"} />
           <RailKeyValue label="Model" value={context.member.model ?? "Not recorded"} />
           <RailKeyValue label="Session" value={context.member.provider_session_id ?? context.member.acp_session_id ?? "Unavailable"} mono />
           <RailKeyValue label="Session status" value={sessionStatus ?? "Not reported"} />
@@ -431,6 +502,7 @@ function MemberComposer({
   kind,
   disabled,
   disabledReason,
+  deliveryHint,
   onChange,
   onKindChange,
   onSend,
@@ -439,6 +511,7 @@ function MemberComposer({
   kind: string;
   disabled: boolean;
   disabledReason: string;
+  deliveryHint: string;
   onChange: (value: string) => void;
   onKindChange: (value: string) => void;
   onSend: () => void;
@@ -467,7 +540,7 @@ function MemberComposer({
             }
           }}
         />
-        <p className="mt-1 text-[10px] text-muted-foreground">{disabled ? disabledReason : "Clarify, request review, or hand off work. ⌘/Ctrl + Enter to send."}</p>
+        <p className="mt-1 text-[10px] text-muted-foreground">{disabled ? disabledReason : `${deliveryHint} ⌘/Ctrl + Enter to send.`}</p>
       </div>
       <select
         aria-label="Message type"
@@ -571,12 +644,15 @@ function toActivityItem(item: StableTeamActivity, context: MemberRunContext): Wo
   }
   if (item.kind === "action") {
     const action = item.action;
+    const statusLine = action.provider_status || action.semantic_status
+      ? `provider ${action.provider_status ?? "unknown"} · semantic ${action.semantic_status ?? "not classified"}`
+      : undefined;
     return {
       id: item.id,
       kind: (action.evidence_refs?.length ?? 0) > 0 ? "evidence" : "action",
       glyph: (action.evidence_refs?.length ?? 0) > 0 ? "artifact" : "runtime",
       title: action.title ?? action.action_type ?? "Member action",
-      body: action.summary,
+      body: statusLine ? <><span>{action.summary}</span><span className="mt-1 block text-[10px] text-muted-foreground">{statusLine}</span></> : action.summary,
       actor: context.member.name ?? context.member.id,
       timestamp: formatTime(item.at),
       tone: actionTone(action.status),

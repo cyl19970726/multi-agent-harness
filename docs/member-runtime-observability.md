@@ -8,9 +8,16 @@ under [integration/](integration/).
 
 It sits between the runtime object model in [agent-runtime.md](agent-runtime.md)
 and the control-plane doctrine in [agent-control-plane.md](company-os/execution-foundation.md).
-It does not redefine `AgentMember`, `AgentRuntime`, `ProviderSession`,
-`AgentEvent`, or `Message`; it defines how a viewer reconstructs a member's live
-state from those objects.
+It does not redefine `AgentMember`, `AgentRuntime`, native session bindings, or
+`Message`; it defines how a viewer joins Harness coordination with live/native
+provider state.
+
+> Migration notice: sections describing `AgentEvent`, `ProviderSession`, and
+> `provider_turn_events.jsonl` as a complete durable activity history document
+> the current implementation. ADR 0032 supersedes that storage boundary. The
+> target keeps provider activity in the provider-native session and uses these
+> mechanisms only for Harness-owned lifecycle/control facts and ephemeral
+> delivery.
 
 ## Purpose And Scope
 
@@ -25,11 +32,12 @@ Two doctrines bound this contract:
   reach a terminal turn, or deliver a message. The Dashboard must not present
   process health as execution readiness when protocol or delivery health is
   unknown (see [agent-control-plane.md](company-os/execution-foundation.md), "Lifecycle").
-- **The store is canonical; the provider transcript is evidence.** Real-time
-  signals describe the canonical harness store. Provider stdout, hooks, and
-  sessions are evidence inputs reduced into that store, never the source of
-  truth (ADR [0011](decisions/0011-provider-neutral-runtime.md) and
-  [0008](decisions/0008-persistent-codex-agent-runtime.md)).
+- **Truth is layered.** Harness store is canonical for assignment,
+  interaction routing, responsibility, explicit outcome, artifacts/check refs,
+  and gates. The provider-native session is canonical for that agent's chat,
+  tools, commands, file events, turns, and resume. The Dashboard joins them
+  through a provider adapter; neither layer is copied into the other (ADR
+  [0032](decisions/0032-provider-native-session-is-execution-truth.md)).
 
 Out of scope: the runtime object semantics ([agent-runtime.md](agent-runtime.md)),
 the delivery queue policy ([agent-control-plane.md](company-os/execution-foundation.md)),
@@ -43,18 +51,17 @@ is sufficient; each covers a failure mode the others miss.
 
 | Signal | Direction | Granularity | Trust | Failure mode it covers |
 | --- | --- | --- | --- | --- |
-| AgentEvent stream | hook / parser **PUSH** | fine, fast (sub-second) | best-effort, **can drop** | "what is the member doing right now" |
+| Native activity projection | provider notification/native reader **PUSH/PULL** | fine, fast | best-effort display; provider session remains truth | "what is the member doing right now" |
 | `runtime_health` probe | **PULL** (on demand) | coarse, slow | trustworthy fallback | "is the member actually executable" |
 | ProviderSession lifecycle | reduced from events | one in-flight turn | terminal-backed | "is there a live turn, and did it finish" |
 
 ### (a) AgentEvent stream — fine, fast, can drop
 
-`AgentEvent` rows are pushed as the provider acts: prompt submit, tool calls,
-generation start/complete, turn start/complete, child-thread spawn. They are the
-lowest-latency view of activity and feed the Member conversation + action
-stream. They are **best-effort**: a hook can be missed, a parser can fail to
-classify a line, a connection can drop. A gap in the event stream is not proof
-the member stopped — it is the reason the other two signals exist.
+Provider notifications/native reads are normalized in memory as the provider
+acts. They are the lowest-latency view of activity and feed the Member stream.
+They are **best-effort UI delivery**: a notification can drop, but reconnect can
+re-read the native session when supported. Harness does not repair a gap by
+persisting a parallel provider event ledger.
 
 ### (b) `runtime_health` probe — coarse, slow, trustworthy fallback
 
@@ -236,8 +243,9 @@ provider activity
 
 ## Invariants And Limits
 
-1. **The store stays canonical.** SSE is **advisory delivery**. If a frame is
-   missed, the truth is still the jsonl store; `/v1/snapshot` reconstructs it.
+1. **Each source stays canonical for its layer.** SSE is advisory delivery.
+   `/v1/snapshot` reconstructs Harness coordination; the provider adapter
+   reconstructs native activity from `NativeSessionRef` when available.
 2. **Near-real-time, not hard-real-time.** The ~150ms watcher poll and
    sub-second delivery window are intentional. Do not build logic that assumes
    millisecond delivery or guaranteed ordering across the watched jsonl files.
@@ -259,9 +267,9 @@ provider activity
    degrade process/endpoint to "session exists / API reachable." A layer a
    provider cannot satisfy is `unknown` (amber) or not-applicable, never a
    green claim.
-5. **Events can drop; health and session cannot lie.** Treat an event gap as
-   missing information and fall back to the probe and the ProviderSession
-   terminal state, never as a definitive "stopped."
+5. **Events can drop; source availability must be explicit.** Treat an event
+   gap as missing information and fall back to runtime probe and provider-native
+   session state, never as a definitive "stopped."
 
 ## Cross-Links
 
@@ -269,8 +277,9 @@ provider activity
   endpoint spec.
 - [agent-control-plane.md](company-os/execution-foundation.md) — lifecycle health layers and
   the process-alive-is-not-execution-ready doctrine.
-- [concept-model.md](concept-model.md) — source-of-truth rules; provider
-  transcript is evidence.
+- [concept-model.md](concept-model.md) — layered source-of-truth rules.
+- [ADR 0032](decisions/0032-provider-native-session-is-execution-truth.md) —
+  native session storage, projection, and resume boundary.
 - [integration/codex.md](integration/codex.md) — Codex hook push and four-layer
   health.
 - [integration/claude.md](integration/claude.md) — Claude CLI-output parsing and

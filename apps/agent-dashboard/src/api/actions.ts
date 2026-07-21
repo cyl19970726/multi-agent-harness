@@ -228,6 +228,7 @@ export interface TeamRunMemberSpec {
   role: string;
   provider: string;
   model?: string;
+  executionMode?: "codex_exec" | "codex_app_server" | "kimi_acp";
   /** Paths the member may modify; empty/omitted means read-only. */
   ownedPaths?: string[];
 }
@@ -257,6 +258,9 @@ export function createTeamRun(params: {
       };
       if (member.model) {
         spec.model = member.model;
+      }
+      if (member.executionMode) {
+        spec.execution_mode = member.executionMode;
       }
       if (member.ownedPaths && member.ownedPaths.length) {
         spec.owned_paths = member.ownedPaths;
@@ -396,6 +400,48 @@ export function acknowledgeTeamMessage(
     method: "POST",
     path: `/v1/team-runs/${encodeId(teamRunId)}/messages/${encodeId(messageId)}/ack`,
     body: { member_id: memberId },
+  };
+}
+
+/** Resolve a provider-originated question, approval, or plan review and resume
+ * the same provider turn when its execution mode supports that contract. */
+export function resolvePendingInteraction(
+  teamRunId: string,
+  interactionId: string,
+  optionId: string,
+  resolvedBy: "host" | "lead" | "operator" | "human" | "policy" = "host",
+): ActionDescriptor {
+  return {
+    method: "POST",
+    path: `/v1/team-runs/${encodeId(teamRunId)}/interactions/${encodeId(interactionId)}/resolve`,
+    body: { option_id: optionId, resolved_by: resolvedBy },
+  };
+}
+
+/** Inject input into the currently active provider turn. This is only valid
+ * when the MemberRun's mode advertises live steer (currently codex_app_server). */
+export function steerTeamMember(
+  teamRunId: string,
+  memberRunId: string,
+  content: string,
+): ActionDescriptor {
+  return {
+    method: "POST",
+    path: `/v1/team-runs/${encodeId(teamRunId)}/members/${encodeId(memberRunId)}/steer`,
+    body: { content, requested_by: "operator" },
+  };
+}
+
+/** Cooperatively interrupt the active provider turn. */
+export function interruptTeamMember(
+  teamRunId: string,
+  memberRunId: string,
+  reason = "Operator requested interruption",
+): ActionDescriptor {
+  return {
+    method: "POST",
+    path: `/v1/team-runs/${encodeId(teamRunId)}/members/${encodeId(memberRunId)}/interrupt`,
+    body: { reason, requested_by: "operator" },
   };
 }
 

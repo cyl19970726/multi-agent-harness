@@ -64,7 +64,8 @@ interface MissionsProps {
 interface MemberDraft {
   name: string;
   role: string;
-  provider: "kimi";
+  provider: "codex" | "kimi";
+  executionMode: "codex_exec" | "codex_app_server" | "kimi_acp";
   model: string;
   ownedPaths: string;
 }
@@ -138,7 +139,14 @@ function runsForWave(model: WorkbenchModel, wave: Wave): TeamRun[] {
 }
 
 function blankMember(): MemberDraft {
-  return { name: "", role: "", provider: "kimi", model: "", ownedPaths: "" };
+  return {
+    name: "",
+    role: "",
+    provider: "codex",
+    executionMode: "codex_app_server",
+    model: "",
+    ownedPaths: "",
+  };
 }
 
 function exitCriteriaFor(wave: Wave): string[] {
@@ -1029,6 +1037,7 @@ function AttemptDialog({
           name: member.name.trim(),
           role: member.role.trim(),
           provider: member.provider,
+          executionMode: member.executionMode,
           model: member.model.trim() || undefined,
           ownedPaths: parseList(member.ownedPaths),
         })),
@@ -1091,12 +1100,50 @@ function AttemptDialog({
                   />
                 )}
               </Field>
-              <Field label="Provider" required hint="Kimi is currently the executable provider.">
+              <Field label="Provider" required hint="Choose the provider; control capability is execution-mode specific.">
                 {(id) => (
-                  <Select id={id} value={member.provider} onChange={() => undefined}>
+                  <Select
+                    id={id}
+                    value={member.provider}
+                    onChange={(event) => {
+                      const provider = event.target.value as MemberDraft["provider"];
+                      updateMember(index, {
+                        provider,
+                        executionMode: provider === "codex" ? "codex_app_server" : "kimi_acp",
+                        model: provider === "kimi" ? "k2.5" : "",
+                      });
+                    }}
+                  >
+                    <option value="codex">Codex</option>
                     <option value="kimi">Kimi</option>
-                    <option disabled>Codex (coming later)</option>
                     <option disabled>Claude (coming later)</option>
+                  </Select>
+                )}
+              </Field>
+              <Field
+                label="Execution mode"
+                hint={member.executionMode === "codex_app_server"
+                  ? "Interactive: same-turn steer and cooperative interrupt."
+                  : member.executionMode === "codex_exec"
+                    ? "Batch: messages queue for the next round."
+                    : "ACP: provider questions resume in-turn; chat queues to the next round."}
+              >
+                {(id) => (
+                  <Select
+                    id={id}
+                    value={member.executionMode}
+                    onChange={(event) => updateMember(index, {
+                      executionMode: event.target.value as MemberDraft["executionMode"],
+                    })}
+                  >
+                    {member.provider === "codex" ? (
+                      <>
+                        <option value="codex_app_server">Interactive app-server</option>
+                        <option value="codex_exec">Batch exec</option>
+                      </>
+                    ) : (
+                      <option value="kimi_acp">Kimi ACP</option>
+                    )}
                   </Select>
                 )}
               </Field>

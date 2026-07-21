@@ -53,10 +53,30 @@ async function main() {
     actions.startTeamRun("run/a").path === "/v1/team-runs/run%2Fa/start",
     "Start action targets the selected TeamRun",
   );
+  const resolve = actions.resolvePendingInteraction("run/a", "interaction/b", "q0_opt_0", "lead");
+  check(
+    resolve.path === "/v1/team-runs/run%2Fa/interactions/interaction%2Fb/resolve"
+      && resolve.body.option_id === "q0_opt_0"
+      && resolve.body.resolved_by === "lead",
+    "Provider interaction resolution preserves the exact option and actor",
+  );
+  const steer = actions.steerTeamMember("run/a", "member/b", "focus on the gate");
+  check(
+    steer.path === "/v1/team-runs/run%2Fa/members/member%2Fb/steer"
+      && steer.body.content === "focus on the gate",
+    "Live steer targets one MemberRun and carries explicit input",
+  );
+  const interrupt = actions.interruptTeamMember("run/a", "member/b", "stop now");
+  check(
+    interrupt.path === "/v1/team-runs/run%2Fa/members/member%2Fb/interrupt"
+      && interrupt.body.reason === "stop now",
+    "Provider interruption targets one MemberRun with an auditable reason",
+  );
 
-  const [teamSource, missionSource] = await Promise.all([
+  const [teamSource, missionSource, memberSource] = await Promise.all([
     readFile(join(dashboardRoot, "src/surfaces/TeamWarRoom.tsx"), "utf8"),
     readFile(join(dashboardRoot, "src/surfaces/Missions.tsx"), "utf8"),
+    readFile(join(dashboardRoot, "src/surfaces/MemberRuns.tsx"), "utf8"),
   ]);
   check(
     teamSource.includes('delivery.member_id === "host" && delivery.status === "delivered"')
@@ -68,10 +88,24 @@ async function main() {
     "TeamRun start has an explicit pending state",
   );
   check(
+    teamSource.includes("pendingInteractions")
+      && teamSource.includes("resolvePendingInteraction(")
+      && teamSource.includes('interaction.route === "human" ? "operator" : "host"')
+      && teamSource.includes("Awaiting governed policy decision"),
+    "Team Activity renders provider questions and approvals as actionable pressure",
+  );
+  check(
     missionSource.includes("readyToClose")
       && missionSource.includes("MissionCloseDialog")
       && missionSource.includes('const requiresRun = wave.executor_kind !== "host"'),
     "Mission closeout and executor-aware Wave Gate controls are rendered",
+  );
+  check(
+    memberSource.includes('execution_mode === "codex_app_server"')
+      && memberSource.includes("steerTeamMember(")
+      && memberSource.includes("interruptTeamMember(")
+      && memberSource.includes("supports_cancel"),
+    "Member Focus distinguishes same-turn steer from queued chat and gates Interrupt by capability",
   );
 
   console.log(`\n   operator control checks: ${passed} pass, ${failed} fail`);

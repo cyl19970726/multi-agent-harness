@@ -13,6 +13,29 @@
     "role": { "type": "string", "minLength": 1 },
     "provider": { "type": "string", "minLength": 1 },
     "model": { "type": ["string", "null"], "minLength": 1 },
+    "provider_profile": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["provider", "execution_mode", "interaction_mode", "tool_event_fidelity", "artifact_event_fidelity", "supports_cancel", "supports_resume", "observes_native_subagents", "observes_background_tasks", "thinking_transient_only"],
+      "properties": {
+        "provider": { "type": "string", "minLength": 1 },
+        "execution_mode": { "type": "string", "minLength": 1 },
+        "provider_version": { "type": ["string", "null"], "minLength": 1 },
+        "adapter_contract_version": { "type": ["string", "null"], "minLength": 1 },
+        "reviewed_provider_versions": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "compatibility_status": { "type": "string", "enum": ["current", "review_required", "incompatible", "unavailable", "unknown"] },
+        "adapter_reviewed_at": { "type": ["string", "null"], "minLength": 1 },
+        "compatibility_note": { "type": ["string", "null"], "minLength": 1 },
+        "interaction_mode": { "type": "string", "enum": ["pause_and_resume", "end_round_and_follow_up", "unsupported"] },
+        "tool_event_fidelity": { "type": "string", "enum": ["none", "summary", "structured"] },
+        "artifact_event_fidelity": { "type": "string", "enum": ["none", "summary", "structured"] },
+        "supports_cancel": { "type": "boolean" },
+        "supports_resume": { "type": "boolean" },
+        "observes_native_subagents": { "type": "boolean" },
+        "observes_background_tasks": { "type": "boolean" },
+        "thinking_transient_only": { "type": "boolean" }
+      }
+    },
     "status": {
       "type": "string",
       "enum": ["starting", "idle", "queued", "running", "waiting", "reviewing", "blocked", "completed", "failed", "stopped"]

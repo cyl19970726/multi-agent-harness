@@ -8,6 +8,9 @@ Superseded in part by ADR
 [0026](0026-mission-wave-architecture.md) for top-level product hierarchy,
 Mission/Wave terminology, and thinking policy. This ADR remains canonical for
 the v0 Agent Team object set, delegation guardrails, and host/tooling split.
+ADR [0032](0032-provider-native-session-is-execution-truth.md) supersedes its
+durable provider-activity mirroring: provider transcript/tool/command/file
+events stay in the native session, while Harness keeps coordination facts.
 
 ## Context
 
@@ -96,9 +99,9 @@ Rules:
   gate identifies the accepted attempt.
 - `MemberRun` is an execution instance, not a standing durable employee record.
 - `TeamMessage` separates message semantics from per-recipient delivery state.
-- `MemberAction` stores explicit work facts. It does not store private
-  reasoning.
-- `TeamRunEvent` is a single ordered durable event log with sanitized payloads.
+- `MemberAction` and `TeamRunEvent` are transitional for provider-derived work
+  events. Their target scope is Harness-owned coordination, control requests /
+  acknowledgements, and lifecycle facts; they do not mirror provider activity.
 - A native attempt links both `mission_id` and `wave_id`. Optional identifiers
   remain at the Store/API boundary only for reading imported records; unlinked
   runs are excluded from active Agent Team product navigation and authoring.
@@ -113,8 +116,9 @@ an exposed legacy dependency graph:
 ```text
 TeamMessage(kind=assignment)
   -> correlation_id
-  -> MemberAction / blocker / handoff / review_result / delegation
-  -> artifacts, checks, summaries, explicit outcome
+  -> Harness blocker / handoff / review / PendingInteraction
+  -> explicit outcome + artifacts/check refs
+  -> NativeSessionRef for member execution detail
 ```
 
 This is the target proof chain for lane ownership inside the run.
@@ -168,7 +172,9 @@ object model.
   evidence.
 - It is never replayed or forwarded to other members.
 
-Persist explicit actions, artifacts, summaries, blockers, and outcomes instead.
+Persist Harness-owned control and coordination facts, artifact/check
+references, blockers, handoffs, and explicit outcomes instead. Provider-native
+activity remains readable through the member's native session binding.
 
 New Kimi adapter writes do not append provider reasoning as durable
 `MemberAction(type=thinking)` rows. Active stores are cleaned rather than
@@ -176,13 +182,10 @@ retaining those rows as a compatibility contract. The Console receives a sanitiz
 only through project-scoped SSE: it carries an expiry, is never tailed from a
 ledger, never appears in a snapshot, and is not replayed after reconnect.
 
-The Codex Team Member adapter follows the same boundary through a dedicated
-`codex exec --json` path. It consumes provider events in memory, forwards only
-a sanitized reasoning preview to the volatile SSE sink, and persists the final
-agent message as the member handoff. It does not reuse the persistent delivery
-path that stores raw provider event streams. Codex Team Member turns are
-read-only in this first slice; writable isolation and diff acceptance remain a
-separate capability.
+Provider adapters may normalize native events in memory for live display, but
+must not persist a second event stream. A member handoff is durable only when
+it is explicitly promoted into a Harness `TeamMessage`/outcome; ordinary final
+assistant text remains part of the native session.
 
 Provider model names are execution constraints, not cosmetic metadata. Codex
 maps a requested member model to `codex exec -m`; Kimi maps it after

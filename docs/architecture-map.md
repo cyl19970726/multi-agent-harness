@@ -71,18 +71,19 @@ flowchart TB
 | --- | --- | --- |
 | Docs and Modules | business structure, content, record types, relations, views, templates | provider execution lifecycle |
 | Organization | Actor identity, Lead/direct-report hierarchy, role, authority, permissions, availability, capacity | one TeamRun attempt |
-| Collaboration | object-linked conversation, activity, handoff, artifacts, and promotion of execution outcomes | responsibility, approval, finance truth, or raw thinking |
+| Collaboration | assignments, cross-actor messages, interaction routing, handoff, artifacts, explicit outcomes, and provider-native session links | responsibility, approval, finance truth, copied provider transcripts, or raw thinking |
 | Work and Approval | Milestones, WorkItem responsibility, source/result provenance, policy gates, execution reference | Project hierarchy or executor-internal planning |
 | Finance and Metrics | typed values, observations, audit, business relations | copied document display values |
 | Execution | Mission/Wave, Agent Team, Workflow, direct delivery | company organization or document truth |
-| Runtime | provider processes, sessions, tools, plugins, MCP, events | business approval or assignment inference |
+| Runtime | provider processes, native sessions, native activity readers/resume, plugins, MCP, and ephemeral projections | business approval, assignment inference, or a second provider history |
 
 ## Source-of-truth rule
 
 Documents compose views of typed records. A value shared by two modules is one
-record linked by `Relation`, not duplicated document content. Execution events
-become durable company knowledge only after they are summarized into results,
-evidence, metrics, decisions, or linked record updates.
+record linked by `Relation`, not duplicated document content. Provider-native
+execution remains in its native session. Only explicit outcomes, artifact/check
+references, metrics, decisions, or linked record updates are promoted into
+Harness/Company OS truth.
 
 ## Document runtime rule
 

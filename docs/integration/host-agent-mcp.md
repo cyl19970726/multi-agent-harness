@@ -26,9 +26,9 @@ parts; they do not fork the core model.
 
 - Host: Codex can call the stdio MCP server after local registration below.
 - Coordination: Mission, ordered Wave, and AgentTeamRun are native.
-- Member execution: Kimi ACP is the only executable Team Member adapter.
-- Codex and Claude Team Member adapters are not implemented yet. Recording
-  those provider names does not make them startable; start fails honestly.
+- Member execution: Kimi ACP, Codex batch (`codex_exec`), and Codex interactive
+  (`codex_app_server`) are executable Team Member modes. Claude Team Member
+  execution remains unsupported and fails honestly.
 - `team_run_start` reserves the run and returns immediately while members run
   in the background.
 - Every create/start/status/cancel/ACK result includes an exact TeamRun URL.
@@ -66,13 +66,22 @@ business object. Product copy should say **Workspace**.
 1. Call `mission_create` for durable intent.
 2. Call `wave_create` with `executor_kind=agent_team` for the next lightweight
    outcome boundary.
-3. Call `team_run_create` with role-specific Kimi members and disjoint owned
-   paths. Keep the returned Assignment message ids and correlations.
+3. Call `team_run_create` with role-specific supported provider members and
+   disjoint owned paths. Keep the returned Assignment message ids and
+   correlations.
 4. Call `team_run_start`; immediately give the user its `dashboard_url`.
 5. Follow `team_run_status` or `team_run_events(after_seq=...)`. The browser
-   receives durable events plus transient live activity through SSE.
-6. Acknowledge delivered handoffs with `team_message_acknowledge`.
-7. Check outcomes and artifacts, then call `wave_gate` with
+   receives durable Harness coordination plus transient/on-demand activity
+   projected from provider-native sessions through SSE/API.
+6. When a provider pauses for input, inspect its `PendingInteraction` and call
+   `team_run_resolve_interaction` with the exact option id and authorized actor.
+   Do not treat provider `completed` as proof of semantic approval or answer.
+7. For a running `codex_app_server` member, use `team_run_steer_member` to
+   inject input into the same turn. Use `team_run_interrupt_member` for either
+   Codex app-server or Kimi ACP when cooperative cancellation is intended.
+   Other messages use `team_run_send_message` and are delivered next round.
+8. Acknowledge delivered handoffs with `team_message_acknowledge`.
+9. Check outcomes and artifacts, then call `wave_gate` with
    `accepted | revise | blocked`. Acceptance names the completed attempt.
 
 ## Experience Acceptance
@@ -86,6 +95,8 @@ reconstruct the result from native state:
 - start returns without blocking the Host conversation;
 - the exact URL opens the correct Workspace and selected TeamRun;
 - handoffs and ACKs appear in the event stream;
+- provider interactions preserve route, resolution actor, exact option id, and
+  distinct transport/semantic status;
 - outcome, useful artifacts/checks, and the Wave gate explain acceptance;
 - no durable thinking rows are created.
 

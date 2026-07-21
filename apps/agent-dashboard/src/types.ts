@@ -407,6 +407,7 @@ export interface MemberRun {
   role?: string | null;
   provider?: "codex" | "claude" | "kimi" | string;
   model?: string | null;
+  provider_profile?: ProviderIntegrationProfile | null;
   status?: MemberRunStatus | string;
   provider_session_id?: string | null;
   acp_session_id?: string | null;
@@ -415,6 +416,25 @@ export interface MemberRun {
   started_at?: string;
   last_event_at?: string | null;
   finished_at?: string | null;
+}
+
+export interface ProviderIntegrationProfile {
+  provider: string;
+  execution_mode: string;
+  provider_version?: string | null;
+  adapter_contract_version?: string | null;
+  reviewed_provider_versions?: string[];
+  compatibility_status?: "current" | "review_required" | "incompatible" | "unavailable" | "unknown" | string;
+  adapter_reviewed_at?: string | null;
+  compatibility_note?: string | null;
+  interaction_mode: "pause_and_resume" | "end_round_and_follow_up" | "unsupported" | string;
+  tool_event_fidelity: "none" | "summary" | "structured" | string;
+  artifact_event_fidelity: "none" | "summary" | "structured" | string;
+  supports_cancel: boolean;
+  supports_resume: boolean;
+  observes_native_subagents: boolean;
+  observes_background_tasks: boolean;
+  thinking_transient_only: boolean;
 }
 
 /**
@@ -480,12 +500,42 @@ export interface MemberAction {
   team_run_id?: string;
   member_run_id?: string;
   action_type?: string;
+  provider_call_id?: string | null;
   status?: "started" | "progress" | "succeeded" | "failed" | "cancelled" | string;
+  provider_status?: string | null;
+  semantic_status?: string | null;
   title?: string;
   summary?: string;
   evidence_refs?: string[];
   started_at?: string;
   completed_at?: string | null;
+}
+
+export interface PendingInteractionOption {
+  id: string;
+  label: string;
+  intent?: string | null;
+}
+
+export interface PendingInteraction {
+  id: string;
+  team_run_id: string;
+  member_run_id: string;
+  provider: string;
+  provider_request_id: string;
+  method: string;
+  kind: "question" | "tool_approval" | "plan_review" | "unknown" | string;
+  route: "lead" | "human" | "policy" | string;
+  status: "pending" | "answered" | "approved" | "denied" | "dismissed" | "unsupported" | "cancelled" | string;
+  title: string;
+  prompt: string;
+  options: PendingInteractionOption[];
+  tool_call_id?: string | null;
+  response_option_id?: string | null;
+  response_text?: string | null;
+  created_at: string;
+  resolved_at?: string | null;
+  resolved_by?: string | null;
 }
 
 /**
@@ -561,6 +611,7 @@ export interface DashboardSnapshot {
   member_runs?: MemberRun[];
   team_messages?: TeamMessage[];
   member_actions?: MemberAction[];
+  pending_interactions?: PendingInteraction[];
   delegation_runs?: DelegationRun[];
   team_run_events?: TeamRunEvent[];
 }

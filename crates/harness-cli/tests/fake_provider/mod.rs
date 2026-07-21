@@ -104,6 +104,7 @@ pub fn install_kimi_acp_shim(base: &Path) -> PathBuf {
     let script = r###"#!/bin/sh
 # Fake `kimi acp` (Agent Team v0 tests): line-delimited JSON-RPC over stdio.
 result="${FAKE_KIMI_RESULT:-done}"
+ask="${FAKE_KIMI_ASK:-0}"
 if [ "$1" != "acp" ]; then
   echo "fake kimi: only 'acp' is implemented" >&2
   exit 2
@@ -130,14 +131,39 @@ while IFS= read -r line; do
       esac
       ;;
     *'"method":"session/prompt"'*)
+      prompt_id="$id"
+      if [ "${FAKE_KIMI_WAIT:-0}" = "1" ]; then
+        continue
+      fi
       printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"%s","update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"hidden reasoning"}}}}\n' "$session_id"
-      printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"%s","update":{"sessionUpdate":"tool_call","toolCallId":"tool-1","title":"fake_edit","kind":"edit","status":"in_progress"}}}\n' "$session_id"
-      printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"%s","update":{"sessionUpdate":"tool_call_update","toolCallId":"tool-1","status":"completed"}}}\n' "$session_id"
-      printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"%s","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"## RESULT\\n%s\\n## SUMMARY\\nfake member finished round\\n"}}}}\n' "$session_id" "$result"
-      printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}\n' "$id"
+      if [ "$ask" = "1" ]; then
+        printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"%s","update":{"sessionUpdate":"tool_call","toolCallId":"12:ask-user","title":"AskUserQuestion","kind":"other","status":"in_progress"}}}\n' "$session_id"
+        printf '{"jsonrpc":"2.0","id":700,"method":"session/request_permission","params":{"sessionId":"%s","options":[{"optionId":"q0_opt_0","name":"Use native contract","kind":"allow_once"},{"optionId":"q0_skip","name":"Skip","kind":"reject_once"}],"toolCall":{"toolCallId":"12:ask-user","title":"AskUserQuestion","content":[{"type":"content","content":{"type":"text","text":"Which implementation should be used?"}}]}}}\n' "$session_id"
+      elif [ "$ask" = "approval" ]; then
+        printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"%s","update":{"sessionUpdate":"tool_call","toolCallId":"13:bash","title":"Bash","kind":"execute","status":"in_progress"}}}\n' "$session_id"
+        printf '{"jsonrpc":"2.0","id":701,"method":"session/request_permission","params":{"sessionId":"%s","options":[{"optionId":"tool_allow_once","name":"Allow once","kind":"allow_once"},{"optionId":"tool_reject_once","name":"Reject","kind":"reject_once"}],"toolCall":{"toolCallId":"13:bash","title":"Bash","content":[{"type":"content","content":{"type":"text","text":"Run the requested command?"}}]}}}\n' "$session_id"
+      else
+        printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"%s","update":{"sessionUpdate":"tool_call","toolCallId":"tool-1","title":"fake_edit","kind":"edit","status":"in_progress"}}}\n' "$session_id"
+        printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"%s","update":{"sessionUpdate":"tool_call_update","toolCallId":"tool-1","status":"completed"}}}\n' "$session_id"
+        printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"%s","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"## RESULT\\n%s\\n## SUMMARY\\nfake member finished round\\n"}}}}\n' "$session_id" "$result"
+        printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}\n' "$id"
+      fi
+      ;;
+    *'"id":700'*'"optionId":"q0_opt_0"'*)
+      printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"%s","update":{"sessionUpdate":"tool_call_update","toolCallId":"12:ask-user","status":"completed"}}}\n' "$session_id"
+      printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"%s","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"## RESULT\\n%s\\n## SUMMARY\\nfake member received Lead answer\\n"}}}}\n' "$session_id" "$result"
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}\n' "$prompt_id"
+      ;;
+    *'"id":701'*'"optionId":"tool_allow_once"'*)
+      printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"%s","update":{"sessionUpdate":"tool_call_update","toolCallId":"13:bash","status":"completed"}}}\n' "$session_id"
+      printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"%s","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"## RESULT\\n%s\\n## SUMMARY\\nfake member received Policy approval\\n"}}}}\n' "$session_id" "$result"
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}\n' "$prompt_id"
       ;;
     *'"method":"session/cancel"'*)
       printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id"
+      if [ -n "${prompt_id:-}" ]; then
+        printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"cancelled"}}\n' "$prompt_id"
+      fi
       ;;
   esac
 done
@@ -161,9 +187,51 @@ pub fn install_codex_team_shim(bin_dir: &Path) -> PathBuf {
     fs::create_dir_all(bin_dir).expect("mk fake codex team bin dir");
     let shim_path = bin_dir.join("codex");
     let script = r###"#!/bin/sh
+if [ "$1" = "--version" ]; then
+  printf '%s\n' 'codex-cli 0.145.0-alpha.18'
+  exit 0
+fi
+if [ "$1" = "app-server" ]; then
+  thread_id="thread_fake_codex_app_server"
+  turn_id="turn_fake_codex_app_server"
+  while IFS= read -r line; do
+    id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+    case "$line" in
+      *'"method":"initialize"'*)
+        printf '{"id":%s,"result":{"userAgent":"fake-codex"}}\n' "$id"
+        ;;
+      *'"method":"thread/start"'*)
+        printf '{"id":%s,"result":{"thread":{"id":"%s"}}}\n' "$id" "$thread_id"
+        ;;
+      *'"method":"turn/start"'*)
+        printf '{"id":%s,"result":{"turn":{"id":"%s","status":"inProgress","items":[]}}}\n' "$id" "$turn_id"
+        printf '{"method":"item/started","params":{"threadId":"%s","turnId":"%s","item":{"id":"command-app-1","type":"commandExecution","command":"cargo check","commandActions":[],"cwd":"/tmp","status":"inProgress"}}}\n' "$thread_id" "$turn_id"
+        if [ "${FAKE_CODEX_ASK:-0}" = "1" ]; then
+          printf '{"id":700,"method":"item/tool/requestUserInput","params":{"threadId":"%s","turnId":"%s","itemId":"ask-app-1","questions":[{"id":"implementation","header":"Contract","question":"Which implementation should be used?","options":[{"label":"Use native contract","description":"Use the provider-native path."},{"label":"Stop","description":"Do not continue."}]}]}}\n' "$thread_id" "$turn_id"
+        fi
+        ;;
+      *'"method":"turn/steer"'*)
+        printf '{"id":%s,"result":{"turnId":"%s"}}\n' "$id" "$turn_id"
+        printf '{"method":"item/agentMessage/delta","params":{"threadId":"%s","turnId":"%s","itemId":"message-app-1","delta":"## RESULT\\ndone\\n## SUMMARY\\nsteered app-server member\\n"}}\n' "$thread_id" "$turn_id"
+        printf '{"method":"turn/completed","params":{"threadId":"%s","turn":{"id":"%s","status":"completed","items":[{"id":"message-app-1","type":"agentMessage","text":"## RESULT\\ndone\\n## SUMMARY\\nsteered app-server member\\n"}]}}}\n' "$thread_id" "$turn_id"
+        ;;
+      *'"method":"turn/interrupt"'*)
+        printf '{"id":%s,"result":{}}\n' "$id"
+        printf '{"method":"turn/completed","params":{"threadId":"%s","turn":{"id":"%s","status":"interrupted","items":[]}}}\n' "$thread_id" "$turn_id"
+        ;;
+      *'"id":700'*'"answers"'*)
+        printf '{"method":"item/agentMessage/delta","params":{"threadId":"%s","turnId":"%s","itemId":"message-app-ask","delta":"## RESULT\\ndone\\n## SUMMARY\\nreceived Lead answer\\n"}}\n' "$thread_id" "$turn_id"
+        printf '{"method":"turn/completed","params":{"threadId":"%s","turn":{"id":"%s","status":"completed","items":[]}}}\n' "$thread_id" "$turn_id"
+        ;;
+    esac
+  done
+  exit 0
+fi
 printf '%s\n' '{"type":"thread.started","thread_id":"thread_fake_codex_team"}'
 printf '%s\n' '{"type":"turn.started"}'
 printf '%s\n' '{"type":"item.completed","item":{"id":"reason-1","type":"reasoning","text":"hidden codex reasoning"}}'
+printf '%s\n' '{"type":"item.started","item":{"id":"command-1","type":"command_execution","command":"cargo check","status":"in_progress"}}'
+printf '%s\n' '{"type":"item.completed","item":{"id":"command-1","type":"command_execution","command":"cargo check","status":"completed","aggregated_output":"ok","exit_code":0}}'
 printf '%s\n' '{"type":"item.completed","item":{"id":"message-1","type":"agent_message","text":"## RESULT\ndone\n## SUMMARY\nfake codex member finished round\n"}}'
 printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":5}}'
 exit 0

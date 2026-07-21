@@ -26,10 +26,12 @@ use serde_json::{json, Value};
 use crate::{
     acknowledge_team_message, close_mission, create_mission, create_team_run, create_wave,
     drive_prepared_team_run, gate_wave, latest_member_runs_in_append_order,
-    latest_team_messages_in_append_order, latest_team_run, latest_team_runs_in_append_order,
-    parse_team_message_kind, parse_wave_executor_kind, prepare_team_run_start, send_team_message,
-    team_run_wave_index, transition_team_run, visible_member_actions_in_append_order,
-    ResolvedStore, TeamMemberSpec,
+    latest_pending_interactions_in_append_order, latest_team_messages_in_append_order,
+    latest_team_run, latest_team_runs_in_append_order, parse_team_message_kind,
+    parse_wave_executor_kind, prepare_team_run_start, resolve_pending_interaction_value,
+    send_team_message, steer_team_member_value, interrupt_team_member_value,
+    team_run_wave_index, transition_team_run,
+    visible_member_actions_in_append_order, ResolvedStore, TeamMemberSpec,
 };
 
 /// MCP protocol revision this server speaks, echoed verbatim in `initialize`
@@ -138,6 +140,9 @@ fn call_tool(
         "team_run_list" => tool_team_run_list(store),
         "team_run_status" => tool_team_run_status(store, resolved, &arguments),
         "team_run_send_message" => tool_team_run_send_message(store, &arguments),
+        "team_run_resolve_interaction" => tool_team_run_resolve_interaction(store, &arguments),
+        "team_run_steer_member" => tool_team_run_steer_member(store, &arguments),
+        "team_run_interrupt_member" => tool_team_run_interrupt_member(store, &arguments),
         "team_run_events" => tool_team_run_events(store, &arguments),
         _ => return Err((-32602, format!("unknown tool: {name}"))),
     };
@@ -149,6 +154,33 @@ fn call_tool(
         "content": [{"type": "text", "text": text}],
         "isError": is_error,
     }))
+}
+
+fn tool_team_run_steer_member(store: &HarnessStore, arguments: &Value) -> Result<Value, String> {
+    let team_run_id = required_str(arguments, "team_run_id")?;
+    let member_run_id = required_str(arguments, "member_run_id")?;
+    steer_team_member_value(store, team_run_id, member_run_id, arguments)
+        .map_err(|error| error.to_string())
+}
+
+fn tool_team_run_interrupt_member(
+    store: &HarnessStore,
+    arguments: &Value,
+) -> Result<Value, String> {
+    let team_run_id = required_str(arguments, "team_run_id")?;
+    let member_run_id = required_str(arguments, "member_run_id")?;
+    interrupt_team_member_value(store, team_run_id, member_run_id, arguments)
+        .map_err(|error| error.to_string())
+}
+
+fn tool_team_run_resolve_interaction(
+    store: &HarnessStore,
+    arguments: &Value,
+) -> Result<Value, String> {
+    let team_run_id = required_str(arguments, "team_run_id")?;
+    let interaction_id = required_str(arguments, "interaction_id")?;
+    resolve_pending_interaction_value(store, team_run_id, interaction_id, arguments)
+        .map_err(|error| error.to_string())
 }
 
 fn tool_team_run_start(
@@ -384,6 +416,7 @@ fn tool_team_run_create(
             name: member_str("name")?.to_string(),
             role: member_str("role")?.to_string(),
             provider: member_str("provider")?.to_string(),
+            execution_mode: optional_str(member, "execution_mode")?,
             model: optional_str(member, "model")?,
             owned_paths,
         });
@@ -451,6 +484,11 @@ fn tool_team_run_status(
         visible_member_actions_in_append_order(store).map_err(|error| error.to_string())?;
     let messages =
         latest_team_messages_in_append_order(store).map_err(|error| error.to_string())?;
+    let pending_interactions: Vec<_> = latest_pending_interactions_in_append_order(store)
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .filter(|interaction| interaction.team_run_id == id)
+        .collect();
     let members: Vec<Value> = member_runs
         .iter()
         .map(|member| {
@@ -478,6 +516,7 @@ fn tool_team_run_status(
         "team_run": run,
         "wave_index": wave_index,
         "members": members,
+        "pending_interactions": pending_interactions,
         "unacked_messages": unacked_messages,
         "dashboard_url": team_dashboard_url(resolved, id),
     }))
@@ -642,6 +681,7 @@ fn tool_definitions() -> Value {
                                 "name": {"type": "string", "minLength": 1, "description": "Member display name, unique within the run."},
                                 "role": {"type": "string", "minLength": 1, "description": "e.g. coordinator / implementer / reviewer."},
                                 "provider": {"type": "string", "minLength": 1, "description": "Provider id (kimi is the v0 adapter)."},
+                                "execution_mode": {"type": "string", "enum": ["codex_exec", "codex_app_server", "kimi_acp"], "description": "Optional provider-specific execution mode. Codex defaults to codex_exec for compatibility."},
                                 "model": {"type": "string", "minLength": 1, "description": "Optional provider model override."},
                                 "owned_paths": {"type": "array", "items": {"type": "string", "minLength": 1}, "description": "Paths this member exclusively owns."}
                             },
@@ -693,7 +733,7 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "team_run_status",
-            "description": "Show one team run: the run row, every member run with its latest MemberAction (null when the member has not acted yet), the count of messages with at least one unacknowledged delivery, and the live dashboard URL.",
+            "description": "Show one team run: the run row, every member run with its latest MemberAction, provider PendingInteractions including exact option ids, the count of messages with at least one unacknowledged delivery, and the live dashboard URL.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -717,6 +757,49 @@ fn tool_definitions() -> Value {
                     "causation_id": {"type": "string", "description": "Optional earlier TeamMessage id in this team run. When paired with correlation_id, it must carry that same correlation."}
                 },
                 "required": ["team_run_id", "from_member_id", "to_member_ids", "kind", "body"]
+            }
+        },
+        {
+            "name": "team_run_resolve_interaction",
+            "description": "Resolve one provider-originated pending interaction using its exact provider option id. Lead-routed interactions require resolved_by=host|lead; human-routed interactions require operator|human; policy-routed interactions require policy. Kimi ACP can resume the same provider request after resolution.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "team_run_id": {"type": "string"},
+                    "interaction_id": {"type": "string"},
+                    "option_id": {"type": "string", "description": "Exact option id exposed by the provider interaction."},
+                    "response_text": {"type": "string", "description": "Free-form response when the provider contract supports it."},
+                    "resolved_by": {"type": "string", "enum": ["host", "lead", "operator", "human", "policy"]}
+                },
+                "required": ["team_run_id", "interaction_id", "resolved_by"]
+            }
+        },
+        {
+            "name": "team_run_steer_member",
+            "description": "Inject operator or Lead input into a currently active provider turn. This is capability-gated and currently requires codex_app_server; batch modes must use team_run_send_message for the next round.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "team_run_id": {"type": "string"},
+                    "member_run_id": {"type": "string"},
+                    "content": {"type": "string", "minLength": 1},
+                    "requested_by": {"type": "string", "default": "host"}
+                },
+                "required": ["team_run_id", "member_run_id", "content"]
+            }
+        },
+        {
+            "name": "team_run_interrupt_member",
+            "description": "Cooperatively interrupt one active provider turn when its execution mode advertises supports_cancel. Codex app-server uses turn/interrupt; Kimi ACP uses session/cancel.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "team_run_id": {"type": "string"},
+                    "member_run_id": {"type": "string"},
+                    "reason": {"type": "string"},
+                    "requested_by": {"type": "string", "default": "host"}
+                },
+                "required": ["team_run_id", "member_run_id"]
             }
         },
         {

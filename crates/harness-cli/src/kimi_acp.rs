@@ -18,10 +18,10 @@
 //! - `clientCapabilities` is advertised EMPTY. Advertising
 //!   `fs.readTextFile/writeTextFile` tells the agent to route file IO through
 //!   this client; harness v0 does not serve client methods, so the agent must
-//!   use its own built-in tools instead. Any agent→client REQUEST that still
-//!   arrives (e.g. `session/request_permission`) is answered with a JSON-RPC
-//!   "method not implemented" error so the agent can never wedge waiting on
-//!   us — consistent with the v0 posture of no interactive approvals.
+//!   use its own built-in tools instead. `session/request_permission` is the
+//!   one reverse-RPC method the Team Member adapter serves: the orchestrator
+//!   persists a PendingInteraction and the same ACP turn waits for an answer.
+//!   Unknown reverse-RPC methods still fail closed with method-not-found.
 //! - Reasoning streams (`agent_thought_chunk`) are passed through to the
 //!   caller verbatim. The team-run orchestrator deliberately does not persist
 //!   them: thinking is not evidence, replayable history, or peer-visible
@@ -75,6 +75,7 @@ pub(crate) struct KimiAcpClient {
     /// Requested model alias, applied through ACP
     /// `session/set_config_option(configId=model)` after session creation.
     model: Option<String>,
+    provider_version: Option<String>,
 }
 
 impl KimiAcpClient {
@@ -171,6 +172,7 @@ impl KimiAcpClient {
             stderr_tail,
             session_id: None,
             model: model.map(str::to_string),
+            provider_version: None,
         };
         client.handshake(cwd)?;
         Ok(client)
@@ -179,6 +181,10 @@ impl KimiAcpClient {
     /// The ACP session id negotiated at spawn (`session/new`).
     pub(crate) fn session_id(&self) -> Option<&str> {
         self.session_id.as_deref()
+    }
+
+    pub(crate) fn provider_version(&self) -> Option<&str> {
+        self.provider_version.as_deref()
     }
 
     /// `initialize` + `session/new`, each with a 10s response timeout.
@@ -199,6 +205,10 @@ impl KimiAcpClient {
                 "kimi acp initialize rejected: {error}"
             )));
         }
+        self.provider_version = frame
+            .pointer("/result/agentInfo/version")
+            .and_then(|version| version.as_str())
+            .map(str::to_string);
 
         let session_new = self.request(
             "session/new",
@@ -298,6 +308,8 @@ impl KimiAcpClient {
         text: &str,
         idle_timeout: Duration,
         mut on_update: impl FnMut(&serde_json::Value),
+        mut on_request: impl FnMut(&serde_json::Value) -> CliResult<serde_json::Value>,
+        mut should_cancel: impl FnMut() -> CliResult<bool>,
     ) -> CliResult<PromptOutcome> {
         let session_id = self
             .session_id
@@ -319,6 +331,10 @@ impl KimiAcpClient {
         let mut last_activity = Instant::now();
         let mut cancelled_at: Option<Instant> = None;
         loop {
+            if cancelled_at.is_none() && should_cancel()? {
+                self.cancel()?;
+                cancelled_at = Some(Instant::now());
+            }
             // Response FIRST: the reader thread can deliver the terminal
             // response and immediately hit EOF (child exit), which disconnects
             // the updates channel — checking updates first would mistake a
@@ -329,7 +345,7 @@ impl KimiAcpClient {
                     // the response on the wire BEFORE enqueueing it, so a full
                     // drain here replays the tail of the stream in order.
                     while let Ok(update) = self.updates.try_recv() {
-                        self.handle_incoming(&update, &mut on_update)?;
+                        self.handle_incoming(&update, &mut on_update, &mut on_request)?;
                     }
                     return Ok(prompt_outcome(&frame));
                 }
@@ -341,7 +357,7 @@ impl KimiAcpClient {
             match self.updates.try_recv() {
                 Ok(frame) => {
                     last_activity = Instant::now();
-                    self.handle_incoming(&frame, &mut on_update)?;
+                    self.handle_incoming(&frame, &mut on_update, &mut on_request)?;
                     continue;
                 }
                 Err(TryRecvError::Empty) => {}
@@ -370,16 +386,15 @@ impl KimiAcpClient {
         }
     }
 
-    /// Handle one queued frame: agent→client REQUESTS (frames carrying both
-    /// `id` and `method`, e.g. `fs/read_text_file` or
-    /// `session/request_permission`) get a JSON-RPC "method not implemented"
-    /// error so the agent never wedges on a client v0 does not serve (the id
-    /// is echoed verbatim — JSON-RPC allows non-numeric ids);
-    /// `session/update` notifications go to the caller's callback.
+    /// Handle one queued frame. `session/request_permission` is routed to the
+    /// orchestrator so it can durably pause for Lead/Human input. Other client
+    /// methods fail closed because this client deliberately advertises no FS or
+    /// terminal capability.
     fn handle_incoming(
         &mut self,
         frame: &serde_json::Value,
         on_update: &mut impl FnMut(&serde_json::Value),
+        on_request: &mut impl FnMut(&serde_json::Value) -> CliResult<serde_json::Value>,
     ) -> CliResult<()> {
         if frame.get("method").and_then(|m| m.as_str()) == Some("session/update") {
             let update = frame
@@ -394,15 +409,30 @@ impl KimiAcpClient {
                 .get("method")
                 .and_then(|m| m.as_str())
                 .unwrap_or("unknown");
-            let error = serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": id,
-                "error": {
-                    "code": -32601,
-                    "message": format!("harness v0 does not implement client method {method}"),
-                },
-            });
-            write_frame(&mut self.stdin, &error)?;
+            let response = if method == "session/request_permission" {
+                match on_request(frame) {
+                    Ok(result) => serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "result": result,
+                    }),
+                    Err(error) => serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "error": {"code": -32000, "message": error.to_string()},
+                    }),
+                }
+            } else {
+                serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "error": {
+                        "code": -32601,
+                        "message": format!("harness does not implement client method {method}"),
+                    },
+                })
+            };
+            write_frame(&mut self.stdin, &response)?;
         }
         Ok(())
     }

@@ -88,13 +88,16 @@ copied into Mission/Wave IA.
 
 | Page spec | Owns |
 | --- | --- |
-| [Team workspace](pages/team-workspace.md) | Future Standing Agents workspace; not current AgentTeamRun IA. |
 | [Mission/Wave Canvas](pages/mission-wave-canvas.md) | One Mission's ordered Waves, executor attempts, gates, retry, and closeout. |
 | [Agent Team War Room](pages/team-run-war-room.md) | One linked AgentTeamRun attempt: assignment/message ownership, member presence, unified activity, artifacts, and gate context. |
-| [AgentMember workbench](pages/agent-member-workbench.md) | One durable member as a teammate: current work, inbox/outbox, activity, runtime, prompt/skills, actions. |
-| [Evidence/Review/Decision](pages/evidence-review-decision.md) | Acceptance proof chain and decision queues. |
-| [Warnings/repair](pages/warnings-repair.md) | Workflow risks, affected objects, navigation, repair metadata. |
+| [MemberRun Focus](pages/member-run-focus.md) | One run-scoped Agent Team member: assignment, activity, evidence, runtime, and direct Team messages. |
+| [Standing Agent Focus](pages/standing-agent-focus.md) | One durable organization Agent: responsibilities, WorkItems, documents, availability, and subject-linked collaboration. |
 | [Debug](pages/debug.md) | Raw snapshot, import/export, and low-level object views outside the primary work surface. |
+
+Approval decisions and WorkItem lifecycle actions belong to their Company OS
+focus pages. Execution pressure belongs to the Mission, TeamRun, or MemberRun
+record that produced it. There is no replacement global Goal-era decision or
+warnings page.
 
 ## Source Of Truth Boundary
 

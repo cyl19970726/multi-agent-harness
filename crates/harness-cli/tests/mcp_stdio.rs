@@ -178,6 +178,9 @@ fn mcp_stdio_agent_team_tools() {
             "team_run_list",
             "team_run_status",
             "team_run_send_message",
+            "team_run_resolve_interaction",
+            "team_run_steer_member",
+            "team_run_interrupt_member",
             "team_run_events"
         ]
     );
@@ -302,6 +305,10 @@ fn mcp_stdio_agent_team_tools() {
         );
         assert!(member.get("latest_action").is_some(), "latest_action key");
     }
+    assert_eq!(
+        payload["pending_interactions"].as_array().map(Vec::len),
+        Some(0)
+    );
     assert_eq!(payload["unacked_messages"].as_u64(), Some(2));
     assert_eq!(
         payload["dashboard_url"].as_str(),

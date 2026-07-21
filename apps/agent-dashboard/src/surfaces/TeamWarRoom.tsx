@@ -31,8 +31,8 @@ import {
   type StableTeamActivity,
 } from "../model/teamSelectors";
 import type { WorkbenchModel } from "../model/readModel";
-import { acknowledgeTeamMessage, sendTeamMessage, startTeamRun, transitionTeamRun } from "../api/actions";
-import type { MemberRun, TeamMessage, Wave } from "../types";
+import { acknowledgeTeamMessage, resolvePendingInteraction, sendTeamMessage, startTeamRun, transitionTeamRun } from "../api/actions";
+import type { MemberRun, PendingInteraction, TeamMessage, Wave } from "../types";
 import type { SelectionState } from "../app/selection";
 
 export interface TeamWarRoomProps {
@@ -107,6 +107,9 @@ export function TeamWarRoom({
     needsYou.blockedMembers[0] ??
     needsYou.waitingMembers[0] ??
     orderedMembers[0];
+  const pendingInteractions = context.interactions
+    .filter((interaction) => interaction.status === "pending")
+    .sort((left, right) => timestamp(left.created_at) - timestamp(right.created_at));
   const activityItems = toActivityItems(context.activity, memberById).map((item) => {
     if (!item.id.startsWith("message:")) return item;
     const message = messages.find((candidate) => `message:${candidate.id}` === item.id);
@@ -128,6 +131,19 @@ export function TeamWarRoom({
         </Button>
       ),
     };
+  });
+  [...pendingInteractions].reverse().forEach((interaction) => {
+    activityItems.unshift(toInteractionActivity(
+      interaction,
+      memberById,
+      actionsEnabled,
+      (optionId) => dispatch(onAction, resolvePendingInteraction(
+        run.id,
+        interaction.id,
+        optionId,
+        interaction.route === "human" ? "operator" : "host",
+      )),
+    ));
   });
   const pressureActivityIndex = selectedMember?.status === "blocked"
     ? activityItems.map((item) => item.kind).lastIndexOf("decision")
@@ -404,6 +420,51 @@ export function TeamWarRoom({
   );
 }
 
+function toInteractionActivity(
+  interaction: PendingInteraction,
+  members: Map<string, MemberRun>,
+  actionsEnabled: boolean,
+  onResolve: (optionId: string) => void,
+): WorkbenchActivityItem {
+  return {
+    id: `interaction:${interaction.id}`,
+    kind: "decision",
+    glyph: interaction.kind === "question" ? "message" : "decision",
+    title: (
+      <span className="inline-flex flex-wrap items-center gap-2">
+        <span>{interaction.title}</span>
+        <Badge tone="warn">{interaction.route} decision</Badge>
+      </span>
+    ),
+    body: interaction.prompt,
+    actor: memberLabel(members, interaction.member_run_id),
+    timestamp: formatTime(interaction.created_at),
+    tone: "warn",
+    prominence: "pressure",
+    action: (
+      <div className="flex max-w-72 flex-wrap justify-end gap-1.5 rounded-lg border border-status-warn/25 bg-status-warn/[0.055] p-2">
+        {interaction.options.map((option) => (
+          <Button
+            key={option.id}
+            size="sm"
+            variant={option.intent?.startsWith("reject") ? "secondary" : "default"}
+            disabled={!actionsEnabled || interaction.route === "policy"}
+            onClick={() => onResolve(option.id)}
+          >
+            {option.label}
+          </Button>
+        ))}
+        {interaction.route === "policy" && (
+          <span className="self-center text-[10px] text-muted-foreground">Awaiting governed policy decision</span>
+        )}
+        {interaction.options.length === 0 && (
+          <span className="text-[10px] text-muted-foreground">No compatible response option</span>
+        )}
+      </div>
+    ),
+  };
+}
+
 function AttemptActions({ status, actionsEnabled, starting, onStart, onCancel, onComplete }: {
   status: string;
   actionsEnabled: boolean;
@@ -575,7 +636,8 @@ function toActivityItems(items: StableTeamActivity[], members: Map<string, Membe
     if (item.kind === "action") {
       const action = item.action;
       const evidenceRefs = action.evidence_refs ?? [];
-      return { id: item.id, kind: evidenceRefs.length ? "evidence" : "action", glyph: evidenceRefs.length ? "artifact" : "runtime", title: action.title ?? action.action_type ?? "Member action", body: action.summary, actor, timestamp: formatTime(action.started_at ?? action.completed_at), evidenceRefs, tone: action.status === "failed" ? "bad" : action.status === "succeeded" ? "good" : "running", prominence: "detail" };
+      const status = [action.provider_status, action.semantic_status].filter(Boolean).join(" · ");
+      return { id: item.id, kind: evidenceRefs.length ? "evidence" : "action", glyph: evidenceRefs.length ? "artifact" : "runtime", title: action.title ?? action.action_type ?? "Member action", body: status ? <><span>{action.summary}</span><span className="mt-1 block text-[10px] text-muted-foreground">provider {action.provider_status ?? "unknown"} · semantic {action.semantic_status ?? "not classified"}</span></> : action.summary, actor, timestamp: formatTime(action.started_at ?? action.completed_at), evidenceRefs, tone: action.status === "failed" ? "bad" : action.status === "succeeded" ? "good" : "running", prominence: "detail" };
     }
     const event = item.event;
     const decision = event.entity_type === "wave" || event.operation === "completed" || /gate|decision/i.test(event.summary ?? "");

@@ -360,6 +360,10 @@ fn team_run_start_completes_mixed_codex_kimi_without_persisting_reasoning() {
         .expect("codex member");
     assert_eq!(codex["model"].as_str(), Some("gpt-5.6"));
     assert_eq!(
+        codex["provider_profile"]["execution_mode"].as_str(),
+        Some("codex_exec")
+    );
+    assert_eq!(
         codex["acp_session_id"].as_str(),
         Some("thread_fake_codex_team")
     );
@@ -368,6 +372,18 @@ fn team_run_start_completes_mixed_codex_kimi_without_persisting_reasoning() {
         .find(|member| member["provider"].as_str() == Some("kimi"))
         .expect("kimi member");
     assert_eq!(kimi["model"].as_str(), Some("k2.5"));
+    assert_eq!(
+        kimi["provider_profile"]["execution_mode"].as_str(),
+        Some("kimi_acp")
+    );
+    assert_eq!(
+        kimi["provider_profile"]["interaction_mode"].as_str(),
+        Some("pause_and_resume")
+    );
+    assert_eq!(
+        kimi["provider_profile"]["provider_version"].as_str(),
+        Some("0.0.0")
+    );
 
     let messages = store_rows(&home, &project_id, "team_messages.jsonl");
     let handoffs: Vec<_> = messages
@@ -393,6 +409,288 @@ fn team_run_start_completes_mixed_codex_kimi_without_persisting_reasoning() {
             path.display()
         );
     }
+    let actions = store_rows(&home, &project_id, "member_actions.jsonl");
+    assert!(
+        actions.iter().any(|action| {
+            action["member_run_id"] == codex["id"]
+                && action["provider_call_id"].as_str() == Some("command-1")
+                && action["provider_status"].as_str() == Some("completed")
+                && action["semantic_status"].as_str() == Some("succeeded")
+        }),
+        "codex command activity must be durable and semantic: {actions:?}"
+    );
+}
+
+#[test]
+fn kimi_question_waits_for_lead_resolution_and_resumes_same_turn() {
+    let home = TempHome::new("team-run-kimi-question");
+    let project_id = init_project(&home, "alpha");
+    let fake_bin = fake_provider::install_kimi_acp_shim(home.base());
+    let create = run_with_fake_kimi(
+        &home,
+        &fake_bin,
+        "done",
+        &[
+            "--project",
+            &project_id,
+            "team-run",
+            "create",
+            "--objective",
+            "Ask the Lead once",
+            "--member",
+            "kimi-worker:implementer:kimi:k2.5",
+        ],
+    );
+    assert!(
+        create.status.success(),
+        "create: {}",
+        String::from_utf8_lossy(&create.stderr)
+    );
+    let run_id = String::from_utf8_lossy(&create.stdout).trim().to_string();
+    let path = format!(
+        "{}:{}",
+        fake_bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let child = std::process::Command::new(env!("CARGO_BIN_EXE_harness"))
+        .args([
+            "--project",
+            &project_id,
+            "team-run",
+            "start",
+            "--id",
+            &run_id,
+        ])
+        .current_dir(home.base())
+        .envs(home.envs())
+        .env("PATH", path)
+        .env("FAKE_KIMI_RESULT", "done")
+        .env("FAKE_KIMI_ASK", "1")
+        .env_remove("KIMI_CODE_BIN")
+        .env_remove("HARNESS_ROOT")
+        .env_remove("HARNESS_PROJECT")
+        .spawn()
+        .expect("spawn team run");
+
+    let interaction_path = home
+        .projects_dir()
+        .join(&project_id)
+        .join("pending_interactions.jsonl");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !interaction_path.exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    assert!(
+        interaction_path.exists(),
+        "Kimi request must create a pending interaction"
+    );
+    let interactions = store_rows(&home, &project_id, "pending_interactions.jsonl");
+    let pending = interactions.first().expect("pending interaction");
+    assert_eq!(pending["kind"].as_str(), Some("question"));
+    assert_eq!(pending["route"].as_str(), Some("lead"));
+    assert_eq!(pending["status"].as_str(), Some("pending"));
+    let interaction_id = pending["id"].as_str().expect("interaction id");
+
+    let unauthorized = run_with_fake_kimi(
+        &home,
+        &fake_bin,
+        "done",
+        &[
+            "--project",
+            &project_id,
+            "team-run",
+            "resolve-interaction",
+            "--id",
+            &run_id,
+            "--interaction-id",
+            interaction_id,
+            "--option-id",
+            "q0_opt_0",
+            "--resolved-by",
+            "operator",
+        ],
+    );
+    assert!(
+        !unauthorized.status.success(),
+        "operator must not impersonate Lead"
+    );
+    assert!(
+        String::from_utf8_lossy(&unauthorized.stderr).contains("requires lead authority"),
+        "unauthorized error: {}",
+        String::from_utf8_lossy(&unauthorized.stderr)
+    );
+
+    let resolve = run_with_fake_kimi(
+        &home,
+        &fake_bin,
+        "done",
+        &[
+            "--project",
+            &project_id,
+            "team-run",
+            "resolve-interaction",
+            "--id",
+            &run_id,
+            "--interaction-id",
+            interaction_id,
+            "--option-id",
+            "q0_opt_0",
+            "--resolved-by",
+            "lead",
+        ],
+    );
+    assert!(
+        resolve.status.success(),
+        "resolve: {}",
+        String::from_utf8_lossy(&resolve.stderr)
+    );
+    let output = child.wait_with_output().expect("wait team run");
+    assert!(
+        output.status.success(),
+        "start: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let interactions = store_rows(&home, &project_id, "pending_interactions.jsonl");
+    assert_eq!(interactions[0]["status"].as_str(), Some("answered"));
+    assert_eq!(
+        interactions[0]["response_option_id"].as_str(),
+        Some("q0_opt_0")
+    );
+    let actions = store_rows(&home, &project_id, "member_actions.jsonl");
+    assert!(
+        actions.iter().any(|action| {
+            action["provider_call_id"].as_str() == Some("12:ask-user")
+                && action["provider_status"].as_str() == Some("completed")
+                && action["semantic_status"].as_str() == Some("answered")
+        }),
+        "AskUserQuestion must distinguish transport completion from answered: {actions:?}"
+    );
+}
+
+#[test]
+fn kimi_tool_approval_requires_policy_authority_and_resumes_same_turn() {
+    let home = TempHome::new("team-run-kimi-policy-interaction");
+    let project_id = init_project(&home, "alpha");
+    let fake_bin = fake_provider::install_kimi_acp_shim(home.base());
+    let create = run_with_fake_kimi(
+        &home,
+        &fake_bin,
+        "done",
+        &[
+            "--project",
+            &project_id,
+            "team-run",
+            "create",
+            "--objective",
+            "Request governed tool permission",
+            "--member",
+            "kimi-worker:implementer:kimi:k2.5",
+        ],
+    );
+    assert!(create.status.success(), "create failed: {create:?}");
+    let run_id = String::from_utf8_lossy(&create.stdout).trim().to_string();
+    let path = format!(
+        "{}:{}",
+        fake_bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let child = std::process::Command::new(env!("CARGO_BIN_EXE_harness"))
+        .args([
+            "--project",
+            &project_id,
+            "team-run",
+            "start",
+            "--id",
+            &run_id,
+        ])
+        .current_dir(home.base())
+        .envs(home.envs())
+        .env("PATH", path)
+        .env("FAKE_KIMI_RESULT", "done")
+        .env("FAKE_KIMI_ASK", "approval")
+        .env_remove("KIMI_CODE_BIN")
+        .env_remove("HARNESS_ROOT")
+        .env_remove("HARNESS_PROJECT")
+        .spawn()
+        .expect("spawn team run");
+
+    let interaction_path = home
+        .projects_dir()
+        .join(&project_id)
+        .join("pending_interactions.jsonl");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !interaction_path.exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    let pending = store_rows(&home, &project_id, "pending_interactions.jsonl")
+        .into_iter()
+        .next()
+        .expect("pending interaction");
+    assert_eq!(pending["kind"].as_str(), Some("tool_approval"));
+    assert_eq!(pending["route"].as_str(), Some("policy"));
+    let interaction_id = pending["id"].as_str().expect("interaction id");
+
+    let unauthorized = run_with_fake_kimi(
+        &home,
+        &fake_bin,
+        "done",
+        &[
+            "--project",
+            &project_id,
+            "team-run",
+            "resolve-interaction",
+            "--id",
+            &run_id,
+            "--interaction-id",
+            interaction_id,
+            "--option-id",
+            "tool_allow_once",
+            "--resolved-by",
+            "lead",
+        ],
+    );
+    assert!(
+        !unauthorized.status.success(),
+        "Lead must not bypass policy"
+    );
+    assert!(String::from_utf8_lossy(&unauthorized.stderr).contains("requires policy authority"));
+
+    let resolve = run_with_fake_kimi(
+        &home,
+        &fake_bin,
+        "done",
+        &[
+            "--project",
+            &project_id,
+            "team-run",
+            "resolve-interaction",
+            "--id",
+            &run_id,
+            "--interaction-id",
+            interaction_id,
+            "--option-id",
+            "tool_allow_once",
+            "--resolved-by",
+            "policy",
+        ],
+    );
+    assert!(
+        resolve.status.success(),
+        "policy resolve failed: {resolve:?}"
+    );
+    let output = child.wait_with_output().expect("wait team run");
+    assert!(output.status.success(), "start failed: {output:?}");
+
+    let interactions = store_rows(&home, &project_id, "pending_interactions.jsonl");
+    assert_eq!(interactions[0]["status"].as_str(), Some("approved"));
+    assert_eq!(interactions[0]["resolved_by"].as_str(), Some("policy"));
+    let actions = store_rows(&home, &project_id, "member_actions.jsonl");
+    assert!(actions.iter().any(|action| {
+        action["provider_call_id"].as_str() == Some("13:bash")
+            && action["provider_status"].as_str() == Some("completed")
+            && action["semantic_status"].as_str() == Some("approved")
+    }));
 }
 
 #[test]

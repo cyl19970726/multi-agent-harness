@@ -16,7 +16,7 @@ The accepted product vision is:
 ```text
 Turn a project objective into an agent-operable workflow:
 Mission -> Scenario -> Infra -> Wave -> executor
-  -> Message delivery / actions / artifacts
+  -> Harness coordination / native session refs / artifacts
   -> lightweight Wave gate -> Mission outcome
 ```
 
@@ -123,8 +123,9 @@ The target proof is assignment-message correlation:
 ```text
 TeamMessage(kind=assignment)
   -> correlation_id
-  -> MemberAction / blocker / handoff / review_result / delegation
-  -> artifacts, checks, summaries, explicit outcome
+  -> Harness blocker / handoff / review / PendingInteraction
+  -> explicit outcome + artifacts/check refs
+  -> NativeSessionRef for member execution detail
 ```
 
 Automatic handoff preserves this correlation. Manual progress, blocker, review,
@@ -162,9 +163,9 @@ executor kind. It is not a standing organization.
 | `AgentTeamRun` | One team execution attempt for one Wave. | One Wave may have multiple attempts; every terminal attempt becomes read-only history. |
 | `MemberRun` | One member instance inside a run: role, provider, model, status, worktree, owned paths. | Exists only for that run; it is not a durable standing employee record. |
 | `TeamMessage` | Run-scoped communication envelope with delivery records. | Assignment, handoff, blocker, review, and control messages live here. |
-| `MemberAction` | Normalized explicit work/action record: plan update, file change, command, test, review, delegation, waiting, blocked, completed, error. | Stores explicit action facts, not private reasoning. |
+| `MemberAction` | Transitional Harness action row. Target use is limited to Harness-owned coordination/control facts. | Provider tool, command, file, chat, turn, and reasoning streams stay solely in the native provider session. |
 | `DelegationRun` | Attribution record for observed or orchestrated delegation. | Parent permissions, paths, and budgets bound the child. |
-| `TeamRunEvent` | Ordered durable event log for one run. | Payloads are sanitized before storage. |
+| `TeamRunEvent` | Transitional ordered event projection for Harness-owned run lifecycle. | It must not become a mirror of provider-native activity. |
 
 Relationship rules:
 
@@ -172,7 +173,8 @@ Relationship rules:
   and records which attempt its gate accepted;
 - ownership inside the Wave is explained by `TeamMessage(kind=assignment)` plus
   `correlation_id`;
-- `TeamMessage` and `MemberAction` may reference artifacts or `Evidence`; the
+- `TeamMessage`, explicit outcomes, and Harness control facts may reference
+  artifacts or `Evidence`; the
   Wave gate needs an explicit outcome and acceptance note but does not require
   Proposal/Review/Decision objects;
 - residual task-named runtime fields are removal debt, not the product model or
@@ -197,16 +199,19 @@ and host tools to external providers such as Codex, Claude, or Kimi.
 
 Rules:
 
-- the harness owns assignment, artifacts, evidence, review, and decisions;
-- the provider owns model execution and transcript details;
-- provider output becomes useful only after it is reduced into explicit actions,
-  artifacts, evidence, or outcomes;
+- Harness owns assignment, interaction routing, responsibility, explicit
+  outcomes, artifact/check references, and gates;
+- the provider-native store owns model execution, transcript, tool/command/file
+  activity, provider turns, and resume state;
+- provider output can support an execution claim through its native session
+  reference without being copied into Harness;
 - hooks are observation inputs, not the canonical message bus;
 - runtime health is represented as lifecycle state, not inferred only from raw
   provider output.
 
-Failure mode this prevents: the provider transcript becoming the hidden source
-of truth for ownership, status, or acceptance.
+Failure modes this prevents: a provider transcript becoming the hidden source
+of truth for ownership or acceptance, and a Harness mirror becoming a divergent
+second transcript.
 
 ## Thinking Policy
 
@@ -219,12 +224,12 @@ The target contract makes thinking transient live-only state.
 - It is never execution evidence.
 - It is never forwarded into another member's context.
 
-Persist explicit actions, artifacts, summaries, blockers, and outcomes instead.
+Persist only Harness-owned coordination, artifact/check references, blockers,
+handoffs, control acknowledgements, and explicit outcomes instead.
 
-New Kimi execution no longer writes durable `thinking` actions. Historical rows
-stay in JSONL but are excluded from current snapshots and status reads. The
-transient display channel remains follow-up work, so thinking is currently
-dropped at the adapter boundary.
+No provider thinking may enter a Harness ledger. Obsolete provider-derived
+action rows are migration debt under ADR 0032 and do not define the target
+contract.
 
 ## Closeout Gates
 

@@ -8,10 +8,10 @@ use std::time::{Duration, Instant};
 use harness_core::{
     AgentEvent, AgentMember, AgentRuntime, AgentTeam, AgentTeamRun, Decision, DelegationRun,
     Evidence, Gap, MemberAction, MemberRun, Message, MessageDelivery, MessageDeliveryStatus,
-    MessageTerminalSource, Mission, MissionStatus, Proposal, ProviderChildThread, ProviderSession,
-    ProviderSessionStatus, Review, TeamMessage, TeamRunEvent, TeamRunStatus, Vision, Wave,
-    WaveExecutorKind, WaveGateStatus, WaveStatus, WorkflowArtifactManifest, WorkflowPatch,
-    WorkflowRun, WorkflowStep,
+    MessageTerminalSource, Mission, MissionStatus, PendingInteraction, Proposal,
+    ProviderChildThread, ProviderSession, ProviderSessionStatus, Review, TeamMessage, TeamRunEvent,
+    TeamRunStatus, Vision, Wave, WaveExecutorKind, WaveGateStatus, WaveStatus,
+    WorkflowArtifactManifest, WorkflowPatch, WorkflowRun, WorkflowStep,
 };
 use serde::{de::DeserializeOwned, Serialize};
 use thiserror::Error;
@@ -533,6 +533,10 @@ impl HarnessStore {
         self.append_jsonl("member_actions.jsonl", value)
     }
 
+    pub fn append_pending_interaction(&self, value: &PendingInteraction) -> StoreResult<()> {
+        self.append_jsonl("pending_interactions.jsonl", value)
+    }
+
     pub fn append_delegation_run(&self, value: &DelegationRun) -> StoreResult<()> {
         self.append_jsonl("delegation_runs.jsonl", value)
     }
@@ -819,6 +823,10 @@ impl HarnessStore {
 
     pub fn member_actions(&self) -> StoreResult<Vec<MemberAction>> {
         self.read_jsonl("member_actions.jsonl")
+    }
+
+    pub fn pending_interactions(&self) -> StoreResult<Vec<PendingInteraction>> {
+        self.read_jsonl("pending_interactions.jsonl")
     }
 
     pub fn delegation_runs(&self) -> StoreResult<Vec<DelegationRun>> {
@@ -1519,6 +1527,7 @@ mod tests {
             role: "worker".into(),
             provider: "kimi".into(),
             model: Some("kimi-k2".into()),
+            provider_profile: None,
             status: MemberRunStatus::Running,
             provider_session_id: Some("ps-1".into()),
             acp_session_id: Some("acp-1".into()),
@@ -1613,8 +1622,11 @@ mod tests {
             team_run_id: "tr-1".into(),
             member_run_id: "mr-1".into(),
             task_id: Some("task-1".into()),
+            provider_call_id: Some("tool-1".into()),
             action_type: "tool_completed".into(),
             status: MemberActionStatus::Succeeded,
+            provider_status: Some("completed".into()),
+            semantic_status: Some("succeeded".into()),
             title: "cargo test".into(),
             summary: "all green".into(),
             evidence_refs: vec!["ev-1".into()],

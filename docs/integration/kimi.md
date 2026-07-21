@@ -2,8 +2,8 @@
 
 本文档定义 Star Harness 如何集成 Kimi Code（Moonshot）。重点是把
 Kimi 变成 harness 里的第三个 registry-routed provider：可以创建、投递消息、
-观察状态、回收运行时，并把 Kimi Code 的 flat stream-json 输出转成 harness 的
-`AgentEvent`、`ProviderSession`、`Evidence`、`Message` 和 `Decision`。
+观察状态、回收运行时，并以 Kimi 原生 session 作为执行记录与 resume 真相；
+Harness 只保存 session binding、跨系统协调、显式 outcome 与 artifact/check refs。
 
 Provider-neutral runtime contracts live in [../agent-runtime.md](../agent-runtime.md).
 This file should explain only how Kimi implements those contracts. Shared object
@@ -19,8 +19,9 @@ AgentMember(provider=kimi)
   -> AgentRuntime(kimi CLI, request-response shape, one spawned per delivery)
   -> provider session
   -> Message delivery through kimi CLI with injected harness context
-  -> kimi-native flat stream parsing
-  -> harness store and Agent Dashboard
+  -> Kimi native session (execution truth and resume)
+  -> in-memory flat-stream projection + Harness coordination store
+  -> Agent Dashboard joined view
 ```
 
 也就是说：
@@ -286,24 +287,41 @@ ACP (Agent Client Protocol) JSON-RPC session over stdio, not one-shot print mode
 initialize -> session/new -> session/prompt (streaming notifications) -> session/cancel
 ```
 
-- The ACP `sessionId` is recorded as `ProviderSession.provider_thread_id` (and as
-  `MemberRun.acp_session_id` once the Agent Team objects land).
-- A `MemberRun(provider=kimi)` needs resume, mid-turn message injection, cancel, and streaming
-  observation. Print mode cannot provide these, so `kimi -p` is repositioned: it remains the V1
-  message-delivery substrate above, and under Agent Team it serves only as the
-  `dynamic_workflow` leaf executor.
-- `map_permission` (above) now has a real consumer: the driver applies the mapped mode when
-  establishing the ACP session.
-- Delegation capture: Kimi `SubagentStart` / `SubagentStop` hooks plus the session `wire.jsonl`
-  are reported to the harness and reduced into `DelegationRun` + `MemberAction` rows.
-- Capability honesty still applies: until the ACP adapter lands and the capture path is
-  verified, `ProviderCapabilities::kimi_exec()` stays degraded, and any Kimi-native sub-agent
-  fan-out (`Agent` / `AgentSwarm`) degrades to `dynamic_workflow` with the delegation labeled
-  `unverified` rather than presented as a unified capability.
+- The ACP `sessionId` is currently stored on `MemberRun.acp_session_id` and
+  reused for follow-up rounds inside the same live TeamRun process. The target
+  is a mode-aware `NativeSessionRef`; restart-time `session/load|resume` must be
+  proven separately.
+- `session/update` message, thought, and tool frames stream during the turn.
+  Thought is sanitized into transient live display only. Tool calls remain in
+  Kimi's native session and feed only an ephemeral activity projection; current
+  provider-derived MemberAction writes are ADR 0032 migration debt.
+- `session/request_permission` is implemented as a reverse-RPC bridge. Harness
+  creates a durable `PendingInteraction`, marks the MemberRun waiting, and
+  returns the exact selected ACP `optionId` after Lead/Policy/Human resolution.
+- `AskUserQuestion` routes to Lead. Tool approvals route to policy by default;
+  Plan Review routes to Lead. Company-level legal, financial, permission, and
+  organization effects remain subject to their native Human Approval contract.
+- The TeamRun adapter retains a cooperative live control handle while
+  `session/prompt` is active. Dashboard/MCP member interruption sends
+  `session/cancel`, waits for the prompt's terminal `stopReason=cancelled`, and
+  only then records the MemberRun as `stopped`; the profile reports
+  `supports_cancel=true`. Kimi ACP still does not support same-turn steer, so
+  normal chat is queued for the next provider round.
+- Client FS and terminal reverse-RPC are not advertised. Unknown client methods
+  fail closed with `methodNotFound`.
+- Kimi-native Agent/AgentSwarm/background-task and hook events are not yet
+  reduced into DelegationRun. The provider may use them internally, but Harness
+  does not claim child lifecycle control or complete observation.
 
-## Workspace Model
+The authoritative mode snapshot is `MemberRun.provider_profile` with
+`execution_mode=kimi_acp`; it must not be inferred from the older
+`ProviderCapabilities::kimi_exec()` headless-delivery preset.
 
-Kimi and Claude both use an isolated runtime/session directory:
+## Native session storage and workspace
+
+Kimi owns its native session history and resume data. Harness stores only the
+session binding and coordination above it. The following Harness-created
+delivery mirror is current implementation debt, not the target storage model:
 
 ```text
 {harness_root}/runtimes/{member_id}/
@@ -314,49 +332,49 @@ Kimi and Claude both use an isolated runtime/session directory:
   kimi.stderr                 # only when stderr is non-empty
 ```
 
-`run_kimi_delivery` writes `kimi.stream-json.ndjson`, records the path in
+Today `run_kimi_delivery` writes `kimi.stream-json.ndjson`, records the path in
 `ProviderSession.jsonl_ref`, and writes stderr to `kimi.stderr` when present
 (`crates/harness-cli/src/main.rs:14667-14733`,
 `crates/harness-cli/src/main.rs:14740-14751`).
 
 ## Native Multi-Agent Features
 
-Kimi Code v0.18 is treated as a single provider member execution surface.
+Kimi Code 0.27 exposes native Agent/AgentSwarm, background tasks, hooks, session
+recovery, context compaction, MCP, modes, and model/thinking configuration. That
+provider-native inventory is not the same as current Adapter coverage.
 
 Doctrine:
 
 > Child threads stay under the parent member, not promoted to members.
 
-For Kimi V1:
+For the current `kimi_acp` Team Member mode:
 
-- no native Kimi subagent lifecycle is claimed;
-- no provider child thread creation is claimed;
-- `session.resume_hint` is a resumable session hint, not a child agent;
-- any multi-agent behavior must still flow through harness `AgentMember`, `Task`,
-  `Message`, `Evidence`, and `Decision` records.
-
-This matches `ProviderCapabilities::kimi_exec()`, where `subagents`, `mcp`, `hooks`,
-`schema`, `cost`, and `resume` are all false/degraded until proven
-(`crates/harness-core/src/lib.rs:4929-4950`).
+- native subagents remain implementation details of the invoking MemberRun;
+- no native child is promoted into a MemberRun;
+- no lifecycle control is claimed without a provider child identifier and
+  tested interrupt/resume/close path;
+- hook/background/session files may contain prompts, command output, paths, and
+  credentials and must not be copied into public evidence without redaction;
+- Kimi plan updates are explicit provider state and may be mapped later;
+  provider thinking remains transient-only.
 
 ## Evidence and Report Extraction
 
-Kimi output contains flat assistant text plus optional meta frames. Harness converts them as:
+Kimi output contains flat assistant text plus optional meta frames. The target
+adapter reads these from Kimi native storage and projects them without copying:
 
 ```text
-Kimi flat NDJSON
-  ├─ role=="assistant" content    -> delivery summary + AgentEvent
-  ├─ session.resume_hint          -> ProviderSession resume token / ProviderMeta
-  ├─ raw NDJSON file              -> Evidence jsonl_ref
-  └─ stderr                       -> transcript_ref / stderr_ref when non-empty
+Kimi native session
+  ├─ role=="assistant" content    -> ephemeral activity / explicit outcome on promotion
+  ├─ session.resume_hint          -> NativeSessionRef
+  ├─ tool and status frames       -> ephemeral activity
+  └─ provider errors              -> native detail + Harness lifecycle summary when needed
 ```
 
-Evidence lifecycle:
-
-1. Raw evidence: capture `kimi.stream-json.ndjson` as-is.
-2. Indexed evidence: append `Evidence { source_type: "kimi_delivery_session" }`.
-3. Optional graduation: future structured extraction may promote reply content to Proposal or Decision.
-4. Schema extraction: degraded to caller text-extract fallback because `kimi_exec().schema = false`.
+Harness may explicitly promote an outcome, handoff, artifact reference, check,
+or governed decision. It does not capture raw Kimi NDJSON/stderr as a parallel
+evidence store. Native-session export, if later offered, is an explicit
+redacted user operation under ADR 0032.
 
 `spawn_kimi_ephemeral` sets `tokens`, `model`, `structured`, and `cost_usd` to `None`
 because Kimi `-p` stream-json carries no usage/model/cost frame

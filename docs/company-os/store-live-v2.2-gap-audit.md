@@ -15,14 +15,17 @@ read/write HTTP API, authority-labelled Dashboard projection, governed action
 engine, and the trademark Store-live seed already exist and have V1 acceptance
 evidence.
 
-The remaining work is narrower and more concrete. The first proof item below
-was completed on 2026-07-20; the other items remain:
+The remaining work is narrower and more concrete. Store-live proof and the
+first Approval and WorkItem browser actions are complete:
 
 1. **completed:** prove the merged V2.2 visual implementation against a real Store projection;
-2. connect the visible Company OS controls to the governed Action transport;
-3. add the product contracts that are still represented only in documentation
+2. **completed first slices:** connect Approval and WorkItem controls to the
+   governed Action transport;
+3. replace the local operator capability with actor-bound sessions and add
+   Assignment acknowledgement/reassignment and request-changes/follow-up actions;
+4. add the product contracts that are still represented only in documentation
    or as generic `TypedRecord`s; and
-4. remove stale comments and completion claims that blur those boundaries.
+5. keep implementation claims synchronized as those boundaries move.
 
 ## Status vocabulary
 
@@ -40,7 +43,7 @@ was completed on 2026-07-20; the other items remain:
 | Document / Block / TypedRecord / Relation / View / BusinessModule | `implemented` | [`crates/harness-core/src/company_os.rs`](../../crates/harness-core/src/company_os.rs), [`crates/harness-store/src/company_os.rs`](../../crates/harness-store/src/company_os.rs), [`schemas/company-os/knowledge.schema.json`](../../schemas/company-os/knowledge.schema.json) | No second document substrate is needed. |
 | Human / Standing Agent / External / Service and OrgUnit membership | `implemented` | Separate native actor records and ledgers in Core/Store; actor and organization schemas; Store transition tests | Standing Agent collaboration and organization mutation are not yet connected from the product UI. |
 | WorkItem and Assignment | `partial` | Native `WorkItem`, `Assignment`, HTTP resources, plus governed `work_item.transition` lifecycle, responsibility, provenance, Approval-gate, replay, audit, and Store-live browser acceptance | Native `Milestone`, `WorkItem.milestone_ref`, and `WorkItem.work_type` are absent even though the canonical product docs require them. Assignment acknowledgement/reassignment still needs its own governed action. |
-| Approval / Commitment / Payment governance | `implemented` | Native records, monotonic transition checks, Human authority enforcement, idempotent `ActionCommand`, and atomic audit writes in Store/API tests | Product controls do not dispatch these commands yet. Existing V2.2 approval buttons are deliberately disabled. |
+| Approval / Commitment / Payment governance | `implemented` | Native records, monotonic transition checks, Human authority enforcement, idempotent `ActionCommand`, atomic audit writes, and Store-live `approval.decide` browser acceptance | Approval Focus dispatches the governed command through a local operator capability. Actor-bound Human authentication and later Commitment/Payment action surfaces remain. |
 | Company OS HTTP reads and writes | `implemented` | [`crates/harness-cli/src/company_os_api.rs`](../../crates/harness-cli/src/company_os_api.rs) exposes Store snapshot, typed resources, administrative import, and declared actions protected by `HARNESS_COMPANY_OS_TOKEN` | Approval Focus and WorkItem Focus use the transport. Its session capability is a local operator boundary, not final Human authentication. |
 | Authoritative Dashboard projection | `implemented` | Snapshot uses `snapshot_contract=company-os-v1`, `projection_kind=live_company_os`, Store source metadata, and a revision hash; [`sourceTruth.ts`](../../apps/agent-dashboard/src/company-os/sourceTruth.ts) recognizes it fail-closed | None for read authority. Page-level completeness still depends on the adapter and supplied records. |
 | V2.2 six-page Store-live read rendering | `implemented` | [`expected-vs-store-live-v2.2.html`](../design/company-os-v2/expected-vs-store-live-v2.2.html) and its manifest prove six routed browser renders from an authority-labelled isolated Harness Store, alongside Expected and fixture Actual | Read proof is complete. Interactive action coverage is tracked per native command. |
@@ -55,18 +58,19 @@ was completed on 2026-07-20; the other items remain:
 | Standing Agent subject-linked collaboration | `missing` | Standing Agent focus separates organization identity from execution identity and never persists thinking | Composer is disabled; no durable subject-linked conversation/action API is connected. Direct-report activity and delegation still need a product contract. |
 | Lead direct reports | `implemented` | Store seed writes `agent_lead_actor_ref` plus Agent Lead membership; the projection adapter retains those facts; Lead focus derives Standing Agent reports only from the governed unit membership | Cross-unit actors remain a capability roster, explicitly not a reporting relation. Subject-linked delegation activity is still missing. |
 | Git Issue / PR linkage | `design-only` | Product docs describe development WorkItem integration as an adapter concern | No native adapter currently proves WorkItem start, PR review, merge evidence, and acceptance linkage. Keep it outside the generic core until the Work contract is stable. |
-| Host Wave acceptance | `missing` | Wave gate correctly refuses to invent an accepted run | Host executor has no eligible attempt creation path, so completed Host Waves cannot name an accepted attempt. This is an execution-foundation defect, separate from Company OS. |
+| Host Wave acceptance | `implemented` | A Host Wave records an explicit direct outcome and artifacts without inventing an executor run; `mission_wave_api::host_wave_accepts_direct_outcome_without_fake_run` and native Mission closeout acceptance prove the path | Provider-native Host subagents remain implementation details. Optional observation must not claim lifecycle control. |
 
 ## Contract discrepancies that must not be hidden
 
-### The completion claim is broader than the interactive product
+### Interactive actions still use a local operator boundary
 
-V1 completion evidence correctly proves the Store chain and browser read model.
-It does not prove that a user can approve, request changes, reject, create an
-organization actor, or message a Standing Agent from the current V2.2 pages.
-Those controls remain disabled. Future completion language must distinguish
-**backend governed action acceptance** from **interactive product action
-acceptance**.
+V1 completion evidence proves the Store chain and browser read model. Approval
+Focus now approves or rejects, and WorkItem Focus now starts, submits, and
+completes through governed commands. This does not yet prove actor-bound Human
+authentication, request changes, assignment acknowledgement/reassignment,
+organization mutation, or Standing Agent collaboration. Completion language
+must distinguish local-operator browser acceptance from final identity-bound
+product authority.
 
 ### Metric and governance records use a generic compatibility representation
 
@@ -141,10 +145,12 @@ created. See `docs/design/company-os-v2/workitem-action-v1/review.html`.
 - add subject-linked Standing Agent collaboration and governed organization
   proposals without mixing in Agent Team MemberRun lifecycle.
 
-## Wave 1 exit decision
+## Current exit decision
 
-The Store-live substrate, trademark backend loop, and V2.2 Store-live read proof
-are implemented. The next executable slice is therefore **one real Human
-approval browser action**. Rebuilding Documents, actors, WorkItems, Approvals,
-or finance ledgers would duplicate working product infrastructure and is
-explicitly out of scope.
+The Store-live substrate, trademark backend loop, V2.2 Store-live read proof,
+Approval action, and governed WorkItem lifecycle are implemented. The next
+native product slice is **Work model completion** (`Milestone`,
+`WorkItem.milestone_ref`, and `WorkItem.work_type`), followed by actor-bound
+sessions, Assignment actions, and Standing Agent collaboration. Rebuilding
+Documents, actors, WorkItems, Approvals, or finance ledgers would duplicate
+working infrastructure and remains out of scope.

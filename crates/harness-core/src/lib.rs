@@ -1741,6 +1741,11 @@ pub struct MemberRun {
     pub provider: String,
     #[serde(default)]
     pub model: Option<String>,
+    /// Immutable-at-start snapshot of the concrete provider execution path.
+    /// This distinguishes provider-native capability from what this adapter
+    /// and execution mode have actually wired for the run.
+    #[serde(default)]
+    pub provider_profile: Option<ProviderIntegrationProfile>,
     pub status: MemberRunStatus,
     #[serde(default)]
     pub provider_session_id: Option<String>,
@@ -1755,6 +1760,135 @@ pub struct MemberRun {
     pub last_event_at: Option<String>,
     #[serde(default)]
     pub finished_at: Option<String>,
+}
+
+/// How one provider member is executed by Harness. Capability claims are
+/// mode-specific: `codex_exec` and `kimi_acp` are different products even when
+/// their user-facing provider names are simply Codex and Kimi.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderIntegrationProfile {
+    pub provider: String,
+    pub execution_mode: String,
+    #[serde(default)]
+    pub provider_version: Option<String>,
+    #[serde(default)]
+    pub adapter_contract_version: Option<String>,
+    #[serde(default)]
+    pub reviewed_provider_versions: Vec<String>,
+    #[serde(default)]
+    pub compatibility_status: ProviderCompatibilityStatus,
+    #[serde(default)]
+    pub adapter_reviewed_at: Option<String>,
+    #[serde(default)]
+    pub compatibility_note: Option<String>,
+    pub interaction_mode: ProviderInteractionMode,
+    pub tool_event_fidelity: ProviderEventFidelity,
+    pub artifact_event_fidelity: ProviderEventFidelity,
+    pub supports_cancel: bool,
+    pub supports_resume: bool,
+    pub observes_native_subagents: bool,
+    pub observes_background_tasks: bool,
+    /// Product policy, not a provider claim. Thinking may only appear through
+    /// the sanitized transient live channel and is never durable or replayed.
+    pub thinking_transient_only: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderCompatibilityStatus {
+    Current,
+    ReviewRequired,
+    Incompatible,
+    Unavailable,
+    #[default]
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderInteractionMode {
+    /// The provider can pause the same turn until the client answers.
+    PauseAndResume,
+    /// The execution mode cannot accept mid-turn input; end the round with a
+    /// blocker and start a follow-up after the Host answers.
+    EndRoundAndFollowUp,
+    Unsupported,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderEventFidelity {
+    None,
+    Summary,
+    Structured,
+}
+
+/// A provider-originated request that pauses or blocks a MemberRun until an
+/// authorized actor responds. It is product state; unlike thinking it is
+/// durable, replayable, and visible to the Host/Dashboard.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingInteraction {
+    pub id: String,
+    pub team_run_id: String,
+    pub member_run_id: String,
+    pub provider: String,
+    pub provider_request_id: String,
+    pub method: String,
+    pub kind: PendingInteractionKind,
+    pub route: PendingInteractionRoute,
+    pub status: PendingInteractionStatus,
+    pub title: String,
+    pub prompt: String,
+    #[serde(default)]
+    pub options: Vec<PendingInteractionOption>,
+    #[serde(default)]
+    pub tool_call_id: Option<String>,
+    #[serde(default)]
+    pub response_option_id: Option<String>,
+    #[serde(default)]
+    pub response_text: Option<String>,
+    pub created_at: String,
+    #[serde(default)]
+    pub resolved_at: Option<String>,
+    #[serde(default)]
+    pub resolved_by: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingInteractionOption {
+    pub id: String,
+    pub label: String,
+    #[serde(default)]
+    pub intent: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PendingInteractionKind {
+    Question,
+    ToolApproval,
+    PlanReview,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PendingInteractionRoute {
+    Lead,
+    Human,
+    Policy,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PendingInteractionStatus {
+    Pending,
+    Answered,
+    Approved,
+    Denied,
+    Dismissed,
+    Unsupported,
+    Cancelled,
 }
 
 /// Kind of a routed [`TeamMessage`].
@@ -1853,8 +1987,20 @@ pub struct MemberAction {
     pub member_run_id: String,
     #[serde(default)]
     pub task_id: Option<String>,
+    /// Provider-native call/item id for correlating start, progress, result,
+    /// permission, and artifact frames without leaking provider semantics into
+    /// the generic action id.
+    #[serde(default)]
+    pub provider_call_id: Option<String>,
     pub action_type: String,
     pub status: MemberActionStatus,
+    /// Raw lifecycle status reported by the provider transport.
+    #[serde(default)]
+    pub provider_status: Option<String>,
+    /// Harness interpretation after interaction/result semantics are known.
+    /// `provider_status=completed` must not imply `semantic_status=succeeded`.
+    #[serde(default)]
+    pub semantic_status: Option<String>,
     pub title: String,
     pub summary: String,
     #[serde(default)]

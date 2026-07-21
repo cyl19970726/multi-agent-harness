@@ -134,13 +134,18 @@ the choice (`--store-source`).
   git-backed project).
 - **Diff evidence is unavailable** for `_global` (no worktree to diff) — accepted.
 
-## Risk: per-project `provider_turn_events.jsonl` truncation on serve restart
+## Transitional risk: per-project provider-event mirror
 
 `serve` truncates each project's `provider_turn_events.jsonl` on startup to drop
 stale live frames. With multiple projects this happens **per project on restart**,
 which can drop in-flight events for *all* projects at once. Pass `serve
 --no-truncate` (used by the tests and the verify demo) to preserve pre-seeded /
 in-flight rows across a restart.
+
+ADR 0032 removes this mirror from the target architecture. Provider activity
+will be read from each provider's native session; only Harness coordination
+remains in the centralized project store. This flag and truncation behavior are
+implementation debt until that migration lands.
 
 ## Live acceptance
 

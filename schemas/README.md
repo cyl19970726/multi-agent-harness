@@ -10,6 +10,7 @@
 | Member run | [member-run.schema.json](member-run.schema.json) |
 | Team message | [team-message.schema.json](team-message.schema.json) |
 | Member action | [member-action.schema.json](member-action.schema.json) |
+| Pending provider interaction | [pending-interaction.schema.json](pending-interaction.schema.json) |
 | Delegation run | [delegation-run.schema.json](delegation-run.schema.json) |
 | Team run event | [team-run-event.schema.json](team-run-event.schema.json) |
 | Message | [message.schema.json](message.schema.json) |
@@ -25,6 +26,12 @@
 
 Schemas in this directory are generic. Project-specific artifacts should live
 in an adapter package or example directory.
+
+`ProviderSession` and provider-derived `MemberAction` fields are transitional
+implementation schemas. ADR 0032 defines the target: a mode-aware native
+session binding references provider-owned history/resume state, while Harness
+stores only coordination and outcomes. Do not add new transcript, stdout,
+JSONL, tool, command, or file-event mirroring fields.
 
 Fixtures under `fixtures/<schema-name>/valid` and
 `fixtures/<schema-name>/invalid` are checked by `pnpm check:schema-fixtures`.

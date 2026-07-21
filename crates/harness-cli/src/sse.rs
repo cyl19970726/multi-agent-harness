@@ -10,8 +10,8 @@ use std::time::Duration;
 
 use crossbeam::channel::{bounded, Receiver, Sender};
 use harness_core::{
-    AgentEvent, AgentTeamRun, MemberAction, MemberRun, Message, Mission, ProviderSession,
-    TeamMessage, TeamRunEvent, Wave, WorkflowRun, WorkflowStep,
+    AgentEvent, AgentTeamRun, MemberAction, MemberRun, Message, Mission, PendingInteraction,
+    ProviderSession, TeamMessage, TeamRunEvent, Wave, WorkflowRun, WorkflowStep,
 };
 
 /// An event frame sent to SSE clients. Durable frames are reconstructed by tailing
@@ -59,6 +59,8 @@ pub enum SseEventFrame {
     /// operator-visible execution trace for an Agent Team attempt, so they are
     /// tail-replayed and merged latest-wins like the other run records.
     MemberAction(MemberAction),
+    /// A provider request awaiting or carrying an operator/policy response.
+    PendingInteraction(PendingInteraction),
     /// Sanitized, transient member activity for live display only. This value is
     /// never written to JSONL, included in snapshots, or replayed to a later
     /// subscriber. Callers must not place provider thinking or other durable
@@ -238,6 +240,7 @@ const WATCHED_FILES: &[&str] = &[
     "member_runs.jsonl",
     "team_messages.jsonl",
     "member_actions.jsonl",
+    "pending_interactions.jsonl",
 ];
 
 /// Keep the incremental SSE read model aligned with the snapshot projection:
@@ -361,6 +364,21 @@ fn poll_project(
         "member_actions.jsonl",
         consumed_offsets,
         member_action_frames,
+        manager,
+    );
+
+    check_and_broadcast_appends(
+        project_id,
+        store_root,
+        "pending_interactions.jsonl",
+        consumed_offsets,
+        |line| {
+            serde_json::from_str::<PendingInteraction>(line)
+                .ok()
+                .map(SseEventFrame::PendingInteraction)
+                .into_iter()
+                .collect()
+        },
         manager,
     );
 
@@ -700,8 +718,11 @@ mod tests {
             team_run_id: "trun-1".into(),
             member_run_id: "mrun-1".into(),
             task_id: None,
+            provider_call_id: None,
             action_type: "command_completed".into(),
             status: MemberActionStatus::Succeeded,
+            provider_status: None,
+            semantic_status: None,
             title: "Ran focused checks".into(),
             summary: "Focused checks passed".into(),
             evidence_refs: Vec::new(),

@@ -18,9 +18,10 @@ four questions in the first viewport:
 3. What is it doing or waiting for now?
 4. What output supports its contribution to the Wave?
 
-The page is a focused, continuous working surface: conversation, explicit
-activity, artifacts, and review requests appear in one chronological stream.
-It is not a provider transcript or a task-management page.
+The page is a focused, continuous working surface: durable Harness
+coordination, on-demand native provider activity, artifacts, and review
+requests appear in one chronological presentation. It is not a copied provider
+transcript or a task-management page.
 
 ## Canonical Data And Semantics
 
@@ -30,14 +31,18 @@ Required data:
 - parent `AgentTeamRun` attempt and retry lineage;
 - the selected `MemberRun`;
 - `TeamMessage`, especially `kind=assignment` and its `correlation_id`;
-- `MemberAction`, `TeamRunEvent`, `DelegationRun`, artifacts, and evidence
-  references;
-- runtime/session summary, provider/model, worktree, owned paths, permissions,
+- Harness-owned control/lifecycle facts, observed `DelegationRun`, artifacts,
+  outcomes, and evidence/check references;
+- `PendingInteraction` records attributable to this MemberRun, with exact
+  provider options and Lead/Policy/Human routing;
+- `NativeSessionRef`, native session availability/resume capability,
+  runtime summary, provider/model, worktree, owned paths, permissions,
   budget/availability signals; and
-- transient, sanitized `member_activity` preview only when live data exists.
+- ephemeral `NativeActivityProjection` read from the provider session, plus a
+  sanitized `member_activity` preview only when live data exists.
 
-The assignment message plus correlation is the run-scoped ownership proof.
-Do not substitute a legacy dependency graph or a provider self-description for it.
+The assignment message plus correlation is the sole run-scoped ownership proof;
+a provider self-description does not replace it.
 
 `MemberRun` is an execution instance. `StandingAgent` is a future, long-lived
 identity/capability object. A MemberRun may optionally be sourced from a
@@ -49,6 +54,12 @@ Thinking is a best-effort live preview: sanitized, TTL-bound, local to the
 current project/session, never persisted, replayed, forwarded, or accepted as
 evidence. On refresh or expiry it disappears rather than becoming a blank
 historical event.
+
+The projection must distinguish source and durability. Assignment, handoff,
+PendingInteraction resolution, explicit outcome, control acknowledgement, and
+Wave gate are durable Harness records. Native chat/tool/command/file/turn
+activity is read from the provider session and is rebuildable, non-evidence UI
+state. Harness does not silently fall back to a mirrored history.
 
 ## Layout Contract
 
@@ -116,8 +127,9 @@ than page-specific cards. Its default order is:
    outcome, owned paths, permissions, and applicable constraints.
 4. **OutputsEvidence** — artifacts, checks, report, and contribution to the
    parent Wave gate. It must label absent evidence honestly.
-5. **RuntimeSummary** — provider/model/session, availability, worktree, and
-   actionable failure state. It is operational context, not the primary page.
+5. **RuntimeSummary** — provider/model/native-session binding, availability,
+   resume compatibility, worktree, and actionable failure state. It is
+   operational context, not the primary page.
 6. **DelegationSummary** — observed provider-native or orchestrated child work,
    with attribution and control limits made explicit.
 
@@ -132,6 +144,9 @@ reordering is not a requirement.
 - Open parent Team or Wave without losing selection context.
 - Open an artifact, check, or provider session summary.
 - Acknowledge a waiting/blocker signal where the message protocol permits it.
+- Resolve a provider question, tool approval, or plan review when the current
+  actor is allowed; same-turn resume is available only when the snapshotted
+  execution-mode profile supports it.
 
 Do not offer fake lifecycle control. A stop/cancel action appears only after
 the provider exposes cooperative interruption and the backend can prove its
@@ -141,10 +156,11 @@ outcome. Completion of the MemberRun is an attempt fact, not Wave acceptance.
 
 - **No assignment:** show `No assignment recorded` prominently; preserve
   observed activity but do not infer ownership.
-- **No messages/actions yet:** show the member's starting state and explain
-  that the stream will appear after a durable message or explicit action.
-- **Runtime unavailable:** retain stored identity and history, show the
-  unavailable provider/session and a retry/reconnect path only if supported.
+- **No coordination/native activity yet:** show the member's starting state and
+  explain which source is empty.
+- **Native session unavailable:** retain Harness identity, assignment, outcome,
+  and gate history; mark native detail `missing`, `stale`, or `incompatible`
+  and offer reconnect/resume only if the mode supports it.
 - **Member failed/blocked:** show the explicit failure or blocker action, its
   correlation when present, and the responsible next action; never fabricate a
   reason from status alone.

@@ -60,7 +60,8 @@
     "docs/architecture.md",
     "docs/concept-model.md",
     "docs/decisions/0026-mission-wave-architecture.md",
-    "docs/decisions/0027-company-os-primary-model.md"
+    "docs/decisions/0027-company-os-primary-model.md",
+    "docs/decisions/0032-provider-native-session-is-execution-truth.md"
    ],
    "machineConsumers": [
     "check-doc-links",
@@ -319,6 +320,7 @@
    "canonicalFor": [
     "data model relationships",
     "source-of-truth rules",
+    "provider-native execution versus Harness coordination truth",
     "projection semantics",
     "Mission/Wave and executor attempt edges",
     "optional governance object edges",
@@ -329,7 +331,8 @@
     "docs/concept-model.md",
     "docs/architecture.md",
     "docs/schemas.md",
-    "docs/company-os/governance.md"
+    "docs/company-os/governance.md",
+    "docs/decisions/0032-provider-native-session-is-execution-truth.md"
    ],
    "machineConsumers": [
     "check-doc-links",
@@ -724,7 +727,8 @@
    ],
    "dependsOn": [
     "schemas/README.md",
-    "crates/harness-core/src/lib.rs"
+    "crates/harness-core/src/lib.rs",
+    "docs/decisions/0032-provider-native-session-is-execution-truth.md"
    ],
    "machineConsumers": [
     "check-doc-links",
@@ -789,116 +793,6 @@
     "npx pnpm@9.15.4 check"
    ],
    "reorgTrigger": "Mission/Wave page list, compatibility page status, page-spec template, or page-spec boundary changes."
-  },
-  {
-   "path": "docs/dashboard/pages/team-workspace.md",
-   "ownerRole": "product-design",
-   "status": "planned",
-   "lifecycle": "volatile",
-   "canonicalFor": [
-    "persistent AgentTeam workspace page spec",
-    "team collaboration UI contract",
-    "page-local layout contract"
-   ],
-   "dependsOn": [
-    "docs/prd.md",
-    "docs/concept-model.md",
-    "docs/dashboard.md",
-    "docs/dashboard/frontend-design.md"
-   ],
-   "machineConsumers": [
-    "check-doc-links",
-    "check-doc-governance"
-   ],
-   "reviewAfter": "2026-08-03",
-   "lastVerifiedWith": [
-    "npx pnpm@9.15.4 check",
-    "harness governance check"
-   ],
-   "reorgTrigger": "Team workspace page contract, layout contract dimensions, ASCII diagrams, first viewport, or scroll ownership changes."
-  },
-  {
-   "path": "docs/dashboard/pages/agent-member-workbench.md",
-   "ownerRole": "product-design",
-   "status": "planned",
-   "lifecycle": "volatile",
-   "canonicalFor": [
-    "AgentMember workbench page spec",
-    "member runtime and message UI contract",
-    "page-local layout contract"
-   ],
-   "dependsOn": [
-    "docs/prd.md",
-    "docs/concept-model.md",
-    "docs/dashboard.md",
-    "docs/dashboard/frontend-design.md"
-   ],
-   "machineConsumers": [
-    "check-doc-links",
-    "check-doc-governance"
-   ],
-   "reviewAfter": "2026-08-03",
-   "lastVerifiedWith": [
-    "npx pnpm@9.15.4 check",
-    "harness governance check"
-   ],
-   "reorgTrigger": "AgentMember workbench page contract, layout contract dimensions, ASCII diagrams, first viewport, or scroll ownership changes."
-  },
-  {
-   "path": "docs/dashboard/pages/evidence-review-decision.md",
-   "ownerRole": "product-design",
-   "status": "planned",
-   "lifecycle": "volatile",
-   "canonicalFor": [
-    "acceptance proof UI contract",
-    "evidence review decision page spec",
-    "first-class Review and decision_kind/waiver rendering contract",
-    "page-local layout contract"
-   ],
-   "dependsOn": [
-    "docs/prd.md",
-    "docs/concept-model.md",
-    "docs/dashboard.md",
-    "docs/dashboard/frontend-design.md"
-   ],
-   "machineConsumers": [
-    "check-doc-links",
-    "check-doc-governance"
-   ],
-   "reviewAfter": "2026-08-03",
-   "lastVerifiedWith": [
-    "npx pnpm@9.15.4 check",
-    "harness governance check"
-   ],
-   "reorgTrigger": "Evidence review decision page contract, layout contract dimensions, ASCII diagrams, first viewport, or scroll ownership changes."
-  },
-  {
-   "path": "docs/dashboard/pages/warnings-repair.md",
-   "ownerRole": "product-design",
-   "status": "planned",
-   "lifecycle": "volatile",
-   "canonicalFor": [
-    "warning queue and repair UI contract",
-    "Gap ledger rendering contract",
-    "workflow risk page spec",
-    "page-local layout contract"
-   ],
-   "dependsOn": [
-    "docs/prd.md",
-    "docs/concept-model.md",
-    "docs/dashboard.md",
-    "docs/dashboard/frontend-design.md"
-   ],
-   "machineConsumers": [
-    "check-doc-links",
-    "check-doc-governance"
-   ],
-   "reviewAfter": "2026-08-03",
-   "lastVerifiedWith": [
-    "npx pnpm@9.15.4 check",
-    "harness governance check"
-   ],
-   "reorgTrigger": "Warnings and repair page contract, layout contract dimensions, ASCII diagrams, first viewport, or scroll ownership changes."
   },
   {
    "path": "docs/dashboard/pages/debug.md",
@@ -967,6 +861,7 @@
     "docs/agent-runtime.md",
     "docs/concept-model.md",
     "docs/data-model.md",
+    "docs/decisions/0032-provider-native-session-is-execution-truth.md",
     "docs/integration/codex.md",
     "docs/integration/claude.md",
     "docs/decisions/0008-persistent-codex-agent-runtime.md",
@@ -1605,30 +1500,6 @@
    "reorgTrigger": "The live-turn rendering staging, the incremental-write mechanism, or the reused TUI/event machinery changes."
   },
   {
-   "path": "docs/research/agents-multica-layout-design.md",
-   "ownerRole": "product-design",
-   "status": "idea",
-   "lifecycle": "volatile",
-   "canonicalFor": [
-    "Multica-style Agents page layout (synthesized design)",
-    "chosen variant + no-empty-tabs rationale",
-    "conversation-default + live-current-work tab structure"
-   ],
-   "dependsOn": [
-    "docs/dashboard/pages/agent-member-workbench.md",
-    "apps/agent-dashboard/src/types.ts"
-   ],
-   "machineConsumers": [
-    "check-doc-links",
-    "check-doc-governance"
-   ],
-   "reviewAfter": "2026-09-30",
-   "lastVerifiedWith": [
-    "npx pnpm@9.15.4 check"
-   ],
-   "reorgTrigger": "The chosen Agents layout variant, the tab structure, or the AgentMember config-backing model changes."
-  },
-  {
    "path": "docs/workflow-runtime.md",
    "ownerRole": "architect",
    "status": "stable",
@@ -2242,11 +2113,12 @@
    "lifecycle": "volatile",
    "canonicalFor": [
     "MemberRun execution focus page",
-    "run-scoped assignment, activity, and evidence UI contract"
+    "run-scoped assignment, native activity projection, and evidence UI contract"
    ],
    "dependsOn": [
     "docs/company-os/execution-foundation.md",
     "docs/decisions/0025-agent-team-run-control-plane.md",
+    "docs/decisions/0032-provider-native-session-is-execution-truth.md",
     "docs/design/workbench-layout-v2/README.md"
    ],
    "machineConsumers": [
@@ -2290,11 +2162,12 @@
    "lifecycle": "volatile",
    "canonicalFor": [
     "AgentTeamRun execution war room",
-    "run-scoped collaboration and correlation-proof UI contract"
+    "run-scoped collaboration, native activity projection, and correlation-proof UI contract"
    ],
    "dependsOn": [
     "docs/company-os/execution-foundation.md",
     "docs/decisions/0025-agent-team-run-control-plane.md",
+    "docs/decisions/0032-provider-native-session-is-execution-truth.md",
     "docs/design/execution-workbench-v3/README.md"
    ],
    "machineConsumers": [
@@ -2530,6 +2403,96 @@
     "node apps/agent-dashboard/tests/company-os-trademark-acceptance.mjs"
    ],
    "reorgTrigger": "Fixture loading, browser route evidence, visual comparison policy, or acceptance evidence requirements change."
+  },
+  {
+   "path": "docs/integration/native-session-storage.md",
+   "ownerRole": "provider-integration",
+   "status": "planned",
+   "lifecycle": "volatile",
+   "canonicalFor": [
+    "NativeSessionAdapter target interface",
+    "NativeSessionRef field contract",
+    "provider-native activity read and Dashboard join",
+    "provider-specific resume and availability",
+    "provider mirror removal implementation Waves"
+   ],
+   "dependsOn": [
+    "docs/decisions/0032-provider-native-session-is-execution-truth.md",
+    "docs/agent-integration-model.md",
+    "docs/integration/codex.md",
+    "docs/integration/kimi.md",
+    "docs/integration/claude.md",
+    "docs/dashboard/pages/member-run-focus.md",
+    "docs/dashboard/pages/team-run-war-room.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-08-22",
+   "lastVerifiedWith": [
+    "npx pnpm@9.15.4 check"
+   ],
+   "reorgTrigger": "Native session binding fields, provider reader/resume interfaces, activity projection, or migration order changes."
+  },
+  {
+   "path": "docs/decisions/0032-provider-native-session-is-execution-truth.md",
+   "ownerRole": "architecture",
+   "status": "stable",
+   "lifecycle": "stable",
+   "canonicalFor": [
+    "provider-native session as per-agent execution truth",
+    "Harness coordination-only persistence boundary",
+    "NativeSessionRef and provider-specific resume contract",
+    "ephemeral native activity projection",
+    "provider-event mirror removal migration"
+   ],
+   "dependsOn": [
+    "docs/decisions/0010-harness-store-is-canonical.md",
+    "docs/decisions/0025-agent-team-run-control-plane.md",
+    "docs/decisions/0030-provider-interaction-contract.md",
+    "docs/decisions/0031-interactive-provider-modes-and-version-drift.md",
+    "docs/data-model.md",
+    "docs/company-os/execution-foundation.md",
+    "docs/agent-integration-model.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-08-22",
+   "lastVerifiedWith": [
+    "npx pnpm@9.15.4 check"
+   ],
+   "reorgTrigger": "Per-agent native storage, Harness coordination persistence, native activity projection, provider resume, export, or migration policy changes."
+  },
+  {
+   "path": "docs/integration/live-agent-team-acceptance-2026-07-21.md",
+   "ownerRole": "execution-foundation",
+   "status": "stable",
+   "lifecycle": "stable",
+   "canonicalFor": [
+    "first native Codex and Kimi Agent Team live-provider acceptance",
+    "interrupted foreground TeamRun recovery evidence"
+   ],
+   "dependsOn": [
+    "docs/company-os/execution-foundation.md",
+    "docs/integration/codex.md",
+    "docs/integration/kimi.md",
+    "docs/decisions/0025-agent-team-run-control-plane.md",
+    "docs/decisions/0026-mission-wave-architecture.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance",
+    "live Agent Team acceptance"
+   ],
+   "reviewAfter": "2026-08-21",
+   "lastVerifiedWith": [
+    "harness dashboard snapshot",
+    "cargo test -p harness-cli --test team_run_api"
+   ],
+   "reorgTrigger": "Agent Team provider transport, interrupted-run recovery, thinking persistence, or acceptance evidence requirements change."
   },
   {
    "path": "docs/design/company-os-v1/fixtures/company-os-trademark-v1.json",

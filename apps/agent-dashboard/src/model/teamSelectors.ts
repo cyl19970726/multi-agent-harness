@@ -5,6 +5,7 @@ import type {
   MemberAction,
   MemberRun,
   Mission,
+  PendingInteraction,
   TeamMessage,
   TeamMessageDelivery,
   TeamRun,
@@ -26,6 +27,7 @@ export interface TeamRunNeedsYou {
   approvals: TeamMessage[];
   waitingMembers: MemberRun[];
   blockedMembers: MemberRun[];
+  pendingInteractions: PendingInteraction[];
   unacknowledgedDeliveries: Array<{
     message: TeamMessage;
     delivery: TeamMessageDelivery;
@@ -88,6 +90,7 @@ export interface TeamRunContext {
   memberById: Map<string, MemberRun>;
   messages: TeamMessage[];
   actions: MemberAction[];
+  interactions: PendingInteraction[];
   delegations: DelegationRun[];
   events: TeamRunEvent[];
   liveActivityByMember: Map<string, LiveMemberActivity>;
@@ -196,6 +199,7 @@ export function selectTeamRunContext(
   const memberById = new Map(members.map((member) => [member.id, member]));
   const messages = (snapshot.team_messages ?? []).filter((message) => message.team_run_id === run.id);
   const actions = (snapshot.member_actions ?? []).filter((action) => action.team_run_id === run.id);
+  const interactions = (snapshot.pending_interactions ?? []).filter((interaction) => interaction.team_run_id === run.id);
   const delegations = (snapshot.delegation_runs ?? []).filter((delegation) => delegation.team_run_id === run.id);
   const events = (snapshot.team_run_events ?? []).filter((event) => event.team_run_id === run.id);
   const liveActivityByMember = new Map(
@@ -211,10 +215,11 @@ export function selectTeamRunContext(
     memberById,
     messages,
     actions,
+    interactions,
     delegations,
     events,
     liveActivityByMember,
-    needsYou: selectTeamRunNeedsYou(members, messages),
+    needsYou: selectTeamRunNeedsYou(members, messages, interactions),
     activity: selectStableTeamActivity({ messages, actions, events }),
   };
 }
@@ -305,6 +310,7 @@ export function selectMessageAssignmentLineage(
 export function selectTeamRunNeedsYou(
   members: MemberRun[],
   messages: TeamMessage[],
+  interactions: PendingInteraction[] = [],
 ): TeamRunNeedsYou {
   const approvals = sortMessages(
     messages.filter((message) => ["blocker", "review_request"].includes(message.kind ?? "")),
@@ -313,6 +319,8 @@ export function selectTeamRunNeedsYou(
   const blockedMembers = members.filter(
     (member) => member.status === "blocked" || member.status === "failed",
   );
+  const pendingInteractions = interactions.filter((interaction) => interaction.status === "pending");
+  const interactionMemberIds = new Set(pendingInteractions.map((interaction) => interaction.member_run_id));
   const unacknowledgedDeliveries = messages.flatMap((message) =>
     (message.deliveries ?? [])
       .filter((delivery) => isUnacknowledgedDelivery(delivery.status))
@@ -322,8 +330,13 @@ export function selectTeamRunNeedsYou(
     approvals,
     waitingMembers,
     blockedMembers,
+    pendingInteractions,
     unacknowledgedDeliveries,
-    total: approvals.length + waitingMembers.length + blockedMembers.length + unacknowledgedDeliveries.length,
+    total: approvals.length
+      + pendingInteractions.length
+      + waitingMembers.filter((member) => !interactionMemberIds.has(member.id)).length
+      + blockedMembers.length
+      + unacknowledgedDeliveries.length,
   };
 }
 

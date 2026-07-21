@@ -12,7 +12,7 @@ outputs, adapters, and the Agent Dashboard.
 | `AgentTeamRun` | One `agent_team` attempt linked to a Mission/Wave |
 | `MemberRun` | One role/provider execution instance inside a TeamRun |
 | `TeamMessage` | Assignment, correlation/causation, handoff, review, and delivery state |
-| `MemberAction` | Explicit durable work facts; never provider thinking |
+| `MemberAction` | Transitional action schema; target scope is Harness-owned coordination/control facts, never mirrored provider activity |
 | `DelegationRun` | Honest attribution for observed or harness-controlled delegation |
 | `TeamRunEvent` | Ordered sanitized event projection for one TeamRun |
 
@@ -41,7 +41,7 @@ inside a native Wave.
 | `Proposal` | Rust + JSON schema | yes |
 | `Evidence` | Rust + JSON schema | yes |
 | `Decision` | Rust + JSON schema | yes |
-| `ProviderSession` | Rust + JSON schema | yes |
+| `ProviderSession` | Transitional Rust + JSON schema; replacement by a mode-aware native session binding is planned under ADR 0032 | current schema only |
 | `ToolDescriptor` | JSON schema + example descriptor | partially |
 | `DocDescriptor` | JSON schema + docs registry + governance check | yes |
 | `Skill` | markdown skill + metadata check | partially |
@@ -63,6 +63,7 @@ schema contracts are checked with valid and invalid fixtures.
 | Member run | [member-run.schema.json](../schemas/member-run.schema.json) |
 | Team message | [team-message.schema.json](../schemas/team-message.schema.json) |
 | Member action | [member-action.schema.json](../schemas/member-action.schema.json) |
+| Pending provider interaction | [pending-interaction.schema.json](../schemas/pending-interaction.schema.json) |
 | Delegation run | [delegation-run.schema.json](../schemas/delegation-run.schema.json) |
 | Team run event | [team-run-event.schema.json](../schemas/team-run-event.schema.json) |
 | Agent team | [agent-team.schema.json](../schemas/agent-team.schema.json) |
@@ -82,6 +83,13 @@ schema contracts are checked with valid and invalid fixtures.
 | Vision | [vision.schema.json](../schemas/vision.schema.json) |
 
 ## Schema Evolution
+
+`provider-session.schema.json` currently contains `stdout_ref`, `jsonl_ref`, and
+`transcript_ref`. These fields describe the implementation before ADR 0032 and
+must not be used for new product design. The migration will introduce a
+mode-aware native session binding, stop provider-event mirror writes, update
+Dashboard readers, and then remove obsolete local data and fields without a
+backward-compatibility reader.
 
 Schemas evolve additively where a current contract permits it; Company OS
 contracts define their own required migration and validation rules.
