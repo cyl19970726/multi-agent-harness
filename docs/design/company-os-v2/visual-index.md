@@ -48,10 +48,21 @@ Six implemented views have Store-live Actual captures at three viewports:
 | Timeline | [desktop](work-operating-system-v1/actual/work-timeline--desktop-1536x1024.png) | [tablet](work-operating-system-v1/actual/work-timeline--tablet-1024x900.png) | [mobile](work-operating-system-v1/actual/work-timeline--mobile-390x844.png) |
 | Workload | [desktop](work-operating-system-v1/actual/work-workload--desktop-1536x1024.png) | [tablet](work-operating-system-v1/actual/work-workload--tablet-1024x900.png) | [mobile](work-operating-system-v1/actual/work-workload--mobile-390x844.png) |
 
-These captures prove product truth and responsive rendering. Under the strict
-`frontend-visual-contract` lane, P0 visual-fidelity closure still requires
-versioned design specs, asset inventories, exact-size overlays, retained
-iterations, and a separate `visual_fidelity` gate.
+These captures prove product truth and responsive rendering.
+
+## Native trademark closure
+
+The strict `frontend-visual-contract` closure is complete in
+[`../company-os-v3/trademark-native-closure-v1/`](../company-os-v3/trademark-native-closure-v1/).
+It binds the native trademark Action loop to three P0 pages: Docs Workspace,
+Trademark Business Module, and Work Board. The package includes versioned
+design specs, asset inventories, two retained implementation iterations,
+exact-size overlays, Before/Expected/Store-live Actual comparisons, and
+separate passing `product_truth` and `visual_fidelity` gates.
+
+The Store-live Work board intentionally renders six native WorkItems rather
+than the Expected image's 24 illustrative cards. That named deviation prevents
+visual evidence from fabricating business records.
 
 ## Active Organization and governance direction
 
@@ -96,10 +107,9 @@ language references unless a newer page-family contract supersedes them.
 ## V1 and rejected candidates
 
 [`../company-os-v1/`](../company-os-v1/) preserves the original functional
-baseline, accepted implementation evidence, and design history. Its
-`candidates/` folders include explicitly wrong, inconsistent, or exploratory
-directions. They are retained for provenance and must not be loaded as current
-design targets.
+baseline and accepted implementation evidence. Rejected candidate images were
+deleted after convergence and remain recoverable through Git history; they are
+not part of any active design context.
 
 ## Visual acceptance rule
 

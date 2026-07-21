@@ -98,6 +98,15 @@ pub struct RegistryConfig {
     pub required_fields: Vec<String>,
     pub allowed_statuses: Vec<String>,
     pub allowed_lifecycles: Vec<String>,
+    /// Semantic role of the document, independent of maturity/lifecycle.
+    #[serde(default)]
+    pub allowed_authority_classes: Vec<String>,
+    /// Honest implementation maturity of the capability described by the doc.
+    #[serde(default)]
+    pub allowed_implementation_states: Vec<String>,
+    /// Allowed typed references from documentation claims to executable truth.
+    #[serde(default)]
+    pub allowed_truth_ref_kinds: Vec<String>,
     pub core_docs: Vec<String>,
     /// Roots whose Markdown files must all appear in the registry. This catches
     /// important but invisible documents, complementing `core_docs`.
@@ -150,6 +159,9 @@ impl GovernanceConfig {
                     "ownerRole",
                     "status",
                     "lifecycle",
+                    "authorityClass",
+                    "implementationState",
+                    "truthRefs",
                     "canonicalFor",
                     "dependsOn",
                     "machineConsumers",
@@ -168,6 +180,39 @@ impl GovernanceConfig {
                     .iter()
                     .map(|v| s(v))
                     .collect(),
+                allowed_authority_classes: [
+                    "entry",
+                    "canonical_contract",
+                    "implementation_reference",
+                    "design_intent",
+                    "actual_evidence",
+                    "research",
+                    "historical_evidence",
+                ]
+                .iter()
+                .map(|v| s(v))
+                .collect(),
+                allowed_implementation_states: [
+                    "design_only",
+                    "partial",
+                    "implemented",
+                    "verified",
+                ]
+                .iter()
+                .map(|v| s(v))
+                .collect(),
+                allowed_truth_ref_kinds: [
+                    "schema",
+                    "store",
+                    "api",
+                    "ui",
+                    "test",
+                    "decision",
+                    "runtime_evidence",
+                ]
+                .iter()
+                .map(|v| s(v))
+                .collect(),
                 core_docs: [
                     "README.md",
                     "docs/README.md",
@@ -400,6 +445,21 @@ pub fn check_governance(root: &Path, cfg: &RegistryConfig, today: &str) -> GateR
         cfg.allowed_statuses.iter().map(String::as_str).collect();
     let allowed_lifecycles: BTreeSet<&str> =
         cfg.allowed_lifecycles.iter().map(String::as_str).collect();
+    let allowed_authority_classes: BTreeSet<&str> = cfg
+        .allowed_authority_classes
+        .iter()
+        .map(String::as_str)
+        .collect();
+    let allowed_implementation_states: BTreeSet<&str> = cfg
+        .allowed_implementation_states
+        .iter()
+        .map(String::as_str)
+        .collect();
+    let allowed_truth_ref_kinds: BTreeSet<&str> = cfg
+        .allowed_truth_ref_kinds
+        .iter()
+        .map(String::as_str)
+        .collect();
     let mut seen: BTreeSet<String> = BTreeSet::new();
     let mut canonical_owners: BTreeMap<String, String> = BTreeMap::new();
 
@@ -444,6 +504,58 @@ pub fn check_governance(root: &Path, cfg: &RegistryConfig, today: &str) -> GateR
                 "{label}: invalid lifecycle {}",
                 other.unwrap_or("undefined")
             )),
+        }
+        match doc.get("authorityClass").and_then(|v| v.as_str()) {
+            Some(value) if allowed_authority_classes.contains(value) => {}
+            other => failures.push(format!(
+                "{label}: invalid authorityClass {}",
+                other.unwrap_or("undefined")
+            )),
+        }
+        let implementation_state = doc
+            .get("implementationState")
+            .and_then(|value| value.as_str());
+        match implementation_state {
+            Some(value) if allowed_implementation_states.contains(value) => {}
+            other => failures.push(format!(
+                "{label}: invalid implementationState {}",
+                other.unwrap_or("undefined")
+            )),
+        }
+        let mut has_acceptance_truth = false;
+        match doc.get("truthRefs").and_then(|value| value.as_array()) {
+            Some(refs) => {
+                for (truth_index, truth_ref) in refs.iter().enumerate() {
+                    let truth_label = format!("{label}: truthRefs[{truth_index}]");
+                    let kind = truth_ref.get("kind").and_then(|value| value.as_str());
+                    let reference = truth_ref.get("ref").and_then(|value| value.as_str());
+                    if !matches!(kind, Some(value) if allowed_truth_ref_kinds.contains(value)) {
+                        failures.push(format!(
+                            "{truth_label}: invalid kind {}",
+                            kind.unwrap_or("undefined")
+                        ));
+                    }
+                    if reference.map(str::is_empty).unwrap_or(true) {
+                        failures.push(format!("{truth_label}: ref must be a non-empty string"));
+                    }
+                    if kind == Some("test") || kind == Some("runtime_evidence") {
+                        has_acceptance_truth = true;
+                    }
+                }
+                if implementation_state == Some("verified") && !has_acceptance_truth {
+                    failures.push(format!(
+                        "{label}: verified implementationState requires a test or runtime_evidence truthRef"
+                    ));
+                }
+                if matches!(implementation_state, Some("implemented" | "verified"))
+                    && refs.is_empty()
+                {
+                    failures.push(format!(
+                        "{label}: implemented or verified implementationState requires at least one truthRef"
+                    ));
+                }
+            }
+            None => failures.push(format!("{label}: truthRefs must be an array")),
         }
         if !is_non_empty_string_array(doc.get("canonicalFor")) {
             failures.push(format!(
@@ -1120,6 +1232,8 @@ mod tests {
     fn valid_doc(path: &str) -> serde_json::Value {
         serde_json::json!({
             "path": path, "ownerRole": "lead", "status": "stable", "lifecycle": "stable",
+            "authorityClass": "canonical_contract", "implementationState": "partial",
+            "truthRefs": [],
             "canonicalFor": ["x"], "dependsOn": [], "machineConsumers": ["ci"],
             "reviewAfter": "2999-01-01", "lastVerifiedWith": ["test"], "reorgTrigger": "when X"
         })
@@ -1254,6 +1368,61 @@ mod tests {
             .warnings
             .iter()
             .any(|w| w.contains("reviewAfter is stale: 2020-01-01")));
+    }
+
+    #[test]
+    fn governance_verified_state_requires_acceptance_truth() {
+        let root = tmp("gov-verified-truth");
+        write(&root, "README.md", "x");
+        let mut doc = valid_doc("README.md");
+        doc["implementationState"] = serde_json::json!("verified");
+        doc["truthRefs"] = serde_json::json!([
+            {"kind": "schema", "ref": "schemas/example.json"}
+        ]);
+        let registry = serde_json::json!({
+            "schema": "agent_harness.docs_registry.v1",
+            "documents": [doc]
+        });
+        write(&root, "docs/registry.json", &registry.to_string());
+        let r = check_governance(&root, &reg_cfg(), "2026-06-21");
+        assert!(r.failures.iter().any(|failure| failure.contains(
+            "verified implementationState requires a test or runtime_evidence truthRef"
+        )));
+    }
+
+    #[test]
+    fn governance_implemented_state_requires_truth_reference() {
+        let root = tmp("gov-implemented-truth");
+        write(&root, "README.md", "x");
+        let mut doc = valid_doc("README.md");
+        doc["implementationState"] = serde_json::json!("implemented");
+        let registry = serde_json::json!({
+            "schema": "agent_harness.docs_registry.v1",
+            "documents": [doc]
+        });
+        write(&root, "docs/registry.json", &registry.to_string());
+        let r = check_governance(&root, &reg_cfg(), "2026-06-21");
+        assert!(r.failures.iter().any(|failure| failure.contains(
+            "implemented or verified implementationState requires at least one truthRef"
+        )));
+    }
+
+    #[test]
+    fn governance_accepts_verified_state_with_test_truth() {
+        let root = tmp("gov-verified-test");
+        write(&root, "README.md", "x");
+        let mut doc = valid_doc("README.md");
+        doc["implementationState"] = serde_json::json!("verified");
+        doc["truthRefs"] = serde_json::json!([
+            {"kind": "test", "ref": "cargo test -p example"}
+        ]);
+        let registry = serde_json::json!({
+            "schema": "agent_harness.docs_registry.v1",
+            "documents": [doc]
+        });
+        write(&root, "docs/registry.json", &registry.to_string());
+        let r = check_governance(&root, &reg_cfg(), "2026-06-21");
+        assert!(r.failures.is_empty(), "got {:?}", r.failures);
     }
 
     #[test]

@@ -36,6 +36,11 @@ participant, or an execution substrate such as a Mission/Wave, Agent Team, or
 Dynamic Workflow. The execution reference is proof of how work ran; it is not a
 substitute for responsibility, approval, or the business context held in Docs.
 
+Before claiming any part of this loop is implemented, read the
+[implementation truth matrix](implementation-truth-matrix.md). It maps Docs,
+Organization, Work and Finance from contract through acceptance and names the
+remaining native gaps in the trademark scenario.
+
 ## Knowledge boundary
 
 Company knowledge is deliberate and inspectable: documents, typed business

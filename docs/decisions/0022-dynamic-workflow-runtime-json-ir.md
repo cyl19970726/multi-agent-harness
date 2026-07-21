@@ -15,7 +15,7 @@
 > one-journal/one-dashboard contract decided here are **kept**.
 
 Accepted. **Promotes the deferred parts of
-[the dynamic-workflow design study](../research/dynamic-workflow-runtime-design.md)**
+[the original design study, now recoverable from Git history]**
 (its WP5 IR + an author surface) into a shipped path, and builds on
 [0011 (Provider-neutral runtime)](0011-provider-neutral-runtime.md),
 current schema-governance guidance, and

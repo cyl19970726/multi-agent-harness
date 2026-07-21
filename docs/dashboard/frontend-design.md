@@ -22,6 +22,22 @@ Mission/Wave direction is canonical in
 Vision/Goal/Task work-board and Goal Workbench contracts are archived; they no
 longer define the top-level product IA.
 
+## Documentation placement
+
+| Path | Owns |
+| --- | --- |
+| `../dashboard.md` | Workbench purpose, information architecture, object workflow and product acceptance. |
+| `frontend-design.md` | Design reading order, page map and implementation-readiness summary. |
+| `pages/README.md` and `pages/*.md` | Page indexes and page-local product, UX, responsive layout and screenshot contracts. |
+| `frontend-architecture.md` | React application boundaries, data flow, primitives and stack policy. |
+| `runbook.md` | Build, run, snapshot, live API and safe-action procedures. |
+| `../decisions/` | Durable architectural decisions only. |
+
+For non-trivial UI work, change the product contract and selected page spec
+before implementation, then capture browser evidence and record both product
+truth and visual-fidelity results. Do not mix product meaning, rejected layout
+exploration and component internals in a new all-in-one document.
+
 ## Current Design Status
 
 ```text

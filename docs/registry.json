@@ -39,7 +39,15 @@
    "lastVerifiedWith": [
     "npx pnpm@9.15.4 check"
    ],
-   "reorgTrigger": "Start Here links, Company OS product boundary, or execution-foundation boundary no longer match implemented and gateable surfaces."
+   "reorgTrigger": "Start Here links, Company OS product boundary, or execution-foundation boundary no longer match implemented and gateable surfaces.",
+   "authorityClass": "entry",
+   "implementationState": "partial",
+   "truthRefs": [
+    {
+     "kind": "decision",
+     "ref": "docs/decisions/README.md"
+    }
+   ]
   },
   {
    "path": "AGENTS.md",
@@ -71,7 +79,19 @@
    "lastVerifiedWith": [
     "npx pnpm@9.15.4 check"
    ],
-   "reorgTrigger": "The Company OS product boundary, Mission/Wave execution foundation, native self-hosting workflow, executor proof contract, or staged acceptance requirements change."
+   "reorgTrigger": "The Company OS product boundary, Mission/Wave execution foundation, native self-hosting workflow, executor proof contract, or staged acceptance requirements change.",
+   "authorityClass": "entry",
+   "implementationState": "partial",
+   "truthRefs": [
+    {
+     "kind": "decision",
+     "ref": "docs/decisions/0026-mission-wave-architecture.md"
+    },
+    {
+     "kind": "decision",
+     "ref": "docs/decisions/0027-company-os-primary-model.md"
+    }
+   ]
   },
   {
    "path": "docs/README.md",
@@ -108,7 +128,15 @@
    "lastVerifiedWith": [
     "npx pnpm@9.15.4 check"
    ],
-   "reorgTrigger": "Docs grow new stable sections, readers, or machine-consumed groups."
+   "reorgTrigger": "Docs grow new stable sections, readers, or machine-consumed groups.",
+   "authorityClass": "entry",
+   "implementationState": "partial",
+   "truthRefs": [
+    {
+     "kind": "decision",
+     "ref": "docs/decisions/README.md"
+    }
+   ]
   },
   {
    "path": "docs/documentation-governance.md",
@@ -134,7 +162,10 @@
    "lastVerifiedWith": [
     "harness governance check"
    ],
-   "reorgTrigger": "Documentation modules, authority classes, context packs, governance roles, lifecycle, registry fields, or archive policy change."
+   "reorgTrigger": "Documentation modules, authority classes, context packs, governance roles, lifecycle, registry fields, or archive policy change.",
+   "authorityClass": "canonical_contract",
+   "implementationState": "partial",
+   "truthRefs": []
   },
   {
    "path": "docs/prd.md",
@@ -172,10 +203,26 @@
    "lastVerifiedWith": [
     "npx pnpm@9.15.4 check"
    ],
-   "reorgTrigger": "Company OS product boundary, Docs/Organization model, execution-foundation requirements, near-term scope, scenarios, or non-goals change."
+   "reorgTrigger": "Company OS product boundary, Docs/Organization model, execution-foundation requirements, near-term scope, scenarios, or non-goals change.",
+   "authorityClass": "canonical_contract",
+   "implementationState": "partial",
+   "truthRefs": [
+    {
+     "kind": "decision",
+     "ref": "docs/decisions/0027-company-os-primary-model.md"
+    },
+    {
+     "kind": "decision",
+     "ref": "docs/decisions/0026-mission-wave-architecture.md"
+    },
+    {
+     "kind": "decision",
+     "ref": "docs/decisions/README.md"
+    }
+   ]
   },
   {
-  "path": "docs/mvp.md",
+   "path": "docs/mvp.md",
    "ownerRole": "product",
    "status": "stable",
    "lifecycle": "volatile",
@@ -209,7 +256,19 @@
     "npx pnpm@9.15.4 check",
     "cargo test"
    ],
-   "reorgTrigger": "Mission/Wave MVP scope, executor acceptance, retirement policy, or build order changes."
+   "reorgTrigger": "Mission/Wave MVP scope, executor acceptance, retirement policy, or build order changes.",
+   "authorityClass": "canonical_contract",
+   "implementationState": "verified",
+   "truthRefs": [
+    {
+     "kind": "decision",
+     "ref": "docs/decisions/0026-mission-wave-architecture.md"
+    },
+    {
+     "kind": "test",
+     "ref": "npx pnpm@9.15.4 acceptance:mission-wave"
+    }
+   ]
   },
   {
    "path": "docs/design-basis.md",
@@ -235,10 +294,13 @@
    "lastVerifiedWith": [
     "npx pnpm@9.15.4 check"
    ],
-   "reorgTrigger": "A new core layer, module, surface, or governance rule becomes stable."
+   "reorgTrigger": "A new core layer, module, surface, or governance rule becomes stable.",
+   "authorityClass": "canonical_contract",
+   "implementationState": "partial",
+   "truthRefs": []
   },
   {
-  "path": "docs/concept-model.md",
+   "path": "docs/concept-model.md",
    "ownerRole": "product-architecture",
    "status": "stable",
    "lifecycle": "volatile",
@@ -267,10 +329,18 @@
     "npx pnpm@9.15.4 check",
     "cargo test"
    ],
-   "reorgTrigger": "Core object semantics, the generic object set, closeout gate, open-enum vocabularies, assignment flow, evidence flow, or Dashboard projection rules change."
+   "reorgTrigger": "Core object semantics, the generic object set, closeout gate, open-enum vocabularies, assignment flow, evidence flow, or Dashboard projection rules change.",
+   "authorityClass": "canonical_contract",
+   "implementationState": "partial",
+   "truthRefs": [
+    {
+     "kind": "decision",
+     "ref": "docs/decisions/0026-mission-wave-architecture.md"
+    }
+   ]
   },
   {
-  "path": "docs/architecture.md",
+   "path": "docs/architecture.md",
    "ownerRole": "architecture",
    "status": "stable",
    "lifecycle": "stable",
@@ -303,7 +373,15 @@
     "npx pnpm@9.15.4 check",
     "cargo test"
    ],
-   "reorgTrigger": "Implemented crates, object boundaries, or source-of-truth surfaces diverge from the architecture."
+   "reorgTrigger": "Implemented crates, object boundaries, or source-of-truth surfaces diverge from the architecture.",
+   "authorityClass": "canonical_contract",
+   "implementationState": "partial",
+   "truthRefs": [
+    {
+     "kind": "decision",
+     "ref": "docs/decisions/0026-mission-wave-architecture.md"
+    }
+   ]
   },
   {
    "path": "docs/architecture-map.md",
@@ -335,10 +413,26 @@
    "lastVerifiedWith": [
     "npx pnpm@9.15.4 check"
    ],
-   "reorgTrigger": "The Company OS product hierarchy, Docs/Organization relationship model, executor kinds, shared runtime diagrams, or compatibility migration map change."
+   "reorgTrigger": "The Company OS product hierarchy, Docs/Organization relationship model, executor kinds, shared runtime diagrams, or compatibility migration map change.",
+   "authorityClass": "canonical_contract",
+   "implementationState": "partial",
+   "truthRefs": [
+    {
+     "kind": "decision",
+     "ref": "docs/decisions/0027-company-os-primary-model.md"
+    },
+    {
+     "kind": "decision",
+     "ref": "docs/decisions/0025-agent-team-run-control-plane.md"
+    },
+    {
+     "kind": "decision",
+     "ref": "docs/decisions/0026-mission-wave-architecture.md"
+    }
+   ]
   },
   {
-  "path": "docs/data-model.md",
+   "path": "docs/data-model.md",
    "ownerRole": "schema",
    "status": "stable",
    "lifecycle": "volatile",
@@ -368,7 +462,10 @@
     "npx pnpm@9.15.4 check",
     "cargo test"
    ],
-   "reorgTrigger": "Mission/Wave relationships, executor attempt edges, optional governance edges, projections, source-of-truth rules, or schema responsibilities change."
+   "reorgTrigger": "Mission/Wave relationships, executor attempt edges, optional governance edges, projections, source-of-truth rules, or schema responsibilities change.",
+   "authorityClass": "canonical_contract",
+   "implementationState": "partial",
+   "truthRefs": []
   },
   {
    "path": "docs/agent-runtime.md",
@@ -400,10 +497,18 @@
     "npx pnpm@9.15.4 check",
     "harness governance check"
    ],
-   "reorgTrigger": "Provider-neutral runtime, message delivery, queue policy, or provider interface changes."
+   "reorgTrigger": "Provider-neutral runtime, message delivery, queue policy, or provider interface changes.",
+   "authorityClass": "implementation_reference",
+   "implementationState": "partial",
+   "truthRefs": [
+    {
+     "kind": "api",
+     "ref": "crates/harness-cli/src/sse.rs"
+    }
+   ]
   },
   {
-  "path": "docs/dashboard.md",
+   "path": "docs/dashboard.md",
    "ownerRole": "product-design",
    "status": "stable",
    "lifecycle": "volatile",
@@ -420,7 +525,6 @@
     "docs/concept-model.md",
     "docs/data-model.md",
     "docs/agent-runtime.md",
-    "docs/dashboard/README.md",
     "docs/dashboard/frontend-design.md",
     "docs/dashboard/frontend-architecture.md",
     "docs/dashboard/runbook.md",
@@ -436,38 +540,22 @@
     "npx pnpm@9.15.4 check",
     "harness governance check"
    ],
-   "reorgTrigger": "Mission/Wave navigation, executor views, read models, safe actions, or retired-surface boundaries change."
+   "reorgTrigger": "Mission/Wave navigation, executor views, read models, safe actions, or retired-surface boundaries change.",
+   "authorityClass": "implementation_reference",
+   "implementationState": "partial",
+   "truthRefs": [
+    {
+     "kind": "decision",
+     "ref": "docs/decisions/0026-mission-wave-architecture.md"
+    },
+    {
+     "kind": "ui",
+     "ref": "apps/agent-dashboard/src/app/selection.ts"
+    }
+   ]
   },
   {
-   "path": "docs/dashboard/README.md",
-   "ownerRole": "knowledge",
-   "status": "planned",
-   "lifecycle": "volatile",
-   "canonicalFor": [
-    "Agent Workbench docs placement map",
-    "Workbench docs change order",
-    "Workbench surface routing rules"
-   ],
-   "dependsOn": [
-    "docs/README.md",
-    "docs/dashboard.md",
-    "docs/dashboard/frontend-design.md",
-    "docs/dashboard/frontend-architecture.md",
-    "docs/dashboard/runbook.md",
-    "docs/dashboard/pages/README.md"
-   ],
-   "machineConsumers": [
-    "check-doc-links",
-    "check-doc-governance"
-   ],
-   "reviewAfter": "2026-08-03",
-   "lastVerifiedWith": [
-    "npx pnpm@9.15.4 check"
-   ],
-   "reorgTrigger": "Workbench docs gain new stable surfaces, readers, or source-of-truth boundaries."
-  },
-  {
-  "path": "docs/dashboard/frontend-design.md",
+   "path": "docs/dashboard/frontend-design.md",
    "ownerRole": "product-design",
    "status": "stable",
    "lifecycle": "volatile",
@@ -495,10 +583,18 @@
    "lastVerifiedWith": [
     "npx pnpm@9.15.4 check"
    ],
-   "reorgTrigger": "Workbench page specs, page-local layout contracts, implementation readiness, or frontend design reading order changes."
+   "reorgTrigger": "Workbench page specs, page-local layout contracts, implementation readiness, or frontend design reading order changes.",
+   "authorityClass": "design_intent",
+   "implementationState": "design_only",
+   "truthRefs": [
+    {
+     "kind": "decision",
+     "ref": "docs/decisions/0026-mission-wave-architecture.md"
+    }
+   ]
   },
   {
-  "path": "docs/dashboard/frontend-architecture.md",
+   "path": "docs/dashboard/frontend-architecture.md",
    "ownerRole": "frontend-architecture",
    "status": "stable",
    "lifecycle": "volatile",
@@ -527,10 +623,30 @@
     "npx pnpm@9.15.4 check",
     "harness governance check"
    ],
-   "reorgTrigger": "Frontend stack, data flow, dependency policy, primitive boundaries, or visual implementation policy changes."
+   "reorgTrigger": "Frontend stack, data flow, dependency policy, primitive boundaries, or visual implementation policy changes.",
+   "authorityClass": "implementation_reference",
+   "implementationState": "implemented",
+   "truthRefs": [
+    {
+     "kind": "decision",
+     "ref": "docs/decisions/0014-react-vite-agent-dashboard.md"
+    },
+    {
+     "kind": "ui",
+     "ref": "apps/agent-dashboard/vite.config.ts"
+    },
+    {
+     "kind": "ui",
+     "ref": "apps/agent-dashboard/src/types.ts"
+    },
+    {
+     "kind": "decision",
+     "ref": "docs/decisions/0016-tailwind-shadcn-adoption.md"
+    }
+   ]
   },
   {
-  "path": "docs/dashboard/runbook.md",
+   "path": "docs/dashboard/runbook.md",
    "ownerRole": "operations",
    "status": "stable",
    "lifecycle": "volatile",
@@ -558,10 +674,26 @@
     "npx pnpm@9.15.4 check",
     "harness governance check"
    ],
-   "reorgTrigger": "Workbench run commands, API port, build output, or static artifact workflow changes."
+   "reorgTrigger": "Workbench run commands, API port, build output, or static artifact workflow changes.",
+   "authorityClass": "implementation_reference",
+   "implementationState": "implemented",
+   "truthRefs": [
+    {
+     "kind": "ui",
+     "ref": "apps/agent-dashboard/vite.config.ts"
+    },
+    {
+     "kind": "ui",
+     "ref": "apps/agent-dashboard/src/api.ts"
+    },
+    {
+     "kind": "ui",
+     "ref": "apps/agent-dashboard/src/api/actions.ts"
+    }
+   ]
   },
   {
-  "path": "docs/workflow-git-pr.md",
+   "path": "docs/workflow-git-pr.md",
    "ownerRole": "lead-operations",
    "status": "stable",
    "lifecycle": "volatile",
@@ -588,7 +720,15 @@
     "npx pnpm@9.15.4 check",
     "harness governance check"
    ],
-   "reorgTrigger": "Wave executor concurrency, worktree, WorkflowPatch, PR, review, or gate workflow changes."
+   "reorgTrigger": "Wave executor concurrency, worktree, WorkflowPatch, PR, review, or gate workflow changes.",
+   "authorityClass": "implementation_reference",
+   "implementationState": "partial",
+   "truthRefs": [
+    {
+     "kind": "decision",
+     "ref": "docs/decisions/README.md"
+    }
+   ]
   },
   {
    "path": "docs/integration/README.md",
@@ -617,7 +757,15 @@
     "npx pnpm@9.15.4 check",
     "harness governance check"
    ],
-   "reorgTrigger": "Provider integration template, provider-neutral boundary, or provider roster changes."
+   "reorgTrigger": "Provider integration template, provider-neutral boundary, or provider roster changes.",
+   "authorityClass": "entry",
+   "implementationState": "partial",
+   "truthRefs": [
+    {
+     "kind": "decision",
+     "ref": "docs/decisions/0018-exec-stream-primary-substrate.md"
+    }
+   ]
   },
   {
    "path": "docs/integration/codex.md",
@@ -651,7 +799,15 @@
     "cargo test -p harness-cli",
     "harness governance check"
    ],
-   "reorgTrigger": "Codex provider surfaces, app-server protocol, hook behavior, plugin packaging, or fallback strategy changes."
+   "reorgTrigger": "Codex provider surfaces, app-server protocol, hook behavior, plugin packaging, or fallback strategy changes.",
+   "authorityClass": "implementation_reference",
+   "implementationState": "partial",
+   "truthRefs": [
+    {
+     "kind": "decision",
+     "ref": "docs/decisions/0018-exec-stream-primary-substrate.md"
+    }
+   ]
   },
   {
    "path": "docs/integration/codex-message-delivery.md",
@@ -680,7 +836,19 @@
     "npx pnpm@9.15.4 check",
     "harness governance check"
    ],
-   "reorgTrigger": "Codex delivery queue, provider gateway, MessageDelivery schema, app-server protocol, or Dashboard projection behavior changes."
+   "reorgTrigger": "Codex delivery queue, provider gateway, MessageDelivery schema, app-server protocol, or Dashboard projection behavior changes.",
+   "authorityClass": "implementation_reference",
+   "implementationState": "partial",
+   "truthRefs": [
+    {
+     "kind": "api",
+     "ref": "crates/harness-cli/src/main.rs"
+    },
+    {
+     "kind": "decision",
+     "ref": "docs/decisions/0018-exec-stream-primary-substrate.md"
+    }
+   ]
   },
   {
    "path": "docs/integration/claude.md",
@@ -712,7 +880,19 @@
     "cargo test -p harness-cli",
     "harness governance check"
    ],
-   "reorgTrigger": "Claude provider surfaces, CLI shape, session protocol, subagent lifecycle, or fallback strategy changes."
+   "reorgTrigger": "Claude provider surfaces, CLI shape, session protocol, subagent lifecycle, or fallback strategy changes.",
+   "authorityClass": "implementation_reference",
+   "implementationState": "partial",
+   "truthRefs": [
+    {
+     "kind": "api",
+     "ref": "crates/harness-cli/src/resident.rs"
+    },
+    {
+     "kind": "decision",
+     "ref": "docs/decisions/0021-resident-daemon.md"
+    }
+   ]
   },
   {
    "path": "docs/operations.md",
@@ -738,7 +918,10 @@
     "npx pnpm@9.15.4 check",
     "cargo clippy --all-targets -- -D warnings"
    ],
-   "reorgTrigger": "CI jobs, local commands, or release gates change."
+   "reorgTrigger": "CI jobs, local commands, or release gates change.",
+   "authorityClass": "implementation_reference",
+   "implementationState": "partial",
+   "truthRefs": []
   },
   {
    "path": "docs/schemas.md",
@@ -764,7 +947,15 @@
     "npx pnpm@9.15.4 check",
     "cargo test"
    ],
-   "reorgTrigger": "Schemas, core Rust types, or contract maturity labels change."
+   "reorgTrigger": "Schemas, core Rust types, or contract maturity labels change.",
+   "authorityClass": "implementation_reference",
+   "implementationState": "implemented",
+   "truthRefs": [
+    {
+     "kind": "schema",
+     "ref": "schemas/README.md"
+    }
+   ]
   },
   {
    "path": "docs/decisions/README.md",
@@ -793,7 +984,10 @@
    "lastVerifiedWith": [
     "npx pnpm@9.15.4 check"
    ],
-   "reorgTrigger": "Decisions exceed one file or need numbered ADR lifecycle."
+   "reorgTrigger": "Decisions exceed one file or need numbered ADR lifecycle.",
+   "authorityClass": "entry",
+   "implementationState": "partial",
+   "truthRefs": []
   },
   {
    "path": "docs/dashboard/pages/README.md",
@@ -817,7 +1011,15 @@
    "lastVerifiedWith": [
     "npx pnpm@9.15.4 check"
    ],
-   "reorgTrigger": "Mission/Wave page list, compatibility page status, page-spec template, or page-spec boundary changes."
+   "reorgTrigger": "Mission/Wave page list, compatibility page status, page-spec template, or page-spec boundary changes.",
+   "authorityClass": "entry",
+   "implementationState": "partial",
+   "truthRefs": [
+    {
+     "kind": "decision",
+     "ref": "docs/decisions/0026-mission-wave-architecture.md"
+    }
+   ]
   },
   {
    "path": "docs/dashboard/pages/debug.md",
@@ -844,7 +1046,10 @@
     "npx pnpm@9.15.4 check",
     "harness governance check"
    ],
-   "reorgTrigger": "Debug page contract, layout contract dimensions, ASCII diagrams, first viewport, or scroll ownership changes."
+   "reorgTrigger": "Debug page contract, layout contract dimensions, ASCII diagrams, first viewport, or scroll ownership changes.",
+   "authorityClass": "design_intent",
+   "implementationState": "design_only",
+   "truthRefs": []
   },
   {
    "path": "docs/decisions/0016-tailwind-shadcn-adoption.md",
@@ -869,7 +1074,15 @@
    "lastVerifiedWith": [
     "npx pnpm@9.15.4 check"
    ],
-   "reorgTrigger": "Frontend styling stack, UI-primitive library, dependency boundary, or Workbench module boundary changes."
+   "reorgTrigger": "Frontend styling stack, UI-primitive library, dependency boundary, or Workbench module boundary changes.",
+   "authorityClass": "canonical_contract",
+   "implementationState": "partial",
+   "truthRefs": [
+    {
+     "kind": "decision",
+     "ref": "docs/decisions/0014-react-vite-agent-dashboard.md"
+    }
+   ]
   },
   {
    "path": "docs/member-runtime-observability.md",
@@ -907,7 +1120,39 @@
     "npx pnpm@9.15.4 check",
     "harness governance check"
    ],
-   "reorgTrigger": "The three-signal model, runtime_health layers, /v1/events SSE frame contract, watcher/broadcast mechanism, or the frontend live/polling/offline mode logic changes."
+   "reorgTrigger": "The three-signal model, runtime_health layers, /v1/events SSE frame contract, watcher/broadcast mechanism, or the frontend live/polling/offline mode logic changes.",
+   "authorityClass": "implementation_reference",
+   "implementationState": "partial",
+   "truthRefs": [
+    {
+     "kind": "decision",
+     "ref": "docs/decisions/0008-persistent-codex-agent-runtime.md"
+    },
+    {
+     "kind": "decision",
+     "ref": "docs/decisions/0011-provider-neutral-runtime.md"
+    },
+    {
+     "kind": "api",
+     "ref": "crates/harness-cli/src/sse.rs"
+    },
+    {
+     "kind": "api",
+     "ref": "crates/harness-cli/src/main.rs"
+    },
+    {
+     "kind": "ui",
+     "ref": "apps/agent-dashboard/src/api.ts"
+    },
+    {
+     "kind": "ui",
+     "ref": "apps/agent-dashboard/src/app/useEventStream.ts"
+    },
+    {
+     "kind": "ui",
+     "ref": "apps/agent-dashboard/src/app/App.tsx"
+    }
+   ]
   },
   {
    "path": "docs/agent-integration-model.md",
@@ -942,7 +1187,23 @@
     "npx pnpm@9.15.4 check",
     "harness governance check"
    ],
-   "reorgTrigger": "The three pillars, the neutral launch-spec field set, the skill/MCP/capability-declaration contracts, or the new-provider integration checklist change."
+   "reorgTrigger": "The three pillars, the neutral launch-spec field set, the skill/MCP/capability-declaration contracts, or the new-provider integration checklist change.",
+   "authorityClass": "implementation_reference",
+   "implementationState": "partial",
+   "truthRefs": [
+    {
+     "kind": "decision",
+     "ref": "docs/decisions/0011-provider-neutral-runtime.md"
+    },
+    {
+     "kind": "decision",
+     "ref": "docs/decisions/0018-exec-stream-primary-substrate.md"
+    },
+    {
+     "kind": "schema",
+     "ref": "schemas/agent-member.schema.json"
+    }
+   ]
   },
   {
    "path": "docs/decisions/0018-exec-stream-primary-substrate.md",
@@ -970,7 +1231,19 @@
    "lastVerifiedWith": [
     "npx pnpm@9.15.4 check"
    ],
-   "reorgTrigger": "The primary substrate, the mid-turn-approval fallback policy, or the neutral launch-spec direction changes."
+   "reorgTrigger": "The primary substrate, the mid-turn-approval fallback policy, or the neutral launch-spec direction changes.",
+   "authorityClass": "canonical_contract",
+   "implementationState": "partial",
+   "truthRefs": [
+    {
+     "kind": "decision",
+     "ref": "docs/decisions/0008-persistent-codex-agent-runtime.md"
+    },
+    {
+     "kind": "decision",
+     "ref": "docs/decisions/0011-provider-neutral-runtime.md"
+    }
+   ]
   },
   {
    "path": "docs/decisions/0025-agent-team-run-control-plane.md",
@@ -1005,7 +1278,27 @@
    "lastVerifiedWith": [
     "npx pnpm@9.15.4 check"
    ],
-   "reorgTrigger": "The Agent Team object set, Mission/Wave agent_team layering, delegation guardrails, plugin call-surface split, or the non-durable thinking policy changes."
+   "reorgTrigger": "The Agent Team object set, Mission/Wave agent_team layering, delegation guardrails, plugin call-surface split, or the non-durable thinking policy changes.",
+   "authorityClass": "canonical_contract",
+   "implementationState": "partial",
+   "truthRefs": [
+    {
+     "kind": "decision",
+     "ref": "docs/decisions/0011-provider-neutral-runtime.md"
+    },
+    {
+     "kind": "decision",
+     "ref": "docs/decisions/0018-exec-stream-primary-substrate.md"
+    },
+    {
+     "kind": "decision",
+     "ref": "docs/decisions/0022-dynamic-workflow-runtime-json-ir.md"
+    },
+    {
+     "kind": "decision",
+     "ref": "docs/decisions/0026-mission-wave-architecture.md"
+    }
+   ]
   },
   {
    "path": "docs/decisions/0026-mission-wave-architecture.md",
@@ -1033,220 +1326,15 @@
    "lastVerifiedWith": [
     "npx pnpm@9.15.4 check"
    ],
-   "reorgTrigger": "The Mission/Wave hierarchy, executor kinds, shared runtime contracts, transient-thinking policy, or compatibility migration plan change."
-  },
-  {
-   "path": "docs/research/README.md",
-   "ownerRole": "architect",
-   "status": "stable",
-   "lifecycle": "stable",
-   "canonicalFor": [
-    "research area index",
-    "how to add an external-system architecture study",
-    "research-cache is gitignored and never committed"
-   ],
-   "dependsOn": [
-    "docs/research/claude-code-agent-teams.md",
-    "docs/research/claude-code-agent-teams-diagrams.md",
-    "docs/research/multica-architecture.md",
-    "docs/research/multica-architecture-diagrams.md",
-    "docs/research/runtime-persistence-decision.md",
-    "docs/research/dynamic-workflow-runtime-design.md",
-    "docs/research/agent-mention-and-doc-reference-design.md",
-    "docs/decisions/0018-exec-stream-primary-substrate.md",
-    "docs/agent-integration-model.md"
-   ],
-   "machineConsumers": [
-    "check-doc-links",
-    "check-doc-governance"
-   ],
-   "reviewAfter": "2026-09-30",
-   "lastVerifiedWith": [
-    "npx pnpm@9.15.4 check"
-   ],
-   "reorgTrigger": "A research study is added, removed, or the research-cache/scratch-file conventions change."
-  },
-  {
-   "path": "docs/research/claude-code-agent-teams.md",
-   "ownerRole": "architect",
-   "status": "stable",
-   "lifecycle": "archival",
-   "canonicalFor": [
-    "Claude Code agent-teams task-type taxonomy",
-    "Claude Code agent-teams display modes (tmux/iTerm2 split-pane vs in-process) and what selects them",
-    "teammate process model per mode (separate claude process per pane vs in-process async loop)",
-    "file-mailbox inter-agent communication shared across both modes",
-    "Claude Code cross-session resume behavior per mode (no resume for in-process teammates)"
-   ],
-   "dependsOn": [
-    "docs/research/runtime-persistence-decision.md"
-   ],
-   "machineConsumers": [
-    "check-doc-links",
-    "check-doc-governance"
-   ],
-   "reviewAfter": "2026-09-30",
-   "lastVerifiedWith": [
-    "npx pnpm@9.15.4 check"
-   ],
-   "reorgTrigger": "The Claude Code source checkout is re-read and findings (task types, substrate, mailbox, resume model) change."
-  },
-  {
-   "path": "docs/research/claude-code-agent-teams-diagrams.md",
-   "ownerRole": "architect",
-   "status": "stable",
-   "lifecycle": "archival",
-   "canonicalFor": [
-    "Claude Code agent-teams component diagram (task types, team registry, tools, file mailbox)",
-    "in-process teammate lifecycle state machine",
-    "inter-agent SendMessage-to-mailbox-to-poll sequence",
-    "single-process concurrency model and persistent-vs-ephemeral-across-restart diagrams"
-   ],
-   "dependsOn": [
-    "docs/research/claude-code-agent-teams.md"
-   ],
-   "machineConsumers": [
-    "check-doc-links",
-    "check-doc-governance"
-   ],
-   "reviewAfter": "2026-09-30",
-   "lastVerifiedWith": [
-    "npx pnpm@9.15.4 check"
-   ],
-   "reorgTrigger": "The Claude Code source checkout is re-read and the component, lifecycle, message-flow, concurrency, or persistence facts behind the diagrams change."
-  },
-  {
-   "path": "docs/research/multica-architecture.md",
-   "ownerRole": "architect",
-   "status": "stable",
-   "lifecycle": "archival",
-   "canonicalFor": [
-    "Multica DB-backed server plus edge-daemon architecture",
-    "per-task ephemeral CLI subprocess plus session-resume persistence",
-    "exec-stream provider integration across 12 backends",
-    "squad routing and DB-centric event-driven coordination"
-   ],
-   "dependsOn": [
-    "docs/research/runtime-persistence-decision.md"
-   ],
-   "machineConsumers": [
-    "check-doc-links",
-    "check-doc-governance"
-   ],
-   "reviewAfter": "2026-09-30",
-   "lastVerifiedWith": [
-    "npx pnpm@9.15.4 check"
-   ],
-   "reorgTrigger": "The Multica source checkout is re-read and findings (runtime model, persistence, providers, coordination) change."
-  },
-  {
-   "path": "docs/research/multica-architecture-diagrams.md",
-   "ownerRole": "architect",
-   "status": "stable",
-   "lifecycle": "archival",
-   "canonicalFor": [
-    "Multica deployment/component diagram (CLI, web, server goroutines, Postgres, WS gateway, provider CLI subprocesses)",
-    "DB-backed agent task lifecycle state machine",
-    "end-to-end request-to-web data-flow sequence with the atomic claim and subprocess",
-    "slot-semaphore concurrency model and (session_id, work_dir) resume data-flow diagrams"
-   ],
-   "dependsOn": [
-    "docs/research/multica-architecture.md"
-   ],
-   "machineConsumers": [
-    "check-doc-links",
-    "check-doc-governance"
-   ],
-   "reviewAfter": "2026-09-30",
-   "lastVerifiedWith": [
-    "npx pnpm@9.15.4 check"
-   ],
-   "reorgTrigger": "The Multica source checkout is re-read and the deployment, lifecycle, data-flow, concurrency/slot, or resume facts behind the diagrams change."
-  },
-  {
-   "path": "docs/research/runtime-persistence-decision.md",
-   "ownerRole": "architect",
-   "status": "stable",
-   "lifecycle": "volatile",
-   "canonicalFor": [
-    "3-way runtime/persistence comparison (Claude Code teams, Multica, our harness)",
-    "judgement of the tmux-plus-claude proposal",
-    "recommended model: one-shot exec default plus optional session-resume persistence tier",
-    "sequenced runtime/persistence WP plan and per-provider resume support"
-   ],
-   "dependsOn": [
-    "docs/research/claude-code-agent-teams.md",
-    "docs/research/multica-architecture.md",
-    "docs/decisions/0018-exec-stream-primary-substrate.md",
-    "docs/decisions/0008-persistent-codex-agent-runtime.md",
-    "docs/decisions/0011-provider-neutral-runtime.md",
-    "docs/agent-integration-model.md"
-   ],
-   "machineConsumers": [
-    "check-doc-links",
-    "check-doc-governance"
-   ],
-   "reviewAfter": "2026-09-30",
-   "lastVerifiedWith": [
-    "npx pnpm@9.15.4 check"
-   ],
-   "reorgTrigger": "The recommended runtime/persistence model, the WP plan, or provider resume support changes; or a related ADR is accepted."
-  },
-  {
-   "path": "docs/research/dynamic-workflow-runtime-design.md",
-   "ownerRole": "architect",
-   "status": "idea",
-   "lifecycle": "volatile",
-   "canonicalFor": [
-    "Rust-native Dynamic Workflow runtime design (no embedded JS interpreter)",
-    "the Rust-expression decision (compiled fn vs orchestration IR vs hybrid registry) and the as-built JSON-IR promotion (section 0)",
-    "CC-primitive-to-harness mapping (agent/parallel/pipeline/phase, journal/resume, concurrency cap) and the tokio-vs-std choice",
-    "independent WorkflowDef/WorkflowRun/WorkflowStep object + run model not bound to Task/Goal",
-    "multi-provider codex+claude fan-out-then-synthesize scenario and the sequenced WP plan"
-   ],
-   "dependsOn": [
-    "docs/research/multica-architecture.md",
-    "docs/decisions/0018-exec-stream-primary-substrate.md",
-    "docs/decisions/0011-provider-neutral-runtime.md",
-    "docs/decisions/0022-dynamic-workflow-runtime-json-ir.md"
-   ],
-   "machineConsumers": [
-    "check-doc-links",
-    "check-doc-governance"
-   ],
-   "reviewAfter": "2026-09-30",
-   "lastVerifiedWith": [
-    "npx pnpm@9.15.4 check"
-   ],
-   "reorgTrigger": "The Rust-expression recommendation, the CC-primitive mapping, the Workflow object/run model, or the WP plan changes; or the shipped skill+CLI / JSON-IR path diverges from ADR 0022."
-  },
-  {
-   "path": "docs/research/agent-mention-and-doc-reference-design.md",
-   "ownerRole": "architect",
-   "status": "idea",
-   "lifecycle": "volatile",
-   "canonicalFor": [
-    "@-mention agent assignment as UI sugar over assignee_agent_id/reviewer_agent_id plus a delivered Message(kind=task) (no new Assignment/Mention object)",
-    "assignment-proof delivery-badge rendering on the Task/Goal document",
-    "Agent detail ASSIGNMENTS and DOING-NOW panels mapped to snapshot/SSE data",
-    "Task<->Doc reference model: reference_doc_paths (input), updates_doc_paths (output) + Evidence(source_type=doc), and the doc-sync trigger",
-    "the sequenced WP plan and open owner questions for @-mention plus doc-reference"
-   ],
-   "dependsOn": [
-    "docs/concept-model.md",
-    "docs/data-model.md",
-    "docs/schemas.md",
-    "docs/research/dynamic-workflow-runtime-design.md"
-   ],
-   "machineConsumers": [
-    "check-doc-links",
-    "check-doc-governance"
-   ],
-   "reviewAfter": "2026-09-30",
-   "lastVerifiedWith": [
-    "npx pnpm@9.15.4 check"
-   ],
-   "reorgTrigger": "The @-mention reuse decision, the assignment-proof rendering, the reference_doc_paths/updates_doc_paths field model, the doc-sync trigger choice, or the WP plan changes; or any of the proposed fields lands as an accepted schema/ADR change."
+   "reorgTrigger": "The Mission/Wave hierarchy, executor kinds, shared runtime contracts, transient-thinking policy, or compatibility migration plan change.",
+   "authorityClass": "canonical_contract",
+   "implementationState": "partial",
+   "truthRefs": [
+    {
+     "kind": "decision",
+     "ref": "docs/decisions/0025-agent-team-run-control-plane.md"
+    }
+   ]
   },
   {
    "path": "docs/getting-started.md",
@@ -1272,7 +1360,10 @@
    "lastVerifiedWith": [
     "npx pnpm@9.15.4 check"
    ],
-   "reorgTrigger": "The quickstart steps, skill install paths, serve/run-script store resolution, or the host-function surface change."
+   "reorgTrigger": "The quickstart steps, skill install paths, serve/run-script store resolution, or the host-function surface change.",
+   "authorityClass": "implementation_reference",
+   "implementationState": "partial",
+   "truthRefs": []
   },
   {
    "path": "docs/multi-project.md",
@@ -1299,7 +1390,15 @@
    "lastVerifiedWith": [
     "npx pnpm@9.15.4 check"
    ],
-   "reorgTrigger": "The store_root/project_root split, project identity rules, resolution precedence, project commands, GLOBAL policy, or migration flow change."
+   "reorgTrigger": "The store_root/project_root split, project identity rules, resolution precedence, project commands, GLOBAL policy, or migration flow change.",
+   "authorityClass": "implementation_reference",
+   "implementationState": "implemented",
+   "truthRefs": [
+    {
+     "kind": "api",
+     "ref": "crates/harness-cli/src/main.rs"
+    }
+   ]
   },
   {
    "path": "docs/resident-claude.md",
@@ -1326,154 +1425,27 @@
    "lastVerifiedWith": [
     "npx pnpm@9.15.4 check"
    ],
-   "reorgTrigger": "The resident keep-alive contract, hot/cold/idle model, HARNESS_CLAUDE_RESIDENT gating, or the resident-daemon socket/pidfile/IPC behavior change."
-  },
-  {
-   "path": "docs/design/internal-vs-external-workflow.md",
-   "ownerRole": "architect",
-   "status": "stable",
-   "lifecycle": "volatile",
-   "canonicalFor": [
-    "internal (Claude Code Workflow tool) vs external (harness run-script) comparison",
-    "in-process subagent vs out-of-process subprocess substrate difference",
-    "the three root causes of the external-side gap"
-   ],
-   "dependsOn": [
-    "docs/research/dynamic-workflow-runtime-design.md",
-    "docs/decisions/0023-starlark-workflow-frontend.md",
-    "skills/star-workflow/SKILL.md"
-   ],
-   "machineConsumers": [
-    "check-doc-links",
-    "check-doc-governance"
-   ],
-   "reviewAfter": "2026-09-30",
-   "lastVerifiedWith": [
-    "npx pnpm@9.15.4 check"
-   ],
-   "reorgTrigger": "The internal/external substrate comparison, the authoring-language choice, or the root-cause analysis changes."
-  },
-  {
-   "path": "docs/design/external-workflow-gap-analysis.md",
-   "ownerRole": "architect",
-   "status": "stable",
-   "lifecycle": "volatile",
-   "canonicalFor": [
-    "concrete planning-dimension gaps (A-E) between external and internal workflows",
-    "evidence mined from ~60 internal Workflow run records",
-    "per-gap closing recommendation for the external runtime"
-   ],
-   "dependsOn": [
-    "docs/design/internal-vs-external-workflow.md",
-    "docs/research/dynamic-workflow-runtime-design.md"
-   ],
-   "machineConsumers": [
-    "check-doc-links",
-    "check-doc-governance"
-   ],
-   "reviewAfter": "2026-09-30",
-   "lastVerifiedWith": [
-    "npx pnpm@9.15.4 check"
-   ],
-   "reorgTrigger": "The gap taxonomy (A-E), the mined evidence corpus, or the per-gap closing recommendations change."
-  },
-  {
-   "path": "docs/design/workflow-eval-harness.md",
-   "ownerRole": "architect",
-   "status": "idea",
-   "lifecycle": "volatile",
-   "canonicalFor": [
-    "workflow-vs-single-agent measurement system design",
-    "baseline comparison + naive-vs-exploiting-structure judgment",
-    "cost/variance-aware evaluation method"
-   ],
-   "dependsOn": [
-    "docs/design/external-workflow-gap-analysis.md",
-    "skills/star-workflow/SKILL.md"
-   ],
-   "machineConsumers": [
-    "check-doc-links",
-    "check-doc-governance"
-   ],
-   "reviewAfter": "2026-09-30",
-   "lastVerifiedWith": [
-    "npx pnpm@9.15.4 check"
-   ],
-   "reorgTrigger": "The evaluation comparison model, the baseline definition, or the cost/variance method changes."
-  },
-  {
-   "path": "docs/design/workflow-language-spike.md",
-   "ownerRole": "architect",
-   "status": "idea",
-   "lifecycle": "volatile",
-   "canonicalFor": [
-    "spike: should the external workflow be authored in a mainstream language",
-    "three-way authoring comparison with running feasibility proofs",
-    "judgment on whether Starlark is the real ceiling"
-   ],
-   "dependsOn": [
-    "docs/design/internal-vs-external-workflow.md",
-    "docs/decisions/0023-starlark-workflow-frontend.md",
-    "skills/star-workflow/SKILL.md"
-   ],
-   "machineConsumers": [
-    "check-doc-links",
-    "check-doc-governance"
-   ],
-   "reviewAfter": "2026-09-30",
-   "lastVerifiedWith": [
-    "npx pnpm@9.15.4 check"
-   ],
-   "reorgTrigger": "The authoring-language recommendation, the candidate-runtime comparison, or the Starlark front-end decision (ADR 0023) changes."
-  },
-  {
-   "path": "docs/design/workflow-surface-layout.md",
-   "ownerRole": "product-design",
-   "status": "planned",
-   "lifecycle": "volatile",
-   "canonicalFor": [
-    "read-only Workflow dashboard surface layout design",
-    "workflows index + self-splitting run-detail pattern",
-    "Workflow surface decision log"
-   ],
-   "dependsOn": [
-    "docs/dashboard/frontend-design.md",
-    "apps/agent-dashboard/src/types.ts"
-   ],
-   "machineConsumers": [
-    "check-doc-links",
-    "check-doc-governance"
-   ],
-   "reviewAfter": "2026-09-30",
-   "lastVerifiedWith": [
-    "npx pnpm@9.15.4 check"
-   ],
-   "reorgTrigger": "The Workflow surface IA, the index/run-detail split pattern, or the underlying read model changes."
-  },
-  {
-   "path": "docs/research/agent-live-tui-design.md",
-   "ownerRole": "architect",
-   "status": "idea",
-   "lifecycle": "volatile",
-   "canonicalFor": [
-    "live agent activity view (Claude-Code-TUI style) design",
-    "incremental NDJSON write + poll-while-running staging",
-    "reuse of TurnDrillIn / summarizeRawEvent / provider-session events"
-   ],
-   "dependsOn": [
-    "docs/member-runtime-observability.md",
-    "crates/harness-cli/src/main.rs",
-    "apps/agent-dashboard/src/types.ts"
-   ],
-   "machineConsumers": [
-    "check-doc-links",
-    "check-doc-governance"
-   ],
-   "reviewAfter": "2026-09-30",
-   "lastVerifiedWith": [
-    "npx pnpm@9.15.4 check"
-   ],
-   "reorgTrigger": "The live-turn rendering staging, the incremental-write mechanism, or the reused TUI/event machinery changes."
+   "reorgTrigger": "The resident keep-alive contract, hot/cold/idle model, HARNESS_CLAUDE_RESIDENT gating, or the resident-daemon socket/pidfile/IPC behavior change.",
+   "authorityClass": "implementation_reference",
+   "implementationState": "partial",
+   "truthRefs": [
+    {
+     "kind": "decision",
+     "ref": "docs/decisions/0021-resident-daemon.md"
+    },
+    {
+     "kind": "decision",
+     "ref": "docs/decisions/0020-codex-persistent-service-exploration.md"
+    },
+    {
+     "kind": "decision",
+     "ref": "docs/decisions/0018-exec-stream-primary-substrate.md"
+    },
+    {
+     "kind": "api",
+     "ref": "crates/harness-cli/src/main.rs"
+    }
+   ]
   },
   {
    "path": "docs/workflow-runtime.md",
@@ -1500,7 +1472,15 @@
    "lastVerifiedWith": [
     "npx pnpm@9.15.4 check"
    ],
-   "reorgTrigger": "The workflow runtime primitives, run-script surface, or WorkflowRun/WorkflowStep shape change."
+   "reorgTrigger": "The workflow runtime primitives, run-script surface, or WorkflowRun/WorkflowStep shape change.",
+   "authorityClass": "implementation_reference",
+   "implementationState": "verified",
+   "truthRefs": [
+    {
+     "kind": "test",
+     "ref": "cargo test -p harness-workflow"
+    }
+   ]
   },
   {
    "path": "docs/integration/kimi.md",
@@ -1524,7 +1504,19 @@
    "lastVerifiedWith": [
     "npx pnpm@9.15.4 check"
    ],
-   "reorgTrigger": "The KimiAdapter CLI surface, kimi_exec capabilities, or kimi stream shape change."
+   "reorgTrigger": "The KimiAdapter CLI surface, kimi_exec capabilities, or kimi stream shape change.",
+   "authorityClass": "implementation_reference",
+   "implementationState": "verified",
+   "truthRefs": [
+    {
+     "kind": "api",
+     "ref": "crates/harness-cli/src/main.rs"
+    },
+    {
+     "kind": "test",
+     "ref": "cargo test -p harness-cli --test kimi_provider"
+    }
+   ]
   },
   {
    "path": "docs/governance-engine.md",
@@ -1550,7 +1542,15 @@
     "harness governance check",
     "npx pnpm@9.15.4 check"
    ],
-   "reorgTrigger": "The governance engine's commands, config schema, gate kinds, or the doc-sync integration change; or the full cut lands and the .mjs gates are retired."
+   "reorgTrigger": "The governance engine's commands, config schema, gate kinds, or the doc-sync integration change; or the full cut lands and the .mjs gates are retired.",
+   "authorityClass": "implementation_reference",
+   "implementationState": "verified",
+   "truthRefs": [
+    {
+     "kind": "test",
+     "ref": "cargo test -p harness-governance"
+    }
+   ]
   },
   {
    "path": "docs/design/agent-team-mission-wave-layout.md",
@@ -1576,7 +1576,19 @@
    "lastVerifiedWith": [
     "npx pnpm@9.15.4 check"
    ],
-   "reorgTrigger": "The Mission/Wave IA, Wave executor model, member page structure, active-navigation policy, or transient-thinking policy changes."
+   "reorgTrigger": "The Mission/Wave IA, Wave executor model, member page structure, active-navigation policy, or transient-thinking policy changes.",
+   "authorityClass": "design_intent",
+   "implementationState": "design_only",
+   "truthRefs": [
+    {
+     "kind": "decision",
+     "ref": "docs/decisions/0025-agent-team-run-control-plane.md"
+    },
+    {
+     "kind": "decision",
+     "ref": "docs/decisions/0026-mission-wave-architecture.md"
+    }
+   ]
   },
   {
    "path": "docs/company-os/README.md",
@@ -1588,6 +1600,7 @@
     "Company OS canonical product entry and document map"
    ],
    "dependsOn": [
+    "docs/company-os/implementation-truth-matrix.md",
     "docs/company-os/vision.md",
     "docs/company-os/concept-model.md",
     "docs/decisions/0027-company-os-primary-model.md",
@@ -1601,7 +1614,80 @@
    "lastVerifiedWith": [
     "npx pnpm@9.15.4 check"
    ],
-   "reorgTrigger": "The Company OS product boundary, canonical document map, or migration boundary changes."
+   "reorgTrigger": "The Company OS product boundary, canonical document map, or migration boundary changes.",
+   "authorityClass": "entry",
+   "implementationState": "partial",
+   "truthRefs": [
+    {
+     "kind": "decision",
+     "ref": "docs/decisions/0027-company-os-primary-model.md"
+    },
+    {
+     "kind": "decision",
+     "ref": "docs/decisions/0029-agent-programmable-document-runtime.md"
+    }
+   ]
+  },
+  {
+   "path": "docs/company-os/implementation-truth-matrix.md",
+   "ownerRole": "lead-product-governance",
+   "status": "stable",
+   "lifecycle": "volatile",
+   "canonicalFor": [
+    "Docs Organization Work Finance implementation truth matrix",
+    "Company OS contract to schema store API UI acceptance audit",
+    "native trademark closure gap"
+   ],
+   "dependsOn": [
+    "docs/company-os/document-system.md",
+    "docs/company-os/organization-and-actors.md",
+    "docs/company-os/work-items-and-approvals.md",
+    "docs/company-os/financial-relations.md",
+    "crates/harness-core/src/company_os.rs",
+    "crates/harness-store/src/company_os.rs",
+    "crates/harness-cli/src/company_os_api.rs",
+    "apps/agent-dashboard/src/company-os/CompanyOsRouter.tsx",
+    "crates/harness-cli/tests/company_os_api.rs"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-08-22",
+   "lastVerifiedWith": [
+    "cargo test -p harness-cli --test company_os_api",
+    "npx pnpm@9.15.4 check:company-os",
+    "frontend-visual-contract validate_manifest.py"
+   ],
+   "reorgTrigger": "Any Company OS schema, store, Action, UI, acceptance test, or trademark closure state changes.",
+   "authorityClass": "actual_evidence",
+   "implementationState": "verified",
+   "truthRefs": [
+    {
+     "kind": "schema",
+     "ref": "schemas/company-os"
+    },
+    {
+     "kind": "store",
+     "ref": "crates/harness-store/src/company_os.rs"
+    },
+    {
+     "kind": "api",
+     "ref": "crates/harness-cli/src/company_os_api.rs"
+    },
+    {
+     "kind": "ui",
+     "ref": "apps/agent-dashboard/src/company-os"
+    },
+    {
+     "kind": "test",
+     "ref": "crates/harness-cli/tests/company_os_api.rs"
+    },
+    {
+     "kind": "runtime_evidence",
+     "ref": "docs/design/company-os-v3/trademark-native-closure-v1/visual-contract.json"
+    }
+   ]
   },
   {
    "path": "docs/company-os/product-system-map.md",
@@ -1628,7 +1714,10 @@
    "lastVerifiedWith": [
     "harness governance check"
    ],
-   "reorgTrigger": "Product systems, governance hierarchy, implementation truth, default reading order, or superseded boundaries change."
+   "reorgTrigger": "Product systems, governance hierarchy, implementation truth, default reading order, or superseded boundaries change.",
+   "authorityClass": "canonical_contract",
+   "implementationState": "partial",
+   "truthRefs": []
   },
   {
    "path": "docs/company-os/vision.md",
@@ -1653,7 +1742,15 @@
    "lastVerifiedWith": [
     "npx pnpm@9.15.4 check"
    ],
-   "reorgTrigger": "The Company OS thesis, operating loop, or primary-system boundary changes."
+   "reorgTrigger": "The Company OS thesis, operating loop, or primary-system boundary changes.",
+   "authorityClass": "canonical_contract",
+   "implementationState": "partial",
+   "truthRefs": [
+    {
+     "kind": "decision",
+     "ref": "docs/decisions/0027-company-os-primary-model.md"
+    }
+   ]
   },
   {
    "path": "docs/company-os/concept-model.md",
@@ -1680,7 +1777,10 @@
    "lastVerifiedWith": [
     "npx pnpm@9.15.4 check"
    ],
-   "reorgTrigger": "Any Company OS object, source-of-truth boundary, or relationship invariant changes."
+   "reorgTrigger": "Any Company OS object, source-of-truth boundary, or relationship invariant changes.",
+   "authorityClass": "canonical_contract",
+   "implementationState": "partial",
+   "truthRefs": []
   },
   {
    "path": "docs/company-os/document-system.md",
@@ -1704,7 +1804,10 @@
    "lastVerifiedWith": [
     "npx pnpm@9.15.4 check"
    ],
-   "reorgTrigger": "Document, typed-record, relation, view, or document-space semantics change."
+   "reorgTrigger": "Document, typed-record, relation, view, or document-space semantics change.",
+   "authorityClass": "canonical_contract",
+   "implementationState": "partial",
+   "truthRefs": []
   },
   {
    "path": "docs/company-os/organization-and-actors.md",
@@ -1729,7 +1832,10 @@
    "lastVerifiedWith": [
     "npx pnpm@9.15.4 check"
    ],
-   "reorgTrigger": "Actor types, OrgUnit semantics, authority, capacity, or Standing Agent boundaries change."
+   "reorgTrigger": "Actor types, OrgUnit semantics, authority, capacity, or Standing Agent boundaries change.",
+   "authorityClass": "canonical_contract",
+   "implementationState": "partial",
+   "truthRefs": []
   },
   {
    "path": "docs/company-os/work-items-and-approvals.md",
@@ -1755,7 +1861,10 @@
    "lastVerifiedWith": [
     "npx pnpm@9.15.4 check"
    ],
-   "reorgTrigger": "WorkItem provenance, responsibility roles, approval semantics, or execution-reference rules change."
+   "reorgTrigger": "WorkItem provenance, responsibility roles, approval semantics, or execution-reference rules change.",
+   "authorityClass": "canonical_contract",
+   "implementationState": "partial",
+   "truthRefs": []
   },
   {
    "path": "docs/company-os/financial-relations.md",
@@ -1780,7 +1889,10 @@
    "lastVerifiedWith": [
     "npx pnpm@9.15.4 check"
    ],
-   "reorgTrigger": "FinancialRecord types, cross-module financial relations, approval controls, or audit rules change."
+   "reorgTrigger": "FinancialRecord types, cross-module financial relations, approval controls, or audit rules change.",
+   "authorityClass": "canonical_contract",
+   "implementationState": "partial",
+   "truthRefs": []
   },
   {
    "path": "docs/company-os/module-design.md",
@@ -1806,7 +1918,10 @@
    "lastVerifiedWith": [
     "npx pnpm@9.15.4 check"
    ],
-   "reorgTrigger": "BusinessModule proposal, cross-module relation, permission, finance, or migration requirements change."
+   "reorgTrigger": "BusinessModule proposal, cross-module relation, permission, finance, or migration requirements change.",
+   "authorityClass": "canonical_contract",
+   "implementationState": "partial",
+   "truthRefs": []
   },
   {
    "path": "docs/company-os/governance.md",
@@ -1831,7 +1946,10 @@
    "lastVerifiedWith": [
     "npx pnpm@9.15.4 check"
    ],
-   "reorgTrigger": "Governance roles, policy gates, human authority, module evolution, or audit requirements change."
+   "reorgTrigger": "Governance roles, policy gates, human authority, module evolution, or audit requirements change.",
+   "authorityClass": "canonical_contract",
+   "implementationState": "partial",
+   "truthRefs": []
   },
   {
    "path": "docs/company-os/four-system-collaboration.md",
@@ -1856,7 +1974,10 @@
    "lastVerifiedWith": [
     "npx pnpm@9.15.4 check"
    ],
-   "reorgTrigger": "A primary system changes ownership, a Governance Agent hierarchy changes, or a cross-system Action boundary changes."
+   "reorgTrigger": "A primary system changes ownership, a Governance Agent hierarchy changes, or a cross-system Action boundary changes.",
+   "authorityClass": "canonical_contract",
+   "implementationState": "partial",
+   "truthRefs": []
   },
   {
    "path": "docs/company-os/governance-agent-workspaces.md",
@@ -1880,7 +2001,10 @@
    "lastVerifiedWith": [
     "npx pnpm@9.15.4 check"
    ],
-   "reorgTrigger": "Governance role responsibilities, Agent configuration, Skill authority, or Agent workspace implementation priority changes."
+   "reorgTrigger": "Governance role responsibilities, Agent configuration, Skill authority, or Agent workspace implementation priority changes.",
+   "authorityClass": "design_intent",
+   "implementationState": "design_only",
+   "truthRefs": []
   },
   {
    "path": "docs/company-os/work-operating-system.md",
@@ -1904,7 +2028,10 @@
    "lastVerifiedWith": [
     "npx pnpm@9.15.4 check"
    ],
-   "reorgTrigger": "Work hierarchy, primary views, saved queries, responsibility dimensions, or Milestone boundary changes."
+   "reorgTrigger": "Work hierarchy, primary views, saved queries, responsibility dimensions, or Milestone boundary changes.",
+   "authorityClass": "canonical_contract",
+   "implementationState": "partial",
+   "truthRefs": []
   },
   {
    "path": "docs/company-os/execution-foundation.md",
@@ -1929,7 +2056,19 @@
    "lastVerifiedWith": [
     "npx pnpm@9.15.4 check"
    ],
-   "reorgTrigger": "Execution substrate, execution-reference, provider, or transient-thinking boundary changes."
+   "reorgTrigger": "Execution substrate, execution-reference, provider, or transient-thinking boundary changes.",
+   "authorityClass": "canonical_contract",
+   "implementationState": "partial",
+   "truthRefs": [
+    {
+     "kind": "decision",
+     "ref": "docs/decisions/0025-agent-team-run-control-plane.md"
+    },
+    {
+     "kind": "decision",
+     "ref": "docs/decisions/0026-mission-wave-architecture.md"
+    }
+   ]
   },
   {
    "path": "docs/company-os/frontend-information-architecture.md",
@@ -1954,7 +2093,10 @@
    "lastVerifiedWith": [
     "npx pnpm@9.15.4 check"
    ],
-   "reorgTrigger": "Primary navigation, page responsibility, responsive hierarchy, or execution-tool placement changes."
+   "reorgTrigger": "Primary navigation, page responsibility, responsive hierarchy, or execution-tool placement changes.",
+   "authorityClass": "design_intent",
+   "implementationState": "design_only",
+   "truthRefs": []
   },
   {
    "path": "docs/company-os/core-page-matrix.md",
@@ -1979,7 +2121,10 @@
    "lastVerifiedWith": [
     "npx pnpm@9.15.4 check"
    ],
-   "reorgTrigger": "Required core pages, truth constraints, expected-design coverage, or implementation state changes."
+   "reorgTrigger": "Required core pages, truth constraints, expected-design coverage, or implementation state changes.",
+   "authorityClass": "design_intent",
+   "implementationState": "design_only",
+   "truthRefs": []
   },
   {
    "path": "docs/company-os/agent-programmable-pages.md",
@@ -2005,7 +2150,15 @@
    "lastVerifiedWith": [
     "npx pnpm@9.15.4 check"
    ],
-   "reorgTrigger": "Document/page tiers, CustomView registration, scoped read, or governed action boundaries change."
+   "reorgTrigger": "Document/page tiers, CustomView registration, scoped read, or governed action boundaries change.",
+   "authorityClass": "canonical_contract",
+   "implementationState": "partial",
+   "truthRefs": [
+    {
+     "kind": "decision",
+     "ref": "docs/decisions/0029-agent-programmable-document-runtime.md"
+    }
+   ]
   },
   {
    "path": "docs/company-os/skill-contracts.md",
@@ -2030,7 +2183,15 @@
    "lastVerifiedWith": [
     "npx pnpm@9.15.4 check"
    ],
-   "reorgTrigger": "Optional skill inputs, outputs, policy boundaries, or future custom-page capabilities change."
+   "reorgTrigger": "Optional skill inputs, outputs, policy boundaries, or future custom-page capabilities change.",
+   "authorityClass": "canonical_contract",
+   "implementationState": "partial",
+   "truthRefs": [
+    {
+     "kind": "decision",
+     "ref": "docs/decisions/0029-agent-programmable-document-runtime.md"
+    }
+   ]
   },
   {
    "path": "docs/company-os/examples/trademark-registration.md",
@@ -2055,7 +2216,10 @@
    "lastVerifiedWith": [
     "npx pnpm@9.15.4 check"
    ],
-   "reorgTrigger": "The primary cross-module acceptance scenario, trademark module contract, or finance/approval linkage changes."
+   "reorgTrigger": "The primary cross-module acceptance scenario, trademark module contract, or finance/approval linkage changes.",
+   "authorityClass": "canonical_contract",
+   "implementationState": "partial",
+   "truthRefs": []
   },
   {
    "path": "docs/decisions/0027-company-os-primary-model.md",
@@ -2080,7 +2244,15 @@
    "lastVerifiedWith": [
     "npx pnpm@9.15.4 check"
    ],
-   "reorgTrigger": "The primary Company OS model, product center, WorkItem bridge, or ADR 0026 supersession boundary changes."
+   "reorgTrigger": "The primary Company OS model, product center, WorkItem bridge, or ADR 0026 supersession boundary changes.",
+   "authorityClass": "canonical_contract",
+   "implementationState": "partial",
+   "truthRefs": [
+    {
+     "kind": "decision",
+     "ref": "docs/decisions/0026-mission-wave-architecture.md"
+    }
+   ]
   },
   {
    "path": "docs/design/company-os-v1/README.md",
@@ -2105,7 +2277,10 @@
    "lastVerifiedWith": [
     "npx pnpm@9.15.4 check"
    ],
-   "reorgTrigger": "Company OS visual grammar, truth constraints, evidence lifecycle, or visual-contract scope changes."
+   "reorgTrigger": "Company OS visual grammar, truth constraints, evidence lifecycle, or visual-contract scope changes.",
+   "authorityClass": "design_intent",
+   "implementationState": "design_only",
+   "truthRefs": []
   },
   {
    "path": "docs/design/company-os-v1/page-matrix.md",
@@ -2130,7 +2305,10 @@
    "lastVerifiedWith": [
     "npx pnpm@9.15.4 check"
    ],
-   "reorgTrigger": "Required page coverage, shared fixture, representative states, or expected-image mapping changes."
+   "reorgTrigger": "Required page coverage, shared fixture, representative states, or expected-image mapping changes.",
+   "authorityClass": "design_intent",
+   "implementationState": "design_only",
+   "truthRefs": []
   },
   {
    "path": "docs/design/company-os-v1/visual-contract.json",
@@ -2154,7 +2332,10 @@
    "lastVerifiedWith": [
     "npx pnpm@9.15.4 validate:json"
    ],
-   "reorgTrigger": "Expected-image paths, visual truth rules, page status, or visual acceptance metadata changes."
+   "reorgTrigger": "Expected-image paths, visual truth rules, page status, or visual acceptance metadata changes.",
+   "authorityClass": "design_intent",
+   "implementationState": "design_only",
+   "truthRefs": []
   },
   {
    "path": "docs/dashboard/pages/member-run-focus.md",
@@ -2179,10 +2360,18 @@
    "lastVerifiedWith": [
     "npx pnpm@9.15.4 check"
    ],
-   "reorgTrigger": "MemberRun execution semantics, assignment proof, activity truth, or responsive page contract changes."
+   "reorgTrigger": "MemberRun execution semantics, assignment proof, activity truth, or responsive page contract changes.",
+   "authorityClass": "design_intent",
+   "implementationState": "design_only",
+   "truthRefs": [
+    {
+     "kind": "decision",
+     "ref": "docs/decisions/0025-agent-team-run-control-plane.md"
+    }
+   ]
   },
   {
-  "path": "docs/dashboard/pages/mission-wave-canvas.md",
+   "path": "docs/dashboard/pages/mission-wave-canvas.md",
    "ownerRole": "product-design",
    "status": "stable",
    "lifecycle": "volatile",
@@ -2203,10 +2392,18 @@
    "lastVerifiedWith": [
     "npx pnpm@9.15.4 check"
    ],
-   "reorgTrigger": "Mission/Wave execution semantics, gate rendering, source-context return path, or responsive page contract changes."
+   "reorgTrigger": "Mission/Wave execution semantics, gate rendering, source-context return path, or responsive page contract changes.",
+   "authorityClass": "design_intent",
+   "implementationState": "design_only",
+   "truthRefs": [
+    {
+     "kind": "decision",
+     "ref": "docs/decisions/0026-mission-wave-architecture.md"
+    }
+   ]
   },
   {
-  "path": "docs/dashboard/pages/team-run-war-room.md",
+   "path": "docs/dashboard/pages/team-run-war-room.md",
    "ownerRole": "product-design",
    "status": "stable",
    "lifecycle": "volatile",
@@ -2228,7 +2425,15 @@
    "lastVerifiedWith": [
     "npx pnpm@9.15.4 check"
    ],
-   "reorgTrigger": "AgentTeamRun collaboration, assignment correlation, source-context return path, or responsive page contract changes."
+   "reorgTrigger": "AgentTeamRun collaboration, assignment correlation, source-context return path, or responsive page contract changes.",
+   "authorityClass": "design_intent",
+   "implementationState": "design_only",
+   "truthRefs": [
+    {
+     "kind": "decision",
+     "ref": "docs/decisions/0025-agent-team-run-control-plane.md"
+    }
+   ]
   },
   {
    "path": "docs/dashboard/pages/standing-agent-focus.md",
@@ -2254,7 +2459,10 @@
    "lastVerifiedWith": [
     "npx pnpm@9.15.4 check"
    ],
-   "reorgTrigger": "Standing Agent identity, availability, assignment, organization, execution-link, or responsive page contract changes."
+   "reorgTrigger": "Standing Agent identity, availability, assignment, organization, execution-link, or responsive page contract changes.",
+   "authorityClass": "design_intent",
+   "implementationState": "design_only",
+   "truthRefs": []
   },
   {
    "path": "docs/decisions/0028-retire-goal-phase-task-graph.md",
@@ -2276,10 +2484,18 @@
    "lastVerifiedWith": [
     "harness governance check"
    ],
-   "reorgTrigger": "A retired coordination object or surface is proposed for active product use."
+   "reorgTrigger": "A retired coordination object or surface is proposed for active product use.",
+   "authorityClass": "canonical_contract",
+   "implementationState": "partial",
+   "truthRefs": [
+    {
+     "kind": "decision",
+     "ref": "docs/decisions/0026-mission-wave-architecture.md"
+    }
+   ]
   },
   {
-  "path": "docs/design/execution-workbench-v3/README.md",
+   "path": "docs/design/execution-workbench-v3/README.md",
    "ownerRole": "product-design",
    "status": "stable",
    "lifecycle": "volatile",
@@ -2301,10 +2517,13 @@
    "lastVerifiedWith": [
     "npx pnpm@9.15.4 check:dashboard"
    ],
-   "reorgTrigger": "The approved Mission Canvas or Agent Team War Room visual direction changes."
+   "reorgTrigger": "The approved Mission Canvas or Agent Team War Room visual direction changes.",
+   "authorityClass": "design_intent",
+   "implementationState": "design_only",
+   "truthRefs": []
   },
   {
-  "path": "docs/design/execution-workbench-v3/visual-contract.json",
+   "path": "docs/design/execution-workbench-v3/visual-contract.json",
    "ownerRole": "frontend-quality",
    "status": "stable",
    "lifecycle": "volatile",
@@ -2323,7 +2542,10 @@
    "lastVerifiedWith": [
     "npx pnpm@9.15.4 check:dashboard"
    ],
-   "reorgTrigger": "Expected, implemented, comparison, overlay, fixture, or route evidence changes."
+   "reorgTrigger": "Expected, implemented, comparison, overlay, fixture, or route evidence changes.",
+   "authorityClass": "design_intent",
+   "implementationState": "design_only",
+   "truthRefs": []
   },
   {
    "path": "docs/decisions/0029-agent-programmable-document-runtime.md",
@@ -2348,7 +2570,10 @@
    "lastVerifiedWith": [
     "npx pnpm@9.15.4 check"
    ],
-   "reorgTrigger": "Page-tier model, CustomPageDefinition/Package boundaries, scoped query/action policy, or standard-view fallback requirements change."
+   "reorgTrigger": "Page-tier model, CustomPageDefinition/Package boundaries, scoped query/action policy, or standard-view fallback requirements change.",
+   "authorityClass": "canonical_contract",
+   "implementationState": "partial",
+   "truthRefs": []
   },
   {
    "path": "docs/design/company-os-v1/fixture-contract.md",
@@ -2372,7 +2597,15 @@
    "lastVerifiedWith": [
     "node apps/agent-dashboard/tests/company-os-trademark-acceptance.mjs"
    ],
-   "reorgTrigger": "Fixture identifiers, visible truth rules, required page slices, or financial/approval constraints change."
+   "reorgTrigger": "Fixture identifiers, visible truth rules, required page slices, or financial/approval constraints change.",
+   "authorityClass": "actual_evidence",
+   "implementationState": "verified",
+   "truthRefs": [
+    {
+     "kind": "test",
+     "ref": "node apps/agent-dashboard/tests/company-os-trademark-acceptance.mjs"
+    }
+   ]
   },
   {
    "path": "docs/design/company-os-v1/implementation-acceptance.md",
@@ -2396,7 +2629,15 @@
    "lastVerifiedWith": [
     "node apps/agent-dashboard/tests/company-os-trademark-acceptance.mjs"
    ],
-   "reorgTrigger": "Fixture loading, browser route evidence, visual comparison policy, or acceptance evidence requirements change."
+   "reorgTrigger": "Fixture loading, browser route evidence, visual comparison policy, or acceptance evidence requirements change.",
+   "authorityClass": "actual_evidence",
+   "implementationState": "verified",
+   "truthRefs": [
+    {
+     "kind": "test",
+     "ref": "node apps/agent-dashboard/tests/company-os-trademark-acceptance.mjs"
+    }
+   ]
   },
   {
    "path": "docs/design/company-os-v2/visual-index.md",
@@ -2420,7 +2661,10 @@
    "lastVerifiedWith": [
     "harness governance check"
    ],
-   "reorgTrigger": "An active Company OS visual target, evidence package, historical baseline, or deferred-reference classification changes."
+   "reorgTrigger": "An active Company OS visual target, evidence package, historical baseline, or deferred-reference classification changes.",
+   "authorityClass": "entry",
+   "implementationState": "partial",
+   "truthRefs": []
   },
   {
    "path": "docs/integration/native-session-storage.md",
@@ -2451,7 +2695,10 @@
    "lastVerifiedWith": [
     "npx pnpm@9.15.4 check"
    ],
-   "reorgTrigger": "Native session binding fields, provider reader/resume interfaces, activity projection, or migration order changes."
+   "reorgTrigger": "Native session binding fields, provider reader/resume interfaces, activity projection, or migration order changes.",
+   "authorityClass": "implementation_reference",
+   "implementationState": "partial",
+   "truthRefs": []
   },
   {
    "path": "docs/decisions/0032-provider-native-session-is-execution-truth.md",
@@ -2482,7 +2729,10 @@
    "lastVerifiedWith": [
     "npx pnpm@9.15.4 check"
    ],
-   "reorgTrigger": "Per-agent native storage, Harness coordination persistence, native activity projection, provider resume, export, or migration policy changes."
+   "reorgTrigger": "Per-agent native storage, Harness coordination persistence, native activity projection, provider resume, export, or migration policy changes.",
+   "authorityClass": "canonical_contract",
+   "implementationState": "partial",
+   "truthRefs": []
   },
   {
    "path": "docs/integration/live-agent-team-acceptance-2026-07-21.md",
@@ -2510,7 +2760,10 @@
     "harness dashboard snapshot",
     "cargo test -p harness-cli --test team_run_api"
    ],
-   "reorgTrigger": "Agent Team provider transport, interrupted-run recovery, thinking persistence, or acceptance evidence requirements change."
+   "reorgTrigger": "Agent Team provider transport, interrupted-run recovery, thinking persistence, or acceptance evidence requirements change.",
+   "authorityClass": "actual_evidence",
+   "implementationState": "verified",
+   "truthRefs": []
   },
   {
    "path": "docs/design/company-os-v1/fixtures/company-os-trademark-v1.json",
@@ -2533,7 +2786,15 @@
    "lastVerifiedWith": [
     "node apps/agent-dashboard/tests/company-os-trademark-acceptance.mjs"
    ],
-   "reorgTrigger": "The shared Company OS V1 scenario facts, record IDs, actor roles, financial state, or page slices change."
+   "reorgTrigger": "The shared Company OS V1 scenario facts, record IDs, actor roles, financial state, or page slices change.",
+   "authorityClass": "actual_evidence",
+   "implementationState": "verified",
+   "truthRefs": [
+    {
+     "kind": "test",
+     "ref": "node apps/agent-dashboard/tests/company-os-trademark-acceptance.mjs"
+    }
+   ]
   },
   {
    "path": "docs/company-os/collaboration-and-agent-work.md",
@@ -2557,7 +2818,10 @@
    "lastVerifiedWith": [
     "harness governance check"
    ],
-   "reorgTrigger": "Collaboration subjects, Standing Agent participation, result promotion, or execution-member boundaries change."
+   "reorgTrigger": "Collaboration subjects, Standing Agent participation, result promotion, or execution-member boundaries change.",
+   "authorityClass": "canonical_contract",
+   "implementationState": "partial",
+   "truthRefs": []
   },
   {
    "path": "docs/company-os/browser-action-transport.md",
@@ -2581,7 +2845,19 @@
    "lastVerifiedWith": [
     "npx pnpm@9.15.4 check:company-os"
    ],
-   "reorgTrigger": "Action transport authentication, authorization, idempotency, audit reservation, or browser capability handling changes."
+   "reorgTrigger": "Action transport authentication, authorization, idempotency, audit reservation, or browser capability handling changes.",
+   "authorityClass": "implementation_reference",
+   "implementationState": "verified",
+   "truthRefs": [
+    {
+     "kind": "ui",
+     "ref": "apps/agent-dashboard/src/company-os/operations/approvalAction.ts"
+    },
+    {
+     "kind": "test",
+     "ref": "npx pnpm@9.15.4 check:company-os"
+    }
+   ]
   },
   {
    "path": "docs/company-os/work-item-lifecycle-actions.md",
@@ -2605,7 +2881,15 @@
    "lastVerifiedWith": [
     "npx pnpm@9.15.4 check:company-os"
    ],
-   "reorgTrigger": "WorkItem transition graph, responsibility, result provenance, approval gate, or Action policy changes."
+   "reorgTrigger": "WorkItem transition graph, responsibility, result provenance, approval gate, or Action policy changes.",
+   "authorityClass": "implementation_reference",
+   "implementationState": "verified",
+   "truthRefs": [
+    {
+     "kind": "test",
+     "ref": "npx pnpm@9.15.4 check:company-os"
+    }
+   ]
   },
   {
    "path": "docs/integration/host-agent-mcp.md",
@@ -2628,7 +2912,15 @@
    "lastVerifiedWith": [
     "harness governance check"
    ],
-   "reorgTrigger": "Host MCP registration, TeamRun control, provider executability, or thinking boundary changes."
+   "reorgTrigger": "Host MCP registration, TeamRun control, provider executability, or thinking boundary changes.",
+   "authorityClass": "implementation_reference",
+   "implementationState": "implemented",
+   "truthRefs": [
+    {
+     "kind": "api",
+     "ref": "crates/harness-cli/src/mcp.rs"
+    }
+   ]
   }
  ]
 }

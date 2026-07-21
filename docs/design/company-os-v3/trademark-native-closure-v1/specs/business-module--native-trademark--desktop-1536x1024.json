@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "page": "business-module",
+  "expected": "../../company-os-v2/expected/business-module--trademark-operations-v2-2--desktop-1536x1024.png",
+  "viewport": {
+    "width": 1536,
+    "height": 1024,
+    "device_scale_factor": 1
+  },
+  "geometry": {
+    "regions": ["240px navigation/tree", "860px operating workspace", "410px decision rail"],
+    "grid": {"columns": [240, 860, 410], "main_to_context_ratio": "2.1:1"},
+    "gutters": {"page": 24, "panel": 16},
+    "max_content_width": 1536,
+    "scroll_owner": "module workspace; decision rail sticky",
+    "sticky_regions": ["navigation", "module action header", "decision rail"]
+  },
+  "vertical_landmarks": ["module identity 28px", "lifecycle stepper 185px", "application ledger 278px", "milestone/work rows 445px", "evidence ledger 765px"],
+  "typography": ["module title 36px serif", "panel headings 19px serif", "row copy 12px sans", "decision amount 28px serif"],
+  "spacing_scale": [4, 8, 12, 16, 24, 32],
+  "surfaces": ["warm page", "one main ledger surface", "coral-outlined approval pressure card", "quiet team and finance cards"],
+  "colors": ["ivory", "ink", "coral primary", "olive completed", "amber finance", "sand borders"],
+  "icons_and_assets": ["module seal", "lucide operational icons", "actor portraits", "currency shield illustration"],
+  "component_strategy": {
+    "reuse": ["ActorAvatar", "relation rows", "status tokens", "governed action controls"],
+    "page_specific": ["trademark lifecycle stepper", "application ledger", "approval pressure rail"],
+    "replace_or_split": ["generic business-module cards that hide the end-to-end sequence"]
+  },
+  "responsive_transformations": ["tablet moves decision rail below lifecycle summary", "mobile shows approval pressure immediately after application identity", "rows become labeled stacks; action stays reachable"],
+  "design_risks": ["approval may be approved in Actual rather than pending", "native result evidence is longer than generated labels", "currency must remain CNY/¥ without implying Payment"],
+  "unresolved_decisions": []
+}
