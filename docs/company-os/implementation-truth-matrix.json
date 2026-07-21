@@ -1,0 +1,65 @@
+{
+  "schema": "star_harness.company_os_implementation_truth.v1",
+  "auditedAt": "2026-07-22",
+  "states": ["design_only", "partial", "implemented", "verified"],
+  "systems": [
+    {
+      "id": "docs",
+      "implementationState": "partial",
+      "truthRefs": {
+        "contract": ["docs/company-os/document-system.md"],
+        "schema": ["schemas/company-os/knowledge.schema.json"],
+        "store": ["crates/harness-store/src/company_os.rs"],
+        "api": ["crates/harness-cli/src/company_os_api.rs"],
+        "ui": ["apps/agent-dashboard/src/company-os/docs"],
+        "acceptance": ["crates/harness-cli/tests/company_os_api.rs", "apps/agent-dashboard/tests/company-os-docs-check.mjs"]
+      },
+      "blockingGaps": ["governed root Document result writeback"]
+    },
+    {
+      "id": "organization",
+      "implementationState": "partial",
+      "truthRefs": {
+        "contract": ["docs/company-os/organization-and-actors.md"],
+        "schema": ["schemas/company-os/actors.schema.json"],
+        "store": ["crates/harness-store/src/company_os.rs"],
+        "api": ["crates/harness-cli/src/company_os_api.rs"],
+        "ui": ["apps/agent-dashboard/src/company-os/operations/pages.tsx"],
+        "acceptance": ["crates/harness-core/tests/company_os.rs", "crates/harness-store/tests/company_os.rs"]
+      },
+      "blockingGaps": ["governed organization-change lifecycle", "governance-led Organization Actual"]
+    },
+    {
+      "id": "work",
+      "implementationState": "partial",
+      "truthRefs": {
+        "contract": ["docs/company-os/work-items-and-approvals.md", "docs/company-os/work-operating-system.md"],
+        "schema": ["schemas/company-os/work.schema.json"],
+        "store": ["crates/harness-store/src/company_os.rs"],
+        "api": ["crates/harness-cli/src/company_os_api.rs"],
+        "ui": ["apps/agent-dashboard/src/company-os/work/WorkOperatingPage.tsx"],
+        "acceptance": ["crates/harness-cli/tests/company_os_api.rs", "apps/agent-dashboard/tests/company-os-operations-check.mjs"]
+      },
+      "blockingGaps": ["governed WorkItem creation from source Document", "governed Assignment creation in the same scenario"]
+    },
+    {
+      "id": "finance",
+      "implementationState": "partial",
+      "truthRefs": {
+        "contract": ["docs/company-os/financial-relations.md"],
+        "schema": ["schemas/company-os/finance.schema.json"],
+        "store": ["crates/harness-store/src/company_os.rs"],
+        "api": ["crates/harness-cli/src/company_os_api.rs"],
+        "ui": ["apps/agent-dashboard/src/company-os/operations/pages.tsx"],
+        "acceptance": ["crates/harness-cli/tests/company_os_api.rs", "crates/harness-store/tests/company_os.rs"]
+      },
+      "blockingGaps": ["governed Commitment proposal from WorkItem", "governed Approval request creation"]
+    }
+  ],
+  "trademarkClosure": {
+    "implementationState": "partial",
+    "existingEvidence": ["crates/harness-cli/tests/company_os_api.rs", "scripts/seed-company-os-trademark-v1.mjs"],
+    "missingNativeActions": ["work_item.append create", "assignment.append create", "commitment.propose", "approval.request", "root document result append", "typed record result append"],
+    "forbiddenShortcut": "Fixture or administrative seed must not create the WorkItem, Assignment, Commitment, Approval, or returned result used as acceptance truth."
+  }
+}
