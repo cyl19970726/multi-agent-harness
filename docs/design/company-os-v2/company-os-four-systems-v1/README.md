@@ -3,12 +3,16 @@
 These diagrams explain the organization, responsibility, and collaboration boundaries between
 Docs, Organization, Work, and Finance.
 
-1. `governance-led-organization--1536x1024.png` shows Lead's four Governance
+1. `organization-overview-ui--1536x1024.png` translates the hierarchy into the
+   actual Organization product surface.
+2. `hr-governance-agent-focus-ui--1536x1024.png` defines the Org/HR workspace
+   for capability-gap decisions and governed Agent lifecycle.
+3. `governance-led-organization--1536x1024.png` shows Lead's four Governance
    Agent reports, Org/HR ownership of every Business Agent, and the difference
    between reporting and collaboration.
-2. `four-system-responsibility-map--1536x1024.png` shows which system owns each
+4. `four-system-responsibility-map--1536x1024.png` shows which system owns each
    kind of company truth and which requests cross the boundaries.
-3. `trademark-operating-loop--1536x1024.png` applies the model to the first
+5. `trademark-operating-loop--1536x1024.png` applies the model to the first
    governed acceptance scenario.
 
 The diagrams are explanatory expected assets, not proof that every shown

@@ -7,6 +7,18 @@
   },
   "assets": [
     {
+      "id": "organization-overview-ui",
+      "file": "expected/organization-overview-ui--1536x1024.png",
+      "prompt": "prompts/organization-overview-ui.md",
+      "sha256": "02690610ad5bd5386c7a09a17c6178151f57a55c5551f016be274fa4e5a9f19b"
+    },
+    {
+      "id": "hr-governance-agent-focus-ui",
+      "file": "expected/hr-governance-agent-focus-ui--1536x1024.png",
+      "prompt": "prompts/hr-agent-focus-ui.md",
+      "sha256": "bb8f7eafb777a1ceaa8debbdedf886a66169c5fd89de194d2b81243c65285f64"
+    },
+    {
       "id": "governance-led-organization",
       "file": "expected/governance-led-organization--1536x1024.png",
       "prompt": "prompts/governance-led-organization.md",
