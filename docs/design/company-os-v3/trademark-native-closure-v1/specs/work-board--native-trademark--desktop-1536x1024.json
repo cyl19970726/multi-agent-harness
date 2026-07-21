@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "page": "work-board",
+  "expected": "../../company-os-v2/work-operating-system-v1/expected/work-board--desktop-1536x1024.png",
+  "viewport": {
+    "width": 1536,
+    "height": 1024,
+    "device_scale_factor": 1
+  },
+  "geometry": {
+    "regions": ["172px product navigation", "1364px work surface"],
+    "grid": {"board_columns": 7, "column_width": 188, "gap": 12},
+    "gutters": {"surface": 24, "card": 12},
+    "max_content_width": 1536,
+    "scroll_owner": "board horizontal/vertical viewport inside fixed shell",
+    "sticky_regions": ["navigation", "title/tabs", "filter bar", "column headers"]
+  },
+  "vertical_landmarks": ["title 32px", "tabs 116px", "filters 182px", "board 232px"],
+  "typography": ["page title 46px serif", "column heading 15px semibold", "card title 13px semibold", "metadata 10px sans"],
+  "spacing_scale": [4, 8, 12, 16, 20, 24],
+  "surfaces": ["flat warm board", "subtle column wells", "thin bordered work cards", "status chips only where informative"],
+  "colors": ["ivory", "ink", "coral active", "olive complete", "red blocked", "blue external reference"],
+  "icons_and_assets": ["lucide type icons", "human and Standing Agent portraits", "compact milestone/approval markers"],
+  "component_strategy": {
+    "reuse": ["Work shell tabs", "ActorAvatar", "Work status tokens", "filters"],
+    "page_specific": ["seven-column lifecycle board", "dense WorkItem card"],
+    "replace_or_split": ["wide summary cards above the board", "single-column list used as a board substitute"]
+  },
+  "responsive_transformations": ["tablet keeps columns in a horizontally scrollable board with sticky status header", "mobile defaults to one selected status lane and exposes lane picker", "filters collapse to a sheet"],
+  "design_risks": ["small Store dataset can make the board look empty", "long accountable names affect card rhythm", "completion must remain distinct from Approval and Payment"],
+  "unresolved_decisions": []
+}

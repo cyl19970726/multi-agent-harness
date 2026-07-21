@@ -96,10 +96,9 @@ language references unless a newer page-family contract supersedes them.
 ## V1 and rejected candidates
 
 [`../company-os-v1/`](../company-os-v1/) preserves the original functional
-baseline, accepted implementation evidence, and design history. Its
-`candidates/` folders include explicitly wrong, inconsistent, or exploratory
-directions. They are retained for provenance and must not be loaded as current
-design targets.
+baseline and accepted implementation evidence. Rejected candidate images were
+deleted after convergence and remain recoverable through Git history; they are
+not part of any active design context.
 
 ## Visual acceptance rule
 

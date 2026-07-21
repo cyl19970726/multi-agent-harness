@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "page": "docs-workspace",
+  "expected": "../../company-os-v2/expected/docs--company-knowledge-workspace-v2-2--desktop-1536x1024.png",
+  "viewport": {
+    "width": 1536,
+    "height": 1024,
+    "device_scale_factor": 1
+  },
+  "geometry": {
+    "regions": ["194px product navigation", "234px document tree", "828px editor", "280px context rail"],
+    "grid": {"columns": [194, 234, 828, 280], "main_to_context_ratio": "3:1"},
+    "gutters": {"editor_horizontal": 34, "section_vertical": 24},
+    "max_content_width": 1536,
+    "scroll_owner": "editor and context rail independently; shell fixed",
+    "sticky_regions": ["product navigation", "document tree", "top actions", "context rail"]
+  },
+  "vertical_landmarks": ["breadcrumb 50px", "editor title 96px", "operating-area split 350px", "milestone table 680px"],
+  "typography": ["editor title 50px editorial serif", "section heading 20px serif", "body 14px sans", "metadata 11px condensed sans"],
+  "spacing_scale": [4, 8, 12, 16, 24, 32, 40],
+  "surfaces": ["warm canvas", "borderless editor", "single outlined context card", "table rows instead of card grid"],
+  "colors": ["warm ivory background", "ink foreground", "coral action accent", "olive success", "muted sand borders"],
+  "icons_and_assets": ["lucide line icons", "approved actor portraits", "subtle connection-line ornament"],
+  "component_strategy": {
+    "reuse": ["Workbench shell", "ActorAvatar", "status and relation primitives"],
+    "page_specific": ["document tree", "borderless editor composition", "about/relations/activity rail"],
+    "replace_or_split": ["generic card grids that fragment the editor"]
+  },
+  "responsive_transformations": ["tablet collapses product navigation and opens document tree as sheet", "mobile uses bottom navigation and context drawer", "editor tables become horizontally contained lists without page overflow"],
+  "design_risks": ["real document titles wrap sooner", "Store records must not invent the design's sample metrics", "right rail must not dominate at 1024px"],
+  "unresolved_decisions": []
+}
