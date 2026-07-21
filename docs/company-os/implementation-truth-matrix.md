@@ -54,9 +54,12 @@ Approval or returned result.
 
 - `product_truth`: every displayed relationship resolves to native Store rows;
   the complete scenario is reproducible through governed Actions and tests.
-- `visual_fidelity`: separately compares approved Expected and Store-live
-  Actual at identical viewports. Product truth cannot waive visual defects and
-  visual similarity cannot waive missing records.
+- `visual_fidelity`: the three P0 trademark pages now pass exact-size
+  Expected/Store-live Actual review through
+  [`trademark-native-closure-v1`](../design/company-os-v3/trademark-native-closure-v1/README.md).
+  Product truth cannot waive visual defects and visual similarity cannot waive
+  missing records. The Work board's six native records are an explicit,
+  truth-preserving deviation from the 24-card concept image.
 - Organization lifecycle and rich governance-agent workspaces remain planned
   after this trademark slice; the UI must label them as Expected rather than
   Actual until their own schema, Action and acceptance chains exist.

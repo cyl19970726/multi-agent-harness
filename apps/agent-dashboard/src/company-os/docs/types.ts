@@ -129,6 +129,8 @@ export interface CompanyOsWorkspaceData {
   recentlyUpdated?: CompanyOsLink[];
   templates?: CompanyOsLink[];
   databases?: CompanyOsLink[];
+  /** Explicit Standing Agent maintainers supplied by organization/document relations. */
+  maintainers?: CompanyOsLink[];
   structureNotes?: Array<{ label: string; value: string; tone?: "neutral" | "warning" }>;
   structureLinks?: CompanyOsLink[];
   suggestions?: CompanyOsLink[];

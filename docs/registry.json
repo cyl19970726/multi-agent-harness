@@ -1651,7 +1651,8 @@
    "reviewAfter": "2026-08-22",
    "lastVerifiedWith": [
     "cargo test -p harness-cli --test company_os_api",
-    "npx pnpm@9.15.4 check:company-os"
+    "npx pnpm@9.15.4 check:company-os",
+    "frontend-visual-contract validate_manifest.py"
    ],
    "reorgTrigger": "Any Company OS schema, store, Action, UI, acceptance test, or trademark closure state changes.",
    "authorityClass": "actual_evidence",
@@ -1676,6 +1677,10 @@
     {
      "kind": "test",
      "ref": "crates/harness-cli/tests/company_os_api.rs"
+    },
+    {
+     "kind": "runtime_evidence",
+     "ref": "docs/design/company-os-v3/trademark-native-closure-v1/visual-contract.json"
     }
    ]
   },

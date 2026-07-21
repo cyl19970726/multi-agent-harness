@@ -64,6 +64,13 @@
     "existingEvidence": ["crates/harness-cli/tests/company_os_api.rs"],
     "nativeActions": ["work_item.append", "assignment.append", "commitment.propose", "approval.request", "commitment.append", "approval.decide", "work_item.transition", "block.append", "document.append", "typed_record.append"],
     "missingNativeActions": [],
-    "forbiddenShortcut": "Fixture or administrative seed must not create the WorkItem, Assignment, Commitment, Approval, or returned result used as acceptance truth."
+    "forbiddenShortcut": "Fixture or administrative seed must not create the WorkItem, Assignment, Commitment, Approval, or returned result used as acceptance truth.",
+    "visualClosure": {
+      "implementationState": "verified",
+      "contract": "docs/design/company-os-v3/trademark-native-closure-v1/visual-contract.json",
+      "p0Pages": ["docs-workspace", "business-module", "work-board"],
+      "viewportsVerified": ["1536x1024", "1024x900", "390x844"],
+      "gates": {"product_truth": "pass", "visual_fidelity": "pass"}
+    }
   }
 }
