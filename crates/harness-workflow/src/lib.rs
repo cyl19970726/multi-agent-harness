@@ -15,7 +15,7 @@
 //!   dynamic authoring surface, where an agent writes a real program (loops,
 //!   conditionals, data-driven fan-out) that drives the same scheduler dispatch.
 //!
-//! See docs/research/dynamic-workflow-runtime-design.md for the full design.
+//! See `docs/workflow-runtime.md` and ADRs 0022/0023 for the active contract.
 
 use std::collections::BTreeMap;
 use std::sync::{Condvar, Mutex};

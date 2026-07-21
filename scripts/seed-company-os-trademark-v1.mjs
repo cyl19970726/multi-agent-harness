@@ -202,6 +202,26 @@ export async function seedCompanyOsTrademark({ apiBaseUrl, token, fixture }) {
     token,
     body: bootstrap ? record : admin(record),
   });
+  const dispatch = ({ id, commandName, subjectRef, requestedBy, record, permission, riskTier, approvalRefs = [], auditRef }) =>
+    requestJson(apiBaseUrl, "/v1/company-os/actions/dispatch", {
+      token,
+      body: {
+        id,
+        command_name: commandName,
+        subject_ref: subjectRef,
+        requested_by: requestedBy,
+        payload: { definition_id: "page-trademark", record },
+        required_permission: permission,
+        policy_ref: `page-trademark:${commandName}`,
+        risk_tier: riskTier,
+        requires_human_approval: commandName === "commitment.append" || commandName === "payment.append",
+        approval_refs: approvalRefs,
+        status: "requested",
+        audit_event_refs: [auditRef],
+        requested_at: NOW,
+        completed_at: null,
+      },
+    });
 
   const root = fixture.actors.find((entry) => entry.id === ADMIN_ID);
   await post("actors", humanRecord(root), true);
@@ -310,7 +330,12 @@ export async function seedCompanyOsTrademark({ apiBaseUrl, token, fixture }) {
       permission_policy_ref: "company.records.write",
     }],
     approved_ui_components: ["DocumentCard", "WorkItemCard", "ApprovalCard", "FinancialRecordCard"],
-    action_command_refs: ["approval.decide", "work_item.transition", "commitment.append", "payment.append"],
+    action_command_refs: [
+      "document.append", "block.append", "typed_record.append",
+      "work_item.append", "work_item.transition", "assignment.append",
+      "commitment.propose", "commitment.append",
+      "approval.request", "approval.decide", "payment.append",
+    ],
     standard_view_fallback_ref: "view-trademark-management",
     owner: actorRef("human", ADMIN_ID),
     package_ref: "package-trademark",
@@ -318,7 +343,14 @@ export async function seedCompanyOsTrademark({ apiBaseUrl, token, fixture }) {
     fixture_ref: "company-os-trademark-v1",
     visual_contract_ref: "docs/design/company-os-v1/visual-contract.json",
     policy_refs: [
+      "page-trademark:document.append",
+      "page-trademark:block.append",
+      "page-trademark:typed_record.append",
+      "page-trademark:work_item.append",
+      "page-trademark:assignment.append",
+      "page-trademark:commitment.propose",
       "page-trademark:approval.decide",
+      "page-trademark:approval.request",
       "page-trademark:work_item.transition",
       "page-trademark:commitment.append",
       "page-trademark:payment.append",
@@ -378,7 +410,7 @@ export async function seedCompanyOsTrademark({ apiBaseUrl, token, fixture }) {
     id: work.id,
     title: work.title,
     objective: "Prepare the Brand A trademark filing package and stop for Human approval before legal or financial effect.",
-    status: "waiting_for_approval",
+    status: "submitted",
     source_document_ref: work.source_document_ref,
     source_record_refs: work.source_record_refs,
     milestone_ref: milestoneRecord.id,
@@ -408,10 +440,19 @@ export async function seedCompanyOsTrademark({ apiBaseUrl, token, fixture }) {
     updated_at: work.updated_at,
     completed_at: null,
   };
-  await post("work-items", workRecord);
+  await dispatch({
+    id: "action-trademark-work-create",
+    commandName: "work_item.append",
+    subjectRef: { kind: "document", id: work.source_document_ref },
+    requestedBy: actorRef("human", ADMIN_ID),
+    record: workRecord,
+    permission: "company.records.write",
+    riskTier: "r1",
+    auditRef: "audit-action-trademark-work-create",
+  });
   await post("milestones", { ...milestoneRecord, work_item_refs: [workRecord.id] });
   const assignment = fixture.assignments[0];
-  await post("assignments", {
+  const assignmentRecord = {
     id: assignment.id,
     work_item_id: assignment.work_item_ref,
     recipient: actorRef("agent", assignment.assignee_ref),
@@ -425,6 +466,16 @@ export async function seedCompanyOsTrademark({ apiBaseUrl, token, fixture }) {
     assigned_at: assignment.assigned_at,
     delivered_at: assignment.assigned_at,
     acknowledged_at: assignment.accepted_at,
+  };
+  await dispatch({
+    id: "action-trademark-assignment-create",
+    commandName: "assignment.append",
+    subjectRef: { kind: "work_item", id: work.id },
+    requestedBy: actorRef("human", ADMIN_ID),
+    record: assignmentRecord,
+    permission: "company.records.write",
+    riskTier: "r1",
+    auditRef: "audit-action-trademark-assignment-create",
   });
   await post("relations", {
     id: "relation-trademark-application-work",
@@ -452,7 +503,16 @@ export async function seedCompanyOsTrademark({ apiBaseUrl, token, fixture }) {
     created_at: commitmentFixture.created_at,
     updated_at: commitmentFixture.created_at,
   };
-  await post("commitments", proposedCommitment);
+  await dispatch({
+    id: "action-trademark-commitment-propose",
+    commandName: "commitment.propose",
+    subjectRef: { kind: "work_item", id: work.id },
+    requestedBy: actorRef("agent", "actor-agent-trademark"),
+    record: proposedCommitment,
+    permission: "finance.commitment.write",
+    riskTier: "r2",
+    auditRef: "audit-trademark-commitment-proposed",
+  });
 
   const approvalFixture = fixture.approvals[0];
   const requestedApproval = {
@@ -471,8 +531,47 @@ export async function seedCompanyOsTrademark({ apiBaseUrl, token, fixture }) {
     decided_at: null,
     expires_at: approvalFixture.expires_at,
   };
-  await post("approvals", requestedApproval);
-  await post("work-items", { ...workRecord, approval_refs: [requestedApproval.id] });
+  await dispatch({
+    id: "action-trademark-approval-request",
+    commandName: "approval.request",
+    subjectRef: requestedApproval.subject_ref,
+    requestedBy: requestedApproval.requested_by,
+    record: requestedApproval,
+    permission: "company.records.write",
+    riskTier: "r1",
+    auditRef: "audit-action-trademark-approval-request",
+  });
+  const inProgressWork = {
+    ...workRecord,
+    status: "in_progress",
+    approval_refs: [requestedApproval.id],
+    updated_at: "2026-07-20T09:35:00+08:00",
+  };
+  await dispatch({
+    id: "action-trademark-work-start",
+    commandName: "work_item.transition",
+    subjectRef: { kind: "work_item", id: work.id },
+    requestedBy: actorRef("agent", "actor-agent-trademark"),
+    record: inProgressWork,
+    permission: "company.work.execute",
+    riskTier: "r2",
+    auditRef: "audit-action-trademark-work-start",
+  });
+  const waitingWork = {
+    ...inProgressWork,
+    status: "waiting_for_approval",
+    updated_at: work.updated_at,
+  };
+  await dispatch({
+    id: "action-trademark-work-wait-approval",
+    commandName: "work_item.transition",
+    subjectRef: { kind: "work_item", id: work.id },
+    requestedBy: actorRef("agent", "actor-agent-trademark"),
+    record: waitingWork,
+    permission: "company.work.execute",
+    riskTier: "r2",
+    auditRef: "audit-action-trademark-work-wait-approval",
+  });
 
   // A small native cross-line ledger proves that Work views are projections,
   // not a trademark-specific page. These records use existing governed Actors
@@ -679,9 +778,9 @@ async function main() {
       status: "passed",
       project_id: project.id,
       source: snapshot.source,
-      fixture: "docs/design/company-os-v1/fixtures/company-os-trademark-v1.json",
+      scenario_input: "docs/design/company-os-v1/fixtures/company-os-trademark-v1.json",
       capture_contract: captureContract,
-      transport: "HARNESS_COMPANY_OS_TOKEN + administrative envelope",
+      transport: "administrative bootstrap + governed ActionCommands for trademark WorkItem, Assignment, Commitment, and Approval request",
       archived_store: "archived-harness-home",
       counts: projectionCounts(snapshot),
       gate: {

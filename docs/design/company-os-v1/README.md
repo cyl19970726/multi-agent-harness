@@ -64,10 +64,10 @@ spec_ready
 
 `spec_ready` means its prompt and product contract are ready but no corrected expected image exists. `candidate_generated_needs_revision` is explicitly non-authoritative. `expected_approved` requires an expected-image hash plus approval identity and date. Browser evidence and a comparison file are required before `accepted`.
 
-The obsolete-IA and truth-defect generations are retained under `candidates/`
-as non-authoritative design history. All twelve corrected images now exist under
-`expected/`, have recorded SHA-256 hashes, and are marked `expected_generated`.
-They remain pending product approval; generation is not approval.
+The obsolete-IA and truth-defect candidate generations were deleted after the
+direction closed; Git history is sufficient recovery. All twelve corrected
+images remain under `expected/` with recorded SHA-256 hashes. Generation alone
+did not make those V1 images product authority.
 
 ## Evidence lifecycle
 

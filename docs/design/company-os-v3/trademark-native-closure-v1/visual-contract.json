@@ -1,0 +1,136 @@
+{
+  "version": 1,
+  "workstream": "trademark-native-closure-v1",
+  "artifact_policy": {
+    "expected": "durable",
+    "selected_comparisons": "durable",
+    "raw_browser_runs": "/Users/hhh0x/multi-agent-harness/.visual-evidence/company-os-v3/trademark-native-closure-v1"
+  },
+  "fidelity_policy": {
+    "required_for_p0": true,
+    "expected_viewport_must_match": true,
+    "minimum_implementation_iterations": 2
+  },
+  "cases": [
+    {
+      "id": "docs-workspace--native-trademark--desktop-1536x1024",
+      "priority": "P0",
+      "page": "docs-workspace",
+      "state": "native-trademark",
+      "route": "/?surface=docs",
+      "fixture": "native-trademark-actions-v1",
+      "viewport": {"width": 1536, "height": 1024, "device_scale_factor": 1},
+      "baseline": "../../../../.visual-evidence/company-os-v2/company-os-v3-trademark-baseline/store-live-actual/docs--company-knowledge-workspace--desktop.png",
+      "expected": "../../company-os-v2/expected/docs--company-knowledge-workspace-v2-2--desktop-1536x1024.png",
+      "implemented": "../../../../.visual-evidence/company-os-v3/trademark-native-closure-v1/final/implemented/docs-workspace--native-trademark--desktop-1536x1024.png",
+      "comparison": "comparisons/docs-workspace--native-trademark--desktop-1536x1024.png",
+      "prompt": "../../company-os-v2/prompts/docs-v2.2.md",
+      "design_spec": "specs/docs-workspace--native-trademark--desktop-1536x1024.json",
+      "asset_inventory": "assets/docs-workspace--native-trademark--asset-inventory.md",
+      "overlay": "overlays/docs-workspace--native-trademark--desktop-1536x1024.png",
+      "baseline_revision": "9998f56014d02fe3b85514c8059fa041b0fa7837",
+      "implementation_iterations": [
+        {
+          "revision": "c76b1c8-dirty",
+          "implemented": "../../../../.visual-evidence/company-os-v2/company-os-v3-trademark-structural-2/store-live-actual/docs--company-knowledge-workspace--desktop.png",
+          "stage": "geometry_and_information_architecture",
+          "verdict": "revise",
+          "defects": ["Maintainer section fell below the first viewport and recent-record density was too high."],
+          "next": "Expose explicit projection-backed maintainers and limit the first-viewport recent ledger."
+        },
+        {
+          "revision": "c76b1c8-dirty",
+          "implemented": "../../../../.visual-evidence/company-os-v3/trademark-native-closure-v1/final/implemented/docs-workspace--native-trademark--desktop-1536x1024.png",
+          "stage": "final_store_live",
+          "verdict": "pass_with_deviations"
+        }
+      ],
+      "expected_approval": {"status": "approved", "approver": "Human Owner", "decided_at": "2026-07-21"},
+      "gates": {
+        "product_truth": {"status": "pass", "evidence": "Authority-labelled Harness Store projection; canonical Document, module, proposal, financial, and actor refs verified by capture."},
+        "visual_fidelity": {"status": "pass", "evidence": "Exact 1536x1024 comparison and overlay preserve the editor-first three-column composition, hierarchy, structure callout, record ledger, and maintainer zone."}
+      },
+      "review": {"status": "pass_with_deviations", "defects": [], "intentional_deviations": ["The production Workbench navigation and Store-live truth banner remain visible instead of reproducing the concept image shell.", "Recent records and maintainer identities come only from the native projection; no mock milestones, comments, or activity were invented."]}
+    },
+    {
+      "id": "business-module--native-trademark--desktop-1536x1024",
+      "priority": "P0",
+      "page": "business-module",
+      "state": "native-trademark",
+      "route": "/?surface=docs&module=module-trademark-management",
+      "fixture": "native-trademark-actions-v1",
+      "viewport": {"width": 1536, "height": 1024, "device_scale_factor": 1},
+      "baseline": "../../../../.visual-evidence/company-os-v2/company-os-v3-trademark-baseline/store-live-actual/business-module--trademark-operations--desktop.png",
+      "expected": "../../company-os-v2/expected/business-module--trademark-operations-v2-2--desktop-1536x1024.png",
+      "implemented": "../../../../.visual-evidence/company-os-v3/trademark-native-closure-v1/final/implemented/business-module--native-trademark--desktop-1536x1024.png",
+      "comparison": "comparisons/business-module--native-trademark--desktop-1536x1024.png",
+      "prompt": "../../company-os-v2/prompts/business-module-v2.2.md",
+      "design_spec": "specs/business-module--native-trademark--desktop-1536x1024.json",
+      "asset_inventory": "assets/business-module--native-trademark--asset-inventory.md",
+      "overlay": "overlays/business-module--native-trademark--desktop-1536x1024.png",
+      "baseline_revision": "9998f56014d02fe3b85514c8059fa041b0fa7837",
+      "implementation_iterations": [
+        {
+          "revision": "c76b1c8-dirty",
+          "implemented": "../../../../.visual-evidence/company-os-v2/company-os-v3-trademark-structural-2/store-live-actual/business-module--trademark-operations--desktop.png",
+          "stage": "geometry_and_information_architecture",
+          "verdict": "pass_with_deviations",
+          "defects": [],
+          "next": "Retain the truthful proposed state and verify projection-backed participant and evidence density."
+        },
+        {
+          "revision": "c76b1c8-dirty",
+          "implemented": "../../../../.visual-evidence/company-os-v3/trademark-native-closure-v1/final/implemented/business-module--native-trademark--desktop-1536x1024.png",
+          "stage": "final_store_live",
+          "verdict": "pass_with_deviations"
+        }
+      ],
+      "expected_approval": {"status": "approved", "approver": "Human Owner", "decided_at": "2026-07-21"},
+      "gates": {
+        "product_truth": {"status": "pass", "evidence": "Store-live application, WorkItem, Commitment, Approval, participants, evidence, and zero-Payment assertion are visible through canonical refs."},
+        "visual_fidelity": {"status": "pass", "evidence": "Exact 1536x1024 comparison and overlay preserve lifecycle, dense operating ledger, dominant Human decision rail, team, evidence, and financial truth."}
+      },
+      "review": {"status": "pass_with_deviations", "defects": [], "intentional_deviations": ["The module remains visibly proposed because the native Organization record is not approved; the Expected image's Active badge would be false.", "Only the one native application and WorkItem plus two native evidence records are rendered; the four-row concept ledger is not fabricated."]}
+    },
+    {
+      "id": "work-board--native-trademark--desktop-1536x1024",
+      "priority": "P0",
+      "page": "work-board",
+      "state": "native-trademark",
+      "route": "/?surface=work&view=board",
+      "fixture": "native-trademark-actions-v1",
+      "viewport": {"width": 1536, "height": 1024, "device_scale_factor": 1},
+      "baseline": "../../../../.visual-evidence/company-os-v2/company-os-v3-trademark-baseline/store-live-actual/work--milestones-and-workitems--desktop.png",
+      "expected": "../../company-os-v2/work-operating-system-v1/expected/work-board--desktop-1536x1024.png",
+      "implemented": "../../../../.visual-evidence/company-os-v3/trademark-native-closure-v1/final/implemented/work-board--native-trademark--desktop-1536x1024.png",
+      "comparison": "comparisons/work-board--native-trademark--desktop-1536x1024.png",
+      "prompt": "../../company-os-v2/work-operating-system-v1/README.md",
+      "design_spec": "specs/work-board--native-trademark--desktop-1536x1024.json",
+      "asset_inventory": "assets/work-board--native-trademark--asset-inventory.md",
+      "overlay": "overlays/work-board--native-trademark--desktop-1536x1024.png",
+      "baseline_revision": "9998f56014d02fe3b85514c8059fa041b0fa7837",
+      "implementation_iterations": [
+        {
+          "revision": "c76b1c8-dirty",
+          "implemented": "../../../../.visual-evidence/company-os-v2/company-os-v3-trademark-structural-2/store-live-actual/work--milestones-and-workitems--desktop.png",
+          "stage": "geometry_and_board_default",
+          "verdict": "pass_with_deviations",
+          "defects": [],
+          "next": "Preserve seven-column board geometry and verify native record and Approval references."
+        },
+        {
+          "revision": "c76b1c8-dirty",
+          "implemented": "../../../../.visual-evidence/company-os-v3/trademark-native-closure-v1/final/implemented/work-board--native-trademark--desktop-1536x1024.png",
+          "stage": "final_store_live",
+          "verdict": "pass_with_deviations"
+        }
+      ],
+      "expected_approval": {"status": "approved", "approver": "Human Owner", "decided_at": "2026-07-21"},
+      "gates": {
+        "product_truth": {"status": "pass", "evidence": "The board renders six native WorkItems across seven lifecycle columns and exposes canonical accountable, assignee, milestone, business-line, and Approval facts."},
+        "visual_fidelity": {"status": "pass", "evidence": "Exact 1536x1024 comparison and overlay preserve the wide seven-column board, compact cards, top view switcher, search, and action hierarchy."}
+      },
+      "review": {"status": "pass_with_deviations", "defects": [], "intentional_deviations": ["The Expected image contains 24 illustrative WorkItems; Store-live Actual correctly shows the six native records and leaves remaining column space empty.", "Native statuses determine column counts; no cards are duplicated to imitate concept density."]}
+    }
+  ]
+}

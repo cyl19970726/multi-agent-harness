@@ -599,8 +599,29 @@ fn dispatch_action(store: &HarnessStore, body: &Value) -> Result<Value, ApiError
     if command.command_name == "approval.decide" {
         validate_approval_decision(store, &command, &record)?;
     }
+    if command.command_name == "approval.request" {
+        validate_approval_request(store, &command, &record)?;
+    }
     if command.command_name == "work_item.transition" {
         validate_work_item_transition(store, &command, &record)?;
+    }
+    if command.command_name == "work_item.append" {
+        validate_work_item_create(store, &command, &record)?;
+    }
+    if command.command_name == "assignment.append" {
+        validate_assignment_create(store, &command, &record)?;
+    }
+    if command.command_name == "commitment.propose" {
+        validate_commitment_proposal(store, &command, &record)?;
+    }
+    if command.command_name == "document.append" {
+        validate_document_append(store, &command, &record)?;
+    }
+    if command.command_name == "typed_record.append" {
+        validate_typed_record_append(store, &command, &record)?;
+    }
+    if command.command_name == "block.append" {
+        validate_block_append(store, &command, &record)?;
     }
     ensure_authorization_audit_ids_available(store, &command, &record)?;
     let audit_reservations = action_audit_reservation_ids(&command);
@@ -875,6 +896,13 @@ fn server_action_shape(command_name: &str) -> Result<ServerActionShape, ApiError
             vec![ActorType::Human],
             ActionEffect::TransitionState,
         ),
+        "approval.request" => (
+            "company.records.write",
+            RiskTier::R1,
+            false,
+            vec![ActorType::Human, ActorType::Agent],
+            ActionEffect::CreateRecord,
+        ),
         "work_item.transition" => (
             "company.work.execute",
             RiskTier::R2,
@@ -886,6 +914,13 @@ fn server_action_shape(command_name: &str) -> Result<ServerActionShape, ApiError
             "finance.commitment.write",
             RiskTier::R3,
             true,
+            vec![ActorType::Human, ActorType::Agent],
+            ActionEffect::CreateCommitment,
+        ),
+        "commitment.propose" => (
+            "finance.commitment.write",
+            RiskTier::R2,
+            false,
             vec![ActorType::Human, ActorType::Agent],
             ActionEffect::CreateCommitment,
         ),
@@ -982,15 +1017,42 @@ fn validate_definition_scope(
         }
     }
     let in_scope = match command.command_name.as_str() {
-        "document.append" => record
-            .get("parent_document_id")
-            .and_then(Value::as_str)
-            .is_some_and(|id| document_in_module(store, definition, id)),
+        "document.append" => {
+            let record_id = value_id(record);
+            let updates_scoped_document = record_id.is_some_and(|id| {
+                command.subject_ref.kind == EntityKind::Document
+                    && command.subject_ref.id == id
+                    && document_in_module(store, definition, id)
+            });
+            let creates_scoped_child = record
+                .get("parent_document_id")
+                .and_then(Value::as_str)
+                .is_some_and(|id| {
+                    command.subject_ref.kind == EntityKind::Document
+                        && command.subject_ref.id == id
+                        && document_in_module(store, definition, id)
+                });
+            updates_scoped_document || creates_scoped_child
+        }
         "block.append" => record
             .get("document_id")
             .and_then(Value::as_str)
-            .is_some_and(|id| document_in_module(store, definition, id)),
-        "typed_record.append" | "view.append" => record
+            .is_some_and(|id| {
+                command.subject_ref.kind == EntityKind::Document
+                    && command.subject_ref.id == id
+                    && document_in_module(store, definition, id)
+            }),
+        "typed_record.append" => {
+            record
+                .get("module_id")
+                .and_then(Value::as_str)
+                .is_some_and(|id| id == definition.module_id)
+                && value_id(record).is_some_and(|id| {
+                    command.subject_ref.kind == EntityKind::TypedRecord
+                        && command.subject_ref.id == id
+                })
+        }
+        "view.append" => record
             .get("module_id")
             .and_then(Value::as_str)
             .is_some_and(|id| id == definition.module_id),
@@ -1005,7 +1067,15 @@ fn validate_definition_scope(
             serde_json::from_value::<WorkItem>(record.clone())
                 .ok()
                 .is_some_and(|item| {
-                    document_in_module(store, definition, &item.source_document_ref)
+                    let subject_matches = if command.command_name == "work_item.append" {
+                        command.subject_ref.kind == EntityKind::Document
+                            && command.subject_ref.id == item.source_document_ref
+                    } else {
+                        command.subject_ref.kind == EntityKind::WorkItem
+                            && command.subject_ref.id == item.id
+                    };
+                    subject_matches
+                        && document_in_module(store, definition, &item.source_document_ref)
                         && item
                             .result_document_ref
                             .as_deref()
@@ -1026,8 +1096,22 @@ fn validate_definition_scope(
         "assignment.append" => record
             .get("work_item_id")
             .and_then(Value::as_str)
-            .is_some_and(|id| work_item_in_module(store, definition, id)),
-        "approval.decide" => entity_in_module(store, definition, &command.subject_ref, 0),
+            .is_some_and(|id| {
+                command.subject_ref.kind == EntityKind::WorkItem
+                    && command.subject_ref.id == id
+                    && work_item_in_module(store, definition, id)
+            }),
+        "approval.request" | "approval.decide" => {
+            entity_in_module(store, definition, &command.subject_ref, 0)
+        }
+        "commitment.propose" => {
+            command.subject_ref.kind == EntityKind::WorkItem
+                && work_item_in_module(store, definition, &command.subject_ref.id)
+                && record
+                    .get("source_document_id")
+                    .and_then(Value::as_str)
+                    .is_some_and(|id| document_in_module(store, definition, id))
+        }
         "commitment.append" | "payment.append" => record
             .get("source_document_id")
             .and_then(Value::as_str)
@@ -1156,6 +1240,228 @@ fn entity_in_module(
     }
 }
 
+fn validate_work_item_create(
+    store: &HarnessStore,
+    command: &ActionCommand,
+    record: &Value,
+) -> Result<(), ApiError> {
+    let item: WorkItem = parse(record)?;
+    if command.subject_ref.kind != EntityKind::Document
+        || command.subject_ref.id != item.source_document_ref
+    {
+        return Err(ApiError::forbidden(
+            "work_item.append subject must be its source Document",
+        ));
+    }
+    if store
+        .latest_work_items()?
+        .iter()
+        .any(|row| row.id == item.id)
+    {
+        return Err(ApiError::conflict(format!(
+            "WorkItem {} already exists; use work_item.transition",
+            item.id
+        )));
+    }
+    if matches!(
+        item.status,
+        WorkItemStatus::InProgress | WorkItemStatus::InReview | WorkItemStatus::Completed
+    ) {
+        return Err(ApiError::validation(
+            "new WorkItem cannot start as in_progress, in_review, or completed",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_assignment_create(
+    store: &HarnessStore,
+    command: &ActionCommand,
+    record: &Value,
+) -> Result<(), ApiError> {
+    let assignment: Assignment = parse(record)?;
+    if command.subject_ref.kind != EntityKind::WorkItem
+        || command.subject_ref.id != assignment.work_item_id
+    {
+        return Err(ApiError::forbidden(
+            "assignment.append subject must be its WorkItem",
+        ));
+    }
+    if store
+        .latest_assignments()?
+        .iter()
+        .any(|row| row.id == assignment.id)
+    {
+        return Err(ApiError::conflict(format!(
+            "Assignment {} already exists",
+            assignment.id
+        )));
+    }
+    Ok(())
+}
+
+fn validate_commitment_proposal(
+    store: &HarnessStore,
+    command: &ActionCommand,
+    record: &Value,
+) -> Result<(), ApiError> {
+    let commitment: Commitment = parse(record)?;
+    if commitment.status != CommitmentStatus::Proposed {
+        return Err(ApiError::validation(
+            "commitment.propose must create proposed status",
+        ));
+    }
+    if !commitment.approval_refs.is_empty() {
+        return Err(ApiError::validation(
+            "a proposed Commitment cannot claim an Approval before approval.request",
+        ));
+    }
+    if store
+        .latest_commitments()?
+        .iter()
+        .any(|row| row.id == commitment.id)
+    {
+        return Err(ApiError::conflict(format!(
+            "Commitment {} already exists; use commitment.append",
+            commitment.id
+        )));
+    }
+    let linked_to_work = store.latest_relations()?.iter().any(|relation| {
+        commitment.relation_ids.contains(&relation.id)
+            && ((relation.from_ref.kind == EntityKind::WorkItem
+                && relation.from_ref.id == command.subject_ref.id)
+                || (relation.to_ref.kind == EntityKind::WorkItem
+                    && relation.to_ref.id == command.subject_ref.id))
+    });
+    if !linked_to_work {
+        return Err(ApiError::validation(
+            "commitment.propose requires a Relation linking the Commitment context to its WorkItem",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_approval_request(
+    store: &HarnessStore,
+    command: &ActionCommand,
+    record: &Value,
+) -> Result<(), ApiError> {
+    let approval: Approval = parse(record)?;
+    if approval.status != ApprovalStatus::Requested {
+        return Err(ApiError::validation(
+            "approval.request must create requested status",
+        ));
+    }
+    if approval.subject_ref != command.subject_ref {
+        return Err(ApiError::forbidden(
+            "approval.request subject must match the Approval subject",
+        ));
+    }
+    if approval.requested_by != command.requested_by {
+        return Err(ApiError::forbidden(
+            "approval.request requested_by must be the Action requester",
+        ));
+    }
+    if store
+        .latest_approvals()?
+        .iter()
+        .any(|row| row.id == approval.id)
+    {
+        return Err(ApiError::conflict(format!(
+            "Approval {} already exists",
+            approval.id
+        )));
+    }
+    Ok(())
+}
+
+fn validate_document_append(
+    store: &HarnessStore,
+    command: &ActionCommand,
+    record: &Value,
+) -> Result<(), ApiError> {
+    let target: Document = parse(record)?;
+    if command.subject_ref.kind == EntityKind::Document && command.subject_ref.id == target.id {
+        let previous = store
+            .latest_documents()?
+            .into_iter()
+            .find(|row| row.id == target.id)
+            .ok_or_else(|| ApiError::not_found(format!("Document:{}", target.id)))?;
+        let immutable_changed = previous.space_id != target.space_id
+            || previous.parent_document_id != target.parent_document_id
+            || previous.kind != target.kind
+            || previous.created_by != target.created_by
+            || previous.created_at != target.created_at;
+        let preserves = |old: &[String], next: &[String]| old.iter().all(|id| next.contains(id));
+        if immutable_changed
+            || !preserves(&previous.block_ids, &target.block_ids)
+            || !previous
+                .reference_refs
+                .iter()
+                .all(|reference| target.reference_refs.contains(reference))
+        {
+            return Err(ApiError::conflict(
+                "document.append update cannot change identity or remove blocks/relations",
+            ));
+        }
+        if target.updated_by != command.requested_by {
+            return Err(ApiError::forbidden(
+                "Document.updated_by must be the Action requester",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_typed_record_append(
+    store: &HarnessStore,
+    command: &ActionCommand,
+    record: &Value,
+) -> Result<(), ApiError> {
+    let target: TypedRecord = parse(record)?;
+    let previous = store
+        .latest_typed_records()?
+        .into_iter()
+        .find(|row| row.id == target.id)
+        .ok_or_else(|| ApiError::not_found(format!("TypedRecord:{}", target.id)))?;
+    if previous.module_id != target.module_id
+        || previous.record_type != target.record_type
+        || previous.source_document_ref != target.source_document_ref
+        || previous.created_by != target.created_by
+        || previous.created_at != target.created_at
+    {
+        return Err(ApiError::conflict(
+            "typed_record.append update cannot change record identity or source",
+        ));
+    }
+    if target.updated_by != command.requested_by {
+        return Err(ApiError::forbidden(
+            "TypedRecord.updated_by must be the Action requester",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_block_append(
+    store: &HarnessStore,
+    command: &ActionCommand,
+    record: &Value,
+) -> Result<(), ApiError> {
+    let block: Block = parse(record)?;
+    if store.latest_blocks()?.iter().any(|row| row.id == block.id) {
+        return Err(ApiError::conflict(format!(
+            "Block {} already exists",
+            block.id
+        )));
+    }
+    if block.created_by != command.requested_by || block.updated_by != command.requested_by {
+        return Err(ApiError::forbidden(
+            "Block creator/updater must be the Action requester",
+        ));
+    }
+    Ok(())
+}
+
 fn validate_approval_decision(
     store: &HarnessStore,
     command: &ActionCommand,
@@ -1274,7 +1580,6 @@ fn validate_work_item_transition(
         || previous.reviewer != target.reviewer
         || previous.approver != target.approver
         || previous.execution_mode != target.execution_mode
-        || previous.approval_refs != target.approval_refs
         || previous.due_at != target.due_at
         || previous.priority != target.priority
         || previous.risk_level != target.risk_level
@@ -1289,6 +1594,7 @@ fn validate_work_item_transition(
     let preserves = |old: &[String], next: &[String]| old.iter().all(|item| next.contains(item));
     if !result_document_preserved
         || !preserves(&previous.result_record_refs, &target.result_record_refs)
+        || !preserves(&previous.approval_refs, &target.approval_refs)
         || !preserves(&previous.evidence_refs, &target.evidence_refs)
         || !preserves(&previous.artifact_refs, &target.artifact_refs)
         || !target.execution_refs.starts_with(&previous.execution_refs)
@@ -1359,8 +1665,8 @@ fn dispatch_declared_record(
         "membership.append" => "memberships",
         "work_item.append" | "work_item.transition" => "work-items",
         "assignment.append" => "assignments",
-        "approval.decide" => "approvals",
-        "commitment.append" => "commitments",
+        "approval.request" | "approval.decide" => "approvals",
+        "commitment.propose" | "commitment.append" => "commitments",
         "payment.append" => "payments",
         "custom_page_definition.append" => "custom-page-definitions",
         "custom_page_package.append" => "custom-page-packages",

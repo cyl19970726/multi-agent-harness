@@ -51,6 +51,7 @@ async function main() {
   check(required.every((name) => pages.includes(`function ${name}`)), "exports all nine Company OS operations pages");
   check(router.includes('<WorkOperatingPage source={resolved.value} />') && workOperatingPage.includes('data-work-operating-system="v1"'), "routes Work to the native multi-view operating workspace");
   check(["overview", "board", "all", "milestones", "timeline", "workload"].every((view) => workOperatingPage.includes(`id: "${view}"`)), "Work workspace exposes six projections over one WorkItem ledger");
+  check(workOperatingPage.includes('useState<WorkView>("board")') && workOperatingPage.includes('"submitted", "accepted", "in_progress", "blocked", "in_review", "waiting_for_approval", "completed"'), "Work opens on the seven-lane operating board in the approved lifecycle order");
   check(workOperatingPage.includes("root.work") && workOperatingPage.includes("projection.work_items") && workOperatingPage.includes("projection.milestones"), "Work workspace consumes native Work and Milestone projections before raw fallback records");
   check(workOperatingPage.includes('"No milestone"') && workOperatingPage.includes('"Unclassified"') && workOperatingPage.includes("Unassigned lane"), "Work views preserve missing Milestone, business-line, and assignment truth");
   check(types.includes('"human" | "standing_agent"') && types.includes("interface ActorSummary"), "keeps Human and Standing Agent as distinct actor kinds");

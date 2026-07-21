@@ -136,3 +136,13 @@ when evidence shows the template, relations, or organization need to change.
 
 See [Financial Relations](../financial-relations.md) and
 [Company OS Governance](../governance.md).
+
+## Native acceptance proof
+
+`crates/harness-cli/tests/company_os_api.rs` executes the operational core of
+this scenario against an isolated Harness Store. After administrative bootstrap
+of the Human root, module/page declaration and source Document, governed Actions
+create the WorkItem and Assignment, propose the ¥3,000 Commitment, request and
+record Human Approval, execute and complete the WorkItem, append result evidence,
+and update the originating Document and TypedRecord. The test also proves that a
+Commitment is not a Payment and that every Action is idempotent and audited.

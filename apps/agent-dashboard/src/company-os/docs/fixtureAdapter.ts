@@ -348,6 +348,10 @@ export function adaptCompanyOsDocsProjection(input: unknown, selected: { documen
       recentlyUpdated: linkEntries(documents.map(documentLink)),
       templates: [],
       databases: typedRecords.map((entry) => ({ id: text(entry.id), label: text(entry.record_type, "Typed record"), kind: "record" as const })),
+      maintainers: linkEntries([
+        actorLink(actors, proposal?.proposed_by_ref ?? proposal?.proposed_by),
+        ...moduleActors.filter((actor) => actor.actorType === "Standing Agent"),
+      ]).filter((actor, index, values) => values.findIndex((candidate) => candidate.id === actor.id) === index),
       structureNotes: module ? [{ label: "Module state", value: humanize(module.status) || "Reported", tone: /proposed|pending/i.test(text(module.status)) ? "warning" : "neutral" }] : [],
       structureLinks: linkEntries([moduleLink, proposalLink, sourceLink, applicationLink, financeLink]),
       suggestions: linkEntries([sourceLink, applicationLink, workLink, approvalLink, financeLink]),
