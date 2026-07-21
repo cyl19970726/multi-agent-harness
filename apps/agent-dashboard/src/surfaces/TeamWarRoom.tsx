@@ -4,6 +4,7 @@ import {
   ChevronLeft,
   ChevronRight,
   ExternalLink,
+  ListFilter,
   MessageSquare,
   Play,
   Send,
@@ -72,6 +73,7 @@ export function TeamWarRoom({
   const [draft, setDraft] = useState("");
   const [kind, setKind] = useState("broadcast");
   const [showAllMembers, setShowAllMembers] = useState(false);
+  const [showFullActivity, setShowFullActivity] = useState(false);
 
   if (!context) {
     return (
@@ -107,17 +109,26 @@ export function TeamWarRoom({
     activityItems[pressureActivityIndex] = {
       ...activityItems[pressureActivityIndex],
       action: (
-        <button
-          type="button"
-          onClick={() => messageMember(selectedMember)}
-          className="rounded-md border border-primary/25 bg-primary/[0.055] px-2.5 py-1.5 text-[10px] font-semibold text-primary transition-colors hover:bg-primary/10"
-        >
-          Review request
-        </button>
+        <div className="min-w-32 rounded-lg border border-primary/25 bg-primary/[0.055] px-2.5 py-2 text-center">
+          <p className="text-[10px] font-semibold leading-snug text-primary">QA approval required</p>
+          <button
+            type="button"
+            onClick={() => messageMember(selectedMember)}
+            className="mt-1.5 rounded-md border border-primary/30 bg-background px-2.5 py-1 text-[10px] font-semibold text-primary transition-colors hover:bg-primary/10"
+          >
+            Review request
+          </button>
+        </div>
       ),
     };
   }
-  const shownActivity = activityItems.filter((item) => matchesFilter(item, filter));
+  const filteredActivity = activityItems.filter((item) => matchesFilter(item, filter));
+  const primaryActivity = filteredActivity.filter((item) => item.prominence === "primary");
+  const latestPressure = [...filteredActivity].reverse().find((item) => item.prominence === "pressure");
+  const keyActivity = latestPressure && !primaryActivity.some((item) => item.id === latestPressure.id)
+    ? [...primaryActivity, latestPressure]
+    : primaryActivity;
+  const shownActivity = filter === "all" && !showFullActivity ? keyActivity : filteredActivity;
   const selectedAssignment = selectedMember
     ? selectMemberAssignmentCorrelations(messages, selectedMember.id)[0]?.assignment
     : undefined;
@@ -321,11 +332,24 @@ export function TeamWarRoom({
                   {entry.label}
                 </button>
               ))}
+              <button
+                type="button"
+                aria-label={showFullActivity ? "Show key activity" : "Show full durable record"}
+                aria-pressed={showFullActivity}
+                onClick={() => setShowFullActivity((value) => !value)}
+                className={cn(
+                  "grid size-7 place-items-center rounded-md border text-muted-foreground transition-colors hover:border-primary/25 hover:text-foreground",
+                  showFullActivity ? "border-primary/30 bg-primary/10 text-primary" : "border-border/70",
+                )}
+                title={showFullActivity ? "Show key activity" : `Show all ${filteredActivity.length} durable records`}
+              >
+                <ListFilter className="size-3.5" />
+              </button>
             </div>
           </header>
           <ActivityStream
             items={shownActivity}
-            variant="spine"
+            variant="timeline"
             empty={
               <div className="space-y-1">
                 <p className="text-sm font-medium text-foreground">No {filter === "all" ? "team activity" : filter} yet</p>
@@ -503,19 +527,20 @@ function toActivityItems(items: StableTeamActivity[], members: Map<string, Membe
         title: <span><Badge tone={messageTone(message.kind)}>{message.kind ?? "message"}</Badge><span className="ml-2">{actor} → {recipients}</span></span>,
         body: message.body,
         actor: message.correlation_id ? `correlation ${shortId(message.correlation_id)}` : undefined,
-        timestamp: relativeTime(message.created_at),
+        timestamp: formatTime(message.created_at),
         evidenceRefs,
         tone: messageTone(message.kind),
+        prominence: message.kind === "assignment" ? "primary" : ["blocker", "review_request", "review_result"].includes(message.kind ?? "") ? "pressure" : "detail",
       };
     }
     if (item.kind === "action") {
       const action = item.action;
       const evidenceRefs = action.evidence_refs ?? [];
-      return { id: item.id, kind: evidenceRefs.length ? "evidence" : "action", glyph: evidenceRefs.length ? "artifact" : "runtime", title: action.title ?? action.action_type ?? "Member action", body: action.summary, actor, timestamp: relativeTime(action.started_at ?? action.completed_at), evidenceRefs, tone: action.status === "failed" ? "bad" : action.status === "succeeded" ? "good" : "running" };
+      return { id: item.id, kind: evidenceRefs.length ? "evidence" : "action", glyph: evidenceRefs.length ? "artifact" : "runtime", title: action.title ?? action.action_type ?? "Member action", body: action.summary, actor, timestamp: formatTime(action.started_at ?? action.completed_at), evidenceRefs, tone: action.status === "failed" ? "bad" : action.status === "succeeded" ? "good" : "running", prominence: "detail" };
     }
     const event = item.event;
     const decision = event.entity_type === "wave" || event.operation === "completed" || /gate|decision/i.test(event.summary ?? "");
-    return { id: item.id, kind: decision ? "decision" : "action", glyph: decision ? "decision" : "runtime", title: event.summary ?? `${event.entity_type ?? "Team"} ${event.operation ?? "updated"}`, actor, timestamp: relativeTime(event.occurred_at), tone: decision ? "decision" : "info" };
+    return { id: item.id, kind: decision ? "decision" : "action", glyph: decision ? "decision" : "runtime", title: event.summary ?? `${event.entity_type ?? "Team"} ${event.operation ?? "updated"}`, actor, timestamp: formatTime(event.occurred_at), tone: decision ? "decision" : "info", prominence: event.entity_type === "team_run" && event.operation === "created" ? "primary" : "detail" };
   });
 }
 
@@ -549,6 +574,7 @@ function memberLabel(members: Map<string, MemberRun>, id: string): string { retu
 function shortId(value: string): string { return value.length > 18 ? `${value.slice(0, 8)}…${value.slice(-5)}` : value; }
 function timestamp(value?: string | null): number { if (!value) return 0; return value.startsWith("unix-ms:") ? Number(value.slice(8)) || 0 : Date.parse(value) || 0; }
 function formatDate(value?: string | null): string { if (!value) return "Not recorded"; const ms = timestamp(value); return ms ? new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }).format(ms) : value; }
+function formatTime(value?: string | null): string { if (!value) return "—"; const ms = timestamp(value); return ms ? new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(ms) : value; }
 function relativeTime(value?: string | null): string { const ms = timestamp(value); if (!ms) return "no update"; const delta = Math.max(0, Date.now() - ms); if (delta < 60_000) return "just now"; if (delta < 3_600_000) return `${Math.floor(delta / 60_000)}m ago`; if (delta < 86_400_000) return `${Math.floor(delta / 3_600_000)}h ago`; return `${Math.floor(delta / 86_400_000)}d ago`; }
 function pressureLabel(status?: string | null): string { if (["blocked", "failed"].includes(status ?? "")) return "blocked"; if (["waiting", "reviewing"].includes(status ?? "")) return "waiting"; if (status === "running") return "active"; return status ?? "idle"; }
 function teamTone(status?: string | null): StatusTone { if (status === "running") return "running"; if (status === "completed") return "good"; if (["failed", "cancelled"].includes(status ?? "")) return "bad"; if (["waiting", "reviewing"].includes(status ?? "")) return "warn"; if (status === "planning") return "info"; return "idle"; }

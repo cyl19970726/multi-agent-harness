@@ -68,9 +68,9 @@
       "viewport": { "width": 1440, "height": 1000, "device_scale_factor": 1 },
       "baseline": "../../../.visual-evidence/execution-workbench-v3/baseline/team-war-room--workbench-v2--desktop-1440x1000.png",
       "expected": "expected/team-war-room/running-needs-you--desktop-fidelity-v2-1440x1000.png",
-      "implemented": "../../../.visual-evidence/execution-workbench-v3/fidelity-v2-final/team-war-room--running-needs-you--desktop-1440x1000.png",
-      "comparison": "comparisons/team-war-room/running-needs-you--desktop-fidelity-v2.png",
-      "overlay": "overlays/team-war-room/running-needs-you--desktop-fidelity-v2.png",
+      "implemented": "../../../.visual-evidence/execution-workbench-v3/team-activity-final/team-war-room--running-needs-you--desktop-1440x1000.png",
+      "comparison": "comparisons/team-war-room/running-needs-you--team-activity-correction.png",
+      "overlay": "overlays/team-war-room/running-needs-you--team-activity-correction.png",
       "prompt": "prompts/team-war-room/running-needs-you--fidelity-v2.md",
       "design_spec": "specs/team-war-room--running-needs-you--desktop-1440x1000.json",
       "asset_inventory": "assets/team-war-room--running-needs-you--asset-inventory.md",
@@ -92,17 +92,29 @@
           "revision": "b198261-dirty",
           "implemented": "../../../.visual-evidence/execution-workbench-v3/fidelity-v2-final/team-war-room--running-needs-you--desktop-1440x1000.png",
           "stage": "final-responsive",
-          "verdict": "pass: desktop and responsive hierarchy, pressure, activity, context, and composer are accepted"
+          "verdict": "reopened: generic activity rows lacked the approved independent time column and let detail records push review pressure below the first viewport"
+        },
+        {
+          "revision": "5ae6200-dirty",
+          "implemented": "../../../.visual-evidence/execution-workbench-v3/team-activity-iteration-1/team-war-room--running-needs-you--desktop-1440x1000.png",
+          "stage": "activity-structure",
+          "verdict": "revise: key/full projection and pressure attachment were correct, but the desktop columns were ordered timestamp before semantic node"
+        },
+        {
+          "revision": "5ae6200-dirty",
+          "implemented": "../../../.visual-evidence/execution-workbench-v3/team-activity-final/team-war-room--running-needs-you--desktop-1440x1000.png",
+          "stage": "activity-final",
+          "verdict": "pass: node/spine, timestamp, durable content, and optional pressure action now use the approved independent-column structure on desktop and collapse honestly on mobile"
         }
       ],
       "gates": {
         "product_truth": { "status": "pass", "note": "MemberRuns, assignment correlations, explicit actions, pressure, attempt state, Wave Gate, and transient-thinking policy remain honest." },
-        "visual_fidelity": { "status": "pass", "note": "Exact shell proportions, compact presence, semantic activity spine, attached review action, context rail, and responsive composer match approved intent." }
+        "visual_fidelity": { "status": "pass", "note": "Compact presence, semantic node-first timeline, independent desktop timestamps, key/full activity projection, attached review action, context rail, and responsive composer match approved intent." }
       },
       "review": {
         "status": "pass_with_deviations",
         "intentional_deviations": [
-          "Real durable activity and correlation identifiers replace the candidate's abbreviated rows and continue behind the sticky composer.",
+          "The default All projection shows attempt creation, assignments, and the latest pressure record; the filter control exposes every remaining durable message, action, and event without deleting or rewriting evidence.",
           "The selected QA provider/model and assignment come from the fixture rather than generated text.",
           "The mobile header omits the redundant member-count label because Team presence immediately states membership."
         ],

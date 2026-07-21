@@ -11,7 +11,7 @@
 ## Fidelity v2 · approved and implemented
 
 - Mission Wave canvas: approved `1440×1000` expected, design spec, prompt provenance, asset inventory, final browser evidence, comparison, and Overlay are complete.
-- Agent Team war room: approved `1440×1000` expected, design spec, prompt provenance, asset inventory, final browser evidence, comparison, and Overlay are complete.
+- Agent Team war room: approved `1440×1000` expected, design spec, prompt provenance, asset inventory, corrected node-first Team Activity timeline, two retained correction captures, comparison, and overlay are complete.
 - Product-truth and visual-fidelity gates pass independently for both P0 cases.
 
 ## Responsive contract

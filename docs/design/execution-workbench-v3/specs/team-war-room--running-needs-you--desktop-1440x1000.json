@@ -12,7 +12,7 @@
       { "name": "team-context", "x": 1070, "y": 58, "width": 370, "height": 942, "behavior": "independent-context-rail" },
       { "name": "composer", "x": 250, "y": 884, "width": 795, "height": 62, "behavior": "sticky-bottom" }
     ],
-    "grid": { "shell_columns": [230, 840, 370], "presence_columns": [1, 1, 1, 1], "activity_time_column": 66 },
+    "grid": { "shell_columns": [230, 840, 370], "presence_columns": [1, 1, 1, 1], "activity_columns": ["36px semantic node and spine", "80px independent timestamp", "fluid durable content", "optional pressure action"] },
     "gutters": { "workspace_left": 20, "workspace_right": 25, "context_horizontal": 24 },
     "max_content_width": 1440,
     "scroll_owner": "team-activity",
@@ -63,8 +63,8 @@
   ],
   "component_strategy": {
     "reuse": ["AppNavigation", "TopWorkbenchBar", "StatusPill", "AgentPortrait", "SemanticIcon", "ConnectionFooter"],
-    "page_specific": ["TeamPresenceStrip", "CorrelatedActivityStream", "ActivityEventRow", "AttachedMemberPressure", "TeamComposer", "TeamContextRail"],
-    "replace_or_split": ["replace generic member cards with a border-separated presence strip", "replace admin event rows with a semantic chronological stream", "split selected member pressure from generic resources", "keep message composition distinct from durable activity records"]
+    "page_specific": ["TeamPresenceStrip", "CorrelatedActivityTimeline", "ActivityEventRow", "AttachedMemberPressure", "TeamComposer", "TeamContextRail"],
+    "replace_or_split": ["replace generic member cards with a border-separated presence strip", "replace admin event rows with a semantic chronological timeline whose node, timestamp, content, and pressure action have independent columns", "default All to attempt creation, assignments, and latest pressure while retaining a one-click full durable record", "split selected member pressure from generic resources", "keep message composition distinct from durable activity records"]
   },
   "responsive_transformations": [
     "Tablet turns the four-column presence strip into a horizontally scrollable strip and moves context to a drawer.",

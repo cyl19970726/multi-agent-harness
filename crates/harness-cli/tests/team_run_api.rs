@@ -1096,19 +1096,38 @@ fn post_team_run_message_and_start_async() {
         body["result"]["deliveries"][0]["status"].as_str(),
         Some("acknowledged")
     );
-    let event_count = body["snapshot"]["team_run_events"]
+    let ack_event_count = body["snapshot"]["team_run_events"]
         .as_array()
-        .map(Vec::len)
-        .expect("event count");
+        .expect("team run events")
+        .iter()
+        .filter(|event| {
+            event["entity_type"].as_str() == Some("message")
+                && event["entity_id"].as_str() == Some(host_handoff_id.as_str())
+                && event["summary"].as_str() == Some("message acknowledged by host")
+        })
+        .count();
+    assert_eq!(
+        ack_event_count, 1,
+        "first ACK must add one message ACK event"
+    );
     let (status, body) = serve.post_json(
         &format!("/v1/team-runs/{run_id}/messages/{host_handoff_id}/ack"),
         &serde_json::json!({"member_id": "host"}),
     );
     assert_eq!(status, 200, "body: {body}");
+    let repeated_ack_event_count = body["snapshot"]["team_run_events"]
+        .as_array()
+        .expect("team run events")
+        .iter()
+        .filter(|event| {
+            event["entity_type"].as_str() == Some("message")
+                && event["entity_id"].as_str() == Some(host_handoff_id.as_str())
+                && event["summary"].as_str() == Some("message acknowledged by host")
+        })
+        .count();
     assert_eq!(
-        body["snapshot"]["team_run_events"].as_array().map(Vec::len),
-        Some(event_count),
-        "idempotent ACK must not add another event"
+        repeated_ack_event_count, ack_event_count,
+        "idempotent ACK must not add another message ACK event"
     );
 }
 

@@ -96,10 +96,14 @@ async function main() {
     "Mission V3 renders one continuous Wave journey with live and decision anchors",
   );
   check(
-    warRoomSource.includes('variant="spine"')
+    warRoomSource.includes('variant="timeline"')
       && warRoomSource.includes("Team presence")
-      && warRoomSource.includes("Review request"),
-    "Agent Team V3 exposes a presence rail, semantic event spine, and anchored review action",
+      && warRoomSource.includes("Review request")
+      && warRoomSource.includes("showFullActivity")
+      && warRoomSource.includes('prominence === "primary"')
+      && activitySource.includes("activity-timeline-row")
+      && cssSource.includes(".activity-timeline::before"),
+    "Agent Team V3 exposes a presence rail, timestamped semantic timeline, key/full projection, and anchored review action",
   );
   check(
     executionSource.includes('role="progressbar"')

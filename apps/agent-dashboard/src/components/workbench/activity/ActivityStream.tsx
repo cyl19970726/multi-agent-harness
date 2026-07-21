@@ -49,6 +49,8 @@ export interface WorkbenchActivityItem {
   action?: ReactNode;
   /** Optional semantic glyph; the durable record kind remains authoritative. */
   glyph?: WorkbenchActivityGlyph;
+  /** Controls only the default visual projection; every record remains available. */
+  prominence?: "primary" | "detail" | "pressure";
 }
 
 /**
@@ -65,7 +67,7 @@ export function ActivityStream({
   items: WorkbenchActivityItem[];
   empty?: ReactNode;
   className?: string;
-  variant?: "rows" | "spine";
+  variant?: "rows" | "spine" | "timeline";
 }) {
   if (items.length === 0) {
     return (
@@ -76,7 +78,12 @@ export function ActivityStream({
   }
 
   return (
-    <ol className={cn(variant === "spine" ? "activity-spine" : "divide-y divide-border/60", className)}>
+    <ol className={cn(
+      variant === "spine" && "activity-spine",
+      variant === "timeline" && "activity-timeline",
+      variant === "rows" && "divide-y divide-border/60",
+      className,
+    )}>
       {items.map((item) => (
         <li key={item.id}>
           <ActivityRow item={item} variant={variant} />
@@ -86,9 +93,57 @@ export function ActivityStream({
   );
 }
 
-export function ActivityRow({ item, className, variant = "rows" }: { item: WorkbenchActivityItem; className?: string; variant?: "rows" | "spine" }) {
+export function ActivityRow({ item, className, variant = "rows" }: { item: WorkbenchActivityItem; className?: string; variant?: "rows" | "spine" | "timeline" }) {
   const Icon = activityIcon(item.kind, item.glyph);
   const tone = item.tone ?? activityTone(item.kind);
+  if (variant === "timeline") {
+    return (
+      <article
+        className={cn(
+          "activity-timeline-row relative grid min-w-0 grid-cols-[2.25rem_minmax(0,1fr)] gap-x-3 py-2.5 sm:grid-cols-[2.25rem_5rem_minmax(0,1fr)_auto]",
+          item.transient && "bg-status-info/5",
+          className,
+        )}
+      >
+        <div className="hidden pt-1 text-right text-[10px] font-medium text-muted-foreground sm:col-start-2 sm:block">
+          {item.timestamp}
+        </div>
+        <span className={cn(
+          "relative z-[1] col-start-1 row-start-1 mt-0.5 grid size-8 shrink-0 place-items-center rounded-full border shadow-[0_5px_16px_-13px_currentColor]",
+          activityIconSurface(tone),
+        )}>
+          <Icon className="size-3.5" strokeWidth={2.15} aria-hidden />
+          <StatusDot
+            tone={tone}
+            pulse={item.transient || tone === "running"}
+            className="absolute -bottom-0.5 -right-0.5 ring-2 ring-background"
+          />
+        </span>
+        <div className="col-start-2 row-start-1 min-w-0 space-y-1 sm:col-start-3">
+          <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-[10px]">
+            <span className="font-semibold uppercase tracking-wider text-muted-foreground">
+              {activityLabel(item.kind)}
+            </span>
+            {item.actor && <span className="text-muted-foreground">{item.actor}</span>}
+            {item.timestamp && <span className="text-muted-foreground/80 sm:hidden">{item.timestamp}</span>}
+            {item.transient && <Badge tone="info">live only</Badge>}
+          </div>
+          <div className="text-[12px] font-medium leading-snug text-foreground">{item.title}</div>
+          {item.body && <div className="whitespace-pre-wrap text-[12px] leading-relaxed text-muted-foreground">{item.body}</div>}
+          {(item.evidenceRefs?.length ?? 0) > 0 && (
+            <div className="flex flex-wrap gap-1 pt-0.5">
+              {item.evidenceRefs?.map((ref) => <Badge key={ref} tone="muted">{ref}</Badge>)}
+            </div>
+          )}
+        </div>
+        {item.action && (
+          <div className="col-start-2 mt-2 self-center sm:col-start-4 sm:row-start-1 sm:ml-4 sm:mt-0">
+            {item.action}
+          </div>
+        )}
+      </article>
+    );
+  }
   return (
     <article
       className={cn(

@@ -277,6 +277,37 @@
     display: none;
   }
 
+  .activity-timeline {
+    position: relative;
+  }
+  .activity-timeline::before {
+    content: "";
+    position: absolute;
+    bottom: 1.5rem;
+    left: 1rem;
+    top: 1.5rem;
+    width: 1px;
+    background: color-mix(in oklch, var(--border) 78%, transparent);
+  }
+  .activity-timeline-row::after {
+    content: "";
+    position: absolute;
+    bottom: 0;
+    left: 8.75rem;
+    right: 0;
+    height: 1px;
+    background: color-mix(in oklch, var(--border) 56%, transparent);
+  }
+  .activity-timeline > li:last-child .activity-timeline-row::after {
+    display: none;
+  }
+
+  @media (max-width: 639px) {
+    .activity-timeline-row::after {
+      left: 3rem;
+    }
+  }
+
   @media (prefers-reduced-motion: reduce) {
     .pulse-dot::after,
     .execution-live-trace::after {
