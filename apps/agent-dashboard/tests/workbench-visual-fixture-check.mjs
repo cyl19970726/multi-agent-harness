@@ -112,6 +112,18 @@ async function main() {
       && contextSource.includes("quiet?: boolean"),
     "Shared activity and context primitives add V3 treatments without changing their defaults",
   );
+  check(
+    activitySource.includes("SendHorizontal")
+      && activitySource.includes("ArrowRightLeft")
+      && activitySource.includes("activityIconSurface")
+      && warRoomSource.includes("teamMessageGlyph"),
+    "Team activity uses distinct assignment, handoff, runtime, evidence, review, and decision glyphs",
+  );
+  check(
+    contextSource.includes("contextIconSurface")
+      && contextSource.includes("rounded-full border"),
+    "Context modules render semantic icon surfaces instead of uniform low-contrast glyphs",
+  );
 
   console.log(`\n   workbench visual fixture checks: ${pass} pass, ${fail} fail`);
   process.exit(fail === 0 ? 0 : 1);

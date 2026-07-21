@@ -1,11 +1,15 @@
 import type { ReactNode } from "react";
 import {
+  ArrowRightLeft,
   Bot,
   CheckCircle2,
   FileCheck2,
   MessageSquare,
+  SendHorizontal,
   ShieldAlert,
+  ShieldCheck,
   Sparkles,
+  TerminalSquare,
   Wrench,
 } from "lucide-react";
 
@@ -22,6 +26,15 @@ export type WorkbenchActivityKind =
   | "delegation"
   | "thinking";
 
+export type WorkbenchActivityGlyph =
+  | "assignment"
+  | "handoff"
+  | "runtime"
+  | "artifact"
+  | "review"
+  | "decision"
+  | "message";
+
 export interface WorkbenchActivityItem {
   id: string;
   kind: WorkbenchActivityKind;
@@ -34,6 +47,8 @@ export interface WorkbenchActivityItem {
   /** Volatile UI state only. Never pass persisted provider thinking here. */
   transient?: boolean;
   action?: ReactNode;
+  /** Optional semantic glyph; the durable record kind remains authoritative. */
+  glyph?: WorkbenchActivityGlyph;
 }
 
 /**
@@ -72,7 +87,7 @@ export function ActivityStream({
 }
 
 export function ActivityRow({ item, className, variant = "rows" }: { item: WorkbenchActivityItem; className?: string; variant?: "rows" | "spine" }) {
-  const Icon = activityIcon(item.kind);
+  const Icon = activityIcon(item.kind, item.glyph);
   const tone = item.tone ?? activityTone(item.kind);
   return (
     <article
@@ -83,8 +98,12 @@ export function ActivityRow({ item, className, variant = "rows" }: { item: Workb
         className,
       )}
     >
-      <span className={cn("relative mt-0.5 grid size-7 shrink-0 place-items-center border border-border bg-card", variant === "spine" ? "z-[1] rounded-full" : "rounded-md")}>
-        <Icon className="size-3.5 text-muted-foreground" aria-hidden />
+      <span className={cn(
+        "relative mt-0.5 grid size-8 shrink-0 place-items-center border shadow-[0_5px_16px_-13px_currentColor]",
+        activityIconSurface(tone),
+        variant === "spine" ? "z-[1] rounded-full" : "rounded-lg",
+      )}>
+        <Icon className="size-3.5" strokeWidth={2.15} aria-hidden />
         <StatusDot
           tone={tone}
           pulse={item.transient || tone === "running"}
@@ -115,7 +134,16 @@ export function ActivityRow({ item, className, variant = "rows" }: { item: Workb
   );
 }
 
-function activityIcon(kind: WorkbenchActivityKind) {
+function activityIcon(kind: WorkbenchActivityKind, glyph?: WorkbenchActivityGlyph) {
+  switch (glyph) {
+    case "assignment": return SendHorizontal;
+    case "handoff": return ArrowRightLeft;
+    case "runtime": return TerminalSquare;
+    case "artifact": return FileCheck2;
+    case "review": return ShieldCheck;
+    case "decision": return CheckCircle2;
+    case "message": return MessageSquare;
+  }
   switch (kind) {
     case "message": return MessageSquare;
     case "action": return Wrench;
@@ -124,6 +152,18 @@ function activityIcon(kind: WorkbenchActivityKind) {
     case "blocker": return ShieldAlert;
     case "delegation": return Bot;
     case "thinking": return Sparkles;
+  }
+}
+
+function activityIconSurface(tone: StatusTone): string {
+  switch (tone) {
+    case "bad": return "border-status-bad/25 bg-status-bad/10 text-status-bad";
+    case "warn": return "border-status-warn/25 bg-status-warn/10 text-status-warn";
+    case "good": return "border-status-good/25 bg-status-good/10 text-status-good";
+    case "decision": return "border-status-decision/25 bg-status-decision/10 text-status-decision";
+    case "running":
+    case "info": return "border-status-running/25 bg-status-running/10 text-status-running";
+    default: return "border-border bg-card text-muted-foreground";
   }
 }
 

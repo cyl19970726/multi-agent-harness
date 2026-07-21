@@ -145,7 +145,7 @@ function ContextModuleTitle({
 }) {
   return (
     <span className="flex min-w-0 flex-1 items-center gap-2">
-      {icon && <span className="shrink-0 text-muted-foreground">{icon}</span>}
+      {icon && <span className={cn("grid size-7 shrink-0 place-items-center rounded-full border", contextIconSurface(tone))}>{icon}</span>}
       {tone && <StatusDot tone={tone} pulse={live && tone === "running"} />}
       <span className="min-w-0 flex-1">
         {kicker && (
@@ -160,4 +160,16 @@ function ContextModuleTitle({
       {pinned && <Pin className="size-3 shrink-0 text-muted-foreground" aria-label="Pinned" />}
     </span>
   );
+}
+
+function contextIconSurface(tone?: StatusTone): string {
+  switch (tone) {
+    case "bad": return "border-status-bad/20 bg-status-bad/8 text-status-bad";
+    case "warn": return "border-status-warn/20 bg-status-warn/8 text-status-warn";
+    case "good": return "border-status-good/20 bg-status-good/8 text-status-good";
+    case "decision": return "border-status-decision/20 bg-status-decision/8 text-status-decision";
+    case "running":
+    case "info": return "border-status-running/20 bg-status-running/8 text-status-running";
+    default: return "border-border/70 bg-muted/45 text-muted-foreground";
+  }
 }

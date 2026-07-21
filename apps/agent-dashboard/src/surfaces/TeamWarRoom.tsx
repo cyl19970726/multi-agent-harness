@@ -148,7 +148,7 @@ export function TeamWarRoom({
       composerClassName="bg-background shadow-[0_-12px_30px_-28px_rgba(15,23,42,0.55)]"
       header={
         <FocusHeader
-          eyebrow="4 members active"
+          eyebrow={<span className="inline-flex items-center gap-1.5"><Users className="size-3.5 text-status-running" /> 4 members active</span>}
           breadcrumb={
             <button
               type="button"
@@ -249,7 +249,7 @@ export function TeamWarRoom({
         <section aria-label="Team members" className="relative border-b border-border/70 pb-4">
           <div className="mb-3 flex items-center justify-between gap-3">
             <div>
-              <h2 className="text-[12px] font-semibold text-foreground">Team presence</h2>
+              <h2 className="flex items-center gap-2 text-[12px] font-semibold text-foreground"><span className="grid size-7 place-items-center rounded-full border border-status-running/20 bg-status-running/8 text-status-running"><Users className="size-3.5" /></span> Team presence</h2>
               <p className="text-[10px] text-muted-foreground">{members.length} members active in this attempt</p>
             </div>
             <span className="inline-flex items-center gap-1.5 text-[10px] font-medium text-status-running"><StatusDot tone="running" pulse /> Live</span>
@@ -286,7 +286,7 @@ export function TeamWarRoom({
         <section className="min-h-[28rem] overflow-hidden bg-background">
           <header className="flex flex-wrap items-center justify-between gap-2 border-b border-border/70 py-3">
             <div className="flex items-center gap-2">
-              <MessageSquare className="size-3.5 text-muted-foreground" />
+              <span className="grid size-7 place-items-center rounded-full border border-status-running/20 bg-status-running/8 text-status-running"><MessageSquare className="size-3.5" /></span>
               <h2 className="text-[13px] font-semibold text-foreground">Team activity</h2>
               <span className="text-[11px] text-muted-foreground">durable record</span>
             </div>
@@ -483,6 +483,7 @@ function toActivityItems(items: StableTeamActivity[], members: Map<string, Membe
       return {
         id: item.id,
         kind: message.kind === "blocker" ? "blocker" : message.kind === "review_result" ? "decision" : evidenceRefs.length ? "evidence" : "message",
+        glyph: teamMessageGlyph(message.kind, evidenceRefs.length > 0),
         title: <span><Badge tone={messageTone(message.kind)}>{message.kind ?? "message"}</Badge><span className="ml-2">{actor} → {recipients}</span></span>,
         body: message.body,
         actor: message.correlation_id ? `correlation ${shortId(message.correlation_id)}` : undefined,
@@ -494,12 +495,23 @@ function toActivityItems(items: StableTeamActivity[], members: Map<string, Membe
     if (item.kind === "action") {
       const action = item.action;
       const evidenceRefs = action.evidence_refs ?? [];
-      return { id: item.id, kind: evidenceRefs.length ? "evidence" : "action", title: action.title ?? action.action_type ?? "Member action", body: action.summary, actor, timestamp: relativeTime(action.started_at ?? action.completed_at), evidenceRefs, tone: action.status === "failed" ? "bad" : action.status === "succeeded" ? "good" : "running" };
+      return { id: item.id, kind: evidenceRefs.length ? "evidence" : "action", glyph: evidenceRefs.length ? "artifact" : "runtime", title: action.title ?? action.action_type ?? "Member action", body: action.summary, actor, timestamp: relativeTime(action.started_at ?? action.completed_at), evidenceRefs, tone: action.status === "failed" ? "bad" : action.status === "succeeded" ? "good" : "running" };
     }
     const event = item.event;
     const decision = event.entity_type === "wave" || event.operation === "completed" || /gate|decision/i.test(event.summary ?? "");
-    return { id: item.id, kind: decision ? "decision" : "action", title: event.summary ?? `${event.entity_type ?? "Team"} ${event.operation ?? "updated"}`, actor, timestamp: relativeTime(event.occurred_at), tone: decision ? "decision" : "info" };
+    return { id: item.id, kind: decision ? "decision" : "action", glyph: decision ? "decision" : "runtime", title: event.summary ?? `${event.entity_type ?? "Team"} ${event.operation ?? "updated"}`, actor, timestamp: relativeTime(event.occurred_at), tone: decision ? "decision" : "info" };
   });
+}
+
+function teamMessageGlyph(kind?: string | null, hasEvidence = false): WorkbenchActivityItem["glyph"] {
+  if (hasEvidence) return "artifact";
+  switch (kind) {
+    case "assignment": return "assignment";
+    case "handoff": return "handoff";
+    case "review_request": return "review";
+    case "review_result": return "decision";
+    default: return "message";
+  }
 }
 
 function matchesFilter(item: WorkbenchActivityItem, filter: StreamFilter): boolean {

@@ -16,6 +16,20 @@ Recommended primitives:
 - `ContextSection`: typography/divider-based rail section; a bordered container is optional, not the default.
 - `ConnectionPulse`: small shared live/transport status indicator.
 
+## Semantic icon language
+
+Operational icons remain code-native SVGs rather than generated raster assets so they stay crisp at 16–32px, inherit semantic tokens, and remain accessible under zoom and high-density displays.
+
+- assignment: `SendHorizontal`, active blue;
+- handoff: `ArrowRightLeft`, active blue;
+- runtime action: `TerminalSquare`, active blue or result tone;
+- evidence/artifact: `FileCheck2`, accepted green when succeeded;
+- review request: `ShieldCheck`, waiting/pressure tone;
+- decision: `CheckCircle2`, decision or accepted tone;
+- blocker: `ShieldAlert`, pressure coral/red.
+
+Every icon keeps an adjacent text label; color is reinforcement, never the only meaning.
+
 ## Motion
 
 Use motion only to explain state change:
