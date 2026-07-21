@@ -23,7 +23,6 @@ not seven independent sources of product truth.
 | Execution | `docs/dashboard/`, `docs/integration/`, runtime/workflow docs | Mission/Wave, executors, providers, operator surfaces and runbooks | only for execution work |
 | Design evidence | `docs/design/<workstream>/` | versioned Expected, Actual, prompts, specs, overlays, comparisons and reviews | only for the selected workstream |
 | Operations | `docs/getting-started.md`, `docs/operations.md`, `docs/schemas.md`, `docs/governance-engine.md` | commands, release and governance gates | only for implementation/operations |
-| Research | `docs/research/` | external observations and unresolved exploration | never product authority |
 | Historical evidence | verified external archives and Git history | provenance needed to interpret still-existing records or decisions | never default context |
 
 Within Company OS, product contracts divide by truth-owning system:
@@ -86,8 +85,10 @@ answer the current decision.
 4. relevant Organization, Work, Finance and Approval policy;
 5. the domain example or adapter, if one exists.
 
-Research, old visual candidates, completion audits and historical evidence are loaded only
-to answer a historical or comparative question.
+Old visual candidates, completion audits and historical evidence are loaded
+only to answer a historical or comparative question. Unresolved research must
+be attached to an active WorkItem or decision; abandoned standalone studies are
+deleted and remain recoverable from Git history.
 
 ## Creating or changing documentation
 
@@ -227,10 +228,30 @@ structural decisions. All remediation remains normal WorkItems.
 ## Required metadata and review
 
 Canonical and implementation-critical documents must be registered in
-`docs/registry.json` with owner, status, lifecycle, canonical scope,
-dependencies, review date, verification and reorganization trigger. Review is
-event-driven as well as date-driven. A document must be reviewed when its
-schema, store, API, UI, ADR, owning module or acceptance scenario changes.
+`docs/registry.json` with owner, status, lifecycle, authority class,
+implementation state, truth references, canonical scope, dependencies, review
+date, verification and reorganization trigger. Review is event-driven as well
+as date-driven. A document must be reviewed when its schema, store, API, UI,
+ADR, owning module or acceptance scenario changes.
+
+These fields answer different questions and must not be inferred from one
+another:
+
+| Field | Question | Important boundary |
+| --- | --- | --- |
+| `status` | Is this document's prose draft, planned or stable? | `stable` means the document is dependable, not that its capability exists. |
+| `lifecycle` | How quickly is this document expected to change? | It controls review cadence, not product completion. |
+| `authorityClass` | What kind of truth may this document own? | `design_intent` and `research` cannot prove implementation. |
+| `implementationState` | How much of the described capability exists? | Use `design_only`, `partial`, `implemented` or `verified`; downgrade when evidence is incomplete. |
+| `truthRefs` | Which executable artifacts support that claim? | References are typed as `schema`, `store`, `api`, `ui`, `test`, `decision` or `runtime_evidence`. |
+
+`implemented` requires at least one executable truth reference. `verified`
+additionally requires a `test` or `runtime_evidence` reference. A fixture,
+mockup, screenshot or polished Expected image does not by itself move a
+capability beyond `design_only`; a UI reading fixtures is not Store-live Actual.
+The registry gate enforces the structural minimum, while the owning Governance
+Agent remains responsible for checking whether each reference actually proves
+the claim.
 
 The governance gate must prevent broken links, missing registered authorities,
 stale review dates and retired product vocabulary in active authority. Explicit

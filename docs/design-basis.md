@@ -100,7 +100,6 @@ Documentation mirrors authority rather than implementation folders:
 | `docs/decisions/` | durable decisions and supersession records |
 | `docs/dashboard/`, `docs/integration/`, runtime/workflow docs | execution implementation and operations |
 | `docs/design/<workstream>/` | versioned visual intent and evidence |
-| `docs/research/` | non-authoritative inputs |
 | `docs/archive/` | historical provenance excluded from normal planning |
 
 The creation, ownership, lifecycle, registry and archive rules live in

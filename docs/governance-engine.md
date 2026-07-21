@@ -46,10 +46,17 @@ member_data_root = ".agents/data"   # optional: scanned for *-agent-member.json 
 path = "docs/registry.json"
 schema = "agent_harness.docs_registry.v1"
 required_fields = ["path", "ownerRole", "status", "lifecycle", "canonicalFor",
+                   "authorityClass", "implementationState", "truthRefs",
                    "dependsOn", "machineConsumers", "reviewAfter",
                    "lastVerifiedWith", "reorgTrigger"]
 allowed_statuses = ["idea", "planned", "stable", "deprecated", "archival"]
 allowed_lifecycles = ["volatile", "stable", "archival"]
+allowed_authority_classes = ["entry", "canonical_contract",
+                             "implementation_reference", "design_intent",
+                             "actual_evidence", "research", "historical_evidence"]
+allowed_implementation_states = ["design_only", "partial", "implemented", "verified"]
+allowed_truth_ref_kinds = ["schema", "store", "api", "ui", "test",
+                           "decision", "runtime_evidence"]
 core_docs = ["README.md", "docs/README.md", "docs/architecture.md"]
 coverage_roots = ["docs/product", "docs/operations"]
 coverage_exclude = []
