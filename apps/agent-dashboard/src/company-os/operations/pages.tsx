@@ -7,13 +7,18 @@ import {
 } from "./components";
 import { prototypeTrademarkOperationsProjection } from "./fixture";
 import { buildApprovalDecisionCommand } from "./approvalAction";
-import type { ActorSummary, ApprovalDecision, ApprovalDecisionCommand, TrademarkOperationsProjection, WorkItemView } from "./types";
+import { buildWorkItemTransitionCommand } from "./workItemAction";
+import type { ActorSummary, ApprovalDecision, ApprovalDecisionCommand, TrademarkOperationsProjection, WorkItemTransitionCommand, WorkItemTransitionStatus, WorkItemView } from "./types";
 import { ActorAvatar, ObjectEmblem } from "../visuals";
 
 type OperationsPageProps = { data?: TrademarkOperationsProjection };
 type ApprovalFocusProps = OperationsPageProps & {
   actionEnabled?: boolean;
   onDecision?: (command: ApprovalDecisionCommand, capabilityToken: string) => Promise<boolean>;
+};
+type WorkItemFocusProps = OperationsPageProps & {
+  actionEnabled?: boolean;
+  onTransition?: (command: WorkItemTransitionCommand, capabilityToken: string) => Promise<boolean>;
 };
 
 function projection(data?: TrademarkOperationsProjection): TrademarkOperationsProjection {
@@ -181,12 +186,56 @@ function BoardFact({ label, actor }: { label: string; actor?: ActorSummary }) {
   return <div className="grid grid-cols-[6.5rem_minmax(0,1fr)] gap-2"><dt className="text-xs text-muted-foreground">{label}</dt><dd className="min-w-0 break-words text-sm leading-5 text-foreground" data-company-os-ref={actor?.id} data-actor-kind={kind} data-actor-type={kind}>{actorDescriptor(actor)}</dd></div>;
 }
 
-export function WorkItemFocus({ data }: OperationsPageProps) {
+export function WorkItemFocus({ data, actionEnabled = false, onTransition }: WorkItemFocusProps) {
   const view = projection(data);
   const { workItem, commitment, approval } = view;
   const approvalTitle = humanReadable(approval.title, "Approval decision");
-  return <div data-company-os-ref={workItem.id} data-work-item-status={workItem.status}><PageFrame eyebrow="Work item" title={workItem.title} description="A linked business commitment with explicit responsibility, evidence and the human authorization it still needs." context={<ContextRail><StatusTag status={workItem.status} /><Panel title="Source"><LinkedRecord recordRef={workItem.sourceDocument.id} label={workItem.sourceDocument.label} detail="Durable source context" /><LinkedRecord recordRef={view.typedApplication.id} label={view.typedApplication.label} detail={view.typedApplication.detail} /></Panel><Panel title="Last updated"><p className="text-sm">{displayTimestamp(workItem.updatedAt)}</p></Panel></ContextRail>}>
-    <div className="space-y-5"><DecisionNotice><strong>Blocked by authorization, not execution.</strong> Preparation may continue within policy; filing and the linked commitment require human approval.</DecisionNotice><Panel title="Evidence"><div className="space-y-1">{view.evidence.length > 0 ? view.evidence.map((evidence) => <LinkedRecord key={evidence.id} recordRef={evidence.id} label={evidence.label} detail={evidence.detail} />) : <p className="text-sm text-muted-foreground">No evidence is linked in this projection.</p>}</div></Panel><div className="grid gap-5 lg:grid-cols-2"><Panel title="Approval decision"><LinkedRecord wrapLabel recordRef={approval.id} label={approvalTitle} detail={`Decision requested from ${actorDescriptor(approval.requiredApprover)}`} /><p className="mt-3 break-words text-sm leading-6 text-muted-foreground">{humanReadable(approval.actionSummary, "No approval summary was supplied.")}</p></Panel><Panel title="Financial relation"><FinancialRecordCard record={commitment} /></Panel></div><Panel title="Responsibility"><WorkRoleTable workItem={workItem} /></Panel></div>
+  const [capabilityToken, setCapabilityToken] = useState("");
+  const [transitionNote, setTransitionNote] = useState("");
+  const [submitting, setSubmitting] = useState<WorkItemTransitionStatus | null>(null);
+  const [feedback, setFeedback] = useState<string | null>(null);
+  const intents = useRef<Partial<Record<WorkItemTransitionStatus, { id: string; transitionedAt: string }>>>({});
+  const canTransition = actionEnabled && Boolean(onTransition) && Boolean(workItem.transitionContext) && workItem.status !== "completed";
+  const targets: Array<{ status: WorkItemTransitionStatus; label: string }> = workItem.status === "in_progress"
+    ? [{ status: "in_review", label: "Submit result" }, { status: "blocked", label: "Mark blocked" }]
+    : workItem.status === "in_review"
+      ? [{ status: "completed", label: "Complete" }, { status: "in_progress", label: "Resume work" }]
+      : workItem.status === "completed"
+        ? []
+        : [{ status: "in_progress", label: workItem.status === "blocked" ? "Resume work" : "Start preparation" }];
+  async function transition(targetStatus: WorkItemTransitionStatus) {
+    if (!canTransition || !onTransition || !capabilityToken.trim() || !transitionNote.trim()) return;
+    const intent = intents.current[targetStatus] ?? {
+      id: `action-browser-${workItem.id}-${targetStatus}-${crypto.randomUUID()}`,
+      transitionedAt: new Date().toISOString(),
+    };
+    intents.current[targetStatus] = intent;
+    setSubmitting(targetStatus);
+    setFeedback(null);
+    try {
+      const command = buildWorkItemTransitionCommand({ workItem, targetStatus, note: transitionNote, commandId: intent.id, transitionedAt: intent.transitionedAt });
+      const accepted = await onTransition(command, capabilityToken.trim());
+      if (accepted) { setCapabilityToken(""); setTransitionNote(""); }
+      setFeedback(accepted ? `WorkItem moved to ${humanReadable(targetStatus, targetStatus)} in Store truth.` : "Transition was not applied. Review the action error above and retry with the same intent.");
+    } catch (error) {
+      setFeedback(error instanceof Error ? error.message : String(error));
+    } finally {
+      setSubmitting(null);
+    }
+  }
+  const unavailableReason = !actionEnabled
+    ? commandUnavailable
+    : !workItem.transitionContext
+      ? "The current projection does not expose a complete work_item.transition contract."
+      : workItem.status === "completed"
+        ? "This WorkItem is completed and cannot be reopened by the V1 transition contract."
+        : !capabilityToken.trim() || !transitionNote.trim()
+          ? "Enter the session capability and a durable transition note."
+          : undefined;
+  const transitionControls = <div className="w-full max-w-lg space-y-2" aria-label="WorkItem transition controls" data-company-os-action-state={canTransition ? "available" : "unavailable"}><div className="grid gap-2 sm:grid-cols-2"><label className="text-xs font-medium text-muted-foreground">Session capability<input data-company-os-action-token type="password" autoComplete="off" value={capabilityToken} onChange={(event) => setCapabilityToken(event.target.value)} disabled={!canTransition} placeholder="Not stored" className="mt-1 h-9 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground disabled:bg-muted" /></label><label className="text-xs font-medium text-muted-foreground">Transition note<input data-company-os-work-note value={transitionNote} onChange={(event) => setTransitionNote(event.target.value)} disabled={!canTransition} placeholder="Required for durable outcome" className="mt-1 h-9 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground disabled:bg-muted" /></label></div><div className="flex flex-wrap gap-2">{targets.map((target) => { const approvalBlocked = target.status === "completed" && approval.status !== "approved"; const ready = canTransition && Boolean(capabilityToken.trim()) && Boolean(transitionNote.trim()) && !submitting && !approvalBlocked; return <GovernedActionButton key={target.status} label={submitting === target.status ? `${target.label}…` : target.label} reason={approvalBlocked ? "Every linked Approval must be approved before completion." : unavailableReason} disabled={!ready} onClick={() => void transition(target.status)} />; })}</div><p className="max-w-lg text-xs leading-5 text-muted-foreground">{feedback ?? unavailableReason ?? "The server validates lifecycle, responsibility, provenance, policy, scope and idempotency before appending the next WorkItem version."}</p></div>;
+  const stateNotice = workItem.status === "completed" ? <><strong>Work completed.</strong> The durable result is linked; completion did not create a Payment or accept an execution run.</> : workItem.status === "in_review" ? <><strong>Result submitted for review.</strong> The accountable owner may complete it only after every linked Approval is approved.</> : workItem.status === "in_progress" ? <><strong>Preparation is in progress.</strong> The assignee can submit a durable result or record a blocker.</> : <><strong>Blocked by authorization, not execution.</strong> Preparation may continue within policy; filing and the linked commitment require human approval.</>;
+  return <div data-company-os-ref={workItem.id} data-work-item-status={workItem.status}><PageFrame eyebrow="Work item" title={workItem.title} description="A linked business commitment with explicit responsibility, result provenance and governed lifecycle actions." action={transitionControls} context={<ContextRail><StatusTag status={workItem.status} /><Panel title="Source"><LinkedRecord recordRef={workItem.sourceDocument.id} label={workItem.sourceDocument.label} detail="Durable source context" /><LinkedRecord recordRef={view.typedApplication.id} label={view.typedApplication.label} detail={view.typedApplication.detail} /></Panel><Panel title="Last updated"><p className="text-sm">{displayTimestamp(workItem.updatedAt)}</p></Panel>{workItem.outcomeSummary && <Panel title="Latest outcome"><p className="text-sm leading-6">{workItem.outcomeSummary}</p></Panel>}</ContextRail>}>
+    <div className="space-y-5"><DecisionNotice>{stateNotice}</DecisionNotice><Panel title="Evidence"><div className="space-y-1">{view.evidence.length > 0 ? view.evidence.map((evidence) => <LinkedRecord key={evidence.id} recordRef={evidence.id} label={evidence.label} detail={evidence.detail} />) : <p className="text-sm text-muted-foreground">No evidence is linked in this projection.</p>}</div></Panel><div className="grid gap-5 lg:grid-cols-2"><Panel title="Approval decision"><LinkedRecord wrapLabel recordRef={approval.id} label={approvalTitle} detail={`${humanReadable(approval.status, "Unknown")} · ${actorDescriptor(approval.requiredApprover)}`} /><p className="mt-3 break-words text-sm leading-6 text-muted-foreground">{humanReadable(approval.actionSummary, "No approval summary was supplied.")}</p></Panel><Panel title="Financial relation"><FinancialRecordCard record={commitment} /></Panel></div><Panel title="Responsibility"><WorkRoleTable workItem={workItem} /></Panel></div>
   </PageFrame></div>;
 }
 

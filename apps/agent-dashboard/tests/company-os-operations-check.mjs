@@ -21,24 +21,30 @@ async function main() {
     readFile(resolve(operations, "pages.tsx"), "utf8"),
     readFile(fixturePath, "utf8").then(JSON.parse),
   ]);
-  const [components, fixtureAdapter, approvalAction] = await Promise.all([
+  const [components, fixtureAdapter, approvalAction, workItemAction] = await Promise.all([
     readFile(resolve(operations, "components.tsx"), "utf8"),
     readFile(resolve(operations, "fixture.ts"), "utf8"),
     readFile(resolve(operations, "approvalAction.ts"), "utf8"),
+    readFile(resolve(operations, "workItemAction.ts"), "utf8"),
   ]);
   const types = await readFile(resolve(operations, "types.ts"), "utf8");
   const ts = (await import("typescript")).default;
   const adapterDirectory = await mkdtemp(resolve(tmpdir(), "company-os-operations-"));
   const adapterTarget = resolve(adapterDirectory, "fixture.mjs");
   const approvalActionTarget = resolve(adapterDirectory, "approvalAction.mjs");
+  const workItemActionTarget = resolve(adapterDirectory, "workItemAction.mjs");
   await writeFile(adapterTarget, ts.transpileModule(fixtureAdapter, {
     compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2020 },
   }).outputText, "utf8");
   await writeFile(approvalActionTarget, ts.transpileModule(approvalAction, {
     compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2020 },
   }).outputText, "utf8");
+  await writeFile(workItemActionTarget, ts.transpileModule(workItemAction, {
+    compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2020 },
+  }).outputText, "utf8");
   const adapterModule = await import(pathToFileURL(adapterTarget).href);
   const approvalActionModule = await import(pathToFileURL(approvalActionTarget).href);
+  const workItemActionModule = await import(pathToFileURL(workItemActionTarget).href);
   const required = ["OrganizationPage", "HumanMemberFocus", "StandingAgentFocus", "WorkboardPage", "WorkItemFocus", "ApprovalFocus", "FinancePage", "GovernanceProposalFocus", "BusinessModuleFocus"];
   check(required.every((name) => pages.includes(`function ${name}`)), "exports all nine Company OS operations pages");
   check(types.includes('"human" | "standing_agent"') && types.includes("interface ActorSummary"), "keeps Human and Standing Agent as distinct actor kinds");
@@ -122,10 +128,13 @@ async function main() {
     expires_at: "2026-07-31T18:00:00+08:00",
   };
   governedProjection.work_items[0].approval_refs = ["approval-browser-test"];
+  governedProjection.work_items[0].accountable_owner = { actor_type: "human", actor_id: "actor-human-brand-owner" };
+  governedProjection.work_items[0].assignees = [{ actor_type: "agent", actor_id: "actor-agent-trademark" }];
+  governedProjection.work_items[0].reviewer = { actor_type: "agent", actor_id: "actor-agent-finance" };
   governedProjection.custom_page_definitions = [{
     id: "page-trademark",
-    action_command_refs: ["approval.decide"],
-    policy_refs: ["page-trademark:approval.decide"],
+    action_command_refs: ["approval.decide", "work_item.transition"],
+    policy_refs: ["page-trademark:approval.decide", "page-trademark:work_item.transition"],
   }];
   const governed = adapterModule.adaptTrademarkOperationsProjection(governedProjection);
   const command = approvalActionModule.buildApprovalDecisionCommand({ approval: governed.approval, decision: "approved", note: "Approved in browser acceptance", commandId: "action-browser-test", decidedAt: "2026-07-20T10:00:00+08:00" });
@@ -134,6 +143,10 @@ async function main() {
   check(command.subject_ref.kind === "approval" && command.payload.record.subject_ref.kind === "financial_record", "Action subject is the Approval while the Approval record preserves its governed financial subject");
   check(command.requires_human_approval === false && command.risk_tier === "r2" && command.approval_refs.length === 0, "approval.decide does not recursively require a second Approval");
   check(pages.includes("data-company-os-action-token") && approvalAction.includes("A durable decision note is required") && pages.includes("Request changes needs a separate native Approval status"), "Approval Focus exposes a session-only capability, durable note, and honest request-changes boundary");
+  const workCommand = workItemActionModule.buildWorkItemTransitionCommand({ workItem: governed.workItem, targetStatus: "in_progress", note: "Preparation started", commandId: "action-work-browser-test", transitionedAt: "2026-07-20T10:05:00+08:00" });
+  check(workCommand.command_name === "work_item.transition" && workCommand.subject_ref.kind === "work_item" && workCommand.requested_by.actor_id === "actor-agent-trademark", "WorkItem browser command attributes execution to the explicit assignee");
+  check(workCommand.required_permission === "company.work.execute" && workCommand.risk_tier === "r2" && workCommand.payload.record.status === "in_progress", "WorkItem transition uses the declared lifecycle policy and complete next record");
+  check(pages.includes('aria-label="WorkItem transition controls"') && pages.includes("Every linked Approval must be approved before completion") && workItemAction.includes("A durable transition note is required"), "WorkItem Focus exposes governed lifecycle controls and the explicit Approval completion gate");
   await rm(adapterDirectory, { recursive: true, force: true });
   console.log(`\nCompany OS operations checks: ${pass} pass, ${fail} fail`);
   process.exit(fail === 0 ? 0 : 1);

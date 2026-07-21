@@ -118,6 +118,13 @@ explicit document update or linked typed record; it does not replace the source
 content with raw execution logs. Artifact, evidence, metric, decision, and
 financial-record links remain referentially stable.
 
+Operational state changes use the governed `work_item.transition` Action rather
+than broad record authoring. Its implemented V1 state graph, responsibility
+rules, immutable fields, Approval completion gate, and browser evidence are
+canonicalized in [WorkItem lifecycle actions](work-item-lifecycle-actions.md).
+Reassignment, cancellation, archive, and reopening remain separate future
+commands so this transition cannot silently expand its authority.
+
 ## Execution references and assignments
 
 `execution_refs` answer how an accepted WorkItem was performed. They are

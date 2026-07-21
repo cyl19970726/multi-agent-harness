@@ -97,7 +97,7 @@ function humanRecord(canonical) {
       availability: null,
       membership_refs: [`membership-${canonical.id}`],
       responsibility_summary: "Accountable owner for company brand, legal, finance, and organization decisions.",
-      permission_policy_refs: ["company_os.admin", "company.records.write", "finance.commitment.write"],
+      permission_policy_refs: ["company_os.admin", "company.records.write", "company.work.execute", "finance.commitment.write"],
       authority_policy_refs: ["company_os.admin", "company.approve", "policy-human-approval-financial-and-legal-submission"],
       created_at: canonical.created_at,
       updated_at: NOW,
@@ -121,9 +121,9 @@ function agentRecord(canonical) {
       responsibility_summary: documentArchitecture
         ? "Maintain the company document architecture and propose governed business modules."
         : `Perform the declared ${canonical.display_name} responsibility without inferred runtime presence.`,
-      capability_refs: ["company.records.write"],
+      capability_refs: ["company.records.write", "company.work.execute"],
       permission_policy_refs: canonical.id === "actor-agent-trademark"
-        ? ["company.records.write", "finance.commitment.write"]
+        ? ["company.records.write", "company.work.execute", "finance.commitment.write"]
         : ["company.records.write"],
       runtime_refs: [],
       provider_session_refs: [],
@@ -310,7 +310,7 @@ export async function seedCompanyOsTrademark({ apiBaseUrl, token, fixture }) {
       permission_policy_ref: "company.records.write",
     }],
     approved_ui_components: ["DocumentCard", "WorkItemCard", "ApprovalCard", "FinancialRecordCard"],
-    action_command_refs: ["approval.decide", "commitment.append", "payment.append"],
+    action_command_refs: ["approval.decide", "work_item.transition", "commitment.append", "payment.append"],
     standard_view_fallback_ref: "view-trademark-management",
     owner: actorRef("human", ADMIN_ID),
     package_ref: "package-trademark",
@@ -319,6 +319,7 @@ export async function seedCompanyOsTrademark({ apiBaseUrl, token, fixture }) {
     visual_contract_ref: "docs/design/company-os-v1/visual-contract.json",
     policy_refs: [
       "page-trademark:approval.decide",
+      "page-trademark:work_item.transition",
       "page-trademark:commitment.append",
       "page-trademark:payment.append",
     ],
@@ -598,6 +599,9 @@ async function main() {
       if (captureContract === "v2.2" && flag("--capture-approval-action")) {
         captureArgs.push("--approval-action-token", token);
         captureArgs.push("--approval-action-decision", argument("--approval-action-decision", "approved"));
+      }
+      if (captureContract === "v2.2" && flag("--capture-workitem-action")) {
+        captureArgs.push("--workitem-action-token", token);
       }
       const capture = spawnSync(process.execPath, captureArgs, { cwd: repoRoot, env: process.env, stdio: "inherit" });
       if (capture.status !== 0) throw new Error(`live Company OS capture failed with status ${capture.status}`);
