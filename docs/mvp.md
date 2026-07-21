@@ -8,9 +8,9 @@ The next MVP proves the accepted product hierarchy in running software:
 Mission -> ordered Wave -> executor
 ```
 
-It is not a rewrite of the whole compatibility runtime. It adds the smallest
-Mission/Wave contracts and joins needed to run real Agent Team and Dynamic
-Workflow Waves while preserving existing Goal/legacy phase record data.
+It is the smallest native Mission/Wave slice needed to run real Agent Team and
+Dynamic Workflow Waves without preserving the superseded coordination model as
+an active dependency.
 
 The retired `acceptance:mvp*` and `acceptance:autonomous-team` names belonged
 to the superseded coordination stack. The active executable gate is
@@ -18,12 +18,11 @@ to the superseded coordination stack. The active executable gate is
 
 ## MVP Slice
 
-### 1. Additive Mission/Wave Contracts
+### 1. Native Mission/Wave Contracts
 
 - JSON schemas and Rust types for Mission, Wave, Wave attempt refs, and the
   lightweight gate;
-- store ledgers/projections that do not rewrite existing Goal/legacy phase record JSONL;
-- dual-read mapping for compatibility records where the mapping is honest;
+- native store ledgers and projections with no retired-object dual read;
 - explicit `executor_kind = agent_team | dynamic_workflow | host`;
 - `executor_run_ids[]` and `accepted_run_id` for retry lineage.
 
@@ -36,7 +35,7 @@ to the superseded coordination stack. The active executable gate is
 - correlate actions, blockers, handoffs, reviews, and delegation when the
   runtime actually has the reference;
 - complete a Wave through a lightweight gate and record the accepted run;
-- keep v0 task fields readable but optional for new runs.
+- treat residual v0 task-named fields as removal debt, never ownership proof.
 
 ### 3. Dynamic Workflow Wave
 
@@ -58,8 +57,7 @@ to the superseded coordination stack. The active executable gate is
   provider exposes thinking;
 - exclude new thinking from JSONL, snapshots, replay, evidence, and peer
   messages;
-- preserve old durable rows as compatibility history without presenting them
-  as accepted product behavior.
+- remove old durable thinking rows from active stores.
 
 ### 6. Host And Dashboard Surfaces
 
@@ -95,14 +93,14 @@ The accepted journey must prove:
 - a retry is a new run attempt and the gate identifies the accepted attempt;
 - both executor kinds appear in one Mission read model;
 - artifacts and gate notes explain why each Wave was accepted;
-- compatibility data remains readable.
+- retired coordination data is absent from active reads and navigation.
 
 ## Acceptance Gates
 
 | Gate | Accepted when | Does not pass |
 | --- | --- | --- |
 | Contracts | Rust, schema, fixtures, store, CLI/API, and docs agree on Mission/Wave. | Future-state prose only. |
-| Compatibility | Existing Goal/legacy phase record ledgers and commands still read/run or emit explicit deprecation guidance. | Destructive history rewrite or silent data loss. |
+| Retirement | Active reads, commands, docs, and UI do not depend on the superseded coordination stack. | A compatibility surface or dual-read path remains product-visible. |
 | Wave minimalism | Wave fields are objective/executor/attempt/outcome/artifact/gate focused. | Task DAG embedded in Wave. |
 | Agent Team joins | New runs/messages/actions can join Mission, Wave, and assignment correlation without Task. | A `task_id` is still required or manual sends always fork correlation. |
 | Team execution | A real provider-backed team completes an assignment/handoff/review path. | Create/start smoke with no accepted outcome. |
@@ -125,7 +123,7 @@ npx pnpm@9.15.4 acceptance:mission-wave
 Add focused Mission/Wave acceptance covering:
 
 1. schema/fixture validation;
-2. old Goal/legacy phase record dual-read;
+2. retired coordination objects absent from active projections;
 3. Agent Team Wave with assignment correlation and accepted attempt;
 4. Dynamic Workflow Wave with artifacts/result;
 5. retry/revise lineage;
@@ -134,13 +132,13 @@ Add focused Mission/Wave acceptance covering:
 
 Live-provider acceptance must use only the minimum expensive calls needed to
 prove the cross-provider contract. Deterministic tests own state transitions,
-compatibility, failure paths, and read-model parity.
+retirement, failure paths, and read-model parity.
 
 ## Build Order
 
 ```text
-additive schemas/types
-  -> store + dual-read projection
+native schemas/types
+  -> store projection
   -> assignment correlation inputs
   -> Agent Team Wave routing
   -> Dynamic Workflow Wave attachment
@@ -154,7 +152,7 @@ additive schemas/types
 
 ## Non-Goals For This MVP
 
-- Removing Goal/legacy phase record code or rewriting old ledgers.
+- Reintroducing or maintaining the superseded coordination stack.
 - Standing Agents + Docs business operation.
 - A portfolio/project-management suite.
 - A mandatory legacy dependency graph, Proposal, Critic, or Decision object for every Wave.

@@ -27,22 +27,23 @@ longer define the top-level product IA.
 ```text
 status:
   top_level_direction: shipped
-  current_implementation: merged (PR #7)
+  current_implementation: Execution Workbench V3 on the active product branch
   stack: React 18 + TypeScript + Vite + Tailwind v4 + shadcn/Radix + lucide + Geist
   theme: light, Notion-like document surface (supersedes 0016 dark theme)
-  mission_wave_direction: planned; architecture-map.md + ADR 0026
-  agent_team_page: planned; pages/team-run-console.md
-  legacy_goal_task_ui: shipped compatibility surface
-  implementation_allowed: Mission/Wave work requires updated page contracts
+  mission_wave_direction: implemented; pages/mission-wave-canvas.md
+  agent_team_page: implemented; pages/team-run-war-room.md
+  retired_coordination_ui: removed from active product surfaces
+  implementation_allowed: follow the canonical page and visual contracts
 ```
 
-The compatibility Agent Workbench frontend was rebuilt and merged in PR #7 on the Tailwind v4
-+ shadcn/ui (Radix) + lucide-react + Geist stack. The earlier hand-rolled-CSS
-shell (PR #6) was rejected; that outcome and the full layout decision ledger are
-recorded in [layout-history.md](../company-os/frontend-information-architecture.md). New Mission/Wave changes must:
+The Agent Workbench uses Tailwind v4 + shadcn/ui (Radix) + lucide-react + Geist
+with generated identity art and purpose-built execution primitives. Historical
+shell decisions are retained only as design provenance in
+[the frontend IA](../company-os/frontend-information-architecture.md). New
+Mission/Wave changes must:
 
 - start from [the architecture map](../architecture-map.md), ADR 0026, and the
-  planned Agent Team page spec;
+  implemented Mission/Wave Canvas and Agent Team War Room page specs;
 - follow the architecture and stack decision in
   [frontend-architecture.md](frontend-architecture.md) and ADR
   [0016](../decisions/0016-tailwind-shadcn-adoption.md);
@@ -60,9 +61,9 @@ Mission -> ordered Wave -> executor attempt
   -> Wave gate -> next Wave or Mission closeout
 ```
 
-Goal/legacy phase record/Task/Proposal/Decision views remain available for compatibility
-and stricter self-hosting governance, but are not mandatory product objects for
-every Wave.
+The retired coordination views are absent from active product navigation and
+must not be reintroduced as compatibility UI. Stricter governance may add
+review evidence without changing the Mission/Wave object hierarchy.
 
 ## Reading Order
 
@@ -88,7 +89,8 @@ copied into Mission/Wave IA.
 | Page spec | Owns |
 | --- | --- |
 | [Team workspace](pages/team-workspace.md) | Future Standing Agents workspace; not current AgentTeamRun IA. |
-| [Agent Team page](pages/team-run-console.md) | One AgentTeamRun attempt in its Mission/Wave context: assignment/message ownership, member cockpit, actions, artifacts, gate context, and honest capability degradation. |
+| [Mission/Wave Canvas](pages/mission-wave-canvas.md) | One Mission's ordered Waves, executor attempts, gates, retry, and closeout. |
+| [Agent Team War Room](pages/team-run-war-room.md) | One linked AgentTeamRun attempt: assignment/message ownership, member presence, unified activity, artifacts, and gate context. |
 | [AgentMember workbench](pages/agent-member-workbench.md) | One durable member as a teammate: current work, inbox/outbox, activity, runtime, prompt/skills, actions. |
 | [Evidence/Review/Decision](pages/evidence-review-decision.md) | Acceptance proof chain and decision queues. |
 | [Warnings/repair](pages/warnings-repair.md) | Workflow risks, affected objects, navigation, repair metadata. |
@@ -110,9 +112,8 @@ page spec.
 
 ## Non-Negotiable Implementation Rule
 
-No frontend implementation may start from the old dashboard component tree or
-from the rejected PR #6 Workbench shell. Implementation builds on the shipped
-rebuild (PR #7) and starts from page specs with accepted page-local layout
-contracts, the architecture decision in
+Frontend implementation starts from current page specs, V3 visual evidence,
+and the current component tree. It must not restore a retired coordination
+surface or rejected shell. The architecture decision lives in
 [frontend-architecture.md](frontend-architecture.md), and ADR
 [0016](../decisions/0016-tailwind-shadcn-adoption.md).

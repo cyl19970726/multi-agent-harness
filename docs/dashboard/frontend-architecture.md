@@ -1,231 +1,138 @@
 # Agent Workbench Frontend Architecture
 
-This document owns the frontend architecture and technology-stack decision for
-Agent Workbench. Product purpose stays in [../dashboard.md](../dashboard.md).
-Page-level UX and layout contracts stay in [pages/](pages/). Layout history and
-the rejected/selected decision ledger stay in [layout-history.md](../company-os/frontend-information-architecture.md).
-Acceptance gates stay in [acceptance.md](../company-os/frontend-information-architecture.md). The stack decision is
-recorded as ADR [0016](../decisions/0016-tailwind-shadcn-adoption.md).
+This document owns the implemented frontend stack, module boundaries, data
+flow, and component policy. Product semantics live in
+[the Workbench product contract](../dashboard.md); page behavior lives in
+[page specs](pages/README.md); the approved visual baseline lives in
+[`execution-workbench-v3`](../design/execution-workbench-v3/README.md).
 
-## Current Decision
-
-```text
-status: shipped (PR #7); light document theme retained from a historical redesign
-implementation_allowed: yes, from current page-local layout contracts
-decision:
-  React 18 + TypeScript + Vite build/runtime shell
-  Tailwind CSS v4 (@tailwindcss/vite) for styling and tokens
-  shadcn/ui primitives over Radix (components.json, style new-york)
-  lucide-react icons; Geist + Geist Mono fonts
-  light, Notion-like token theme in src/index.css (the historical redesign
-    superseded the 0016 dark operator-console theme; decoration removed)
-  document atoms (DocumentSurface / DocSection / DocProperties) for the
-    Notion-style Goal/Task detail pages
-  dependencies live in the ROOT package.json (no per-app package.json)
-  module boundary: src/app, src/surfaces, src/model, src/components
-```
-
-The Agent Workbench frontend was rebuilt and merged in PR #7 on React +
-TypeScript + Vite with Tailwind CSS v4, shadcn/ui primitives over Radix,
-lucide-react icons, and the Geist font family. The original rebuild used a dark
-operator-console token theme; the historical Vision/Goal/Task redesign
-**repivoted the
-theme to a light, Notion-like document surface** (decoration removed) and added
-the document atoms used by the Goal/Task detail pages, superseding the theme
-tokens of ADR [0016](../decisions/0016-tailwind-shadcn-adoption.md) (the stack
-decision itself stands). The earlier hand-rolled-CSS shell was rejected for
-product-architecture and acceptance reasons (card/tab dumps, vague layout specs),
-not because of the build path. ADR 0016 supersedes ADR
-[0014](../decisions/0014-react-vite-agent-dashboard.md) in part.
-
-This decision must be re-opened if implementation needs routing, graph,
-collaboration editing, or state-management capabilities that the current stack
-cannot support.
-
-## Source Boundary
+## Implemented Decision
 
 ```text
-Rust harness store / CLI / API
-  -> dashboard snapshot JSON
-  -> frontend read model selectors
-  -> Workbench primitives and page surfaces
-  -> screenshot-first browser acceptance
+React 18 + strict TypeScript + Vite
+Tailwind CSS v4 + owned shadcn/Radix primitives
+lucide-react icons + Geist fonts + generated identity portraits
+one responsive Workbench shell
+pure read-model selectors over snapshot + SSE
+typed action descriptors over the Rust HTTP API
+root package.json owns dependencies
 ```
 
-The frontend does not own canonical harness state. It can derive operator
-views, selection state, advisory warnings, and disabled reasons. It must not
-invent assignment, evidence, review, decision, goal completion, or graph
-mutation truth.
+The source directory remains named `apps/agent-dashboard` for package and
+command stability; the product is Agent Workbench. The frontend never owns
+canonical Mission, Wave, AgentTeamRun, Company OS, assignment, approval, or
+financial state.
 
-## Stack Choice
+## Data Flow
 
-| Area | Decision | Rationale |
-| --- | --- | --- |
-| Framework | React 18 | Good composition for page/workbench surfaces. |
-| Language | TypeScript strict mode | Snapshot/read-model contracts must remain explicit. |
-| Bundler | Vite | Lightweight local dev and static `web/` output. |
-| Styling | Tailwind CSS v4 via `@tailwindcss/vite` | Token-driven utility styling tied to page-local contracts; light, Notion-like theme in `src/index.css` (supersedes the 0016 dark operator-console theme). |
-| UI kit | shadcn/ui primitives over Radix (`components.json`, style `new-york`) in `src/components/ui` | Accessible Radix behavior with copy-in primitives the product owns and can adapt. |
-| Product atoms | `src/components/workbench` | Workbench-specific atoms composed from the shadcn/ui primitives. |
-| Icons | `lucide-react` | Use icon+tooltip/label where it clarifies action. |
-| Fonts | Geist + Geist Mono | Operator-console typography for UI and code/data. |
-| Routing | Route-ready internal state first; add router only when page specs require URL routing | Avoid adding dependency before page contracts stabilize. |
-| Graph | Defer library choice until the `graph-kanban` page layout contract is accepted | Graph must be semantic and controlled, not decorative canvas. |
-| State | Local app state + pure read-model selectors first | Canonical state comes from snapshot/API; avoid store abstraction until needed. |
-| Dependencies | Declared in the ROOT `package.json` (no `apps/agent-dashboard/package.json`) | Single dependency surface for the gated monorepo build. |
+```text
+Harness store / provider adapters
+  -> Rust snapshot and action APIs
+  -> project-scoped SSE deltas
+  -> pure read-model selectors
+  -> Mission, Team, Workflow, and Company OS surfaces
+  -> screenshot and behavior acceptance
+```
 
-## Component Decision
-
-The first rebuild uses product primitives, not a generic UI kit. These are the
-implementation components for the next slice:
-
-| Component | Owns | Refuses |
-| --- | --- | --- |
-| `WorkbenchShell` | top bar, app rail, responsive workspace grid, source state, debug boundary | business proof logic |
-| `AppRail` | stable navigation across Team, Vision, Goal, Task, Graph/Kanban, Member, Docs, Decisions, Warnings, Debug | raw object browsing |
-| `TopBar` | live/offline source, active Vision/Goal, API input, refresh, search affordance | page content |
-| `TeamRail` | team switcher, role groups, member rows, queue/current-work pressure | graph visualization |
-| `Inspector` | selected member/task/docs/warnings/evidence/decision context | primary workflow ownership |
-| `TeamWorkspace` | default collaboration workspace, activity stream, current work, decisions, warnings | roster-only dashboard |
-| `MemberWorkbench` | durable teammate view: identity, current work, inbox/outbox, timeline, runtime, prompt/skills | provider-session dump |
-| `VisionOverview` | goal collection, completed/not-complete proof, distance-to-vision, next proposals | single-goal status card |
-| `GoalDocument` | legacy plan record, team design, branch policy, graph/Kanban preview, evidence/review/decision, evaluation | task list |
-| `TaskDocument` | assignment -> report -> evidence -> proposal -> review -> decision proof order | status card |
-| `GraphKanban` | Kanban default plus semantic graph focus and synchronized selected object | graph-first shell |
-| `DocsContext` | mounted docs context with source paths and missing-context warnings | copied docs body |
-| `DecisionCenter` | global and object-local Evidence/Proposal/Review/Decision lanes | status chip |
-| `WarningsRepair` | workflow risk queue with affected object, cause, consequence, safe repair state | toast-only alerts |
-| `DebugSurface` / `DebugDrawer` | raw snapshot and import/export only behind explicit debug route/drawer | primary viewport |
-
-Shipped divergence from that plan table: the primary rail is Agents / Vision /
-Work / Workflows / Docs, with Goal/Task drill-in documents and Debug behind a
-top-bar toggle. The Team-shaped components (`TeamRail`, `TeamWorkspace`) did not
-ship — the current UI has no Team surface — and `MemberWorkbench` shipped as the
-Agents area (`AgentsList` + `AgentDetail`). Workflow-run visibility added
-`surfaces/Workflows.tsx` and `components/workbench/WorkflowPanels.tsx`.
-
-Product atoms in `src/components/workbench` are composed from the shadcn/ui
-primitives and preserve the product model:
-
-| Primitive | Purpose |
-| --- | --- |
-| `StatusDot` + tone maps (`tones.ts`) | text-backed state dots/labels, never color-only. |
-| `Section` / `SurfaceHeader` | bounded workspace region and surface heading with kicker/action slots. |
-| `DocumentSurface` / `DocSection` / `DocProperties` | Notion-style document atoms retained from the earlier UI. |
-| `TimelineRow` | canonical Message/Event/Evidence/Decision rows. |
-| `Avatar`, `AgentSparkline`, `CollapsibleBlock`, `MetaList`, `EmptyState`, `Kbd`, `MonoId` | supporting display atoms (`atoms.tsx`). |
-| `Markdown` | markdown rendering for doc/plan bodies. |
-| `OperatorForms` | safe-action dialogs that dispatch typed `api/actions.ts` descriptors. |
-| `WorkflowPanels` | workflow definition/run summary panels shared by the Goal and Workflows surfaces. |
-
-The rebuild uses Tailwind CSS v4 plus shadcn/ui primitives over Radix as the
-base layer. Material UI, Ant Design, and other full component frameworks remain
-out of scope.
-
-## Dependency Policy
-
-- shadcn/ui primitives are added through `components.json` (style `new-york`)
-  into `src/components/ui`; product atoms wrap them in `src/components/workbench`.
-- All dependencies are declared in the ROOT `package.json`; there is no
-  `apps/agent-dashboard/package.json`.
-- Do not add a second full component framework without a recorded Reviewer
-  decision.
-- Do not add a graph/canvas library until a current Company OS page contract
-  requires capabilities that custom SVG/HTML cannot
-  provide.
-- Any dependency must name the page spec it serves and how it will be
-  screenshot-accepted.
-
-## Workbench Primitives
-
-The rebuild starts from product primitives, not dashboard widgets. (Design
-vocabulary; the shipped-divergence note in Component Decision applies here too —
-Team-shaped primitives did not ship.)
-
-| Primitive | Purpose |
-| --- | --- |
-| `WorkbenchShell` | Top bar, app navigation, workspace, inspector, debug boundary. |
-| `AppRail` | Stable product navigation across Vision, Team, Work, Member, Docs, Warnings, Debug. |
-| `TeamRail` | Team switcher, role groups, member rows, queue/current work pressure. |
-| `Workspace` | Primary work surface for Team, Work, Vision, or document surfaces. |
-| `MemberWorkbench` | Durable member view: identity, current work, inbox/outbox, timeline, runtime, actions. |
-| `DocumentSurface` | Goal and Task document sections with proof order. |
-| `MessageTimeline` | Canonical activity rows tied to messages, sessions, evidence, proposals, decisions. |
-| `LaneBoard` | Kanban/list projection for Goal/Task execution. |
-| `GraphFocus` | Controlled semantic graph focus when accepted by the Graph/Kanban page layout contract. |
-| `Inspector` | Secondary context for selected Member, Task, Docs, Warnings, Evidence, Decision. |
-| `DebugDrawer` | Raw snapshot/import/export outside the primary viewport. |
-
-## Old Code Disposition
-
-This disposition was executed in the PR #7 rebuild: the listed old components
-and styles no longer exist. `api.ts`/`types.ts`/`vite.config.ts` were retained,
-and `readModel.ts` migrated to `src/model/readModel.ts`. The table stays as the
-record of what was decided.
-
-| Path/pattern | Decision | Reason |
-| --- | --- | --- |
-| `apps/agent-dashboard/src/components/SummaryGrid.tsx` | delete or quarantine | Encodes metrics/dashboard-first composition. |
-| `apps/agent-dashboard/src/components/RawViews.tsx` | quarantine behind Debug only or replace | Raw views cannot drive primary viewport. |
-| `apps/agent-dashboard/src/components/ControlPlane.tsx` | delete or replace | Old composition encourages card/tab dashboard. |
-| `apps/agent-dashboard/src/components/*Detail*.tsx` | review before reuse | Detail panels may be useful only if converted to page/workbench primitives. |
-| `apps/agent-dashboard/src/styles/*.css` | delete or replace | Old styles encode failed layout and dashboard density. |
-| `apps/agent-dashboard/src/App.tsx` from PR #6 | delete | Rejected implementation, not patchable. |
-| `apps/agent-dashboard/src/api.ts` | retain | Stable API helper if it stays layout-neutral. |
-| `apps/agent-dashboard/src/types.ts` | retain | Snapshot types are layout-neutral. |
-| `apps/agent-dashboard/src/readModel.ts` | review/migrate | Retain only pure selectors that serve page specs. |
-| `apps/agent-dashboard/vite.config.ts` | retain | Build boundary still valid. |
-
-No old component may drive the first viewport unless the Reviewer records it as
-a retained Workbench primitive with a page spec and screenshot acceptance path.
+- A full snapshot establishes authority.
+- SSE merges newer durable events and transient expiring member activity.
+- Reconnect fetches a fresh snapshot; stale overlapping reads cannot overwrite
+  newer action responses or live deltas.
+- Project selection is explicit. URL selection state never substitutes for a
+  canonical object relation.
+- Thinking is sanitized transient state and is absent after expiry/reload.
 
 ## Module Boundary
 
-Shipped shape after the rebuild (PR #7):
-
 ```text
-src/
-  app/            # App composition, WorkbenchShell, selection state, SSE hook
-  surfaces/       # agents (list + detail), vision, goal, task, work board,
-                  #   workflows, docs, debug page surfaces
-  model/          # read-model selectors, warnings, workflow selectors/shape
-  components/
-    ui/           # shadcn/ui primitives over Radix (components.json, new-york)
-    workbench/    # product atoms composed from the ui primitives
-  api.ts, api/    # snapshot/SSE/projects fetch + typed write-action descriptors
-  types.ts        # snapshot and UI object types
-  index.css       # Tailwind v4 entry + light Notion-like token theme
+apps/agent-dashboard/src/
+  app/               shell, selection, snapshot/SSE lifecycle
+  surfaces/          Missions, Agent Teams, Team War Room, MemberRuns, Workflows
+  company-os/        Docs, Organization, Work, Approvals, Finance, Governance
+  model/             pure selectors and projection helpers
+  components/ui/     owned shadcn/Radix primitives
+  components/workbench/ shared execution and document primitives
+  api.ts             reads, project selection, SSE, action transport
+  api/actions.ts     typed write-action descriptors
+  types.ts           wire and projection types
+  index.css          tokens, typography, responsive and motion policy
 ```
 
-shadcn configuration lives in `apps/agent-dashboard/components.json`. The build
-boundary stays under `apps/agent-dashboard/`, but all dependencies are declared
-in the ROOT `package.json`.
+Execution surfaces and Company OS surfaces share shell, typography, identity,
+status, relation, activity, and context primitives. They do not collapse their
+objects: a MemberRun is still different from a Standing Agent; a Wave gate is
+different from a Human Approval; an AgentTeamRun is different from an OrgUnit.
 
-## Graph Strategy
+## Surface Ownership
 
-Initial implementation should default to lane/list views. Graph is added as a
-controlled focus surface only when:
+| Surface | Owns | Must not claim |
+| --- | --- | --- |
+| Mission Canvas | ordered Waves, attempts, gates, retry, closeout | dependency graph or implicit acceptance |
+| Agent Teams Home | Mission/Wave-linked TeamRun discovery | unlinked/manual run as product navigation |
+| Team War Room | member presence, assignment lineage, unified activity, messages, ACK/start | parent Wave acceptance or provider-child control |
+| MemberRun Focus | one run-scoped member's contract and evidence | Standing Agent identity |
+| Workflows | WorkflowRun/WorkflowStep/result/artifacts | Agent Team semantics |
+| Company OS | Documents, WorkItems, actors, approvals, finance, metrics, governance | unimplemented schema authority |
+| Debug | raw snapshot and diagnostics | primary product navigation |
 
-- nodes and edges are semantic;
-- selection synchronizes with document/inspector context;
-- mobile has a list fallback;
-- topology changes route through Proposal/Decision, not local mutation;
-- screenshots prove graph does not become the default Team product.
+## Component Policy
 
-Possible future options:
+| Primitive | Purpose |
+| --- | --- |
+| `WorkbenchShell` | product rail, source state, responsive workspace, debug boundary |
+| execution portraits and `Avatar` | stable identity with generated asset and text fallback |
+| status/tone primitives | text-backed semantic state, never color-only |
+| timeline/activity rows | assignment, handoff, runtime, evidence, review, decision semantics |
+| context modules | Wave, Gate, Attempt, Member, Resources, linked company records |
+| document primitives | basic rich content, properties, relations, structured views |
+| operator forms | typed API commands with pending/error state and truthful disable reasons |
 
-- custom SVG/HTML for small semantic graphs;
-- React Flow or equivalent when pan/zoom/minimap/collapse/search are necessary;
-- no canvas for initial slice if Kanban/list can satisfy acceptance.
+Avoid generic metric-card grids for primary workflows. Use cards only for
+bounded interactive objects; use continuous document or timeline composition
+for the main story. Icons and generated art must carry identity or semantics,
+not decorative noise.
 
-## Acceptance Implications
+## Responsive Contract
 
-Architecture acceptance requires:
+- Desktop uses product rail, primary work surface, and contextual rail.
+- Tablet collapses the product rail and permits contextual sheets/inline
+  modules without hiding the gate or current pressure.
+- Mobile shows one clear work story, explicit disclosure for secondary members
+  or context, and no horizontal overflow.
+- Motion communicates progress, selection, and readiness; it respects
+  `prefers-reduced-motion` and never implies nonexistent runtime activity.
 
-- import audit proving old dashboard components do not drive first viewport;
-- styling through Tailwind v4 plus shadcn/ui primitives over Radix, not a
-  second full component framework;
-- page specs and page-local layout contracts linked from implemented surfaces;
-- screenshot-first PM/User acceptance;
-- rejected implementation outcomes recorded in
-  [layout-history.md](../company-os/frontend-information-architecture.md) for failed browser-visible attempts.
+## Technology Policy
+
+| Area | Decision |
+| --- | --- |
+| Routing | URL-addressable selection handled by the app selection layer; add a router only when nested navigation needs it. |
+| State | local React state plus pure selectors; canonical state stays server-side. |
+| Styling | Tailwind v4 tokens plus owned CSS for high-fidelity execution compositions. |
+| UI primitives | shadcn/Radix copy-in components, wrapped by product primitives. |
+| Icons | lucide plus purpose-built generated identity assets. |
+| Graph/canvas | no library unless a future Company OS view has a semantic graph requirement and a list fallback. |
+| Dependencies | root `package.json`; no second full component framework without an ADR. |
+
+## Visual Implementation Contract
+
+Design images establish hierarchy, density, material, iconography, and motion
+intent. Implementation must record expected, baseline, actual, comparison,
+overlay, and intentional deviations in a versioned visual contract. A design
+is not considered implemented because the same content exists at larger card
+sizes; layout rhythm, continuous flow, semantic icons, pressure placement, and
+responsive behavior are acceptance criteria.
+
+The active contract is
+[`docs/design/execution-workbench-v3/visual-contract.json`](../design/execution-workbench-v3/visual-contract.json).
+
+## Validation
+
+```bash
+npx pnpm@9.15.4 check:dashboard
+npx pnpm@9.15.4 acceptance:mission-wave
+```
+
+The first command proves types, selectors, operator controls, visual fixture
+semantics, and production build. The second also proves native Mission/Wave,
+MCP, TeamRun, Kimi, Codex, and mixed-provider execution contracts.
