@@ -1,10 +1,10 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
-  CircleAlert,
   ExternalLink,
+  ListFilter,
   MessageSquare,
   Play,
   Send,
@@ -20,6 +20,7 @@ import { Badge } from "@/components/ui/badge";
 import { Avatar } from "@/components/workbench/Avatar";
 import { ActivityStream, type WorkbenchActivityItem } from "@/components/workbench/activity/ActivityStream";
 import { ContextModule, ContextRail } from "@/components/workbench/context/ContextRail";
+import { ReadinessMeter } from "@/components/workbench/execution/ExecutionPrimitives";
 import { FocusHeader, FocusShell } from "@/components/workbench/layout/FocusShell";
 import { EmptyState, StatusDot, type StatusTone } from "@/components/workbench/atoms";
 import { Select, TextArea } from "@/components/workbench/OperatorForms";
@@ -30,7 +31,7 @@ import {
   type StableTeamActivity,
 } from "../model/teamSelectors";
 import type { WorkbenchModel } from "../model/readModel";
-import { sendTeamMessage, startTeamRun, transitionTeamRun } from "../api/actions";
+import { acknowledgeTeamMessage, sendTeamMessage, startTeamRun, transitionTeamRun } from "../api/actions";
 import type { MemberRun, TeamMessage, Wave } from "../types";
 import type { SelectionState } from "../app/selection";
 
@@ -39,7 +40,7 @@ export interface TeamWarRoomProps {
   teamRunId?: string;
   onSelectionChange: (selection: Partial<SelectionState>) => void;
   actionsEnabled?: boolean;
-  onAction?: (path: string, body?: unknown) => void;
+  onAction?: (path: string, body?: unknown) => void | Promise<boolean>;
 }
 
 type StreamFilter = "all" | "messages" | "actions" | "decisions" | "evidence";
@@ -72,6 +73,13 @@ export function TeamWarRoom({
   const [draft, setDraft] = useState("");
   const [kind, setKind] = useState("broadcast");
   const [showAllMembers, setShowAllMembers] = useState(false);
+  const [showFullActivity, setShowFullActivity] = useState(false);
+  const [starting, setStarting] = useState(false);
+  const runStatus = context?.run.status;
+
+  useEffect(() => {
+    if (runStatus !== "planning") setStarting(false);
+  }, [runStatus]);
 
   if (!context) {
     return (
@@ -99,8 +107,55 @@ export function TeamWarRoom({
     needsYou.blockedMembers[0] ??
     needsYou.waitingMembers[0] ??
     orderedMembers[0];
-  const activityItems = toActivityItems(context.activity, memberById);
-  const shownActivity = activityItems.filter((item) => matchesFilter(item, filter));
+  const activityItems = toActivityItems(context.activity, memberById).map((item) => {
+    if (!item.id.startsWith("message:")) return item;
+    const message = messages.find((candidate) => `message:${candidate.id}` === item.id);
+    const hostDelivery = message?.deliveries?.find(
+      (delivery) => delivery.member_id === "host" && delivery.status === "delivered",
+    );
+    if (!message || !hostDelivery) return item;
+    return {
+      ...item,
+      action: (
+        <Button
+          size="sm"
+          variant="secondary"
+          disabled={!actionsEnabled}
+          title={actionsEnabled ? "Acknowledge delivered message" : "Connect a live source to acknowledge"}
+          onClick={() => dispatch(onAction, acknowledgeTeamMessage(run.id, message.id, "host"))}
+        >
+          ACK
+        </Button>
+      ),
+    };
+  });
+  const pressureActivityIndex = selectedMember?.status === "blocked"
+    ? activityItems.map((item) => item.kind).lastIndexOf("decision")
+    : -1;
+  if (pressureActivityIndex >= 0) {
+    activityItems[pressureActivityIndex] = {
+      ...activityItems[pressureActivityIndex],
+      action: (
+        <div className="min-w-32 rounded-lg border border-primary/25 bg-primary/[0.055] px-2.5 py-2 text-center">
+          <p className="text-[10px] font-semibold leading-snug text-primary">QA approval required</p>
+          <button
+            type="button"
+            onClick={() => messageMember(selectedMember)}
+            className="mt-1.5 rounded-md border border-primary/30 bg-background px-2.5 py-1 text-[10px] font-semibold text-primary transition-colors hover:bg-primary/10"
+          >
+            Review request
+          </button>
+        </div>
+      ),
+    };
+  }
+  const filteredActivity = activityItems.filter((item) => matchesFilter(item, filter));
+  const primaryActivity = filteredActivity.filter((item) => item.prominence === "primary");
+  const latestPressure = [...filteredActivity].reverse().find((item) => item.prominence === "pressure");
+  const keyActivity = latestPressure && !primaryActivity.some((item) => item.id === latestPressure.id)
+    ? [...primaryActivity, latestPressure]
+    : primaryActivity;
+  const shownActivity = filter === "all" && !showFullActivity ? keyActivity : filteredActivity;
   const selectedAssignment = selectedMember
     ? selectMemberAssignmentCorrelations(messages, selectedMember.id)[0]?.assignment
     : undefined;
@@ -144,9 +199,10 @@ export function TeamWarRoom({
 
   return (
     <FocusShell
+      headerClassName="min-h-[118px] bg-background py-3 sm:py-3"
+      composerClassName="bg-background shadow-[0_-12px_30px_-28px_rgba(15,23,42,0.55)]"
       header={
         <FocusHeader
-          eyebrow="Agent Team War Room"
           breadcrumb={
             <button
               type="button"
@@ -161,8 +217,7 @@ export function TeamWarRoom({
               {mission?.title ?? "Mission"} <span className="text-border">/</span> {wave ? `Wave ${wave.index}` : "Agent Teams"}
             </button>
           }
-          title={run.objective ?? "Agent Team attempt"}
-          description={`Attempt ${attemptNumber(attempts, run.id)}${run.previous_run_id ? " · retry attempt" : ""}`}
+          title={wave ? `${wave.title} · Agent Team` : "Agent Team attempt"}
           meta={
             <>
               <Badge tone={teamTone(status)}>{status}</Badge>
@@ -171,13 +226,29 @@ export function TeamWarRoom({
             </>
           }
           actions={
-            <AttemptActions
-              status={status}
-              actionsEnabled={actionsEnabled}
-              onStart={() => dispatch(onAction, startTeamRun(run.id))}
-              onCancel={() => dispatch(onAction, transitionTeamRun(run.id, "cancelled"))}
-              onComplete={() => dispatch(onAction, transitionTeamRun(run.id, "completed"))}
-            />
+            <>
+              <span className="hidden items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground sm:inline-flex">
+                <Users className="size-3.5" /> {members.length} members active
+              </span>
+              <AttemptActions
+                status={status}
+                actionsEnabled={actionsEnabled}
+                starting={starting}
+                onStart={() => {
+                  setStarting(true);
+                  const result = dispatch(onAction, startTeamRun(run.id));
+                  if (result instanceof Promise) {
+                    void result.then((ok) => {
+                      if (!ok) setStarting(false);
+                    });
+                  } else {
+                    setStarting(false);
+                  }
+                }}
+                onCancel={() => dispatch(onAction, transitionTeamRun(run.id, "cancelled"))}
+                onComplete={() => dispatch(onAction, transitionTeamRun(run.id, "completed"))}
+              />
+            </>
           }
         />
       }
@@ -221,7 +292,7 @@ export function TeamWarRoom({
         </section>
       }
       context={
-        <ContextRail label="Team context">
+        <ContextRail quiet label="Team context">
           <WaveModule wave={wave} onOpen={() => wave && onSelectionChange({ surface: "missions", missionId: wave.mission_id, waveId: wave.id, teamId: undefined })} />
           <GateReadinessModule wave={wave} runStatus={status} needsYouCount={needsYou.total} />
           <AttemptModule runId={run.id} status={status} attempt={attemptNumber(attempts, run.id)} previousRunId={run.previous_run_id} hostSurface={run.host_surface} createdAt={run.created_at} completedAt={run.completed_at} />
@@ -240,11 +311,18 @@ export function TeamWarRoom({
         </ContextRail>
       }
     >
-      <div className="mx-auto flex w-full max-w-[980px] flex-col gap-4 px-4 py-4 sm:px-5">
+      <div className="mx-auto flex w-full max-w-[1040px] flex-col px-4 py-3 sm:px-5">
         <div className="hidden items-center justify-end gap-1 text-[10px] font-medium text-muted-foreground sm:flex xl:hidden">
           Scroll members <ChevronRight className="size-3" />
         </div>
-        <section aria-label="Team members" className="grid grid-cols-1 gap-2 pb-1 sm:flex sm:overflow-x-auto xl:grid xl:grid-cols-4 xl:overflow-visible">
+        <section aria-label="Team members" className="relative border-b border-border/70 pb-3">
+          <div className="mb-2 flex items-center justify-between gap-3">
+            <div>
+              <h2 className="text-[12px] font-semibold text-foreground">Team presence</h2>
+            </div>
+            <span className="inline-flex items-center gap-1.5 text-[10px] font-medium text-status-running"><StatusDot tone="running" pulse /> Live</span>
+          </div>
+          <div className="grid grid-cols-1 divide-y divide-border/60 sm:flex sm:divide-x sm:divide-y-0 sm:overflow-x-auto xl:grid xl:grid-cols-4 xl:overflow-visible">
           {orderedMembers.map((member, index) => (
             <MemberControl
               key={member.id}
@@ -254,6 +332,7 @@ export function TeamWarRoom({
               assignment={selectMemberAssignmentCorrelations(messages, member.id)[0]?.assignment?.body}
               currentAction={latestActionTitle(actions, member.id)}
               livePreview={liveActivityByMember.get(member.id)?.preview}
+              terminal={["completed", "failed", "cancelled"].includes(status)}
               onSelect={() => selectMember(member)}
               onOpen={() => openMember(member)}
             />
@@ -268,25 +347,13 @@ export function TeamWarRoom({
             </button>
           )}
           {members.length === 0 && <EmptyState icon={Users} title="No member runs" description="This attempt did not create any runnable member instances." />}
+          </div>
         </section>
 
-        <NeedsYouBand
-          total={needsYou.total}
-          waiting={needsYou.waitingMembers}
-          blocked={needsYou.blockedMembers}
-          approvals={needsYou.approvals}
-          deliveries={needsYou.unacknowledgedDeliveries}
-          memberById={memberById}
-          onSelectMember={selectMember}
-          onShowMessages={() => setFilter("messages")}
-        />
-
-        <section className="min-h-[28rem] overflow-hidden rounded-lg border border-border bg-card">
-          <header className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-3.5 py-2.5 sm:px-4">
+        <section className="min-h-[28rem] overflow-hidden bg-background">
+          <header className="flex flex-wrap items-center justify-between gap-2 border-b border-border/70 py-3">
             <div className="flex items-center gap-2">
-              <MessageSquare className="size-3.5 text-muted-foreground" />
               <h2 className="text-[13px] font-semibold text-foreground">Team activity</h2>
-              <span className="text-[11px] text-muted-foreground">durable record</span>
             </div>
             <div className="flex flex-wrap gap-1" role="group" aria-label="Activity filters">
               {FILTERS.map((entry) => (
@@ -303,10 +370,24 @@ export function TeamWarRoom({
                   {entry.label}
                 </button>
               ))}
+              <button
+                type="button"
+                aria-label={showFullActivity ? "Show key activity" : "Show full durable record"}
+                aria-pressed={showFullActivity}
+                onClick={() => setShowFullActivity((value) => !value)}
+                className={cn(
+                  "grid size-7 place-items-center rounded-md border text-muted-foreground transition-colors hover:border-primary/25 hover:text-foreground",
+                  showFullActivity ? "border-primary/30 bg-primary/10 text-primary" : "border-border/70",
+                )}
+                title={showFullActivity ? "Show key activity" : `Show all ${filteredActivity.length} durable records`}
+              >
+                <ListFilter className="size-3.5" />
+              </button>
             </div>
           </header>
           <ActivityStream
             items={shownActivity}
+            variant="timeline"
             empty={
               <div className="space-y-1">
                 <p className="text-sm font-medium text-foreground">No {filter === "all" ? "team activity" : filter} yet</p>
@@ -323,15 +404,16 @@ export function TeamWarRoom({
   );
 }
 
-function AttemptActions({ status, actionsEnabled, onStart, onCancel, onComplete }: {
+function AttemptActions({ status, actionsEnabled, starting, onStart, onCancel, onComplete }: {
   status: string;
   actionsEnabled: boolean;
+  starting: boolean;
   onStart: () => void;
   onCancel: () => void;
   onComplete: () => void;
 }) {
   if (status === "planning") {
-    return <Button size="sm" onClick={onStart} disabled={!actionsEnabled} title={actionsEnabled ? undefined : "Connect a live source to enable actions"}><Play className="size-3.5" /> Start attempt</Button>;
+    return <Button size="sm" onClick={onStart} disabled={!actionsEnabled || starting} title={actionsEnabled ? undefined : "Connect a live source to enable actions"}><Play className="size-3.5" /> {starting ? "Starting…" : "Start attempt"}</Button>;
   }
   if (["planning", "waiting", "reviewing"].includes(status)) {
     return (
@@ -344,19 +426,26 @@ function AttemptActions({ status, actionsEnabled, onStart, onCancel, onComplete 
   return null;
 }
 
-function MemberControl({ member, selected, assignment, currentAction, livePreview, className, onSelect, onOpen }: {
+function MemberControl({ member, selected, assignment, currentAction, livePreview, terminal, className, onSelect, onOpen }: {
   member: MemberRun;
   selected: boolean;
   assignment?: string;
   currentAction?: string;
   livePreview?: string;
+  terminal: boolean;
   className?: string;
   onSelect: () => void;
   onOpen: () => void;
 }) {
   const tone = memberTone(member.status);
+  const blocked = member.status === "blocked";
   return (
-    <article className={cn("group relative w-full shrink-0 rounded-lg border bg-card p-3 sm:w-[15.5rem] xl:w-auto xl:min-w-0", selected ? "border-primary/45 ring-1 ring-primary/20" : "border-border", className)}>
+    <article className={cn(
+      "group relative w-full shrink-0 px-3 py-2 sm:w-[15.5rem] xl:w-auto xl:min-w-0",
+      selected && "bg-primary/[0.035]",
+      blocked && "bg-status-bad/[0.035]",
+      className,
+    )}>
       <div className="flex min-w-0 items-start gap-2">
         <button type="button" onClick={onSelect} className="flex min-w-0 flex-1 items-start gap-2 text-left">
           <Avatar name={member.name ?? member.id} tone={tone} />
@@ -365,52 +454,24 @@ function MemberControl({ member, selected, assignment, currentAction, livePrevie
             <span className="mt-0.5 block truncate text-[10px] text-muted-foreground">{member.role ?? "member"} · {member.provider ?? "provider"}{member.model ? ` · ${member.model}` : ""}<span className="sm:hidden"> · {member.status ?? "unknown"}</span></span>
           </span>
         </button>
-        <button type="button" onClick={onOpen} aria-label={`Open ${member.name ?? member.id}`} className="absolute right-1.5 top-1.5 rounded bg-card/90 p-1 text-muted-foreground opacity-0 shadow-sm transition-opacity hover:bg-accent hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100"><SquareArrowOutUpRight className="size-3.5" /></button>
+        <button type="button" onClick={onOpen} aria-label={`Open ${member.name ?? member.id}`} className="absolute right-1.5 top-1.5 rounded bg-background/90 p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100"><SquareArrowOutUpRight className="size-3.5" /></button>
       </div>
-      <div className="mt-2 hidden space-y-1 border-t border-border/60 pt-2 text-[10px] sm:block">
+      {blocked && (
+        <button
+          type="button"
+          onClick={onSelect}
+          aria-label={terminal ? "Unresolved history" : "QA approval required"}
+          className="mt-1.5 w-full rounded-md border border-primary/25 bg-primary/[0.045] px-2 py-1 text-[10px] font-semibold text-primary transition-colors hover:bg-primary/10"
+        >
+          {terminal ? "Inspect unresolved history" : "Review request"}
+        </button>
+      )}
+      <div className="mt-1.5 hidden space-y-1 border-t border-border/60 pt-1.5 text-[10px] sm:block">
         <p className="truncate text-foreground"><span className="text-muted-foreground">Now · </span>{currentAction ?? assignment ?? "No durable action yet"}</p>
         {livePreview && <p className="truncate text-status-info"><span className="font-semibold">Live · </span>{livePreview}</p>}
-        <p className="truncate text-muted-foreground">{pressureLabel(member.status)} · {relativeTime(member.last_event_at ?? member.finished_at ?? member.started_at)}</p>
+        {!blocked && <p className="truncate text-muted-foreground">{pressureLabel(member.status)} · {relativeTime(member.last_event_at ?? member.finished_at ?? member.started_at)}</p>}
       </div>
     </article>
-  );
-}
-
-function NeedsYouBand({ total, waiting, blocked, approvals, deliveries, memberById, onSelectMember, onShowMessages }: {
-  total: number;
-  waiting: MemberRun[];
-  blocked: MemberRun[];
-  approvals: TeamMessage[];
-  deliveries: Array<{ message: TeamMessage; delivery: { member_id?: string; status?: string } }>;
-  memberById: Map<string, MemberRun>;
-  onSelectMember: (member: MemberRun) => void;
-  onShowMessages: () => void;
-}) {
-  if (!total) return null;
-  const subject = blocked[0] ?? waiting[0];
-  const approval = approvals[0];
-  const delivery = deliveries[0];
-  const deliveryMember = delivery?.delivery.member_id
-    ? memberById.get(delivery.delivery.member_id)
-    : undefined;
-  const urgent = blocked.length > 0 || approval?.kind === "blocker";
-  return (
-    <section className={cn("flex flex-wrap items-center gap-3 rounded-lg border px-3.5 py-2.5", urgent ? "border-status-bad/35 bg-status-bad/8" : "border-status-warn/35 bg-status-warn/8")}>
-      <CircleAlert className={cn("size-4 shrink-0", urgent ? "text-status-bad" : "text-status-warn")} />
-      <div className="min-w-0 flex-1">
-        <p className="text-[12px] font-semibold text-foreground">Needs you · {total}</p>
-        <p className="truncate text-[11px] text-muted-foreground">
-          {subject
-            ? `${subject.name ?? subject.id} is ${subject.status}`
-            : approval?.body ??
-              (delivery
-                ? `${deliveryMember?.name ?? delivery.delivery.member_id ?? "A member"} has not acknowledged ${delivery.message.kind ?? "a message"}.`
-                : "A team signal needs review.")}
-        </p>
-      </div>
-      {subject && <Button size="sm" variant="secondary" onClick={() => onSelectMember(subject)}>Inspect member</Button>}
-      {approval && <Button size="sm" variant="secondary" onClick={onShowMessages}>View message</Button>}
-    </section>
   );
 }
 
@@ -436,6 +497,8 @@ function WaveModule({ wave, onOpen }: { wave?: Wave; onOpen: () => void }) {
 
 function GateReadinessModule({ wave, runStatus, needsYouCount }: { wave?: Wave; runStatus: string; needsYouCount: number }) {
   const gate = wave?.gate_status ?? "pending";
+  const criteria = (wave?.exit_criteria ?? "").split(";").map((item) => item.trim()).filter(Boolean);
+  const readiness = teamGateReadiness(wave, criteria.length);
   return (
     <ContextModule title="Gate readiness" kicker="Wave gate" tone={gateTone(gate)} icon={<ShieldCheck className="size-3.5" />}>
       <p className="text-[11px] leading-relaxed text-muted-foreground">
@@ -446,10 +509,22 @@ function GateReadinessModule({ wave, runStatus, needsYouCount }: { wave?: Wave; 
         <Fact label="Open signals" value={String(needsYouCount)} />
         {wave?.accepted_run_id && <Fact label="Accepted attempt" value={shortId(wave.accepted_run_id)} mono />}
       </div>
+      {criteria.length > 0 && readiness != null && <ReadinessMeter className="mt-3" value={readiness} total={criteria.length} />}
       {wave?.gate_note && <p className="mt-2 border-t border-border/60 pt-2 text-[11px] text-muted-foreground">{wave.gate_note}</p>}
       <p className="mt-2 text-[10px] font-medium text-status-warn">This page cannot accept the Wave.</p>
     </ContextModule>
   );
+}
+
+function teamGateReadiness(wave: Wave | undefined, total: number): number | undefined {
+  if (!wave || !total) return undefined;
+  if (wave.gate_status === "accepted") return total;
+  const note = wave.gate_note?.toLowerCase() ?? "";
+  const numeric = note.match(/\b(\d+)\s+(?:of\s+\d+\s+)?criteria?\b/);
+  if (numeric) return Math.min(total, Number(numeric[1]));
+  const words: Record<string, number> = { zero: 0, one: 1, two: 2, three: 3, four: 4, five: 5 };
+  const spelled = note.match(/\b(zero|one|two|three|four|five)\s+(?:of\s+\w+\s+)?criteria?\b/);
+  return spelled ? Math.min(total, words[spelled[1]]) : undefined;
 }
 
 function AttemptModule({ runId, status, attempt, previousRunId, hostSurface, createdAt, completedAt }: { runId: string; status: string; attempt: number; previousRunId?: string | null; hostSurface?: string | null; createdAt?: string; completedAt?: string | null }) {
@@ -487,23 +562,36 @@ function toActivityItems(items: StableTeamActivity[], members: Map<string, Membe
       return {
         id: item.id,
         kind: message.kind === "blocker" ? "blocker" : message.kind === "review_result" ? "decision" : evidenceRefs.length ? "evidence" : "message",
+        glyph: teamMessageGlyph(message.kind, evidenceRefs.length > 0),
         title: <span><Badge tone={messageTone(message.kind)}>{message.kind ?? "message"}</Badge><span className="ml-2">{actor} → {recipients}</span></span>,
         body: message.body,
         actor: message.correlation_id ? `correlation ${shortId(message.correlation_id)}` : undefined,
-        timestamp: relativeTime(message.created_at),
+        timestamp: formatTime(message.created_at),
         evidenceRefs,
         tone: messageTone(message.kind),
+        prominence: message.kind === "assignment" ? "primary" : ["blocker", "review_request", "review_result"].includes(message.kind ?? "") ? "pressure" : "detail",
       };
     }
     if (item.kind === "action") {
       const action = item.action;
       const evidenceRefs = action.evidence_refs ?? [];
-      return { id: item.id, kind: evidenceRefs.length ? "evidence" : "action", title: action.title ?? action.action_type ?? "Member action", body: action.summary, actor, timestamp: relativeTime(action.started_at ?? action.completed_at), evidenceRefs, tone: action.status === "failed" ? "bad" : action.status === "succeeded" ? "good" : "running" };
+      return { id: item.id, kind: evidenceRefs.length ? "evidence" : "action", glyph: evidenceRefs.length ? "artifact" : "runtime", title: action.title ?? action.action_type ?? "Member action", body: action.summary, actor, timestamp: formatTime(action.started_at ?? action.completed_at), evidenceRefs, tone: action.status === "failed" ? "bad" : action.status === "succeeded" ? "good" : "running", prominence: "detail" };
     }
     const event = item.event;
     const decision = event.entity_type === "wave" || event.operation === "completed" || /gate|decision/i.test(event.summary ?? "");
-    return { id: item.id, kind: decision ? "decision" : "action", title: event.summary ?? `${event.entity_type ?? "Team"} ${event.operation ?? "updated"}`, actor, timestamp: relativeTime(event.occurred_at), tone: decision ? "decision" : "info" };
+    return { id: item.id, kind: decision ? "decision" : "action", glyph: decision ? "decision" : "runtime", title: event.summary ?? `${event.entity_type ?? "Team"} ${event.operation ?? "updated"}`, actor, timestamp: formatTime(event.occurred_at), tone: decision ? "decision" : "info", prominence: event.entity_type === "team_run" && event.operation === "created" ? "primary" : "detail" };
   });
+}
+
+function teamMessageGlyph(kind?: string | null, hasEvidence = false): WorkbenchActivityItem["glyph"] {
+  if (hasEvidence) return "artifact";
+  switch (kind) {
+    case "assignment": return "assignment";
+    case "handoff": return "handoff";
+    case "review_request": return "review";
+    case "review_result": return "decision";
+    default: return "message";
+  }
 }
 
 function matchesFilter(item: WorkbenchActivityItem, filter: StreamFilter): boolean {
@@ -519,12 +607,13 @@ function latestActionTitle(actions: Array<{ member_run_id?: string; title?: stri
   return actions.filter((action) => action.member_run_id === memberId).sort((left, right) => timestamp(right.started_at ?? right.completed_at) - timestamp(left.started_at ?? left.completed_at))[0]?.title ?? actions.filter((action) => action.member_run_id === memberId).sort((left, right) => timestamp(right.started_at ?? right.completed_at) - timestamp(left.started_at ?? left.completed_at))[0]?.action_type;
 }
 
-function dispatch(onAction: TeamWarRoomProps["onAction"], action: { path: string; body: unknown }): void { onAction?.(action.path, action.body); }
+function dispatch(onAction: TeamWarRoomProps["onAction"], action: { path: string; body: unknown }): void | Promise<boolean> | undefined { return onAction?.(action.path, action.body); }
 function attemptNumber(attempts: Array<{ id: string }>, id: string): number { return Math.max(1, attempts.findIndex((attempt) => attempt.id === id) + 1); }
 function memberLabel(members: Map<string, MemberRun>, id: string): string { return id === "host" ? "Host" : members.get(id)?.name ?? id; }
 function shortId(value: string): string { return value.length > 18 ? `${value.slice(0, 8)}…${value.slice(-5)}` : value; }
 function timestamp(value?: string | null): number { if (!value) return 0; return value.startsWith("unix-ms:") ? Number(value.slice(8)) || 0 : Date.parse(value) || 0; }
 function formatDate(value?: string | null): string { if (!value) return "Not recorded"; const ms = timestamp(value); return ms ? new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }).format(ms) : value; }
+function formatTime(value?: string | null): string { if (!value) return "—"; const ms = timestamp(value); return ms ? new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(ms) : value; }
 function relativeTime(value?: string | null): string { const ms = timestamp(value); if (!ms) return "no update"; const delta = Math.max(0, Date.now() - ms); if (delta < 60_000) return "just now"; if (delta < 3_600_000) return `${Math.floor(delta / 60_000)}m ago`; if (delta < 86_400_000) return `${Math.floor(delta / 3_600_000)}h ago`; return `${Math.floor(delta / 86_400_000)}d ago`; }
 function pressureLabel(status?: string | null): string { if (["blocked", "failed"].includes(status ?? "")) return "blocked"; if (["waiting", "reviewing"].includes(status ?? "")) return "waiting"; if (status === "running") return "active"; return status ?? "idle"; }
 function teamTone(status?: string | null): StatusTone { if (status === "running") return "running"; if (status === "completed") return "good"; if (["failed", "cancelled"].includes(status ?? "")) return "bad"; if (["waiting", "reviewing"].includes(status ?? "")) return "warn"; if (status === "planning") return "info"; return "idle"; }

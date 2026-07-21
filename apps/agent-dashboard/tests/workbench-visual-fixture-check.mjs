@@ -29,10 +29,19 @@ async function rows(name) {
 
 async function main() {
   const manifest = JSON.parse(await readFile(join(fixtureRoot, "fixture-manifest.json"), "utf8"));
-  const [teamRunsSource, actionsSource, typesSource] = await Promise.all([
-    readFile(join(dashboardRoot, "src/surfaces/TeamRuns.tsx"), "utf8"),
+  const repoRoot = resolve(dashboardRoot, "../..");
+  const [agentTeamsHomeSource, actionsSource, typesSource, missionSource, warRoomSource, avatarSource, captureSource, executionSource, activitySource, contextSource, cssSource] = await Promise.all([
+    readFile(join(dashboardRoot, "src/surfaces/AgentTeamsHome.tsx"), "utf8"),
     readFile(join(dashboardRoot, "src/api/actions.ts"), "utf8"),
     readFile(join(dashboardRoot, "src/types.ts"), "utf8"),
+    readFile(join(dashboardRoot, "src/surfaces/Missions.tsx"), "utf8"),
+    readFile(join(dashboardRoot, "src/surfaces/TeamWarRoom.tsx"), "utf8"),
+    readFile(join(dashboardRoot, "src/components/workbench/Avatar.tsx"), "utf8"),
+    readFile(join(repoRoot, "scripts/capture-workbench-layout-v2.mjs"), "utf8"),
+    readFile(join(dashboardRoot, "src/components/workbench/execution/ExecutionPrimitives.tsx"), "utf8"),
+    readFile(join(dashboardRoot, "src/components/workbench/activity/ActivityStream.tsx"), "utf8"),
+    readFile(join(dashboardRoot, "src/components/workbench/context/ContextRail.tsx"), "utf8"),
+    readFile(join(dashboardRoot, "src/index.css"), "utf8"),
   ]);
   const [missions, waves, runs, members, messages, actions, events] = await Promise.all([
     rows("missions.jsonl"), rows("waves.jsonl"), rows("team_runs.jsonl"),
@@ -61,7 +70,65 @@ async function main() {
   const duplicateWaveField = ["wave", "index"].join("_");
   check(runs.every((item) => !Object.hasOwn(item, duplicateWaveField)), "AgentTeamRun fixture does not duplicate the Wave index");
   check(!actionsSource.includes(duplicateWaveField) && !typesSource.includes(duplicateWaveField), "AgentTeamRun API and type contracts do not carry a duplicate Wave index");
-  check(teamRunsSource.includes("resolveRunWave(snapshot.waves ?? [], run)") && teamRunsSource.includes("wave.index") && !teamRunsSource.includes(`run.${duplicateWaveField}`), "Team Run labels join Wave index and title through wave_id");
+  check(agentTeamsHomeSource.includes("waves.get(run.wave_id)") && agentTeamsHomeSource.includes("wave.index") && !agentTeamsHomeSource.includes(`run.${duplicateWaveField}`), "Agent Team home joins native attempts to Wave labels through wave_id");
+  check(
+    captureSource.includes("HARNESS_CAPTURE_API_PROXY: apiBase")
+      && captureSource.includes("api=${encodeURIComponent(webBase)}")
+      && captureSource.includes('manifest.routes["agent-teams-home"]'),
+    "Browser capture keeps API and SSE reads on the Vite same-origin proxy and covers the native Agent Team home",
+  );
+  check(
+    missionSource.includes("flex flex-col items-stretch")
+      && missionSource.includes("flex w-full flex-wrap items-center"),
+    "Mission header gives its title and actions separate mobile layout rows",
+  );
+  check(
+    avatarSource.includes("portraitFor") && avatarSource.includes("rounded-full"),
+    "Execution identities reuse the shared portrait system with a text-backed fallback",
+  );
+  check(
+    warRoomSource.includes('terminal ? "Unresolved history" : "QA approval required"'),
+    "Terminal Team attempts distinguish unresolved history from active operator pressure",
+  );
+  check(
+    missionSource.includes("WaveJourneyCompact")
+      && missionSource.includes("LiveTrace")
+      && missionSource.includes("DecisionAnchor"),
+    "Mission V3 renders one continuous Wave journey with live and decision anchors",
+  );
+  check(
+    warRoomSource.includes('variant="timeline"')
+      && warRoomSource.includes("Team presence")
+      && warRoomSource.includes("Review request")
+      && warRoomSource.includes("showFullActivity")
+      && warRoomSource.includes('prominence === "primary"')
+      && activitySource.includes("activity-timeline-row")
+      && cssSource.includes(".activity-timeline::before"),
+    "Agent Team V3 exposes a presence rail, timestamped semantic timeline, key/full projection, and anchored review action",
+  );
+  check(
+    executionSource.includes('role="progressbar"')
+      && executionSource.includes("motion-reduce")
+      && cssSource.includes("@media (prefers-reduced-motion: reduce)"),
+    "Execution primitives expose semantic readiness and reduced-motion-safe transitions",
+  );
+  check(
+    activitySource.includes('variant?: "rows" | "spine"')
+      && contextSource.includes("quiet?: boolean"),
+    "Shared activity and context primitives add V3 treatments without changing their defaults",
+  );
+  check(
+    activitySource.includes("SendHorizontal")
+      && activitySource.includes("ArrowRightLeft")
+      && activitySource.includes("activityIconSurface")
+      && warRoomSource.includes("teamMessageGlyph"),
+    "Team activity uses distinct assignment, handoff, runtime, evidence, review, and decision glyphs",
+  );
+  check(
+    contextSource.includes("contextIconSurface")
+      && contextSource.includes("rounded-full border"),
+    "Context modules render semantic icon surfaces instead of uniform low-contrast glyphs",
+  );
 
   console.log(`\n   workbench visual fixture checks: ${pass} pass, ${fail} fail`);
   process.exit(fail === 0 ? 0 : 1);

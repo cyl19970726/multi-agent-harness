@@ -50,14 +50,16 @@ open_questions:
 
 The current product direction is Mission -> ordered Wave -> executor, owned by
 [the architecture map](../../architecture-map.md) and
-[ADR 0026](../../decisions/0026-mission-wave-architecture.md). The next primary
-page is the Agent Team war room in Mission/Wave context. Historical
+[ADR 0026](../../decisions/0026-mission-wave-architecture.md). The implemented
+primary pages are the Mission/Wave Canvas and Agent Team War Room. Historical
 Vision/Goal/Task Work-board and Goal Workbench specs are archived; they do not
 define the new information architecture.
 
 | Page | Status | Layout |
 | --- | --- | --- |
-| [Agent Team page](team-run-console.md) | planned current product page | page-local Mission/Wave contract |
+| [Mission/Wave Canvas](mission-wave-canvas.md) | implemented | ordered execution and gate contract |
+| [Agent Team War Room](team-run-war-room.md) | implemented | one linked AgentTeamRun attempt |
+| [MemberRun Focus](member-run-focus.md) | planned | run-scoped member detail |
 | [Team workspace](team-workspace.md) | future Standing Agents | page-local concept |
 | [AgentMember workbench](agent-member-workbench.md) | compatibility/future Standing Agent | page-local contract |
 | [Evidence/Review/Decision](evidence-review-decision.md) | planned | page-local contract |

@@ -1,7 +1,7 @@
 # Agent Team War Room Page Spec
 
 ```text
-status: planned
+status: implemented
 owner_role: product-design
 canonical_for: one AgentTeamRun attempt that executes an agent_team Wave
 route_or_surface: Missions -> Wave -> Agent Team attempt
@@ -46,7 +46,7 @@ name an accepted completed attempt.
 
 The visual reference is the approved
 `team-war-room/running-needs-you--desktop` expected design in
-[`../../design/workbench-layout-v2/`](../../design/workbench-layout-v2/README.md).
+[`../../design/execution-workbench-v3/`](../../design/execution-workbench-v3/README.md).
 
 ### Desktop — `1440x1000`
 
@@ -61,9 +61,8 @@ and 340px Context Rail.
 |                      | compact Member controls              | Attempt           |
 |                      | role/model/status/action/pressure    | Selected member  |
 |                      +--------------------------------------+ Resources        |
-|                      | Needs-you band (only if actionable)  |                  |
-|                      +--------------------------------------+                  |
 |                      | unified Team activity stream          |                  |
+|                      | pressure + QA attached to records     |                  |
 |                      | filters: All/Messages/Actions/        |                  |
 |                      | Decisions/Evidence                    |                  |
 |                      | sticky Message team or @member…       |                  |
@@ -77,16 +76,21 @@ module; `Open member` navigates to the MemberRun Focus page rather than opening
 a blocking drawer.
 
 The center uses one chronological team stream. Filters change visibility but
-not the data model. Messages show sender/recipient/delivery/correlation;
+not the data model. The default `All` projection keeps the attempt creation,
+assignment ownership, and latest pressure-bearing activity visible; `Full
+record` expands to the complete durable timeline. Messages show
+sender/recipient/delivery/correlation;
 actions and evidence retain their member attribution; decision rows distinguish
-attempt outcome from parent Wave-gate decision.
+attempt outcome from parent Wave-gate decision. Operator actions such as ACK,
+review, or start-pending attach to the relevant activity record instead of
+forming a separate alert band.
 
 ### Tablet — `900x1180`
 
 - Collapse the product sidebar; retain mission/wave/attempt breadcrumb.
 - Member controls become a horizontally scrollable but keyboard-accessible
   strip, or a two-column grid with no hidden critical status.
-- Show `Needs You` before the stream.
+- Encode actionable pressure in member controls and its related activity row.
 - Context Rail becomes an inline section after the stream or a right sheet;
   Wave and Gate remain first.
 - Composer remains fixed to the safe area.
@@ -94,9 +98,11 @@ attempt outcome from parent Wave-gate decision.
 ### Mobile — `390x844`
 
 - Header has back-to-Wave, attempt state, and context-sheet affordance.
-- Member controls form a vertical priority list: blocked/waiting first, then
-  running, then completed.
-- The `Needs You` band is immediately below the controls.
+- Show the highest-pressure member first with an explicit `View all members`
+  disclosure; the expanded list orders blocked/waiting before running and
+  completed members.
+- Keep the actionable activity row visible without duplicating it in a
+  separate `Needs You` band.
 - One stream with filter chips scrolls beneath it; composer supports Team or
   an explicitly chosen member, never an ambiguous recipient.
 - Context appears in a bottom sheet ordered Wave, Gate, Attempt, Selected
@@ -139,8 +145,9 @@ is eligible. It is never an implicit side effect of a TeamRun button.
   label them as working before an explicit action/state supports it.
 - **No Team activity:** retain member controls and explain that durable
   messages/actions will arrive here; do not add invented placeholders.
-- **One or more blocked:** show a precise Needs You card only when an action or
-  decision is known; otherwise say the blocker is being reported.
+- **One or more blocked:** encode pressure on the member and the related
+  activity row only when an action or decision is known; otherwise say the
+  blocker is being reported.
 - **Provider/session failure:** attribute it to the affected member and retain
   attempt history; do not mark the whole Wave accepted/failed automatically.
 - **Completed/failed/stopped attempt:** read-only stream, outcome, artifacts,
@@ -154,10 +161,12 @@ For `team-war-room--running-needs-you--desktop`:
 
 - captures use the registered native fixture, route, and `1440x1000` viewport;
 - first viewport includes the shared sidebar, attempt header, four compact
-  member controls, one clear Needs You signal, unified activity stream, sticky
+  member controls, one clear pressure signal, unified activity stream, sticky
   composer, and Wave/Gate/Attempt context modules;
 - filters read `All`, `Messages`, `Actions`, `Decisions`, and `Evidence`; they
   are stream filters, not replacing primary page tabs;
+- default `All` preserves creation, assignment ownership, and current pressure,
+  while `Full record` exposes all durable records without inventing activity;
 - selected member context provides `Message` and `Open member`, and the latter
   resolves to a standalone MemberRun page;
 - Team completion and Wave gate state are visibly different in text and color;

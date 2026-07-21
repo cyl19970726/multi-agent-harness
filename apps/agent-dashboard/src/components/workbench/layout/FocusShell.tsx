@@ -17,6 +17,8 @@ export function FocusShell({
   context,
   className,
   mainClassName,
+  headerClassName,
+  composerClassName,
 }: {
   header?: ReactNode;
   children: ReactNode;
@@ -24,6 +26,8 @@ export function FocusShell({
   context?: ReactNode;
   className?: string;
   mainClassName?: string;
+  headerClassName?: string;
+  composerClassName?: string;
 }) {
   return (
     <div
@@ -33,7 +37,7 @@ export function FocusShell({
       )}
     >
       <section className="flex min-h-0 min-w-0 flex-col">
-        {header && <div className="border-b border-border bg-card px-4 py-3 sm:px-5">{header}</div>}
+        {header && <div className={cn("border-b border-border bg-card px-4 py-3 sm:px-5", headerClassName)}>{header}</div>}
         <main className={cn("min-h-0 flex-1 overflow-y-auto", mainClassName)}>{children}</main>
         {context && (
           <details className="group shrink-0 border-t border-border bg-card xl:hidden">
@@ -46,7 +50,7 @@ export function FocusShell({
           </details>
         )}
         {composer && (
-          <footer className="border-t border-border bg-card px-4 py-3 sm:px-5">{composer}</footer>
+          <footer className={cn("border-t border-border bg-card px-4 py-3 sm:px-5", composerClassName)}>{composer}</footer>
         )}
       </section>
       {context && (
@@ -85,7 +89,7 @@ export function FocusHeader({
           </p>
         )}
         <h1 className="min-w-0 text-lg font-semibold tracking-tight text-foreground sm:truncate">{title}</h1>
-        {description && <p className="max-w-3xl text-[13px] text-muted-foreground">{description}</p>}
+        {description && <p className="line-clamp-2 max-w-3xl text-[13px] leading-relaxed text-muted-foreground">{description}</p>}
         {meta && <div className="flex flex-wrap items-center gap-2 pt-1">{meta}</div>}
       </div>
       {actions && <div className="flex shrink-0 flex-wrap items-center gap-2">{actions}</div>}
