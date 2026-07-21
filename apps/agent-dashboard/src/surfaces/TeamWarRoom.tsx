@@ -19,7 +19,7 @@ import { Badge } from "@/components/ui/badge";
 import { Avatar } from "@/components/workbench/Avatar";
 import { ActivityStream, type WorkbenchActivityItem } from "@/components/workbench/activity/ActivityStream";
 import { ContextModule, ContextRail } from "@/components/workbench/context/ContextRail";
-import { DecisionAnchor, LiveTrace, ReadinessMeter } from "@/components/workbench/execution/ExecutionPrimitives";
+import { ReadinessMeter } from "@/components/workbench/execution/ExecutionPrimitives";
 import { FocusHeader, FocusShell } from "@/components/workbench/layout/FocusShell";
 import { EmptyState, StatusDot, type StatusTone } from "@/components/workbench/atoms";
 import { Select, TextArea } from "@/components/workbench/OperatorForms";
@@ -100,6 +100,23 @@ export function TeamWarRoom({
     needsYou.waitingMembers[0] ??
     orderedMembers[0];
   const activityItems = toActivityItems(context.activity, memberById);
+  const pressureActivityIndex = selectedMember?.status === "blocked"
+    ? activityItems.map((item) => item.kind).lastIndexOf("decision")
+    : -1;
+  if (pressureActivityIndex >= 0) {
+    activityItems[pressureActivityIndex] = {
+      ...activityItems[pressureActivityIndex],
+      action: (
+        <button
+          type="button"
+          onClick={() => messageMember(selectedMember)}
+          className="rounded-md border border-primary/25 bg-primary/[0.055] px-2.5 py-1.5 text-[10px] font-semibold text-primary transition-colors hover:bg-primary/10"
+        >
+          Review request
+        </button>
+      ),
+    };
+  }
   const shownActivity = activityItems.filter((item) => matchesFilter(item, filter));
   const selectedAssignment = selectedMember
     ? selectMemberAssignmentCorrelations(messages, selectedMember.id)[0]?.assignment
@@ -144,11 +161,10 @@ export function TeamWarRoom({
 
   return (
     <FocusShell
-      headerClassName="bg-background py-4 sm:py-5"
+      headerClassName="min-h-[118px] bg-background py-3 sm:py-3"
       composerClassName="bg-background shadow-[0_-12px_30px_-28px_rgba(15,23,42,0.55)]"
       header={
         <FocusHeader
-          eyebrow={<span className="inline-flex items-center gap-1.5"><Users className="size-3.5 text-status-running" /> 4 members active</span>}
           breadcrumb={
             <button
               type="button"
@@ -164,7 +180,6 @@ export function TeamWarRoom({
             </button>
           }
           title={wave ? `${wave.title} · Agent Team` : "Agent Team attempt"}
-          description={run.objective ?? "A bounded Agent Team execution attempt."}
           meta={
             <>
               <Badge tone={teamTone(status)}>{status}</Badge>
@@ -173,13 +188,18 @@ export function TeamWarRoom({
             </>
           }
           actions={
-            <AttemptActions
-              status={status}
-              actionsEnabled={actionsEnabled}
-              onStart={() => dispatch(onAction, startTeamRun(run.id))}
-              onCancel={() => dispatch(onAction, transitionTeamRun(run.id, "cancelled"))}
-              onComplete={() => dispatch(onAction, transitionTeamRun(run.id, "completed"))}
-            />
+            <>
+              <span className="hidden items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground sm:inline-flex">
+                <Users className="size-3.5" /> {members.length} members active
+              </span>
+              <AttemptActions
+                status={status}
+                actionsEnabled={actionsEnabled}
+                onStart={() => dispatch(onAction, startTeamRun(run.id))}
+                onCancel={() => dispatch(onAction, transitionTeamRun(run.id, "cancelled"))}
+                onComplete={() => dispatch(onAction, transitionTeamRun(run.id, "completed"))}
+              />
+            </>
           }
         />
       }
@@ -242,19 +262,17 @@ export function TeamWarRoom({
         </ContextRail>
       }
     >
-      <div className="mx-auto flex w-full max-w-[1040px] flex-col px-4 py-4 sm:px-5">
+      <div className="mx-auto flex w-full max-w-[1040px] flex-col px-4 py-3 sm:px-5">
         <div className="hidden items-center justify-end gap-1 text-[10px] font-medium text-muted-foreground sm:flex xl:hidden">
           Scroll members <ChevronRight className="size-3" />
         </div>
-        <section aria-label="Team members" className="relative border-b border-border/70 pb-4">
-          <div className="mb-3 flex items-center justify-between gap-3">
+        <section aria-label="Team members" className="relative border-b border-border/70 pb-3">
+          <div className="mb-2 flex items-center justify-between gap-3">
             <div>
-              <h2 className="flex items-center gap-2 text-[12px] font-semibold text-foreground"><span className="grid size-7 place-items-center rounded-full border border-status-running/20 bg-status-running/8 text-status-running"><Users className="size-3.5" /></span> Team presence</h2>
-              <p className="text-[10px] text-muted-foreground">{members.length} members active in this attempt</p>
+              <h2 className="text-[12px] font-semibold text-foreground">Team presence</h2>
             </div>
             <span className="inline-flex items-center gap-1.5 text-[10px] font-medium text-status-running"><StatusDot tone="running" pulse /> Live</span>
           </div>
-          {status === "running" && <LiveTrace className="mb-3" />}
           <div className="grid grid-cols-1 divide-y divide-border/60 sm:flex sm:divide-x sm:divide-y-0 sm:overflow-x-auto xl:grid xl:grid-cols-4 xl:overflow-visible">
           {orderedMembers.map((member, index) => (
             <MemberControl
@@ -286,9 +304,7 @@ export function TeamWarRoom({
         <section className="min-h-[28rem] overflow-hidden bg-background">
           <header className="flex flex-wrap items-center justify-between gap-2 border-b border-border/70 py-3">
             <div className="flex items-center gap-2">
-              <span className="grid size-7 place-items-center rounded-full border border-status-running/20 bg-status-running/8 text-status-running"><MessageSquare className="size-3.5" /></span>
               <h2 className="text-[13px] font-semibold text-foreground">Team activity</h2>
-              <span className="text-[11px] text-muted-foreground">durable record</span>
             </div>
             <div className="flex flex-wrap gap-1" role="group" aria-label="Activity filters">
               {FILTERS.map((entry) => (
@@ -362,7 +378,7 @@ function MemberControl({ member, selected, assignment, currentAction, livePrevie
   const blocked = member.status === "blocked";
   return (
     <article className={cn(
-      "group relative w-full shrink-0 px-3 py-2.5 sm:w-[15.5rem] xl:w-auto xl:min-w-0",
+      "group relative w-full shrink-0 px-3 py-2 sm:w-[15.5rem] xl:w-auto xl:min-w-0",
       selected && "bg-primary/[0.035]",
       blocked && "bg-status-bad/[0.035]",
       className,
@@ -377,21 +393,21 @@ function MemberControl({ member, selected, assignment, currentAction, livePrevie
         </button>
         <button type="button" onClick={onOpen} aria-label={`Open ${member.name ?? member.id}`} className="absolute right-1.5 top-1.5 rounded bg-background/90 p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100"><SquareArrowOutUpRight className="size-3.5" /></button>
       </div>
-      <div className="mt-2 hidden space-y-1 border-t border-border/60 pt-2 text-[10px] sm:block">
+      {blocked && (
+        <button
+          type="button"
+          onClick={onSelect}
+          aria-label={terminal ? "Unresolved history" : "QA approval required"}
+          className="mt-1.5 w-full rounded-md border border-primary/25 bg-primary/[0.045] px-2 py-1 text-[10px] font-semibold text-primary transition-colors hover:bg-primary/10"
+        >
+          {terminal ? "Inspect unresolved history" : "Review request"}
+        </button>
+      )}
+      <div className="mt-1.5 hidden space-y-1 border-t border-border/60 pt-1.5 text-[10px] sm:block">
         <p className="truncate text-foreground"><span className="text-muted-foreground">Now · </span>{currentAction ?? assignment ?? "No durable action yet"}</p>
         {livePreview && <p className="truncate text-status-info"><span className="font-semibold">Live · </span>{livePreview}</p>}
-        <p className="truncate text-muted-foreground">{pressureLabel(member.status)} · {relativeTime(member.last_event_at ?? member.finished_at ?? member.started_at)}</p>
+        {!blocked && <p className="truncate text-muted-foreground">{pressureLabel(member.status)} · {relativeTime(member.last_event_at ?? member.finished_at ?? member.started_at)}</p>}
       </div>
-      {blocked && (
-        <DecisionAnchor
-          compact
-          className="mt-2"
-          title={terminal ? "Unresolved history" : "QA approval required"}
-          detail={terminal ? "This attempt is no longer active" : "Review test results"}
-          actionLabel={terminal ? "Inspect history" : "Review request"}
-          onAction={onSelect}
-        />
-      )}
     </article>
   );
 }

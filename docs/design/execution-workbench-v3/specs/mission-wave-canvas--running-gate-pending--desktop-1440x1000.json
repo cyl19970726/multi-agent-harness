@@ -1,0 +1,77 @@
+{
+  "version": 1,
+  "status": "approved_and_implemented",
+  "page": "mission-wave-canvas",
+  "expected": "../expected/mission-wave-canvas/running-gate-pending--desktop-fidelity-v2-1440x1000.png",
+  "viewport": { "width": 1440, "height": 1000, "device_scale_factor": 1 },
+  "geometry": {
+    "regions": [
+      { "name": "primary-navigation", "x": 0, "y": 0, "width": 230, "height": 1000, "behavior": "fixed" },
+      { "name": "topbar", "x": 230, "y": 0, "width": 1210, "height": 58, "behavior": "sticky" },
+      { "name": "mission-canvas", "x": 250, "y": 78, "width": 830, "height": 890, "behavior": "primary-scroll-owner" },
+      { "name": "mission-context", "x": 1105, "y": 58, "width": 335, "height": 942, "behavior": "independent-context-rail" }
+    ],
+    "grid": { "shell_columns": [230, 875, 335], "canvas_content_width": 830, "context_inner_width": 287 },
+    "gutters": { "canvas_left": 20, "canvas_right": 25, "context_horizontal": 24 },
+    "max_content_width": 1440,
+    "scroll_owner": "mission-canvas",
+    "sticky_regions": ["primary-navigation", "topbar", "mission-context-footer"]
+  },
+  "vertical_landmarks": [
+    { "name": "mission-heading", "y": 108 },
+    { "name": "wave-journey-start", "y": 247 },
+    { "name": "current-wave-start", "y": 367 },
+    { "name": "member-attempt", "y": 480 },
+    { "name": "attached-pressure-action", "y": 603 },
+    { "name": "evidence-and-gate", "y": 686 },
+    { "name": "planned-wave", "y": 858 }
+  ],
+  "typography": [
+    { "role": "page-title", "size": 28, "weight": 650, "line_height": 34 },
+    { "role": "wave-title", "size": 16, "weight": 620, "line_height": 22 },
+    { "role": "section-title", "size": 14, "weight": 620, "line_height": 20 },
+    { "role": "body", "size": 12, "weight": 400, "line_height": 18 },
+    { "role": "meta", "size": 10, "weight": 500, "line_height": 15, "letter_spacing": 0.02 },
+    { "role": "eyebrow", "size": 9, "weight": 650, "line_height": 13, "letter_spacing": 0.09 }
+  ],
+  "spacing_scale": [4, 8, 12, 16, 20, 24, 32],
+  "surfaces": [
+    { "name": "canvas", "fill": "#fffefd", "border": "none", "radius": 0, "shadow": "none" },
+    { "name": "context-group", "fill": "#ffffff", "border": "#e8e6e3", "radius": 8, "shadow": "none" },
+    { "name": "pressure-strip", "fill": "#fff7f7", "border": "#ffb7bf", "radius": 8, "shadow": "none" },
+    { "name": "planning-note", "fill": "#faf7ff", "border": "left #8b5cf6 3px", "radius": 2, "shadow": "none" }
+  ],
+  "colors": [
+    { "token": "accent", "value": "#f43f5e", "use": "primary action and pressure" },
+    { "token": "live", "value": "#1688f8", "use": "running Wave and live execution" },
+    { "token": "accepted", "value": "#16a05d", "use": "accepted Wave and passed evidence" },
+    { "token": "pending", "value": "#e99a08", "use": "gate pending" },
+    { "token": "planning", "value": "#7c4de8", "use": "re-plan note" },
+    { "token": "foreground", "value": "#17191e", "use": "headings" },
+    { "token": "muted", "value": "#6f7279", "use": "body and metadata" },
+    { "token": "hairline", "value": "#e8e6e3", "use": "structural separators" }
+  ],
+  "icons_and_assets": [
+    { "asset": "company-mark", "strategy": "reuse project SVG/code primitive", "size": "34x34" },
+    { "asset": "operational-icons", "strategy": "Lucide-compatible code-native SVG", "size": "14-18", "stroke": 1.7 },
+    { "asset": "agent-portraits", "strategy": "reuse approved shared portrait sprites", "size": "34x34 and 38x38" },
+    { "asset": "status-dots", "strategy": "deterministic CSS primitive", "size": "7x7" },
+    { "asset": "wave-journey-line", "strategy": "deterministic CSS gradient/line", "size": "2px wide" }
+  ],
+  "component_strategy": {
+    "reuse": ["AppNavigation", "TopWorkbenchBar", "StatusPill", "AgentPortrait", "SemanticIcon", "ConnectionFooter"],
+    "page_specific": ["MissionJourney", "WaveJourneyNode", "CurrentWaveAttempt", "AttachedGatePressure", "MissionContextRail"],
+    "replace_or_split": ["split generic Mission cards into continuous Wave sections", "split generic context cards into rail groups", "keep evidence readiness separate from Wave lifecycle status"]
+  },
+  "responsive_transformations": [
+    "Tablet removes fixed navigation and exposes it from the top bar; context becomes a drawer.",
+    "Mobile converts the journey into one vertical column and presents Mission/Wave context in a bottom sheet.",
+    "The Review gate pressure remains adjacent to the blocked attempt and is never moved to a global toolbar."
+  ],
+  "design_risks": [
+    "Generated member copy is abbreviated; implementation must preserve canonical role, provider, and assignment text without widening the presence row.",
+    "The design shows aggregate 2/3 readiness; it must not invent individual criterion evidence absent from the store.",
+    "The right rail and canvas need independent overflow rules so the connection footer does not cover content."
+  ],
+  "unresolved_decisions": []
+}

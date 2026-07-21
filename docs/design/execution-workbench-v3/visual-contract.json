@@ -3,8 +3,13 @@
   "workstream": "execution-workbench-v3",
   "artifact_policy": {
     "expected": "durable under docs/design/execution-workbench-v3/expected",
-    "selected_comparisons": "durable under docs/design/execution-workbench-v3/comparisons",
+    "selected_comparisons": "durable under docs/design/execution-workbench-v3/comparisons and overlays",
     "raw_browser_runs": ".visual-evidence/execution-workbench-v3"
+  },
+  "fidelity_policy": {
+    "required_for_p0": true,
+    "expected_viewport_must_match": true,
+    "minimum_implementation_iterations": 2
   },
   "cases": [
     {
@@ -16,20 +21,41 @@
       "fixture": "workbench-layout-v2-native-v1",
       "viewport": { "width": 1440, "height": 1000, "device_scale_factor": 1 },
       "baseline": "../../../.visual-evidence/execution-workbench-v3/baseline/mission-wave-canvas--workbench-v2--desktop-1440x1000.png",
-      "expected": "expected/mission-wave-canvas/running-gate-pending--desktop-concept-1536x1024.png",
-      "implemented": "../../../.visual-evidence/execution-workbench-v3/implemented/mission-wave-canvas--running-gate-pending--desktop-1440x1000.png",
-      "comparison": "comparisons/mission-wave-canvas/running-gate-pending--desktop.png",
-      "prompt": "prompts/mission-wave-canvas/running-gate-pending.md",
+      "expected": "expected/mission-wave-canvas/running-gate-pending--desktop-fidelity-v2-1440x1000.png",
+      "implemented": "../../../.visual-evidence/execution-workbench-v3/fidelity-v2-final/mission-wave-canvas--running-gate-pending--desktop-1440x1000.png",
+      "comparison": "comparisons/mission-wave-canvas/running-gate-pending--desktop-fidelity-v2.png",
+      "overlay": "overlays/mission-wave-canvas/running-gate-pending--desktop-fidelity-v2.png",
+      "prompt": "prompts/mission-wave-canvas/running-gate-pending--fidelity-v2.md",
+      "design_spec": "specs/mission-wave-canvas--running-gate-pending--desktop-1440x1000.json",
+      "asset_inventory": "assets/mission-wave-canvas--running-gate-pending--asset-inventory.md",
       "expected_approval": { "status": "approved", "by": "user", "date": "2026-07-21" },
+      "implementation_iterations": [
+        {
+          "revision": "b198261-dirty",
+          "implemented": "../../../.visual-evidence/execution-workbench-v3/fidelity-v2-iteration-1/mission-wave-canvas--running-gate-pending--desktop-1440x1000.png",
+          "stage": "geometry-density",
+          "verdict": "revise: Gate readiness remained below Agent Team compact in the context rail"
+        },
+        {
+          "revision": "b198261-dirty",
+          "implemented": "../../../.visual-evidence/execution-workbench-v3/fidelity-v2-final/mission-wave-canvas--running-gate-pending--desktop-1440x1000.png",
+          "stage": "final-responsive",
+          "verdict": "pass: shell, Wave journey, attached pressure, evidence, and Gate priority match approved intent"
+        }
+      ],
+      "gates": {
+        "product_truth": { "status": "pass", "note": "Mission, ordered Waves, executor attempts, aggregate readiness, and explicit host Gate remain canonical." },
+        "visual_fidelity": { "status": "pass", "note": "Exact viewport geometry, continuous journey, portraits, semantic status, context priority, and responsive transformation are accepted." }
+      },
       "review": {
         "status": "pass_with_deviations",
         "intentional_deviations": [
-          "The generated expected design is 1536x1024 while deterministic browser evidence uses 1440x1000.",
-          "The implementation keeps the full real Mission objective and Re-plan note visible because they are canonical stored context.",
-          "Aggregate 2/3 readiness comes from the existing gate note; individual criteria are not falsely marked complete."
+          "The right rail prioritizes the actionable Needs you state over the design candidate's passive Now module.",
+          "The implementation renders the fixture's four linked members rather than the generated candidate's extra portrait.",
+          "Real Mission objective, exit criteria, artifact references, and re-plan text replace abbreviated generated copy."
         ],
         "defects": [],
-        "follow_ups": ["Replace gate-note readiness parsing with structured criterion evidence when that contract exists."]
+        "follow_ups": ["Replace aggregate gate-note parsing with structured criterion evidence when that native contract exists."]
       }
     },
     {
@@ -41,18 +67,44 @@
       "fixture": "workbench-layout-v2-native-v1",
       "viewport": { "width": 1440, "height": 1000, "device_scale_factor": 1 },
       "baseline": "../../../.visual-evidence/execution-workbench-v3/baseline/team-war-room--workbench-v2--desktop-1440x1000.png",
-      "expected": "expected/team-war-room/running-needs-you--desktop-concept-1536x1024.png",
-      "implemented": "../../../.visual-evidence/execution-workbench-v3/implemented/team-war-room--running-needs-you--desktop-1440x1000.png",
-      "comparison": "comparisons/team-war-room/running-needs-you--desktop.png",
-      "prompt": "prompts/team-war-room/running-needs-you.md",
+      "expected": "expected/team-war-room/running-needs-you--desktop-fidelity-v2-1440x1000.png",
+      "implemented": "../../../.visual-evidence/execution-workbench-v3/fidelity-v2-final/team-war-room--running-needs-you--desktop-1440x1000.png",
+      "comparison": "comparisons/team-war-room/running-needs-you--desktop-fidelity-v2.png",
+      "overlay": "overlays/team-war-room/running-needs-you--desktop-fidelity-v2.png",
+      "prompt": "prompts/team-war-room/running-needs-you--fidelity-v2.md",
+      "design_spec": "specs/team-war-room--running-needs-you--desktop-1440x1000.json",
+      "asset_inventory": "assets/team-war-room--running-needs-you--asset-inventory.md",
       "expected_approval": { "status": "approved", "by": "user", "date": "2026-07-21" },
+      "implementation_iterations": [
+        {
+          "revision": "b198261-dirty",
+          "implemented": "../../../.visual-evidence/execution-workbench-v3/fidelity-v2-iteration-1/team-war-room--running-needs-you--desktop-1440x1000.png",
+          "stage": "geometry-density",
+          "verdict": "revise: member presence consumed about 20px too much vertical space"
+        },
+        {
+          "revision": "b198261-dirty",
+          "implemented": "../../../.visual-evidence/execution-workbench-v3/fidelity-v2-iteration-2/team-war-room--running-needs-you--desktop-1440x1000.png",
+          "stage": "presence-activity",
+          "verdict": "revise: desktop passed, but the new member-count action forced an avoidable mobile title wrap"
+        },
+        {
+          "revision": "b198261-dirty",
+          "implemented": "../../../.visual-evidence/execution-workbench-v3/fidelity-v2-final/team-war-room--running-needs-you--desktop-1440x1000.png",
+          "stage": "final-responsive",
+          "verdict": "pass: desktop and responsive hierarchy, pressure, activity, context, and composer are accepted"
+        }
+      ],
+      "gates": {
+        "product_truth": { "status": "pass", "note": "MemberRuns, assignment correlations, explicit actions, pressure, attempt state, Wave Gate, and transient-thinking policy remain honest." },
+        "visual_fidelity": { "status": "pass", "note": "Exact shell proportions, compact presence, semantic activity spine, attached review action, context rail, and responsive composer match approved intent." }
+      },
       "review": {
         "status": "pass_with_deviations",
         "intentional_deviations": [
-          "The generated expected design is 1536x1024 while deterministic browser evidence uses 1440x1000.",
-          "The blocked member is ordered first to make pressure visible on mobile; member ordering does not imply hierarchy or ownership.",
-          "The Agent Teams primary navigation item remains selected because this is the direct TeamRun surface; the breadcrumb preserves Mission and Wave continuity.",
-          "Real fixture events and correlations replace the abbreviated generated activity copy."
+          "Real durable activity and correlation identifiers replace the candidate's abbreviated rows and continue behind the sticky composer.",
+          "The selected QA provider/model and assignment come from the fixture rather than generated text.",
+          "The mobile header omits the redundant member-count label because Team presence immediately states membership."
         ],
         "defects": [],
         "follow_ups": ["Validate the sticky composer with a software keyboard and long drafted message on a real mobile browser."]

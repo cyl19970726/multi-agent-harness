@@ -8,6 +8,12 @@
 | P0 | Agent Team war room | responsive implementation | Can presence, activity, pressure, and composer remain one usable flow? | Message/review | captured at tablet and mobile |
 | P1 | MemberRun focus | active assignment | What has this member done and what does it need? | Message member | reuse V3 visual system after P0 approval |
 
+## Fidelity v2 · approved and implemented
+
+- Mission Wave canvas: approved `1440×1000` expected, design spec, prompt provenance, asset inventory, final browser evidence, comparison, and Overlay are complete.
+- Agent Team war room: approved `1440×1000` expected, design spec, prompt provenance, asset inventory, final browser evidence, comparison, and Overlay are complete.
+- Product-truth and visual-fidelity gates pass independently for both P0 cases.
+
 ## Responsive contract
 
 - Desktop keeps the navigation, central workspace, and contextual rail.

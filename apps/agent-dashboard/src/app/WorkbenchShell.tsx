@@ -276,7 +276,7 @@ function TopBar({
   const statusTone = sourceError ? "warn" : prototypeMode ? "info" : transportOnline ? "good" : "info";
   const displayedSourceLabel = prototypeMode ? "prototype fixture" : sourceLabel;
   return (
-    <header className="flex h-14 min-w-0 shrink-0 items-center gap-2 border-b border-border bg-card/70 px-3 backdrop-blur-md lg:gap-3">
+    <header className="flex h-[58px] min-w-0 shrink-0 items-center gap-2 border-b border-border bg-card/80 px-3 backdrop-blur-md lg:gap-3">
       <div className="flex min-w-0 shrink items-center gap-2.5">
         <div className="grid size-8 place-items-center rounded-md bg-primary/15 text-primary ring-1 ring-primary/40 sm:hidden">
           <Workflow className="size-4" />
@@ -524,8 +524,8 @@ function AppRail({
 
   return (
     <>
-      <aside className="hidden h-full w-[17rem] shrink-0 flex-col border-r border-sidebar-border bg-sidebar xl:flex">
-        <div className="flex h-14 shrink-0 items-center gap-2.5 border-b border-border px-4">
+      <aside className="hidden h-full w-[14.5rem] shrink-0 flex-col border-r border-sidebar-border bg-sidebar xl:flex">
+        <div className="flex h-[58px] shrink-0 items-center gap-2.5 border-b border-border px-4">
           <div className="grid size-8 place-items-center rounded-lg bg-primary text-primary-foreground shadow-sm">
             <Building2 className="size-4" />
           </div>

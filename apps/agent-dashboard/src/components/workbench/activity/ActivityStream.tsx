@@ -92,8 +92,8 @@ export function ActivityRow({ item, className, variant = "rows" }: { item: Workb
   return (
     <article
       className={cn(
-        "group flex min-w-0 gap-3 px-4 py-3.5 sm:px-5",
-        variant === "spine" && "activity-spine-row relative border-0 py-3",
+        "group flex min-w-0 gap-3 px-4 py-3 sm:px-5",
+        variant === "spine" && "activity-spine-row relative border-0 py-2.5",
         item.transient && "bg-status-info/5",
         className,
       )}
@@ -120,8 +120,8 @@ export function ActivityRow({ item, className, variant = "rows" }: { item: Workb
           {item.transient && <Badge tone="info">live only</Badge>}
           {item.action && <span className="ml-auto shrink-0">{item.action}</span>}
         </div>
-        <div className="text-[13px] font-medium leading-snug text-foreground">{item.title}</div>
-        {item.body && <div className="whitespace-pre-wrap text-[13px] leading-relaxed text-muted-foreground">{item.body}</div>}
+        <div className="text-[12px] font-medium leading-snug text-foreground">{item.title}</div>
+        {item.body && <div className="whitespace-pre-wrap text-[12px] leading-relaxed text-muted-foreground">{item.body}</div>}
         {(item.evidenceRefs?.length ?? 0) > 0 && (
           <div className="flex flex-wrap gap-1 pt-0.5">
             {item.evidenceRefs?.map((ref) => (

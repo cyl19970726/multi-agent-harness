@@ -4,6 +4,8 @@ Date: 2026-07-21
 
 The approved V3 Mission and Agent Team hierarchy is implemented without adding a frontend dependency. React and Tailwind compose the surfaces; Radix remains responsible for existing interaction primitives; CSS keyframes provide the active execution trace and pulse with a reduced-motion override.
 
+Fidelity V2 replaces the earlier size-mismatched concept comparison with exact `1440×1000` expected images, explicit geometry/asset specs, retained implementation iterations, and separate product-truth and visual-fidelity gates.
+
 ## Browser result
 
 - deterministic fixture: `workbench-layout-v2-native-v1`;

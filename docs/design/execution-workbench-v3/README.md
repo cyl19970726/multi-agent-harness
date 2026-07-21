@@ -22,7 +22,7 @@ The expected images are design intent, not browser evidence. They must remain im
 
 ## Selected expected designs
 
-- `expected/mission-wave-canvas/running-gate-pending--desktop-concept-1536x1024.png`
-- `expected/team-war-room/running-needs-you--desktop-concept-1536x1024.png`
+- `expected/mission-wave-canvas/running-gate-pending--desktop-fidelity-v2-1440x1000.png`
+- `expected/team-war-room/running-needs-you--desktop-fidelity-v2-1440x1000.png`
 
-The direction was approved by the user on 2026-07-21 and is now the immutable V3 expected design contract.
+The normalized Fidelity V2 direction was approved by the user on 2026-07-21 and is now the immutable V3 expected design contract. The earlier `1536×1024` concepts remain as design history, not the active screenshot baseline.

@@ -306,7 +306,7 @@ function MissionDetail({
   return (
     <DocumentSurface className="max-w-[1280px] space-y-0">
       <div className="grid min-w-0 gap-5 xl:grid-cols-[minmax(0,1fr)_21rem] xl:gap-0">
-        <section className="min-w-0 xl:pr-6">
+        <section className="min-w-0 xl:pl-5 xl:pr-6">
           <button
             type="button"
             onClick={() =>
@@ -499,7 +499,7 @@ function MissionDetail({
 
           {selectedWave?.executor_kind === "agent_team" && (
             <ContextModule
-              className="order-4 xl:order-4"
+              className="order-5 xl:order-5"
               title="Agent Team"
               kicker="Executor compact"
               icon={<Users className="size-3.5" />}
@@ -532,8 +532,8 @@ function MissionDetail({
 
           {selectedWave && (
             <ContextModule
-              className="order-2 xl:order-5"
-              title="Gate & outcome"
+              className="order-2 xl:order-4"
+              title="Gate readiness"
               kicker="Explicit host decision"
               icon={<ShieldCheck className="size-3.5" />}
               tone={gateTone(selectedWave.gate_status)}
@@ -716,54 +716,34 @@ function WaveCanvasCard({
         {canTeamRun ? (
           <section className="border-y border-border/70 py-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <span className="flex items-center gap-2 text-[12px] font-semibold text-foreground"><Users className="size-3.5 text-muted-foreground" /> Agent Team</span>
-              <span className="flex items-center gap-1.5">
+              <span className="flex items-center gap-2 text-[12px] font-semibold text-foreground"><Users className="size-3.5 text-muted-foreground" /> Agent Team{runs.length > 0 ? ` · Attempt ${runs.length}` : ""}</span>
+              <span className="flex flex-wrap items-center justify-end gap-1.5">
                 <Badge tone="muted">{runs.length} attempt{runs.length === 1 ? "" : "s"}</Badge>
                 {latest && <Badge tone={waveTone(latest.status)}>{latest.status ?? "planning"}</Badge>}
+                <ActionButton
+                  enabled={actionsEnabled}
+                  disabled={hasActiveAttempt || waveAccepted}
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => setAttemptOpen(true)}
+                >
+                  <Rocket className="size-3.5" />
+                  {latest ? "Retry / new attempt" : "Create Agent Team"}
+                </ActionButton>
               </span>
             </div>
             <div className="mt-3 space-y-3">
-              <div className="flex flex-wrap gap-2">
-            {canTeamRun && (
-              <ActionButton
-                enabled={actionsEnabled}
-                disabled={hasActiveAttempt || waveAccepted}
-                size="sm"
-                onClick={() => setAttemptOpen(true)}
-              >
-                <Rocket className="size-3.5" />
-                {latest ? "Retry / new attempt" : "Create Agent Team"}
-              </ActionButton>
-            )}
-              </div>
               {runs.length === 0 ? (
                 <p className="text-[12px] text-muted-foreground">No Agent Team attempt yet. Create one when this Wave is ready to execute.</p>
-              ) : (
-                <div className="overflow-hidden rounded-md bg-muted/35">
-              {latest && (
+              ) : latest ? (
                 <button
-                  key={latest.id}
                   type="button"
-                  onClick={() =>
-                    onSelectionChange({
-                      surface: "team",
-                      teamId: latest.id,
-                      missionId: wave.mission_id,
-                      waveId: wave.id,
-                    })
-                  }
-                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-[12px] hover:bg-accent/40"
+                  onClick={() => onSelectionChange({ surface: "team", teamId: latest.id, missionId: wave.mission_id, waveId: wave.id })}
+                  className="sr-only"
                 >
-                  <StatusDot tone={waveTone(latest.status)} />
-                  <span className="font-medium text-foreground">Attempt {runs.length}</span>
-                  <Badge tone={waveTone(latest.status)}>{latest.status ?? "planning"}</Badge>
-                  {latest.previous_run_id && <span className="truncate text-[11px] text-muted-foreground">retry of Attempt {Math.max(1, runs.length - 1)}</span>}
-                  <MonoId>{latest.id}</MonoId>
-                  {latest.id === wave.accepted_run_id && <Badge tone="good">accepted</Badge>}
+                  Open Attempt {runs.length}<MonoId>{latest.id}</MonoId>
                 </button>
-              )}
-                </div>
-              )}
+              ) : null}
               {activeMembers.length > 0 && (
                 <div className="flex flex-wrap gap-4">
                   {activeMembers.map((member) => (
