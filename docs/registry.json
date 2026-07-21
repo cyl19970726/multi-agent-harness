@@ -11,6 +11,7 @@
     "Company OS product boundary and execution-foundation boundary"
    ],
    "dependsOn": [
+    "docs/documentation-governance.md",
     "docs/prd.md",
     "docs/company-os/README.md",
     "docs/company-os/vision.md",
@@ -108,6 +109,32 @@
     "npx pnpm@9.15.4 check"
    ],
    "reorgTrigger": "Docs grow new stable sections, readers, or machine-consumed groups."
+  },
+  {
+   "path": "docs/documentation-governance.md",
+   "ownerRole": "docs-governance",
+   "status": "stable",
+   "lifecycle": "stable",
+   "canonicalFor": [
+    "documentation module taxonomy",
+    "documentation authority and lifecycle",
+    "default context packs and archive policy"
+   ],
+   "dependsOn": [
+    "docs/company-os/product-system-map.md",
+    "docs/company-os/module-design.md",
+    "docs/governance-engine.md",
+    "docs/registry.json"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-08-22",
+   "lastVerifiedWith": [
+    "harness governance check"
+   ],
+   "reorgTrigger": "Documentation modules, authority classes, context packs, governance roles, lifecycle, registry fields, or archive policy change."
   },
   {
    "path": "docs/prd.md",
@@ -345,7 +372,7 @@
   {
    "path": "docs/agent-runtime.md",
    "ownerRole": "provider-integration",
-   "status": "planned",
+   "status": "stable",
    "lifecycle": "volatile",
    "canonicalFor": [
     "provider-neutral Agent Runtime Object Model",
@@ -793,12 +820,10 @@
   {
    "path": "docs/dashboard/pages/team-workspace.md",
    "ownerRole": "product-design",
-   "status": "planned",
-   "lifecycle": "volatile",
+   "status": "deprecated",
+   "lifecycle": "archival",
    "canonicalFor": [
-    "persistent AgentTeam workspace page spec",
-    "team collaboration UI contract",
-    "page-local layout contract"
+    "deprecated Team workspace forwarding note"
    ],
    "dependsOn": [
     "docs/prd.md",
@@ -815,17 +840,15 @@
     "npx pnpm@9.15.4 check",
     "harness governance check"
    ],
-   "reorgTrigger": "Team workspace page contract, layout contract dimensions, ASCII diagrams, first viewport, or scroll ownership changes."
+   "reorgTrigger": "The historical Team workspace path is removed or its Organization and Team War Room replacements change."
   },
   {
    "path": "docs/dashboard/pages/agent-member-workbench.md",
    "ownerRole": "product-design",
-   "status": "planned",
-   "lifecycle": "volatile",
+   "status": "deprecated",
+   "lifecycle": "archival",
    "canonicalFor": [
-    "AgentMember workbench page spec",
-    "member runtime and message UI contract",
-    "page-local layout contract"
+    "deprecated AgentMember workbench forwarding note"
    ],
    "dependsOn": [
     "docs/prd.md",
@@ -842,18 +865,15 @@
     "npx pnpm@9.15.4 check",
     "harness governance check"
    ],
-   "reorgTrigger": "AgentMember workbench page contract, layout contract dimensions, ASCII diagrams, first viewport, or scroll ownership changes."
+   "reorgTrigger": "The historical AgentMember path is removed or its Standing Agent and MemberRun replacements change."
   },
   {
    "path": "docs/dashboard/pages/evidence-review-decision.md",
    "ownerRole": "product-design",
-   "status": "planned",
-   "lifecycle": "volatile",
+   "status": "deprecated",
+   "lifecycle": "archival",
    "canonicalFor": [
-    "acceptance proof UI contract",
-    "evidence review decision page spec",
-    "first-class Review and decision_kind/waiver rendering contract",
-    "page-local layout contract"
+    "deprecated universal evidence review decision forwarding note"
    ],
    "dependsOn": [
     "docs/prd.md",
@@ -870,18 +890,15 @@
     "npx pnpm@9.15.4 check",
     "harness governance check"
    ],
-   "reorgTrigger": "Evidence review decision page contract, layout contract dimensions, ASCII diagrams, first viewport, or scroll ownership changes."
+   "reorgTrigger": "The historical universal decision path is removed or its object-owned gate replacements change."
   },
   {
    "path": "docs/dashboard/pages/warnings-repair.md",
    "ownerRole": "product-design",
-   "status": "planned",
-   "lifecycle": "volatile",
+   "status": "deprecated",
+   "lifecycle": "archival",
    "canonicalFor": [
-    "warning queue and repair UI contract",
-    "Gap ledger rendering contract",
-    "workflow risk page spec",
-    "page-local layout contract"
+    "deprecated global warnings repair forwarding note"
    ],
    "dependsOn": [
     "docs/prd.md",
@@ -898,7 +915,7 @@
     "npx pnpm@9.15.4 check",
     "harness governance check"
    ],
-   "reorgTrigger": "Warnings and repair page contract, layout contract dimensions, ASCII diagrams, first viewport, or scroll ownership changes."
+   "reorgTrigger": "The historical warnings path is removed or its object-owned pressure replacements change."
   },
   {
    "path": "docs/dashboard/pages/debug.md",
@@ -1738,7 +1755,7 @@
    "lifecycle": "volatile",
    "canonicalFor": [
     "AI Company OS documentation entry",
-    "Docs and mixed Organization product boundary"
+    "Company OS canonical product entry and document map"
    ],
    "dependsOn": [
     "docs/company-os/vision.md",
@@ -1756,6 +1773,33 @@
     "npx pnpm@9.15.4 check"
    ],
    "reorgTrigger": "The Company OS product boundary, canonical document map, or migration boundary changes."
+  },
+  {
+   "path": "docs/company-os/product-system-map.md",
+   "ownerRole": "product-architecture",
+   "status": "stable",
+   "lifecycle": "volatile",
+   "canonicalFor": [
+    "whole-product Company OS orientation",
+    "four-system truth ownership and governance hierarchy",
+    "Company OS default reading order and superseded boundaries"
+   ],
+   "dependsOn": [
+    "docs/company-os/vision.md",
+    "docs/company-os/four-system-collaboration.md",
+    "docs/company-os/organization-and-actors.md",
+    "docs/company-os/work-operating-system.md",
+    "docs/company-os/execution-foundation.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-08-22",
+   "lastVerifiedWith": [
+    "harness governance check"
+   ],
+   "reorgTrigger": "Product systems, governance hierarchy, implementation truth, default reading order, or superseded boundaries change."
   },
   {
    "path": "docs/company-os/vision.md",
@@ -2504,8 +2548,8 @@
   {
    "path": "docs/company-os/implementation-waves.md",
    "ownerRole": "product-architecture",
-   "status": "stable",
-   "lifecycle": "stable",
+   "status": "archival",
+   "lifecycle": "archival",
    "canonicalFor": [
     "Company OS V1 ordered implementation Waves and gates",
     "shared cross-Wave acceptance scenario"
@@ -2555,8 +2599,8 @@
   {
    "path": "docs/company-os/completion-audit.md",
    "ownerRole": "product-architecture",
-   "status": "stable",
-   "lifecycle": "stable",
+   "status": "archival",
+   "lifecycle": "archival",
    "canonicalFor": [
     "Company OS V1 requirement-by-requirement completion evidence",
     "remaining Human-only visual sign-off boundary"
@@ -2603,6 +2647,30 @@
     "node apps/agent-dashboard/tests/company-os-trademark-acceptance.mjs"
    ],
    "reorgTrigger": "Fixture loading, browser route evidence, visual comparison policy, or acceptance evidence requirements change."
+  },
+  {
+   "path": "docs/design/company-os-v2/visual-index.md",
+   "ownerRole": "product-design",
+   "status": "stable",
+   "lifecycle": "volatile",
+   "canonicalFor": [
+    "Company OS V2 active visual artifact inventory",
+    "Expected Actual historical and deferred visual classifications"
+   ],
+   "dependsOn": [
+    "docs/company-os/product-system-map.md",
+    "docs/design/company-os-v2/work-operating-system-v1/manifest.json",
+    "docs/design/company-os-v2/company-os-four-systems-v1/manifest.json"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-08-22",
+   "lastVerifiedWith": [
+    "harness governance check"
+   ],
+   "reorgTrigger": "An active Company OS visual target, evidence package, historical baseline, or deferred-reference classification changes."
   },
   {
    "path": "docs/design/company-os-v1/fixtures/company-os-trademark-v1.json",

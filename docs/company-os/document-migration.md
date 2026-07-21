@@ -1,5 +1,11 @@
 # Documentation migration map
 
+```text
+status: archival migration evidence
+default_context: no
+current_authority: docs/documentation-governance.md
+```
+
 This map prevents older, still-useful execution documentation from silently
 reasserting the former product model.
 
@@ -40,3 +46,27 @@ reasserting the former product model.
    stable.
 5. A retired object is never kept in active documentation merely because a
    residual internal field still needs code cleanup; track that debt directly.
+
+## 2026-07-22 convergence result
+
+- `docs/README.md` is now a module index instead of a flat reading list.
+- `docs/documentation-governance.md` owns authority classes, context packs,
+  placement, lifecycle and the Docs Governance operating loop.
+- `docs/company-os/product-system-map.md` is the default whole-product
+  orientation; Company OS readers then load only the owning system contract.
+- V1 implementation waves, completion audits and Store-live gap audits are
+  historical evidence and no longer product-default reading.
+- Superseded Team workspace, AgentMember workbench, universal decision review
+  and global warnings specs are forwarding notes with archival registry state.
+- Provider runtime and integration references are being retained only for the
+  current execution substrate; their language must follow Mission/Wave,
+  executor-native ownership and Company OS links.
+- The native `retired_vocabulary` governance gate blocks configured old model
+  phrases in active registered Markdown while allowing explicitly historical,
+  migration and archival context.
+
+Physical file relocation is not required merely to look clean: old source paths
+may remain as short forwarding notes when stored records and external links
+depend on them. Long historical content belongs under `docs/archive/` or a
+versioned design evidence directory; active indexes carry only the route and
+classification.

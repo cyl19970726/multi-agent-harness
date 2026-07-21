@@ -44,10 +44,38 @@ allowed_lifecycles = [
 core_docs = [
     "README.md",
     "docs/README.md",
+    "docs/documentation-governance.md",
     "docs/prd.md",
     "docs/design-basis.md",
     "docs/architecture.md",
     "docs/operations.md",
     "docs/schemas.md",
     "docs/decisions/README.md",
+    "docs/company-os/product-system-map.md",
+]
+
+[retired_vocabulary]
+terms = [
+    "Goal System",
+    "Task System",
+    "Goal -> Task",
+    "Vision/Goal/Task",
+    "Goal/Task Workbench",
+]
+allowed_paths = [
+    "docs/decisions/0002-message-first-task-system.md",
+    "docs/governance-engine.md",
+]
+context_markers = [
+    "archive",
+    "archived",
+    "compatibility",
+    "deprecated",
+    "former",
+    "historical",
+    "legacy",
+    "migration",
+    "not active",
+    "retired",
+    "superseded",
 ]

@@ -60,10 +60,10 @@ define the new information architecture.
 | [Mission/Wave Canvas](mission-wave-canvas.md) | implemented | ordered execution and gate contract |
 | [Agent Team War Room](team-run-war-room.md) | implemented | one linked AgentTeamRun attempt |
 | [MemberRun Focus](member-run-focus.md) | planned | run-scoped member detail |
-| [Team workspace](team-workspace.md) | future Standing Agents | page-local concept |
-| [AgentMember workbench](agent-member-workbench.md) | compatibility/future Standing Agent | page-local contract |
-| [Evidence/Review/Decision](evidence-review-decision.md) | planned | page-local contract |
-| [Warnings/repair](warnings-repair.md) | planned | page-local contract |
+| [Team workspace](team-workspace.md) | deprecated | forwarding note to Organization and Team War Room |
+| [AgentMember workbench](agent-member-workbench.md) | deprecated | forwarding note to Standing Agent and MemberRun pages |
+| [Evidence/Review/Decision](evidence-review-decision.md) | deprecated | forwarding note to object-owned gates and Approvals |
+| [Warnings/repair](warnings-repair.md) | deprecated | forwarding note to object-owned pressure surfaces |
 | [Debug](debug.md) | planned | page-local contract |
 
 ## Boundary

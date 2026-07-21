@@ -51,62 +51,46 @@ under ADR 0028. Historical ledgers are exported and verified before deletion;
 they are not projected into Company OS records or retained as a second live
 model.
 
-## Reading map
+## Default context
 
-- [Product system map](product-system-map.md): the single whole-product entry
-  point for the four systems, governance hierarchy, execution boundary,
-  current implementation truth, superseded decisions, and canonical reading
-  order.
-- [Implementation waves](implementation-waves.md): the seven delivery Waves,
-  their dependency order, evidence, and completion gates.
-- [Completion audit](completion-audit.md): requirement-by-requirement evidence
-  and the remaining Human-only visual sign-off boundary.
-- [Store-live V2.2 gap audit](store-live-v2.2-gap-audit.md): the implemented
-  backend boundary, the still-disabled interactive product paths, model gaps,
-  and the ordered work after the V2.2 visual merge.
-- [Vision](vision.md): the product thesis, operating loop, and system boundary.
-- [Concept model](concept-model.md): object boundaries and source-of-truth rules.
-- [Document system](document-system.md) and [module design](module-design.md):
-  Notion-like composition, typed records, relations, views, and business-domain
-  growth.
-- [Agent-programmable pages](agent-programmable-pages.md): basic documents,
-  structured views, governed custom code, scoped Actions, and fallback.
-- [Browser Action transport](browser-action-transport.md): the implemented
-  `approval.decide` browser slice, session capability, evidence, and the honest
-  boundary before actor-bound Human authentication.
-- [WorkItem lifecycle actions](work-item-lifecycle-actions.md): the governed
-  `work_item.transition` graph, responsibility rules, and result provenance.
-- [Skill contracts](skill-contracts.md): the optional module-designer and
-  page-builder capabilities.
-- [Organization and actors](organization-and-actors.md): human, Standing Agent,
-  external, service, and OrgUnit lifecycles.
-- [Collaboration and Agent work](collaboration-and-agent-work.md): Lead/direct-report
-  collaboration, subject-linked conversation, shared UI primitives, and the
-  boundary between Standing Agents and temporary execution members.
-- [WorkItems and approvals](work-items-and-approvals.md): responsibility,
-  submission provenance, execution references, review, and human gates.
-- [Work Operating System](work-operating-system.md): the company-wide task
-  ledger, primary and saved views, Milestone boundary, workload, and responsive
-  behavior.
-- [Four-system collaboration](four-system-collaboration.md): what Docs,
-  Organization, Work, and Finance each own and how linked operations move
-  through them without duplicating truth.
-- [Governance Agent workspaces](governance-agent-workspaces.md): Lead-managed
-  Docs, Work, Finance, and Org/HR governance roles, decision surfaces, Skills,
-  Actions, and authority boundaries.
-- [Financial relations](financial-relations.md): budget, commitment, invoice,
-  payment, refund, metrics, and cross-module linkage.
-- [Governance](governance.md): document architecture, organization evolution,
-  permissions, risk, and approval authority.
-- [Execution foundation](execution-foundation.md): Mission/Wave, Agent Team,
-  Dynamic Workflow, Host execution, providers, plugins, and MCP.
-- [Frontend information architecture](frontend-information-architecture.md)
-  and [core page matrix](core-page-matrix.md): navigation, page responsibilities,
-  responsive behavior, and truth constraints.
-- [Trademark registration example](examples/trademark-registration.md): the
-  first cross-module acceptance scenario.
-- [Document migration map](document-migration.md): canonical, implemented,
-  historical, and superseded documentation.
-- [Company OS V2 visual inventory](../design/company-os-v2/visual-index.md):
-  active Work and Organization Expected images, Store-live Actual evidence,
-  historical baselines, deferred references, and visual acceptance status.
+Start with [Product system map](product-system-map.md). Then read only the
+contract for the system being changed. Repository-wide placement and lifecycle
+rules live in [Documentation Governance](../documentation-governance.md).
+
+## Product authority
+
+| Scope | Canonical contract |
+| --- | --- |
+| Product thesis and whole-system orientation | [Vision](vision.md), [Product system map](product-system-map.md), [Concept model](concept-model.md) |
+| Docs and business modules | [Document system](document-system.md), [Module design](module-design.md) |
+| Organization and collaboration | [Organization and actors](organization-and-actors.md), [Collaboration and Agent work](collaboration-and-agent-work.md) |
+| Work and Approval | [WorkItems and approvals](work-items-and-approvals.md), [Work Operating System](work-operating-system.md) |
+| Finance | [Financial relations](financial-relations.md) |
+| Cross-system ownership | [Four-system collaboration](four-system-collaboration.md) |
+| Governance and internal management | [Governance](governance.md), [Governance Agent workspaces](governance-agent-workspaces.md) |
+| Execution boundary | [Execution foundation](execution-foundation.md) |
+| Product experience | [Frontend information architecture](frontend-information-architecture.md) |
+
+## Supporting references
+
+- [Agent-programmable pages](agent-programmable-pages.md) and
+  [Skill contracts](skill-contracts.md): planned governed capabilities, not
+  product authority or implementation claims.
+- [Browser Action transport](browser-action-transport.md) and
+  [WorkItem lifecycle actions](work-item-lifecycle-actions.md): implemented
+  technical slices.
+- [Core page matrix](core-page-matrix.md) and
+  [Company OS V2 visual inventory](../design/company-os-v2/visual-index.md):
+  page/design scope and visual evidence.
+- [Trademark registration example](examples/trademark-registration.md): first
+  cross-system acceptance scenario.
+
+## Historical and dated evidence
+
+These files are useful for provenance and audits but are excluded from the
+default product context:
+
+- [Company OS V1 implementation waves](implementation-waves.md);
+- [Company OS V1 completion audit](completion-audit.md);
+- [Store-live V2.2 gap audit](store-live-v2.2-gap-audit.md);
+- [Documentation migration map](document-migration.md).
