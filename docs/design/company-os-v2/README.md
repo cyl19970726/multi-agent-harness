@@ -1,5 +1,9 @@
 # Company OS V2 visual direction
 
+Start with [`visual-index.md`](visual-index.md). It is the canonical inventory
+for active Expected images, Actual browser evidence, historical baselines, and
+superseded visual directions.
+
 V2 is a visual and interaction redesign built on the accepted Company OS
 product model. V1 remains the historical functional baseline; its generated
 Expected images were not promoted into V2 and did not constrain V2 composition.
@@ -15,7 +19,8 @@ The redesign starts with six P0 mother pages:
 
 1. Company Home;
 2. Docs Workspace;
-3. Organization;
+3. Organization — historical Lead-first implementation baseline; the active
+   target is now the governance-led Organization package linked below;
 4. Lead Agent Workspace;
 5. Business Module;
 6. Work with Milestones and WorkItems.
@@ -69,7 +74,7 @@ Review artifacts:
   Focus over one shared company task ledger.
 - [`company-os-four-systems-v1/`](company-os-four-systems-v1/) — visual
   responsibility map and trademark operating loop for Docs, Organization,
-  Work, and Finance.
+  Work, and Finance, including the active governance-led Organization target.
 
 Reproduce the Store-live evidence with
 `pnpm visual:capture:company-os-v2:live`, then update the checked-in comparison

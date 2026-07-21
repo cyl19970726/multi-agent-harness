@@ -7,16 +7,19 @@ into a coherent family of views over one WorkItem truth.
 ## Review sequence
 
 ```text
-Current Store-live
+Current-before Store-live
   -> one trademark WorkItem, no native Milestone
 Expected target
   -> multi-business-line Overview / Board / All Work / Milestones / Workload / Detail
-Future actual
-  -> browser captures after the native model and projections are implemented
+Actual
+  -> six Store-live views captured at desktop, tablet, and mobile after the
+     native model and projection were implemented
 ```
 
-The expected screens are product intent, not evidence that Milestone,
-multi-business-line queries, or workload capacity already exist.
+The Expected screens remain product intent. Actual evidence separately proves
+native Milestone, multi-business-line queries, and honest workload projection;
+it does not prove invented capacity values or the unimplemented WorkItem Focus
+reference.
 
 ## Required screens
 
@@ -29,8 +32,10 @@ multi-business-line queries, or workload capacity already exist.
 7. `work-item-focus--desktop-1536x1024.png`
 
 The first generation round concentrates on desktop information architecture.
-Responsive expected designs follow after the desktop family is reviewed so a
-premature mobile composition does not constrain the core model.
+Responsive Actual evidence exists for the six implemented list/workspace views.
+Responsive Expected images were not generated, so high-fidelity mobile closure
+requires a later versioned visual contract rather than treating desktop art as
+a pixel target for mobile.
 
 ## Shared visual direction
 

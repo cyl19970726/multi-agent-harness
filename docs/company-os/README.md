@@ -53,6 +53,10 @@ model.
 
 ## Reading map
 
+- [Product system map](product-system-map.md): the single whole-product entry
+  point for the four systems, governance hierarchy, execution boundary,
+  current implementation truth, superseded decisions, and canonical reading
+  order.
 - [Implementation waves](implementation-waves.md): the seven delivery Waves,
   their dependency order, evidence, and completion gates.
 - [Completion audit](completion-audit.md): requirement-by-requirement evidence
@@ -103,3 +107,6 @@ model.
   first cross-module acceptance scenario.
 - [Document migration map](document-migration.md): canonical, implemented,
   historical, and superseded documentation.
+- [Company OS V2 visual inventory](../design/company-os-v2/visual-index.md):
+  active Work and Organization Expected images, Store-live Actual evidence,
+  historical baselines, deferred references, and visual acceptance status.
