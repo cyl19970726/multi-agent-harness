@@ -362,7 +362,12 @@ fn trademark_chain_projection_actions_and_payment_boundaries() {
                 "permission_policy_ref": "policy-finance"
             }],
             "approved_ui_components": ["FinancialRecordCard", "ApprovalCard"],
-            "action_command_refs": ["approval.decide", "work_item.transition", "commitment.append", "payment.append"],
+            "action_command_refs": [
+                "document.append", "block.append", "typed_record.append",
+                "work_item.append", "work_item.transition", "assignment.append",
+                "commitment.propose", "commitment.append",
+                "approval.request", "approval.decide", "payment.append"
+            ],
             "standard_view_fallback_ref": "view-trademark-standard",
             "owner": actor("human", "human-brand-owner"),
             "package_ref": "package-trademark",
@@ -370,8 +375,15 @@ fn trademark_chain_projection_actions_and_payment_boundaries() {
             "fixture_ref": "company-os-trademark-v1",
             "visual_contract_ref": "visual-contract-v1",
             "policy_refs": [
+                "page-trademark:document.append",
+                "page-trademark:block.append",
+                "page-trademark:typed_record.append",
+                "page-trademark:work_item.append",
                 "page-trademark:approval.decide",
+                "page-trademark:approval.request",
                 "page-trademark:work_item.transition",
+                "page-trademark:assignment.append",
+                "page-trademark:commitment.propose",
                 "page-trademark:commitment.append",
                 "page-trademark:payment.append"
             ],
@@ -419,7 +431,7 @@ fn trademark_chain_projection_actions_and_payment_boundaries() {
         "id": "work-trademark-filing",
         "title": "Trademark filing for Brand A",
         "objective": "Prepare and submit the filing after approval",
-        "status": "waiting_for_approval",
+        "status": "submitted",
         "source_document_ref": document["id"],
         "source_record_refs": ["trademark-application-cn-2026-018"],
         "milestone_ref": "milestone-trademark-submitted",
@@ -449,27 +461,50 @@ fn trademark_chain_projection_actions_and_payment_boundaries() {
     });
     post_ok(
         &serve,
-        "/v1/company-os/work-items",
-        admin(work_item.clone()),
+        "/v1/company-os/actions/dispatch",
+        action(
+            "action-create-trademark-work",
+            "work_item.append",
+            json!({"kind": "document", "id": "document-trademark-cn-2026-018"}),
+            work_item.clone(),
+            "page-trademark:work_item.append",
+            "company.records.write",
+            "r1",
+            false,
+            vec![],
+            "audit-create-trademark-work",
+        ),
     );
+    let assignment = json!({
+        "id": "assignment-trademark-agent",
+        "work_item_id": "work-trademark-filing",
+        "recipient": actor("agent", "agent-trademark"),
+        "sender": actor("human", "human-brand-owner"),
+        "assigned_role": "filing owner",
+        "scope": "Prepare CN filing",
+        "delivery_state": "delivered",
+        "delivery_policy_ref": "company.records.write",
+        "correlation_id": "corr-trademark-018",
+        "delivery_evidence_ref": "evidence-assignment-delivered",
+        "assigned_at": NOW,
+        "delivered_at": NOW,
+        "acknowledged_at": null
+    });
     post_ok(
         &serve,
-        "/v1/company-os/assignments",
-        admin(json!({
-            "id": "assignment-trademark-agent",
-            "work_item_id": "work-trademark-filing",
-            "recipient": actor("agent", "agent-trademark"),
-            "sender": actor("human", "human-brand-owner"),
-            "assigned_role": "filing owner",
-            "scope": "Prepare CN filing",
-            "delivery_state": "delivered",
-            "delivery_policy_ref": "company.records.write",
-            "correlation_id": "corr-trademark-018",
-            "delivery_evidence_ref": "evidence-assignment-delivered",
-            "assigned_at": NOW,
-            "delivered_at": NOW,
-            "acknowledged_at": null
-        })),
+        "/v1/company-os/actions/dispatch",
+        action(
+            "action-assign-trademark-work",
+            "assignment.append",
+            json!({"kind": "work_item", "id": "work-trademark-filing"}),
+            assignment,
+            "page-trademark:assignment.append",
+            "company.records.write",
+            "r1",
+            false,
+            vec![],
+            "audit-assign-trademark-work",
+        ),
     );
     post_ok(
         &serve,
@@ -504,8 +539,19 @@ fn trademark_chain_projection_actions_and_payment_boundaries() {
     assert_eq!(status, 403, "{body}");
     post_ok(
         &serve,
-        "/v1/company-os/commitments",
-        admin(commitment.clone()),
+        "/v1/company-os/actions/dispatch",
+        action(
+            "action-propose-trademark-commitment",
+            "commitment.propose",
+            json!({"kind": "work_item", "id": "work-trademark-filing"}),
+            commitment.clone(),
+            "page-trademark:commitment.propose",
+            "finance.commitment.write",
+            "r2",
+            false,
+            vec![],
+            "audit-commitment-created",
+        ),
     );
 
     // A Payment is never inferred from a Commitment, and a direct append cannot
@@ -548,8 +594,20 @@ fn trademark_chain_projection_actions_and_payment_boundaries() {
     });
     post_ok(
         &serve,
-        "/v1/company-os/approvals",
-        admin(requested_commitment_approval.clone()),
+        "/v1/company-os/actions/dispatch",
+        action_by(
+            "action-request-trademark-commitment-approval",
+            "approval.request",
+            json!({"kind": "financial_record", "id": "commitment-trademark-fee"}),
+            requested_commitment_approval.clone(),
+            actor("agent", "agent-finance"),
+            "page-trademark:approval.request",
+            "company.records.write",
+            "r1",
+            false,
+            vec![],
+            "audit-request-trademark-commitment-approval",
+        ),
     );
     let mut queued_commitment = commitment.clone();
     queued_commitment["status"] = json!("pending_approval");
@@ -575,14 +633,8 @@ fn trademark_chain_projection_actions_and_payment_boundaries() {
     // WorkItem execution is a governed transition, not a broad append. The
     // assignee can start and submit durable results, but cannot complete work
     // while a linked Approval is still requested.
-    let mut governed_work = work_item.clone();
-    governed_work["approval_refs"] = json!(["approval-trademark-commitment"]);
-    post_ok(
-        &serve,
-        "/v1/company-os/work-items",
-        admin(governed_work.clone()),
-    );
-    let mut in_progress_work = governed_work;
+    let mut in_progress_work = work_item.clone();
+    in_progress_work["approval_refs"] = json!(["approval-trademark-commitment"]);
     in_progress_work["status"] = json!("in_progress");
     in_progress_work["updated_at"] = json!("2026-07-20T10:05:00+08:00");
     let mut rewritten_work = in_progress_work.clone();
@@ -665,7 +717,9 @@ fn trademark_chain_projection_actions_and_payment_boundaries() {
     );
     let mut in_review_work = in_progress_work;
     in_review_work["status"] = json!("in_review");
+    in_review_work["result_document_ref"] = document["id"].clone();
     in_review_work["result_record_refs"] = json!(["trademark-application-cn-2026-018"]);
+    in_review_work["evidence_refs"] = json!(["evidence-filing-package", "evidence-filing-receipt"]);
     in_review_work["artifact_refs"] = json!(["artifact://trademark/filing-package-v1"]);
     in_review_work["outcome_summary"] =
         json!("Filing package prepared and submitted for accountable review.");
@@ -776,6 +830,107 @@ fn trademark_chain_projection_actions_and_payment_boundaries() {
         ),
     );
     assert_eq!(replay["idempotent_replay"], true);
+
+    // The accepted outcome returns to the original Docs truth through declared
+    // Actions. These are latest-row-wins updates, not fixture projection hacks.
+    let result_block = json!({
+        "id": "block-trademark-filing-result",
+        "document_id": document["id"],
+        "kind": "callout",
+        "position": 1,
+        "content": {
+            "title": "Filing completed",
+            "text": "CN filing receipt returned from WorkItem work-trademark-filing.",
+            "evidence_refs": ["evidence-filing-receipt"]
+        },
+        "referenced_entities": [
+            {"kind": "work_item", "id": "work-trademark-filing"},
+            {"kind": "typed_record", "id": "trademark-application-cn-2026-018"}
+        ],
+        "created_by": actor("agent", "agent-trademark"),
+        "updated_by": actor("agent", "agent-trademark"),
+        "created_at": "2026-07-20T10:21:00+08:00",
+        "updated_at": "2026-07-20T10:21:00+08:00"
+    });
+    post_ok(
+        &serve,
+        "/v1/company-os/actions/dispatch",
+        action_by(
+            "action-return-trademark-result-block",
+            "block.append",
+            json!({"kind": "document", "id": "document-trademark-cn-2026-018"}),
+            result_block,
+            actor("agent", "agent-trademark"),
+            "page-trademark:block.append",
+            "company.records.write",
+            "r1",
+            false,
+            vec![],
+            "audit-return-trademark-result-block",
+        ),
+    );
+    let mut returned_document = document.clone();
+    returned_document["block_ids"] = json!(["block-trademark-filing-result"]);
+    returned_document["reference_refs"] = json!([
+        {"kind": "work_item", "id": "work-trademark-filing"},
+        {"kind": "typed_record", "id": "trademark-application-cn-2026-018"},
+        {"kind": "financial_record", "id": "commitment-trademark-fee"}
+    ]);
+    returned_document["updated_by"] = actor("agent", "agent-trademark");
+    returned_document["updated_at"] = json!("2026-07-20T10:21:00+08:00");
+    post_ok(
+        &serve,
+        "/v1/company-os/actions/dispatch",
+        action_by(
+            "action-return-trademark-source-document",
+            "document.append",
+            json!({"kind": "document", "id": "document-trademark-cn-2026-018"}),
+            returned_document,
+            actor("agent", "agent-trademark"),
+            "page-trademark:document.append",
+            "company.records.write",
+            "r1",
+            false,
+            vec![],
+            "audit-return-trademark-source-document",
+        ),
+    );
+    let mut returned_record = json!({
+        "id": "trademark-application-cn-2026-018",
+        "module_id": "module-trademark",
+        "record_type": "trademark_application",
+        "title": "CN-2026-018",
+        "fields": {
+            "jurisdiction": "CN",
+            "mark": "Brand A",
+            "filing_status": "filed",
+            "filing_receipt_ref": "evidence-filing-receipt",
+            "work_item_ref": "work-trademark-filing"
+        },
+        "lifecycle_status": "filed",
+        "source_document_ref": document["id"],
+        "created_by": actor("agent", "agent-trademark"),
+        "updated_by": actor("agent", "agent-trademark"),
+        "created_at": NOW,
+        "updated_at": "2026-07-20T10:21:00+08:00"
+    });
+    post_ok(
+        &serve,
+        "/v1/company-os/actions/dispatch",
+        action_by(
+            "action-return-trademark-typed-record",
+            "typed_record.append",
+            json!({"kind": "typed_record", "id": "trademark-application-cn-2026-018"}),
+            returned_record.take(),
+            actor("agent", "agent-trademark"),
+            "page-trademark:typed_record.append",
+            "company.records.write",
+            "r1",
+            false,
+            vec![],
+            "audit-return-trademark-typed-record",
+        ),
+    );
 
     let mut second_commitment = commitment.clone();
     second_commitment["id"] = json!("commitment-other-fee");
@@ -1231,23 +1386,27 @@ fn trademark_chain_projection_actions_and_payment_boundaries() {
         snapshot["result"]["action_policy_definitions"]
             .as_array()
             .map(Vec::len),
-        Some(4)
+        Some(11)
     );
     assert_eq!(
         snapshot["result"]["action_commands"]
             .as_array()
             .map(Vec::len),
-        Some(12)
+        Some(19)
     );
     assert_eq!(
         snapshot["result"]["audit_events"].as_array().map(Vec::len),
-        Some(24)
+        Some(38)
     );
 
     let (status, detail) = serve.get_json("/v1/company-os/work-items/work-trademark-filing");
     assert_eq!(status, 200, "{detail}");
     assert_eq!(detail["result"]["title"], "Trademark filing for Brand A");
     assert_eq!(detail["result"]["status"], "completed");
+    assert_eq!(
+        detail["result"]["result_document_ref"],
+        "document-trademark-cn-2026-018"
+    );
     assert_eq!(detail["result"]["work_type"], "legal");
     assert_eq!(
         detail["result"]["milestone_ref"],
@@ -1256,6 +1415,26 @@ fn trademark_chain_projection_actions_and_payment_boundaries() {
     assert_eq!(
         detail["result"]["result_record_refs"],
         json!(["trademark-application-cn-2026-018"])
+    );
+    let (status, returned_document) =
+        serve.get_json("/v1/company-os/documents/document-trademark-cn-2026-018");
+    assert_eq!(status, 200, "{returned_document}");
+    assert_eq!(
+        returned_document["result"]["block_ids"],
+        json!(["block-trademark-filing-result"])
+    );
+    assert!(returned_document["result"]["reference_refs"]
+        .as_array()
+        .is_some_and(|refs| refs.iter().any(|reference| {
+            reference["kind"] == "financial_record" && reference["id"] == "commitment-trademark-fee"
+        })));
+    let (status, returned_record) =
+        serve.get_json("/v1/company-os/typed-records/trademark-application-cn-2026-018");
+    assert_eq!(status, 200, "{returned_record}");
+    assert_eq!(returned_record["result"]["lifecycle_status"], "filed");
+    assert_eq!(
+        returned_record["result"]["fields"]["filing_receipt_ref"],
+        "evidence-filing-receipt"
     );
     let (status, list) = serve.get_json("/v1/company-os/actors");
     assert_eq!(status, 200, "{list}");

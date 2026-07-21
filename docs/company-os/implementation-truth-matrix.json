@@ -14,7 +14,8 @@
         "ui": ["apps/agent-dashboard/src/company-os/docs"],
         "acceptance": ["crates/harness-cli/tests/company_os_api.rs", "apps/agent-dashboard/tests/company-os-docs-check.mjs"]
       },
-      "blockingGaps": ["governed root Document result writeback"]
+      "verifiedSlices": ["trademark result Block, source Document and TypedRecord writeback"],
+      "blockingGaps": ["general-purpose collaborative editor authoring beyond declared module Actions"]
     },
     {
       "id": "organization",
@@ -40,7 +41,8 @@
         "ui": ["apps/agent-dashboard/src/company-os/work/WorkOperatingPage.tsx"],
         "acceptance": ["crates/harness-cli/tests/company_os_api.rs", "apps/agent-dashboard/tests/company-os-operations-check.mjs"]
       },
-      "blockingGaps": ["governed WorkItem creation from source Document", "governed Assignment creation in the same scenario"]
+      "verifiedSlices": ["source Document to WorkItem and Assignment through governed Actions"],
+      "blockingGaps": ["additional business-specific lifecycle policies"]
     },
     {
       "id": "finance",
@@ -53,13 +55,15 @@
         "ui": ["apps/agent-dashboard/src/company-os/operations/pages.tsx"],
         "acceptance": ["crates/harness-cli/tests/company_os_api.rs", "crates/harness-store/tests/company_os.rs"]
       },
-      "blockingGaps": ["governed Commitment proposal from WorkItem", "governed Approval request creation"]
+      "verifiedSlices": ["linked WorkItem to ¥3,000 Commitment proposal and Human Approval request/decision"],
+      "blockingGaps": ["finance reporting and reconciliation beyond Commitment/Payment records"]
     }
   ],
   "trademarkClosure": {
-    "implementationState": "partial",
-    "existingEvidence": ["crates/harness-cli/tests/company_os_api.rs", "scripts/seed-company-os-trademark-v1.mjs"],
-    "missingNativeActions": ["work_item.append create", "assignment.append create", "commitment.propose", "approval.request", "root document result append", "typed record result append"],
+    "implementationState": "verified",
+    "existingEvidence": ["crates/harness-cli/tests/company_os_api.rs"],
+    "nativeActions": ["work_item.append", "assignment.append", "commitment.propose", "approval.request", "commitment.append", "approval.decide", "work_item.transition", "block.append", "document.append", "typed_record.append"],
+    "missingNativeActions": [],
     "forbiddenShortcut": "Fixture or administrative seed must not create the WorkItem, Assignment, Commitment, Approval, or returned result used as acceptance truth."
   }
 }
