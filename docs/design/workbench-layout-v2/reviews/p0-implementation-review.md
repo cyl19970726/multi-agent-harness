@@ -1,6 +1,7 @@
 # P0 implementation review
 
 Date: 2026-07-19
+Hardening pass: 2026-07-21
 
 The three P0 pages pass visual acceptance with documented deviations. The
 deterministic native fixture now represents the pressure states named by the
@@ -45,11 +46,12 @@ The versioned `workbench-layout-v2-native-v1` fixture contains:
 6. Wave 3 planned.
 
 The capture runner materializes the fixture into an isolated temporary store,
-starts the dashboard on free ports, fixes browser time, injects the transient
-preview only after SSE connects, and captures canonical routes. It checks
+starts the dashboard on free ports with a same-origin Vite API/SSE proxy, fixes
+browser time, injects the transient preview only after SSE connects, and
+captures canonical routes. It checks
 console errors and horizontal overflow and records browser, revision, dirty
 state, routes, and viewports in `capture-run.json`. The fixture invariants pass
-12/12.
+19/19.
 
 The historical baselines remain product-direction comparisons, not same-state
 regression proofs. The approved generated designs are 1536x1024 while browser
@@ -74,6 +76,17 @@ shows 2/3 plus all three declared criteria without pretending that individual
 criterion-to-evidence mappings exist. At 900px, a 64px compact product rail
 replaces the full sidebar, and tablet context-open evidence is captured for all
 three P0 pages.
+
+The 2026-07-21 hardening pass repaired two regressions found against real
+browser evidence. Mission actions now occupy their own responsive row instead
+of collapsing the mobile title column, and the capture runner routes browser
+reads through its isolated same-origin proxy rather than depending on
+cross-origin development behavior. It also gives execution members the shared
+portrait system used by Company OS while retaining explicit text identity,
+provider, role, and status. Agent Team headings now use the bounded Wave title
+and keep the potentially long run objective as secondary context. Terminal
+attempts label leftover acknowledgements as `Unresolved history`, not active
+`Needs you` pressure.
 
 ## Deferred visual refinements
 

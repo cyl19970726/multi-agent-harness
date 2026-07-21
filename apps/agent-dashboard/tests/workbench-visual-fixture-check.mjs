@@ -29,10 +29,15 @@ async function rows(name) {
 
 async function main() {
   const manifest = JSON.parse(await readFile(join(fixtureRoot, "fixture-manifest.json"), "utf8"));
-  const [teamRunsSource, actionsSource, typesSource] = await Promise.all([
+  const repoRoot = resolve(dashboardRoot, "../..");
+  const [teamRunsSource, actionsSource, typesSource, missionSource, warRoomSource, avatarSource, captureSource] = await Promise.all([
     readFile(join(dashboardRoot, "src/surfaces/TeamRuns.tsx"), "utf8"),
     readFile(join(dashboardRoot, "src/api/actions.ts"), "utf8"),
     readFile(join(dashboardRoot, "src/types.ts"), "utf8"),
+    readFile(join(dashboardRoot, "src/surfaces/Missions.tsx"), "utf8"),
+    readFile(join(dashboardRoot, "src/surfaces/TeamWarRoom.tsx"), "utf8"),
+    readFile(join(dashboardRoot, "src/components/workbench/Avatar.tsx"), "utf8"),
+    readFile(join(repoRoot, "scripts/capture-workbench-layout-v2.mjs"), "utf8"),
   ]);
   const [missions, waves, runs, members, messages, actions, events] = await Promise.all([
     rows("missions.jsonl"), rows("waves.jsonl"), rows("team_runs.jsonl"),
@@ -62,6 +67,24 @@ async function main() {
   check(runs.every((item) => !Object.hasOwn(item, duplicateWaveField)), "AgentTeamRun fixture does not duplicate the Wave index");
   check(!actionsSource.includes(duplicateWaveField) && !typesSource.includes(duplicateWaveField), "AgentTeamRun API and type contracts do not carry a duplicate Wave index");
   check(teamRunsSource.includes("resolveRunWave(snapshot.waves ?? [], run)") && teamRunsSource.includes("wave.index") && !teamRunsSource.includes(`run.${duplicateWaveField}`), "Team Run labels join Wave index and title through wave_id");
+  check(
+    captureSource.includes("HARNESS_CAPTURE_API_PROXY: apiBase")
+      && captureSource.includes("api=${encodeURIComponent(webBase)}"),
+    "P0 browser capture keeps API and SSE reads on the Vite same-origin proxy",
+  );
+  check(
+    missionSource.includes("flex flex-col items-stretch")
+      && missionSource.includes("flex w-full flex-wrap items-center"),
+    "Mission header gives its title and actions separate mobile layout rows",
+  );
+  check(
+    avatarSource.includes("portraitFor") && avatarSource.includes("rounded-full"),
+    "Execution identities reuse the shared portrait system with a text-backed fallback",
+  );
+  check(
+    warRoomSource.includes('terminal ? "Unresolved history" : "Needs you"'),
+    "Terminal Team attempts distinguish unresolved history from active operator pressure",
+  );
 
   console.log(`\n   workbench visual fixture checks: ${pass} pass, ${fail} fail`);
   process.exit(fail === 0 ? 0 : 1);

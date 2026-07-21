@@ -85,7 +85,7 @@ export function FocusHeader({
           </p>
         )}
         <h1 className="min-w-0 text-lg font-semibold tracking-tight text-foreground sm:truncate">{title}</h1>
-        {description && <p className="max-w-3xl text-[13px] text-muted-foreground">{description}</p>}
+        {description && <p className="line-clamp-2 max-w-3xl text-[13px] leading-relaxed text-muted-foreground">{description}</p>}
         {meta && <div className="flex flex-wrap items-center gap-2 pt-1">{meta}</div>}
       </div>
       {actions && <div className="flex shrink-0 flex-wrap items-center gap-2">{actions}</div>}

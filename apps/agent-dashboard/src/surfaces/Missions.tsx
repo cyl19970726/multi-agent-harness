@@ -316,8 +316,8 @@ function MissionDetail({
             <ChevronLeft className="size-3.5" /> Missions
           </button>
 
-          <header className="flex flex-wrap items-start justify-between gap-3 border-b border-border pb-4">
-            <div className="min-w-0 flex-1 space-y-1.5">
+          <header className="flex flex-col items-stretch gap-3 border-b border-border pb-4 sm:flex-row sm:flex-wrap sm:items-start sm:justify-between">
+            <div className="min-w-0 flex-1 space-y-1.5 sm:min-w-72">
               <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
                 <Flag className="size-3.5" /> Mission canvas
               </div>
@@ -329,7 +329,7 @@ function MissionDetail({
                 <MonoId>{mission.id}</MonoId>
               </div>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:justify-end">
               <Button
                 type="button"
                 variant="secondary"

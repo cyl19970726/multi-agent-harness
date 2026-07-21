@@ -161,8 +161,8 @@ export function TeamWarRoom({
               {mission?.title ?? "Mission"} <span className="text-border">/</span> {wave ? `Wave ${wave.index}` : "Agent Teams"}
             </button>
           }
-          title={run.objective ?? "Agent Team attempt"}
-          description={`Attempt ${attemptNumber(attempts, run.id)}${run.previous_run_id ? " · retry attempt" : ""}`}
+          title={wave ? `${wave.title} · Agent Team` : "Agent Team attempt"}
+          description={run.objective ?? "A bounded Agent Team execution attempt."}
           meta={
             <>
               <Badge tone={teamTone(status)}>{status}</Badge>
@@ -272,6 +272,7 @@ export function TeamWarRoom({
 
         <NeedsYouBand
           total={needsYou.total}
+          runStatus={status}
           waiting={needsYou.waitingMembers}
           blocked={needsYou.blockedMembers}
           approvals={needsYou.approvals}
@@ -376,8 +377,9 @@ function MemberControl({ member, selected, assignment, currentAction, livePrevie
   );
 }
 
-function NeedsYouBand({ total, waiting, blocked, approvals, deliveries, memberById, onSelectMember, onShowMessages }: {
+function NeedsYouBand({ total, runStatus, waiting, blocked, approvals, deliveries, memberById, onSelectMember, onShowMessages }: {
   total: number;
+  runStatus: string;
   waiting: MemberRun[];
   blocked: MemberRun[];
   approvals: TeamMessage[];
@@ -394,11 +396,12 @@ function NeedsYouBand({ total, waiting, blocked, approvals, deliveries, memberBy
     ? memberById.get(delivery.delivery.member_id)
     : undefined;
   const urgent = blocked.length > 0 || approval?.kind === "blocker";
+  const terminal = ["completed", "failed", "cancelled"].includes(runStatus);
   return (
-    <section className={cn("flex flex-wrap items-center gap-3 rounded-lg border px-3.5 py-2.5", urgent ? "border-status-bad/35 bg-status-bad/8" : "border-status-warn/35 bg-status-warn/8")}>
-      <CircleAlert className={cn("size-4 shrink-0", urgent ? "text-status-bad" : "text-status-warn")} />
+    <section className={cn("flex flex-wrap items-start gap-3 rounded-lg border px-3.5 py-2.5 sm:items-center", urgent && !terminal ? "border-status-bad/35 bg-status-bad/8" : "border-status-warn/35 bg-status-warn/8")}>
+      <CircleAlert className={cn("mt-0.5 size-4 shrink-0 sm:mt-0", urgent && !terminal ? "text-status-bad" : "text-status-warn")} />
       <div className="min-w-0 flex-1">
-        <p className="text-[12px] font-semibold text-foreground">Needs you · {total}</p>
+        <p className="text-[12px] font-semibold text-foreground">{terminal ? "Unresolved history" : "Needs you"} · {total}</p>
         <p className="truncate text-[11px] text-muted-foreground">
           {subject
             ? `${subject.name ?? subject.id} is ${subject.status}`
@@ -407,9 +410,14 @@ function NeedsYouBand({ total, waiting, blocked, approvals, deliveries, memberBy
                 ? `${deliveryMember?.name ?? delivery.delivery.member_id ?? "A member"} has not acknowledged ${delivery.message.kind ?? "a message"}.`
                 : "A team signal needs review.")}
         </p>
+        {terminal && <p className="mt-0.5 text-[10px] text-muted-foreground">The attempt is terminal; these signals remain visible until explicitly acknowledged.</p>}
       </div>
-      {subject && <Button size="sm" variant="secondary" onClick={() => onSelectMember(subject)}>Inspect member</Button>}
-      {approval && <Button size="sm" variant="secondary" onClick={onShowMessages}>View message</Button>}
+      {(subject || approval) && (
+        <div className="ml-7 flex w-full gap-2 sm:ml-0 sm:w-auto">
+          {subject && <Button className="flex-1 sm:flex-none" size="sm" variant="secondary" onClick={() => onSelectMember(subject)}>Inspect member</Button>}
+          {approval && <Button className="flex-1 sm:flex-none" size="sm" variant="secondary" onClick={onShowMessages}>View message</Button>}
+        </div>
+      )}
     </section>
   );
 }
