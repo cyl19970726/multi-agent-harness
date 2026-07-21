@@ -135,6 +135,7 @@ async function main() {
 
     browser = await chromium.launch();
     const cases = [
+      ["agent-teams-home", "native-attempts", manifest.routes["agent-teams-home"], "Agent Teams"],
       ["mission-wave-canvas", "running-gate-pending", manifest.routes["mission-wave-canvas"], "Agent Team Console"],
       ["team-war-room", "running-needs-you", manifest.routes["team-war-room"], "Team Console · Agent Team"],
       ["member-run-focus", "running-needs-you", manifest.routes["member-run-focus"], "Research Engineer"],
@@ -191,7 +192,7 @@ async function main() {
         await page.screenshot({ path: output });
         captures.push({ page: pageName, state, viewport: viewportName, route, output });
 
-        if (width <= 900) {
+        if (width <= 900 && pageName !== "agent-teams-home") {
           if (pageName === "mission-wave-canvas") {
             await page.getByRole("button", { name: "Context", exact: true }).click();
           } else {

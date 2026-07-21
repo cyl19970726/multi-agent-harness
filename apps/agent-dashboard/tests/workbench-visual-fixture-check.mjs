@@ -30,8 +30,8 @@ async function rows(name) {
 async function main() {
   const manifest = JSON.parse(await readFile(join(fixtureRoot, "fixture-manifest.json"), "utf8"));
   const repoRoot = resolve(dashboardRoot, "../..");
-  const [teamRunsSource, actionsSource, typesSource, missionSource, warRoomSource, avatarSource, captureSource, executionSource, activitySource, contextSource, cssSource] = await Promise.all([
-    readFile(join(dashboardRoot, "src/surfaces/TeamRuns.tsx"), "utf8"),
+  const [agentTeamsHomeSource, actionsSource, typesSource, missionSource, warRoomSource, avatarSource, captureSource, executionSource, activitySource, contextSource, cssSource] = await Promise.all([
+    readFile(join(dashboardRoot, "src/surfaces/AgentTeamsHome.tsx"), "utf8"),
     readFile(join(dashboardRoot, "src/api/actions.ts"), "utf8"),
     readFile(join(dashboardRoot, "src/types.ts"), "utf8"),
     readFile(join(dashboardRoot, "src/surfaces/Missions.tsx"), "utf8"),
@@ -70,11 +70,12 @@ async function main() {
   const duplicateWaveField = ["wave", "index"].join("_");
   check(runs.every((item) => !Object.hasOwn(item, duplicateWaveField)), "AgentTeamRun fixture does not duplicate the Wave index");
   check(!actionsSource.includes(duplicateWaveField) && !typesSource.includes(duplicateWaveField), "AgentTeamRun API and type contracts do not carry a duplicate Wave index");
-  check(teamRunsSource.includes("resolveRunWave(snapshot.waves ?? [], run)") && teamRunsSource.includes("wave.index") && !teamRunsSource.includes(`run.${duplicateWaveField}`), "Team Run labels join Wave index and title through wave_id");
+  check(agentTeamsHomeSource.includes("waves.get(run.wave_id)") && agentTeamsHomeSource.includes("wave.index") && !agentTeamsHomeSource.includes(`run.${duplicateWaveField}`), "Agent Team home joins native attempts to Wave labels through wave_id");
   check(
     captureSource.includes("HARNESS_CAPTURE_API_PROXY: apiBase")
-      && captureSource.includes("api=${encodeURIComponent(webBase)}"),
-    "P0 browser capture keeps API and SSE reads on the Vite same-origin proxy",
+      && captureSource.includes("api=${encodeURIComponent(webBase)}")
+      && captureSource.includes('manifest.routes["agent-teams-home"]'),
+    "Browser capture keeps API and SSE reads on the Vite same-origin proxy and covers the native Agent Team home",
   );
   check(
     missionSource.includes("flex flex-col items-stretch")

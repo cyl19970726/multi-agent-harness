@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   CheckCircle2,
   ChevronLeft,
@@ -31,7 +31,7 @@ import {
   type StableTeamActivity,
 } from "../model/teamSelectors";
 import type { WorkbenchModel } from "../model/readModel";
-import { sendTeamMessage, startTeamRun, transitionTeamRun } from "../api/actions";
+import { acknowledgeTeamMessage, sendTeamMessage, startTeamRun, transitionTeamRun } from "../api/actions";
 import type { MemberRun, TeamMessage, Wave } from "../types";
 import type { SelectionState } from "../app/selection";
 
@@ -40,7 +40,7 @@ export interface TeamWarRoomProps {
   teamRunId?: string;
   onSelectionChange: (selection: Partial<SelectionState>) => void;
   actionsEnabled?: boolean;
-  onAction?: (path: string, body?: unknown) => void;
+  onAction?: (path: string, body?: unknown) => void | Promise<boolean>;
 }
 
 type StreamFilter = "all" | "messages" | "actions" | "decisions" | "evidence";
@@ -74,6 +74,12 @@ export function TeamWarRoom({
   const [kind, setKind] = useState("broadcast");
   const [showAllMembers, setShowAllMembers] = useState(false);
   const [showFullActivity, setShowFullActivity] = useState(false);
+  const [starting, setStarting] = useState(false);
+  const runStatus = context?.run.status;
+
+  useEffect(() => {
+    if (runStatus !== "planning") setStarting(false);
+  }, [runStatus]);
 
   if (!context) {
     return (
@@ -101,7 +107,28 @@ export function TeamWarRoom({
     needsYou.blockedMembers[0] ??
     needsYou.waitingMembers[0] ??
     orderedMembers[0];
-  const activityItems = toActivityItems(context.activity, memberById);
+  const activityItems = toActivityItems(context.activity, memberById).map((item) => {
+    if (!item.id.startsWith("message:")) return item;
+    const message = messages.find((candidate) => `message:${candidate.id}` === item.id);
+    const hostDelivery = message?.deliveries?.find(
+      (delivery) => delivery.member_id === "host" && delivery.status === "delivered",
+    );
+    if (!message || !hostDelivery) return item;
+    return {
+      ...item,
+      action: (
+        <Button
+          size="sm"
+          variant="secondary"
+          disabled={!actionsEnabled}
+          title={actionsEnabled ? "Acknowledge delivered message" : "Connect a live source to acknowledge"}
+          onClick={() => dispatch(onAction, acknowledgeTeamMessage(run.id, message.id, "host"))}
+        >
+          ACK
+        </Button>
+      ),
+    };
+  });
   const pressureActivityIndex = selectedMember?.status === "blocked"
     ? activityItems.map((item) => item.kind).lastIndexOf("decision")
     : -1;
@@ -206,7 +233,18 @@ export function TeamWarRoom({
               <AttemptActions
                 status={status}
                 actionsEnabled={actionsEnabled}
-                onStart={() => dispatch(onAction, startTeamRun(run.id))}
+                starting={starting}
+                onStart={() => {
+                  setStarting(true);
+                  const result = dispatch(onAction, startTeamRun(run.id));
+                  if (result instanceof Promise) {
+                    void result.then((ok) => {
+                      if (!ok) setStarting(false);
+                    });
+                  } else {
+                    setStarting(false);
+                  }
+                }}
                 onCancel={() => dispatch(onAction, transitionTeamRun(run.id, "cancelled"))}
                 onComplete={() => dispatch(onAction, transitionTeamRun(run.id, "completed"))}
               />
@@ -366,15 +404,16 @@ export function TeamWarRoom({
   );
 }
 
-function AttemptActions({ status, actionsEnabled, onStart, onCancel, onComplete }: {
+function AttemptActions({ status, actionsEnabled, starting, onStart, onCancel, onComplete }: {
   status: string;
   actionsEnabled: boolean;
+  starting: boolean;
   onStart: () => void;
   onCancel: () => void;
   onComplete: () => void;
 }) {
   if (status === "planning") {
-    return <Button size="sm" onClick={onStart} disabled={!actionsEnabled} title={actionsEnabled ? undefined : "Connect a live source to enable actions"}><Play className="size-3.5" /> Start attempt</Button>;
+    return <Button size="sm" onClick={onStart} disabled={!actionsEnabled || starting} title={actionsEnabled ? undefined : "Connect a live source to enable actions"}><Play className="size-3.5" /> {starting ? "Starting…" : "Start attempt"}</Button>;
   }
   if (["planning", "waiting", "reviewing"].includes(status)) {
     return (
@@ -568,7 +607,7 @@ function latestActionTitle(actions: Array<{ member_run_id?: string; title?: stri
   return actions.filter((action) => action.member_run_id === memberId).sort((left, right) => timestamp(right.started_at ?? right.completed_at) - timestamp(left.started_at ?? left.completed_at))[0]?.title ?? actions.filter((action) => action.member_run_id === memberId).sort((left, right) => timestamp(right.started_at ?? right.completed_at) - timestamp(left.started_at ?? left.completed_at))[0]?.action_type;
 }
 
-function dispatch(onAction: TeamWarRoomProps["onAction"], action: { path: string; body: unknown }): void { onAction?.(action.path, action.body); }
+function dispatch(onAction: TeamWarRoomProps["onAction"], action: { path: string; body: unknown }): void | Promise<boolean> | undefined { return onAction?.(action.path, action.body); }
 function attemptNumber(attempts: Array<{ id: string }>, id: string): number { return Math.max(1, attempts.findIndex((attempt) => attempt.id === id) + 1); }
 function memberLabel(members: Map<string, MemberRun>, id: string): string { return id === "host" ? "Host" : members.get(id)?.name ?? id; }
 function shortId(value: string): string { return value.length > 18 ? `${value.slice(0, 8)}…${value.slice(-5)}` : value; }

@@ -46,7 +46,7 @@ name an accepted completed attempt.
 
 The visual reference is the approved
 `team-war-room/running-needs-you--desktop` expected design in
-[`../../design/workbench-layout-v2/`](../../design/workbench-layout-v2/README.md).
+[`../../design/execution-workbench-v3/`](../../design/execution-workbench-v3/README.md).
 
 ### Desktop — `1440x1000`
 

@@ -56,7 +56,7 @@ completed attempt if accepted.
 
 The visual reference is the approved
 `mission-wave-canvas/running-gate-pending--desktop` expected design in
-[`../../design/workbench-layout-v2/`](../../design/workbench-layout-v2/README.md).
+[`../../design/execution-workbench-v3/`](../../design/execution-workbench-v3/README.md).
 
 ### Desktop — `1440x1000`
 

@@ -1,6 +1,6 @@
 # AI Company OS V1 visual contract
 
-This workstream defines expected visual direction for the AI Company OS. It does not replace the current Mission/Wave Workbench implementation or its `workbench-layout-v2` contract; the Workbench remains its execution-tool visual baseline. Company OS V1 defines the product layer above it: documents as company memory and action entry, mixed human/agent organization, typed operational records, and governed growth.
+This workstream defines expected visual direction for the AI Company OS. It does not replace the current Mission/Wave and Agent Team execution surfaces; their active visual baseline is `execution-workbench-v3`. Company OS V1 defines the product layer above it: documents as company memory and action entry, mixed human/agent organization, typed operational records, and governed growth.
 
 ## Product center
 

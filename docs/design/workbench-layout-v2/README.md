@@ -1,7 +1,14 @@
-# Workbench Layout V2 visual contract
+# Remaining Workbench Layout V2 contracts
 
-This directory is the durable visual contract for the Mission / Wave / Agent
-Team Workbench redesign.
+Mission/Wave Canvas and Agent Team War Room moved to the active
+[`../execution-workbench-v3/`](../execution-workbench-v3/README.md) contract.
+Their V2 expected images, prompts, comparisons, and manifest cases were deleted
+after the V3 implementation was accepted. Do not use this directory as the
+Mission or Agent Team visual baseline.
+
+This directory temporarily retains only page contracts that do not yet have an
+approved V3 replacement: MemberRun Focus, Standing Agent Focus, Missions
+Collection, WorkflowRun Focus, and shared context-control candidates.
 
 The evidence chain is:
 
@@ -16,12 +23,8 @@ Raw repeatable browser captures live under the ignored
 screenshots may be promoted here when they materially explain a product
 decision.
 
-The first approved design set covers:
-
-- `member-run-focus`: run-scoped Member activity/chat with Wave and Team context;
-- `team-war-room`: one AgentTeamRun attempt inside a Wave;
-- `mission-wave-canvas`: ordered Waves with compact executor controls and a
-  separate Wave gate.
+The remaining approved design covers `member-run-focus`: run-scoped Member
+activity/chat with Wave and Team context.
 
 Standing Agent uses the same workspace grammar but remains a different product
 object and requires its own expected design before its page is replaced.

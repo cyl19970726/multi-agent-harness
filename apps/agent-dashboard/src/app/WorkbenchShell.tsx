@@ -44,7 +44,7 @@ import {
   DebugSurface,
 } from "../surfaces/Surfaces";
 import { WorkflowRunDetail, WorkflowsList } from "../surfaces/Workflows";
-import { TeamRunsList } from "../surfaces/TeamRuns";
+import { AgentTeamsHome } from "../surfaces/AgentTeamsHome";
 import { TeamWarRoom } from "../surfaces/TeamWarRoom";
 import { MemberRunFocus } from "../surfaces/MemberRuns";
 import { MissionsSurface } from "../surfaces/Missions";
@@ -774,7 +774,7 @@ function SurfaceSwitch({
       ) : selection.teamId ? (
         <TeamWarRoom {...shared} teamRunId={selection.teamId} />
       ) : (
-        <TeamRunsList {...shared} />
+        <AgentTeamsHome {...shared} />
       );
     case "debug":
       return <DebugSurface model={model} sourceLabel={sourceLabel} />;
