@@ -214,9 +214,9 @@ pub struct LaunchSpec {
     /// `--resume`); `None` = a fresh session.
     #[serde(default)]
     pub resume: Option<String>,
-    /// The event-stream output contract the adapter should request so its native
-    /// output normalizes into [`AgentEvent`] (Codex `--json`, Claude
-    /// `--output-format stream-json`). Free string, neutral.
+    /// The event-stream output contract the adapter should request for
+    /// in-memory reduction and transient live projection (Codex `--json`,
+    /// Claude `--output-format stream-json`). Free string, neutral.
     #[serde(default)]
     pub output: Option<String>,
 }
@@ -1877,12 +1877,9 @@ pub enum MemberActionStatus {
 
 /// One journaled action by a member inside an [`AgentTeamRun`]. `seq` is
 /// monotonically increasing per team run and is assigned by the caller.
-/// `action_type` is a free-form string in v0 (conventional values:
-/// plan_updated, message_sent, message_received, tool_started, tool_completed,
-/// file_changed, command_started, command_completed, test_started,
-/// test_completed, delegation_started, delegation_completed, review_started,
-/// review_completed, waiting_for_input, waiting_for_approval, blocked, error,
-/// completed).
+/// `action_type` is a free-form Harness coordination/outcome summary. Provider
+/// tool, command, file, turn, chat, and reasoning streams stay exclusively in
+/// the provider-native session and must not be converted into MemberActions.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MemberAction {
     pub id: String,

@@ -289,6 +289,32 @@ exit 0
     bin_dir.to_path_buf()
 }
 
+/// Claude stream-json shim that opens a native session and then reports an API
+/// failure on stdout, matching the real CLI's authentication-error shape.
+pub fn install_claude_failure_shim(bin_dir: &Path) -> PathBuf {
+    fs::create_dir_all(bin_dir).expect("mk fake claude failure bin dir");
+    let shim_path = bin_dir.join("claude");
+    let script = r###"#!/bin/sh
+if [ "$1" = "--version" ]; then
+  printf '%s\n' '2.1.181 (Claude Code)'
+  exit 0
+fi
+session_id="session_fake_claude_failed"
+printf '%s\n' "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"$session_id\",\"model\":\"fake-claude\"}"
+printf '%s\n' "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":true,\"api_error_status\":401,\"session_id\":\"$session_id\",\"result\":\"Failed to authenticate. API Error: 401 Invalid authentication credentials\"}"
+exit 0
+"###;
+    fs::write(&shim_path, script).expect("write fake claude failure shim");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&shim_path).expect("stat shim").permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&shim_path, perms).expect("chmod shim");
+    }
+    bin_dir.to_path_buf()
+}
+
 /// One spawned `harness` invocation's result.
 pub struct CliOutput {
     pub stdout: String,

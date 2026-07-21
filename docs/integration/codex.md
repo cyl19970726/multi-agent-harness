@@ -548,16 +548,16 @@ canonical state 仍在 harness backend/store。
   静默复活；
 - provider turn input 包含稳定可解析的 harness envelope：message id、kind、
   task、from_agent_id、to_agent_id、channel、delivery attempt 和 content；
-- provider session 记录 request/stdout/stderr 或等价 event fixture，包含
-  provider thread id、terminal source，并能解释缺失 turn id 的 reconciliation；
-- harness store 里有 `AgentEvent`、delivered/failed message 状态变化，message
-  的 `delivery` 字段能解释它是由哪个 provider session 和 turn 产生的；
-- 如果 provider 产生 Codex native subagent，必须转成 `ProviderChildThread` 或
-  带 `provider_child_thread_id` 的 `AgentEvent`，Dashboard 不能只展示父 member；
+- `NativeSessionRef` 记录 mode-aware Codex thread locator、版本、可用性与
+  resume 能力；request/stdout/stderr、item 和 turn 只留在 Codex 原生存储；
+- harness store 里只有 claim/delivery 状态、显式 outcome、artifact/check
+  references 与必要的 terminal source，不复制 Codex transcript；
+- Codex native subagent 是成员内部实现细节。只有 provider hook 确实暴露时
+  才记录诚实 attribution；Harness 不虚构其生命周期控制；
 - turn completion 能通过 notification、thread idle + rollout、或 Stop hook
   reconcile 成 report candidate；
-- Dashboard 能显示 member runtime health、message、event timeline、provider
-  session 和 provider child thread；
+- Dashboard 能显示 member runtime health、Harness 协调 timeline，并按需从
+  `NativeSessionRef` 读取 Codex 原生活动；
 - reviewer/critic 或 Leader decision 不能只依赖 chat summary。
 
 以下情况不能算通过：

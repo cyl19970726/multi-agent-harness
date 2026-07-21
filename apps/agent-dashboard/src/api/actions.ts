@@ -6,7 +6,7 @@
 //   POST /v1/agents                            { name, role, provider?, skill[], team[], ... }
 //   POST /v1/agents/{id}/deliver               { start_runtime?, dry_run?, ... }
 //   POST /v1/agents/{id}/retry-delivery        { message_id, ... }
-//   POST /v1/agents/{id}/reconcile-session     { session_id, status, ... }
+//   POST /v1/agents/{id}/reconcile-delivery    { delivery_id, status, ... }
 //   POST /v1/agents/{id}/close                 {}
 //
 // The agent id / task id belong in the URL PATH, never the body. The earlier
@@ -188,13 +188,13 @@ export function retryDelivery(
 }
 
 /**
- * Reconcile a stuck provider session for a member to a terminal state.
+ * Reconcile a stuck Harness delivery attempt to a terminal state.
  */
-export function reconcileSession(
+export function reconcileDelivery(
   agentId: string,
-  params: { sessionId: string; status?: string; terminalSource?: string; reason?: string },
+  params: { deliveryId: string; status?: string; terminalSource?: string; reason?: string },
 ): ActionDescriptor {
-  const body: Record<string, unknown> = { session_id: params.sessionId };
+  const body: Record<string, unknown> = { delivery_id: params.deliveryId };
   if (params.status) {
     body.status = params.status;
   }
@@ -206,7 +206,7 @@ export function reconcileSession(
   }
   return {
     method: "POST",
-    path: `/v1/agents/${encodeId(agentId)}/reconcile-session`,
+    path: `/v1/agents/${encodeId(agentId)}/reconcile-delivery`,
     body,
   };
 }

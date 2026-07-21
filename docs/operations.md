@@ -83,8 +83,9 @@ cargo run -p harness-cli -- serve --addr 127.0.0.1:8787
 ```
 
 Set `HARNESS_ROOT` to point the file store somewhere other than `.harness`.
-The local store writes append-only JSONL collections for goals, members, tasks,
-messages, events, proposals, evidence, provider sessions, and decisions.
+The local store writes append-only Harness-owned coordination and product
+records. Provider transcripts, tool streams, command output, and turns remain
+in the provider's native store and are joined through `NativeSessionRef`.
 
 The default `.harness` directory is local runtime state. Keep durable product
 contracts in docs, schemas, skills, and code; use evidence refs when a runtime
@@ -108,14 +109,14 @@ POST /v1/messages
 POST /v1/gateway/tick
 POST /v1/agents/{id}/deliver
 POST /v1/agents/{id}/retry-delivery
-POST /v1/agents/{id}/reconcile-session
+POST /v1/agents/{id}/reconcile-delivery
 POST /v1/agents/{id}/close
 POST /v1/tasks/{id}/request-review
 ```
 
 The API is a read surface and an operator control plane for the Agent
-Dashboard. It does not replace review gates, provider-session evidence, or
-decisions. Safe actions must call the same CLI value paths and append store
+Dashboard. It does not replace review gates, provider-native execution truth,
+or decisions. Safe actions must call the same CLI value paths and append store
 records instead of mutating dashboard-only state.
 
 Bind the API to `127.0.0.1` for normal local use. It sends permissive CORS

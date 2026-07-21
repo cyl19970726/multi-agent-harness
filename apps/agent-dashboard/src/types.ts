@@ -594,12 +594,6 @@ export interface WorkflowRun {
    */
   spec?: unknown;
   /**
-   * Retention policy for the heavy per-node provider turn-event trace:
-   * "durable" (default) persists the trace so a completed run can be drilled
-   * into; "live" streams it over SSE during execution but does not retain it.
-   * Live streaming is independent of this and always happens.
-   */
-  /**
    * True when this run was a `--dry-run` validation (mock driver, no provider
    * spawned, no tokens). Surfaced as a "dry-run" badge so a validation run is
    * never mistaken for a real one. `undefined`/false for live and legacy rows.

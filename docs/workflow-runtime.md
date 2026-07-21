@@ -69,13 +69,13 @@ The fields are defined in `crates/harness-workflow/src/lib.rs:40` through `crate
 
 ### `StepResult`
 
-`StepResult` is the runtime result for one leaf. It records phase, label, provider, isolation, success, provider session linkage, output summary, optional started/step ids, details telemetry, optional structured output, and ordinal (`crates/harness-workflow/src/lib.rs:85`, `crates/harness-workflow/src/lib.rs:88`, `crates/harness-workflow/src/lib.rs:89`, `crates/harness-workflow/src/lib.rs:97`, `crates/harness-workflow/src/lib.rs:99`, `crates/harness-workflow/src/lib.rs:101`, `crates/harness-workflow/src/lib.rs:117`, `crates/harness-workflow/src/lib.rs:124`, `crates/harness-workflow/src/lib.rs:132`). `StepResult::step_status()` maps `ok=true` to `WorkflowStepStatus::Completed` and `ok=false` to `Failed` (`crates/harness-workflow/src/lib.rs:135`, `crates/harness-workflow/src/lib.rs:137`).
+`StepResult` is the runtime result for one leaf. It records phase, label, provider, isolation, success, output summary, optional started/step ids, details telemetry, optional structured output, and ordinal. Provider-native identity is attached to the durable `WorkflowStep.native_session`, not duplicated inside the runtime result. `StepResult::step_status()` maps `ok=true` to `WorkflowStepStatus::Completed` and `ok=false` to `Failed`.
 
 ### `WorkflowOutcome`
 
 `WorkflowOutcome` is the runtime's whole-run value: ordered steps, terminal status, summary, spawned-agent count, and optional final JSON output (`crates/harness-workflow/src/lib.rs:463`, `crates/harness-workflow/src/lib.rs:465`, `crates/harness-workflow/src/lib.rs:466`, `crates/harness-workflow/src/lib.rs:477`). `outcome_from_steps()` is shared by registry workflows and Starlark runs so all front-ends derive status, summary, and final output identically (`crates/harness-workflow/src/lib.rs:657`, `crates/harness-workflow/src/lib.rs:659`). A run with steps but zero successful leaves fails; otherwise partial success completes unless a Starlark `verdict()` overrides the outcome (`crates/harness-workflow/src/lib.rs:665`, `crates/harness-workflow/src/lib.rs:677`).
 
-`step_result_json()` is the machine-facing projection stored on `WorkflowStep.result` and inside final output. It includes phase, label, provider, isolation, ok, provider session id, output summary, structured payload, ordinal, and merged telemetry details such as model, exit code, duration, tokens, failures, and worktree diffs (`crates/harness-workflow/src/lib.rs:624`, `crates/harness-workflow/src/lib.rs:627`, `crates/harness-workflow/src/lib.rs:628`, `crates/harness-workflow/src/lib.rs:643`).
+`step_result_json()` is the machine-facing projection stored on `WorkflowStep.result` and inside final output. It includes phase, label, provider, isolation, ok, output summary, structured payload, ordinal, and merged telemetry details such as model, exit code, duration, tokens, failures, and worktree diffs. It does not embed provider transcript or session-history data.
 
 ## Host API
 
@@ -359,7 +359,7 @@ Workflow leaves are read-only by default: `writable=False` is the Starlark defau
 
 Read-only is enforced per provider, not assumed. codex (`--sandbox read-only`) and claude (the `Read,Grep,Glob` tool allowlist) physically prevent a read-only leaf from writing, so they run in the shared cwd. kimi's `kimi -p` has no read-only mode (it rejects every permission flag), so a "read-only" kimi leaf could otherwise edit the live tree. The leaf runner reads each provider's `enforces_read_only` capability and isolates a read-only leaf into a throwaway worktree when its provider can't enforce read-only — so the worktree, not provider trust, is the boundary (`step_needs_isolation`, `provider_enforces_read_only`).
 
-The worktree path is unique per run, node label, and provider session id, so same-label concurrent writable leaves do not collide (`crates/harness-cli/src/main.rs:7409`, `crates/harness-cli/src/main.rs:7415`, `crates/harness-cli/src/main.rs:7419`). The guard removes the worktree and temporary branch on drop (`crates/harness-cli/src/main.rs:7395`, `crates/harness-cli/src/main.rs:7496`, `crates/harness-cli/src/main.rs:7502`, `crates/harness-cli/src/main.rs:7507`). The diff is captured before cleanup and stored as leaf evidence/telemetry (`crates/harness-cli/src/main.rs:7798`, `crates/harness-cli/src/main.rs:7803`, `crates/harness-cli/src/main.rs:7867`).
+The worktree path is unique per run, node label, and Harness worker execution id, so same-label concurrent writable leaves do not collide. The guard removes the worktree and temporary branch on drop. The diff is captured before cleanup and stored as leaf evidence/telemetry.
 
 The writable worktree base is the project-root checkout's HEAD, not the cwd used to launch `run-script`. Keep the selected project root on the intended branch before running writable or isolated workflow leaves.
 

@@ -20,12 +20,12 @@ use harness_core::{
     PendingInteractionKind, PendingInteractionOption, PendingInteractionRoute,
     PendingInteractionStatus, ProjectContext, ProjectKind, ProviderCapabilities,
     ProviderCompatibilityStatus, ProviderEventFidelity, ProviderExecutionStatus,
-    ProviderIntegrationProfile,
-    ProviderInteractionMode, SenderKind, TeamDeliveryPolicy, TeamDeliveryStatus, TeamMessage,
-    TeamMessageDelivery, TeamMessageKind, TeamRunEvent, TeamRunEventSourceKind, TeamRunStatus,
-    Wave, WaveExecutorKind, WaveGateStatus, WaveStatus, WorkflowArtifactFile,
-    WorkflowArtifactManifest, WorkflowArtifactManifestStatus, WorkflowPatch, WorkflowPatchStatus,
-    WorkflowRun, WorkflowRunStatus, WorkflowStep, WorkflowStepStatus, WorkflowTerminalReason,
+    ProviderIntegrationProfile, ProviderInteractionMode, SenderKind, TeamDeliveryPolicy,
+    TeamDeliveryStatus, TeamMessage, TeamMessageDelivery, TeamMessageKind, TeamRunEvent,
+    TeamRunEventSourceKind, TeamRunStatus, Wave, WaveExecutorKind, WaveGateStatus, WaveStatus,
+    WorkflowArtifactFile, WorkflowArtifactManifest, WorkflowArtifactManifestStatus, WorkflowPatch,
+    WorkflowPatchStatus, WorkflowRun, WorkflowRunStatus, WorkflowStep, WorkflowStepStatus,
+    WorkflowTerminalReason,
 };
 use harness_store::{HarnessStore, MessageDeliveryClaimResult, StoreError};
 use thiserror::Error;
@@ -1885,7 +1885,7 @@ fn team_member_provider_profile_for_mode(
             reviewed_provider_versions: vec!["0.145.0-alpha.18".to_string()],
             compatibility_status: ProviderCompatibilityStatus::Unknown,
             adapter_reviewed_at: Some("2026-07-21".to_string()),
-            compatibility_note: Some("Exec JSONL is retained for non-interactive turns; app-server is the target interactive mode.".to_string()),
+            compatibility_note: Some("Codex rollout storage is the execution history; Harness keeps only its NativeSessionRef and coordination outcome. App-server is the interactive mode.".to_string()),
             // codex exec --json is non-interactive in this adapter. A future
             // follow-up contract must first turn an end-of-round blocker into
             // a PendingInteraction; do not claim it before that exists.
@@ -4624,12 +4624,29 @@ fn run_claude_team_turn(
         text
     });
     let mut events = Vec::new();
+    let mut bound_session_id = member
+        .native_session
+        .as_ref()
+        .map(|session| session.native_session_id.clone());
     let mut last_activity = Instant::now();
     let status = loop {
         match line_rx.recv_timeout(Duration::from_millis(100)) {
             Ok(line) => {
                 last_activity = Instant::now();
                 if let Some(event) = ClaudeStreamEvent::parse_line(&line) {
+                    if let Some(session_id) = event.session_id() {
+                        if bound_session_id.as_deref() != Some(session_id.as_str()) {
+                            let mut bound = member.clone();
+                            bound.native_session = Some(native_session_ref(
+                                member,
+                                &session_id,
+                                "claude_project_session",
+                            ));
+                            bound.last_event_at = Some(now_string());
+                            ledger.save_member_run(&bound)?;
+                            bound_session_id = Some(session_id);
+                        }
+                    }
                     project_claude_team_event_live(
                         ledger,
                         member,
@@ -4659,10 +4676,16 @@ fn run_claude_team_turn(
     let stderr = stderr_reader.join().unwrap_or_default();
     if infer_claude_session_status(&events, status.success()) != ProviderExecutionStatus::Succeeded
     {
+        let provider_error = extract_claude_reply_text(&events)
+            .filter(|text| !text.trim().is_empty())
+            .or_else(|| {
+                let stderr = stderr.trim();
+                (!stderr.is_empty()).then(|| stderr.to_string())
+            })
+            .unwrap_or_else(|| format!("provider exited with {status}"));
         return Err(CliError::Usage(format!(
             "Claude Team Member {} failed: {}",
-            member.name,
-            stderr.trim()
+            member.name, provider_error
         )));
     }
     let session_id = extract_session_id_from_claude_events(&events)
@@ -7920,11 +7943,6 @@ struct WorkflowDeliveryOptions {
     /// run's ceiling between the cumulative tally's barrier-granular checks. `None`
     /// = no per-worker cap. Codex has no native budget flag, so this is claude-only.
     max_budget_usd: Option<f64>,
-    /// Retention policy for the heavy per-node turn-event trace: "durable"
-    /// (default) persists the per-session AgentEvents + retained NDJSON trace;
-    /// "live" streams the trace over SSE during execution but prunes it after the
-    /// run so a PAST run shows "trace not retained". Live streaming itself is
-    /// independent and always happens.
     /// When true, emit a compact NDJSON progress line to STDERR as each step goes
     /// `running` then terminal — so an agent caller that invoked us via its shell
     /// tool sees the phase-by-phase timeline (which step/phase is live) alongside
@@ -7998,8 +8016,8 @@ fn workflow_effective_effort<'a>(
 /// The REAL agent-step driver. Drives one provider delivery through the neutral
 /// seam: (1) queue a Message addressed to the member, (2) deliver exactly that
 /// message via `deliver_agent_messages_value` (which claims + runs
-/// `run_provider_delivery`), (3) read back the resulting provider session and
-/// report to build a [`workflow::StepResult`].
+/// `run_provider_delivery`), and (3) reduce the explicit provider outcome into
+/// a [`workflow::StepResult`]. Provider history remains in its native session.
 ///
 /// This fn is TOTAL: any error (store failure, no runtime, provider failure) is
 /// reported as `StepResult { ok: false, .. }` so the workflow's control flow —
@@ -12060,9 +12078,6 @@ fn deliver_agent_messages_value(
                 provider_thread_id,
                 provider_turn_id,
                 terminal_source: Some(MessageTerminalSource::DryRun),
-                stdout_ref: None,
-                stderr_ref: None,
-                request_ref: None,
                 provider_request_id: None,
                 evidence_ids,
                 exit_code: Some(0),
@@ -12113,9 +12128,6 @@ fn deliver_agent_messages_value(
                     provider_thread_id: member.provider_thread_id.clone(),
                     provider_turn_id: None,
                     terminal_source: Some(MessageTerminalSource::Failed),
-                    stdout_ref: None,
-                    stderr_ref: None,
-                    request_ref: None,
                     provider_request_id: None,
                     evidence_ids,
                     exit_code: Some(1),
@@ -12145,9 +12157,6 @@ fn deliver_agent_messages_value(
                     provider_thread_id: member.provider_thread_id.clone(),
                     provider_turn_id: None,
                     terminal_source: Some(MessageTerminalSource::Failed),
-                    stdout_ref: None,
-                    stderr_ref: None,
-                    request_ref: None,
                     provider_request_id: None,
                     evidence_ids,
                     exit_code: Some(1),
@@ -12269,9 +12278,6 @@ fn deliver_agent_messages_value(
             "provider_turn_id": delivery.provider_turn_id,
             "terminal_source": delivery.terminal_source,
             "provider_request_id": delivery.provider_request_id,
-            "request_ref": delivery.request_ref,
-            "stdout_ref": delivery.stdout_ref,
-            "stderr_ref": delivery.stderr_ref,
             "exit_code": delivery.exit_code,
             "tokens": delivery.tokens.map(TokenUsage::to_json),
             "cost_usd": delivery.cost_usd,
@@ -12430,9 +12436,6 @@ struct DeliveryOutcome {
     provider_thread_id: Option<String>,
     provider_turn_id: Option<String>,
     terminal_source: Option<MessageTerminalSource>,
-    stdout_ref: Option<String>,
-    stderr_ref: Option<String>,
-    request_ref: Option<String>,
     provider_request_id: Option<String>,
     evidence_ids: Vec<String>,
     exit_code: Option<i32>,
@@ -13921,10 +13924,8 @@ fn build_bootstrap_prompt(member: &AgentMember) -> String {
 //
 // The harness core stays provider-neutral (ADR 0011); all provider-specific
 // behaviour lives behind these four dispatch points keyed on `member.provider`.
-// Codex routes to the existing, regression-clean implementation. Claude routes
-// to stubs that return a clear "not yet implemented" error until BE-WP7/WP8
-// land the real claude-CLI runtime/delivery/ingest. Unknown providers fail
-// fast with an explicit, debuggable message rather than silently assuming Codex.
+// Codex, Claude, and Kimi route to their registered adapters. Unknown providers
+// fail fast with an explicit error rather than silently assuming Codex.
 // ---------------------------------------------------------------------------
 
 /// Everything a one-shot ephemeral provider spawn needs, bundled so the
@@ -14587,9 +14588,8 @@ fn run_kimi_exec_delivery_real(
     ))
 }
 
-/// Run one Kimi member delivery. Mirrors [`run_claude_delivery`] (claude-shaped
-/// telemetry/status/session bookkeeping) but spawns `kimi` and records the row
-/// under the `kimi` provider + `kimi.stream-json.ndjson` jsonl_ref.
+/// Run one Kimi member delivery. The short-lived transport stream is reduced in
+/// memory and removed; Kimi's own session remains the execution history.
 #[allow(clippy::too_many_arguments)]
 fn run_kimi_delivery(
     store: &HarnessStore,
@@ -14651,9 +14651,6 @@ fn run_kimi_delivery(
         provider_turn_id: None,
         terminal_source,
         status,
-        stdout_ref: None,
-        stderr_ref: None,
-        request_ref: None,
         provider_request_id: None,
         evidence_ids: vec![evidence_id],
         exit_code: if process_success { Some(0) } else { Some(1) },
@@ -14825,7 +14822,7 @@ impl ClaudeStreamEvent {
     }
 }
 
-/// Infer provider session status from Claude stream-json events.
+/// Infer provider execution status from Claude stream-json events.
 fn infer_claude_session_status(
     events: &[ClaudeStreamEvent],
     process_success: bool,
@@ -14836,7 +14833,14 @@ fn infer_claude_session_status(
     let has_result = events.iter().any(|e| e.event_type == "result");
     if has_result {
         if let Some(result_event) = events.iter().find(|e| e.event_type == "result") {
-            if result_event.payload.get("error").is_some() {
+            if result_event.payload.get("error").is_some()
+                || result_event
+                    .payload
+                    .get("is_error")
+                    .and_then(|value| value.as_bool())
+                    == Some(true)
+                || result_event.payload.get("api_error_status").is_some()
+            {
                 return ProviderExecutionStatus::Failed;
             }
         }
@@ -14910,8 +14914,8 @@ fn status_to_terminal_source(status: &ProviderExecutionStatus) -> Option<Message
 }
 
 // --- Codex exec --json delivery (WP-2) ---
-// Parse NDJSON output from `codex exec --json` into AgentEvent + provider execution attempt lifecycle.
-// Row parity with app-server path: identical provider execution attempt/Evidence structure.
+// Parse the short-lived transport stream in memory. Harness records only the
+// delivery outcome and NativeSessionRef; Codex owns the durable item history.
 
 #[derive(Debug, Clone, PartialEq)]
 struct CodexExecEvent {
@@ -15446,9 +15450,6 @@ fn run_codex_exec_delivery(
         provider_thread_id,
         provider_turn_id,
         terminal_source,
-        stdout_ref: None,
-        stderr_ref: None,
-        request_ref: None,
         provider_request_id: None, // exec stream does not use request_id
         evidence_ids: vec![evidence_id],
         exit_code,
@@ -15667,9 +15668,6 @@ fn run_claude_delivery(
         provider_turn_id: None,
         terminal_source,
         status,
-        stdout_ref: None,
-        stderr_ref: None,
-        request_ref: None,
         provider_request_id: None,
         evidence_ids: vec![evidence_id],
         exit_code: if process_success { Some(0) } else { Some(1) },
@@ -16246,7 +16244,7 @@ fn print_help() {
   team-run create|list|status|start|send|events|complete|cancel
   team create|list|show|close
   member register|list|providers
-  agent create|list|show|start|health|send|deliver|retry-delivery|reconcile-session|gateway|ingest|close
+  agent create|list|show|start|health|send|deliver|retry-delivery|reconcile-delivery|gateway|close
   workflow list|run|run-script|get-output|patch|gc-worktrees|reap-workers
   dashboard snapshot
   hook record --agent <agent> [--runtime <runtime>]
@@ -17088,9 +17086,6 @@ mod workflow_runtime_tests {
             provider_thread_id: None,
             provider_turn_id: None,
             terminal_source: Some(MessageTerminalSource::Unknown),
-            stdout_ref: None,
-            stderr_ref: None,
-            request_ref: None,
             provider_request_id: None,
             evidence_ids: Vec::new(),
             exit_code: Some(0),

@@ -474,10 +474,13 @@ against Moonshot pricing or a future live usage frame before spend decisions are
 - [ ] No permission flags are passed on the `-p` path.
 - [ ] Optional `--model` is passed when launch spec has a model.
 - [ ] Optional `--session` is passed only when a real resume id is available.
-- [ ] `kimi.stream-json.ndjson` is written under the provider session directory.
+- [ ] Kimi transport frames are reduced in memory and no Harness transcript or
+      NDJSON mirror is retained.
 - [ ] Assistant reply extraction works for string content and array block content.
-- [ ] `session.resume_hint` is parsed into the provider session thread/resume field.
-- [ ] schema/cost/resume remain degraded until a follow-up proves them live.
+- [ ] ACP `sessionId` is bound to a mode-aware `NativeSessionRef` and native
+      activity is read from Kimi's own session store.
+- [ ] ACP `session/load` resume is covered; schema and cost remain explicitly
+      degraded where the selected Kimi mode does not expose them.
 - [ ] `supported_provider_names()` includes `kimi`.
 - [ ] Codex and Claude paths remain regression-clean.
 

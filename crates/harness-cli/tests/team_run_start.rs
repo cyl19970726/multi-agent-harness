@@ -391,6 +391,83 @@ fn claude_member_uses_native_session_without_provider_activity_mirror() {
 }
 
 #[test]
+fn claude_failure_keeps_native_session_and_provider_error_without_mirroring_stream() {
+    let home = TempHome::new("team-run-claude-native-failure");
+    let project_id = init_project(&home, "alpha");
+    let fake_bin = fake_provider::install_claude_failure_shim(
+        &home.base().join("fakebin-claude-team-failure"),
+    );
+    let out = run_with_fake_kimi(
+        &home,
+        &fake_bin,
+        "done",
+        &[
+            "--project",
+            &project_id,
+            "team-run",
+            "create",
+            "--objective",
+            "Prove failed native session binding",
+            "--member",
+            "reviewer:reviewer:claude/cli",
+        ],
+    );
+    assert!(out.status.success(), "create failed: {out:?}");
+    let run_id = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let out = run_with_fake_kimi(
+        &home,
+        &fake_bin,
+        "done",
+        &[
+            "--project",
+            &project_id,
+            "team-run",
+            "start",
+            "--id",
+            &run_id,
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "failure is journaled, not a CLI crash: {out:?}"
+    );
+
+    let members = store_rows(&home, &project_id, "member_runs.jsonl");
+    let member = members
+        .iter()
+        .find(|member| member["team_run_id"] == run_id)
+        .unwrap();
+    assert_eq!(member["status"], "failed");
+    assert_eq!(
+        member["native_session"]["native_session_id"],
+        "session_fake_claude_failed"
+    );
+    assert_eq!(member["native_session"]["availability"], "available");
+
+    let actions = store_rows(&home, &project_id, "member_actions.jsonl");
+    let failure = actions
+        .iter()
+        .find(|action| action["member_run_id"] == member["id"])
+        .expect("failure action");
+    assert_eq!(failure["action_type"], "error");
+    assert!(
+        failure["summary"]
+            .as_str()
+            .is_some_and(|summary| summary.contains("401 Invalid authentication credentials")),
+        "provider failure is explicit: {failure:?}"
+    );
+    assert_eq!(
+        store_rows(&home, &project_id, "team_runs.jsonl")[0]["status"],
+        "reviewing"
+    );
+    assert!(!home
+        .projects_dir()
+        .join(&project_id)
+        .join("provider_sessions.jsonl")
+        .exists());
+}
+
+#[test]
 fn team_run_start_completes_mixed_codex_kimi_without_persisting_reasoning() {
     let home = TempHome::new("team-run-start-mixed-codex-kimi");
     let project_id = init_project(&home, "alpha");

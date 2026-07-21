@@ -97,8 +97,8 @@ Center reading order:
    model;
 2. availability banner, including exclusive-assignment truth;
 3. chronological cross-context activity: direct messages, explicit assignment
-   entries, workflow participation, delivered artifacts, provider-session
-   summaries, and agent replies;
+   entries, workflow participation, delivered artifacts, provider-native
+   activity projections, and agent replies;
 4. composer addressed to the AgentMember, with queue/busy behavior stated
    honestly.
 

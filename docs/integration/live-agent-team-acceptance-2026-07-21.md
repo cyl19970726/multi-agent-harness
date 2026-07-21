@@ -9,8 +9,42 @@ canonical_for: first native Codex + Kimi AgentTeamRun acceptance and interrupted
 > Historical implementation evidence: this run predates ADR 0032 and therefore
 > includes provider-derived MemberAction/TeamRunEvent mirrors. It remains valid
 > evidence for transport, correlation, interruption recovery, and gates, but it
-> is not the target storage contract. A new acceptance must prove native-session
-> reads/resume with no mirrored provider tool/command/file history.
+> is not the target storage contract. The 2026-07-22 acceptance below replaces
+> its storage claim with native-session reads and no mirrored provider history.
+
+## 2026-07-22 provider-native storage acceptance
+
+The post-ADR 0032 acceptance is Mission
+`mission-1784634958783-p62756-0`, Wave
+`wave-1784664060823-p62885-0`, accepted TeamRun
+`team-run-1784664071054-p64939-0`.
+
+Two real members completed one bounded, tool-free assignment:
+
+| MemberRun | Reviewed provider/model | Native session | Result |
+| --- | --- | --- | --- |
+| `member-run-1784664071054-p64939-1` | Codex `0.145.0-alpha.18` / `gpt-5.6-sol` | `019f8644-bfc8-7912-beb3-00ce0d15cb0d` | completed |
+| `member-run-1784664071054-p64939-2` | Kimi `0.27.0` / `kimi-code/kimi-for-coding` | `session_cdb47f15-3a65-40ad-a6a6-b71db69b89c5` | completed |
+
+Each assignment has its own correlation id and each handoff reuses that
+correlation while naming the assignment as causation. Both `NativeSessionRef`s
+are `available` and the on-demand native-activity API reconstructed two items
+from each provider-owned store. The project Store contains no
+`provider_sessions.jsonl`, `provider_turn_events.jsonl`, `provider-sessions/`,
+provider stdout/stderr mirror, or Harness NDJSON transcript.
+
+Kimi `k2.5` was not present in the operator's installed model configuration.
+The acceptance therefore used the configured low coding tier
+`kimi-code/kimi-for-coding`; it does not claim a K2.5 run.
+
+A separate preserved three-provider attempt,
+`team-run-1784663785080-p43197-0`, proved Codex and Kimi again and reached a
+real Claude `2.1.181` native session. Claude generation was blocked by the
+operator's expired OAuth token (`401`), so Wave
+`wave-1784663768283-p32736-0` is explicitly `blocked`, not accepted. The adapter
+now preserves Claude's native session locator and provider error even on this
+failure path; deterministic tests cover successful Claude native read/resume
+and failure behavior without transcript mirroring.
 
 ## 2026-07-22 Codex app-server live control addendum
 
@@ -84,7 +118,7 @@ the Host; the Store contains explicit progress and completion actions.
 - Wave attempt order contains the cancelled attempt followed by the completed
   retry.
 - Both Assignment messages moved from queued to delivered with attempt `1`.
-- Codex and Kimi MemberRuns have real provider session identifiers and terminal
+- Codex and Kimi MemberRuns have real provider-native session identifiers and terminal
   timestamps.
 - Both handoffs name their originating assignment as `causation_id` and reuse
   its `correlation_id`.
