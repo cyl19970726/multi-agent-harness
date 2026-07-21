@@ -1736,7 +1736,6 @@ mod tests {
             execution_status: Some(ProviderSessionStatus::Running),
             native_session: None,
             started_at: Some("unix-ms:1".into()),
-            provider_session_id: Some(provider_session_id.into()),
             provider_request_id: None,
             provider_thread_id: None,
             provider_turn_id: None,

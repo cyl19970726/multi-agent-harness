@@ -48,7 +48,6 @@ import { fetchNativeWorkflowStepActivity, normalizeBaseUrl } from "../api";
 import type {
   NativeActivityProjection,
   NativeSessionRef,
-  ProviderSession,
   WorkflowRun,
   WorkflowStep,
 } from "../types";
@@ -291,7 +290,6 @@ export function WorkflowRunDetail({ model, onSelectionChange, apiUrl }: Workflow
   }
 
   const steps = model.selectedWorkflowSteps;
-  const sessions = model.snapshot.provider_sessions ?? [];
   const tone = workflowRunTone(run.status);
   const headerTone = run.status === "failed" ? "decision" : tone;
   const headerStatus = run.status === "failed" ? "needs review" : run.status === "completed" ? "passed" : run.status;
@@ -422,7 +420,7 @@ export function WorkflowRunDetail({ model, onSelectionChange, apiUrl }: Workflow
 
       <DocSection label="Detailed workflow timeline">
         {phases.length ? (
-          <Timeline phases={phases} sessions={sessions} model={model} apiUrl={apiUrl} run={run} onSelectionChange={onSelectionChange} />
+          <Timeline phases={phases} model={model} apiUrl={apiUrl} run={run} onSelectionChange={onSelectionChange} />
         ) : (
           <EmptyState
             icon={Workflow}
@@ -1265,14 +1263,12 @@ function plainVerdictResult(result: string): string {
 
 function Timeline({
   phases,
-  sessions,
   model,
   apiUrl,
   run,
   onSelectionChange,
 }: {
   phases: WorkflowPhase[];
-  sessions: ProviderSession[];
   model: WorkbenchModel;
   apiUrl?: string;
   run: WorkflowRun;
@@ -1307,7 +1303,6 @@ function Timeline({
                 key={step.id}
                 step={step}
                 phase={phase}
-                sessions={sessions}
                 model={model}
                 apiUrl={apiUrl}
                 run={run}
@@ -1435,7 +1430,6 @@ function normalizeWorkflowUiLanguage(value: string): string {
 function StepCard({
   step,
   phase,
-  sessions,
   model,
   apiUrl,
   run,
@@ -1443,7 +1437,6 @@ function StepCard({
 }: {
   step: WorkflowStep;
   phase: WorkflowPhase;
-  sessions: ProviderSession[];
   model: WorkbenchModel;
   apiUrl?: string;
   run: WorkflowRun;

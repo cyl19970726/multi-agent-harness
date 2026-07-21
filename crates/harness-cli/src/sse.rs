@@ -11,7 +11,7 @@ use std::time::Duration;
 use crossbeam::channel::{bounded, Receiver, Sender};
 use harness_core::{
     AgentEvent, AgentTeamRun, MemberAction, MemberRun, Message, Mission, PendingInteraction,
-    ProviderSession, TeamMessage, TeamRunEvent, Wave, WorkflowRun, WorkflowStep,
+    TeamMessage, TeamRunEvent, Wave, WorkflowRun, WorkflowStep,
 };
 
 /// An event frame sent to SSE clients. Durable frames are reconstructed by tailing
@@ -24,25 +24,16 @@ pub enum SseEventFrame {
     Snapshot {
         agent_events: Vec<AgentEvent>,
         messages: Vec<Message>,
-        provider_sessions: Vec<ProviderSession>,
         generated_at: String,
     },
     /// A new agent event was recorded
     AgentEvent(AgentEvent),
     /// A message was created or delivery status changed
     Message(Message),
-    /// A provider session status changed
-    ProviderSession(ProviderSession),
     /// A workflow run status changed (WP2)
     WorkflowRun(WorkflowRun),
     /// A workflow step started or completed (WP2)
     WorkflowStep(WorkflowStep),
-    /// A single raw provider turn event ({session_id, event}), teed live during
-    /// a delivery so the agent TUI streams sub-second instead of polling (Stage B).
-    ProviderTurnEvent(serde_json::Value),
-    /// Normalized companion to ProviderTurnEvent for live Stage B consumers:
-    /// {session_id, events: HarnessTurnEvent[]}.
-    ProviderTurnEventNormalized(serde_json::Value),
     /// A folded team-run event was recorded (Agent Team v0).
     TeamRunEvent(TeamRunEvent),
     /// A native Mission was created or updated.
@@ -128,8 +119,6 @@ impl Clone for SseManager {
 
 /// A live-turn-event normalizer, scoped to one project's store (so the provider
 /// session lookup hits the right ledger). Boxed so each project can carry its own.
-pub type Normalizer = Box<dyn Fn(&str, &serde_json::Value) -> Vec<serde_json::Value> + Send>;
-
 /// Start a background watcher thread that monitors each project's jsonl files for
 /// appends and broadcasts new records to that project's SSE clients only
 /// (goal-multi-project P6). One thread polls every watched project serially; the
@@ -139,9 +128,7 @@ pub type Normalizer = Box<dyn Fn(&str, &serde_json::Value) -> Vec<serde_json::Va
 /// `rescan` returns the live project-id → store-root map and is called EVERY poll,
 /// not just at startup, so a project created or switched-to after serve starts
 /// (`POST /v1/projects/switch` or a CLI `project add`) gets a live event channel
-/// without a serve restart (goal-multi-project #147 follow-up). `make_normalizer`
-/// builds a project's live-turn-event normalizer lazily on first sight, scoped to
-/// that project's store.
+/// without a serve restart (goal-multi-project #147 follow-up).
 ///
 /// Seeding policy: projects present at startup are seeded at current EOF so only
 /// rows appended after the watcher starts are streamed (the initial snapshot covers
@@ -152,7 +139,6 @@ pub type Normalizer = Box<dyn Fn(&str, &serde_json::Value) -> Vec<serde_json::Va
 /// empty/small and the full replay is cheap and deduped by id on the client).
 pub fn start_sse_watcher(
     rescan: impl Fn() -> HashMap<String, PathBuf> + Send + 'static,
-    make_normalizer: impl Fn(&Path) -> Normalizer + Send + 'static,
     manager: SseManager,
 ) -> std::io::Result<()> {
     thread::spawn(move || {
@@ -164,16 +150,10 @@ pub fn start_sse_watcher(
         // projects with the same filename (e.g. both have `messages.jsonl`)
         // completely independent.
         let mut consumed_offsets: HashMap<(String, String), u64> = HashMap::new();
-        // project_id → its live-turn-event normalizer, built lazily so a project
-        // registered AFTER serve starts gets one on first sight. Membership also
-        // marks which projects we have already seen (EOF-seeded vs. stream-from-0).
-        let mut normalizers: HashMap<String, Normalizer> = HashMap::new();
-
         // Seed offsets at current EOF for the projects known at startup so we only
         // stream rows appended after the watcher starts.
         for (project_id, store_root) in rescan() {
             seed_offsets_at_eof(&project_id, &store_root, &mut consumed_offsets);
-            normalizers.insert(project_id, make_normalizer(store_root.as_path()));
         }
 
         // Poll for new appends at a low floor (~150ms) so the operator sees
@@ -185,20 +165,7 @@ pub fn start_sse_watcher(
             // set mid-run. `store_for` already resolves new projects live for
             // `/v1/snapshot`; this closes the matching gap for `/v1/events`.
             for (project_id, store_root) in rescan() {
-                // First sight of a post-startup project: build its normalizer now.
-                // We do NOT EOF-seed it, so its offsets stay 0 and this first poll
-                // streams its (freshly-created, hence small) ledger live.
-                if !normalizers.contains_key(&project_id) {
-                    normalizers.insert(project_id.clone(), make_normalizer(store_root.as_path()));
-                }
-                let normalize = normalizers.get(&project_id);
-                poll_project(
-                    &project_id,
-                    &store_root,
-                    &mut consumed_offsets,
-                    normalize,
-                    &manager,
-                );
+                poll_project(&project_id, &store_root, &mut consumed_offsets, &manager);
             }
         }
     });
@@ -229,10 +196,8 @@ fn seed_offsets_at_eof(
 const WATCHED_FILES: &[&str] = &[
     "agent_events.jsonl",
     "messages.jsonl",
-    "provider_sessions.jsonl",
     "workflow_runs.jsonl",
     "workflow_steps.jsonl",
-    "provider_turn_events.jsonl",
     "team_run_events.jsonl",
     "missions.jsonl",
     "waves.jsonl",
@@ -262,7 +227,6 @@ fn poll_project(
     project_id: &str,
     store_root: &Path,
     consumed_offsets: &mut HashMap<(String, String), u64>,
-    normalize: Option<&Normalizer>,
     manager: &SseManager,
 ) {
     check_and_broadcast_appends(
@@ -400,21 +364,6 @@ fn poll_project(
     check_and_broadcast_appends(
         project_id,
         store_root,
-        "provider_sessions.jsonl",
-        consumed_offsets,
-        |line| {
-            if let Ok(session) = serde_json::from_str::<ProviderSession>(line) {
-                vec![SseEventFrame::ProviderSession(session)]
-            } else {
-                Vec::new()
-            }
-        },
-        manager,
-    );
-
-    check_and_broadcast_appends(
-        project_id,
-        store_root,
         "workflow_runs.jsonl",
         consumed_offsets,
         |line| {
@@ -455,43 +404,6 @@ fn poll_project(
             } else {
                 Vec::new()
             }
-        },
-        manager,
-    );
-
-    // provider_turn_events.jsonl (Stage B): each line is a raw {session_id, event}
-    // teed during a provider delivery; broadcast it so the agent TUI streams live
-    // without polling. Normalized companion frames use this project's normalizer.
-    check_and_broadcast_appends(
-        project_id,
-        store_root,
-        "provider_turn_events.jsonl",
-        consumed_offsets,
-        |line| {
-            let Ok(envelope) = serde_json::from_str::<serde_json::Value>(line) else {
-                return Vec::new();
-            };
-
-            let mut frames = vec![SseEventFrame::ProviderTurnEvent(envelope.clone())];
-            if let (Some(normalize), Some(session_id)) = (
-                normalize,
-                envelope
-                    .get("session_id")
-                    .and_then(|value| value.as_str())
-                    .filter(|value| !value.is_empty()),
-            ) {
-                let raw = &envelope["event"];
-                let normalized = normalize(session_id, raw);
-                if !normalized.is_empty() {
-                    frames.push(SseEventFrame::ProviderTurnEventNormalized(
-                        serde_json::json!({
-                            "session_id": session_id,
-                            "events": normalized,
-                        }),
-                    ));
-                }
-            }
-            frames
         },
         manager,
     );
@@ -912,57 +824,6 @@ mod tests {
         std::fs::remove_dir_all(&root).expect("cleanup");
     }
 
-    /// A parse callback may now fan out one complete JSONL row into multiple
-    /// SSE frames; offset handling remains one-row-at-a-time.
-    #[test]
-    fn one_line_can_broadcast_multiple_frames() {
-        let root = unique_dir("multi-frame");
-        std::fs::create_dir_all(&root).expect("create root");
-        let path = root.join("provider_turn_events.jsonl");
-
-        let manager = SseManager::new();
-        let rx = manager.subscribe(TEST_PID);
-        let mut offsets: HashMap<(String, String), u64> = HashMap::new();
-
-        std::fs::write(
-            &path,
-            serde_json::json!({"session_id": "s-1", "event": {"type": "x"}}).to_string() + "\n",
-        )
-        .expect("write row");
-
-        check_and_broadcast_appends(
-            TEST_PID,
-            &root,
-            "provider_turn_events.jsonl",
-            &mut offsets,
-            |_| {
-                vec![
-                    SseEventFrame::ProviderTurnEvent(serde_json::json!({"raw": true})),
-                    SseEventFrame::ProviderTurnEventNormalized(serde_json::json!({
-                        "session_id": "s-1",
-                        "events": [],
-                    })),
-                ]
-            },
-            &manager,
-        );
-
-        let mut raw = 0;
-        let mut normalized = 0;
-        while let Ok(frame) = rx.try_recv() {
-            match frame {
-                SseEventFrame::ProviderTurnEvent(_) => raw += 1,
-                SseEventFrame::ProviderTurnEventNormalized(_) => normalized += 1,
-                other => panic!("unexpected frame {other:?}"),
-            }
-        }
-
-        assert_eq!(raw, 1);
-        assert_eq!(normalized, 1);
-
-        std::fs::remove_dir_all(&root).expect("cleanup");
-    }
-
     /// Workflow runs and steps should be streamed via SSE like other events (WP2).
     #[test]
     fn workflow_run_and_step_broadcast_exactly_once() {
@@ -1213,7 +1074,7 @@ mod tests {
             std::fs::write(root.join(filename), format!("{compact}\n")).expect("write row");
         }
 
-        poll_project(TEST_PID, &root, &mut offsets, None, &manager);
+        poll_project(TEST_PID, &root, &mut offsets, &manager);
 
         let mut kinds = Vec::new();
         while let Ok(frame) = rx.try_recv() {

@@ -68,7 +68,6 @@
         "execution_status",
         "native_session",
         "started_at",
-        "provider_session_id",
         "provider_request_id",
         "provider_thread_id",
         "provider_turn_id",
@@ -100,7 +99,6 @@
           }
         },
         "started_at": { "type": ["string", "null"], "minLength": 1 },
-        "provider_session_id": { "type": ["string", "null"] },
         "provider_request_id": { "type": ["string", "null"] },
         "provider_thread_id": { "type": ["string", "null"] },
         "provider_turn_id": { "type": ["string", "null"] },

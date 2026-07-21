@@ -524,8 +524,6 @@ pub struct MessageDelivery {
     #[serde(default)]
     pub started_at: Option<String>,
     #[serde(default)]
-    pub provider_session_id: Option<String>,
-    #[serde(default)]
     pub provider_request_id: Option<String>,
     #[serde(default)]
     pub provider_thread_id: Option<String>,

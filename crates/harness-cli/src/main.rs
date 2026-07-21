@@ -1103,7 +1103,7 @@ fn member_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
 fn agent_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     require_subcommand(
         args,
-        "agent create|list|show|start|health|hooks|send|deliver|retry-delivery|reconcile-session|gateway|ingest|close",
+        "agent create|list|show|start|health|hooks|send|deliver|retry-delivery|reconcile-delivery|gateway|close",
     )?;
     match args[0].as_str() {
         "create" => {
@@ -1240,17 +1240,17 @@ fn agent_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
                 store,
                 &required(args, "--agent").or_else(|_| required(args, "--id"))?,
                 &required(args, "--message")?,
-                value(args, "--session").as_deref(),
+                value(args, "--delivery").as_deref(),
                 &value(args, "--reason").unwrap_or_else(|| "operator requested retry".into()),
                 has_flag(args, "--force"),
             )?;
             print_json(&result)?;
         }
-        "reconcile-session" => {
-            let result = reconcile_provider_session_value(
+        "reconcile-delivery" => {
+            let result = reconcile_delivery_value(
                 store,
                 &required(args, "--agent").or_else(|_| required(args, "--id"))?,
-                &required(args, "--session")?,
+                &required(args, "--delivery")?,
                 parse_provider_session_status(&required(args, "--status")?)?,
                 parse_terminal_source(
                     value(args, "--terminal-source")
@@ -1262,22 +1262,6 @@ fn agent_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
             print_json(&result)?;
         }
         "gateway" => run_provider_gateway(store, args)?,
-        "ingest" => {
-            let agent_id = required(args, "--agent")?;
-            let before_events = store.events()?.len();
-            ingest_provider_output(
-                store,
-                &agent_id,
-                value(args, "--runtime").as_deref(),
-                value(args, "--task").as_deref(),
-                &required(args, "--source")?,
-            )?;
-            let after_events = store.events()?.len();
-            print_json(&serde_json::json!({
-                "agent_member_id": agent_id,
-                "events_ingested": after_events.saturating_sub(before_events)
-            }))?;
-        }
         "close" => {
             let id = required(args, "--id")?;
             print_json(&close_agent_member_value(store, &id)?)?;
@@ -5878,12 +5862,10 @@ fn handle_sse_stream(
     // Send initial snapshot
     let events = store.events()?;
     let messages = store.messages()?;
-    let sessions = store.provider_sessions()?;
     // Initial snapshot sent to client for sync
     let _snapshot = sse::SseEventFrame::Snapshot {
         agent_events: events,
         messages,
-        provider_sessions: sessions,
         generated_at: now_string(),
     };
 
@@ -5928,14 +5910,6 @@ fn handle_sse_stream(
                             }
                         }
                     }
-                    sse::SseEventFrame::ProviderSession(session) => {
-                        if let Ok(json) = serde_json::to_value(&session) {
-                            if sse::write_sse_frame(&mut stream, "provider_session", &json).is_err()
-                            {
-                                break; // Client disconnected
-                            }
-                        }
-                    }
                     // WP2: workflow run and step frames
                     sse::SseEventFrame::WorkflowRun(run) => {
                         if let Ok(json) = serde_json::to_value(&run) {
@@ -5949,23 +5923,6 @@ fn handle_sse_stream(
                             if sse::write_sse_frame(&mut stream, "workflow_step", &json).is_err() {
                                 break; // Client disconnected
                             }
-                        }
-                    }
-                    sse::SseEventFrame::ProviderTurnEvent(value) => {
-                        if sse::write_sse_frame(&mut stream, "provider_turn_event", &value).is_err()
-                        {
-                            break; // Client disconnected
-                        }
-                    }
-                    sse::SseEventFrame::ProviderTurnEventNormalized(value) => {
-                        if sse::write_sse_frame(
-                            &mut stream,
-                            "provider_turn_event_normalized",
-                            &value,
-                        )
-                        .is_err()
-                        {
-                            break; // Client disconnected
                         }
                     }
                     // Agent Team v0: folded per-run events (team console merges
@@ -6170,7 +6127,6 @@ fn serve_command(store: &HarnessStore, resolved: &ResolvedStore, args: &[String]
     // Tests can keep the transient live turn-event tee instead of truncating it on
     // startup (per-project truncation drops in-flight events for ALL projects at
     // once — see Risks). Production serve always truncates.
-    let no_truncate = has_flag(args, "--no-truncate");
     let listener = TcpListener::bind(&addr)?;
     println!("serving harness API on http://{addr}");
     // Show WHICH store this serve reads — the #1 confusion in issue #89 item 3 was
@@ -6192,65 +6148,6 @@ fn serve_command(store: &HarnessStore, resolved: &ResolvedStore, args: &[String]
 
     let sse_manager = sse::SseManager::new();
 
-    // Truncate the transient live turn-event tee (Stage B) on startup so it does
-    // not grow unbounded across serve runs; the watcher seeds at EOF and the
-    // per-session NDJSON remains the durable source for catch-up. This is done
-    // PER PROJECT now — restarting serve drops in-flight live events for every
-    // watched project at once (documented disruption, P6 Risks). `--no-truncate`
-    // lets tests preserve pre-seeded rows.
-    if !no_truncate {
-        for store_root in watch_map.values() {
-            let _ = fs::write(store_root.join("provider_turn_events.jsonl"), b"");
-        }
-    }
-
-    // The live-turn-event normalizer is project-scoped: it must look up the
-    // provider session in the SAME store the event came from, so the per-project
-    // watcher passes the project's store root to its normalizer.
-    let make_normalize = |normalize_store: HarnessStore| {
-        let provider_cache = Mutex::new(HashMap::<String, String>::new());
-        let next_seq_cache = Mutex::new(HashMap::<String, u64>::new());
-        move |session_id: &str, raw: &serde_json::Value| -> Vec<serde_json::Value> {
-            let provider = {
-                let Ok(mut cache) = provider_cache.lock() else {
-                    return Vec::new();
-                };
-                if let Some(provider) = cache.get(session_id).cloned() {
-                    provider
-                } else {
-                    let session = match latest_provider_session(&normalize_store, session_id) {
-                        Ok(Some(session)) => session,
-                        Ok(None) | Err(_) => return Vec::new(),
-                    };
-                    let provider = session.provider;
-                    cache.insert(session_id.to_string(), provider.clone());
-                    provider
-                }
-            };
-
-            let next_seq = {
-                let Ok(cache) = next_seq_cache.lock() else {
-                    return Vec::new();
-                };
-                cache.get(session_id).copied().unwrap_or(0)
-            };
-            let events = normalize_live_turn_event(&provider, session_id, raw, next_seq);
-            if events.is_empty() {
-                return Vec::new();
-            }
-
-            let Ok(mut cache) = next_seq_cache.lock() else {
-                return Vec::new();
-            };
-            cache.insert(session_id.to_string(), next_seq + events.len() as u64);
-
-            events
-                .into_iter()
-                .filter_map(|event| serde_json::to_value(event).ok())
-                .collect()
-        }
-    };
-
     // Start ONE project-multiplexed SSE watcher: per-project offsets + per-project
     // subscriber channels, so a client subscribed to project A never sees B. The
     // watcher re-scans the registry every poll (via `watch_map()`), so a project
@@ -6258,14 +6155,8 @@ fn serve_command(store: &HarnessStore, resolved: &ResolvedStore, args: &[String]
     // restart (#147 follow-up); each project's normalizer is built lazily by the
     // factory below, scoped to that project's store.
     let watcher_projects = projects.clone();
-    sse::start_sse_watcher(
-        move || watcher_projects.watch_map(),
-        move |root| {
-            Box::new(make_normalize(HarnessStore::new(root.to_path_buf()))) as sse::Normalizer
-        },
-        sse_manager.clone(),
-    )
-    .map_err(CliError::Io)?;
+    sse::start_sse_watcher(move || watcher_projects.watch_map(), sse_manager.clone())
+        .map_err(CliError::Io)?;
 
     // Start the abandoned-run reaper PER WATCHED PROJECT: periodically flip
     // `Running` runs whose driver process has died (or legacy runs past the stale
@@ -7166,7 +7057,7 @@ fn handle_http_action(
             store,
             agent_id,
             &required_json_string(body, "message_id")?,
-            json_string(body, "session_id").as_deref(),
+            json_string(body, "delivery_id").as_deref(),
             json_string(body, "reason")
                 .as_deref()
                 .unwrap_or("dashboard requested retry"),
@@ -7175,12 +7066,12 @@ fn handle_http_action(
     }
     if let Some(agent_id) = path
         .strip_prefix("/v1/agents/")
-        .and_then(|rest| rest.strip_suffix("/reconcile-session"))
+        .and_then(|rest| rest.strip_suffix("/reconcile-delivery"))
     {
-        return reconcile_provider_session_value(
+        return reconcile_delivery_value(
             store,
             agent_id,
-            &required_json_string(body, "session_id")?,
+            &required_json_string(body, "delivery_id")?,
             parse_provider_session_status(
                 json_string(body, "status").as_deref().unwrap_or("failed"),
             )?,
@@ -7999,7 +7890,7 @@ fn close_agent_member_value(store: &HarnessStore, agent_id: &str) -> CliResult<A
         )?;
     }
 
-    mark_running_provider_sessions_terminal(
+    mark_running_delivery_attempts_terminal(
         store,
         &member.id,
         ProviderSessionStatus::Canceled,
@@ -12321,7 +12212,7 @@ fn deliver_agent_messages_value(
             "Runtime pid or socket is not healthy",
             None,
         )?;
-        mark_running_provider_sessions_terminal(
+        mark_running_delivery_attempts_terminal(
             store,
             &member.id,
             ProviderSessionStatus::Stale,
@@ -12331,7 +12222,7 @@ fn deliver_agent_messages_value(
         member = latest_member(store, &agent_id)?;
         ensure_member_accepts_delivery(&member)?;
     }
-    if has_unresolved_provider_session(store, &member.id)? {
+    if has_unresolved_delivery_attempt(store, &member.id)? {
         return Err(CliError::Usage(format!(
             "agent {} still has an unresolved provider turn; ingest a terminal provider event or close the runtime before delivering more messages",
             member.id
@@ -12414,7 +12305,6 @@ fn deliver_agent_messages_value(
                 stderr_ref: None,
                 request_ref: None,
                 provider_request_id: None,
-                provider_session_id: Some(delivery_id.clone()),
                 evidence_ids,
                 exit_code: Some(0),
                 tokens: None,
@@ -12468,7 +12358,6 @@ fn deliver_agent_messages_value(
                     stderr_ref: None,
                     request_ref: None,
                     provider_request_id: None,
-                    provider_session_id: Some(delivery_id.clone()),
                     evidence_ids,
                     exit_code: Some(1),
                     tokens: None,
@@ -12501,7 +12390,6 @@ fn deliver_agent_messages_value(
                     stderr_ref: None,
                     request_ref: None,
                     provider_request_id: None,
-                    provider_session_id: Some(delivery_id.clone()),
                     evidence_ids,
                     exit_code: Some(1),
                     tokens: None,
@@ -12535,7 +12423,6 @@ fn deliver_agent_messages_value(
                 .delivery
                 .as_ref()
                 .and_then(|delivery| delivery.started_at.clone()),
-            provider_session_id: delivery.provider_session_id.clone(),
             provider_request_id: delivery.provider_request_id.clone(),
             provider_thread_id: delivery.provider_thread_id.clone(),
             provider_turn_id: delivery.provider_turn_id.clone(),
@@ -12544,7 +12431,7 @@ fn deliver_agent_messages_value(
             last_error: delivery_error_message(&delivery.status, &delivery.summary),
         });
         store.append_message(&delivered_message)?;
-        if delivery.provider_session_id.is_some() && !delivery_unresolved {
+        if !delivery_unresolved {
             let report = Message {
                 id: generated_id("msg"),
                 task_id: delivered_message.task_id.clone(),
@@ -12770,10 +12657,7 @@ fn expire_safe_delivery_claims_value(
         let Some(agent_id) = message.to_agent_id.as_deref() else {
             continue;
         };
-        let delivery_id = delivery
-            .delivery_id
-            .as_deref()
-            .or(delivery.provider_session_id.as_deref());
+        let delivery_id = delivery.delivery_id.as_deref();
         match retry_delivery_value(
             store,
             agent_id,
@@ -12805,7 +12689,6 @@ struct DeliveryOutcome {
     stderr_ref: Option<String>,
     request_ref: Option<String>,
     provider_request_id: Option<String>,
-    provider_session_id: Option<String>,
     evidence_ids: Vec<String>,
     exit_code: Option<i32>,
     tokens: Option<TokenUsage>,
@@ -12827,7 +12710,6 @@ fn claim_message_for_delivery(
         execution_status: Some(ProviderSessionStatus::Running),
         native_session: member.native_session.clone(),
         started_at: Some(now_string()),
-        provider_session_id: Some(delivery_id.to_string()),
         provider_request_id: None,
         provider_thread_id: member.provider_thread_id.clone(),
         provider_turn_id: None,
@@ -12869,18 +12751,12 @@ fn retry_delivery_value(
     let delivery_id = session_id
         .map(str::to_string)
         .or(delivery.delivery_id.clone())
-        .or(delivery.provider_session_id.clone())
         .ok_or_else(|| {
             CliError::Usage(format!(
                 "message {message_id} has no delivery attempt id to retry"
             ))
         })?;
-    if delivery
-        .delivery_id
-        .as_deref()
-        .or(delivery.provider_session_id.as_deref())
-        != Some(delivery_id.as_str())
-    {
+    if delivery.delivery_id.as_deref() != Some(delivery_id.as_str()) {
         return Err(CliError::Usage(format!(
             "delivery attempt {delivery_id} does not belong to message {message_id}"
         )));
@@ -12928,10 +12804,10 @@ fn retry_delivery_value(
     }))
 }
 
-fn reconcile_provider_session_value(
+fn reconcile_delivery_value(
     store: &HarnessStore,
     agent_id: &str,
-    session_id: &str,
+    delivery_id: &str,
     status: ProviderSessionStatus,
     terminal_source: MessageTerminalSource,
     reason: &str,
@@ -12941,36 +12817,36 @@ fn reconcile_provider_session_value(
         ProviderSessionStatus::Queued | ProviderSessionStatus::Running
     ) {
         return Err(CliError::Usage(
-            "reconcile-session requires a terminal status".into(),
+            "reconcile-delivery requires a terminal status".into(),
         ));
     }
-    let mut session = latest_provider_session(store, session_id)?
-        .ok_or_else(|| CliError::Usage(format!("provider session not found: {session_id}")))?;
-    if session.agent_member_id != agent_id {
-        return Err(CliError::Usage(format!(
-            "provider session {session_id} does not belong to agent {agent_id}"
-        )));
-    }
+    let mut message = latest_messages_in_append_order(store)?
+        .into_iter()
+        .find(|message| {
+            message.to_agent_id.as_deref() == Some(agent_id)
+                && message
+                    .delivery
+                    .as_ref()
+                    .is_some_and(|delivery| delivery.delivery_id.as_deref() == Some(delivery_id))
+        })
+        .ok_or_else(|| CliError::Usage(format!("delivery attempt not found: {delivery_id}")))?;
     let evidence_id = record_operator_evidence(
         store,
-        session.task_id.clone(),
-        "provider_session_reconciliation",
-        &format!("provider-session:{session_id}"),
+        message.task_id.clone(),
+        "delivery_reconciliation",
+        &format!("delivery-attempt:{delivery_id}"),
         reason,
     )?;
-    session.status = status.clone();
-    session.terminal_source = Some(terminal_source.clone());
-    session.ended_at = Some(now_string());
-    if !session.evidence_ids.contains(&evidence_id) {
-        session.evidence_ids.push(evidence_id.clone());
+    message.delivery_status = message_status_for_terminal(&status, Some(&terminal_source));
+    let delivery = message.delivery.as_mut().expect("delivery checked");
+    delivery.execution_status = Some(status.clone());
+    delivery.terminal_source = Some(terminal_source.clone());
+    delivery.delivered_at = Some(now_string());
+    delivery.last_error = delivery_error_message(&status, reason);
+    if !message.evidence_ids.contains(&evidence_id) {
+        message.evidence_ids.push(evidence_id.clone());
     }
-    store.append_provider_session(&session)?;
-    mark_delivery_messages_terminal(
-        store,
-        &session,
-        status.clone(),
-        Some(terminal_source.clone()),
-    )?;
+    store.append_message(&message)?;
     if let Ok(mut member) = latest_member(store, agent_id) {
         if matches!(
             member.status,
@@ -12978,7 +12854,7 @@ fn reconcile_provider_session_value(
         ) && member
             .current_task_id
             .as_ref()
-            .map_or_else(|| true, |task_id| session.task_id.as_ref() == Some(task_id))
+            .map_or_else(|| true, |task_id| message.task_id.as_ref() == Some(task_id))
         {
             member.status = AgentMemberStatus::Idle;
             member.current_task_id = None;
@@ -12990,14 +12866,14 @@ fn reconcile_provider_session_value(
         store,
         agent_id,
         None,
-        session.task_id.as_deref(),
-        "provider_session_reconciled",
+        message.task_id.as_deref(),
+        "delivery_reconciled",
         reason,
         None,
     )?;
     Ok(serde_json::json!({
         "agent_member_id": agent_id,
-        "provider_session_id": session_id,
+        "delivery_id": delivery_id,
         "status": status,
         "terminal_source": terminal_source,
         "evidence_id": evidence_id
@@ -13080,19 +12956,6 @@ fn provider_status_blocks_delivery(status: &ProviderSessionStatus) -> bool {
         status,
         ProviderSessionStatus::Running | ProviderSessionStatus::Stale
     )
-}
-
-fn provider_session_blocks_delivery(session: &ProviderSession) -> bool {
-    session.status == ProviderSessionStatus::Queued
-        || session.status == ProviderSessionStatus::Running
-        || (session.status == ProviderSessionStatus::Stale
-            && session.terminal_source != Some(MessageTerminalSource::Failed))
-}
-
-fn provider_session_needs_terminal_update(session: &ProviderSession) -> bool {
-    session.status == ProviderSessionStatus::Running
-        || (session.status == ProviderSessionStatus::Stale
-            && session.terminal_source != Some(MessageTerminalSource::Failed))
 }
 
 fn delivery_error_message(status: &ProviderSessionStatus, summary: &str) -> Option<String> {
@@ -13185,7 +13048,7 @@ fn terminal_source_from_provider_event(
     None
 }
 
-fn reconcile_running_provider_sessions(
+fn reconcile_running_delivery_attempts(
     store: &HarnessStore,
     agent_member_id: &str,
     task_id: Option<&str>,
@@ -13196,46 +13059,66 @@ fn reconcile_running_provider_sessions(
     if provider_thread_id.is_none() && provider_turn_id.is_none() {
         return Ok(false);
     }
-    let mut latest = BTreeMap::new();
-    for session in store.provider_sessions()? {
-        latest.insert(session.id.clone(), session);
-    }
     let mut reconciled_task_ids = BTreeSet::new();
     let mut reconciled_any = false;
-    for mut session in latest.into_values().filter(|session| {
-        provider_session_needs_terminal_update(session)
-            && session.agent_member_id == agent_member_id
-            && task_id.is_none_or(|task_id| session.task_id.as_deref() == Some(task_id))
-            && provider_thread_id
-                .is_none_or(|thread_id| session.provider_thread_id.as_deref() == Some(thread_id))
-            && provider_turn_id.is_none_or(|turn_id| {
-                session
-                    .provider_turn_id
-                    .as_deref()
-                    .is_none_or(|session_turn_id| session_turn_id == turn_id)
-            })
-    }) {
-        session.status = ProviderSessionStatus::Succeeded;
-        session.terminal_source = Some(terminal_source.clone());
-        if session.provider_thread_id.is_none() {
-            session.provider_thread_id = provider_thread_id.map(str::to_string);
+    for mut message in latest_messages_in_append_order(store)?
+        .into_iter()
+        .filter(|message| {
+            message.to_agent_id.as_deref() == Some(agent_member_id)
+                && message.delivery_status == MessageDeliveryStatus::Acknowledged
+                && task_id.is_none_or(|task_id| message.task_id.as_deref() == Some(task_id))
+                && message.delivery.as_ref().is_some_and(|delivery| {
+                    matches!(
+                        delivery.execution_status,
+                        Some(ProviderSessionStatus::Running | ProviderSessionStatus::Stale)
+                    ) && provider_thread_id.is_none_or(|thread_id| {
+                        delivery.provider_thread_id.as_deref() == Some(thread_id)
+                    }) && provider_turn_id.is_none_or(|turn_id| {
+                        delivery
+                            .provider_turn_id
+                            .as_deref()
+                            .is_none_or(|delivery_turn_id| delivery_turn_id == turn_id)
+                    })
+                })
+        })
+    {
+        message.delivery_status = MessageDeliveryStatus::Delivered;
+        if let Some(delivery) = message.delivery.as_mut() {
+            delivery.execution_status = Some(ProviderSessionStatus::Succeeded);
+            delivery.terminal_source = Some(terminal_source.clone());
+            if delivery.provider_thread_id.is_none() {
+                delivery.provider_thread_id = provider_thread_id.map(str::to_string);
+            }
+            if delivery.provider_turn_id.is_none() {
+                delivery.provider_turn_id = provider_turn_id.map(str::to_string);
+            }
+            delivery.delivered_at = Some(now_string());
+            delivery.last_error = None;
         }
-        if session.provider_turn_id.is_none() {
-            session.provider_turn_id = provider_turn_id.map(str::to_string);
-        }
-        session.exit_code = session.exit_code.or(Some(0));
-        session.ended_at = Some(now_string());
-        if let Some(task_id) = session.task_id.clone() {
+        if let Some(task_id) = message.task_id.clone() {
             reconciled_task_ids.insert(task_id);
         }
-        store.append_provider_session(&session)?;
+        store.append_message(&message)?;
+        let delivery_id = message
+            .delivery
+            .as_ref()
+            .and_then(|delivery| delivery.delivery_id.as_deref())
+            .unwrap_or("unknown");
+        store.append_message(&Message {
+            id: generated_id("msg"),
+            task_id: message.task_id.clone(),
+            from_agent_id: agent_member_id.into(),
+            to_agent_id: None,
+            channel: Some("provider-report".into()),
+            kind: MessageKind::Report,
+            delivery_status: MessageDeliveryStatus::Delivered,
+            content: format!("Delivery {delivery_id} completed from provider-native activity"),
+            evidence_ids: message.evidence_ids.clone(),
+            created_at: now_string(),
+            delivery: message.delivery.clone(),
+            sender_kind: SenderKind::Agent,
+        })?;
         reconciled_any = true;
-        mark_delivery_messages_terminal(
-            store,
-            &session,
-            ProviderSessionStatus::Succeeded,
-            Some(terminal_source.clone()),
-        )?;
     }
     if reconciled_any {
         if let Ok(mut member) = latest_member(store, agent_member_id) {
@@ -13258,58 +13141,6 @@ fn reconcile_running_provider_sessions(
         }
     }
     Ok(reconciled_any)
-}
-
-fn mark_delivery_messages_terminal(
-    store: &HarnessStore,
-    session: &ProviderSession,
-    status: ProviderSessionStatus,
-    terminal_source: Option<MessageTerminalSource>,
-) -> CliResult<()> {
-    let mut latest = BTreeMap::new();
-    for message in store.messages()? {
-        latest.insert(message.id.clone(), message);
-    }
-    for mut message in latest.into_values().filter(|message| {
-        message.delivery_status == MessageDeliveryStatus::Acknowledged
-            && message.delivery.as_ref().is_some_and(|delivery| {
-                delivery.provider_session_id.as_deref() == Some(session.id.as_str())
-            })
-    }) {
-        message.delivery_status = message_status_for_terminal(&status, terminal_source.as_ref());
-        if let Some(delivery) = message.delivery.as_mut() {
-            delivery.terminal_source = terminal_source.clone();
-            if delivery.provider_thread_id.is_none() {
-                delivery.provider_thread_id = session.provider_thread_id.clone();
-            }
-            if delivery.provider_turn_id.is_none() {
-                delivery.provider_turn_id = session.provider_turn_id.clone();
-            }
-            delivery.delivered_at = Some(now_string());
-            delivery.last_error = delivery_error_message(&status, "provider delivery ended");
-        }
-        store.append_message(&message)?;
-        let report = Message {
-            id: generated_id("msg"),
-            task_id: message.task_id.clone(),
-            from_agent_id: session.agent_member_id.clone(),
-            to_agent_id: None,
-            channel: Some("provider-report".into()),
-            kind: MessageKind::Report,
-            delivery_status: MessageDeliveryStatus::Delivered,
-            content: format!(
-                "Provider delivery {} ended with status {}",
-                session.id,
-                provider_status_label(&status)
-            ),
-            evidence_ids: session.evidence_ids.clone(),
-            created_at: now_string(),
-            delivery: message.delivery.clone(),
-            sender_kind: SenderKind::Agent,
-        };
-        store.append_message(&report)?;
-    }
-    Ok(())
 }
 
 fn mark_runtime_delivery_reconciled(
@@ -13361,36 +13192,51 @@ fn mark_runtime_delivery_terminal(
     Ok(())
 }
 
-fn has_unresolved_provider_session(store: &HarnessStore, agent_member_id: &str) -> CliResult<bool> {
-    let mut latest = BTreeMap::new();
-    for session in store.provider_sessions()? {
-        latest.insert(session.id.clone(), session);
-    }
-    Ok(latest.into_values().any(|session| {
-        session.agent_member_id == agent_member_id && provider_session_blocks_delivery(&session)
-    }))
+fn has_unresolved_delivery_attempt(store: &HarnessStore, agent_member_id: &str) -> CliResult<bool> {
+    Ok(latest_messages_in_append_order(store)?
+        .into_iter()
+        .any(|message| {
+            message.to_agent_id.as_deref() == Some(agent_member_id)
+                && message.delivery.as_ref().is_some_and(|delivery| {
+                    matches!(
+                        delivery.execution_status,
+                        Some(ProviderSessionStatus::Queued | ProviderSessionStatus::Running)
+                    ) || (delivery.execution_status == Some(ProviderSessionStatus::Stale)
+                        && !matches!(
+                            delivery.terminal_source,
+                            Some(MessageTerminalSource::Failed)
+                        ))
+                })
+        }))
 }
 
-fn mark_running_provider_sessions_terminal(
+fn mark_running_delivery_attempts_terminal(
     store: &HarnessStore,
     agent_member_id: &str,
     status: ProviderSessionStatus,
     terminal_source: Option<MessageTerminalSource>,
 ) -> CliResult<()> {
-    let mut latest = BTreeMap::new();
-    for session in store.provider_sessions()? {
-        latest.insert(session.id.clone(), session);
-    }
     let mut changed = false;
-    for mut session in latest.into_values().filter(|session| {
-        session.agent_member_id == agent_member_id
-            && provider_session_needs_terminal_update(session)
-    }) {
-        session.status = status.clone();
-        session.terminal_source = terminal_source.clone();
-        session.ended_at = Some(now_string());
-        store.append_provider_session(&session)?;
-        mark_delivery_messages_terminal(store, &session, status.clone(), terminal_source.clone())?;
+    for mut message in latest_messages_in_append_order(store)?
+        .into_iter()
+        .filter(|message| {
+            message.to_agent_id.as_deref() == Some(agent_member_id)
+                && message.delivery.as_ref().is_some_and(|delivery| {
+                    matches!(
+                        delivery.execution_status,
+                        Some(ProviderSessionStatus::Running | ProviderSessionStatus::Stale)
+                    )
+                })
+        })
+    {
+        message.delivery_status = message_status_for_terminal(&status, terminal_source.as_ref());
+        if let Some(delivery) = message.delivery.as_mut() {
+            delivery.execution_status = Some(status.clone());
+            delivery.terminal_source = terminal_source.clone();
+            delivery.delivered_at = Some(now_string());
+            delivery.last_error = delivery_error_message(&status, "provider delivery ended");
+        }
+        store.append_message(&message)?;
         changed = true;
     }
     if changed {
@@ -13717,7 +13563,6 @@ fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::Value> {
     let messages = latest_messages_in_append_order(store)?;
     let events = store.events()?;
     let evidence = store.evidence()?;
-    let sessions = latest_provider_sessions_in_append_order(store)?;
     let provider_child_threads = store.provider_child_threads()?;
     let workflow_runs = latest_workflow_runs_in_append_order(store)?;
     let workflow_steps = latest_workflow_steps_in_append_order(store)?;
@@ -13770,6 +13615,7 @@ fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::Value> {
                 "runtime_alive": runtime.is_some_and(runtime_is_alive),
                 "runtime_health": runtime.map(|runtime| runtime.health.clone()),
                 "control_endpoint": member.control_endpoint.clone(),
+                "native_session": member.native_session.clone(),
                 "provider_thread_id": member.provider_thread_id.clone(),
                 "provider_agent_path": member.provider_agent_path.clone(),
                 "provider_agent_nickname": member.provider_agent_nickname.clone(),
@@ -13800,7 +13646,6 @@ fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::Value> {
         "messages": messages,
         "events": events,
         "evidence": evidence,
-        "provider_sessions": sessions,
         "provider_child_threads": provider_child_threads,
         "workflow_runs": workflow_runs,
         "workflow_steps": workflow_steps,
@@ -14847,10 +14692,6 @@ trait ProviderAdapter: Sync {
     /// (codex `--sandbox`, claude `--permission-mode`).
     fn map_permission(&self, perm: LaunchPermission) -> &'static str;
 
-    /// The recorded argv head for this provider's delivery command (the
-    /// ProviderSession `args` audit field), optionally resuming `resume_id`.
-    fn recorded_args(&self, resume_id: Option<&str>) -> Vec<String>;
-
     /// Record a provider hook event into the neutral event log. Hooks are a
     /// codex-runtime mechanism; the default reports the provider has no hook
     /// integration — an explicit error beats silently recording a codex-shaped
@@ -14932,19 +14773,6 @@ impl ProviderAdapter for CodexAdapter {
             LaunchPermission::ReadOnly => "read-only",
             LaunchPermission::WorkspaceWrite => "workspace-write",
             LaunchPermission::FullAccess => "danger-full-access",
-        }
-    }
-
-    fn recorded_args(&self, resume_id: Option<&str>) -> Vec<String> {
-        match resume_id {
-            Some(id) => vec![
-                "codex".into(),
-                "exec".into(),
-                "resume".into(),
-                "--json".into(),
-                id.into(),
-            ],
-            None => vec!["codex".into(), "exec".into(), "--json".into()],
         }
     }
 
@@ -15219,7 +15047,7 @@ impl ProviderAdapter for CodexAdapter {
             }
         }
         if hook_event_name.eq_ignore_ascii_case("stop") {
-            reconcile_running_provider_sessions(
+            reconcile_running_delivery_attempts(
                 store,
                 &agent_id,
                 task_id.as_deref(),
@@ -15316,7 +15144,7 @@ impl ProviderAdapter for CodexAdapter {
             }
             if let Some(terminal_source) = terminal_source_from_provider_event(&value, &event_type)
             {
-                let reconciled = reconcile_running_provider_sessions(
+                let reconciled = reconcile_running_delivery_attempts(
                     store,
                     agent_member_id,
                     task_id,
@@ -15345,7 +15173,6 @@ impl ProviderAdapter for CodexAdapter {
                         execution_status: Some(ProviderSessionStatus::Succeeded),
                         native_session: None,
                         started_at: None,
-                        provider_session_id: None,
                         provider_request_id: None,
                         provider_thread_id,
                         provider_turn_id,
@@ -15380,20 +15207,6 @@ impl ProviderAdapter for ClaudeAdapter {
             LaunchPermission::WorkspaceWrite => "acceptEdits",
             LaunchPermission::FullAccess => "bypassPermissions",
         }
-    }
-
-    fn recorded_args(&self, resume_id: Option<&str>) -> Vec<String> {
-        let mut args = vec![
-            "-p".into(),
-            "--output-format".into(),
-            "stream-json".into(),
-            "--verbose".into(),
-        ];
-        if let Some(id) = resume_id {
-            args.push("--resume".into());
-            args.push(id.into());
-        }
-        args
     }
 
     fn normalize_turn_event(
@@ -16045,8 +15858,6 @@ fn run_kimi_delivery(
         .join("deliveries")
         .join(delivery_id);
     fs::create_dir_all(&session_dir)?;
-    let started_at = now_string();
-
     let (process_success, _events, raw_events, session_id, stderr_log) =
         run_kimi_exec_delivery_real(&session_dir, member, message, timeout_ms, project)?;
     // Kimi -p stream-json carries no usage/model/cost/structured frame; degrade per
@@ -16065,9 +15876,6 @@ fn run_kimi_delivery(
     // Only a real session id parsed from the stream is resumable; the synthetic
     // fallback is not surfaced as a resume token (claude-identical).
     let resumable_session_id = session_id.clone();
-    let used_resume_id = build_launch_spec(member, message).resume;
-    let recorded_args = KimiAdapter.recorded_args(used_resume_id.as_deref());
-
     let evidence_id = generated_id("evidence");
     let evidence = Evidence {
         id: evidence_id.clone(),
@@ -16086,32 +15894,6 @@ fn run_kimi_delivery(
     };
     store.append_evidence(&evidence)?;
 
-    let provider_session = ProviderSession {
-        id: delivery_id.to_string(),
-        provider: KimiAdapter.name().into(),
-        agent_member_id: member.id.clone(),
-        task_id: message.task_id.clone(),
-        workspace_ref: None,
-        provider_thread_id: resumable_session_id.clone(),
-        provider_turn_id: None,
-        terminal_source: terminal_source.clone(),
-        status: status.clone(),
-        command: "kimi".into(),
-        args: recorded_args,
-        prompt_ref: member.prompt_ref.clone(),
-        prompt_summary: Some(format!("deliver message {}", message.id)),
-        provider_session_ref: None,
-        stdout_ref: None,
-        jsonl_ref: None,
-        transcript_ref: None,
-        last_message_ref: None,
-        exit_code: if process_success { Some(0) } else { Some(1) },
-        started_at,
-        ended_at: Some(now_string()),
-        evidence_ids: vec![evidence_id.clone()],
-    };
-    store.append_provider_session(&provider_session)?;
-
     let _ = fs::remove_dir_all(&session_dir);
     Ok(DeliveryOutcome {
         native_session: resumable_session_id
@@ -16125,7 +15907,6 @@ fn run_kimi_delivery(
         stderr_ref: None,
         request_ref: None,
         provider_request_id: None,
-        provider_session_id: Some(delivery_id.to_string()),
         evidence_ids: vec![evidence_id],
         exit_code: if process_success { Some(0) } else { Some(1) },
         tokens,
@@ -16166,17 +15947,6 @@ impl ProviderAdapter for KimiAdapter {
             LaunchPermission::WorkspaceWrite => "--auto",
             LaunchPermission::FullAccess => "--yolo",
         }
-    }
-
-    fn recorded_args(&self, resume_id: Option<&str>) -> Vec<String> {
-        // Mirrors the real kimi invocation surface (no `--verbose`; resume is
-        // `-S/--session <id>`).
-        let mut args = vec!["-p".into(), "--output-format".into(), "stream-json".into()];
-        if let Some(id) = resume_id {
-            args.push("--session".into());
-            args.push(id.into());
-        }
-        args
     }
 
     fn normalize_turn_event(
@@ -16466,11 +16236,6 @@ fn ingest_claude_stream_json(
     }
 
     // Extract session_id and infer status from the event stream.
-    let session_id =
-        extract_session_id_from_claude_events(&events).unwrap_or_else(|| generated_id("session"));
-    let process_success = true; // Stream was parsed successfully.
-    let status = infer_claude_session_status(&events, process_success);
-
     // Ingest each event as a neutral AgentEvent.
     for event in &events {
         let event_kind = match event.event_type.as_str() {
@@ -16508,38 +16273,6 @@ fn ingest_claude_stream_json(
         store.append_event(&agent_event)?;
     }
 
-    // Create one ProviderSession record for the entire delivery.
-    let provider_session = ProviderSession {
-        id: session_id.clone(),
-        provider: provider.into(),
-        agent_member_id: agent_member_id.into(),
-        task_id: task_id.map(str::to_string),
-        workspace_ref: None,
-        provider_thread_id: None,
-        provider_turn_id: None,
-        terminal_source: status_to_terminal_source(&status),
-        status,
-        command: provider.into(),
-        args: vec![
-            "-p".into(),
-            "--output-format".into(),
-            "stream-json".into(),
-            "--verbose".into(),
-        ],
-        prompt_ref: None,
-        prompt_summary: Some(format!("delivered via {provider} -p stream-json")),
-        provider_session_ref: None,
-        stdout_ref: None,
-        jsonl_ref: None,
-        transcript_ref: None,
-        last_message_ref: None,
-        exit_code: if process_success { Some(0) } else { Some(1) },
-        started_at: now_string(),
-        ended_at: Some(now_string()),
-        evidence_ids: Vec::new(),
-    };
-    store.append_provider_session(&provider_session)?;
-
     Ok(())
 }
 
@@ -16558,10 +16291,6 @@ fn ingest_kimi_stream_json(
     text: &str,
 ) -> CliResult<()> {
     let frames = parse_kimi_frames(text);
-    let session_id = extract_kimi_session_id(&frames).unwrap_or_else(|| generated_id("session"));
-    let process_success = true; // The stream parsed; exit-code status is set on the live path.
-    let status = infer_kimi_status(&frames, process_success);
-
     for frame in &frames {
         let event_kind = match (
             frame.get("role").and_then(|r| r.as_str()),
@@ -16589,31 +16318,6 @@ fn ingest_kimi_stream_json(
         store.append_event(&agent_event)?;
     }
 
-    let provider_session = ProviderSession {
-        id: session_id.clone(),
-        provider: provider.into(),
-        agent_member_id: agent_member_id.into(),
-        task_id: task_id.map(str::to_string),
-        workspace_ref: None,
-        provider_thread_id: None,
-        provider_turn_id: None,
-        terminal_source: status_to_terminal_source(&status),
-        status,
-        command: provider.into(),
-        args: vec!["-p".into(), "--output-format".into(), "stream-json".into()],
-        prompt_ref: None,
-        prompt_summary: Some(format!("delivered via {provider} -p stream-json")),
-        provider_session_ref: None,
-        stdout_ref: None,
-        jsonl_ref: None,
-        transcript_ref: None,
-        last_message_ref: None,
-        exit_code: Some(0),
-        started_at: now_string(),
-        ended_at: Some(now_string()),
-        evidence_ids: Vec::new(),
-    };
-    store.append_provider_session(&provider_session)?;
     Ok(())
 }
 
@@ -17043,23 +16747,12 @@ fn codex_mcp_id_key(id: &str) -> String {
     }
 }
 
-// Run a single Codex exec delivery, writing identical ProviderSession/Evidence rows.
-// WP-5: Minimal record of provider session for exec-stream delivery.
-// This records evidence and session metadata for audit/tracing.
+// Record only the Harness-level link from a delivery attempt to provider-native
+// session truth. The provider owns the transcript, tool history, and resume data.
 struct ExecDeliverySessionRecord<'a> {
     delivery_id: &'a str,
-    member: &'a AgentMember,
     message: &'a Message,
-    status: ProviderSessionStatus,
-    started_at: String,
-    exit_code: Option<i32>,
     provider_thread_id: Option<String>,
-    provider_turn_id: Option<String>,
-    terminal_source: Option<MessageTerminalSource>,
-    /// Prior session id this delivery resumed (`codex exec resume <id>`), if any.
-    /// Recorded into the ProviderSession args so the snapshot is the evidence
-    /// that resume was actually used.
-    resume_id: Option<String>,
 }
 
 fn record_exec_delivery_session(
@@ -17085,36 +16778,6 @@ fn record_exec_delivery_session(
         goal_id: None,
     };
     store.append_evidence(&evidence)?;
-    let ended_at = if record.status == ProviderSessionStatus::Running {
-        None
-    } else {
-        Some(now_string())
-    };
-    let provider_session = ProviderSession {
-        id: record.delivery_id.into(),
-        provider: "codex".into(),
-        agent_member_id: record.member.id.clone(),
-        task_id: record.message.task_id.clone(),
-        workspace_ref: None,
-        provider_thread_id: record.provider_thread_id,
-        provider_turn_id: record.provider_turn_id,
-        terminal_source: record.terminal_source,
-        status: record.status,
-        command: "harness".into(),
-        args: CodexAdapter.recorded_args(record.resume_id.as_deref()),
-        prompt_ref: record.member.prompt_ref.clone(),
-        prompt_summary: Some(format!("deliver message {}", record.message.id)),
-        provider_session_ref: None,
-        jsonl_ref: None,
-        stdout_ref: None,
-        transcript_ref: None,
-        last_message_ref: None,
-        exit_code: record.exit_code,
-        started_at: record.started_at,
-        ended_at,
-        evidence_ids: vec![evidence_id.clone()],
-    };
-    store.append_provider_session(&provider_session)?;
     Ok(evidence_id)
 }
 
@@ -17135,12 +16798,7 @@ fn run_codex_exec_delivery(
         .join("deliveries")
         .join(delivery_id);
     fs::create_dir_all(&session_dir)?;
-    let started_at = now_string();
-
-    // The resume id used for this delivery (same source as the spawned command:
-    // the member's prior provider thread id). Recorded into the session args.
     let spec = build_launch_spec(member, message);
-    let resume_id = spec.resume.clone();
 
     let (process_success, events, raw_events, stderr_log) = run_codex_exec_process(
         &session_dir,
@@ -17174,15 +16832,8 @@ fn run_codex_exec_delivery(
         store,
         ExecDeliverySessionRecord {
             delivery_id,
-            member,
             message,
-            status: status.clone(),
-            started_at,
-            exit_code,
             provider_thread_id: provider_thread_id.clone(),
-            provider_turn_id: provider_turn_id.clone(),
-            terminal_source: terminal_source.clone(),
-            resume_id: resume_id.clone(),
         },
     )?;
 
@@ -17220,7 +16871,6 @@ fn run_codex_exec_delivery(
         stderr_ref: None,
         request_ref: None,
         provider_request_id: None, // exec stream does not use request_id
-        provider_session_id: Some(delivery_id.to_string()),
         evidence_ids: vec![evidence_id],
         exit_code,
         tokens,
@@ -17378,7 +17028,6 @@ fn run_claude_delivery(
         .join("deliveries")
         .join(delivery_id);
     fs::create_dir_all(&session_dir)?;
-    let started_at = now_string();
 
     // WP-3: Spawn real `claude -p --output-format stream-json --verbose`.
     //
@@ -17386,9 +17035,7 @@ fn run_claude_delivery(
     // fresh `claude -p <prompt>` that exits per turn, hold a `claude
     // --input-format stream-json` process open and feed the turn as a stdin
     // frame (see `resident.rs`). The returned tuple shape is identical to the
-    // default path, so everything below (NDJSON write, status infer, telemetry,
-    // evidence, ProviderSession) is reused verbatim. When unset/false the default
-    // path runs unchanged.
+    // default path, so status inference and telemetry stay provider-neutral.
     let resident = env::var("HARNESS_CLAUDE_RESIDENT").as_deref() == Ok("1");
     let (process_success, events, raw_events, session_id, stderr_log) = if resident {
         run_claude_resident_delivery_real(&session_dir, member, message, timeout_ms, project)?
@@ -17410,16 +17057,6 @@ fn run_claude_delivery(
     // as a resume token.
     let resumable_session_id = session_id.clone();
 
-    // The resume id this delivery actually used (from the member's prior thread,
-    // same source as `spec.resume`). Recorded into the session args so the
-    // snapshot is the evidence that `--resume` was passed.
-    let used_resume_id = build_launch_spec(member, message).resume;
-    let recorded_args = if resident {
-        resident::resident_recorded_args(used_resume_id.as_deref())
-    } else {
-        ClaudeAdapter.recorded_args(used_resume_id.as_deref())
-    };
-
     // Record an Evidence row for the delivery session, mirroring the codex path
     // so every provider delivery is auditable from the snapshot.
     let evidence_id = generated_id("evidence");
@@ -17440,39 +17077,6 @@ fn run_claude_delivery(
     };
     store.append_evidence(&evidence)?;
 
-    // Record session in ProviderSession (neutral object, not provider-specific).
-    let provider_session = ProviderSession {
-        // Key the terminal session row on the delivery id (same key as the
-        // "running" claim row) so it reconciles that claim to terminal in
-        // `has_unresolved_provider_session`. The provider's real session id is
-        // carried in `provider_thread_id`, not the row id. Keying on the session
-        // id instead would leave the running claim row dangling and wrongly
-        // block the next delivery.
-        id: delivery_id.to_string(),
-        provider: "claude".into(),
-        agent_member_id: member.id.clone(),
-        task_id: message.task_id.clone(),
-        workspace_ref: None,
-        provider_thread_id: resumable_session_id.clone(),
-        provider_turn_id: None,
-        terminal_source: terminal_source.clone(),
-        status: status.clone(),
-        command: "claude".into(),
-        args: recorded_args,
-        prompt_ref: member.prompt_ref.clone(),
-        prompt_summary: Some(format!("deliver message {}", message.id)),
-        provider_session_ref: None,
-        stdout_ref: None,
-        jsonl_ref: None,
-        transcript_ref: None,
-        last_message_ref: None,
-        exit_code: if process_success { Some(0) } else { Some(1) },
-        started_at,
-        ended_at: Some(now_string()),
-        evidence_ids: vec![evidence_id.clone()],
-    };
-    store.append_provider_session(&provider_session)?;
-
     let _ = fs::remove_dir_all(&session_dir);
     Ok(DeliveryOutcome {
         native_session: resumable_session_id
@@ -17488,11 +17092,6 @@ fn run_claude_delivery(
         stderr_ref: None,
         request_ref: None,
         provider_request_id: None,
-        // The session ROW id (delivery_id), so a message's delivery.provider_session_id
-        // maps 1:1 to its ProviderSession row (resume continuity lives in
-        // provider_thread_id). This matches codex + the dry-run/failure paths and
-        // lets the dashboard drill into the exact turn by id.
-        provider_session_id: Some(delivery_id.to_string()),
         evidence_ids: vec![evidence_id],
         exit_code: if process_success { Some(0) } else { Some(1) },
         tokens,
@@ -18931,7 +18530,6 @@ mod workflow_runtime_tests {
             stderr_ref: None,
             request_ref: None,
             provider_request_id: None,
-            provider_session_id: Some("delivery-test".into()),
             evidence_ids: Vec::new(),
             exit_code: Some(0),
             tokens,
@@ -23335,6 +22933,43 @@ mod tests {
         }
     }
 
+    fn append_test_delivery_attempt(
+        store: &HarnessStore,
+        agent_id: &str,
+        task_id: Option<&str>,
+        status: ProviderSessionStatus,
+        thread_id: Option<&str>,
+        turn_id: Option<&str>,
+    ) {
+        store
+            .append_message(&Message {
+                id: generated_id("message"),
+                task_id: task_id.map(str::to_string),
+                from_agent_id: "lead-1".into(),
+                to_agent_id: Some(agent_id.into()),
+                channel: Some("assignment".into()),
+                kind: MessageKind::Assignment,
+                delivery_status: MessageDeliveryStatus::Acknowledged,
+                content: "test delivery".into(),
+                evidence_ids: Vec::new(),
+                created_at: "unix-ms:1".into(),
+                delivery: Some(MessageDelivery {
+                    delivery_id: Some("delivery-1".into()),
+                    execution_status: Some(status),
+                    native_session: None,
+                    started_at: Some("unix-ms:1".into()),
+                    provider_request_id: None,
+                    provider_thread_id: thread_id.map(str::to_string),
+                    provider_turn_id: turn_id.map(str::to_string),
+                    terminal_source: None,
+                    delivered_at: None,
+                    last_error: None,
+                }),
+                sender_kind: SenderKind::Agent,
+            })
+            .expect("append delivery attempt");
+    }
+
     #[test]
     fn read_allowed_doc_rejects_traversal_and_non_docs_paths() {
         // Missing parameter.
@@ -23724,10 +23359,9 @@ mod tests {
                 created_at: "unix-ms:1".into(),
                 delivery: Some(MessageDelivery {
                     delivery_id: Some("delivery-1".into()),
-                    execution_status: Some(ProviderSessionStatus::Succeeded),
+                    execution_status: Some(ProviderSessionStatus::Running),
                     native_session: None,
                     started_at: Some("unix-ms:1".into()),
-                    provider_session_id: Some("delivery-1".into()),
                     provider_request_id: None,
                     provider_thread_id: Some("thread-1".into()),
                     provider_turn_id: Some("turn-1".into()),
@@ -23791,19 +23425,6 @@ mod tests {
         )
         .expect("ingest provider output");
 
-        let sessions = store.provider_sessions().expect("provider sessions");
-        let latest = sessions
-            .iter()
-            .rev()
-            .find(|session| session.id == "delivery-1")
-            .expect("reconciled session");
-        assert_eq!(latest.status, ProviderSessionStatus::Succeeded);
-        assert_eq!(
-            latest.terminal_source,
-            Some(MessageTerminalSource::TurnCompleted)
-        );
-        assert_eq!(latest.exit_code, Some(0));
-        assert!(latest.ended_at.is_some());
         let latest_member = latest_member(&store, "agent-1").expect("latest member");
         assert_eq!(latest_member.status, AgentMemberStatus::Idle);
         assert_eq!(latest_member.current_task_id, None);
@@ -23833,12 +23454,14 @@ mod tests {
             .filter(|message| message.channel.as_deref() == Some("provider-report"))
             .collect();
         assert_eq!(reports.len(), 1);
-        assert!(reports[0].delivery.as_ref().is_some_and(|delivery| {
-            delivery.provider_session_id.as_deref() == Some("delivery-1")
-        }));
-        assert!(reports
-            .iter()
-            .any(|message| message.evidence_ids == vec!["evidence-1".to_string()]));
+        assert!(reports[0]
+            .delivery
+            .as_ref()
+            .is_some_and(|delivery| { delivery.delivery_id.as_deref() == Some("delivery-1") }));
+        assert_eq!(
+            reports[0].content,
+            "Delivery delivery-1 completed from provider-native activity"
+        );
 
         let _ = std::fs::remove_dir_all(root);
     }
@@ -23866,10 +23489,9 @@ mod tests {
                 created_at: "unix-ms:1".into(),
                 delivery: Some(MessageDelivery {
                     delivery_id: Some("delivery-1".into()),
-                    execution_status: Some(ProviderSessionStatus::Succeeded),
+                    execution_status: Some(ProviderSessionStatus::Running),
                     native_session: None,
                     started_at: Some("unix-ms:1".into()),
-                    provider_session_id: Some("delivery-1".into()),
                     provider_request_id: None,
                     provider_thread_id: Some("thread-1".into()),
                     provider_turn_id: Some("turn-1".into()),
@@ -23907,7 +23529,7 @@ mod tests {
             })
             .expect("append running provider session");
 
-        reconcile_running_provider_sessions(
+        reconcile_running_delivery_attempts(
             &store,
             "agent-1",
             None,
@@ -23933,12 +23555,12 @@ mod tests {
                 message.kind == MessageKind::Report
                     && message.channel.as_deref() == Some("provider-report")
                     && message.delivery.as_ref().is_some_and(|delivery| {
-                        delivery.provider_session_id.as_deref() == Some("delivery-1")
+                        delivery.delivery_id.as_deref() == Some("delivery-1")
                     })
             })
             .expect("provider report");
         assert_eq!(report.task_id, None);
-        assert_eq!(report.evidence_ids, vec!["evidence-1".to_string()]);
+        assert!(report.evidence_ids.is_empty());
 
         let _ = std::fs::remove_dir_all(root);
     }
@@ -23974,23 +23596,31 @@ mod tests {
             })
             .expect("append running provider session");
 
-        assert!(has_unresolved_provider_session(&store, "agent-1").expect("running check"));
+        append_test_delivery_attempt(
+            &store,
+            "agent-1",
+            Some("task-1"),
+            ProviderSessionStatus::Running,
+            Some("thread-1"),
+            Some("turn-1"),
+        );
 
-        mark_running_provider_sessions_terminal(
+        assert!(has_unresolved_delivery_attempt(&store, "agent-1").expect("running check"));
+
+        mark_running_delivery_attempts_terminal(
             &store,
             "agent-1",
             ProviderSessionStatus::Stale,
             Some(MessageTerminalSource::Failed),
         )
         .expect("mark stale");
-        assert!(!has_unresolved_provider_session(&store, "agent-1").expect("running check"));
-        let sessions = store.provider_sessions().expect("provider sessions");
-        let latest = sessions
-            .iter()
-            .rev()
-            .find(|session| session.id == "delivery-1")
-            .expect("latest session");
-        assert_eq!(latest.status, ProviderSessionStatus::Stale);
+        assert!(!has_unresolved_delivery_attempt(&store, "agent-1").expect("running check"));
+        let latest = latest_messages_in_append_order(&store)
+            .expect("messages")
+            .into_iter()
+            .find(|message| message.to_agent_id.as_deref() == Some("agent-1"))
+            .expect("latest delivery message");
+        assert_eq!(latest.delivery_status, MessageDeliveryStatus::Failed);
 
         let _ = std::fs::remove_dir_all(root);
     }
@@ -24026,7 +23656,16 @@ mod tests {
             })
             .expect("append stale provider session");
 
-        assert!(has_unresolved_provider_session(&store, "agent-1").expect("running check"));
+        append_test_delivery_attempt(
+            &store,
+            "agent-1",
+            Some("task-1"),
+            ProviderSessionStatus::Stale,
+            Some("thread-1"),
+            Some("turn-1"),
+        );
+
+        assert!(has_unresolved_delivery_attempt(&store, "agent-1").expect("running check"));
 
         let _ = std::fs::remove_dir_all(root);
     }
@@ -24054,10 +23693,9 @@ mod tests {
                 created_at: "unix-ms:1".into(),
                 delivery: Some(MessageDelivery {
                     delivery_id: Some("delivery-1".into()),
-                    execution_status: Some(ProviderSessionStatus::Succeeded),
+                    execution_status: Some(ProviderSessionStatus::Stale),
                     native_session: None,
                     started_at: Some("unix-ms:1".into()),
-                    provider_session_id: Some("delivery-1".into()),
                     provider_request_id: None,
                     provider_thread_id: Some("thread-1".into()),
                     provider_turn_id: Some("turn-1".into()),
@@ -24095,7 +23733,7 @@ mod tests {
             })
             .expect("append stale provider session");
 
-        mark_running_provider_sessions_terminal(
+        mark_running_delivery_attempts_terminal(
             &store,
             "agent-1",
             ProviderSessionStatus::Stale,
@@ -24103,7 +23741,7 @@ mod tests {
         )
         .expect("mark stale failed");
 
-        assert!(!has_unresolved_provider_session(&store, "agent-1").expect("running check"));
+        assert!(!has_unresolved_delivery_attempt(&store, "agent-1").expect("running check"));
         let latest_message = latest_message(&store, "message-1").expect("latest message");
         assert_eq!(
             latest_message.delivery_status,
@@ -24150,6 +23788,15 @@ mod tests {
             })
             .expect("append running provider session");
 
+        append_test_delivery_attempt(
+            &store,
+            "agent-1",
+            Some("task-1"),
+            ProviderSessionStatus::Running,
+            Some("thread-1"),
+            Some("turn-1"),
+        );
+
         let result = deliver_agent_messages(
             &store,
             &["--agent".into(), "agent-1".into(), "--start-runtime".into()],
@@ -24192,7 +23839,16 @@ mod tests {
             })
             .expect("append running provider session");
 
-        reconcile_running_provider_sessions(
+        append_test_delivery_attempt(
+            &store,
+            "agent-1",
+            Some("task-1"),
+            ProviderSessionStatus::Running,
+            Some("thread-1"),
+            Some("turn-1"),
+        );
+
+        reconcile_running_delivery_attempts(
             &store,
             "agent-1",
             Some("task-1"),
@@ -24202,15 +23858,19 @@ mod tests {
         )
         .expect("thread idle should reconcile the active session");
 
-        let latest = store
-            .provider_sessions()
-            .expect("provider sessions")
+        let latest = latest_messages_in_append_order(&store)
+            .expect("messages")
             .into_iter()
-            .rev()
-            .find(|session| session.id == "delivery-1")
-            .expect("latest session");
-        assert_eq!(latest.status, ProviderSessionStatus::Succeeded);
-        assert_eq!(latest.provider_turn_id.as_deref(), Some("turn-1"));
+            .find(|message| message.to_agent_id.as_deref() == Some("agent-1"))
+            .expect("latest delivery message");
+        assert_eq!(latest.delivery_status, MessageDeliveryStatus::Delivered);
+        assert_eq!(
+            latest
+                .delivery
+                .as_ref()
+                .and_then(|delivery| delivery.provider_turn_id.as_deref()),
+            Some("turn-1")
+        );
 
         let _ = std::fs::remove_dir_all(root);
     }
@@ -24275,7 +23935,16 @@ mod tests {
             })
             .expect("append running provider session");
 
-        reconcile_running_provider_sessions(
+        append_test_delivery_attempt(
+            &store,
+            "agent-1",
+            Some("task-1"),
+            ProviderSessionStatus::Running,
+            Some("thread-1"),
+            None,
+        );
+
+        reconcile_running_delivery_attempts(
             &store,
             "agent-1",
             Some("task-1"),
@@ -24285,14 +23954,12 @@ mod tests {
         )
         .expect("reconcile session with missing stored turn id");
 
-        let latest = store
-            .provider_sessions()
-            .expect("provider sessions")
+        let latest = latest_messages_in_append_order(&store)
+            .expect("messages")
             .into_iter()
-            .rev()
-            .find(|session| session.id == "delivery-1")
-            .expect("latest session");
-        assert_eq!(latest.status, ProviderSessionStatus::Succeeded);
+            .find(|message| message.to_agent_id.as_deref() == Some("agent-1"))
+            .expect("latest delivery message");
+        assert_eq!(latest.delivery_status, MessageDeliveryStatus::Delivered);
 
         let _ = std::fs::remove_dir_all(root);
     }
@@ -24657,7 +24324,7 @@ mod tests {
             assert_eq!(latest.delivery_status, MessageDeliveryStatus::Delivered);
             assert!(latest
                 .delivery
-                .and_then(|delivery| delivery.provider_session_id)
+                .and_then(|delivery| delivery.delivery_id)
                 .is_some());
         }
 
@@ -24981,12 +24648,8 @@ mod sse_tests {
                 default_store: serve_store.clone(),
             };
             let watcher_projects = projects.clone();
-            sse::start_sse_watcher(
-                move || watcher_projects.watch_map(),
-                |_root| Box::new(|_: &str, _: &serde_json::Value| Vec::new()) as sse::Normalizer,
-                sse_manager.clone(),
-            )
-            .expect("watcher");
+            sse::start_sse_watcher(move || watcher_projects.watch_map(), sse_manager.clone())
+                .expect("watcher");
             for stream in listener.incoming() {
                 let Ok(stream) = stream else { continue };
                 let conn_projects = projects.clone();
