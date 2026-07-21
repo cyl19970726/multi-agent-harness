@@ -85,12 +85,6 @@ rules live in [Documentation Governance](../documentation-governance.md).
 - [Trademark registration example](examples/trademark-registration.md): first
   cross-system acceptance scenario.
 
-## Historical and dated evidence
-
-These files are useful for provenance and audits but are excluded from the
-default product context:
-
-- [Company OS V1 implementation waves](implementation-waves.md);
-- [Company OS V1 completion audit](completion-audit.md);
-- [Store-live V2.2 gap audit](store-live-v2.2-gap-audit.md);
-- [Documentation migration map](document-migration.md).
+Historical implementation plans and completion audits are available through Git
+history and the native Mission/Wave records that executed them. They are not
+maintained as a second documentation layer.

@@ -99,6 +99,13 @@ pub struct RegistryConfig {
     pub allowed_statuses: Vec<String>,
     pub allowed_lifecycles: Vec<String>,
     pub core_docs: Vec<String>,
+    /// Roots whose Markdown files must all appear in the registry. This catches
+    /// important but invisible documents, complementing `core_docs`.
+    #[serde(default)]
+    pub coverage_roots: Vec<String>,
+    /// Exact repository-relative paths intentionally excluded from coverage.
+    #[serde(default)]
+    pub coverage_exclude: Vec<String>,
 }
 
 /// Rules for the active-document retired-vocabulary gate.
@@ -176,6 +183,15 @@ impl GovernanceConfig {
                 .iter()
                 .map(|v| s(v))
                 .collect(),
+                coverage_roots: [
+                    "docs/company-os",
+                    "docs/dashboard/pages",
+                    "docs/integration",
+                ]
+                .iter()
+                .map(|v| s(v))
+                .collect(),
+                coverage_exclude: Vec::new(),
             }),
             retired_vocabulary: None,
         }
@@ -495,6 +511,16 @@ pub fn check_governance(root: &Path, cfg: &RegistryConfig, today: &str) -> GateR
     for core in &cfg.core_docs {
         if !seen.contains(core) {
             failures.push(format!("{registry_path}: missing core doc {core}"));
+        }
+    }
+
+    let coverage_exclude: BTreeSet<&str> =
+        cfg.coverage_exclude.iter().map(String::as_str).collect();
+    for path in collect_markdown(root, &cfg.coverage_roots) {
+        if !coverage_exclude.contains(path.as_str()) && !seen.contains(&path) {
+            failures.push(format!(
+                "{registry_path}: active coverage path is not registered: {path}"
+            ));
         }
     }
 
@@ -1175,6 +1201,40 @@ mod tests {
         });
         write(&root, "docs/registry.json", &registry.to_string());
         let r = check_governance(&root, &reg_cfg(), "2026-06-21");
+        assert!(r.failures.is_empty(), "got {:?}", r.failures);
+    }
+
+    #[test]
+    fn governance_requires_markdown_under_coverage_roots_to_be_registered() {
+        let root = tmp("gov-coverage");
+        write(&root, "README.md", "x");
+        write(&root, "docs/product/hidden.md", "important but invisible");
+        let registry = serde_json::json!({
+            "schema": "agent_harness.docs_registry.v1",
+            "documents": [valid_doc("README.md")]
+        });
+        write(&root, "docs/registry.json", &registry.to_string());
+        let mut cfg = reg_cfg();
+        cfg.coverage_roots = vec!["docs/product".into()];
+        let r = check_governance(&root, &cfg, "2026-06-21");
+        assert!(r.failures.iter().any(|failure| failure
+            .contains("active coverage path is not registered: docs/product/hidden.md")));
+    }
+
+    #[test]
+    fn governance_allows_explicit_coverage_exclusion() {
+        let root = tmp("gov-coverage-exclude");
+        write(&root, "README.md", "x");
+        write(&root, "docs/product/generated.md", "generated");
+        let registry = serde_json::json!({
+            "schema": "agent_harness.docs_registry.v1",
+            "documents": [valid_doc("README.md")]
+        });
+        write(&root, "docs/registry.json", &registry.to_string());
+        let mut cfg = reg_cfg();
+        cfg.coverage_roots = vec!["docs/product".into()];
+        cfg.coverage_exclude = vec!["docs/product/generated.md".into()];
+        let r = check_governance(&root, &cfg, "2026-06-21");
         assert!(r.failures.is_empty(), "got {:?}", r.failures);
     }
 

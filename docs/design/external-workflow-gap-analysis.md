@@ -154,7 +154,7 @@ symptom; **closed-loop self-checking (A) is the largest hole.**
 
 ## 6. More structural gaps (F–H), from the full 62-record corpus
 
-The full classification ([internal-workflow-catalog-full.md](internal-workflow-catalog-full.md))
+The full historical classification (recoverable from Git history)
 surfaced three structural gaps that A–E did not name. They extend the same
 "de-naive the program" axis.
 
@@ -307,7 +307,7 @@ serialization for forward-injection. Those three are the expressiveness gaps to
 close (on top of the authoring gaps A–H and the runtime gaps §7).
 
 > Evidence base: 62 classified internal `wf_*.json` records
-> ([internal-workflow-catalog-full.md](internal-workflow-catalog-full.md)) +
+> (historical corpus in Git history) +
 > the internal runtime eval `wf_961f46bb-0f7`, re-verified against current
 > `crates/harness-workflow` + `crates/harness-cli` + `apps/agent-dashboard`.
 

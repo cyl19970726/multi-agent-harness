@@ -53,6 +53,12 @@ core_docs = [
     "docs/decisions/README.md",
     "docs/company-os/product-system-map.md",
 ]
+coverage_roots = [
+    "docs/company-os",
+    "docs/dashboard/pages",
+    "docs/integration",
+]
+coverage_exclude = []
 
 [retired_vocabulary]
 terms = [
@@ -63,7 +69,6 @@ terms = [
     "Goal/Task Workbench",
 ]
 allowed_paths = [
-    "docs/decisions/0002-message-first-task-system.md",
     "docs/governance-engine.md",
 ]
 context_markers = [

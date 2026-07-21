@@ -24,7 +24,7 @@ not seven independent sources of product truth.
 | Design evidence | `docs/design/<workstream>/` | versioned Expected, Actual, prompts, specs, overlays, comparisons and reviews | only for the selected workstream |
 | Operations | `docs/getting-started.md`, `docs/operations.md`, `docs/schemas.md`, `docs/governance-engine.md` | commands, release and governance gates | only for implementation/operations |
 | Research | `docs/research/` | external observations and unresolved exploration | never product authority |
-| Archive | `docs/archive/` | historical provenance needed to interpret old records | never default context |
+| Historical evidence | verified external archives and Git history | provenance needed to interpret still-existing records or decisions | never default context |
 
 Within Company OS, product contracts divide by truth-owning system:
 
@@ -52,7 +52,8 @@ Every maintained document belongs to one class:
 4. **Design intent** — versioned Expected direction, never implementation proof.
 5. **Actual evidence** — reproducible browser/runtime evidence with provenance.
 6. **Research** — input to a decision, never the decision itself.
-7. **Historical/archive** — retained provenance, excluded from active planning.
+7. **Historical evidence** — retained only when a live record, compliance need,
+   or unresolved decision requires reconstruction; excluded from active planning.
 
 Two active documents may not both claim the same `canonical_for` scope. A
 summary links to the owning contract instead of copying its rules.
@@ -85,7 +86,7 @@ answer the current decision.
 4. relevant Organization, Work, Finance and Approval policy;
 5. the domain example or adapter, if one exists.
 
-Research, old visual candidates, completion audits and archives are loaded only
+Research, old visual candidates, completion audits and historical evidence are loaded only
 to answer a historical or comparative question.
 
 ## Creating or changing documentation
@@ -122,10 +123,47 @@ Archive or replace a document when:
 - its useful facts are now enforced by schema, code, CLI or tests;
 - a new Agent cannot tell whether it is current without reading another file.
 
-Historical evidence moves under `docs/archive/` or a versioned design
-workstream. Active indexes must label it historical and must not place it in the
-default reading order. Git history alone is sufficient for abandoned prose that
-has no ongoing audit or record-interpretation value.
+Historical evidence belongs in an immutable external export when it must travel
+with retired runtime data, or in a versioned design evidence workstream when it
+is still used for visual comparison. Active indexes must not place it in the
+default reading order. Git history is sufficient for abandoned prose that has
+no ongoing audit, compliance, compatibility or record-interpretation value.
+
+## Retention and redundancy audit
+
+A document remains in the repository only when it satisfies at least one
+retention test:
+
+1. it is the current authority for a named scope;
+2. it explains implemented code, schema, store, API or an operator procedure;
+3. it is an active Expected/Actual design contract used for implementation or
+   acceptance;
+4. it is required to reproduce a current compliance, migration or acceptance
+   claim;
+5. it is unresolved research attached to an active decision or WorkItem;
+6. a live record or supported compatibility path still references it and cannot
+   be migrated safely.
+
+“It may be useful later”, “it took effort to write”, and “it is already in an
+archive folder” are not retention reasons. If none of the tests pass, delete the
+file; Git history already preserves recovery. A forwarding note is justified
+only while real inbound references still require that path.
+
+The Docs Governance audit combines machine signals with an ownership review:
+
+| Signal | Governance question | Default action |
+| --- | --- | --- |
+| no inbound links and no registry entry | Is this an undiscoverable authority or an orphan? | register and route it, or delete it |
+| duplicated `canonicalFor` scope | Which document owns the rule? | merge into one authority and delete the copy |
+| high text/heading overlap | Are two documents serving the same reader and lifecycle? | merge or make one a narrow implementation reference |
+| archival/process status after implementation | Is executable truth now sufficient? | delete unless reconstruction is required |
+| stale review date or broken dependency | Does the owner still stand behind it? | review, downgrade or delete |
+| unreferenced Expected/Actual asset | Is it part of an active visual contract? | delete the asset and manifest entry |
+| active document missing from registry/index | Is important product behavior absent from governance? | register it or merge it into an existing authority |
+
+Run the audit after a product-model change, a large feature lands, a design
+workstream closes, or the active document count grows materially. The result is
+a bounded cleanup WorkItem, not a permanent archive-building activity.
 
 ## Governance roles
 

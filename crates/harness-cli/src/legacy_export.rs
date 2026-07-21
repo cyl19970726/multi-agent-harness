@@ -51,7 +51,6 @@ const INTERPRETATION_PATHS: &[&str] = &[
     "schemas/fixtures/goal-evaluation",
     "schemas/fixtures/goal-case",
     "examples/goal-cases",
-    "docs/archive/legacy-goal-task-v1",
     // These retired Skills are contract-required interpretation materials. The
     // repository intentionally no longer contains them, so the manifest must
     // state `not_present_in_source` rather than silently omitting them.

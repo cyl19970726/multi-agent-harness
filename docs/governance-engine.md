@@ -51,6 +51,8 @@ required_fields = ["path", "ownerRole", "status", "lifecycle", "canonicalFor",
 allowed_statuses = ["idea", "planned", "stable", "deprecated", "archival"]
 allowed_lifecycles = ["volatile", "stable", "archival"]
 core_docs = ["README.md", "docs/README.md", "docs/architecture.md"]
+coverage_roots = ["docs/product", "docs/operations"]
+coverage_exclude = []
 
 [retired_vocabulary]                # optional; requires [registry]
 terms = ["Goal -> Task", "Goal/Task Workbench"]
@@ -68,7 +70,7 @@ drops the `[registry]` block and keeps `links` + `size`.
 | `links` | blocker | every relative Markdown link resolves to a file | `check-doc-links.mjs` |
 | `size` | warning | markdown over `max_lines` (warn, never block) | `check-doc-size.mjs` |
 | `skills` | blocker | SKILL.md frontmatter + `agents/openai.yaml` + member `skill_refs` resolve | `check-skills.mjs` |
-| `registry` | blocker | required fields, allowed enums, path/dependency existence, no duplicate paths or active canonical scopes, core docs registered, valid `reviewAfter` | extended native port |
+| `registry` | blocker | required fields, allowed enums, path/dependency existence, no duplicate paths or active canonical scopes, core docs and every Markdown file under configured coverage roots registered, valid `reviewAfter` | extended native port |
 | `retired_vocabulary` | blocker | exact retired phrases cannot appear as current language in active registered Markdown; archival/deprecated docs, configured owner paths and explicitly historical lines are allowed | native governance extension |
 
 The ports are faithful 1:1 (same roots, rules, and messages), with two

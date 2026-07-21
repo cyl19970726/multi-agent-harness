@@ -15,7 +15,7 @@ lifecycle and archive rules are defined in
 | Implement or operate the repository | [Getting started](getting-started.md), [Operations](operations.md), [Schemas](schemas.md) |
 | Change frontend visual direction | [Company OS visual inventory](design/company-os-v2/visual-index.md) or [Execution Workbench V3](design/execution-workbench-v3/README.md) |
 | Integrate a provider | [Integration index](integration/README.md) |
-| Interpret an old decision | [Archive](archive/legacy-goal-task-v1/README.md) or [Research](research/README.md) |
+| Interpret an old decision | The relevant ADR, verified native export, Git history, or [Research](research/README.md) |
 
 ## Documentation modules
 
@@ -27,7 +27,7 @@ lifecycle and archive rules are defined in
 | Design evidence | [`design/`](design/) workstreams; use each workstream README/manifest, not the directory as product authority |
 | Operations | [Getting started](getting-started.md), [Operations](operations.md), [Multi-project](multi-project.md), [Governance engine](governance-engine.md) |
 | Research | [Research index](research/README.md); non-authoritative input |
-| Archive | [Legacy archive](archive/legacy-goal-task-v1/README.md); never default context |
+| Historical evidence | Verified native exports and Git history; never default context |
 
 Project-specific tool usage belongs in `examples/adapters/**` or in the
 integrating project repository, not in the generic core docs.
