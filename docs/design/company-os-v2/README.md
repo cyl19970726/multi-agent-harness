@@ -58,6 +58,9 @@ Review artifacts:
 - `expected/`
 - `actual/` — deterministic-fixture browser evidence;
 - `store-live-actual/` — browser renders backed by an archived Harness Store.
+- [`approval-action-v1/review.html`](approval-action-v1/review.html) — the first
+  governed browser interaction: requested, invalid capability denied, approved,
+  and rejected, with ActionCommand/audit evidence in the adjacent manifest.
 
 Reproduce the Store-live evidence with
 `pnpm visual:capture:company-os-v2:live`, then update the checked-in comparison

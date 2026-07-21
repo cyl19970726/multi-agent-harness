@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import { Bot, Building2, FileText, Landmark, Network, Plus, Scale, Send, ShieldCheck, Tag, Users } from "lucide-react";
 
 import {
@@ -6,10 +6,15 @@ import {
   FinancialRecordCard, GovernedActionButton, LinkedRecord, PageFrame, Panel, PolicyNote, RoleLine, StatusTag,
 } from "./components";
 import { prototypeTrademarkOperationsProjection } from "./fixture";
-import type { ActorSummary, TrademarkOperationsProjection, WorkItemView } from "./types";
+import { buildApprovalDecisionCommand } from "./approvalAction";
+import type { ActorSummary, ApprovalDecision, ApprovalDecisionCommand, TrademarkOperationsProjection, WorkItemView } from "./types";
 import { ActorAvatar, ObjectEmblem } from "../visuals";
 
 type OperationsPageProps = { data?: TrademarkOperationsProjection };
+type ApprovalFocusProps = OperationsPageProps & {
+  actionEnabled?: boolean;
+  onDecision?: (command: ApprovalDecisionCommand, capabilityToken: string) => Promise<boolean>;
+};
 
 function projection(data?: TrademarkOperationsProjection): TrademarkOperationsProjection {
   return data ?? prototypeTrademarkOperationsProjection;
@@ -189,11 +194,50 @@ function WorkRoleTable({ workItem }: { workItem: WorkItemView }) {
   return <div className="divide-y divide-border"><RoleLine label="Requested by" actor={workItem.requestedBy} /><RoleLine label="Submitted by" actor={workItem.submittedBy} /><RoleLine label="Accountable owner" actor={workItem.accountableOwner} /><RoleLine label="Assignee" actor={workItem.assignees[0]} /><RoleLine label="Contributor" actor={workItem.contributors[0]} /><RoleLine label="Finance reviewer" actor={workItem.reviewer} /><RoleLine label="Legal reviewer" actor={workItem.legalReviewer} /><RoleLine label="Approver" actor={workItem.approver} /></div>;
 }
 
-export function ApprovalFocus({ data }: OperationsPageProps) {
+export function ApprovalFocus({ data, actionEnabled = false, onDecision }: ApprovalFocusProps) {
   const view = projection(data);
   const { approval, commitment } = view;
   const approvalTitle = humanReadable(approval.title, "Approval decision");
-  const decisionControls = <div className="space-y-2" aria-label="Approval decision controls"><div className="flex flex-wrap gap-2"><GovernedActionButton label="Approve" reason={commandUnavailable} /><GovernedActionButton label="Request changes" reason={commandUnavailable} /><GovernedActionButton label="Reject" reason={commandUnavailable} /></div><p className="max-w-sm text-xs leading-5 text-muted-foreground">{commandUnavailable}</p></div>;
+  const [capabilityToken, setCapabilityToken] = useState("");
+  const [decisionNote, setDecisionNote] = useState("");
+  const [submitting, setSubmitting] = useState<ApprovalDecision | null>(null);
+  const [feedback, setFeedback] = useState<string | null>(null);
+  const intents = useRef<Partial<Record<ApprovalDecision, { id: string; decidedAt: string }>>>({});
+  const canDecide = actionEnabled && Boolean(onDecision) && approval.status === "requested" && Boolean(approval.decisionContext);
+  const ready = canDecide && Boolean(capabilityToken.trim()) && Boolean(decisionNote.trim()) && !submitting;
+  async function decide(decision: ApprovalDecision) {
+    if (!ready || !onDecision) return;
+    const intent = intents.current[decision] ?? {
+      id: `action-browser-${approval.id}-${decision}-${crypto.randomUUID()}`,
+      decidedAt: new Date().toISOString(),
+    };
+    intents.current[decision] = intent;
+    setSubmitting(decision);
+    setFeedback(null);
+    try {
+      const command = buildApprovalDecisionCommand({ approval, decision, note: decisionNote, commandId: intent.id, decidedAt: intent.decidedAt });
+      const accepted = await onDecision(command, capabilityToken.trim());
+      if (accepted) {
+        setCapabilityToken("");
+        setDecisionNote("");
+      }
+      setFeedback(accepted ? `${decision === "approved" ? "Approval" : "Rejection"} recorded in Store truth.` : "Decision was not applied. Review the action error above and retry with the same intent.");
+    } catch (error) {
+      setFeedback(error instanceof Error ? error.message : String(error));
+    } finally {
+      setSubmitting(null);
+    }
+  }
+  const unavailableReason = !actionEnabled
+    ? commandUnavailable
+    : !approval.decisionContext
+      ? "The current projection does not expose a complete approval.decide contract."
+      : approval.status !== "requested"
+        ? `This Approval is already ${approval.status}.`
+        : !capabilityToken.trim() || !decisionNote.trim()
+          ? "Enter the session capability and a durable decision note."
+          : undefined;
+  const decisionControls = <div className="w-full max-w-lg space-y-2" aria-label="Approval decision controls" data-company-os-action-state={canDecide ? "available" : "unavailable"}><div className="grid gap-2 sm:grid-cols-2"><label className="text-xs font-medium text-muted-foreground">Session capability<input data-company-os-action-token type="password" autoComplete="off" value={capabilityToken} onChange={(event) => setCapabilityToken(event.target.value)} disabled={!canDecide} placeholder="Not stored" className="mt-1 h-9 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground disabled:bg-muted" /></label><label className="text-xs font-medium text-muted-foreground">Decision note<input data-company-os-decision-note value={decisionNote} onChange={(event) => setDecisionNote(event.target.value)} disabled={!canDecide} placeholder="Required for audit" className="mt-1 h-9 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground disabled:bg-muted" /></label></div><div className="flex flex-wrap gap-2"><GovernedActionButton label={submitting === "approved" ? "Approving…" : "Approve"} reason={unavailableReason} disabled={!ready} onClick={() => void decide("approved")} /><GovernedActionButton label="Request changes" reason="Request changes needs a separate native Approval status or follow-up WorkItem contract." /><GovernedActionButton label={submitting === "rejected" ? "Rejecting…" : "Reject"} reason={unavailableReason} disabled={!ready} onClick={() => void decide("rejected")} /></div><p className="max-w-lg text-xs leading-5 text-muted-foreground">{feedback ?? unavailableReason ?? "The capability remains in this browser session only. The server still validates Human identity, permission, policy, scope and idempotency."}</p></div>;
   return (
     <PageFrame
       eyebrow="Approval"
@@ -203,7 +247,7 @@ export function ApprovalFocus({ data }: OperationsPageProps) {
       context={<ContextRail><StatusTag status={approval.status} /><Panel title="Expires"><p className="text-sm">{approval.expiresAt ? displayTimestamp(approval.expiresAt) : "No expiry recorded"}</p></Panel><Panel title="Policy"><p className="text-xs leading-5 text-muted-foreground">Human approval for financial and legal submission</p></Panel></ContextRail>}
     >
       <div className="space-y-5" data-company-os-ref={approval.id}>
-        <DecisionNotice><strong>Human action required.</strong> {actorDescriptor(approval.requiredApprover)} is the required approver; no payment is authorized or recorded by this pending approval.</DecisionNotice>
+        <DecisionNotice>{approval.status === "requested" ? <><strong>Human action required.</strong> {actorDescriptor(approval.requiredApprover)} is the required approver; no payment is authorized or recorded by this pending approval.</> : <><strong>Decision recorded: {approval.status}.</strong> The Approval changed state, while the linked Commitment and any future Payment remain separate governed records.</>}</DecisionNotice>
         <Panel title="Evidence"><div className="space-y-1">{view.evidence.length > 0 ? view.evidence.map((evidence) => <LinkedRecord key={evidence.id} recordRef={evidence.id} label={evidence.label} detail={evidence.detail} />) : <p className="text-sm text-muted-foreground">No evidence is linked in this projection.</p>}</div></Panel>
         <Panel title="Proposed action"><p className="break-words text-sm leading-6">{humanReadable(approval.actionSummary, "No approval summary was supplied.")}</p><LinkedRecord recordRef={view.workItem.id} label={view.workItem.title} detail="Linked WorkItem" /><LinkedRecord recordRef={view.sourceDocument.id} label={view.sourceDocument.label} detail="Source document" /></Panel>
         <Panel title="Participants"><div className="divide-y divide-border"><RoleLine label="Requested by" actor={approval.requestedBy} /><RoleLine label="Required approver" actor={approval.requiredApprover} /><RoleLine label="Finance reviewed by" actor={approval.financeReviewer} /><RoleLine label="Legal reviewed by" actor={approval.legalReviewer} /></div></Panel>

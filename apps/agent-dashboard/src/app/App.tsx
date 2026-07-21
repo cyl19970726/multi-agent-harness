@@ -491,7 +491,7 @@ export function App() {
   // Returns whether the action succeeded so callers that chain actions (e.g. the
   // composer's queue-then-deliver) can stop on failure instead of clobbering the
   // first error with the next call's `setSourceError(null)`.
-  async function runAction(path: string, body?: unknown): Promise<boolean> {
+  async function runAction(path: string, body?: unknown, options?: { headers?: Readonly<Record<string, string>> }): Promise<boolean> {
     if (!isLive) return false;
     if (mutationInFlightRef.current) {
       setSourceError("Another Console action is still in progress");
@@ -502,7 +502,7 @@ export function App() {
     const request = beginMutationSnapshotRequest();
     let needsRefresh = false;
     try {
-      const response = await postAction(apiUrl, path, body, selectedProjectId);
+      const response = await postAction(apiUrl, path, body, selectedProjectId, options);
       if (response.snapshot) {
         adoptSnapshotResponse(request, response.snapshot);
       } else {
@@ -544,7 +544,7 @@ export function App() {
         sourceError={sourceError}
         sourceLabel={sourceLabel}
         actionsEnabled={isLive}
-        onAction={(path, body) => runAction(path, body)}
+        onAction={(path, body, options) => runAction(path, body, options)}
         pollEnabled={pollEnabled}
         canPoll={isLive}
         onTogglePoll={() => setPollEnabled((on) => !on)}

@@ -2,6 +2,8 @@ import type {
   ActorAvailability,
   ActorKind,
   ActorSummary,
+  CanonicalActorRef,
+  CanonicalEntityRef,
   ApprovalView,
   FinancialRecordView,
   RelatedLink,
@@ -33,6 +35,23 @@ function refId(value: unknown): string {
   if (!value || typeof value !== "object" || Array.isArray(value)) return "";
   const ref = value as JsonRecord;
   return text(ref.actor_id) || text(ref.id);
+}
+
+function canonicalActorRef(value: unknown): CanonicalActorRef | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const candidate = value as JsonRecord;
+  const actorId = text(candidate.actor_id);
+  const actorType = text(candidate.actor_type);
+  if (!actorId || !new Set(["human", "agent", "external", "service"]).has(actorType)) return undefined;
+  return { actor_type: actorType as CanonicalActorRef["actor_type"], actor_id: actorId };
+}
+
+function canonicalEntityRef(value: unknown): CanonicalEntityRef | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const candidate = value as JsonRecord;
+  const id = text(candidate.id);
+  const kind = text(candidate.kind);
+  return id && kind ? { id, kind } : undefined;
 }
 
 function field(record: JsonRecord | undefined, key: string): unknown {
@@ -266,6 +285,7 @@ export function adaptTrademarkOperationsProjection(projection: unknown): Tradema
   const workRecords = records(root.work_items);
   const financeRecords = records(root.financial_records);
   const approvalRecords = records(root.approvals);
+  const pageDefinitions = records(root.custom_page_definitions);
   const evidenceRecords = records(root.evidence);
   const proposalRecords = [
     ...records(root.governance_proposals),
@@ -282,6 +302,8 @@ export function adaptTrademarkOperationsProjection(projection: unknown): Tradema
   const application = pick(typedRecords, "trademark-application-cn-2026-018");
   const commitmentRecord = financeRecords.find((item) => text(item.type) === "commitment") ?? financeRecords[0] ?? {};
   const approvalRecord = pick(approvalRecords, text((Array.isArray(workRecord.approval_refs) ? workRecord.approval_refs[0] : undefined), "approval-trademark-filing-fee-cn-2026-018"));
+  const approvalDefinition = pageDefinitions.find((definition) => Array.isArray(definition.action_command_refs)
+    && definition.action_command_refs.includes("approval.decide"));
   const proposalRecord = pick(proposalRecords, "governance-proposal-trademark-management");
   const moduleRecord = pick(moduleRecords, "module-trademark-management");
   const metricRecord = pick(metrics, "metric-july-spend");
@@ -341,6 +363,30 @@ export function adaptTrademarkOperationsProjection(projection: unknown): Tradema
       : (Array.isArray(workRecord.contributors) ? workRecord.contributors.map(actor).find((entry) => entry.kind === "external") : undefined),
     expiresAt: text(approvalRecord.expires_at) || undefined,
   };
+  const subjectRef = canonicalEntityRef(approvalRecord.subject_ref);
+  const requestedByRef = canonicalActorRef(approvalRecord.requested_by);
+  const requiredApproverRefs = Array.isArray(approvalRecord.required_approver_refs)
+    ? approvalRecord.required_approver_refs.map(canonicalActorRef).filter((value): value is CanonicalActorRef => Boolean(value))
+    : [];
+  const definitionId = text(approvalDefinition?.id);
+  const actionPolicyRef = Array.isArray(approvalDefinition?.policy_refs)
+    ? approvalDefinition.policy_refs.map((value) => text(value)).find((value) => value.endsWith(":approval.decide"))
+    : undefined;
+  if (subjectRef && requestedByRef && requiredApproverRefs.length > 0 && definitionId && actionPolicyRef) {
+    approval.decisionContext = {
+      definitionId,
+      actionPolicyRef,
+      recordSubjectRef: subjectRef,
+      requestedBy: requestedByRef,
+      requiredApproverRefs,
+      requiredActorType: text(approvalRecord.required_actor_type) || undefined,
+      recordPolicyRef: text(approvalRecord.policy_ref),
+      rawActionSummary: text(approvalRecord.action_summary),
+      evidenceRefs: Array.isArray(approvalRecord.evidence_refs) ? approvalRecord.evidence_refs.map((value) => text(value)).filter(Boolean) : [],
+      requestedAt: text(approvalRecord.requested_at),
+      expiresAt: text(approvalRecord.expires_at) || undefined,
+    };
+  }
 
   const organizationUnits = units.map((unit) => {
     const unitMemberships = memberships.filter((membership) => text(field(membership, "org_unit_id")) === text(unit.id));

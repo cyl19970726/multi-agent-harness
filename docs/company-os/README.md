@@ -67,6 +67,9 @@ model.
   growth.
 - [Agent-programmable pages](agent-programmable-pages.md): basic documents,
   structured views, governed custom code, scoped Actions, and fallback.
+- [Browser Action transport](browser-action-transport.md): the implemented
+  `approval.decide` browser slice, session capability, evidence, and the honest
+  boundary before actor-bound Human authentication.
 - [Skill contracts](skill-contracts.md): the optional module-designer and
   page-builder capabilities.
 - [Organization and actors](organization-and-actors.md): human, Standing Agent,

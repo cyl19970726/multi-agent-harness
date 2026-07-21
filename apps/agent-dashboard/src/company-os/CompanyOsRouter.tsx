@@ -192,7 +192,7 @@ function PlatformPlaceholder({ surface }: { surface: "providers" | "plugins" | "
  * explicitly labelled prototype fixture. Presentation remains read-only until
  * a governed browser Action transport is connected separately.
  */
-export function CompanyOsRouter({ model, selection }: { model: WorkbenchModel; selection: SelectionState }) {
+export function CompanyOsRouter({ model, selection, actionsEnabled = false, onAction }: { model: WorkbenchModel; selection: SelectionState; actionsEnabled?: boolean; onAction?: (path: string, body?: unknown, options?: { headers?: Readonly<Record<string, string>> }) => Promise<boolean> }) {
   if (selection.surface === "providers" || selection.surface === "plugins" || selection.surface === "settings") {
     return <PlatformPlaceholder surface={selection.surface} />;
   }
@@ -217,7 +217,7 @@ export function CompanyOsRouter({ model, selection }: { model: WorkbenchModel; s
     case "agents-organization": content = <OrganizationPage data={operations} />; break;
     case "standing-agent-focus": content = <StandingAgentFocus data={operations} actorId={selection.standingAgentId} />; break;
     case "governance-proposal": content = <GovernanceProposalFocus data={operations} />; break;
-    case "approval-focus": content = <ApprovalFocus data={operations} />; break;
+    case "approval-focus": content = <ApprovalFocus data={operations} actionEnabled={actionsEnabled && resolved.mode === "store-live"} onDecision={onAction ? (command, capabilityToken) => onAction("/v1/company-os/actions/dispatch", command, { headers: { "X-Harness-Company-OS-Token": capabilityToken } }) : undefined} />; break;
     case "business-module-focus": content = <BusinessModuleFocus data={operations} />; break;
     case "human-member-focus": content = <HumanMemberFocus data={operations} />; break;
   }

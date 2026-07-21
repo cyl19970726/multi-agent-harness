@@ -24,6 +24,11 @@ export interface ActionResponse {
   result?: unknown;
   snapshot?: DashboardSnapshot;
   error?: string;
+  detail?: string;
+}
+
+export interface ActionRequestOptions {
+  headers?: Readonly<Record<string, string>>;
 }
 
 /** Trim a trailing slash so `${base}/v1/...` never double-slashes. */
@@ -661,6 +666,7 @@ export async function postAction(
   path: string,
   body: unknown = {},
   project?: string | null,
+  options: ActionRequestOptions = {},
 ): Promise<ActionResponse> {
   const normalized = baseUrl.trim().replace(/\/$/, "");
   if (!normalized) {
@@ -668,12 +674,12 @@ export async function postAction(
   }
   const response = await fetch(`${normalized}${withProject(path, project)}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { ...options.headers, "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
   const payload = (await response.json()) as ActionResponse;
   if (!response.ok || !payload.ok) {
-    throw new Error(payload.error || `HTTP ${response.status}`);
+    throw new Error(payload.detail || payload.error || `HTTP ${response.status}`);
   }
   return payload;
 }

@@ -1,0 +1,91 @@
+{
+  "contract": "company-os-approval-browser-action-v1",
+  "status": "human_review_pending",
+  "source_captures": {
+    "approved": ".visual-evidence/company-os-v2/company-os-approval-action-approved-v1/capture-run.json",
+    "rejected": ".visual-evidence/company-os-v2/company-os-approval-action-rejected-v1/capture-run.json"
+  },
+  "assertions": [
+    "invalid capability is denied without mutating the Approval",
+    "named Human can approve or reject through approval.decide",
+    "the ActionCommand is executed with authorization and execution audits",
+    "an exact replay is idempotent",
+    "the Commitment remains pending_approval",
+    "no Payment is created",
+    "the capability is not persisted or copied into evidence"
+  ],
+  "approved": {
+    "approval_id": "approval-trademark-filing-fee-cn-2026-018",
+    "approval_status": "approved",
+    "decided_by": [
+      {
+        "actor_id": "actor-human-brand-owner",
+        "actor_type": "human"
+      }
+    ],
+    "action_command_id": "action-browser-approval-trademark-filing-fee-cn-2026-018-approved-f7b65cfc-bc9a-47ba-8eb8-261f7ec319e9",
+    "action_command_status": "executed",
+    "audit_event_refs": [
+      "action-browser-approval-trademark-filing-fee-cn-2026-018-approved-f7b65cfc-bc9a-47ba-8eb8-261f7ec319e9:executed",
+      "action-browser-approval-trademark-filing-fee-cn-2026-018-approved-f7b65cfc-bc9a-47ba-8eb8-261f7ec319e9:policy-authorized"
+    ],
+    "commitment_status": "pending_approval",
+    "payment_count": 0,
+    "idempotent_replay": true,
+    "capability_storage": "browser-session-memory-only; omitted from evidence"
+  },
+  "rejected": {
+    "approval_id": "approval-trademark-filing-fee-cn-2026-018",
+    "approval_status": "rejected",
+    "decided_by": [
+      {
+        "actor_id": "actor-human-brand-owner",
+        "actor_type": "human"
+      }
+    ],
+    "action_command_id": "action-browser-approval-trademark-filing-fee-cn-2026-018-rejected-ca3d360f-a991-44f2-9dda-6e6cbdce6118",
+    "action_command_status": "executed",
+    "audit_event_refs": [
+      "action-browser-approval-trademark-filing-fee-cn-2026-018-rejected-ca3d360f-a991-44f2-9dda-6e6cbdce6118:executed",
+      "action-browser-approval-trademark-filing-fee-cn-2026-018-rejected-ca3d360f-a991-44f2-9dda-6e6cbdce6118:policy-authorized"
+    ],
+    "commitment_status": "pending_approval",
+    "payment_count": 0,
+    "idempotent_replay": true,
+    "capability_storage": "browser-session-memory-only; omitted from evidence"
+  },
+  "states": [
+    {
+      "id": "requested",
+      "title": "1 · Requested",
+      "caption": "Store-live Approval before a Human decision.",
+      "source": ".visual-evidence/company-os-v2/company-os-approval-action-approved-v1/approval-action/approval-requested--before.png",
+      "file": "requested--desktop-1536x1024.png",
+      "sha256": "sha256:31be4a8d08b5d8778e6a492d12fd3e38be4b6edb01863ec5669c0178b3ae91a8"
+    },
+    {
+      "id": "denied",
+      "title": "2 · Invalid capability denied",
+      "caption": "The browser remains on requested; no ActionCommand effect is applied.",
+      "source": ".visual-evidence/company-os-v2/company-os-approval-action-approved-v1/approval-action/approval-denied-invalid-capability.png",
+      "file": "denied--desktop-1536x1024.png",
+      "sha256": "sha256:8f74c8fd996da1edc635f0ded41ffac91eaf6838710f297f31834899e99d476f"
+    },
+    {
+      "id": "approved",
+      "title": "3A · Human approved",
+      "caption": "Approval is approved; Commitment stays pending and Payment stays absent.",
+      "source": ".visual-evidence/company-os-v2/company-os-approval-action-approved-v1/approval-action/approval-approved--after.png",
+      "file": "approved--desktop-1536x1024.png",
+      "sha256": "sha256:822386bdecd1ac99348d4f4a99bf1f4549913729edf642f42aac8594e9311ec1"
+    },
+    {
+      "id": "rejected",
+      "title": "3B · Human rejected",
+      "caption": "A separate isolated Store proves the native rejected branch.",
+      "source": ".visual-evidence/company-os-v2/company-os-approval-action-rejected-v1/approval-action/approval-rejected--after.png",
+      "file": "rejected--desktop-1536x1024.png",
+      "sha256": "sha256:2f874d1956ec8f4d412eb7e168db7dd776f30277baee76a7cf163982e8d7e4d5"
+    }
+  ]
+}
